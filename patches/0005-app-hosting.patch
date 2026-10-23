@@ -1,0 +1,158 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts b/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domain-zone.ts
+@@ -14,12 +14,12 @@
+ 
+ /** Deploy this shared stack once before enabling app domains on a hosted stage. */
+ export class AppDomainZone extends Alchemy.Stack<AppDomainZone, AppDomainZoneOutput>()(
+-  "executor-app-domain-zone",
++  "basalt-app-domains",
+ ) {}
+ 
+ /** Stage-independent reference to the single shared zone owner. */
+ export const sharedAppDomainZone = Output.stackRef<AppDomainZoneOutput>(
+-  "executor-app-domain-zone",
++  "basalt-app-domains",
+   { stage: "shared" },
+ );
+ 
+diff --git a/apps/hosted/cloud/alchemy.app-domains.ts b/apps/hosted/cloud/alchemy.app-domains.ts
+--- a/apps/hosted/cloud/alchemy.app-domains.ts
++++ b/apps/hosted/cloud/alchemy.app-domains.ts
+@@ -2,7 +2,6 @@
+ import { adopt } from "alchemy/AdoptPolicy";
+ import { retain } from "alchemy/RemovalPolicy";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import * as Output from "alchemy/Output";
+ import { Config, Effect } from "effect";
+ import { AppDomainZone } from "./src/infrastructure/app-domain-zone.ts";
+ 
+@@ -18,48 +17,11 @@
+       certificateAuthority: "google",
+     }).pipe(adopt(), retain());
+     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
+-    const token = yield* Cloudflare.ApiToken.AccountApiToken("ControllerToken", {
+-      accountId,
+-      policies: zone.zoneId.pipe(
+-        Output.map((zoneId) => [
+-          {
+-            effect: "allow" as const,
+-            permissionGroups: [
+-              "DNS Write" as const,
+-              "Zone Read" as const,
+-              "SSL and Certificates Read" as const,
+-            ],
+-            resources: {
+-              [`com.cloudflare.api.account.${accountId}`]: {
+-                [`com.cloudflare.api.account.zone.${zoneId}`]: "*",
+-              },
+-            },
+-          },
+-        ]),
+-      ),
+-    }).pipe(retain());
+-    // Account-owned tokens currently share the saturated account allowance.
+-    // Test stages use the deployment user's separate quota through one scoped
+-    // token, without consuming a token for every disposable environment.
+-    const testToken = yield* Cloudflare.ApiToken.UserApiToken("TestControllerToken", {
+-      policies: zone.zoneId.pipe(
+-        Output.map((zoneId) => [
+-          {
+-            effect: "allow" as const,
+-            permissionGroups: [
+-              "DNS Write" as const,
+-              "Zone Read" as const,
+-              "SSL and Certificates Read" as const,
+-            ],
+-            resources: { [`com.cloudflare.api.account.zone.${zoneId}`]: "*" },
+-          },
+-        ]),
+-      ),
+-    }).pipe(retain());
++    const controllerToken = yield* Config.Redacted("APP_DOMAIN_CONTROLLER_TOKEN");
+     return {
+       zone: { id: zone.zoneId, domain: zone.name, accountId },
+-      controllerToken: token.value,
+-      testControllerToken: testToken.value,
++      controllerToken,
++      testControllerToken: controllerToken,
+     };
+   }),
+ );
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domain-control.ts b/apps/hosted/cloud/src/infrastructure/app-domain-control.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-domain-control.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domain-control.ts
+@@ -1,7 +1,4 @@
+-/** The control key has one Alchemy owner. Teardown reads that owner's state, including after an interrupted create. */
+-import { Random } from "alchemy";
++/** Actions owns the lifecycle control key; runtime receives a secret binding. */
++import { Config, Effect } from "effect";
+ 
+-/** Stable root resource identity shared by the API binding, resume action and teardown. */
+-export const appDomainControlSecretId = "AppDomainControlSecret";
+-/** Generated and retained by Alchemy; never supplied through a deployment credential. */
+-export const appDomainControlSecret = Random(appDomainControlSecretId);
++export const appDomainControlSecret = Config.Redacted("APP_DOMAIN_CONTROL_SECRET").pipe(Effect.orDie);
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domain-lifecycle.ts b/apps/hosted/cloud/src/infrastructure/app-domain-lifecycle.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-domain-lifecycle.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domain-lifecycle.ts
+@@ -1,14 +1,10 @@
+ /** Destroy a stage's dynamic Alchemy stack before removing the Worker and its durable journal. */
+ import { Resource } from "alchemy";
+ import { Action } from "alchemy/Action";
+-import { State } from "alchemy/State/State";
+-import { StackContext } from "alchemy/StackContext";
+-import { Stage } from "alchemy/Stage";
+ import type { Worker } from "alchemy/Cloudflare";
+ import * as Provider from "alchemy/Provider";
+-import { Effect, Redacted, Schedule, Schema } from "effect";
++import { Config, Effect, Redacted, Schedule, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+-import { appDomainControlSecretId } from "./app-domain-control.ts";
+ 
+ interface DomainLifecycleProps {
+   readonly origin: string;
+@@ -73,17 +69,8 @@
+     reconcile: ({ news }) => Effect.succeed({ origin: news.origin }),
+     delete: ({ olds }) =>
+       Effect.gen(function* () {
+-        const state = yield* yield* State;
+-        const stack = yield* StackContext;
+-        const stage = yield* Stage;
+-        const saved = yield* state.get({ stack: stack.name, stage, fqn: appDomainControlSecretId });
+-        const key = yield* Schema.decodeUnknownEffect(
+-          Schema.Struct({
+-            resourceType: Schema.Literal("Alchemy.Random"),
+-            attr: Schema.Struct({ text: Schema.Redacted(Schema.String) }),
+-          }),
+-        )(saved);
+-        yield* control({ origin: olds.origin, secret: key.attr.text }, "drain");
++        const secret = yield* Config.Redacted("APP_DOMAIN_CONTROL_SECRET");
++        yield* control({ origin: olds.origin, secret }, "drain");
+       }),
+   });
+ 
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domains.ts b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-domains.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+@@ -55,7 +55,7 @@
+   // Local development serves apps over HTTP and provisions no domains.
+   const suffix =
+     base === undefined || new URL(base).protocol !== "https:" ? undefined : new URL(base).hostname;
+-  const controlSecret = yield* (yield* appDomainControlSecret).text;
++  const controlSecret = Effect.succeed(yield* appDomainControlSecret);
+   const heartbeat = Effect.suspend(() => coordinator.getByName("domains").heartbeat()).pipe(
+     Effect.provide(RuntimeContext.phantom),
+     Effect.withSpan("app_domains.heartbeat.rpc"),
+diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
+--- a/apps/hosted/cloud/alchemy.run.ts
++++ b/apps/hosted/cloud/alchemy.run.ts
+@@ -109,7 +109,7 @@
+       });
+       yield* ResumeAppDomains({
+         origin: lifecycle.origin,
+-        secret: (yield* appDomainControlSecret).text,
++        secret: yield* appDomainControlSecret,
+         deployment: api.hash,
+         controller: controller.hash,
+       });

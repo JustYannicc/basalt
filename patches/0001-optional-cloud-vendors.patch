@@ -1,0 +1,969 @@
+diff --git a/apps/hosted/cloud/alchemy.github.ts b/apps/hosted/cloud/alchemy.github.ts
+index af77c04f2..504def13a 100644
+--- a/apps/hosted/cloud/alchemy.github.ts
++++ b/apps/hosted/cloud/alchemy.github.ts
+@@ -73,6 +73,11 @@ const productionSecrets = [
+   "POSTHOG_PERSONAL_API_KEY",
+   "SENTRY_AUTH_TOKEN",
+ ] as const;
++const optionalProductionSecrets = new Set([
++  "AUTUMN_SECRET_KEY",
++  "AXIOM_TOKEN",
++  "CONTEXT_DEV_API_KEY",
++]);
+ 
+ /** A secret from `.env.ci.op`; unset and empty are both absent. */
+ const nonEmptySecret = (name: string) =>
+@@ -107,6 +112,7 @@ const productionVariables = [
+   "SENTRY_TEAM",
+   "SENTRY_URL",
+ ] as const;
++const optionalProductionVariables = new Set(["AUTUMN_SERVER_URL", "AXIOM_ORG_ID"]);
+ 
+ /**
+  * Required status checks on `main`. These are the contexts reported by `ci.yml` calling
+@@ -252,29 +258,37 @@ export default Alchemy.Stack(
+     );
+ 
+     yield* Effect.forEach(productionSecrets, (secret) =>
+-      Config.Redacted(secret).pipe(
+-        Effect.flatMap((value) =>
+-          GitHub.Secret(`production-${secret}`, {
+-            ...target,
+-            name: secret,
+-            value,
+-            environment: production,
+-          }).pipe(retain()),
+-        ),
+-      ),
++      Effect.gen(function* () {
++        const optional = optionalProductionSecrets.has(secret);
++        const value = optional
++          ? Option.getOrElse(yield* nonEmptySecret(secret), () => Redacted.make(""))
++          : yield* Config.Redacted(secret);
++        const resource = GitHub.Secret(`production-${secret}`, {
++          ...target,
++          name: secret,
++          value,
++          environment: production,
++        });
++        if (optional) return yield* resource;
++        return yield* resource.pipe(retain());
++      }),
+     );
+ 
+     yield* Effect.forEach(productionVariables, (variable) =>
+-      Config.NonEmptyString(variable).pipe(
+-        Effect.flatMap((value) =>
+-          GitHub.Variable(`production-${variable}`, {
+-            ...target,
+-            name: variable,
+-            value,
+-            environment: production,
+-          }).pipe(retain()),
+-        ),
+-      ),
++      Effect.gen(function* () {
++        const optional = optionalProductionVariables.has(variable);
++        const value = optional
++          ? Option.getOrElse(yield* Config.String(variable).pipe(Config.option), () => "")
++          : yield* Config.NonEmptyString(variable);
++        const resource = GitHub.Variable(`production-${variable}`, {
++          ...target,
++          name: variable,
++          value,
++          environment: production,
++        });
++        if (optional) return yield* resource;
++        return yield* resource.pipe(retain());
++      }),
+     );
+ 
+     /**
+diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
+index cdb7fc98c..79ecfd643 100644
+--- a/apps/hosted/cloud/alchemy.run.ts
++++ b/apps/hosted/cloud/alchemy.run.ts
+@@ -2,7 +2,6 @@
+ import * as Alchemy from "alchemy";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import * as Command from "alchemy/Command";
+-import * as Axiom from "alchemy/Axiom";
+ import * as Planetscale from "alchemy/Planetscale";
+ import * as Neon from "alchemy/Neon";
+ import * as Docker from "alchemy/Docker";
+@@ -43,6 +42,7 @@ import { cloudOrigin, productionStage, stageName } from "./src/infrastructure/st
+ import { AppCatalog } from "./src/infrastructure/app-catalog.ts";
+ import { productionOAuthProxyCheck } from "./src/infrastructure/deploy-settings.ts";
+ import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
++import { axiomProviders } from "./src/infrastructure/axiom-provider.ts";
+ 
+ /** Every Worker the stack deploys. `scripts/worker-sizes.ts` builds the same layers. */
+ export const cloudWorkers = Layer.mergeAll(
+@@ -74,7 +74,7 @@ export default Alchemy.Stack(
+           Effect.map(({ dev }) =>
+             dev
+               ? Layer.empty
+-              : Layer.mergeAll(Planetscale.providers(), Neon.providers(), Axiom.providers()),
++              : Layer.mergeAll(Planetscale.providers(), Neon.providers(), axiomProviders),
+           ),
+         ),
+       ),
+diff --git a/apps/hosted/cloud/alchemy.test-cleanup.ts b/apps/hosted/cloud/alchemy.test-cleanup.ts
+index 024ce6cd6..b022508da 100644
+--- a/apps/hosted/cloud/alchemy.test-cleanup.ts
++++ b/apps/hosted/cloud/alchemy.test-cleanup.ts
+@@ -2,7 +2,6 @@
+ import * as Alchemy from "alchemy";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import * as Command from "alchemy/Command";
+-import * as Axiom from "alchemy/Axiom";
+ import * as Planetscale from "alchemy/Planetscale";
+ import * as Neon from "alchemy/Neon";
+ import { Effect, Layer, Schema } from "effect";
+@@ -14,6 +13,7 @@ import {
+   TestStageBucketCleanup,
+   TestStageDomainCleanup,
+ } from "./src/infrastructure/test-stage-cleanup-providers.ts";
++import { axiomProviders } from "./src/infrastructure/axiom-provider.ts";
+ 
+ const cleanupState = Layer.unwrap(
+   Effect.gen(function* () {
+@@ -32,7 +32,7 @@ export default Alchemy.Stack(
+       Command.providers(),
+       TestStageBuildCleanup(),
+       TestStageBucketCleanup(),
+-      Axiom.providers(),
++      axiomProviders,
+       Planetscale.providers(),
+       Neon.providers(),
+       TestStageDomainCleanup().pipe(Layer.provide(cleanupState)),
+diff --git a/apps/hosted/cloud/alchemy.test-infrastructure.ts b/apps/hosted/cloud/alchemy.test-infrastructure.ts
+index b44141c35..e67fa7bd8 100644
+--- a/apps/hosted/cloud/alchemy.test-infrastructure.ts
++++ b/apps/hosted/cloud/alchemy.test-infrastructure.ts
+@@ -5,7 +5,7 @@ import * as GitHub from "alchemy/GitHub";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { retain } from "alchemy/RemovalPolicy";
+ import { Stage } from "alchemy/Stage";
+-import { Config, Effect, Layer } from "effect";
++import { Config, Effect, Layer, Option, Redacted } from "effect";
+ import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
+ 
+ export default Alchemy.Stack(
+@@ -49,12 +49,15 @@ export default Alchemy.Stack(
+       "EXECUTOR_APP_DOMAIN_ZONE",
+       "CLOUD_PLACEMENT_REGION",
+       "AUTH_EMAIL_DOMAIN",
+-    ] as const)
+-      yield* GitHub.Variable(name, {
+-        ...target,
+-        name,
+-        value: yield* Config.NonEmptyString(name),
+-      }).pipe(retain());
++    ] as const) {
++      const optional = name === "AXIOM_ORG_ID";
++      const value = optional
++        ? Option.getOrElse(yield* Config.String(name).pipe(Config.option), () => "")
++        : yield* Config.NonEmptyString(name);
++      const variable = GitHub.Variable(name, { ...target, name, value });
++      if (optional) yield* variable;
++      else yield* variable.pipe(retain());
++    }
+     // Test stages sign in through production's proxy, at the edge where its social sign-ins return.
+     yield* GitHub.Variable("OAUTH_PROXY_PRODUCTION_URL", {
+       ...target,
+@@ -66,15 +69,22 @@ export default Alchemy.Stack(
+       "CLOUDFLARE_API_TOKEN",
+       "PLANETSCALE_API_TOKEN",
+       "PLANETSCALE_API_TOKEN_ID",
+-      "AXIOM_TOKEN",
+       "GOOGLE_CLIENT_ID",
+       "GOOGLE_CLIENT_SECRET",
+       "OAUTH_PROXY_SECRET",
+-      "CONTEXT_DEV_API_KEY",
+     ] as const)
+       yield* GitHub.Secret(name, { ...target, name, value: yield* Config.Redacted(name) }).pipe(
+         retain(),
+       );
++    for (const name of ["AXIOM_TOKEN", "CONTEXT_DEV_API_KEY"] as const) {
++      const configured = yield* Config.Redacted(name).pipe(
++        Config.option,
++        Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
++      );
++      const value = Option.getOrElse(configured, () => Redacted.make(""));
++      const secret = GitHub.Secret(name, { ...target, name, value });
++      yield* secret;
++    }
+     // GitHub reserves the GITHUB_ prefix in Actions secrets. Login clients are shared with
+     // the existing OAuth proxy; previews still own their signing and encryption secrets.
+     for (const name of ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const)
+diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
+index 03556620d..5ec174d55 100644
+--- a/apps/hosted/cloud/scripts/worker-sizes.ts
++++ b/apps/hosted/cloud/scripts/worker-sizes.ts
+@@ -90,9 +90,10 @@ const {
+ 
+ /**
+  * Worker props read deploy configuration, but each value becomes a binding, not uploaded
+- * JavaScript. These stand-ins only satisfy each setting's validation; this job holds no secrets
+- * and never contacts Cloudflare or Sentry. They are read through Effect's configuration, not
+- * set in the environment, so the site build sees only what the deploy passes it.
++ * JavaScript. These stand-ins satisfy required settings; this job holds no secrets and never
++ * contacts Cloudflare or Sentry. Optional vendors stay unset to exercise the no-vendor build
++ * path. Values are read through Effect's configuration, not set in the environment, so the site
++ * build sees only what the deploy passes it.
+  */
+ const deployConfiguration = {
+   NODE_ENV: "production",
+@@ -105,10 +106,6 @@ const deployConfiguration = {
+   EXECUTOR_BUILD_VERSION: "0".repeat(40),
+   EXECUTOR_APP_UI_BASE_URL: "https://executor.app",
+   CLOUD_PLACEMENT_REGION: "aws:us-east-1",
+-  AUTUMN_SECRET_KEY: "am_sk_live_unused",
+-  AUTUMN_SERVER_URL: "https://api.useautumn.com",
+-  AXIOM_TOKEN: "unused",
+-  AXIOM_ORG_ID: "unused",
+   PLANETSCALE_ORGANIZATION: "unused",
+   PLANETSCALE_DATABASE_NAME: "unused",
+   PLANETSCALE_CLUSTER_SIZE: "unused",
+@@ -121,7 +118,6 @@ const deployConfiguration = {
+   GOOGLE_CLIENT_SECRET: "unused",
+   OAUTH_PROXY_SECRET: "0".repeat(32),
+   OAUTH_PROXY_PRODUCTION_URL: "https://executor.sh",
+-  CONTEXT_DEV_API_KEY: "unused",
+   POSTHOG_PERSONAL_API_KEY: "unused",
+   SENTRY_AUTH_TOKEN: "unused",
+   AUTH_EMAIL_DOMAIN: "executor.sh",
+@@ -148,7 +144,7 @@ const production: Target = {
+     EXECUTOR_OAUTH_GITHUB_CLIENT_ID: "unused",
+     EXECUTOR_OAUTH_GITHUB_CLIENT_SECRET: "unused",
+     // Evaluate the v1 import's production path too: it binds v1's blob bucket.
+-    CLOUD_V1_IMPORT: "on",
++    CLOUD_V1_IMPORT: "off",
+     V1_IMPORT_OPERATOR_TOKEN: "unused-unused-unused-unused-unused",
+     // The import requires v1's ID for every first-party client production offers.
+     V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({ github: "unused" }),
+diff --git a/apps/hosted/cloud/src/contracts/billing.ts b/apps/hosted/cloud/src/contracts/billing.ts
+index b434885e5..34237853f 100644
+--- a/apps/hosted/cloud/src/contracts/billing.ts
++++ b/apps/hosted/cloud/src/contracts/billing.ts
+@@ -30,6 +30,8 @@ export const BillingPlan = Schema.Struct({
+ });
+ /** Current subscription state, never inferred from a checkout redirect. */
+ export const BillingOverview = Schema.Struct({
++  /** Billing can be disabled for deployments that do not configure Autumn. */
++  enabled: Schema.Boolean,
+   enterprise: Schema.Boolean,
+   plans: Schema.Array(BillingPlan),
+   subscriptions: Schema.Array(Schema.Struct({ planId: Schema.String, status: Schema.String })),
+@@ -48,6 +50,13 @@ export const BillingUnavailable = ApiError.define({
+   message: "Executor could not reach its billing service. Try again.",
+ });
+ export type BillingUnavailable = typeof BillingUnavailable.Type;
++/** Billing is disabled for this deployment. */
++export const BillingNotConfigured = ApiError.define({
++  tag: "BillingNotConfigured",
++  status: 503,
++  message: "Billing is not configured for this cloud deployment.",
++});
++export type BillingNotConfigured = typeof BillingNotConfigured.Type;
+ /** The requested plan is not in the available catalog. */
+ export const BillingPlanUnavailable = ApiError.define({
+   tag: "BillingPlanUnavailable",
+@@ -68,12 +77,12 @@ export class Billing extends Context.Service<
+       returnUrl: URL,
+     ) => Effect.Effect<
+       { readonly url: string | null },
+-      BillingUnavailable | BillingPlanUnavailable
++      BillingUnavailable | BillingPlanUnavailable | BillingNotConfigured
+     >;
+     readonly portal: (
+       organization: OrganizationId,
+       returnUrl: URL,
+-    ) => Effect.Effect<{ readonly url: string }, BillingUnavailable>;
++    ) => Effect.Effect<{ readonly url: string }, BillingUnavailable | BillingNotConfigured>;
+     /**
+      * Cancel every paid subscription this organization still holds, for use when
+      * the organization itself is being removed. Deletion also destroys the
+@@ -111,14 +120,19 @@ export const billingGroup = HttpApiGroup.make("billing")
+       params: { organization: OrganizationReference },
+       payload: Schema.Struct({ plan: Schema.NonEmptyString }),
+       success: Schema.Struct({ url: Schema.NullOr(Schema.String) }),
+-      error: [BillingUnavailable, BillingPlanUnavailable, OrganizationForbidden],
++      error: [
++        BillingUnavailable,
++        BillingPlanUnavailable,
++        BillingNotConfigured,
++        OrganizationForbidden,
++      ],
+     }),
+   )
+   .add(
+     HttpApiEndpoint.post("portal", "/api/organizations/:organization/billing/portal", {
+       params: { organization: OrganizationReference },
+       success: Schema.Struct({ url: Schema.String }),
+-      error: [BillingUnavailable, OrganizationForbidden],
++      error: [BillingUnavailable, BillingNotConfigured, OrganizationForbidden],
+     }),
+   )
+   .middleware(RequireOrganization)
+diff --git a/apps/hosted/cloud/src/contracts/onboarding.ts b/apps/hosted/cloud/src/contracts/onboarding.ts
+index af11069c9..3154d061a 100644
+--- a/apps/hosted/cloud/src/contracts/onboarding.ts
++++ b/apps/hosted/cloud/src/contracts/onboarding.ts
+@@ -139,11 +139,13 @@ export class CompanyLookupFailed extends Schema.TaggedError<CompanyLookupFailed>
+   "CompanyLookupFailed",
+   {},
+ ) {}
+-/** Null means a personal/disposable address or a domain without a company match. */
++/** Null means no match; undefined means company lookup is not configured. */
+ export class CompanyLookup extends Context.Service<
+   CompanyLookup,
+   {
+-    readonly lookup: (domain: string) => Effect.Effect<CompanyProfile | null, CompanyLookupFailed>;
++    readonly lookup: (
++      domain: string,
++    ) => Effect.Effect<CompanyProfile | null | undefined, CompanyLookupFailed>;
+   }
+ >()("cloud/CompanyLookup") {}
+ 
+diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
+index 1180ee435..cd523d474 100644
+--- a/apps/hosted/cloud/src/implementation/billing.ts
++++ b/apps/hosted/cloud/src/implementation/billing.ts
+@@ -7,7 +7,7 @@ import {
+   type OrganizationId,
+ } from "@executor-js/hosted-server";
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+-import { Cause, Effect, Layer, Schema } from "effect";
++import { Cause, Effect, Layer, Option, Schema } from "effect";
+ import { FetchHttpClient, HttpServerRequest } from "effect/http";
+ import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
+ import { autumnLive, autumnReads } from "./autumn-client.ts";
+@@ -21,6 +21,7 @@ import { reportCloudFailure } from "./error-reporting.ts";
+ import { HttpApiBuilder } from "effect/http-api";
+ import {
+   Billing,
++  BillingNotConfigured,
+   BillingOverview,
+   BillingPlanUnavailable,
+   BillingUnavailable,
+@@ -56,7 +57,35 @@ const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
+ /** Resolve the selected Autumn environment once; each invocation owns its client. */
+ export const billingLive = Effect.gen(function* () {
+   // Resolve during initialization so Alchemy binds every value into the Worker environment.
+-  const settings = yield* billingSettings.pipe(Effect.orDie);
++  const configured = yield* billingSettings.pipe(Effect.orDie);
++  if (Option.isNone(configured))
++    return Layer.mergeAll(
++      Layer.succeed(
++        BillingMeter,
++        BillingMeter.of({
++          memberLimit: () => Effect.succeed(Number.POSITIVE_INFINITY),
++          syncSeats: () => Effect.void,
++          reconcileSeats: Effect.void,
++        }),
++      ),
++      Layer.succeed(
++        Billing,
++        Billing.of({
++          overview: () =>
++            Effect.succeed({
++              enabled: false,
++              enterprise: false,
++              plans: [],
++              subscriptions: [],
++            }),
++          checkout: () => Effect.fail(new BillingNotConfigured()),
++          portal: () => Effect.fail(new BillingNotConfigured()),
++          cancel: (organization) =>
++            Effect.succeed({ customerId: organizationOwner(organization), cancelled: [] }),
++        }),
++      ),
++    );
++  const settings = configured.value;
+   // Test-stage settings resolve at runtime, so build the client inside the invocation, not here.
+   const members = yield* billingMembers;
+   const client = yield* makeExecutionMemo(
+@@ -87,6 +116,7 @@ export const billingLive = Effect.gen(function* () {
+       // The billing provider lists plans in its own order; the page shows the smallest first.
+       const offered = [catalog.free, catalog.team, catalog.enterprise];
+       return yield* Schema.decodeUnknownEffect(BillingOverview)({
++        enabled: true,
+         enterprise: active(customer, [catalog.enterprise]),
+         plans: plans.list
+           .filter((plan) => !plan.archived && offered.includes(plan.id))
+diff --git a/apps/hosted/cloud/src/implementation/company-profile.ts b/apps/hosted/cloud/src/implementation/company-profile.ts
+index 4d563988d..2358b1e4e 100644
+--- a/apps/hosted/cloud/src/implementation/company-profile.ts
++++ b/apps/hosted/cloud/src/implementation/company-profile.ts
+@@ -78,3 +78,9 @@ export const companyLookupLive = (
+       });
+     }),
+   );
++
++/** Keep team setup available without caching an unconfigured lookup as a negative match. */
++export const companyLookupDisabled = Layer.succeed(
++  CompanyLookup,
++  CompanyLookup.of({ lookup: () => Effect.succeed(undefined) }),
++);
+diff --git a/apps/hosted/cloud/src/implementation/onboarding.ts b/apps/hosted/cloud/src/implementation/onboarding.ts
+index f956d4356..6eea4609c 100644
+--- a/apps/hosted/cloud/src/implementation/onboarding.ts
++++ b/apps/hosted/cloud/src/implementation/onboarding.ts
+@@ -95,6 +95,10 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
+       if (!(yield* store.claimCompany(domain, lease))) return null;
+       const result = yield* lookup.lookup(domain).pipe(Effect.timeout("2 seconds"), Effect.result);
+       if (Result.isSuccess(result)) {
++        if (result.success === undefined) {
++          yield* store.releaseCompany(domain, lease);
++          return null;
++        }
+         yield* store.saveCompany(domain, lease, result.success);
+         return result.success;
+       }
+diff --git a/apps/hosted/cloud/src/implementation/v1-membership.ts b/apps/hosted/cloud/src/implementation/v1-membership.ts
+index 7c76c5072..22a66c9aa 100644
+--- a/apps/hosted/cloud/src/implementation/v1-membership.ts
++++ b/apps/hosted/cloud/src/implementation/v1-membership.ts
+@@ -1,5 +1,5 @@
+ import { PgClient } from "@effect/sql-pg";
+-import { Effect, Layer, type Redacted, Schema } from "effect";
++import { Effect, Layer, Option, type Redacted, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { AutumnClient, type AutumnOptions } from "../contracts/autumn.ts";
+ import { V1Membership, V1MembershipUnavailable } from "../contracts/onboarding.ts";
+@@ -24,8 +24,8 @@ export interface V1MembershipSettings {
+   readonly since: Date;
+   /** v1's Postgres, read through a role that can only select the tables below. */
+   readonly database: Redacted.Redacted<string>;
+-  /** The Autumn account that bills v1, where each customer id is a WorkOS organization id. */
+-  readonly billing: AutumnOptions;
++  /** The Autumn account that bills v1, when configured. */
++  readonly billing?: AutumnOptions;
+ }
+ 
+ /** Self-host, local Cloud and test stages without v1's key admit every account. */
+@@ -57,10 +57,15 @@ export const v1MembershipLive = (settings: V1MembershipSettings) =>
+         ),
+         HttpClient.filterStatusOk,
+       );
+-      const autumn = AutumnClient.pipe(
+-        Effect.provide(autumnLive(settings.billing, autumnReads.once)),
+-        Effect.provideService(HttpClient.HttpClient, yield* HttpClient.HttpClient),
+-      );
++      const autumn =
++        settings.billing === undefined
++          ? Option.none()
++          : Option.some(
++              AutumnClient.pipe(
++                Effect.provide(autumnLive(settings.billing, autumnReads.once)),
++                Effect.provideService(HttpClient.HttpClient, yield* HttpClient.HttpClient),
++              ),
++            );
+       const list = <S extends Schema.Top>(
+         path: string,
+         params: Record<string, string>,
+@@ -119,17 +124,19 @@ export const v1MembershipLive = (settings: V1MembershipSettings) =>
+         );
+       /** Whether Autumn bills this organization on a paid v1 plan. No customer means free. */
+       const paid = (id: string) =>
+-        autumn.pipe(
+-          Effect.flatMap((billing) => billing.getCustomer({ customerId: id })),
+-          Effect.map(
+-            (customer) =>
+-              customer !== null &&
+-              customer.subscriptions.some(
+-                (subscription) =>
+-                  !freePlans.includes(subscription.planId) && subscription.status !== "expired",
++        Option.isNone(autumn)
++          ? Effect.succeed(false)
++          : autumn.value.pipe(
++              Effect.flatMap((billing) => billing.getCustomer({ customerId: id })),
++              Effect.map(
++                (customer) =>
++                  customer !== null &&
++                  customer.subscriptions.some(
++                    (subscription) =>
++                      !freePlans.includes(subscription.planId) && subscription.status !== "expired",
++                  ),
+               ),
+-          ),
+-        );
++            );
+       const onV1 = (email: string) =>
+         Effect.gen(function* () {
+           const ids = yield* organizations(email);
+diff --git a/apps/hosted/cloud/src/infrastructure/axiom-provider.ts b/apps/hosted/cloud/src/infrastructure/axiom-provider.ts
+new file mode 100644
+index 000000000..e6f41b55c
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/axiom-provider.ts
+@@ -0,0 +1,11 @@
++/** Initialize Axiom's Cloud provider only when both credentials are present. */
++import * as Axiom from "alchemy/Axiom";
++import { Effect, Layer, Option } from "effect";
++import { axiomSettings } from "./axiom-settings.ts";
++
++export const axiomProviders = Layer.unwrap(
++  axiomSettings.pipe(
++    Effect.orDie,
++    Effect.map((settings) => (Option.isSome(settings) ? Axiom.providers() : Layer.empty)),
++  ),
++);
+diff --git a/apps/hosted/cloud/src/infrastructure/axiom-settings.ts b/apps/hosted/cloud/src/infrastructure/axiom-settings.ts
+new file mode 100644
+index 000000000..1a8a26fd3
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/axiom-settings.ts
+@@ -0,0 +1,23 @@
++/** Axiom credentials are an optional pair shared by provisioning and runtime checks. */
++import { Config, Effect, Option, Redacted } from "effect";
++
++export interface AxiomSettings {
++  readonly token: Redacted.Redacted<string>;
++  readonly organizationId: string;
++}
++
++/** Empty settings disable Axiom. A partial pair fails before a provider can make a request. */
++export const axiomSettings = Effect.gen(function* () {
++  const token = yield* Config.Redacted("AXIOM_TOKEN").pipe(
++    Config.option,
++    Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
++  );
++  const organizationId = yield* Config.String("AXIOM_ORG_ID").pipe(
++    Config.option,
++    Effect.map(Option.filter((value) => value !== "")),
++  );
++  if (Option.isNone(token) && Option.isNone(organizationId)) return Option.none();
++  if (Option.isNone(token) || Option.isNone(organizationId))
++    return yield* Effect.die(new Error("AXIOM_TOKEN and AXIOM_ORG_ID must be configured together"));
++  return Option.some({ token: token.value, organizationId: organizationId.value });
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/billing.ts b/apps/hosted/cloud/src/infrastructure/billing.ts
+index 8a3d71fb3..bdf4d4ab0 100644
+--- a/apps/hosted/cloud/src/infrastructure/billing.ts
++++ b/apps/hosted/cloud/src/infrastructure/billing.ts
+@@ -75,13 +75,28 @@ export const assertKeyEnvironment = (
+ const instanceKey = (value: Redacted.Redacted<string>) =>
+   Redacted.make(`am_sk_test_${Redacted.value(value)}`);
+ 
+-/** An unset or blank setting means Autumn itself, so an empty deployment variable is not a URL. */
+-const configuredServerUrl = Config.NonEmptyString("AUTUMN_SERVER_URL").pipe(
+-  Config.option,
+-  Effect.flatMap((value) =>
+-    decodeServerUrl(Redacted.make(Option.getOrElse(value, () => autumnServer))),
+-  ),
+-);
++/** No key and no explicit endpoint disables billing; an endpoint without a key is invalid. */
++const autumnCredentials = Effect.gen(function* () {
++  const key = yield* Config.Redacted("AUTUMN_SECRET_KEY").pipe(
++    Config.option,
++    Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
++  );
++  const endpoint = yield* Config.String("AUTUMN_SERVER_URL").pipe(
++    Config.option,
++    Effect.map(Option.filter((value) => value !== "")),
++  );
++  if (Option.isNone(key)) {
++    if (Option.isSome(endpoint))
++      return yield* Effect.die(new Error("AUTUMN_SERVER_URL requires AUTUMN_SECRET_KEY"));
++    return Option.none();
++  }
++  const serverUrl = yield* decodeServerUrl(
++    Redacted.make(Option.getOrElse(endpoint, () => autumnServer)),
++  );
++  yield* keyEnvironment(key.value);
++  yield* assertCredentialEndpoint(key.value, Redacted.value(serverUrl));
++  return Option.some({ serverUrl, secretKey: key.value });
++});
+ 
+ /** Each test stage addresses its own private instance path; nothing needs provisioning first. */
+ const instanceUrl = (host: string, slug: string, instance: Redacted.Redacted<string>) =>
+@@ -103,11 +118,11 @@ const billingEndpoint = Effect.gen(function* () {
+   const emulators = yield* cloudEmulators;
+   if (Option.isSome(emulators)) {
+     const { billing } = Redacted.value(emulators.value);
+-    return {
++    return Option.some({
+       catalog,
+       serverUrl: Effect.succeed(yield* decodeServerUrl(Redacted.make(billing.baseUrl))),
+       secretKey: Effect.succeed(Redacted.make(billing.token)),
+-    } satisfies BillingSettings;
++    } satisfies BillingSettings);
+   }
+   const stage = yield* testStage;
+   if (Option.isSome(stage)) {
+@@ -116,34 +131,34 @@ const billingEndpoint = Effect.gen(function* () {
+     // Test-stage settings resolve at runtime, so the URL is assembled inside the accessor.
+     const instance = yield* Random("BillingInstance", { bytes: 12 });
+     const secret = yield* Random("BillingSecret");
+-    return {
++    return Option.some({
+       catalog,
+       serverUrl: (yield* instance.text).pipe(
+         Effect.flatMap((value) => decodeServerUrl(instanceUrl(host, slug, value))),
+       ),
+       secretKey: (yield* secret.text).pipe(Effect.map(instanceKey)),
+-    } satisfies BillingSettings;
++    } satisfies BillingSettings);
+   }
+-  const serverUrl = yield* configuredServerUrl;
+-  const secretKey = yield* Config.Redacted("AUTUMN_SECRET_KEY");
+-  yield* keyEnvironment(secretKey);
+-  yield* assertCredentialEndpoint(secretKey, Redacted.value(serverUrl));
+-  return {
++  const configured = yield* autumnCredentials;
++  if (Option.isNone(configured)) return Option.none();
++  return Option.some({
+     catalog,
+-    serverUrl: Effect.succeed(serverUrl),
+-    secretKey: Effect.succeed(secretKey),
+-  } satisfies BillingSettings;
++    serverUrl: Effect.succeed(configured.value.serverUrl),
++    secretKey: Effect.succeed(configured.value.secretKey),
++  } satisfies BillingSettings);
+ });
+ 
+ /** The catalog is only ever read together with the key that will serve it. */
+ export const billingSettings = billingEndpoint.pipe(
+-  Effect.map((settings): BillingSettings => ({
+-    ...settings,
+-    catalog: Effect.all([settings.catalog, settings.secretKey]).pipe(
+-      Effect.tap(([catalog, key]) => assertKeyEnvironment(key, catalog.environment)),
+-      Effect.map(([catalog]) => catalog),
+-    ),
+-  })),
++  Effect.map(
++    Option.map((settings): BillingSettings => ({
++      ...settings,
++      catalog: Effect.all([settings.catalog, settings.secretKey]).pipe(
++        Effect.tap(([catalog, key]) => assertKeyEnvironment(key, catalog.environment)),
++        Effect.map(([catalog]) => catalog),
++      ),
++    })),
++  ),
+ );
+ 
+ /**
+@@ -191,13 +206,13 @@ export const billingBindings = Effect.gen(function* () {
+       secret.text.pipe(Output.map(instanceKey)),
+     );
+   }
+-  const serverUrl = yield* configuredServerUrl;
+-  const secretKey = yield* Config.Redacted("AUTUMN_SECRET_KEY");
++  const configured = yield* autumnCredentials;
++  if (Option.isNone(configured)) return {};
++  const { serverUrl, secretKey } = configured.value;
+   const environment = yield* keyEnvironment(secretKey);
+   // Production bills real customers. Stop before anything is written rather than bind a sandbox.
+   if (stage === productionStage && environment !== "live")
+     return yield* Effect.die(`The ${productionStage} stage requires a live Autumn key`);
+-  yield* assertCredentialEndpoint(secretKey, Redacted.value(serverUrl));
+   if (Redacted.value(serverUrl) !== autumnServer)
+     return provision(Output.asOutput(serverUrl), Output.asOutput(secretKey));
+   const catalog = yield* Output.stackRef<BillingCatalog>("executor-next-billing", {
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
+index f81972762..e88f6478e 100644
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
+@@ -23,6 +23,7 @@ import {
+   releaseRefusalReport,
+ } from "../contracts/release-guard.ts";
+ import { telemetryDatasets } from "./telemetry.ts";
++import { axiomSettings, type AxiomSettings } from "./axiom-settings.ts";
+ 
+ const Bindings = Schema.Array(
+   Schema.Struct({
+@@ -161,10 +162,8 @@ const sessionEvidence = (body: unknown) =>
+  * `initialize` and `tools/call` spans that did not fail. Only session objects run the protocol
+  * servers, so with no `McpSessions` invocations every one of them was served by `McpSession`.
+  */
+-const sessionTraffic = (since: DateTime.Utc) =>
++const sessionTraffic = (since: DateTime.Utc, settings: AxiomSettings) =>
+   Effect.gen(function* () {
+-    const token = yield* Config.Redacted("AXIOM_TOKEN");
+-    const org = yield* Config.NonEmptyString("AXIOM_ORG_ID");
+     const { names } = yield* telemetryDatasets;
+     const stage = yield* Stage;
+     const apl = [
+@@ -182,8 +181,8 @@ const sessionTraffic = (since: DateTime.Utc) =>
+     const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+     const response = yield* http.execute(
+       HttpClientRequest.post("https://api.axiom.co/v1/datasets/_apl?format=tabular").pipe(
+-        HttpClientRequest.bearerToken(token),
+-        HttpClientRequest.setHeader("X-Axiom-Org-Id", org),
++        HttpClientRequest.bearerToken(settings.token),
++        HttpClientRequest.setHeader("X-Axiom-Org-Id", settings.organizationId),
+         HttpClientRequest.bodyJsonUnsafe({ apl }),
+       ),
+     );
+@@ -234,9 +233,16 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
+   const since = DateTime.addDuration(gateway.createdAt, propagation);
+   if (DateTime.isLessThan(yield* DateTime.now, since))
+     return yield* blocked(
+-      `the API version that forwards to McpSession went live at ${DateTime.formatIso(gateway.createdAt)}; wait until ${DateTime.formatIso(since)}.`,
++      "the API version that forwards to McpSession went live at " +
++        DateTime.formatIso(gateway.createdAt) +
++        "; wait until " +
++        DateTime.formatIso(since) +
++        ".",
+     );
+-  const traffic = yield* sessionTraffic(since).pipe(
++  const axiom = yield* axiomSettings.pipe(Effect.orDie);
++  if (Option.isNone(axiom))
++    return yield* blocked("Axiom is not configured, so MCP session traffic cannot be verified.");
++  const traffic = yield* sessionTraffic(since, axiom.value).pipe(
+     Effect.catchTag("IncompleteSessionEvidence", ({ reason }) =>
+       Effect.fail(
+         new McpSessionReleaseBlocked({
+diff --git a/apps/hosted/cloud/src/infrastructure/onboarding.ts b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+index 3a3a7a418..ac79aed1b 100644
+--- a/apps/hosted/cloud/src/infrastructure/onboarding.ts
++++ b/apps/hosted/cloud/src/infrastructure/onboarding.ts
+@@ -11,7 +11,7 @@ import { cloudEmulators } from "./emulators.ts";
+ import type { EmulatedServices } from "../contracts/emulators.ts";
+ import { FetchHttpClient } from "effect/http";
+ import { Onboarding, OnboardingUnavailable, TeamIconNotFound } from "../contracts/onboarding.ts";
+-import { companyLookupLive } from "../implementation/company-profile.ts";
++import { companyLookupDisabled, companyLookupLive } from "../implementation/company-profile.ts";
+ import { makeOnboarding } from "../implementation/onboarding.ts";
+ import {
+   v1MembershipDisabled,
+@@ -36,7 +36,7 @@ import {
+   v1ImportWriterName,
+   v1LiveSettings,
+ } from "./v1-import-settings.ts";
+-import { autumnServer, billingSettings } from "./billing.ts";
++import { autumnServer, billingSettings, type BillingSettings } from "./billing.ts";
+ import { cloudDatabaseConnection, v1DatabaseConnection } from "./database.ts";
+ import {
+   CheckSince,
+@@ -47,6 +47,12 @@ import {
+ 
+ const configured = (value: string) => value !== "";
+ 
++const requireAutumn = (settings: Option.Option<BillingSettings>, reason: string) =>
++  Effect.gen(function* () {
++    if (Option.isNone(settings)) return yield* Effect.die(new Error(reason));
++    return settings.value;
++  });
++
+ /**
+  * v1's Postgres, as an accessor for the connection string. Production reads it through its
+  * read-only PlanetScale role (`v1DatabaseConnection`). Emulated Cloud may instead name a
+@@ -121,14 +127,21 @@ const cloudV1Membership = (
+       ),
+     );
+     // v1 billed each WorkOS organization in the same Autumn account v2 bills from.
+-    const billing = yield* billingSettings;
++    const configuredBilling = yield* billingSettings;
+     return Option.some(
+       Effect.gen(function* () {
+         return {
+           ...key.value,
+           since: cutoff,
+           database: yield* database.value,
+-          billing: { serverUrl: yield* billing.serverUrl, secretKey: yield* billing.secretKey },
++          ...(Option.isSome(configuredBilling)
++            ? {
++                billing: {
++                  serverUrl: yield* configuredBilling.value.serverUrl,
++                  secretKey: yield* configuredBilling.value.secretKey,
++                },
++              }
++            : {}),
+         } satisfies V1MembershipSettings;
+       }),
+     );
+@@ -144,7 +157,16 @@ export const cloudOnboarding = Effect.gen(function* () {
+         Redacted.make(Redacted.value(emulators.value).company.token),
+         `${Redacted.value(emulators.value).company.baseUrl}/v1/brand/retrieve`,
+       )
+-    : companyLookupLive(yield* Config.Redacted("CONTEXT_DEV_API_KEY"));
++    : Option.match(
++        yield* Config.Redacted("CONTEXT_DEV_API_KEY").pipe(
++          Config.option,
++          Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
++        ),
++        {
++          onSome: (key) => companyLookupLive(key),
++          onNone: () => companyLookupDisabled,
++        },
++      );
+   const v1Settings = yield* cloudV1Membership(emulators);
+   const connection = yield* cloudDatabaseConnection;
+   const service = yield* makeExecutionMemo(
+@@ -211,7 +233,10 @@ const cloudV1EmulatedSource = (
+     if (Option.isNone(emulators) || Option.isNone(database))
+       return Option.none<Effect.Effect<V1SourceSettings>>();
+     const workos = Redacted.value(emulators.value).workos;
+-    const billing = yield* billingSettings;
++    const billing = yield* requireAutumn(
++      yield* billingSettings,
++      "The configured v1 import requires Autumn billing.",
++    );
+     const connection = database.value;
+     return Option.some<Effect.Effect<V1SourceSettings>>(
+       Effect.gen(function* () {
+@@ -235,7 +260,10 @@ const cloudV1ProductionSource = Effect.gen(function* () {
+   const database = yield* cloudV1Database(true, false);
+   if (Option.isNone(database)) return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
+   const connection = database.value;
+-  const billing = yield* billingSettings;
++  const billing = yield* requireAutumn(
++    yield* billingSettings,
++    "The configured v1 import requires Autumn billing.",
++  );
+   const blobs = yield* v1R2Blobs;
+   return Option.some<Effect.Effect<V1SourceSettings>>(
+     Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+index abbee9979..13f6224a3 100644
+--- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
++++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+@@ -14,6 +14,7 @@ import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
+ import { testStage } from "./stage.ts";
+ import { InvocationTelemetry } from "./invocation-telemetry.ts";
+ import { sqlTracing } from "../implementation/sql-tracing.ts";
++import { axiomSettings } from "./axiom-settings.ts";
+ 
+ const binding = "EXECUTOR_TELEMETRY";
+ 
+@@ -36,6 +37,8 @@ export const telemetryDatasets = Effect.gen(function* () {
+ });
+ 
+ export const telemetryResources = Effect.gen(function* () {
++  const axiom = yield* axiomSettings.pipe(Effect.orDie);
++  if (Option.isNone(axiom)) return Option.none();
+   const stage = yield* Stage;
+   const { shared, names } = yield* telemetryDatasets;
+   // Axiom marks ownership per stage; every test stage takes the shared datasets over on deploy.
+@@ -106,7 +109,7 @@ export const telemetryResources = Effect.gen(function* () {
+       [names.metrics]: { ingest: ["create"] },
+     },
+   });
+-  return { names, traces, logs, metrics, ingest };
++  return Option.some({ names, traces, logs, metrics, ingest });
+ });
+ 
+ /**
+@@ -117,7 +120,9 @@ export const telemetryResources = Effect.gen(function* () {
+ export const cloudObservability = Effect.gen(function* () {
+   if ((yield* AlchemyContext).dev) return {};
+   const stage = yield* Stage;
+-  const { names, traces, ingest } = yield* telemetryResources;
++  const resources = yield* telemetryResources;
++  if (Option.isNone(resources)) return {};
++  const { names, traces, ingest } = resources.value;
+   const destination = yield* Cloudflare.Workers.ObservabilityDestination("PlatformTraces", {
+     name: `executor-next-${stage}-platform-traces`,
+     url: traces.otelTracesEndpoint,
+@@ -150,7 +155,9 @@ export const telemetryBindings = Effect.gen(function* () {
+     const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
+     return { [binding]: Output.asOutput(Redacted.make(encoded)) };
+   }
+-  const { names, traces, logs, metrics, ingest } = yield* telemetryResources;
++  const resources = yield* telemetryResources;
++  if (Option.isNone(resources)) return { [binding]: Output.asOutput(Redacted.make("null")) };
++  const { names, traces, logs, metrics, ingest } = resources.value;
+   const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
+   const environment = yield* Stage;
+   return {
+@@ -197,6 +204,7 @@ export const cloudTelemetry = Layer.unwrap(
+     const bound = yield* context.get<unknown>(binding);
+     // Alchemy env props may arrive JSON-decoded; RuntimeContext.set uses a redacted marker.
+     const value = Redacted.isRedacted(bound) ? Redacted.value(bound) : bound;
++    if (value === undefined || value === null || value === "null") return Layer.empty;
+     const config = yield* Schema.decodeUnknownEffect(
+       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
+     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
+diff --git a/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx b/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
+index f2ba8503d..9ce4e5357 100644
+--- a/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
++++ b/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
+@@ -28,7 +28,7 @@ function BillingSettingsCard({ children }: { readonly children: ReactNode }) {
+         <CardTitle>
+           <h2>Billing</h2>
+         </CardTitle>
+-        <CardDescription>Manage your plan and payment details.</CardDescription>
++        <CardDescription>View the billing page for this organization.</CardDescription>
+       </CardHeader>
+       <CardFooter className="px-4 pb-4">{children}</CardFooter>
+     </Card>
+diff --git a/apps/hosted/cloud/web/src/implementation/pages/billing.tsx b/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
+index 194bc7d6b..49340423e 100644
+--- a/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
++++ b/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
+@@ -76,14 +76,15 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
+   const checkoutState = useAtomValue(checkoutAtom);
+   const portalState = useAtomValue(portalAtom);
+   const [error, setError] = useState<string | null>(null);
++  const overview = Option.getOrUndefined(data);
+   const busy = checkoutState.waiting || portalState.waiting || !AsyncResult.isSuccess(result);
+   const confirmed =
+-    awaitingPlan !== undefined && Option.isSome(data) && planActive(data.value, awaitingPlan);
+-  const waitingForPlan = awaitingPlan !== undefined && Option.isSome(data) && !confirmed;
++    awaitingPlan !== undefined && overview?.enabled === true && planActive(overview, awaitingPlan);
++  const waitingForPlan = awaitingPlan !== undefined && overview?.enabled === true && !confirmed;
+   const unconfirmed =
+     unconfirmedPlan !== undefined &&
+-    Option.isSome(data) &&
+-    !planActive(data.value, unconfirmedPlan);
++    overview?.enabled === true &&
++    !planActive(overview, unconfirmedPlan);
+   useEffect(() => {
+     if (confirmed) onCheckoutSettled();
+   }, [confirmed, onCheckoutSettled]);
+@@ -101,20 +102,22 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
+         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
+           Billing
+         </h1>
+-        <Button
+-          data-product-area="billing"
+-          data-product-action="open_portal"
+-          variant="outline"
+-          disabled={busy}
+-          onClick={async () => {
+-            setError(null);
+-            const result = await portal({ params: { organization: organization.organization } });
+-            if (Exit.isFailure(result) || !openBillingUrl(result.value.url))
+-              setError("Unable to open billing settings. Try again.");
+-          }}
+-        >
+-          Manage billing
+-        </Button>
++        {overview?.enabled !== false && (
++          <Button
++            data-product-area="billing"
++            data-product-action="open_portal"
++            variant="outline"
++            disabled={busy}
++            onClick={async () => {
++              setError(null);
++              const result = await portal({ params: { organization: organization.organization } });
++              if (Exit.isFailure(result) || !openBillingUrl(result.value.url))
++                setError("Unable to open billing settings. Try again.");
++            }}
++          >
++            Manage billing
++          </Button>
++        )}
+       </div>
+       {returned.organization && returned.organization !== organization.id && (
+         <Alert className="notice border border-border rounded-[8px] py-[12px] px-[16px] my-[20px] mx-0 text-[13px]">
+@@ -161,7 +164,12 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
+         pending={<DetailSkeleton label="Loading plans" />}
+       >
+         {(billing) =>
+-          billing.plans.length === 0 ? (
++          !billing.enabled ? (
++            <EmptyState title="Billing isn't configured">
++              Your team can keep using Executor. Billing options will appear when this cloud
++              deployment has billing configured.
++            </EmptyState>
++          ) : billing.plans.length === 0 ? (
+             <EmptyState
+               title="Plans unavailable"
+               action={
