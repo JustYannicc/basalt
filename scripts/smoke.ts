@@ -3,8 +3,7 @@ import { brand } from "../brand.ts";
 
 const origin = `https://${brand.host}`;
 const root = await fetch(origin, { redirect: "manual" });
-assert.equal(root.status, 307, "Signed-out homepage must lead to sign-in");
-assert.equal(new URL(root.headers.get("location")!, origin).pathname, "/login");
+assert.equal(root.status, 200, "Upstream signed-out homepage must load");
 const login = await fetch(`${origin}/login`);
 assert.equal(login.status, 200, "Sign-in page must load");
 const pool = await fetch(`${origin}/v1/models`);

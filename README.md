@@ -28,7 +28,9 @@ Autumn billing, Axiom telemetry and Context.dev company suggestions are optional
 
 ## GitHub Actions secrets
 
-Repository Actions secrets are the deploy input source of truth. Never commit credentials or create a production `.env` file. Alchemy binds runtime copies into Worker secrets, and manages database roles and infrastructure credentials in its protected deployment state.
+GitHub Actions is authoritative for every deploy input; Alchemy-generated credentials, encrypted Cloudflare state and its bootstrap secrets are managed runtime copies, with plaintext scratch allowed only on ephemeral Actions runners and never in the repo, logs, artifacts or persisted developer storage.
+
+After state loss or state-key rotation, redeploy from Actions to adopt the existing named infrastructure and regenerate database roles.
 
 | Secret name                   | Purpose                                                                 |
 | ----------------------------- | ----------------------------------------------------------------------- |
@@ -79,7 +81,7 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 ## Carried patches
 
 - `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls.
-- `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router, configures native mail senders, and sends signed-out visitors to sign-in.
+- `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router, configures native mail senders,.
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch.
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 
@@ -91,7 +93,7 @@ The public cloud runtime remains upstream code. Each carried patch is applied ag
 
 `npm run check` exercises routing and configuration without credentials. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter; `npm run typecheck` checks Basalt scripts and router code; `npm run build` builds the upstream framework. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
 
-The deploy smoke test checks the signed-out redirect, sign-in page, protected MCP endpoint and reserved model path. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
+The deploy smoke test checks the upstream homepage, sign-in page, protected MCP endpoint and reserved model path. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
 
 The deployment model can be derived from [alchemy.run.ts](alchemy.run.ts). Architecture modeling and its CI checks attach there in separate work.
 

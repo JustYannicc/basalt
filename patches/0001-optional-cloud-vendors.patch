@@ -514,19 +514,31 @@ index 000000000..e6f41b55c
 +);
 diff --git a/apps/hosted/cloud/src/infrastructure/axiom-settings.ts b/apps/hosted/cloud/src/infrastructure/axiom-settings.ts
 new file mode 100644
-index 000000000..1a8a26fd3
+index 000000000..139d69b32
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/axiom-settings.ts
-@@ -0,0 +1,23 @@
-+/** Axiom credentials are an optional pair shared by provisioning and runtime checks. */
+@@ -0,0 +1,40 @@
++/** An API token is sufficient; a personal access token also needs an organization id. */
 +import { Config, Effect, Option, Redacted } from "effect";
 +
 +export interface AxiomSettings {
 +  readonly token: Redacted.Redacted<string>;
++  readonly organizationId?: string;
++}
++
++export interface AxiomSessionQuerySettings extends AxiomSettings {
 +  readonly organizationId: string;
 +}
 +
-+/** Empty settings disable Axiom. A partial pair fails before a provider can make a request. */
++/** The session-retirement check needs an org-scoped token, so API tokens cannot query it. */
++export const axiomSessionQuerySettings = (
++  settings: AxiomSettings,
++): Option.Option<AxiomSessionQuerySettings> =>
++  settings.organizationId === undefined
++    ? Option.none()
++    : Option.some({ token: settings.token, organizationId: settings.organizationId });
++
++/** Empty settings disable Axiom. An organization id without a token is invalid. */
 +export const axiomSettings = Effect.gen(function* () {
 +  const token = yield* Config.Redacted("AXIOM_TOKEN").pipe(
 +    Config.option,
@@ -536,10 +548,15 @@ index 000000000..1a8a26fd3
 +    Config.option,
 +    Effect.map(Option.filter((value) => value !== "")),
 +  );
-+  if (Option.isNone(token) && Option.isNone(organizationId)) return Option.none();
-+  if (Option.isNone(token) || Option.isNone(organizationId))
-+    return yield* Effect.die(new Error("AXIOM_TOKEN and AXIOM_ORG_ID must be configured together"));
-+  return Option.some({ token: token.value, organizationId: organizationId.value });
++  if (Option.isNone(token)) {
++    if (Option.isSome(organizationId))
++      return yield* Effect.die(new Error("AXIOM_ORG_ID requires AXIOM_TOKEN"));
++    return Option.none();
++  }
++  return Option.some({
++    token: token.value,
++    ...(Option.isSome(organizationId) ? { organizationId: organizationId.value } : {}),
++  });
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/billing.ts b/apps/hosted/cloud/src/infrastructure/billing.ts
 index 8a3d71fb3..bdf4d4ab0 100644
@@ -665,30 +682,34 @@ index 8a3d71fb3..bdf4d4ab0 100644
      return provision(Output.asOutput(serverUrl), Output.asOutput(secretKey));
    const catalog = yield* Output.stackRef<BillingCatalog>("executor-next-billing", {
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
-index f81972762..e88f6478e 100644
+index f81972762..332a0cfae 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
-@@ -23,6 +23,7 @@ import {
+@@ -23,6 +23,11 @@ import {
    releaseRefusalReport,
  } from "../contracts/release-guard.ts";
  import { telemetryDatasets } from "./telemetry.ts";
-+import { axiomSettings, type AxiomSettings } from "./axiom-settings.ts";
++import {
++  axiomSessionQuerySettings,
++  axiomSettings,
++  type AxiomSessionQuerySettings,
++} from "./axiom-settings.ts";
  
  const Bindings = Schema.Array(
    Schema.Struct({
-@@ -161,10 +162,8 @@ const sessionEvidence = (body: unknown) =>
+@@ -161,10 +166,8 @@ const sessionEvidence = (body: unknown) =>
   * `initialize` and `tools/call` spans that did not fail. Only session objects run the protocol
   * servers, so with no `McpSessions` invocations every one of them was served by `McpSession`.
   */
 -const sessionTraffic = (since: DateTime.Utc) =>
-+const sessionTraffic = (since: DateTime.Utc, settings: AxiomSettings) =>
++const sessionTraffic = (since: DateTime.Utc, settings: AxiomSessionQuerySettings) =>
    Effect.gen(function* () {
 -    const token = yield* Config.Redacted("AXIOM_TOKEN");
 -    const org = yield* Config.NonEmptyString("AXIOM_ORG_ID");
      const { names } = yield* telemetryDatasets;
      const stage = yield* Stage;
      const apl = [
-@@ -182,8 +181,8 @@ const sessionTraffic = (since: DateTime.Utc) =>
+@@ -182,8 +185,8 @@ const sessionTraffic = (since: DateTime.Utc) =>
      const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
      const response = yield* http.execute(
        HttpClientRequest.post("https://api.axiom.co/v1/datasets/_apl?format=tabular").pipe(
@@ -699,7 +720,7 @@ index f81972762..e88f6478e 100644
          HttpClientRequest.bodyJsonUnsafe({ apl }),
        ),
      );
-@@ -234,9 +233,16 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
+@@ -234,9 +237,21 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
    const since = DateTime.addDuration(gateway.createdAt, propagation);
    if (DateTime.isLessThan(yield* DateTime.now, since))
      return yield* blocked(
@@ -709,12 +730,17 @@ index f81972762..e88f6478e 100644
 +        "; wait until " +
 +        DateTime.formatIso(since) +
 +        ".",
-     );
--  const traffic = yield* sessionTraffic(since).pipe(
++    );
 +  const axiom = yield* axiomSettings.pipe(Effect.orDie);
 +  if (Option.isNone(axiom))
 +    return yield* blocked("Axiom is not configured, so MCP session traffic cannot be verified.");
-+  const traffic = yield* sessionTraffic(since, axiom.value).pipe(
++  const querySettings = axiomSessionQuerySettings(axiom.value);
++  if (Option.isNone(querySettings))
++    return yield* blocked(
++      "Axiom organization id is not configured, so MCP session traffic cannot be verified.",
+     );
+-  const traffic = yield* sessionTraffic(since).pipe(
++  const traffic = yield* sessionTraffic(since, querySettings.value).pipe(
      Effect.catchTag("IncompleteSessionEvidence", ({ reason }) =>
        Effect.fail(
          new McpSessionReleaseBlocked({

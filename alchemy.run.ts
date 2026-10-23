@@ -5,6 +5,7 @@ import * as Output from "alchemy/Output";
 import { fileURLToPath } from "node:url";
 import { Config, Effect } from "effect";
 import { retain } from "alchemy/RemovalPolicy";
+import { adopt } from "alchemy/AdoptPolicy";
 import { brand } from "./brand.ts";
 import {
   cloudDeployment,
@@ -52,5 +53,5 @@ export default Alchemy.Stack(
       },
     });
     return { url: router.url, emailReady: email.enabled };
-  }).pipe(Effect.provide(cloudWorkers)),
+  }).pipe(adopt(true), Effect.provide(cloudWorkers)),
 );

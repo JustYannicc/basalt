@@ -48,6 +48,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     GITHUB_CLIENT_ID: source.AUTH_GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: source.AUTH_GITHUB_CLIENT_SECRET,
     PLANETSCALE_DATABASE_NAME: deployment.databaseName,
+    PLANETSCALE_ADOPT_DATABASE: "true",
     PLANETSCALE_REGION: deployment.databaseRegion,
     PLANETSCALE_CLUSTER_SIZE: deployment.databaseClusterSize,
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,

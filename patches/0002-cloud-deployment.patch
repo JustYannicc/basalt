@@ -136,17 +136,6 @@ diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
 +  { providers: cloudProviders, state: stackState },
 +  cloudDeployment.pipe(Effect.provide(cloudWorkers)),
  );
-diff --git a/apps/hosted/cloud/src/implementation/homepage.ts b/apps/hosted/cloud/src/implementation/homepage.ts
---- a/apps/hosted/cloud/src/implementation/homepage.ts
-+++ b/apps/hosted/cloud/src/implementation/homepage.ts
-@@ -46,2 +46,6 @@
-   dashboard: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
--) => homepageResponse(cookiePrefix, staticDocument("/index.html"), dashboard);
-+) => homepageResponse(
-+  cookiePrefix,
-+  Effect.succeed(HttpServerResponse.redirect("/login", { status: 307 })),
-+  dashboard,
-+);
 diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
 --- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
 +++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
@@ -243,7 +232,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts b/apps/
  import { Stage } from "alchemy/Stage";
 +import { StackName } from "alchemy/Stack";
  import { Config, DateTime, Duration, Effect, FileSystem, Option, Schema, Stream } from "effect";
-@@ -41,3 +42,3 @@
+@@ -45,3 +46,3 @@
    const stage = yield* Stage;
 -  const owned = ["alchemy:stack:executor-next-hosted", `alchemy:stage:${stage}`];
 +  const owned = [`alchemy:stack:${yield* StackName}`, `alchemy:stage:${stage}`];
