@@ -51,3 +51,9 @@ test("deploys hand the brand's name and logo to the tools service", () => {
   // The router serves the logo; a rename that moves it must move the file too.
   assert.ok(existsSync(fileURLToPath(new URL(`../public${brand.logo}`, import.meta.url))));
 });
+
+test("the brand's own links are absolute, so the router never redirects a path to itself", () => {
+  for (const [name, link] of Object.entries(brand.links)) {
+    if (link !== null) assert.match(link, /^https?:\/\//, name);
+  }
+});
