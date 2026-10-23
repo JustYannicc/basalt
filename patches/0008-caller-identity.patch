@@ -19,7 +19,7 @@ index afc8616d7c..04fd035bc6 100644
      "packages/apps": {
        "name": "apps",
 -      "version": "0.0.1-beta.103",
-+      "version": "0.0.1-beta.104-basalt.1",
++      "version": "0.0.1-beta.104",
        "dependencies": {
          "@cfworker/json-schema": "4.1.1",
          "@csstools/css-tokenizer": "4.0.2",
@@ -55,10 +55,10 @@ index caed05bc63..97bfaf5a09 100644
      file: "workflows.spec.ts",
 diff --git a/e2e/tests/app-caller-identity.spec.ts b/e2e/tests/app-caller-identity.spec.ts
 new file mode 100644
-index 0000000000..f450dae9d8
+index 0000000000..d40d9e7574
 --- /dev/null
 +++ b/e2e/tests/app-caller-identity.spec.ts
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,263 @@
 +/** A shared app's handlers and cached dynamic declarations stay bound to the calling user. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -74,25 +74,6 @@ index 0000000000..f450dae9d8
 +const source = `import {
 +  defineApp, dynamicRouter, mutation, object, query, router, string, workflow
 +} from "apps";
-+import { createAppHandler, hostContext } from "apps/host";
-+const portable = createAppHandler(defineApp({}, {
-+  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
-+    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
-+  })) }),
-+}));
-+const direct = query({ input: object({}) }, async (ctx) => {
-+  const invoke = async (accounts, caller) => {
-+    const response = await portable(new Request("https://app.invalid", {
-+      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
-+    }), hostContext(accounts, undefined, caller));
-+    return { status: response.status, body: await response.json() };
-+  };
-+  return {
-+    caller: await invoke({ app: {} }, ctx.user.id),
-+    app: await invoke({ app: {} }, undefined),
-+    subjectless: await invoke({ app: {}, user: {} }, undefined),
-+  };
-+});
 +const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
 +const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
 +  callerId: ctx.user.id ?? "missing",
@@ -115,7 +96,7 @@ index 0000000000..f450dae9d8
 +    }],
 +    resolve: async (requested) => requested === name ? fromFactory : undefined,
 +  });
-+  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
++  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
 +});`;
 +
 +const SessionIdentity = Schema.NullOr(
@@ -219,15 +200,6 @@ index 0000000000..f450dae9d8
 +        expect(yield* query(actors.owner)).toBe(ownerId);
 +        expect(yield* query(actors.member)).toBe(memberId);
 +        expect(yield* query(actors.owner)).toBe(ownerId);
-+
-+        // Portable hosts can supply a caller without any user-account requirements.
-+        const direct = yield* call(actors.member, "direct", "query", {});
-+        expect(direct.status).toBe(200);
-+        expect(direct.body).toEqual({
-+          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
-+          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
-+          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
-+        });
 +
 +        // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
 +        const subscribe = (actor: Session) =>
@@ -464,7 +436,7 @@ index 5a4523803e..570fd05b61 100644
  {
    "name": "apps",
 -  "version": "0.0.1-beta.103",
-+  "version": "0.0.1-beta.104-basalt.1",
++  "version": "0.0.1-beta.104",
    "private": true,
    "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
    "type": "module",
@@ -883,28 +855,14 @@ index e84dd66eb3..671942e06a 100644
      ? {}
      : {
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 3e7dc3f155..4a5b39e752 100644
+index 3e7dc3f155..ac3f8677d0 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -336,7 +336,7 @@ function bindScope(
- 
- /**
-  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
-- * the invocation has a caller. Without `user` accounts the context has no `user`.
-+ * the host supplies a caller or a user-account scope. App-only work has neither.
-  */
- function bindAccounts(
-   slots: ScopedSlots,
-@@ -350,9 +350,14 @@ function bindAccounts(
-           Redacted.value(context.accounts),
-         );
+@@ -352,7 +352,11 @@ function bindAccounts(
          const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
--        if (selected.user === undefined) return { app: { accounts: app } };
--        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
+         if (selected.user === undefined) return { app: { accounts: app } };
+         const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
 -        return { app: { accounts: app }, user: { accounts: user } };
-+        if (selected.user === undefined && context.caller === undefined)
-+          return { app: { accounts: app } };
-+        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user ?? {});
 +        const id =
 +          context.caller === undefined
 +            ? undefined
@@ -913,7 +871,7 @@ index 3e7dc3f155..4a5b39e752 100644
        }),
      new HostAccountsInvalid(),
    );
-@@ -715,7 +720,12 @@ function dispatch(
+@@ -715,7 +719,12 @@ function dispatch(
              Effect.gen(function* () {
                const current = yield* execution.resolve();
                const accounts = yield* safe(
@@ -1207,65 +1165,83 @@ index bf9a830855..67bc6c1b27 100644
                  command: { operation: "workflow-run", name: seed.name, input: seed.input },
                  headers: {},
                },
-diff --git a/apps/hosted/cloud/src/implementation/test-stage-commands.ts b/apps/hosted/cloud/src/implementation/test-stage-commands.ts
---- a/apps/hosted/cloud/src/implementation/test-stage-commands.ts
-+++ b/apps/hosted/cloud/src/implementation/test-stage-commands.ts
-@@ -64,7 +64,6 @@
-  * stage then run the unpublished framework. The directory is named by the package's content.
+diff --git a/e2e/tests/app-caller-identity.spec.ts b/e2e/tests/app-caller-identity.spec.ts
+index d40d9e7574..f450dae9d8 100644
+--- a/e2e/tests/app-caller-identity.spec.ts
++++ b/e2e/tests/app-caller-identity.spec.ts
+@@ -13,6 +13,25 @@ import { Browser } from "../support/browser.ts";
+ const source = `import {
+   defineApp, dynamicRouter, mutation, object, query, router, string, workflow
+ } from "apps";
++import { createAppHandler, hostContext } from "apps/host";
++const portable = createAppHandler(defineApp({}, {
++  tools: router({ who: query({ input: object({}) }, async (ctx) => ({
++    hasUser: "user" in ctx, id: ctx.user?.id ?? null,
++  })) }),
++}));
++const direct = query({ input: object({}) }, async (ctx) => {
++  const invoke = async (accounts, caller) => {
++    const response = await portable(new Request("https://app.invalid", {
++      method: "POST", body: JSON.stringify({ operation: "call", tool: "who", input: {} }),
++    }), hostContext(accounts, undefined, caller));
++    return { status: response.status, body: await response.json() };
++  };
++  return {
++    caller: await invoke({ app: {} }, ctx.user.id),
++    app: await invoke({ app: {} }, undefined),
++    subjectless: await invoke({ app: {}, user: {} }, undefined),
++  };
++});
+ const who = query({ input: object({}) }, async (ctx) => ctx.user.id ?? "missing");
+ const spoof = mutation({ input: object({ userId: string() }) }, async (ctx, input) => ({
+   callerId: ctx.user.id ?? "missing",
+@@ -35,7 +54,7 @@ export default defineApp({}, async (ctx) => {
+     }],
+     resolve: async (requested) => requested === name ? fromFactory : undefined,
+   });
+-  return { tools: router({ who, spoof, generated, launch }), workflows: { record } };
++  return { tools: router({ who, direct, spoof, generated, launch }), workflows: { record } };
+ });`;
+ 
+ const SessionIdentity = Schema.NullOr(
+@@ -140,6 +159,15 @@ layer(HostedLive, { excludeTestServices: true })("App caller identity", (it) =>
+         expect(yield* query(actors.member)).toBe(memberId);
+         expect(yield* query(actors.owner)).toBe(ownerId);
+ 
++        // Portable hosts can supply a caller without any user-account requirements.
++        const direct = yield* call(actors.member, "direct", "query", {});
++        expect(direct.status).toBe(200);
++        expect(direct.body).toEqual({
++          caller: { status: 200, body: { ok: true, value: { hasUser: true, id: memberId } } },
++          app: { status: 200, body: { ok: true, value: { hasUser: false, id: null } } },
++          subjectless: { status: 200, body: { ok: true, value: { hasUser: true, id: null } } },
++        });
++
+         // Subscription queries execute lazily, after the HTTP handler's auth scope has ended.
+         const subscribe = (actor: Session) =>
+           Effect.gen(function* () {
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index ac3f8677d0..4a5b39e752 100644
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -336,7 +336,7 @@ function bindScope(
+ 
+ /**
+  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
+- * the invocation has a caller. Without `user` accounts the context has no `user`.
++ * the host supplies a caller or a user-account scope. App-only work has neither.
   */
- const stageAppsFramework = Effect.gen(function* () {
--  const fs = yield* FileSystem.FileSystem;
-   const path = yield* Path.Path;
-   const root = yield* path.fromFileUrl(new URL("../../../../..", import.meta.url));
-   for (const script of ["apps:build", "e2e:apps"])
-@@ -76,6 +75,14 @@
-         stderr: "inherit",
-       }),
-     );
-+  return yield* packedAppsFramework;
-+}).pipe(Effect.scoped);
-+
-+/** Convert the packed framework into the compiler's package-files asset map. */
-+export const packedAppsFramework = Effect.gen(function* () {
-+  const fs = yield* FileSystem.FileSystem;
-+  const path = yield* Path.Path;
-+  const root = yield* path.fromFileUrl(new URL("../../../../..", import.meta.url));
-   const packed = path.join(root, ".local/test-runtime/apps.tgz");
-   const unpacked = yield* fs.makeTempDirectoryScoped();
-   yield* runChild(ChildProcess.make("tar", ["-xzf", packed, "-C", unpacked]));
-diff --git a/scripts/build-basalt-framework.ts b/scripts/build-basalt-framework.ts
-new file mode 100644
---- /dev/null
-+++ b/scripts/build-basalt-framework.ts
-@@ -0,0 +1,31 @@
-+/** Production uses the same unpublished framework package assets as hosted test stages. */
-+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-+import * as NodeServices from "@effect/platform-node/NodeServices";
-+import { Effect, FileSystem, Path } from "effect";
-+import { ChildProcess, ChildProcessSpawner } from "effect/process";
-+import { packedAppsFramework } from "../apps/hosted/cloud/src/implementation/test-stage-commands.ts";
-+
-+NodeRuntime.runMain(
-+  Effect.gen(function* () {
-+    const fs = yield* FileSystem.FileSystem;
-+    const path = yield* Path.Path;
-+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-+    const archive = path.resolve(".local/test-runtime/apps.tgz");
-+    yield* fs.makeDirectory(path.dirname(archive), { recursive: true });
-+    const code = yield* processes.exitCode(
-+      ChildProcess.make("bun", ["pm", "pack", "--ignore-scripts", "--filename", archive], {
-+        cwd: path.resolve("packages/apps/dist"),
-+        stdout: "inherit",
-+        stderr: "inherit",
-+      }),
-+    );
-+    if (Number(code) !== 0) return yield* Effect.die(new Error("Framework packing failed"));
-+    const framework = yield* packedAppsFramework;
-+    const destination = path.resolve(".local/basalt-framework");
-+    yield* fs.makeDirectory(destination, { recursive: true });
-+    yield* fs.copyFile(
-+      path.join(framework.EXECUTOR_APPS_FRAMEWORK, "framework.json"),
-+      path.join(destination, "framework.json"),
-+    );
-+  }).pipe(Effect.provide(NodeServices.layer)),
-+);
+ function bindAccounts(
+   slots: ScopedSlots,
+@@ -350,8 +350,9 @@ function bindAccounts(
+           Redacted.value(context.accounts),
+         );
+         const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
+-        if (selected.user === undefined) return { app: { accounts: app } };
+-        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
++        if (selected.user === undefined && context.caller === undefined)
++          return { app: { accounts: app } };
++        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user ?? {});
+         const id =
+           context.caller === undefined
+             ? undefined

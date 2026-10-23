@@ -124,8 +124,9 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 - `0006-product-brand.patch`: a configurable product name and logo, so the tools service presents the brand from [brand.ts](brand.ts) in its pages, emails, OAuth and MCP metadata. Offered upstream in [executor#2350](https://github.com/UsefulSoftwareCo/executor/pull/2350). The deployment patch no longer names the email sender; this patch does.
 - `0007-product-brand-surfaces.patch`: the built-in app, its account and key, and approvals show the brand's name and logo; Docs, Privacy and Terms links appear only when `brand.links` names them; error and status copy no longer names the tools service. Offered upstream in [executor#2352](https://github.com/UsefulSoftwareCo/executor/pull/2352).
-- `0008-caller-identity.patch`: carries [executor#2346](https://github.com/UsefulSoftwareCo/executor/pull/2346), so app code reads the caller's id as `ctx.user.id` (host protocol 14). npm has no framework release with it, so production builds serve `apps@0.0.1-beta.104-basalt.1`, built from the patched checkout, through the compiler Worker's framework assets. `framework.release` reports that version, so people's own apps get it too.
-- `0009-member-pools.patch`: installs and upgrades one private pool per verified organization member, with its signed pool token as the owner's personal account.
+- `0008-caller-identity.patch`: verbatim carry of [executor#2346](https://github.com/UsefulSoftwareCo/executor/pull/2346) at `281f282`, so app code reads the caller's id as `ctx.user.id` (host protocol 14).
+- `0009-basalt-framework.patch`: npm has no framework release with caller identity, so production builds serve `apps@0.0.1-beta.104-basalt.1`, built from the patched checkout, through the compiler Worker's framework assets. `framework.release` reports that version, so people's own apps get it too. Drop it with 0008.
+- `0010-member-pools.patch`: installs one private pool per organization owner with a verified email, with owner-only upgrades, token repair and signing-key rotation. Demoted owners keep their pools; deleted pools stay deleted.
 
 A patch change that alters workflow step names requires existing runs to be drained before deployment.
 

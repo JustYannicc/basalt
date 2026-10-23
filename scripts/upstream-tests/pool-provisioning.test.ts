@@ -23,13 +23,15 @@ const [sdk, organizationContracts, scheduleContracts, lifecycleModule, defaults,
     load("apps/hosted/server/src/implementation/pool-app-source.ts"),
     load("apps/hosted/server/src/implementation/pool-app-upgrades.ts"),
   ]);
-const { AccountId, AppId, AppNameTaken, AppNotFound, StorageHost, VersionId } = sdk;
+const { AccountId, AppId, AppNameTaken, AppNotFound, AccountNotFound, StorageHost, VersionId } =
+  sdk;
 const { OrganizationId } = organizationContracts;
 const { ScheduleWakeup } = scheduleContracts;
 const { hostedResourceLifecycle } = lifecycleModule;
 const { poolDefaults, poolName } = defaults;
 const { poolAppFiles, poolAppVersion } = source;
 const { queuePoolAppUpgrades } = upgrades;
+const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementation/pool-account.ts");
 const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
 const { provision, selfHostProvisioningServices } = await load(
   "apps/hosted/server/src/implementation/provisioning.ts",
@@ -37,7 +39,7 @@ const { provision, selfHostProvisioningServices } = await load(
 const { OrganizationDefaults } = await load(
   "apps/hosted/server/src/contracts/organization-defaults.ts",
 );
-import { verifyPoolToken } from "../../src/pool/token.ts";
+import { signPoolToken, verifyPoolToken } from "../../src/pool/token.ts";
 
 const organization = Schema.decodeUnknownSync(OrganizationId)("organization-fixture");
 const key = Redacted.make("ab".repeat(32));
@@ -52,9 +54,18 @@ const fixture = <A>(
     executor: Executor;
     copies: { calls: number; collisions: number };
     reads: { get: number; source: number };
-    setup: (user?: string) => ReturnType<typeof poolDefaults>;
+    changeProvider: (provider: string) => void;
+    setup: (
+      user?: string,
+      signingKey?: Redacted.Redacted<string>,
+      team?: typeof organization,
+    ) => ReturnType<typeof poolDefaults>;
   }) => Effect.Effect<A, unknown, unknown>,
-  options: { raceCopies?: boolean } = {},
+  options: {
+    raceCopies?: boolean;
+    beforeCopyCommit?: (sql: SqlClient.SqlClient) => Effect.Effect<unknown, unknown>;
+    beforeDeployCommit?: (sql: SqlClient.SqlClient) => Effect.Effect<unknown, unknown>;
+  } = {},
 ) =>
   Effect.runPromise(
     Effect.scoped(
@@ -66,7 +77,7 @@ const fixture = <A>(
           'create table member (id text, "organizationId" text, "userId" text, role text)',
           "create table executor_apps (id text primary key, owner text, name text unique, active_deployment text, files jsonb, workspace jsonb, copied_from jsonb)",
           "create table executor_deployments (id text primary key, requirements jsonb)",
-          "create table executor_accounts (id text primary key, owner text, provider text, token text)",
+          "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text)",
           "create table hosted_app_access (id text, organization_id text, creator_id text, audience text)",
           "create table hosted_account_access (account_id text, organization_id text, creator_id text, kind text, personal_user_id text)",
           "create table hosted_app_account_links (app text, requirement text, subject text, account text, linked_by text, created_at timestamptz)",
@@ -76,9 +87,11 @@ const fixture = <A>(
         yield* createDataStepJournal("private_hosted");
         yield* sql`insert into organization values (${organization}, '{}')`;
         yield* sql`insert into "user" values ('person-a', 'Alex', 'alex@example.invalid', true),
-      ('person-b', 'Alex', 'second@example.invalid', true), ('unverified', '', 'pending@example.invalid', false)`;
-        yield* sql`insert into member values ('m1', ${organization}, 'person-a', 'member'),
-      ('m2', ${organization}, 'person-b', 'member'), ('m3', ${organization}, 'unverified', 'owner')`;
+      ('person-b', 'Alex', 'second@example.invalid', true),
+      ('invited', 'Guest', 'guest@example.invalid', true), ('admin', 'Admin', 'admin@example.invalid', true), ('unverified', '', 'pending@example.invalid', false)`;
+        yield* sql`insert into member values ('m1', ${organization}, 'person-a', 'owner'),
+      ('m2', ${organization}, 'person-b', 'owner'), ('m3', ${organization}, 'unverified', 'owner'),
+      ('m4', ${organization}, 'invited', 'member'), ('m5', ${organization}, 'admin', 'admin')`;
         const lifecycle = yield* hostedResourceLifecycle;
         let nextId = 0;
         const copies = { calls: 0, collisions: 0 };
@@ -120,9 +133,11 @@ const fixture = <A>(
                   if (copies.calls === 2) yield* Deferred.succeed(copying, undefined);
                   yield* Deferred.await(copying);
                 }
+                if (options.beforeCopyCommit) yield* options.beforeCopyCommit(sql);
                 // Like the SDK, compilation finishes before this short persistence transaction.
                 return yield* sql.withTransaction(
                   Effect.gen(function* () {
+                    yield* lifecycle.hooks.appDeploying?.(input.owner) ?? Effect.void;
                     const existing =
                       yield* sql`select id from executor_apps where name = ${input.name}`;
                     if (existing.length) {
@@ -173,21 +188,46 @@ const fixture = <A>(
                   false,
                   "deploy must compile without the provisioning transaction",
                 );
-                const version = `dpl_upgrade_${++nextId}`;
-                yield* sql`update executor_apps set active_deployment = ${version}, files = ${JSON.stringify(files)}::jsonb,
-            workspace = ${JSON.stringify(files)}::jsonb where id = ${app}`;
-                yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb)`;
-                return { app: yield* get(app) };
+                if (options.beforeDeployCommit) yield* options.beforeDeployCommit(sql);
+                return yield* sql.withTransaction(
+                  Effect.gen(function* () {
+                    const current = yield* get(app);
+                    yield* lifecycle.hooks.appDeploying?.(current.owner) ?? Effect.void;
+                    const version = `dpl_upgrade_${++nextId}`;
+                    yield* sql`update executor_apps set active_deployment = ${version}, files = ${JSON.stringify(files)}::jsonb,
+                    workspace = ${JSON.stringify(files)}::jsonb where id = ${app}`;
+                    yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb)`;
+                    return { app: yield* get(app) };
+                  }),
+                );
+              }),
+          },
+          accounts: {
+            update: (input: Parameters<Executor["accounts"]["update"]>[0]) =>
+              Effect.gen(function* () {
+                const [row] = yield* sql`update executor_accounts set label = ${input.label}
+                where id = ${input.account} and owner = ${input.owner} returning id, owner`;
+                if (row === undefined)
+                  return yield* new AccountNotFound({ account: input.account });
+                return row as unknown as Account;
               }),
           },
           managedAccounts: {
+            readCredentials: (input: { account: string; owner: string }) =>
+              Effect.gen(function* () {
+                const [row] =
+                  yield* sql`select token from executor_accounts where id = ${input.account} and owner = ${input.owner}`;
+                if (row === undefined)
+                  return yield* new AccountNotFound({ account: input.account });
+                return Redacted.make({ token: row.token });
+              }),
             add: (input: Parameters<Executor["managedAccounts"]["add"]>[0]) =>
               Effect.gen(function* () {
                 assert.equal(input.method, "token");
                 assert.equal(input.label, "Pool access");
                 const id = Schema.decodeUnknownSync(AccountId)(`acc_fixture_${++nextId}`);
                 const fields = Redacted.value(input.fields) as { token: string };
-                yield* sql`insert into executor_accounts values (${id}, ${input.owner}, ${input.provider}, ${fields.token})`;
+                yield* sql`insert into executor_accounts values (${id}, ${input.owner}, ${input.provider}, ${fields.token}, ${input.method}, ${input.label})`;
                 const account = { id, owner: input.owner } as Account;
                 yield* lifecycle.hooks.accountCreated(account);
                 return account;
@@ -201,8 +241,11 @@ const fixture = <A>(
           executor,
           copies,
           reads,
-          setup: (user = "person-a") =>
-            poolDefaults(executor, Option.some(key), organization, user),
+          changeProvider: (provider) => {
+            requirements.accounts.pool.provider = provider;
+          },
+          setup: (user = "person-a", signingKey = key, team = organization) =>
+            poolDefaults(executor, Option.some(signingKey), team, user),
         });
       }),
     ).pipe(
@@ -211,7 +254,7 @@ const fixture = <A>(
     ) as Effect.Effect<A, unknown>,
   );
 
-test("installs a member's private app and personal linked account with a verifiable token, once", async () => {
+test("installs an owner's private app and personal linked account with a verifiable token, once", async () => {
   await fixture(({ sql, setup }) =>
     Effect.gen(function* () {
       yield* setup();
@@ -258,7 +301,7 @@ test("deleted pools stay deleted; unverified members and missing keys create not
   );
 });
 
-test("two ordinary members get distinct pools and names under concurrent setup", async () => {
+test("two owners get distinct pools and names under concurrent setup", async () => {
   await fixture(({ sql, setup }) =>
     Effect.gen(function* () {
       yield* Effect.all([setup(), setup(), setup("person-b")], { concurrency: "unbounded" });
@@ -315,11 +358,11 @@ test("upgrades an untouched recorded version and preserves owner deployments and
   );
 });
 
-test("bundle rollouts queue every verified member once with delayed durable jobs", async () => {
+test("bundle and key rollouts queue every verified owner once with delayed durable jobs", async () => {
   await fixture(({ sql }) =>
     Effect.gen(function* () {
-      const queue = queuePoolAppUpgrades();
-      yield* Effect.all([queue, queuePoolAppUpgrades()], { concurrency: "unbounded" });
+      const queue = queuePoolAppUpgrades(key);
+      yield* Effect.all([queue, queuePoolAppUpgrades(key)], { concurrency: "unbounded" });
       yield* queue;
       const jobs =
         yield* sql`select user_id, available_at > now() + interval '14 minutes' as delayed from hosted_provisioning order by user_id`;
@@ -329,8 +372,13 @@ test("bundle rollouts queue every verified member once with delayed durable jobs
       ]);
       const markers =
         yield* sql`select name, completed_at is not null as completed from private_hosted_data_steps`;
-      assert.deepEqual(markers, [{ name: `basalt-pools:${poolAppVersion}`, completed: true }]);
-      yield* queuePoolAppUpgrades("next-bundle");
+      assert.deepEqual(markers, [
+        {
+          name: `basalt-pools:${poolAppVersion}:${yield* poolTokenKeyVersion(key)}`,
+          completed: true,
+        },
+      ]);
+      yield* queuePoolAppUpgrades(key, "next-bundle");
       assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
     }),
   );
@@ -339,11 +387,11 @@ test("bundle rollouts queue every verified member once with delayed durable jobs
 test("completed rollouts skip membership scans in fresh isolates and all SQL in the same isolate", async () => {
   await fixture(({ sql }) =>
     Effect.gen(function* () {
-      const queue = queuePoolAppUpgrades();
+      const queue = queuePoolAppUpgrades(key);
       yield* queue;
       yield* sql`drop table member`;
       // A fresh isolate needs only the global journal marker, even when bulk reads are unavailable.
-      yield* queuePoolAppUpgrades();
+      yield* queuePoolAppUpgrades(key);
       yield* sql`drop table private_hosted_data_steps`;
       // The completed isolate does not even query that marker again.
       yield* queue;
@@ -354,7 +402,7 @@ test("completed rollouts skip membership scans in fresh isolates and all SQL in 
 test("a failed rollout commits neither jobs nor completion and remains retryable in its isolate", async () => {
   await fixture(({ sql }) =>
     Effect.gen(function* () {
-      const queue = queuePoolAppUpgrades();
+      const queue = queuePoolAppUpgrades(key);
       yield* sql`alter table hosted_provisioning add constraint reject_rollout check (false)`;
       const failed = yield* Effect.exit(queue);
       assert.equal(failed._tag, "Failure");
@@ -482,25 +530,318 @@ test("a same-name app created by the member from another origin gets a suffix", 
   );
 });
 
-test("current bundle records skip SDK app reads and legacy records are marked after one full check", async () => {
+test("current bundles still check credentials and legacy bundles get one source check", async () => {
   await fixture(({ sql, setup, reads }) =>
     Effect.gen(function* () {
       yield* setup();
       const initial = { ...reads };
       yield* setup();
-      assert.deepEqual(reads, initial);
+      assert.equal(reads.source, initial.source);
+      assert.equal(reads.get, initial.get + 2);
       const [recorded] =
         yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`;
       assert.equal(recorded!.bundle, poolAppVersion);
       // Existing installations have no bundle field; verify their source once without redeploying.
       yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,bundle}')::text`;
       yield* setup();
-      assert.equal(reads.get, initial.get + 1);
+      assert.equal(reads.get, initial.get + 4);
       assert.equal(reads.source, initial.source + 1);
       const checked = { ...reads };
       yield* setup();
-      assert.deepEqual(reads, checked);
+      assert.equal(reads.source, checked.source);
+      assert.equal(reads.get, checked.get + 2);
       assert.equal((yield* sql`select * from executor_accounts`).length, 1);
     }),
   );
 });
+
+test("invited members and admins get no pool; ownership is scoped to each organization", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      const other = Schema.decodeUnknownSync(OrganizationId)("organization-other");
+      yield* sql`insert into organization values (${other}, '{}')`;
+      yield* sql`insert into member values ('other-member', ${other}, 'person-a', 'member')`;
+      yield* setup("invited");
+      yield* setup("admin");
+      yield* setup("person-a", key, other);
+      assert.equal((yield* sql`select * from executor_apps`).length, 0);
+      yield* setup();
+      yield* setup();
+      assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      const [access] = yield* sql`select organization_id, creator_id from hosted_app_access`;
+      assert.deepEqual(access, { organization_id: organization, creator_id: "person-a" });
+      const [foreign] = yield* sql<{
+        metadata: string;
+      }>`select metadata from organization where id = ${other}`;
+      assert.deepEqual(JSON.parse(foreign!.metadata), {});
+    }),
+  );
+});
+
+test("promotion installs once; demotion leaves the pool, token and pending upgrade untouched", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup("invited");
+      assert.equal((yield* sql`select * from executor_apps`).length, 0);
+      yield* sql`update member set role = 'owner' where "userId" = 'invited'`;
+      yield* setup("invited");
+      yield* setup("invited");
+      assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      yield* sql`update member set role = 'member' where "userId" = 'invited'`;
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,invited,bundle}', '"previous-bundle"')::text`;
+      const old = JSON.stringify([{ path: "index.ts", content: "previous pool" }]);
+      yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+      yield* sql`delete from hosted_app_account_links`;
+      const before = yield* sql`select * from organization`;
+      const apps = yield* sql`select * from executor_apps`;
+      const accounts = yield* sql`select * from executor_accounts`;
+      yield* setup("invited", Redacted.make("cd".repeat(32)));
+      assert.deepEqual(yield* sql`select * from organization`, before);
+      assert.deepEqual(yield* sql`select * from executor_apps`, apps);
+      assert.deepEqual(yield* sql`select * from executor_accounts`, accounts);
+      assert.equal((yield* sql`select * from hosted_app_account_links`).length, 0);
+      yield* queuePoolAppUpgrades(key);
+      const jobs = yield* sql`select user_id from hosted_provisioning order by user_id`;
+      assert.deepEqual(jobs, [{ user_id: "person-a" }, { user_id: "person-b" }]);
+    }),
+  );
+});
+
+test("a rotated signing key re-mints and re-links once, retires the old account and journals the key", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [original] = yield* sql`select * from executor_accounts`;
+      const rotated = Redacted.make("cd".repeat(32));
+      yield* setup("person-a", rotated);
+      yield* setup("person-a", rotated);
+      const [link] = yield* sql`select * from hosted_app_account_links`;
+      const [active] = yield* sql<{
+        token: string;
+      }>`select token from executor_accounts where id = ${link!.account}`;
+      assert.notEqual(link!.account, original!.id);
+      assert.deepEqual(
+        yield* Effect.promise(() => verifyPoolToken(Redacted.value(rotated), active!.token)),
+        {
+          pool: link!.app,
+          owner: "person-a",
+          organization,
+        },
+      );
+      assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 2);
+      assert.equal(
+        (yield* sql`select label from executor_accounts where id = ${original!.id}`)[0]!.label,
+        "Pool access (retired)",
+      );
+      const [state] = yield* sql<{
+        pool: { tokenKeyVersion: string; account: string };
+      }>`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
+      assert.equal(state!.pool.tokenKeyVersion, yield* poolTokenKeyVersion(rotated));
+      assert.equal(state!.pool.account, link!.account);
+      yield* queuePoolAppUpgrades(key);
+      yield* queuePoolAppUpgrades(rotated);
+      yield* queuePoolAppUpgrades(rotated);
+      assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
+      assert.equal((yield* sql`select * from private_hosted_data_steps`).length, 2);
+    }),
+  );
+});
+
+for (const failure of ["unlinked", "deleted", "invalid token", "wrong pool token"] as const) {
+  test(`a current pool's ${failure} account is repaired without creating another app`, async () => {
+    await fixture(({ sql, setup }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        const [old] = yield* sql`select id from executor_accounts`;
+        if (failure === "unlinked") yield* sql`delete from hosted_app_account_links`;
+        if (failure === "deleted") {
+          yield* sql`delete from hosted_app_account_links`;
+          yield* sql`delete from executor_accounts`;
+        }
+        if (failure === "wrong pool token") {
+          const token = yield* Effect.promise(() =>
+            signPoolToken(Redacted.value(key), {
+              pool: "another-pool",
+              owner: "person-a",
+              organization,
+            }),
+          );
+          yield* sql`update executor_accounts set token = ${token}`;
+        }
+        if (failure === "invalid token") yield* sql`update executor_accounts set token = 'broken'`;
+        yield* setup();
+        yield* setup();
+        const [link] = yield* sql`select * from hosted_app_account_links`;
+        const [account] = yield* sql<{
+          token: string;
+        }>`select token from executor_accounts where id = ${link!.account}`;
+        assert.notEqual(link!.account, old!.id);
+        assert.deepEqual(
+          yield* Effect.promise(() => verifyPoolToken(Redacted.value(key), account!.token)),
+          {
+            pool: link!.app,
+            owner: "person-a",
+            organization,
+          },
+        );
+        assert.equal((yield* sql`select * from executor_apps`).length, 1);
+        assert.equal((yield* sql`select * from hosted_app_account_links`).length, 1);
+        assert.equal(
+          (yield* sql`select * from executor_accounts`).length,
+          failure === "deleted" ? 1 : 2,
+        );
+        const [access] =
+          yield* sql`select * from hosted_account_access where account_id = ${link!.account}`;
+        assert.equal(access!.personal_user_id, "person-a");
+      }),
+    );
+  });
+}
+
+test("key rotation and a missing link never recreate a deleted pool", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* sql`delete from executor_apps`;
+      yield* sql`delete from hosted_app_account_links`;
+      const before = yield* sql`select * from organization`;
+      const accounts = yield* sql`select * from executor_accounts`;
+      yield* setup("person-a", Redacted.make("cd".repeat(32)));
+      assert.equal((yield* sql`select * from executor_apps`).length, 0);
+      assert.deepEqual(yield* sql`select * from organization`, before);
+      assert.deepEqual(yield* sql`select * from executor_accounts`, accounts);
+    }),
+  );
+});
+
+test("pool copy origin reads the product name and falls back to Signalbox", async () => {
+  const { ConfigProvider } = await import("effect");
+  for (const name of ["Basalt", ""]) {
+    await fixture(({ sql, setup }) =>
+      Effect.gen(function* () {
+        yield* setup().pipe(
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromUnknown({ EXECUTOR_PRODUCT_NAME: name }),
+          ),
+        );
+        const [app] = yield* sql<{
+          copied_from: { name: string };
+        }>`select copied_from from executor_apps`;
+        assert.equal(app!.copied_from.name, `${name || "Signalbox"} pool`);
+      }),
+    );
+  }
+});
+
+test("a legacy unlinked pool retires the personal account whose signed claims match", async () => {
+  await fixture(({ sql, setup, executor }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [original] = yield* sql`select id from executor_accounts`;
+      // Another app's token with the same provider and label must survive this repair unchanged.
+      const token = yield* Effect.promise(() =>
+        signPoolToken(Redacted.value(key), {
+          pool: "another-pool",
+          owner: "person-a",
+          organization,
+        }),
+      );
+      const unrelated = yield* lifecycleModule.personalAccountCreation("person-a")(
+        executor.managedAccounts.add({
+          owner: organizationContracts.organizationOwner(organization),
+          provider: "provider-pool" as Account["provider"],
+          method: "token",
+          label: "Pool access",
+          fields: Redacted.make({ token }),
+        }),
+      );
+      yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,account}'
+      #- '{basaltPools,person-a,tokenKeyVersion}')::text`;
+      yield* sql`delete from hosted_app_account_links`;
+      yield* setup();
+      const [link] = yield* sql`select account from hosted_app_account_links`;
+      assert.notEqual(link!.account, original!.id);
+      assert.equal(
+        (yield* sql`select label from executor_accounts where id = ${original!.id}`)[0]!.label,
+        "Pool access (retired)",
+      );
+      assert.equal(
+        (yield* sql`select label from executor_accounts where id = ${unrelated.id}`)[0]!.label,
+        "Pool access",
+      );
+    }),
+  );
+});
+
+for (const transition of ["demotion", "email verification revoked"] as const) {
+  const revoke = (sql: SqlClient.SqlClient) =>
+    transition === "demotion"
+      ? sql`update member set role = 'member' where "userId" = 'person-a'`
+      : sql`update "user" set "emailVerified" = false where id = 'person-a'`;
+  test(`${transition} during compilation prevents pool creation at commit`, async () => {
+    await fixture(
+      ({ sql, setup }) =>
+        Effect.gen(function* () {
+          assert.equal((yield* Effect.exit(setup()))._tag, "Failure");
+          yield* setup();
+          assert.equal((yield* sql`select * from executor_apps`).length, 0);
+          assert.equal((yield* sql`select * from executor_accounts`).length, 0);
+          assert.equal((yield* sql`select * from hosted_app_account_links`).length, 0);
+        }),
+      { beforeCopyCommit: revoke },
+    );
+  });
+  test(`${transition} during compilation prevents upgrading an existing pool`, async () => {
+    await fixture(
+      ({ sql, setup }) =>
+        Effect.gen(function* () {
+          yield* setup();
+          const old = JSON.stringify([{ path: "index.ts", content: "previous pool" }]);
+          yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+          yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+          const before = yield* sql`select * from executor_apps`;
+          const accounts = yield* sql`select * from executor_accounts`;
+          assert.equal((yield* Effect.exit(setup()))._tag, "Failure");
+          yield* setup();
+          assert.deepEqual(yield* sql`select * from executor_apps`, before);
+          assert.deepEqual(yield* sql`select * from executor_accounts`, accounts);
+        }),
+      { beforeDeployCommit: revoke },
+    );
+  });
+}
+
+for (const legacyUnlinked of [false, true]) {
+  test(`a provider change repairs and retires ${legacyUnlinked ? "a legacy unlinked" : "the recorded"} pool account`, async () => {
+    await fixture(({ sql, setup, changeProvider }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        const [original] = yield* sql`select id from executor_accounts`;
+        const old = JSON.stringify([{ path: "index.ts", content: "previous pool" }]);
+        yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+        yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+        changeProvider("provider-next");
+        if (legacyUnlinked) {
+          yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,account}'
+          #- '{basaltPools,person-a,tokenKeyVersion}')::text`;
+          yield* sql`delete from hosted_app_account_links`;
+        }
+        yield* setup();
+        const [link] = yield* sql`select account from hosted_app_account_links`;
+        const [account] =
+          yield* sql`select provider from executor_accounts where id = ${link!.account}`;
+        assert.equal(account!.provider, "provider-next");
+        assert.equal(
+          (yield* sql`select label from executor_accounts where id = ${original!.id}`)[0]!.label,
+          "Pool access (retired)",
+        );
+        assert.equal((yield* sql`select * from executor_accounts`).length, 2);
+      }),
+    );
+  });
+}
