@@ -77,9 +77,9 @@ test("released Home/node stream, stick, spread, fail over at quota and retain ke
       assert.match(mapping, /^127\.0\.0\.1:\d+$/);
       return `http://${mapping}`;
     }
-    const home = origin(8327);
-    const node = origin(8317);
-    const readiness = origin(8318);
+    let home = origin(8327);
+    let node = origin(8317);
+    let readiness = origin(8318);
     const managementHeaders = { "Content-Type": "application/json", "X-Management-Key": "fixture-management-key" };
     async function ready() {
       return until(async () => {
@@ -140,6 +140,10 @@ test("released Home/node stream, stick, spread, fail over at quota and retain ke
     const failover = await turn("fixture-conversation-a");
     assert.deepEqual(failover, [first[0], second[0]]);
     docker(["restart", "--time", "20", containerId]);
+    // Docker may assign new random host ports when the container restarts.
+    home = origin(8327);
+    node = origin(8317);
+    readiness = origin(8318);
     const restarted = await ready();
     assert.notEqual(restarted.boot_id, initial.boot_id);
     await until(catalog);
