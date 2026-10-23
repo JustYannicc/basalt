@@ -36,6 +36,11 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
   }
   if (!isSigningKey(source.POOL_APP_SIGNING_KEY!))
     throw new Error("POOL_APP_SIGNING_KEY must be 32 bytes of lowercase hex");
+  const previousSigningKey = source.POOL_APP_SIGNING_KEY_PREVIOUS?.trim();
+  if (previousSigningKey && !isSigningKey(previousSigningKey))
+    throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex");
+  if (previousSigningKey === source.POOL_APP_SIGNING_KEY)
+    throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY");
   if (appHosting.enabled && !source.APP_DOMAIN_CONTROLLER_TOKEN?.trim()) {
     throw new Error("Missing GitHub Actions secret: APP_DOMAIN_CONTROLLER_TOKEN");
   }

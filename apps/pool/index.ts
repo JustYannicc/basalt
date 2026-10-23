@@ -79,7 +79,7 @@ export const view = query(
 
 export const startSignIn = mutation(
   {
-    description: "Start connecting a subscription. Only the pool's owner can do this.",
+    description: "Start connecting a subscription; only the pool's owner can. Give the person `url` to open. With flow `callback`, they sign in and paste back the localhost address the page ends on: pass it to finishSignIn. With flow `device`, they approve on that page (entering `userCode` if set) and the pool finishes by itself. Check signInStatus until it isn't `waiting`. One open sign-in per pool; a new start replaces it.",
     input: object({ provider: string({ minLength: 1 }) }),
   },
   async (ctx: Context, { provider }) =>
@@ -95,7 +95,7 @@ export const finishSignIn = mutation(
 );
 
 export const signInStatus = query(
-  { description: "Whether a started sign-in has finished", input: session },
+  { description: "Whether a started sign-in has finished: `waiting`, `connected` with the new account, or `failed` with the reason. Polling every few seconds is fine; the pool keeps a sign-in alive while the provider still waits.", input: session },
   async (ctx: Context, input) =>
     control<SignInStatus>(ctx, `/sign-ins/status?session=${encodeURIComponent(input.session)}`),
 );

@@ -76,3 +76,18 @@ test("pool signing key is required and malformed values are never printed", () =
     message: "POOL_APP_SIGNING_KEY must be 32 bytes of lowercase hex",
   });
 });
+
+test("a previous pool signing key is optional, hex, and never the current key", () => {
+  const credentials = {
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  };
+  assert.doesNotThrow(() => deployEnvironment(credentials));
+  assert.doesNotThrow(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32) }));
+  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "old-value" }), {
+    message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
+  });
+  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "ab".repeat(32) }), {
+    message: "POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY",
+  });
+});

@@ -1,6 +1,6 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
-import { Config, Effect } from "effect";
+import { Config, Effect, Option } from "effect";
 import { fileURLToPath } from "node:url";
 import { poolDatabaseInfrastructure } from "./database.ts";
 
@@ -23,6 +23,8 @@ export const poolWorker = Effect.gen(function* () {
     constraints: euPlacement,
   });
   const application = yield* image.Application;
+  // Set only while rotating: the Worker still accepts pool tokens signed with it.
+  const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
   return yield* Cloudflare.Worker("PoolWorker", {
     main: fileURLToPath(new URL("./worker.ts", import.meta.url)),
     workersDev: false,
@@ -33,6 +35,7 @@ export const poolWorker = Effect.gen(function* () {
       POOL_DATABASE_URL: databaseUrl,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
+      ...(Option.isSome(previousSigningKey) ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value } : {}),
       POOL_IMAGE_HASH: application.hash.pipe(Output.map((hash) => {
         if (!hash?.image) throw new Error("The pool image has no build revision");
         return hash.image;

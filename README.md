@@ -49,7 +49,7 @@ Each person has their own pool from sign-in, empty at first. Once an organizatio
 
 The pool app never holds the pool backend's management key, because anyone who can edit an app's code could read it out. Provisioning signs a pool token with `POOL_APP_SIGNING_KEY`, naming the pool, its owner and its organization. It stores the token as the owner's personal account and links it as the app's account. The app sends it to `/pool/v1/*` along with the caller's id from `ctx.user.id`. The pool Worker verifies the token and scopes every call to that pool's channel group in Home. It refuses changes, such as starting a sign-in, pasting a callback, uploading a login file or removing an account, unless the caller owns the pool. Home management calls stay inside the control-plane DO, on the container's port 8327.
 
-**v1 limit:** an organization's owners and admins can manage every app in it, so they could edit a pool's code to act as its owner, or copy its token out. That's acceptable for v1: organizations are only the sharing boundary and v1 has no admin roles. A person's pool is created only in the organization they own, and sharing adds people as members, so the only owner or admin who can edit a pool is its owner. A host-signed caller assertion would remove the limit ([executor#2359](https://github.com/UsefulSoftwareCo/executor/issues/2359)). Pool tokens carry a key version: rotating `POOL_APP_SIGNING_KEY` and redeploying makes member setup re-sign and re-link every pool's token, which revokes the old ones.
+**v1 limit:** an organization's owners and admins can manage every app in it, so they could edit a pool's code to act as its owner, or copy its token out. That's acceptable for v1: organizations are only the sharing boundary and v1 has no admin roles. A person's pool is created only in the organization they own, and sharing adds people as members, so the only owner or admin who can edit a pool is its owner. A host-signed caller assertion would remove the limit ([executor#2359](https://github.com/UsefulSoftwareCo/executor/issues/2359)). Each pool's record and token name the signing key's version, so rotating `POOL_APP_SIGNING_KEY` (see Rotation and rollback) re-signs and re-links every pool's token and then revokes the old ones.
 
 Connect offers every provider Home can sign in. Home has no endpoint that lists them, so [src/pool/providers.json](src/pool/providers.json) mirrors the provider switch in Home's source at the pinned release. `npm run check:providers` fails when the table drifts from that source. The table only holds ids and display names. The sign-in flow comes from Home's own sign-in link at runtime: a `redirect_uri` on a local address means the person pastes back the address the browser lands on, and anything else is a device sign-in that Home finishes by itself. A login file Home exported can be uploaded instead. Pools take subscriptions only.
 
@@ -84,6 +84,7 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `MCP_SESSION_KEY_PREVIOUS`    | Previous MCP session verification key                                   |
 | `POOL_MANAGEMENT_KEY`         | Pool management API and local readiness authentication                 |
 | `POOL_APP_SIGNING_KEY`        | 32-byte lowercase hex key that signs pool tokens; shared by provisioning and the pool Worker |
+| `POOL_APP_SIGNING_KEY_PREVIOUS` | Optional, only while rotating: the pool Worker still accepts tokens signed with it |
 | `APP_DOMAIN_CONTROL_SECRET`   | App-domain lifecycle control key                                        |
 | `APP_DOMAIN_CONTROLLER_TOKEN` | Scoped DNS/certificate token, required only when app hosting is enabled |
 
@@ -110,6 +111,8 @@ The managed path needs an existing Advanced Certificate Manager subscription and
 ### Rotation and rollback
 
 Keep the encryption key stable. Replacing `EXECUTOR_ENCRYPTION_KEY` without re-encrypting existing credentials makes them unreadable. Rotating `BETTER_AUTH_SECRET` can invalidate sessions.
+
+Rotate the pool signing key in two deploys. First copy `POOL_APP_SIGNING_KEY` into `POOL_APP_SIGNING_KEY_PREVIOUS`, set a new random 32-byte hex `POOL_APP_SIGNING_KEY` and deploy. Member setup re-signs and re-links every pool's token, while the Worker still accepts old ones. Once that has run, delete `POOL_APP_SIGNING_KEY_PREVIOUS` and deploy again; old tokens stop working.
 
 Rotate MCP signing keys over three deploys. First put a new random signing key in `MCP_SESSION_KEY_PREVIOUS` and deploy. Next swap `MCP_SESSION_KEY_CURRENT` and `MCP_SESSION_KEY_PREVIOUS` and deploy. Finally replace `MCP_SESSION_KEY_PREVIOUS` and deploy again. Both keys are independently generated 32-byte hex strings. Retiring a key causes sessions signed only by it to initialize again.
 
