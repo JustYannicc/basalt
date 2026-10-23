@@ -45,6 +45,15 @@ test("deploys hand the brand's name and logo to the tools service", () => {
   assert.equal(env.EXECUTOR_PRODUCT_NAME, brand.name);
   assert.equal(env.EXECUTOR_PRODUCT_LOGO_URL, brand.logo);
   assert.equal(env.AUTH_EMAIL_DOMAIN, brand.emailDomain);
+  assert.equal(env.EXECUTOR_PRODUCT_DOCS_URL, brand.links.docs ?? undefined);
+  assert.equal(env.EXECUTOR_PRODUCT_PRIVACY_URL, brand.links.privacy ?? undefined);
+  assert.equal(env.EXECUTOR_PRODUCT_TERMS_URL, brand.links.terms ?? undefined);
   // The router serves the logo; a rename that moves it must move the file too.
   assert.ok(existsSync(fileURLToPath(new URL(`../public${brand.logo}`, import.meta.url))));
+});
+
+test("the brand's own links are absolute, so the router never redirects a path to itself", () => {
+  for (const [name, link] of Object.entries(brand.links)) {
+    if (link !== null) assert.match(link, /^https?:\/\//, name);
+  }
 });

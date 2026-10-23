@@ -1,0 +1,2759 @@
+diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
+index 82df0ba6e..294039e69 100644
+--- a/apps/docs/content/run/self-host.mdx
++++ b/apps/docs/content/run/self-host.mdx
+@@ -32,4 +32,5 @@ These settings override the defaults:
+ | `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
+ | `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
++| `EXECUTOR_PRODUCT_DOCS_URL`, `EXECUTOR_PRODUCT_PRIVACY_URL`, `EXECUTOR_PRODUCT_TERMS_URL` | no | Your own docs, privacy policy and terms. With another product name, a link you leave unset is not shown. |
+ | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
+ | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
+@@ -100,6 +101,7 @@ the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
+ `EXECUTOR_PRODUCT_LOGO_URL` replaces the logo and favicon; serve a square image of at least 64
+ pixels. With another name, setup guides leave out Executor's own plugins and screenshots, and
+-the dashboard leaves out Executor's feedback and GitHub links. The built-in app keeps the name
+-Executor and shows your logo.
++the dashboard leaves out Executor's feedback and GitHub links. Docs, privacy and terms links
++point at the pages you set, and are left out when you set none. The built-in app shows your name
++and logo; agents still reach it as `executor`.
+ 
+ ## Run it
+diff --git a/apps/hosted/cloud/src/infrastructure/product-brand.ts b/apps/hosted/cloud/src/infrastructure/product-brand.ts
+index 8d8819eaa..490cc77d9 100644
+--- a/apps/hosted/cloud/src/infrastructure/product-brand.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-brand.ts
+@@ -1,6 +1,7 @@
+ /** The operator's brand reaches each Worker that presents it as plain Worker settings. */
++import { productBrandSettings } from "@executor-js/utils/product-brand";
+ import { Config, Effect, Option } from "effect";
+ 
+-const settings = ["EXECUTOR_PRODUCT_NAME", "EXECUTOR_PRODUCT_LOGO_URL"] as const;
++const settings = Object.values(productBrandSettings);
+ 
+ /** Only the settings the deploy sets are bound; an unset one keeps Executor's own. */
+diff --git a/apps/hosted/self-host/compose.yaml b/apps/hosted/self-host/compose.yaml
+index 80d4b4905..d58c4d6f2 100644
+--- a/apps/hosted/self-host/compose.yaml
++++ b/apps/hosted/self-host/compose.yaml
+@@ -32,4 +32,8 @@ services:
+       EXECUTOR_PRODUCT_NAME:
+       EXECUTOR_PRODUCT_LOGO_URL:
++      # Your own docs, privacy and terms pages; under another name, unset links are not shown.
++      EXECUTOR_PRODUCT_DOCS_URL:
++      EXECUTOR_PRODUCT_PRIVACY_URL:
++      EXECUTOR_PRODUCT_TERMS_URL:
+       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
+       # document there, which authorization servers must be able to fetch over public HTTPS.
+diff --git a/apps/hosted/server/src/contracts/auth.ts b/apps/hosted/server/src/contracts/auth.ts
+index 4d059016d..55b4fe4e1 100644
+--- a/apps/hosted/server/src/contracts/auth.ts
++++ b/apps/hosted/server/src/contracts/auth.ts
+@@ -26,5 +26,5 @@ export const Unauthorized = UserFacingError.define({
+     action: "Sign in again, then try the action again.",
+     instructions:
+-      "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around an Executor login failure.",
++      "Restore the user’s session through the normal sign-in flow and retry the failed operation. If the session expires repeatedly, investigate session handling. Do not change the integration’s OAuth configuration to work around a login failure.",
+   },
+ });
+diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
+index 416fd3ded..781057b80 100644
+--- a/apps/hosted/server/src/contracts/mcp.ts
++++ b/apps/hosted/server/src/contracts/mcp.ts
+@@ -44,5 +44,5 @@ const forbidden: { readonly [Reason in McpForbiddenReason]: ErrorPresentation }
+     title: "Organization required",
+     description:
+-      "This full-account token does not name an organization, so Executor cannot choose one for this MCP request.",
++      "This full-account token does not name an organization, so none can be chosen for this MCP request.",
+     recovery: {
+       action:
+diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/server/src/implementation/api-keys.ts
+index 81d6942ef..fb72a5d9b 100644
+--- a/apps/hosted/server/src/implementation/api-keys.ts
++++ b/apps/hosted/server/src/implementation/api-keys.ts
+@@ -10,4 +10,5 @@ import { Effect, Option, Redacted, Schema } from "effect";
+ import { ApiKeyId, ApiKeyMetadata, CreateApiKey } from "../contracts/api-keys.ts";
+ import { OrganizationId } from "../contracts/organization.ts";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Better Auth owns the only key store and lifecycle for personal and saved Executor accounts. */
+@@ -153,9 +154,10 @@ export const browserPersonalTokenAccess = (
+  * Fields follow the pinned api-key plugin's public schema and native create endpoint.
+  */
+-/** Names the key on the Tokens page so its owner knows where it came from. */
+-export const managedKeyName = "Executor app (created automatically)";
+ export const managedAccountKey = (organization: OrganizationId, user: string) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
++    // Names the key on the Tokens page so its owner knows where it came from.
++    const { name: product } = yield* productBrandConfig.pipe(Effect.orDie);
++    const managedKeyName = `${product} app (created automatically)`;
+     const token = Redacted.make(`exp_${generateRandomString(64)}`);
+     const hash = yield* Effect.tryPromise({
+diff --git a/apps/hosted/server/src/implementation/catalog.ts b/apps/hosted/server/src/implementation/catalog.ts
+index 6f2dda3a8..eb0907cd4 100644
+--- a/apps/hosted/server/src/implementation/catalog.ts
++++ b/apps/hosted/server/src/implementation/catalog.ts
+@@ -7,4 +7,5 @@ import { HostedCatalog } from "../contracts/catalog.ts";
+ import { executorCatalogEntry, executorCopyOrigin } from "./executor-catalog-entry.ts";
+ import type { ClientMetadataSetting } from "./oauth-client-metadata.ts";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /**
+@@ -30,5 +31,8 @@ export const catalogLive = (
+         feedUrl,
+       });
+-      const executor = executorCatalogEntry(apiOrigin);
++      const executor = executorCatalogEntry(
++        apiOrigin,
++        yield* productBrandConfig.pipe(Effect.orDie),
++      );
+       return HostedCatalog.of({
+         list: official.list.pipe(
+diff --git a/apps/hosted/server/src/implementation/executor-app.ts b/apps/hosted/server/src/implementation/executor-app.ts
+index bd1673bdf..2040914c0 100644
+--- a/apps/hosted/server/src/implementation/executor-app.ts
++++ b/apps/hosted/server/src/implementation/executor-app.ts
+@@ -1,4 +1,5 @@
+ import { SourceFiles } from "@executor-js/sdk/core";
+ import { Effect } from "effect";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ import { packageFile } from "@executor-js/app-templates";
+ /** Executor uses the same source generator, provider accounts and versions as other API apps. */
+@@ -62,7 +63,16 @@ const managementConfiguration = (origin: string, document: HostedApiDocument) =>
+   );
+ 
++/**
++ * The provider people see when they connect the app: the deployment's product name. The app's
++ * own name and slug stay Executor for agents.
++ */
++const providerName = productBrandConfig.pipe(
++  Effect.orDie,
++  Effect.map((brand) => brand.name),
++);
++
+ /** The version installed from the catalog. Existing untouched copies are recognized by exact files. */
+ export const executorAppSource = (origin: string, document: HostedApiDocument) =>
+-  Effect.succeed({
++  Effect.map(providerName, (name) => ({
+     files: SourceFiles.make([
+       { path: "index.ts", content: managementIndex(origin) },
+@@ -73,5 +83,5 @@ export const executorAppSource = (origin: string, document: HostedApiDocument) =
+         content: `import { defineProvider, object, string, secrets, oauth2 } from "apps"
+ 
+-export const provider = defineProvider({ name: "Executor", auth: {
++export const provider = defineProvider({ name: ${JSON.stringify(name)}, auth: {
+   ["apiKey"]: secrets({ label: "API key", fields: object({ ["token"]: string({ minLength: 1 }) }) }),
+   ["oauth"]: oauth2({
+@@ -82,9 +92,9 @@ export const provider = defineProvider({ name: "Executor", auth: {
+       },
+     ]),
+-  });
++  }));
+ 
+ /** The default app accepts a saved user API key through the ordinary secrets method. */
+ export const defaultExecutorAppSource = (origin: string, document: HostedApiDocument) =>
+-  Effect.succeed({
++  Effect.map(providerName, (name) => ({
+     files: SourceFiles.make([
+       {
+@@ -96,6 +106,6 @@ export const defaultExecutorAppSource = (origin: string, document: HostedApiDocu
+         content: `import { defineProvider, object, string, secrets, oauth2 } from "apps";
+ 
+-export const provider = defineProvider({ name: "Executor", auth: {
+-  apiKey: secrets({ label: "Executor API key", fields: object({ token: string(), organization: string() }) }),
++export const provider = defineProvider({ name: ${JSON.stringify(name)}, auth: {
++  apiKey: secrets({ label: ${JSON.stringify(`${name} API key`)}, fields: object({ token: string(), organization: string() }) }),
+   oauth: oauth2({ discover: ${JSON.stringify(`${origin}/api`)} }),
+ } });
+@@ -105,3 +115,3 @@ export const provider = defineProvider({ name: "Executor", auth: {
+       packageFile("executor"),
+     ]),
+-  });
++  }));
+diff --git a/apps/hosted/server/src/implementation/executor-catalog-entry.ts b/apps/hosted/server/src/implementation/executor-catalog-entry.ts
+index f6c3287f9..2dbbfe919 100644
+--- a/apps/hosted/server/src/implementation/executor-catalog-entry.ts
++++ b/apps/hosted/server/src/implementation/executor-catalog-entry.ts
+@@ -3,17 +3,25 @@ import { CatalogEntry } from "@executor-js/catalog/contracts";
+ import type { AppCopyOrigin } from "@executor-js/sdk/core";
+ import { executorCatalogPackage } from "../contracts/catalog.ts";
++import { defaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
+ 
+-/** This installation's public API, available as a built-in app. */
+-export const executorCatalogEntry = (origin: string) =>
++/**
++ * This installation's public API, available as a built-in app. Its name stays Executor, which
++ * the installed copy and agents rely on; the dashboard shows it under the product's name.
++ */
++export const executorCatalogEntry = (origin: string, brand: ProductBrand = defaultProductBrand) =>
+   CatalogEntry.make({
+     id: `${origin}/openapi.json`,
+     package: executorCatalogPackage,
+     name: "Executor",
+-    description: "Manage apps and connected accounts in Executor.",
++    description: `Manage apps and connected accounts in ${brand.name}.`,
+     auth: [
+       { method: "oauth", kind: "oauth2" },
+-      { method: "apiKey", kind: "secrets", label: "Executor API key" },
++      { method: "apiKey", kind: "secrets", label: `${brand.name} API key` },
++    ],
++    icons: [
++      brand.logo === defaultProductBrand.logo
++        ? { src: brand.logo, mimeType: "image/png" }
++        : { src: brand.logo },
+     ],
+-    icons: [{ src: "/favicon.png", mimeType: "image/png" }],
+   });
+ 
+diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/apps/hosted/server/src/implementation/organization-defaults.ts
+index 8aed977ae..ddec51e15 100644
+--- a/apps/hosted/server/src/implementation/organization-defaults.ts
++++ b/apps/hosted/server/src/implementation/organization-defaults.ts
+@@ -22,4 +22,5 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
+ import { addLink } from "./app-accounts.ts";
+ import { executorCopyOrigin } from "./executor-catalog-entry.ts";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Only a new or changed installation generates the Executor app, so its OpenAPI compiler loads then. */
+@@ -246,5 +247,5 @@ export const organizationDefaults = (
+                       method: "apiKey",
+                       // Email sign-ups have no name; say whose access this is instead.
+-                      label: "Your Executor access",
++                      label: `Your ${(yield* productBrandConfig.pipe(Effect.orDie)).name} access`,
+                       fields: Redacted.make({ token: Redacted.value(token), organization }),
+                     })
+diff --git a/apps/hosted/web/src/implementation/documentation.ts b/apps/hosted/web/src/implementation/documentation.ts
+index 7858e42f6..3b7e956d6 100644
+--- a/apps/hosted/web/src/implementation/documentation.ts
++++ b/apps/hosted/web/src/implementation/documentation.ts
+@@ -1,7 +1,18 @@
+ /** Documentation links resolved against the documentation base the server sent with this page. */
+ import { useAtomValue } from "@effect/atom-react";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productLink } from "@executor-js/utils/product-brand";
+ import { documentationBaseAtom, documentationPage } from "../contracts/documentation.ts";
+ 
+-/** The absolute URL of a documentation page; the empty path is the documentation index. */
+-export const useDocumentationUrl = (path = ""): string =>
+-  documentationPage(useAtomValue(documentationBaseAtom), path);
++/**
++ * The absolute URL of a documentation page; the empty path is the documentation index. A
++ * deployment's own docs get only an index link, used as given, since their pages are its own;
++ * under another name without docs of its own, every documentation link is undefined.
++ */
++export const useDocumentationUrl = (path = ""): string | undefined => {
++  const brand = useProductBrand();
++  const base = useAtomValue(documentationBaseAtom);
++  if (brand.docs !== undefined) return path === "" ? brand.docs : undefined;
++  const fallback = productLink(brand, "docs", base);
++  return fallback === undefined ? undefined : documentationPage(fallback, path);
++};
+diff --git a/apps/hosted/web/src/implementation/pages/agent-setup.tsx b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
+index eea1d1e2f..dc275e1f4 100644
+--- a/apps/hosted/web/src/implementation/pages/agent-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/agent-setup.tsx
+@@ -787,13 +787,15 @@ const firstPrompt = (
+   endpoint: string,
+   product: string,
+-  docsUrl: string,
++  docsUrl: string | undefined,
+   connected: ReturnType<typeof connectedAccounts>,
+ ) =>
+   `${promptOpening(endpoint, product)}\n\n${
+     connected === undefined
+-      ? `Read the docs to understand the product at ${docsUrl}, then help me get my first app set up.`
++      ? docsUrl === undefined
++        ? "Help me get my first app set up."
++        : `Read the docs to understand the product at ${docsUrl}, then help me get my first app set up.`
+       : `I've connected ${list.format(
+           connected.map(({ app, accounts }) => `${app} (${list.format(accounts)})`),
+-        )}. Read the docs to understand the product at ${docsUrl}, then show me what you can do with them.`
++        )}. ${docsUrl === undefined ? "Show me" : `Read the docs to understand the product at ${docsUrl}, then show me`} what you can do with them.`
+   }`;
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index e60e9d55c..e29dddf08 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -70,4 +70,6 @@ import { type OrganizationPageReads, useOrganizationRoute } from "../components/
+ import { AppTools } from "./app-tools.tsx";
+ import { AppSource, AppVersions } from "./app-source.tsx";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
+@@ -465,4 +467,5 @@ export function AppDetailPage({
+ 
+ function DeleteApp({ app }: { readonly app: App }) {
++  const brand = useProductBrand();
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const remove = useAtomSet(removeAppAtom({ organization, app: app.id }), { mode: "promiseExit" });
+@@ -487,5 +490,5 @@ function DeleteApp({ app }: { readonly app: App }) {
+       <DialogContent className="sm:max-w-[440px]">
+         <DialogTitle>Delete app?</DialogTitle>
+-        <p className="text-sm font-medium">{app.name}</p>
++        <p className="text-sm font-medium">{appDisplayName(app, brand)}</p>
+         <DialogDescription>
+           This permanently removes the app and its saved data. Connected accounts and copies
+diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
+index e0883613d..2030dc538 100644
+--- a/apps/hosted/web/src/implementation/pages/connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect.tsx
+@@ -71,5 +71,5 @@ export function ConnectPage() {
+   const mcpOrigin = origins.mcp[0];
+   const { organization } = useOrganizationRoute();
+-  const docs = useDocumentationUrl();
++  const docs = useDocumentationUrl() ?? null;
+   return (
+     <ScopedConnectionsPage
+diff --git a/apps/hosted/web/src/implementation/pages/groups.tsx b/apps/hosted/web/src/implementation/pages/groups.tsx
+index cfa785351..dfbede962 100644
+--- a/apps/hosted/web/src/implementation/pages/groups.tsx
++++ b/apps/hosted/web/src/implementation/pages/groups.tsx
+@@ -34,4 +34,6 @@ import { appError, type HostedError } from "../../contracts/errors.ts";
+ import { GroupConflict } from "@executor-js/hosted-server/groups";
+ import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/alert";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+ 
+ /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
+@@ -578,4 +580,5 @@ function GroupEditor({
+ 
+ function GroupApps({ group }: { readonly group: string }) {
++  const brand = useProductBrand();
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   return (
+@@ -599,5 +602,5 @@ function GroupApps({ group }: { readonly group: string }) {
+                   params={{ organizationSlug, appId: app.id }}
+                 >
+-                  {app.name}
++                  {appDisplayName(app, brand)}
+                 </Link>
+               ))}
+diff --git a/apps/hosted/web/src/implementation/pages/login.tsx b/apps/hosted/web/src/implementation/pages/login.tsx
+index dc63c890b..c7f89413c 100644
+--- a/apps/hosted/web/src/implementation/pages/login.tsx
++++ b/apps/hosted/web/src/implementation/pages/login.tsx
+@@ -12,4 +12,5 @@ import { Spinner } from "@executor-js/ui/components/spinner";
+ import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productLink } from "@executor-js/utils/product-brand";
+ 
+ const callbackError = (error: unknown, product: string): string | null => {
+@@ -203,5 +204,8 @@ export function LoginPage({
+ }
+ 
+-/** Product hosts provide their own legal URLs because cloud and self-host differ. */
++/**
++ * Product hosts provide Executor's legal URLs because cloud and self-host differ. A deployment
++ * under another name shows only the legal pages it names itself.
++ */
+ export function LoginLegalFooter({
+   privacyUrl,
+@@ -211,9 +215,13 @@ export function LoginLegalFooter({
+   readonly termsUrl: string;
+ }) {
++  const brand = useProductBrand();
++  const privacy = productLink(brand, "privacy", privacyUrl);
++  const terms = productLink(brand, "terms", termsUrl);
++  if (privacy === undefined && terms === undefined) return null;
+   return (
+     <p className="auth-legal mt-4 flex items-center justify-center gap-2 text-xs text-muted-foreground">
+-      <a href={privacyUrl}>Privacy</a>
+-      <span aria-hidden>·</span>
+-      <a href={termsUrl}>Terms</a>
++      {privacy !== undefined && <a href={privacy}>Privacy</a>}
++      {privacy !== undefined && terms !== undefined && <span aria-hidden>·</span>}
++      {terms !== undefined && <a href={terms}>Terms</a>}
+     </p>
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/tokens.tsx b/apps/hosted/web/src/implementation/pages/tokens.tsx
+index d3d9419bb..2e6be868e 100644
+--- a/apps/hosted/web/src/implementation/pages/tokens.tsx
++++ b/apps/hosted/web/src/implementation/pages/tokens.tsx
+@@ -377,12 +377,14 @@ export function TokensPage({
+               </span>
+             </label>
+-            <a
+-              href={tokenDocsUrl}
+-              target="_blank"
+-              rel="noopener noreferrer"
+-              className="inline-flex text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+-            >
+-              About personal access tokens<span className="sr-only"> (opens in a new tab)</span>
+-            </a>
++            {tokenDocsUrl !== undefined && (
++              <a
++                href={tokenDocsUrl}
++                target="_blank"
++                rel="noopener noreferrer"
++                className="inline-flex text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
++              >
++                About personal access tokens<span className="sr-only"> (opens in a new tab)</span>
++              </a>
++            )}
+             {error && (
+               <p role="alert" className="text-sm text-destructive">
+diff --git a/e2e/support/write-outcome.ts b/e2e/support/write-outcome.ts
+index 1b2d6512b..d33046475 100644
+--- a/e2e/support/write-outcome.ts
++++ b/e2e/support/write-outcome.ts
+@@ -6,5 +6,5 @@ import { expect } from "@effect/vitest";
+  */
+ export const unknownOutcomeAction =
+-  "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.";
++  "Do not automatically repeat this call or duplicate its change. Its outcome could not be confirmed.";
+ 
+ /** The agent instructions that lead such a failure's recovery. */
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 89d68399e..84dc99b14 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -80,4 +80,5 @@ export const productBrand = {
+   logo: "/acme-tools.png",
+   server: "acme-tools",
++  privacy: "https://acme.example/privacy",
+ } as const;
+ /**
+@@ -5713,4 +5714,5 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "product-brand.spec.ts",
++    managementApps: ["owner"],
+     title:
+       "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
+@@ -5718,4 +5720,5 @@ export const scenarios = plan({
+       EXECUTOR_PRODUCT_NAME: productBrand.name,
+       EXECUTOR_PRODUCT_LOGO_URL: productBrand.logo,
++      EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
+     },
+     targets: {
+diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
+index 675bb4c88..756ad3501 100644
+--- a/e2e/tests/account-connection-query.spec.ts
++++ b/e2e/tests/account-connection-query.spec.ts
+@@ -122,5 +122,5 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+           page
+             .getByRole("dialog")
+-            .getByText("Can’t reach Executor", { exact: true })
++            .getByText("Can’t reach the server", { exact: true })
+             .waitFor({ state: "visible" }),
+         );
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index e32ab64cf..ca7337938 100644
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -290,5 +290,5 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         ).toBe(true);
+         yield* linkFailure.release;
+-        yield* failureShown("A failed link is reported in place", "Can’t reach Executor");
++        yield* failureShown("A failed link is reported in place", "Can’t reach the server");
+         yield* shows("mailboxes", "A failed link keeps the current links", [
+           ["First account", true],
+@@ -375,5 +375,5 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         yield* unlinkFailure.requested;
+         yield* unlinkFailure.release;
+-        yield* failureShown("A failed unlink is reported in place", "Can’t reach Executor");
++        yield* failureShown("A failed unlink is reported in place", "Can’t reach the server");
+         yield* shows("mailboxes", "A failed unlink keeps the account linked", allMailboxes);
+         expect(yield* links).toEqual(
+diff --git a/e2e/tests/app-egress-failures.spec.ts b/e2e/tests/app-egress-failures.spec.ts
+index 2768da435..557a51e1c 100644
+--- a/e2e/tests/app-egress-failures.spec.ts
++++ b/e2e/tests/app-egress-failures.spec.ts
+@@ -216,5 +216,5 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) =>
+         // message cannot claim the request was not sent: the connection may fail after it was.
+         const networkMessage =
+-          "Executor's connection to the service failed before it answered. The request may have reached the service.";
++          "The connection to the service failed before it answered. The request may have reached the service.";
+         const rejected = { source: "app", errorName: "TypeError", message: networkMessage };
+         const fetches: Record<string, unknown> = {};
+diff --git a/e2e/tests/app-evaluation-reporting.spec.ts b/e2e/tests/app-evaluation-reporting.spec.ts
+index b18a5c8ff..b432ff93d 100644
+--- a/e2e/tests/app-evaluation-reporting.spec.ts
++++ b/e2e/tests/app-evaluation-reporting.spec.ts
+@@ -492,5 +492,5 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
+         const garbled = yield* failing(`${prefix}/apps/${unreadable.id}/skill-bundle`);
+         expect(garbled.error.message).toBe(
+-          "GitHub returned a git response Executor could not read.",
++          "GitHub returned a git response that could not be read.",
+         );
+         const unattributed = yield* failing(`${prefix}/apps/${unsupportedApp.id}/tools`);
+@@ -500,5 +500,5 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
+         const unreached = yield* failing(`${prefix}/apps/${unanswered.id}/tools`);
+         expect(unreached.error.message).toBe(
+-          "Executor’s request to the app’s MCP server failed before the server answered, while connecting.",
++          "The request to the app’s MCP server failed before the server answered, while connecting.",
+         );
+         const refusedEgress = yield* failing(`${prefix}/apps/${egress.id}/tools`);
+@@ -506,5 +506,5 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
+         const thrown = yield* failing(`${prefix}/apps/${throwing.id}/tools`);
+         expect(thrown.error.message).toBe(
+-          "Executor could not load this app’s tool definitions. The app threw TypeError: Synthetic failure in the factory",
++          "Could not load this app’s tool definitions. The app threw TypeError: Synthetic failure in the factory",
+         );
+         const closed = yield* failing(`${prefix}/apps/${closedSkills.id}/skill-bundle`);
+diff --git a/e2e/tests/app-failure-details.spec.ts b/e2e/tests/app-failure-details.spec.ts
+index 6d570a3ad..4f95245ec 100644
+--- a/e2e/tests/app-failure-details.spec.ts
++++ b/e2e/tests/app-failure-details.spec.ts
+@@ -407,5 +407,5 @@ export default defineApp({}, {});`,
+           recovery: {
+             action:
+-              "Read the error to determine whether input, app code, configuration or Executor needs attention.",
++              "Read the error to determine whether input, app code, configuration or this instance needs attention.",
+             instructions:
+               "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
+@@ -464,5 +464,5 @@ export default defineApp({}, {});`,
+           unknownOutcomeRecovery(
+             readAdvice(
+-              "Read the error to determine whether input, app code, configuration or Executor needs attention. This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
++              "Read the error to determine whether input, app code, configuration or this instance needs attention. This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
+             ),
+           ),
+diff --git a/e2e/tests/app-failure-telemetry.spec.ts b/e2e/tests/app-failure-telemetry.spec.ts
+index 7d87b9ef5..460beecc3 100644
+--- a/e2e/tests/app-failure-telemetry.spec.ts
++++ b/e2e/tests/app-failure-telemetry.spec.ts
+@@ -473,7 +473,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
+           expect(failed.response.status).toBe(502);
+           expect(yield* body(ResultLost, failed.response)).toMatchObject({
+-            reason: "Executor did not receive a usable result from this tool call.",
++            reason: "No usable result came back from this tool call.",
+             message:
+-              "Executor did not receive a usable result from this tool call. No further failure detail is available.",
++              "No usable result came back from this tool call. No further failure detail is available.",
+           });
+           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
+@@ -486,7 +486,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
+           expect(yield* body(ResultLost, failed.response)).toMatchObject({
+             reason:
+-              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
++              "No usable result came back from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
+             message:
+-              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it. No further failure detail is available.",
++              "No usable result came back from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it. No further failure detail is available.",
+           });
+           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
+diff --git a/e2e/tests/app-fetch-errors.spec.ts b/e2e/tests/app-fetch-errors.spec.ts
+index 4006c8435..e66f921a9 100644
+--- a/e2e/tests/app-fetch-errors.spec.ts
++++ b/e2e/tests/app-fetch-errors.spec.ts
+@@ -98,5 +98,5 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
+         const host = `127.0.0.1:${upstream.port}`;
+ 
+-        const message = `Executor refused a request to ${host}: apps on this instance can reach only public addresses, and ${host} is a private, loopback or internal address. The request was not sent.`;
++        const message = `Refused a request to ${host}: apps on this instance can reach only public addresses, and ${host} is a private, loopback or internal address. The request was not sent.`;
+         const refusedCall = (tool: string, input: object) =>
+           call(tool, input).pipe(
+@@ -171,5 +171,5 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
+           errorName: "FetchOptionUnsupported",
+           code: "redirect",
+-          message: `fetch option redirect: "error" is not supported by Executor's app runtime. Use "follow" or "manual", or omit redirect. To reject redirects, send redirect: "manual" and treat a 3xx response as the error.`,
++          message: `fetch option redirect: "error" is not supported by the app runtime. Use "follow" or "manual", or omit redirect. To reject redirects, send redirect: "manual" and treat a 3xx response as the error.`,
+         });
+         const cache = yield* option({ cache: "force-cache" });
+@@ -181,5 +181,5 @@ layer(HostedLive, { excludeTestServices: true })("App fetch errors", (it) => {
+           errorName: "FetchOptionUnsupported",
+           code: "integrity",
+-          message: `fetch option integrity: "sha256-synthetic" is not supported by Executor's app runtime. Use "", or omit integrity. To check a digest, read the body and hash it with crypto.subtle.digest.`,
++          message: `fetch option integrity: "sha256-synthetic" is not supported by the app runtime. Use "", or omit integrity. To check a digest, read the body and hash it with crypto.subtle.digest.`,
+         });
+ 
+diff --git a/e2e/tests/app-git-remotes.spec.ts b/e2e/tests/app-git-remotes.spec.ts
+index 72a426fde..faedcbe99 100644
+--- a/e2e/tests/app-git-remotes.spec.ts
++++ b/e2e/tests/app-git-remotes.spec.ts
+@@ -149,5 +149,5 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
+           const retained = yield* tools.git(["push", "origin", "HEAD:refs/heads/__executor/x"]);
+           expect(retained.code).not.toBe(0);
+-          expect(retained.stderr).toContain("Executor keeps this ref for retained versions");
++          expect(retained.stderr).toContain("This ref is kept for retained versions");
+           expect(yield* remoteMain).toBe((yield* tools.git(["rev-parse", "HEAD"])).stdout.trim());
+ 
+diff --git a/e2e/tests/app-ui.spec.ts b/e2e/tests/app-ui.spec.ts
+index f117a6489..8ec9deeb0 100644
+--- a/e2e/tests/app-ui.spec.ts
++++ b/e2e/tests/app-ui.spec.ts
+@@ -331,5 +331,5 @@ return { items };`,
+         const recovery = {
+           action:
+-            "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.",
++            "Do not automatically repeat this call or duplicate its change. Its outcome could not be confirmed.",
+           instructions: `This call may have changed data or may still complete. A safe read can show effects but cannot rule out later completion. Tell the user what is known and get their agreement before repeating the change. ${readAdvice(`${declared.action} ${declared.instructions}`)} Repairing the cause does not establish whether the earlier call completed.`,
+         };
+diff --git a/e2e/tests/browser-connection-failures.spec.ts b/e2e/tests/browser-connection-failures.spec.ts
+index 569df88e0..2261245d3 100644
+--- a/e2e/tests/browser-connection-failures.spec.ts
++++ b/e2e/tests/browser-connection-failures.spec.ts
+@@ -19,5 +19,5 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
+ import { batchPath } from "../support/read-batches.ts";
+ 
+-const unreachable = (page: Page) => page.getByRole("heading", { name: "Can’t reach Executor" });
++const unreachable = (page: Page) => page.getByRole("heading", { name: "Can’t reach the server" });
+ const connectionNotice = (page: Page) =>
+   page
+diff --git a/e2e/tests/cloud-compiler.spec.ts b/e2e/tests/cloud-compiler.spec.ts
+index b8151811c..948df66b0 100644
+--- a/e2e/tests/cloud-compiler.spec.ts
++++ b/e2e/tests/cloud-compiler.spec.ts
+@@ -82,5 +82,5 @@ export default defineApp({}, {tools: router({
+           _tag: "BuildMemoryExceeded",
+           message:
+-            "This app's build needed more memory than Executor currently allows. No new version was activated.",
++            "This app's build needed more memory than is currently allowed. No new version was activated.",
+           recovery: {
+             action:
+@@ -109,5 +109,5 @@ export default defineApp({}, {tools: router({
+           page
+             .getByText(
+-              "This app's build needed more memory than Executor currently allows. No new version was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
++              "This app's build needed more memory than is currently allowed. No new version was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
+               { exact: true },
+             )
+diff --git a/e2e/tests/credential-hosts.spec.ts b/e2e/tests/credential-hosts.spec.ts
+index e2faef169..4f7ffb452 100644
+--- a/e2e/tests/credential-hosts.spec.ts
++++ b/e2e/tests/credential-hosts.spec.ts
+@@ -346,5 +346,5 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
+       });
+       expect(undeclared.status).toBe(421);
+-      const refusal = `Executor refused this request: ${name} credentials cannot be sent to ${new URL(undeclaredOrigin).host}. The provider allows: ${declaredHost}.`;
++      const refusal = `Refused this request: ${name} credentials cannot be sent to ${new URL(undeclaredOrigin).host}. The provider allows: ${declaredHost}.`;
+       expect(Schema.decodeUnknownSync(Refusal)(undeclared.text)).toEqual({
+         _tag: "NetworkRefused",
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+index 009facb47..a9b919476 100644
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -1488,5 +1488,5 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         expect(JSON.stringify(broader.completed.body)).not.toContain("synthetic-");
+         const refusal = yield* messageOf(broader.completed);
+-        expect(refusal).toContain("Executor rejected the sign-in and saved nothing");
++        expect(refusal).toContain("The sign-in was rejected and nothing was saved");
+         expect(refusal).not.toMatch(claimsRevoked);
+ 
+diff --git a/e2e/tests/docker-release.spec.ts b/e2e/tests/docker-release.spec.ts
+index dda32e7f6..fb437cfd5 100644
+--- a/e2e/tests/docker-release.spec.ts
++++ b/e2e/tests/docker-release.spec.ts
+@@ -1683,5 +1683,5 @@ http.createServer((request, response) => {
+         "@fixture/garbled": {
+           reason: "invalid-response",
+-          message: "The public app registry returned a response Executor could not read.",
++          message: "The public app registry returned a response that could not be read.",
+         },
+         "@fixture/missing": {
+@@ -1707,5 +1707,5 @@ http.createServer((request, response) => {
+           _tag: "RegistryError",
+           reason: "network",
+-          message: "Executor could not reach the public app registry. Try again.",
++          message: "Could not reach the public app registry. Try again.",
+         },
+       });
+@@ -1819,5 +1819,5 @@ export default defineApp({}, async () => ({
+       // Executor refuses the address by name, before the public-only network would.
+       expect(refused.value, "private app fetch stays off by default").toMatch(
+-        /^refused:Executor refused a request to 100\.64\.[\d.]+:\d+: apps on this instance can reach only public addresses/,
++        /^refused:Refused a request to 100\.64\.[\d.]+:\d+: apps on this instance can reach only public addresses/,
+       );
+       // A public name passes Executor's check, and the public-only network refuses its address.
+@@ -1827,5 +1827,5 @@ export default defineApp({}, async () => ({
+         /^refused:/,
+       );
+-      expect(resolved.value).not.toMatch(/^refused:Executor refused/);
++      expect(resolved.value).not.toMatch(/^refused:Refused/);
+       expect(yield* probe(`${origin}/health`), "authored apps reach the dashboard origin").toEqual({
+         ok: true,
+diff --git a/e2e/tests/empty-states.spec.ts b/e2e/tests/empty-states.spec.ts
+index 30fe4c7a9..506d41431 100644
+--- a/e2e/tests/empty-states.spec.ts
++++ b/e2e/tests/empty-states.spec.ts
+@@ -184,5 +184,5 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
+         );
+         yield* browser.use("The catalog error is visible", (page) =>
+-          page.getByText("Can’t reach Executor", { exact: true }).waitFor(),
++          page.getByText("Can’t reach the server", { exact: true }).waitFor(),
+         );
+         expect(
+diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spec.ts
+index 671025021..93ad71c66 100644
+--- a/e2e/tests/grouped-accounts.spec.ts
++++ b/e2e/tests/grouped-accounts.spec.ts
+@@ -222,5 +222,5 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
+         yield* held.release;
+         yield* browser.use("The new catalog's failure is visible", (page) =>
+-          page.getByRole("alert", { name: "Can’t reach Executor", exact: true }).waitFor(),
++          page.getByRole("alert", { name: "Can’t reach the server", exact: true }).waitFor(),
+         );
+         yield* browser.use("Retry Work", (page) =>
+diff --git a/e2e/tests/live-openapi-import.spec.ts b/e2e/tests/live-openapi-import.spec.ts
+index bb7009f1f..54e33bdbd 100644
+--- a/e2e/tests/live-openapi-import.spec.ts
++++ b/e2e/tests/live-openapi-import.spec.ts
+@@ -504,5 +504,5 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) =>
+         });
+         expect(failure("jobs")?.message).toContain(
+-          "GET /jobs (auth_method: Executor cannot authenticate with any of its security requirements: client (oauth2 clientCredentials)); GET /jobs/events (event_stream: It responds with text/event-stream",
++          "GET /jobs (auth_method: None of its security requirements can be used to authenticate: client (oauth2 clientCredentials)); GET /jobs/events (event_stream: It responds with text/event-stream",
+         );
+         // It still offers a custom tool, for the operation that needs other authentication.
+diff --git a/e2e/tests/local-account-choice.spec.ts b/e2e/tests/local-account-choice.spec.ts
+index 275bd0cc9..37d0e2133 100644
+--- a/e2e/tests/local-account-choice.spec.ts
++++ b/e2e/tests/local-account-choice.spec.ts
+@@ -335,5 +335,5 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
+           _tag: "RequestInvalid",
+           message:
+-            "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
++            "Could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+         });
+ 
+diff --git a/e2e/tests/local-account-owners.spec.ts b/e2e/tests/local-account-owners.spec.ts
+index 8080c8c79..c104700ce 100644
+--- a/e2e/tests/local-account-owners.spec.ts
++++ b/e2e/tests/local-account-owners.spec.ts
+@@ -148,5 +148,5 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+               _tag: "RequestInvalid",
+               message:
+-                "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
++                "Could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+             },
+           });
+diff --git a/e2e/tests/local-oauth.spec.ts b/e2e/tests/local-oauth.spec.ts
+index 26564f3ff..d4bddd554 100644
+--- a/e2e/tests/local-oauth.spec.ts
++++ b/e2e/tests/local-oauth.spec.ts
+@@ -364,5 +364,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+         // hosted dialog does.
+         expect(refused).toContain(
+-          "This service doesn’t accept Executor’s callback URL. Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
++          "This service doesn’t accept this deployment’s callback URL. Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
+         );
+         expect(refused).toContain(`Service response: invalid_redirect_uri: ${refusal}`);
+@@ -484,5 +484,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+         });
+         expect(completion[0]).toContain(
+-          "The service asked Executor to wait before sending more sign-in requests. Start the connection again shortly.",
++          "The service asked for a pause before more sign-in requests. Start the connection again shortly.",
+         );
+         expect(completion[0]).not.toContain("couldn’t reach");
+diff --git a/e2e/tests/local-tool-runner.spec.ts b/e2e/tests/local-tool-runner.spec.ts
+index 2a9bba3f5..91c46f6d1 100644
+--- a/e2e/tests/local-tool-runner.spec.ts
++++ b/e2e/tests/local-tool-runner.spec.ts
+@@ -248,5 +248,5 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
+         expect(notice).toContain("The app threw Error: Synthetic tool failure");
+         expect(notice).toContain(
+-          "Read the error to determine whether input, app code, configuration or Executor needs attention.",
++          "Read the error to determine whether input, app code, configuration or this instance needs attention.",
+         );
+         // The form's own Run tool button repeats the call; the notice adds no Try again.
+diff --git a/e2e/tests/mcp-account-health.spec.ts b/e2e/tests/mcp-account-health.spec.ts
+index d66c68df0..96983ec97 100644
+--- a/e2e/tests/mcp-account-health.spec.ts
++++ b/e2e/tests/mcp-account-health.spec.ts
+@@ -143,5 +143,5 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
+             info: null,
+             message:
+-              "This MCP server answers without credentials, so Executor can't check this account. A refused key will show up when a tool is called.",
++              "This MCP server answers without credentials, so this account can't be checked. A refused key will show up when a tool is called.",
+           });
+         // When the attempt without credentials fails for another reason, the check cannot tell. A
+@@ -162,5 +162,5 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
+             status: "check_failed",
+             info: null,
+-            message: `The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. ${reason}`,
++            message: `The MCP server accepted the credentials, but the same check without them failed, so it isn't clear whether it requires them. ${reason}`,
+           });
+         }
+@@ -171,5 +171,5 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
+           info: null,
+           message:
+-            "The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. The MCP server did not respond in time while connecting.",
++            "The MCP server accepted the credentials, but the same check without them failed, so it isn't clear whether it requires them. The MCP server did not respond in time while connecting.",
+         });
+ 
+@@ -210,5 +210,5 @@ layer(HostedLive, { excludeTestServices: true })("MCP account health", (it) => {
+             info: null,
+             message:
+-              "The MCP server returned a response Executor could not use while connecting, such as an unreadable message or an address on another origin.",
++              "The MCP server returned an unusable response while connecting, such as an unreadable message or an address on another origin.",
+           });
+         }
+diff --git a/e2e/tests/mcp-execute-failures.spec.ts b/e2e/tests/mcp-execute-failures.spec.ts
+index 75d128c06..815128182 100644
+--- a/e2e/tests/mcp-execute-failures.spec.ts
++++ b/e2e/tests/mcp-execute-failures.spec.ts
+@@ -2194,5 +2194,5 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
+         )).execution.error;
+         expect(message).toBe(
+-          `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
++          `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so the call stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+         );
+         expect(message).not.toContain("The app threw");
+@@ -2272,5 +2272,5 @@ try { return await call(); } catch (error) {
+           mayHaveWritten: true,
+           message:
+-            "The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it.",
++            "The request to the app’s MCP server failed before the server answered the tool call, so it is unknown whether the server ran it.",
+           recovery: { action: unknownOutcomeAction },
+         });
+@@ -2292,5 +2292,5 @@ try { return await call(); } catch (error) {
+         );
+         expect(write.message).toBe(
+-          `ToolCallFailed (HTTP 502): The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
++          `ToolCallFailed (HTTP 502): The request to the app’s MCP server failed before the server answered the tool call, so it is unknown whether the server ran it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+         );
+         expect(write.message).not.toContain("Try again");
+@@ -2426,5 +2426,5 @@ try { return await call(); } catch (error) {
+         const tools = `tools[${JSON.stringify(app.slug)}]`;
+         const unreachable =
+-          "Executor’s request to the app’s MCP server failed before the server answered, while connecting.";
++          "The request to the app’s MCP server failed before the server answered, while connecting.";
+ 
+         // The tool saves a record, then cannot reach the MCP server it syncs with. The failure
+@@ -2493,5 +2493,5 @@ try { return await call(); } catch (error) {
+         const tools = `tools[${JSON.stringify(app.slug)}]`;
+         const optionsFailure =
+-          "Executor could not load this app’s tool definitions. The app threw McpOptionsInvalid (invalid_option): mcpRouter received an option it cannot use.";
++          "Could not load this app’s tool definitions. The app threw McpOptionsInvalid (invalid_option): mcpRouter received an option it cannot use.";
+         const failedTool = (code: string, label: string, file: string) =>
+           executeOnce(app.client, label, `return await ${tools}.${code};`, file).pipe(
+@@ -2854,5 +2854,5 @@ try { return await call(); } catch (error) {
+           _tag: "StorageError",
+           mayHaveWritten: true,
+-          message: "Executor could not read or write its saved data.",
++          message: "Could not read or write saved data.",
+         });
+         if (failure.recovery === undefined)
+@@ -2879,5 +2879,5 @@ try { return await call(); } catch (error) {
+         expectUnknownOutcome(failed.response.recovery);
+         expect(failed.message).toBe(
+-          `StorageError (HTTP 500): Executor could not read or write its saved data. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
++          `StorageError (HTTP 500): Could not read or write saved data. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+         );
+         expectNoRepeatAdvice(failed.response.recovery.instructions, "MCP");
+@@ -2924,6 +2924,5 @@ try { return await call(); } catch (error) {
+           code: "ToolSearchUnavailable",
+           status: 503,
+-          message:
+-            "Executor could not save this app's tools for search, so search cannot rank them.",
++          message: "Could not save this app's tools for search, so search cannot rank them.",
+         });
+         // The app itself still loads: its tools are callable, only searching them failed.
+diff --git a/e2e/tests/oauth-completion-reasons.spec.ts b/e2e/tests/oauth-completion-reasons.spec.ts
+index 3d31696ba..2d42bbf9c 100644
+--- a/e2e/tests/oauth-completion-reasons.spec.ts
++++ b/e2e/tests/oauth-completion-reasons.spec.ts
+@@ -326,5 +326,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           yield* recoveryActions(
+             "Read the saved-client recovery",
+-            "no longer accepts the client Executor registered earlier",
++            "no longer accepts the client registered earlier",
+           ),
+         ).toEqual([1, 1, 0, 0]);
+@@ -354,5 +354,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           yield* recoveryActions(
+             "Read the new-client recovery",
+-            "refused the client Executor registered moments ago",
++            "refused the client registered moments ago",
+           ),
+         ).toEqual([1, 0, 0, 1]);
+diff --git a/e2e/tests/oauth-error-report.spec.ts b/e2e/tests/oauth-error-report.spec.ts
+index 70ec99614..78f2ef514 100644
+--- a/e2e/tests/oauth-error-report.spec.ts
++++ b/e2e/tests/oauth-error-report.spec.ts
+@@ -88,5 +88,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+           page.emulateMedia({ colorScheme: "dark" }),
+         );
+-        const title = "Executor could not use the service’s response";
++        const title = "Couldn’t use the service’s response";
+         // Open the page in its own step: the dashboard is server-rendered, and the browser waits
+         // for hydration only after a step, so a click in the same step can land on inert markup.
+diff --git a/e2e/tests/oauth-error-responses.spec.ts b/e2e/tests/oauth-error-responses.spec.ts
+index 42496cb30..fa8c25a6f 100644
+--- a/e2e/tests/oauth-error-responses.spec.ts
++++ b/e2e/tests/oauth-error-responses.spec.ts
+@@ -376,5 +376,5 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
+             _tag: "OAuthCompletionFailed",
+             reason: "rate_limited",
+-            message: "The service asked Executor to wait before sending more sign-in requests.",
++            message: "The service asked for a pause before more sign-in requests.",
+           });
+           // Retry-After: 120 is two minutes from the answer, and the copy rounds it up to a minute.
+@@ -393,5 +393,5 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
+           );
+           expect(result.failure.recovery?.instructions).toContain(
+-            `Its Retry-After header asked Executor to wait until ${retryAfter}`,
++            `Its Retry-After header asked for a wait until ${retryAfter}`,
+           );
+           const serviceError = result.failure.serviceError;
+@@ -472,5 +472,5 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
+             reason: "client_not_approved",
+           });
+-          expect(failure.message).toContain("doesn’t accept Executor’s callback URL");
++          expect(failure.message).toContain("doesn’t accept this deployment’s callback URL");
+           curated("Registration refused", failure, serviceError);
+           expect(yield* readConnection(connection.id)).toMatchObject({
+diff --git a/e2e/tests/oauth-refresh-resilience.spec.ts b/e2e/tests/oauth-refresh-resilience.spec.ts
+index 154ea87ec..14d9c5dc3 100644
+--- a/e2e/tests/oauth-refresh-resilience.spec.ts
++++ b/e2e/tests/oauth-refresh-resilience.spec.ts
+@@ -752,5 +752,5 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+         );
+         expect(failed.message).toBe(
+-          `${name} records rejected the credentials for account “Synthetic records account” (HTTP 401) while calling a tool. Renewing the account’s access failed: Executor could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.`,
++          `${name} records rejected the credentials for account “Synthetic records account” (HTTP 401) while calling a tool. Renewing the account’s access failed: Could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.`,
+         );
+         expectUnknownOutcome(failed.recovery);
+@@ -909,5 +909,5 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+           );
+           expect(renewedFailure.message).toContain(
+-            "Executor has renewed the account’s access, but did not repeat this call automatically.",
++            "The account’s access was renewed, but this call was not repeated automatically.",
+           );
+           expectUnknownOutcome(renewedFailure.recovery);
+diff --git a/e2e/tests/oauth-setup-errors.spec.ts b/e2e/tests/oauth-setup-errors.spec.ts
+index 79bb2ef98..68477989b 100644
+--- a/e2e/tests/oauth-setup-errors.spec.ts
++++ b/e2e/tests/oauth-setup-errors.spec.ts
+@@ -161,5 +161,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             );
+             expect(copied).toContain("OAuthSetupFailed");
+-            expect(copied).toContain("Diagnose and fix this problem in Executor");
++            expect(copied).toContain("Diagnose and fix this problem.");
+             expect(copied).toContain("provider definition");
+             expect(copied).toContain(
+@@ -227,5 +227,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             "Callback URL refused during registration",
+             [
+-              "This service doesn’t accept Executor’s callback URL.",
++              "This service doesn’t accept this deployment’s callback URL.",
+               "Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
+             ],
+@@ -247,7 +247,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             "metadata-refused",
+             { registrationStatus: 400, registrationError: "invalid_client_metadata" },
+-            "Service did not accept Executor’s callback URL",
++            "Service did not accept this deployment’s callback URL",
+             [
+-              "Executor’s callback URL is most likely not among the service’s allowed redirect URIs.",
++              "This deployment’s callback URL is most likely not among the service’s allowed redirect URIs.",
+               "Ask the service’s administrator to allow it, or create an OAuth app there and enter its client ID and secret.",
+             ],
+@@ -258,7 +258,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             "rejected",
+             { registrationStatus: 400, registrationError: "invalid_request" },
+-            "Service rejected Executor’s registration",
++            "Service rejected this deployment’s registration",
+             [
+-              "Without an OAuth client for this service, Executor can’t start sign-in.",
++              "Without an OAuth client for this service, sign-in can’t start.",
+               "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
+             ],
+@@ -269,6 +269,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             "incompatible",
+             { registrationStatus: 200, malformedRegistration: true },
+-            "Executor could not use the service’s response",
+-            ["Retrying won’t help until Executor is fixed."],
++            "Couldn’t use the service’s response",
++            ["Retrying won’t help until this is fixed."],
+             false,
+             undefined,
+@@ -279,5 +279,5 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
+             { registrationStatus: 429 },
+             "Service rate limit reached",
+-            ["The service asked Executor to wait before sending more sign-in requests.", retryAt],
++            ["The service asked for a pause before more sign-in requests.", retryAt],
+             false,
+             "429 Too Many Requests 429 Too Many Requests synthetic-edge",
+diff --git a/e2e/tests/openapi-errors.spec.ts b/e2e/tests/openapi-errors.spec.ts
+index 2b222bcd3..08fd80897 100644
+--- a/e2e/tests/openapi-errors.spec.ts
++++ b/e2e/tests/openapi-errors.spec.ts
+@@ -491,5 +491,5 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
+               recovery: {
+                 instructions: expect.stringContaining(
+-                  "The reported details do not establish whether the cause is the request, the service or Executor.",
++                  "The reported details do not establish whether the cause is the request, the service or this instance.",
+                 ),
+               },
+@@ -659,5 +659,5 @@ export default defineApp({}, async () => {
+           status: 502,
+           message:
+-            "Executor could not load this app’s tool definitions. The app threw Error: Synthetic factory failure",
++            "Could not load this app’s tool definitions. The app threw Error: Synthetic factory failure",
+           recovery: {
+             action: "Try again. If this continues, investigate this error and fix its cause.",
+diff --git a/e2e/tests/pat-mcp.spec.ts b/e2e/tests/pat-mcp.spec.ts
+index b1aac77fa..c5ca99d7f 100644
+--- a/e2e/tests/pat-mcp.spec.ts
++++ b/e2e/tests/pat-mcp.spec.ts
+@@ -149,5 +149,5 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
+               refusal(
+                 "McpForbidden",
+-                "This full-account token does not name an organization, so Executor cannot choose one for this MCP request. Recovery: Connect at /org/<organization>/mcp, or send the X-Executor-Organization header, then retry.",
++                "This full-account token does not name an organization, so none can be chosen for this MCP request. Recovery: Connect at /org/<organization>/mcp, or send the X-Executor-Organization header, then retry.",
+               ),
+             );
+diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+index 3e5f77054..6da36dc67 100644
+--- a/e2e/tests/product-brand.spec.ts
++++ b/e2e/tests/product-brand.spec.ts
+@@ -56,6 +56,71 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+           ),
+         ).not.toMatch(executorName);
++        // The configured privacy page is linked; terms are not configured, so no link shows.
++        expect(
++          yield* browser.use("Read the privacy link", (page) =>
++            page.getByRole("link", { name: "Privacy", exact: true }).getAttribute("href"),
++          ),
++        ).toBe(productBrand.privacy);
++        expect(
++          yield* browser.use("Count terms links", (page) =>
++            page.getByRole("link", { name: "Terms", exact: true }).count(),
++          ),
++        ).toBe(0);
+ 
+         yield* browser.login(actors.owner);
++        yield* browser.use("Open apps", (page) =>
++          page.goto(`${origin}/org/${actors.organization.slug}/apps`),
++        );
++        // The built-in app keeps its stored name for agents and shows the product's name.
++        yield* browser.use("The built-in app shows the configured name", (page) =>
++          page
++            .getByRole("link", { name: new RegExp(`^Open ${productBrand.name}\\b`) })
++            .waitFor({ state: "visible" }),
++        );
++        const apps = yield* browser.use("Read the apps page", (page) =>
++          page.locator("body").innerText(),
++        );
++        expect(apps).not.toMatch(executorName);
++        expect(
++          yield* browser.use("Count the sidebar's Docs links", (page) =>
++            page.getByRole("link", { name: "Docs" }).count(),
++          ),
++        ).toBe(0);
++        // The built-in app's own page and its account read under the configured name too.
++        yield* browser.use("Open the built-in app", (page) =>
++          page.getByRole("link", { name: new RegExp(`^Open ${productBrand.name}\\b`) }).click(),
++        );
++        yield* browser.use("The built-in app's page names the configured product", (page) =>
++          page
++            .getByRole("heading", { name: productBrand.name, exact: true })
++            .first()
++            .waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("Read the built-in app's page", (page) =>
++            page.locator("main").innerText(),
++          ),
++        ).not.toMatch(executorName);
++        // Its accounts tab names the provider people connect, with the configured name.
++        yield* browser.use("Open the built-in app's accounts", (page) =>
++          page.goto(`${page.url().split("?")[0]}?view=accounts`),
++        );
++        yield* browser.use("The provider shows the configured name", (page) =>
++          page.getByText(productBrand.name, { exact: true }).first().waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("Read the built-in app's accounts", (page) =>
++            page.locator("main").innerText(),
++          ),
++        ).not.toMatch(executorName);
++        yield* browser.use("Open accounts", (page) =>
++          page.goto(`${origin}/org/${actors.organization.slug}/accounts`),
++        );
++        yield* browser.use("The accounts page has loaded", (page) =>
++          page.getByText(`Your ${productBrand.name} access`).first().waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("Read the accounts page", (page) => page.locator("main").innerText()),
++        ).not.toMatch(executorName);
+         yield* browser.use("Open assistant setup", (page) =>
+           page.goto(`${origin}/org/${actors.organization.slug}/connect`),
+diff --git a/e2e/tests/tools-error-state.spec.ts b/e2e/tests/tools-error-state.spec.ts
+index b32da655d..d63a8cebd 100644
+--- a/e2e/tests/tools-error-state.spec.ts
++++ b/e2e/tests/tools-error-state.spec.ts
+@@ -71,5 +71,5 @@ export default defineApp({}, async () => {
+           page.getByRole("alert", { name: title, exact: true }).innerText(),
+         );
+-        expect(copy).toContain("Executor could not load this app’s tool definitions.");
++        expect(copy).toContain("Could not load this app’s tool definitions.");
+         expect(copy).toContain("AppEvaluationFailed");
+         expect(copy).not.toContain("Check its accounts");
+diff --git a/packages/app-management/src/http.ts b/packages/app-management/src/http.ts
+index 25e17537c..ede63278e 100644
+--- a/packages/app-management/src/http.ts
++++ b/packages/app-management/src/http.ts
+@@ -469,5 +469,5 @@ export const gitRoutes = (() => {
+     Effect.catch((error) => {
+       const headers = {
+-        "www-authenticate": 'Basic realm="Executor Git"',
++        "www-authenticate": 'Basic realm="Git"',
+         "cache-control": "no-store",
+       };
+diff --git a/packages/app-source/src/implementation/protected-git.ts b/packages/app-source/src/implementation/protected-git.ts
+index 77d02355a..53c034e84 100644
+--- a/packages/app-source/src/implementation/protected-git.ts
++++ b/packages/app-source/src/implementation/protected-git.ts
+@@ -93,5 +93,5 @@ const commandListParser = () => {
+ const refusal = (update: PushCommand) =>
+   update.ref.startsWith("refs/heads/__executor/")
+-    ? "Executor keeps this ref for retained versions"
++    ? "This ref is kept for retained versions"
+     : update.ref === "refs/heads/main" && update.new === "0".repeat(40)
+       ? "the app's main branch cannot be deleted"
+@@ -214,5 +214,5 @@ export const protectGit = (backend: RepositoryBackend): RepositoryBackend => ({
+           parsed.capabilities,
+           (update) => refusal(update) ?? "another ref in this push is protected",
+-          "Executor refused this push. Branches named __executor/... hold retained versions, and main cannot be deleted. No ref was changed.",
++          "This push was refused. Branches named __executor/... hold retained versions, and main cannot be deleted. No ref was changed.",
+         );
+         if (refused === undefined) return yield* new SourceError({ reason: "protected" });
+@@ -249,6 +249,6 @@ export const protectGit = (backend: RepositoryBackend): RepositoryBackend => ({
+                 parsed.commands,
+                 parsed.capabilities,
+-                () => "Executor could not reach the repository; push again",
+-                "Executor could not reach the app's repository, so this push may not have been saved. Push again.",
++                () => "Could not reach the repository; push again",
++                "The app's repository could not be reached, so this push may not have been saved. Push again.",
+               ),
+             ).pipe(Effect.mapError(() => error)),
+diff --git a/packages/apps/src/contracts/network.ts b/packages/apps/src/contracts/network.ts
+index 74b355fde..5be2854a1 100644
+--- a/packages/apps/src/contracts/network.ts
++++ b/packages/apps/src/contracts/network.ts
+@@ -68,19 +68,19 @@ export class NetworkRefused extends Schema.TaggedError<NetworkRefused>()("Networ
+     switch (refusal.reason) {
+       case "private_address":
+-        return `Executor refused a request to ${this.host}: apps on this instance can reach only public addresses, and ${this.host} is a private, loopback or internal address. The request was not sent.`;
++        return `Refused a request to ${this.host}: apps on this instance can reach only public addresses, and ${this.host} is a private, loopback or internal address. The request was not sent.`;
+       case "credential_host":
+         return refusal.allowedHosts.length === 0
+-          ? `Executor refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}: the provider declares no hosts.`
+-          : `Executor refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}. The provider allows: ${refusal.allowedHosts.join(", ")}.`;
++          ? `Refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}: the provider declares no hosts.`
++          : `Refused this request: ${refusal.provider} credentials cannot be sent to ${this.host}. The provider allows: ${refusal.allowedHosts.join(", ")}.`;
+       case "credential_app":
+-        return "Executor refused this request: it carries a credential handle that is not valid for this app. Use the account fields this invocation received.";
++        return "Refused this request: it carries a credential handle that is not valid for this app. Use the account fields this invocation received.";
+       case "credential_expired":
+-        return `Executor refused this request: it carries an expired ${refusal.provider} credential handle. Use the account fields this invocation received.`;
++        return `Refused this request: it carries an expired ${refusal.provider} credential handle. Use the account fields this invocation received.`;
+       case "credential_placement":
+-        return `Executor refused this request: it carries a ${refusal.provider} credential handle in the ${refusal.location}, where the provider does not place it. Send credentials only as the provider's request declares, for example with the account's headers() and url().`;
++        return `Refused this request: it carries a ${refusal.provider} credential handle in the ${refusal.location}, where the provider does not place it. Send credentials only as the provider's request declares, for example with the account's headers() and url().`;
+       case "credential_transport":
+-        return `Executor refused this request: ${refusal.provider} credentials are sent only over HTTPS, and ${this.host} was requested over plain HTTP.`;
++        return `Refused this request: ${refusal.provider} credentials are sent only over HTTPS, and ${this.host} was requested over plain HTTP.`;
+       case "credential_method":
+-        return `Executor refused this request: credential handles are never sent with ${refusal.method}, which asks the service to echo the request back.`;
++        return `Refused this request: credential handles are never sent with ${refusal.method}, which asks the service to echo the request back.`;
+     }
+   }
+@@ -109,5 +109,5 @@ export const networkRefusalResponse = (refused: NetworkRefused) =>
+   new Response(JSON.stringify({ ...encodeRefusal(refused), message: refused.message }), {
+     status: networkRefusalStatus,
+-    statusText: "Refused by Executor",
++    statusText: "Refused by network policy",
+     headers: {
+       "content-type": "application/json; charset=utf-8",
+@@ -139,5 +139,5 @@ export class FetchOptionUnsupported extends Schema.TaggedError<FetchOptionUnsupp
+   override get message() {
+     const supported = this.supported.map((value) => JSON.stringify(value)).join(" or ");
+-    return `fetch option ${this.option}: ${JSON.stringify(this.value)} is not supported by Executor's app runtime. Use ${supported}, or omit ${this.option}.${this.advice}`;
++    return `fetch option ${this.option}: ${JSON.stringify(this.value)} is not supported by the app runtime. Use ${supported}, or omit ${this.option}.${this.advice}`;
+   }
+ 
+diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/src/implementation/failure-detail.ts
+index d86665f60..4636bca15 100644
+--- a/packages/apps/src/implementation/failure-detail.ts
++++ b/packages/apps/src/implementation/failure-detail.ts
+@@ -73,5 +73,5 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
+       "invalid_response",
+       () =>
+-        `The MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
++        `The MCP server returned an unusable response while ${stage}, such as an unreadable message or an address on another origin.`,
+     ),
+     Match.when("invalid_input", () => "The MCP server URL or connection settings are invalid."),
+@@ -81,5 +81,5 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
+         ? `The MCP server answered HTTP ${status} while ${stage}.`
+         : phase === "transport"
+-          ? `Executor could not reach the MCP server while ${stage}.`
++          ? `Could not reach the MCP server while ${stage}.`
+           : `The request to the MCP server failed while ${stage}.`,
+     ),
+@@ -91,6 +91,6 @@ const mcpMessage = ({ phase, reason, status }: McpError) => {
+ const unverifiedMessage = ({ anonymous }: McpCredentialsUnverified) =>
+   anonymous === "answered"
+-    ? "This MCP server answers without credentials, so Executor can't check this account. A refused key will show up when a tool is called."
+-    : `The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. ${
++    ? "This MCP server answers without credentials, so this account can't be checked. A refused key will show up when a tool is called."
++    : `The MCP server accepted the credentials, but the same check without them failed, so it isn't clear whether it requires them. ${
+         Schema.is(McpError)(anonymous)
+           ? mcpMessage(anonymous)
+diff --git a/packages/apps/src/implementation/openapi-compile.ts b/packages/apps/src/implementation/openapi-compile.ts
+index 1f6a8c6eb..90cd9edd8 100644
+--- a/packages/apps/src/implementation/openapi-compile.ts
++++ b/packages/apps/src/implementation/openapi-compile.ts
+@@ -607,5 +607,5 @@ export const compileOpenApiDocument = (
+             fail(
+               "operation_method",
+-              `Executor does not send the HTTP method ${method}. It imports ${fixedMethods32.join(", ")} operations.`,
++              `The HTTP method ${method} is not sent. Only ${fixedMethods32.join(", ")} operations are imported.`,
+             );
+           const operationMethods: GeneratedSecrets[] = [];
+@@ -1004,5 +1004,5 @@ export const compileOpenApiDocument = (
+         throw new TemplateError({
+           code: "no_supported_operations",
+-          reason: "Executor cannot import any operation in this API definition.",
++          reason: "No operation in this API definition can be imported.",
+           skipped: left,
+         });
+@@ -1053,5 +1053,5 @@ export const compileOpenApiDocument = (
+         return {
+           code: "auth_method",
+-          reason: `Executor cannot authenticate with any of its security requirements: ${security.map(unsupportedBy).join("; ")}.`,
++          reason: `None of its security requirements can be used to authenticate: ${security.map(unsupportedBy).join("; ")}.`,
+         };
+       };
+@@ -1060,5 +1060,5 @@ export const compileOpenApiDocument = (
+           code: "no_supported_operations",
+           reason:
+-            "No operation can be called: each one is left out, streams its response, or needs authentication Executor does not support.",
++            "No operation can be called: each one is left out, streams its response, or needs authentication that is not supported.",
+           skipped: inDefinitionOrder([
+             ...skipped,
+diff --git a/packages/apps/src/implementation/skills.ts b/packages/apps/src/implementation/skills.ts
+index cc1764bd1..43d430d98 100644
+--- a/packages/apps/src/implementation/skills.ts
++++ b/packages/apps/src/implementation/skills.ts
+@@ -58,5 +58,5 @@ const describe = (service: string, { reason, status }: SkillLoadFailed) => {
+       return `A skill from ${service} is not a valid skill document.`;
+     case "limit":
+-      return `The skills from ${service} exceed Executor’s file or size limits.`;
++      return `The skills from ${service} exceed the file or size limits.`;
+     case "changed":
+       return `The skills on ${service} changed while they were being read.`;
+@@ -199,5 +199,5 @@ const unreadable = () =>
+   new SkillLoadFailed({
+     reason: "request",
+-    message: "GitHub returned a git response Executor could not read.",
++    message: "GitHub returned a git response that could not be read.",
+   });
+ const git = <A>(run: () => A | Promise<A>) =>
+@@ -375,5 +375,5 @@ const cachedSkillDirectories = (
+           new SkillLoadFailed({
+             reason: "request",
+-            message: "Executor could not read or update the app cache for skills.",
++            message: "The app cache for skills could not be read or updated.",
+           }),
+       ),
+@@ -451,5 +451,5 @@ const cachedCatalog = (
+               new SkillLoadFailed({
+                 reason: "request",
+-                message: "Executor could not read or update the app cache for skills.",
++                message: "The app cache for skills could not be read or updated.",
+               }),
+           ),
+diff --git a/packages/apps/src/implementation/sql.ts b/packages/apps/src/implementation/sql.ts
+index d5b4b0a47..10c416b3f 100644
+--- a/packages/apps/src/implementation/sql.ts
++++ b/packages/apps/src/implementation/sql.ts
+@@ -146,5 +146,5 @@ export const authorSql = (
+       throw refuse(
+         new Error(
+-          `SQLite connection settings belong to Executor, so app code cannot change PRAGMA ${changed}; the statement was rolled back. Migrations may change settings while they run.`,
++          `SQLite connection settings belong to the host, so app code cannot change PRAGMA ${changed}; the statement was rolled back. Migrations may change settings while they run.`,
+         ),
+       );
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+index 410a74099..944b49869 100644
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -153,5 +153,5 @@ export const CatalogUnavailable = ApiError.define({
+   tag: "CatalogUnavailable",
+   status: 502,
+-  message: "Executor could not read the app catalog. Try again.",
++  message: "Could not read the app catalog. Try again.",
+ });
+ export type CatalogUnavailable = typeof CatalogUnavailable.Type;
+diff --git a/packages/catalog/src/contracts/setup.ts b/packages/catalog/src/contracts/setup.ts
+index f10bb5aba..b0e9dca90 100644
+--- a/packages/catalog/src/contracts/setup.ts
++++ b/packages/catalog/src/contracts/setup.ts
+@@ -13,7 +13,7 @@ export const customSetupRecovery: CatalogRecovery = {
+     "Write this app with the app-authoring skill, using the MCP server URL you supplied. The refusal's reason says what the server answered.",
+   instructions: [
+-    "Executor adds an MCP server by URL directly only when the server confirms it needs OAuth sign-in or no sign-in.",
++    "An MCP server is added by URL directly only when the server confirms it needs OAuth sign-in or no sign-in.",
+     "",
+-    "Start with the Executor app's executor skill, then follow its app-authoring skill: its integrations guide shows an `mcpRouter` app that sends the API key or other credentials the server documents. Read the server's documentation, ask me how I sign in, then write and deploy the app and help me connect my account.",
++    "Start with the built-in app's executor skill, then follow its app-authoring skill: its integrations guide shows an `mcpRouter` app that sends the API key or other credentials the server documents. Read the server's documentation, ask me how I sign in, then write and deploy the app and help me connect my account.",
+   ].join("\n"),
+ };
+diff --git a/packages/catalog/src/implementation/mcp.ts b/packages/catalog/src/implementation/mcp.ts
+index 07c6c3275..5fd769437 100644
+--- a/packages/catalog/src/implementation/mcp.ts
++++ b/packages/catalog/src/implementation/mcp.ts
+@@ -41,5 +41,5 @@ const decidingRequest = (signals: ReadonlyArray<McpSignal>) =>
+ /** Why advertised OAuth could not be used, from the last metadata lookup. */
+ const oauthProblem = (signals: ReadonlyArray<McpSignal>) => {
+-  const blocked = "an address in its OAuth settings is not allowed by this Executor instance";
++  const blocked = "an address in its OAuth settings is not allowed by this instance";
+   const last = signals.filter((signal) => !Schema.is(McpRequestSignal)(signal)).at(-1);
+   return last === undefined
+@@ -114,5 +114,5 @@ const undetermined = ({ reason, signals }: typeof McpDetection.cases.Undetermine
+     Match.when("refused", () => ({
+       code: "agent_setup_required" as const,
+-      reason: `This MCP server refused Executor's request with a web page (${status}) instead of an MCP or sign-in response. Its firewall may block requests from this Executor host. ${agent}`,
++      reason: `This MCP server refused this instance's request with a web page (${status}) instead of an MCP or sign-in response. Its firewall may block requests from this host. ${agent}`,
+     })),
+     Match.when("not_mcp", () => ({
+diff --git a/packages/mcp-auth/src/contracts/grant.ts b/packages/mcp-auth/src/contracts/grant.ts
+index 750062a3b..392d82e8c 100644
+--- a/packages/mcp-auth/src/contracts/grant.ts
++++ b/packages/mcp-auth/src/contracts/grant.ts
+@@ -207,5 +207,5 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
+           return {
+             title: "API credential",
+-            description: "This credential was issued for the Executor API, not for MCP.",
++            description: "This credential was issued for API access, not for MCP.",
+             recovery: {
+               action: "Connect at the MCP URL to get a credential for it, then retry.",
+@@ -228,5 +228,5 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
+         recovery: {
+           action: "Connect again at the MCP URL with elicitation_mode=browser, then retry.",
+-          instructions: `The grant was narrowed to selected tools with browser approval after it was issued for a URL in another approval mode, which Executor no longer allows. A grant serves only the URL it was issued for. Connect again at the same MCP URL with elicitation_mode=browser, choose its tools, and verify that tools are listed. ${notBypassed}`,
++          instructions: `The grant was narrowed to selected tools with browser approval after it was issued for a URL in another approval mode, which is no longer allowed. A grant serves only the URL it was issued for. Connect again at the same MCP URL with elicitation_mode=browser, choose its tools, and verify that tools are listed. ${notBypassed}`,
+         },
+       }),
+diff --git a/packages/mcp-auth/src/implementation/device-authorization.ts b/packages/mcp-auth/src/implementation/device-authorization.ts
+index c40f1c374..454792d02 100644
+--- a/packages/mcp-auth/src/implementation/device-authorization.ts
++++ b/packages/mcp-auth/src/implementation/device-authorization.ts
+@@ -310,5 +310,5 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions)
+               if (body.resource === undefined || !settings.accepts(body.resource))
+                 return yield* Effect.fail(
+-                  oauthError("invalid_target", "Name the Executor URL to authorize as resource."),
++                  oauthError("invalid_target", "Name the URL to authorize as resource."),
+                 );
+               const resource = body.resource;
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+index ab7278372..b47012604 100644
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -970,5 +970,5 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+         return yield* Effect.fail(
+           new APIError("BAD_REQUEST", {
+-            message: "Choose one Executor connection URL and try again.",
++            message: "Choose one connection URL and try again.",
+           }),
+         );
+@@ -1491,5 +1491,5 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+               throw new APIError("BAD_REQUEST", {
+                 error: "invalid_target",
+-                error_description: "Name the Executor URL to authorize in the resource parameter.",
++                error_description: "Name the URL to authorize in the resource parameter.",
+               });
+             const named = { ...input.value, resource };
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+index 4be92feab..795950320 100644
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -235,5 +235,5 @@ export const AppNotFound = UserFacingError.define({
+   fields: { app: AppId },
+   title: "App no longer available",
+-  description: "Executor could not find the requested app.",
++  description: "Could not find the requested app.",
+   recovery: {
+     action: "Return to Apps and open an available app.",
+diff --git a/packages/sdk/src/contracts/call-presentation.ts b/packages/sdk/src/contracts/call-presentation.ts
+index 0457b147a..dec588aa5 100644
+--- a/packages/sdk/src/contracts/call-presentation.ts
++++ b/packages/sdk/src/contracts/call-presentation.ts
+@@ -18,5 +18,5 @@ export const MayHaveWritten = Schema.optional(Schema.Literal(true));
+ export const unknownOutcome = {
+   action:
+-    "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.",
++    "Do not automatically repeat this call or duplicate its change. Its outcome could not be confirmed.",
+   instructions:
+     "This call may have changed data or may still complete. A safe read can show effects but cannot rule out later completion. Tell the user what is known and get their agreement before repeating the change.",
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index a30e0d647..36ca3ad7b 100644
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -247,5 +247,5 @@ const withServiceError = (
+ const serviceUnavailable = {
+   title: "The connected service’s sign-in is unavailable",
+-  description: "Executor couldn’t reach the service, which may be down or busy.",
++  description: "Couldn’t reach the service, which may be down or busy.",
+   recovery: {
+     action: "Try again in a moment, or check the service’s status if this continues.",
+@@ -295,8 +295,8 @@ const rateLimited = (
+         ? `${copy.action} shortly.`
+         : `${copy.action} after ${retryTime(retryAfter)}.`,
+-    instructions: `The service answered HTTP 429 Too Many Requests: Executor reached it, and it is limiting requests. ${
++    instructions: `The service answered HTTP 429 Too Many Requests: the request reached it, and it is limiting requests. ${
+       retryAfter === undefined
+         ? "It did not say how long to wait, so retry after a short pause."
+-        : `Its Retry-After header asked Executor to wait until ${retryAfter.toISOString()}, so retry only after that.`
++        : `Its Retry-After header asked for a wait until ${retryAfter.toISOString()}, so retry only after that.`
+     } ${copy.instructions} Do not retry in a loop, and do not change the app’s OAuth configuration or replace accounts for this failure. If it continues, check the service’s documented rate limits for its OAuth endpoints.`,
+   },
+@@ -305,11 +305,11 @@ const rateLimited = (
+ 
+ const incompatibleResponse = {
+-  title: "Executor could not use the service’s response",
++  title: "Couldn’t use the service’s response",
+   description:
+-    "This is a compatibility problem between Executor and the service, not a problem with your account.",
++    "This is a compatibility problem between this instance and the service, not a problem with your account.",
+   recovery: {
+-    action: "Retrying won’t help until Executor is fixed.",
++    action: "Retrying won’t help until this is fixed.",
+     instructions:
+-      "Compare the service’s OAuth response at the recorded stage with the fields Executor and the app’s provider definition require. Identify the precise incompatibility and whether Executor or the service must change. Do not weaken state, PKCE, issuer, or token validation to work around it.",
++      "Compare the service’s OAuth response at the recorded stage with the fields this instance and the app’s provider definition require. Identify the precise incompatibility and whether this instance or the service must change. Do not weaken state, PKCE, issuer, or token validation to work around it.",
+   },
+   agentFixable: false,
+@@ -516,5 +516,6 @@ export const OAuthSetupFailed = UserFacingError.define({
+   presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter }) => {
+     // Forms that open client entry already show the callback, so only the fix prompt repeats it.
+-    const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
++    const callback =
++      callbackUrl === undefined ? "" : ` This deployment’s callback URL is ${callbackUrl}.`;
+     return withCause(
+       (
+@@ -523,6 +524,5 @@ export const OAuthSetupFailed = UserFacingError.define({
+           rate_limited: {
+             ...rateLimited(retryAfter, {
+-              description:
+-                "The service asked Executor to wait before sending more sign-in requests.",
++              description: "The service asked for a pause before more sign-in requests.",
+               action: "Try again",
+               instructions:
+@@ -552,9 +552,9 @@ export const OAuthSetupFailed = UserFacingError.define({
+             title: "OAuth address blocked",
+             description:
+-              "This Executor instance doesn’t allow requests to an address in the app’s OAuth settings.",
++              "This instance doesn’t allow requests to an address in the app’s OAuth settings.",
+             recovery: {
+               action: "Review the app’s server URL and this instance’s network policy.",
+               instructions:
+-                "Inspect the app’s OAuth discovery URL and advertised endpoints against this Executor instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
++                "Inspect the app’s OAuth discovery URL and advertised endpoints against this instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
+             },
+           },
+@@ -562,5 +562,5 @@ export const OAuthSetupFailed = UserFacingError.define({
+             title: "Server URL does not match its sign-in settings",
+             description:
+-              "The service says its sign-in belongs to another address, so Executor won’t use it.",
++              "The service says its sign-in belongs to another address, so it won’t be used.",
+             recovery: {
+               action: "Check the app’s server URL.",
+@@ -572,10 +572,10 @@ export const OAuthSetupFailed = UserFacingError.define({
+           client_not_approved: {
+             title: "Callback URL refused during registration",
+-            description: "This service doesn’t accept Executor’s callback URL.",
++            description: "This service doesn’t accept this deployment’s callback URL.",
+             recovery: {
+               action:
+                 "Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
+               instructions:
+-                "Executor’s dynamic client registration request was refused with invalid_redirect_uri (RFC 7591 section 3.2.2): the service does not accept Executor’s callback URL as a redirect URI. Read the service’s response, when one is shown, for the rule it applies. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in Executor. Otherwise identify the service’s approval or allowlist process and prepare a request that includes Executor’s callback URL. Do not repeatedly register clients." +
++                "The dynamic client registration request was refused with invalid_redirect_uri (RFC 7591 section 3.2.2): the service does not accept this deployment’s callback URL as a redirect URI. Read the service’s response, when one is shown, for the rule it applies. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in this deployment. Otherwise identify the service’s approval or allowlist process and prepare a request that includes this deployment’s callback URL. Do not repeatedly register clients." +
+                 callback,
+             },
+@@ -591,5 +591,5 @@ export const OAuthSetupFailed = UserFacingError.define({
+                 "Create an OAuth app there with this redirect URL, then enter its client ID and secret.",
+               instructions:
+-                "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which Executor does not have. Explain how to create an OAuth client in the service’s developer settings with Executor’s callback URL, then enter its client ID and secret in Executor. Do not repeatedly register clients or ask for the service’s registration credentials." +
++                "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which this deployment does not have. Explain how to create an OAuth client in the service’s developer settings with this deployment’s callback URL, then enter its client ID and secret in this deployment. Do not repeatedly register clients or ask for the service’s registration credentials." +
+                 callback,
+             },
+@@ -600,12 +600,12 @@ export const OAuthSetupFailed = UserFacingError.define({
+           // allowlist is the likeliest cause.
+           client_metadata_rejected: {
+-            title: "Service did not accept Executor’s callback URL",
++            title: "Service did not accept this deployment’s callback URL",
+             description:
+-              "Executor’s callback URL is most likely not among the service’s allowed redirect URIs.",
++              "This deployment’s callback URL is most likely not among the service’s allowed redirect URIs.",
+             recovery: {
+               action:
+                 "Ask the service’s administrator to allow it, or create an OAuth app there and enter its client ID and secret.",
+               instructions:
+-                "The registration endpoint returned invalid_client_metadata (RFC 7591 section 3.2.2). Services with a redirect URI allowlist, such as Cloudflare Access, return it when the callback URL is not allowed. Check the service’s allowed redirect URIs for Executor’s callback URL first, then compare the other registered fields: grant types, response types, token endpoint authentication method and scopes. Do not repeatedly register clients." +
++                "The registration endpoint returned invalid_client_metadata (RFC 7591 section 3.2.2). Services with a redirect URI allowlist, such as Cloudflare Access, return it when the callback URL is not allowed. Check the service’s allowed redirect URIs for this deployment’s callback URL first, then compare the other registered fields: grant types, response types, token endpoint authentication method and scopes. Do not repeatedly register clients." +
+                 callback,
+             },
+@@ -613,11 +613,11 @@ export const OAuthSetupFailed = UserFacingError.define({
+           },
+           registration_rejected: {
+-            title: "Service rejected Executor’s registration",
+-            description: "Without an OAuth client for this service, Executor can’t start sign-in.",
++            title: "Service rejected this deployment’s registration",
++            description: "Without an OAuth client for this service, sign-in can’t start.",
+             recovery: {
+               action:
+                 "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
+               instructions:
+-                "Compare Executor’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
++                "Compare this deployment’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
+                 callback,
+             },
+@@ -637,15 +637,14 @@ export const OAuthSetupFailed = UserFacingError.define({
+           invalid_redirect: {
+             title: "Callback URL not valid",
+-            description: "Executor’s callback URL is malformed or not allowed on this instance.",
++            description: "The callback URL is malformed or not allowed on this instance.",
+             recovery: {
+-              action: "Check this Executor instance’s public address.",
++              action: "Check this instance’s public address.",
+               instructions:
+-                "Compare Executor’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
++                "Compare this instance’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
+             },
+           },
+           token_exchange: {
+             title: "Account connection failed",
+-            description:
+-              "Executor couldn’t get an access token from the service for this OAuth client.",
++            description: "Couldn’t get an access token from the service for this OAuth client.",
+             recovery: {
+               action: "Try connecting again, or copy the fix prompt if this continues.",
+@@ -657,9 +656,9 @@ export const OAuthSetupFailed = UserFacingError.define({
+           unsupported: {
+             title: "Sign-in method unavailable",
+-            description: "Executor doesn’t support the OAuth setup this app or service uses.",
++            description: "The OAuth setup this app or service uses isn’t supported.",
+             recovery: {
+               action: "Review the app’s sign-in method and OAuth settings.",
+               instructions:
+-                "Compare the app’s provider definition with the service’s supported OAuth flow and Executor’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
++                "Compare the app’s provider definition with the service’s supported OAuth flow and this instance’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
+             },
+           },
+@@ -746,15 +745,13 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           callback_malformed: restart({
+             title: "Sign-in response not recognised",
+-            description:
+-              "The service sent the browser back to Executor with an incomplete or altered address.",
++            description: "The service sent the browser back with an incomplete or altered address.",
+             instructions:
+-              "The callback URL had no single valid state value, or carried a fragment or credentials. Start a fresh sign-in from Executor; never replay or edit a callback URL.",
++              "The callback URL had no single valid state value, or carried a fragment or credentials. Start a fresh sign-in from this instance; never replay or edit a callback URL.",
+           }),
+           sign_in_not_found: restart({
+             title: "Sign-in not found",
+-            description:
+-              "Executor has no record of this sign-in, which may have started at another Executor address.",
++            description: "This sign-in has no record here. It may have started at another address.",
+             instructions:
+-              "No pending sign-in matches the callback's state. The sign-in may have started on another Executor instance or origin. Start a fresh sign-in from the Executor instance that should own the account; never replay a callback.",
++              "No pending sign-in matches the callback's state. The sign-in may have started on another instance or origin. Start a fresh sign-in from the instance that should own the account; never replay a callback.",
+           }),
+           sign_in_replaced: restart({
+@@ -766,9 +763,11 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           redirect_mismatch: {
+             title: "Sign-in returned to a different address",
+-            description: "A proxy or the service may have changed the callback URL Executor sent.",
++            description:
++              "A proxy or the service may have changed the callback URL this instance sent.",
+             recovery: {
+-              action: "Check Executor’s public address and the service’s allowed redirect URLs.",
++              action:
++                "Check this instance’s public address and the service’s allowed redirect URLs.",
+               instructions:
+-                "Compare the callback URL Executor registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
++                "Compare the callback URL this instance registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
+             },
+           },
+@@ -856,18 +855,18 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           },
+           registered_client_rejected: restart({
+-            title: "Service rejected Executor’s client",
++            title: "Service rejected this deployment’s client",
+             description:
+-              "The service no longer accepts the client Executor registered earlier, so a new sign-in registers a fresh one.",
++              "The service no longer accepts the client registered earlier, so a new sign-in registers a fresh one.",
+             instructions:
+-              "The token endpoint answered invalid_client for a client Executor registered in an earlier sign-in and reused. Executor removed that saved registration, so the next sign-in registers a fresh client. If the fresh client is rejected too, the failure is reported as registered_client_incompatible.",
++              "The token endpoint answered invalid_client for a client registered in an earlier sign-in and reused. That saved registration was removed, so the next sign-in registers a fresh client. If the fresh client is rejected too, the failure is reported as registered_client_incompatible.",
+           }),
+           registered_client_incompatible: {
+-            title: "Service rejected a new Executor client",
++            title: "Service rejected a newly registered client",
+             description:
+-              "The service refused the client Executor registered moments ago, so trying again would fail the same way.",
++              "The service refused the client registered moments ago, so trying again would fail the same way.",
+             recovery: {
+               action: "Copy the fix prompt for your agent to find out why.",
+               instructions:
+-                "The token endpoint answered invalid_client for a client Executor registered moments earlier in the same sign-in. Executor discarded it. Compare the client authentication method Executor registered, and how it sends the client ID and secret, with what the service's token endpoint accepts. Check the service's registration response for a different token_endpoint_auth_method. Do not ask the user for client details; the client was never theirs.",
++                "The token endpoint answered invalid_client for a client registered moments earlier in the same sign-in. That client was discarded. Compare the client authentication method that was registered, and how it sends the client ID and secret, with what the service's token endpoint accepts. Check the service's registration response for a different token_endpoint_auth_method. Do not ask the user for client details; the client was never theirs.",
+             },
+           },
+@@ -889,10 +888,9 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           destination_blocked: {
+             title: "OAuth address blocked",
+-            description:
+-              "This Executor instance doesn’t allow requests to the service’s token endpoint.",
++            description: "This instance doesn’t allow requests to the service’s token endpoint.",
+             recovery: {
+               action: "Review the app’s OAuth endpoints and this instance’s network policy.",
+               instructions:
+-                "Inspect the app's token endpoint against this Executor instance's network policy. Correct unintended addresses. Do not bypass address validation or weaken network protections.",
++                "Inspect the app's token endpoint against this instance's network policy. Correct unintended addresses. Do not bypass address validation or weaken network protections.",
+             },
+           },
+@@ -907,5 +905,5 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           // The sign-in was claimed before the token request, so only a new one can finish.
+           rate_limited: rateLimited(retryAfter, {
+-            description: "The service asked Executor to wait before sending more sign-in requests.",
++            description: "The service asked for a pause before more sign-in requests.",
+             action: "Start the connection again",
+             instructions:
+@@ -915,10 +913,10 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           unsupported: {
+             title: "Sign-in method unavailable",
+-            description: "The service issued a kind of access token that Executor can’t use.",
++            description: "The service issued a kind of access token that can’t be used here.",
+             recovery: {
+               action:
+                 "Retrying won’t help unless the service can issue standard access tokens for this app.",
+               instructions:
+-                "Check the recorded response field. Executor sends access tokens as Bearer tokens and cannot create DPoP proofs (RFC 9449). Determine whether the service can issue Bearer tokens for this client, and configure that if it can. Do not strip sender constraints from tokens to work around it.",
++                "Check the recorded response field. This instance sends access tokens as Bearer tokens and cannot create DPoP proofs (RFC 9449). Determine whether the service can issue Bearer tokens for this client, and configure that if it can. Do not strip sender constraints from tokens to work around it.",
+             },
+             agentFixable: false,
+@@ -926,5 +924,5 @@ export const OAuthCompletionFailed = UserFacingError.define({
+           oauth_unavailable: {
+             title: "OAuth sign-in unavailable",
+-            description: "This Executor instance isn’t configured for OAuth.",
++            description: "This instance isn’t configured for OAuth.",
+             recovery: {
+               action: "Ask the instance administrator to enable OAuth sign-in.",
+@@ -939,5 +937,5 @@ export const OAuthCompletionFailed = UserFacingError.define({
+             title: "The service granted more access than allowed",
+             description:
+-              "The service granted this sign-in access beyond what this Executor instance allows for its own OAuth client. Executor rejected the sign-in and saved nothing. When the instance’s client supports revocation, Executor also asks the service to revoke that access.",
++              "The service granted this sign-in access beyond what this instance allows for its own OAuth client. The sign-in was rejected and nothing was saved. When the instance’s client supports revocation, the service is also asked to revoke that access.",
+             recovery: {
+               action: "Ask the instance administrator to check the OAuth client’s scopes.",
+@@ -1037,7 +1035,7 @@ export const OAuthReconnectRequired = UserFacingError.define({
+         description:
+           (reason === "renewal_interrupted"
+-            ? "Executor stopped while renewing this account’s access, before it could save the result. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
++            ? "Renewing this account’s access stopped before the result was saved. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
+             : reason === "scope_exceeded"
+-              ? "Renewing this account’s access returned more access than this Executor instance allows for its own OAuth client, so Executor stopped using this sign-in. When the instance’s client supports revocation, Executor also asks the service to revoke that access."
++              ? "Renewing this account’s access returned more access than this instance allows for its own OAuth client, so this sign-in is no longer used. When the instance’s client supports revocation, the service is also asked to revoke that access."
+               : "The saved sign-in can no longer be used for this account.") +
+           (appRequirement === undefined
+@@ -1111,5 +1109,5 @@ export const OAuthRenewalFailed = UserFacingError.define({
+             ...serviceUnavailable,
+             description:
+-              "Executor could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.",
++              "Could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.",
+             recovery: {
+               action: "Try again in a moment. If this continues, check the service’s status.",
+@@ -1121,5 +1119,5 @@ export const OAuthRenewalFailed = UserFacingError.define({
+             ...incompatibleResponse,
+             description:
+-              "The service answered Executor’s request to renew this account’s access, but its response did not match what Executor expects. The saved sign-in is kept; this is a compatibility problem, not a problem with your account.",
++              "The service answered the request to renew this account’s access, but its response did not match what was expected. The saved sign-in is kept; this is a compatibility problem, not a problem with your account.",
+             recovery: {
+               ...incompatibleResponse.recovery,
+@@ -1128,5 +1126,5 @@ export const OAuthRenewalFailed = UserFacingError.define({
+           },
+           client_rejected: {
+-            title: "The service rejected Executor’s OAuth client",
++            title: "The service rejected this deployment’s OAuth client",
+             description:
+               "The service rejected the OAuth client used for renewal. Check client configuration and how the renewal request authenticates. The account’s sign-in is kept.",
+@@ -1141,5 +1139,5 @@ export const OAuthRenewalFailed = UserFacingError.define({
+             title: "The service refused to renew this account’s access",
+             description:
+-              "The service refused Executor’s request to renew this account’s access without saying the sign-in has ended. The saved sign-in is kept, and Executor tries again the next time the account is used.",
++              "The service refused the request to renew this account’s access without saying the sign-in has ended. The saved sign-in is kept, and renewal is tried again the next time the account is used.",
+             recovery: {
+               action:
+diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
+index 437203375..450018607 100644
+--- a/packages/sdk/src/contracts/provider.ts
++++ b/packages/sdk/src/contracts/provider.ts
+@@ -42,5 +42,5 @@ export const ProviderNotFound = UserFacingError.define({
+   fields: { provider: ProviderId },
+   title: "Service no longer available",
+-  description: "Executor could not find the requested service configuration.",
++  description: "Could not find the requested service configuration.",
+   recovery: {
+     action:
+diff --git a/packages/sdk/src/contracts/registry.ts b/packages/sdk/src/contracts/registry.ts
+index 07cec7d14..c747a7b0f 100644
+--- a/packages/sdk/src/contracts/registry.ts
++++ b/packages/sdk/src/contracts/registry.ts
+@@ -90,10 +90,10 @@ const registryFailures = {
+   "invalid-manifest":
+     "The app's package.json needs a valid package name in the publisher's scope and valid metadata.",
+-  storage: "Executor could not read or write the public app catalog. Try again.",
+-  network: "Executor could not reach the public app registry. Try again.",
++  storage: "Could not read or write the public app catalog. Try again.",
++  network: "Could not reach the public app registry. Try again.",
+   status: "The public app registry returned an unexpected HTTP status.",
+-  "invalid-response": "The public app registry returned a response Executor could not read.",
+-  limit: "The public app registry's response exceeded Executor's size limit.",
+-  unsupported: "This Executor reads a remote app registry and cannot publish to it.",
++  "invalid-response": "The public app registry returned a response that could not be read.",
++  limit: "The public app registry's response exceeded the size limit.",
++  unsupported: "This instance reads a remote app registry and cannot publish to it.",
+ } as const;
+ /** Safe public-catalog failures. */
+diff --git a/packages/sdk/src/contracts/shared.ts b/packages/sdk/src/contracts/shared.ts
+index e099f01a8..33a5a2971 100644
+--- a/packages/sdk/src/contracts/shared.ts
++++ b/packages/sdk/src/contracts/shared.ts
+@@ -110,13 +110,13 @@ export const StorageError = UserFacingError.define({
+   status: 500,
+   fields: { mayHaveWritten: MayHaveWritten },
+-  recorded: () => "Executor could not read or write its saved data.",
++  recorded: () => "Could not read or write saved data.",
+   presentation: callPresentation(() => ({
+-    title: "Executor storage unavailable",
+-    description: "Executor could not read or write its saved data.",
++    title: "Storage unavailable",
++    description: "Could not read or write saved data.",
+     recovery: {
+       action:
+-        "Try again. If this continues, copy the fix prompt into your agent to check Executor’s storage.",
++        "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
+       instructions:
+-        "Check Executor’s storage availability and safe diagnostics for the failed operation. Restore the failing storage dependency or identify the required instance action. Do not change the integration’s authentication to work around an Executor storage failure. Do not delete stored data.",
++        "Check this instance’s storage availability and safe diagnostics for the failed operation. Restore the failing storage dependency or identify the required instance action. Do not change the integration’s authentication to work around a storage failure on this instance. Do not delete stored data.",
+     },
+     retryable: true,
+@@ -134,13 +134,13 @@ export const CredentialsError = UserFacingError.define({
+   status: 500,
+   fields: { mayHaveWritten: MayHaveWritten },
+-  recorded: () => "Executor could not securely read or write the saved credentials.",
++  recorded: () => "Could not securely read or write the saved credentials.",
+   presentation: callPresentation(() => ({
+     title: "Saved credentials unavailable",
+-    description: "Executor could not securely read or write the saved credentials.",
++    description: "Could not securely read or write the saved credentials.",
+     recovery: {
+       action:
+-        "Try again. If this continues, copy the fix prompt into your agent to check Executor’s credential storage.",
++        "Try again. If this continues, copy the fix prompt into your agent to check this instance’s credential storage.",
+       instructions:
+-        "Check Executor’s credential storage and encryption-key availability without exposing secret values. Restore access through the supported configuration. Do not overwrite credentials, rotate keys as a guess, or change integration code to mask an Executor storage failure.",
++        "Check this instance’s credential storage and encryption-key availability without exposing secret values. Restore access through the supported configuration. Do not overwrite credentials, rotate keys as a guess, or change integration code to mask a storage failure on this instance.",
+     },
+     retryable: true,
+@@ -155,5 +155,5 @@ export const RequestInvalid = ApiError.define({
+   status: 400,
+   message:
+-    "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
++    "Could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+ });
+ export type RequestInvalid = typeof RequestInvalid.Type;
+diff --git a/packages/sdk/src/contracts/source.ts b/packages/sdk/src/contracts/source.ts
+index 4e6ddc520..57d0a2c84 100644
+--- a/packages/sdk/src/contracts/source.ts
++++ b/packages/sdk/src/contracts/source.ts
+@@ -238,8 +238,8 @@ const sourceFailures = {
+   "invalid-source":
+     "The app source is not valid: files outside ui/public/ must be UTF-8 text, paths and file modes must be supported, and stored files must name blobs of the revision they were read from.",
+-  git: "Executor's Git storage could not complete this source operation. Try again.",
+-  storage: "Executor could not read or write this app's source. Try again.",
++  git: "Git storage could not complete this source operation. Try again.",
++  storage: "Could not read or write this app's source. Try again.",
+   limit:
+-    "The app source exceeds Executor's limits: at most 4,096 code files and 16 MiB of code and inline files, and at most 10,000 public files under ui/public/, each at most 32 MB and 1 GB in total.",
++    "The app source exceeds the allowed limits: at most 4,096 code files and 16 MiB of code and inline files, and at most 10,000 public files under ui/public/, each at most 32 MB and 1 GB in total.",
+   protected:
+     "The app's Git history is protected from this change, such as deleting or recreating its main branch, or an unsupported push format.",
+diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+index 725eeebb8..66a53a6c1 100644
+--- a/packages/sdk/src/contracts/tools.ts
++++ b/packages/sdk/src/contracts/tools.ts
+@@ -267,5 +267,5 @@ const elicitationFailures = {
+   "invalid-response": "The input response did not match the tool's request.",
+   transport: "The tool’s input request or answer could not be delivered.",
+-  expired: "The tool’s input request expired before Executor received an answer.",
++  expired: "The tool’s input request expired before an answer was received.",
+   forbidden: "This caller may no longer answer the tool's input request.",
+ } as const;
+@@ -290,5 +290,5 @@ const elicitationRecovery = {
+     action: "Check the tool’s input request before changing the app.",
+     instructions:
+-      "Executor could not accept or record the tool’s input request. Check its form and delivery limits before changing the app.",
++      "Could not accept or record the tool’s input request. Check its form and delivery limits before changing the app.",
+     retryable: false,
+   },
+@@ -314,5 +314,5 @@ const elicitationRecovery = {
+     action: "Confirm or restore access to the app and its accounts before another attempt.",
+     instructions:
+-      "Executor checks the caller's access before it delivers an input request, and that check was refused, such as after access changed while the tool was waiting. Confirm or restore the caller's access to the app and its accounts before another attempt.",
++      "The caller's access is checked before an input request is delivered, and that check was refused, such as after access changed while the tool was waiting. Confirm or restore the caller's access to the app and its accounts before another attempt.",
+     retryable: false,
+   },
+@@ -515,5 +515,5 @@ const refusedCredentialHost = {
+ };
+ const invalidSourceInstructions =
+-  "The skill loader reported a problem with its source, which its message names. Its settings may not be valid, such as a malformed or non-HTTP URL or an invalid repository name or path, or the source may list a file Executor cannot read, such as a symbolic link or a path outside the skill's folder. Check the skill loader's options and the files the source publishes.";
++  "The skill loader reported a problem with its source, which its message names. Its settings may not be valid, such as a malformed or non-HTTP URL or an invalid repository name or path, or the source may list a file that cannot be read, such as a symbolic link or a path outside the skill's folder. Check the skill loader's options and the files the source publishes.";
+ const skillInstructions =
+   "The app loads skills from a remote source. Read the app source to find the skill loader and its options. Do not print credentials or raw responses, and do not change accounts. If the factory awaits the loader, tools and skills both fail when that load fails. Declare it with dynamicSkills instead, such as dynamicSkills: dynamicSkills({ list: () => githubSkills(...) }), so only skill reads call it. To stop depending on the remote source, the app can bundle its skill folders and read them with folderSkills. Verify that the Skills and Tools pages load after the repair.";
+@@ -689,5 +689,5 @@ export const mcpFailurePresentation = ({
+         return {
+           title: "MCP server did not answer the tool call",
+-          description: `The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it.${answered}`,
++          description: `The app’s MCP server did not answer the tool call in time, so the call stopped waiting. The server may still finish it.${answered}`,
+           recovery: {
+             action: "You may retry once. If it times out again, investigate before repeating it.",
+@@ -721,5 +721,5 @@ export const mcpFailurePresentation = ({
+         title: "MCP server response not supported",
+         // Includes Executor refusing to follow the server to another origin.
+-        description: `The app’s MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
++        description: `The app’s MCP server returned an unusable response while ${stage}, such as an unreadable message or an address on another origin.${answered}`,
+         recovery: {
+           action: "Check the response compatibility and the app’s MCP server configuration.",
+@@ -794,5 +794,5 @@ export const mcpFailurePresentation = ({
+           ? {
+               title: "MCP server did not answer",
+-              description: `Executor’s request to the app’s MCP server failed before the server answered, while ${stage}.`,
++              description: `The request to the app’s MCP server failed before the server answered, while ${stage}.`,
+               recovery: {
+                 action: "Try again. If this continues, check the MCP server’s address and status.",
+@@ -805,5 +805,5 @@ export const mcpFailurePresentation = ({
+                 title: "Tool call ended without an answer",
+                 description:
+-                  "The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it.",
++                  "The request to the app’s MCP server failed before the server answered the tool call, so it is unknown whether the server ran it.",
+                 recovery: {
+                   action:
+@@ -880,8 +880,8 @@ export const AppEvaluationFailed = UserFacingError.define({
+         ? {
+             title: "Tools could not be loaded",
+-            description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
++            description: `Could not load this app’s tool definitions. ${appFailureText(failure)}`,
+             recovery: {
+               action: "Try again. If this continues, investigate this error and fix its cause.",
+-              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
++              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or this instance, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
+             },
+             retryable: true,
+@@ -890,5 +890,5 @@ export const AppEvaluationFailed = UserFacingError.define({
+           ? {
+               title: "Tools could not be loaded",
+-              description: "Executor could not load this app’s tool definitions.",
++              description: "Could not load this app’s tool definitions.",
+               recovery: {
+                 action: "Try again. If this continues, copy the fix prompt to investigate the app.",
+@@ -939,5 +939,5 @@ export type ToolListingTimedOut = typeof ToolListingTimedOut.Type;
+ 
+ const searchFailures = {
+-  unsaved: "Executor could not save this app's tools for search, so search cannot rank them.",
++  unsaved: "Could not save this app's tools for search, so search cannot rank them.",
+   removed:
+     "The tools this execution found for this app are no longer kept for search: a newer listing replaced them long enough ago that they were removed.",
+@@ -964,7 +964,7 @@ export const ToolSearchUnavailable = UserFacingError.define({
+         ? {
+             action:
+-              "Try again. If this continues, copy the fix prompt into your agent to check Executor’s storage.",
++              "Try again. If this continues, copy the fix prompt into your agent to check this instance’s storage.",
+             instructions:
+-              "Check Executor’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
++              "Check this instance’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
+           }
+         : {
+@@ -1001,5 +1001,5 @@ const renewalRecovery = (
+       return {
+         recovery: {
+-          action: "Check Executor’s storage availability.",
++          action: "Check this instance’s storage availability.",
+           instructions: failure.recovery.instructions,
+         },
+@@ -1008,5 +1008,5 @@ const renewalRecovery = (
+       return {
+         recovery: {
+-          action: "Check Executor’s credential storage and encryption-key availability.",
++          action: "Check this instance’s credential storage and encryption-key availability.",
+           instructions: failure.recovery.instructions,
+         },
+@@ -1085,8 +1085,8 @@ export const AppProviderFailed = UserFacingError.define({
+             return {
+               title: "Access renewed; request not repeated",
+-              description: `${service} rejected the credentials${target}${context}.${reported} Executor has renewed the account’s access, but did not repeat this call automatically.`,
++              description: `${service} rejected the credentials${target}${context}.${reported} The account’s access was renewed, but this call was not repeated automatically.`,
+               recovery: {
+                 action: "The renewed access is used from now on.",
+-                instructions: `Executor renewed the account’s access but did not repeat this call. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
++                instructions: `The account’s access was renewed but this call was not repeated. Renewal does not establish whether an earlier part of the call changed data. ${instructions}`,
+               },
+               retryable: false,
+@@ -1419,5 +1419,5 @@ export const ToolCallFailed = UserFacingError.define({
+           recovery: {
+             action: "Read the reported error and check the corresponding request or configuration.",
+-            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or Executor.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way Executor cannot use. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}`,
++            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or this instance.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way that cannot be used. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}`,
+           },
+           retryable: false,
+@@ -1450,5 +1450,5 @@ export const ToolCallFailed = UserFacingError.define({
+           recovery: {
+             action:
+-              "Read the error to determine whether input, app code, configuration or Executor needs attention.",
++              "Read the error to determine whether input, app code, configuration or this instance needs attention.",
+             instructions:
+               "This error arose while running the app’s tool. Corrected input is a new call. For a read with an uncertain temporary cause, one further attempt may help.",
+diff --git a/packages/sdk/src/contracts/version.ts b/packages/sdk/src/contracts/version.ts
+index 38f39de77..00d02b888 100644
+--- a/packages/sdk/src/contracts/version.ts
++++ b/packages/sdk/src/contracts/version.ts
+@@ -52,5 +52,5 @@ export const VersionNotFound = UserFacingError.define({
+   fields: { app: AppId, version: VersionId },
+   title: "Version no longer available",
+-  description: "Executor could not find the requested version for this app.",
++  description: "Could not find the requested version for this app.",
+   recovery: {
+     action: "Reload the app to use its current version. If this continues, check Versions.",
+@@ -135,10 +135,10 @@ export const BuildMemoryExceeded = UserFacingError.define({
+   title: "App build hit the current memory limit",
+   description:
+-    "This app's build needed more memory than Executor currently allows. No new version was activated.",
++    "This app's build needed more memory than is currently allowed. No new version was activated.",
+   recovery: {
+     action:
+       "This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
+     instructions:
+-      "The build ran out of memory during compilation, not while the app was running. This is a current Executor limit that is planned to increase; it does not mean the app is too large to run. Tell the user the build hit the current limit. Do not remove features, swap libraries, or prebuild dependencies unless the user asks. If they want to deploy now, offer those workarounds as options.",
++      "The build ran out of memory during compilation, not while the app was running. This is a current build limit that is planned to increase; it does not mean the app is too large to run. Tell the user the build hit the current limit. Do not remove features, swap libraries, or prebuild dependencies unless the user asks. If they want to deploy now, offer those workarounds as options.",
+   },
+ });
+diff --git a/packages/sdk/src/contracts/webhooks.ts b/packages/sdk/src/contracts/webhooks.ts
+index 29ed57b66..e7af94644 100644
+--- a/packages/sdk/src/contracts/webhooks.ts
++++ b/packages/sdk/src/contracts/webhooks.ts
+@@ -259,5 +259,5 @@ export const WebhooksGroup = HttpApiGroup.make("webhooks")
+     }).annotate(
+       OpenApi.Description,
+-      "Confirm cleanup after removing the webhook at its provider. Executor cannot verify external deletion. Disable the subscription first.",
++      "Confirm cleanup after removing the webhook at its provider. External deletion cannot be verified. Disable the subscription first.",
+     ),
+   )
+diff --git a/packages/sdk/src/implementation/app-network.ts b/packages/sdk/src/implementation/app-network.ts
+index 0ecfd78fb..56ee87429 100644
+--- a/packages/sdk/src/implementation/app-network.ts
++++ b/packages/sdk/src/implementation/app-network.ts
+@@ -26,5 +26,5 @@ export class NetworkUnreachable extends Schema.TaggedError<NetworkUnreachable>()
+ ) {
+   override get message() {
+-    return "Executor's connection to the service failed before it answered. The request may have reached the service.";
++    return "The connection to the service failed before it answered. The request may have reached the service.";
+   }
+   /** Fixed text: telemetry records the message itself. */
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 986031eaa..daac5fd93 100644
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -482,5 +482,5 @@ export const makeApps = (
+               ? Effect.fail(
+                   invalidSource(
+-                    "the ui/public/ files exceed Executor's limits: at most 10,000 files, each at most 32 MB and 1 GB in total.",
++                    "the ui/public/ files exceed the allowed limits: at most 10,000 files, each at most 32 MB and 1 GB in total.",
+                   ),
+                 )
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 16f3aa512..650796ef1 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -672,5 +672,5 @@ const runtimeFailure = (
+           ...identity,
+           reason:
+-            "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
++            "No usable result came back from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
+         }),
+       HostEvaluationFailed: (error) => evaluationFailure(identity, error),
+@@ -684,5 +684,5 @@ const runtimeFailure = (
+         new ToolCallFailed({
+           ...identity,
+-          reason: "Executor did not receive a usable result from this tool call.",
++          reason: "No usable result came back from this tool call.",
+         }),
+       RuntimeProtocolUnsupported: (error) =>
+@@ -1490,5 +1490,5 @@ export const makeTools = (
+                       new ToolCallFailed({
+                         ...identity,
+-                        reason: "Executor failed unexpectedly while handling this tool call.",
++                        reason: "Handling this tool call failed unexpectedly.",
+                         mayHaveWritten: true,
+                       }),
+diff --git a/packages/sdk/src/implementation/webhooks.ts b/packages/sdk/src/implementation/webhooks.ts
+index 5329c62d9..5354ea919 100644
+--- a/packages/sdk/src/implementation/webhooks.ts
++++ b/packages/sdk/src/implementation/webhooks.ts
+@@ -85,5 +85,5 @@ const ManagedWebhook = Schema.Struct({
+ 
+ const refusedRemoval =
+-  "Executor could not remove this registration: it is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
++  "Could not remove this registration: this instance is no longer allowed to use the accounts it was registered with. Remove the webhook for this callback URL at the provider, then confirm.";
+ const selectedIds = (selected: SelectedAccounts) =>
+   Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
+diff --git a/packages/ui/src/contracts/product-brand.ts b/packages/ui/src/contracts/product-brand.ts
+index 1b2f12331..d5e8a4581 100644
+--- a/packages/ui/src/contracts/product-brand.ts
++++ b/packages/ui/src/contracts/product-brand.ts
+@@ -19,2 +19,24 @@ export const productBrandAtom = Atom.make<ProductBrand>(defaultProductBrand).pip
+ /** The name as the dashboard's lowercase wordmark shows it beside the logo. */
+ export const productWordmark = (brand: ProductBrand) => brand.name.toLowerCase();
++
++/** The app every organization gets, whose name and slug agents use; see `appDisplayName`. */
++export const builtInApp = (app: {
++  readonly name: string;
++  readonly copiedFrom: { readonly name: string } | null;
++}) => app.name === defaultProductBrand.name && app.copiedFrom?.name === "executor";
++
++/**
++ * The name people see for an app. The built-in app keeps the stored name Executor, which agents
++ * and lookups rely on, and shows the product's name instead; a renamed copy shows its own.
++ */
++export const appDisplayName = (
++  app: { readonly name: string; readonly copiedFrom: { readonly name: string } | null },
++  brand: ProductBrand,
++) => (builtInApp(app) ? brand.name : app.name);
++
++/**
++ * Where only an app's name is known, such as on an approval, the name Executor is the built-in
++ * app and shows the product's name.
++ */
++export const productNamed = (name: string, brand: Pick<ProductBrand, "name">) =>
++  name === defaultProductBrand.name ? brand.name : name;
+diff --git a/packages/ui/src/implementation/dashboard/account-actions.tsx b/packages/ui/src/implementation/dashboard/account-actions.tsx
+index dbb58d637..2fb00bab4 100644
+--- a/packages/ui/src/implementation/dashboard/account-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/account-actions.tsx
+@@ -23,4 +23,5 @@ import { ProviderIcon } from "./common.tsx";
+ import { useDashboard } from "./context.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** Account management lives on its list row; products supply the menu items they support. */
+@@ -255,4 +256,5 @@ export function DisconnectAccountForm<E>({
+ /** Links are managed on the app itself. */
+ export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
++  const brand = useProductBrand();
+   const { AppLink } = useDashboard();
+   return apps.length === 0 ? (
+@@ -264,5 +266,5 @@ export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
+       {apps.map((app) => (
+         <AppLink key={app.id} app={app.id} view="accounts">
+-          <span>{app.name}</span>
++          <span>{appDisplayName(app, brand)}</span>
+           <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={14} />
+         </AppLink>
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 7d4ea99a7..d6ce5bf8b 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -9,4 +9,6 @@ import { Button } from "../components/button.tsx";
+ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ type AccountInfo = NonNullable<AccountHealth["info"]>;
+@@ -136,4 +138,5 @@ export function AccountHealthPanel<E>({
+   readonly actions?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const { apps, health } = data;
+   const [pending, setPending] = useState(false);
+@@ -174,5 +177,5 @@ export function AccountHealthPanel<E>({
+             return (
+               <li key={app.id} className="flex items-center justify-between gap-3 py-2.5">
+-                <span className="min-w-0 wrap-anywhere">{app.name}</span>
++                <span className="min-w-0 wrap-anywhere">{appDisplayName(app, brand)}</span>
+                 <AccountCheckResult health={entry} />
+               </li>
+diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
+index 7cfda047f..11c022dd6 100644
+--- a/packages/ui/src/implementation/dashboard/accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts.tsx
+@@ -14,4 +14,6 @@ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
+ import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+ import { Button } from "../components/button.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** Saved account metadata is shared across app references, without exposing credential values. */
+@@ -89,4 +91,5 @@ function AccountsList({
+   readonly highlight?: AccountId | undefined;
+ }) {
++  const brand = useProductBrand();
+   const { AppLink } = useDashboard();
+   const highlighted = useRef<HTMLDivElement>(null);
+@@ -187,5 +190,5 @@ function AccountsList({
+                           health={account.health?.apps.find((entry) => entry.app === app.id)}
+                         />
+-                        {app.name}
++                        {appDisplayName(app, brand)}
+                         <HugeiconsIcon
+                           icon={ArrowUpRight01Icon}
+diff --git a/packages/ui/src/implementation/dashboard/agent-setup.tsx b/packages/ui/src/implementation/dashboard/agent-setup.tsx
+index dbc719eb6..6b4cb0e95 100644
+--- a/packages/ui/src/implementation/dashboard/agent-setup.tsx
++++ b/packages/ui/src/implementation/dashboard/agent-setup.tsx
+@@ -9,5 +9,5 @@ export const agentSetupPrompt = (product: string, endpoint?: string) =>
+     `Help me add a service to ${product} as an app. Ask me which service I want to connect.`,
+     "",
+-    "Start with the Executor app's executor skill, then follow its app-authoring skill. Read the service's API and authentication documentation, ask me how I sign in and anything else you need, then write and deploy the app and help me connect my account.",
++    "Start with the built-in app's executor skill, then follow its app-authoring skill. Read the service's API and authentication documentation, ask me how I sign in and anything else you need, then write and deploy the app and help me connect my account.",
+     ...(endpoint === undefined
+       ? []
+diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
+index 0713050dc..8fce008e5 100644
+--- a/packages/ui/src/implementation/dashboard/app-detail.tsx
++++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
+@@ -22,4 +22,6 @@ import { useDashboard } from "./context.tsx";
+ import { useDocumentTitle } from "../hooks/document-title.ts";
+ import { cn } from "../lib/utils.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ const sections = [
+@@ -96,5 +98,6 @@ export function AppDetailLayout({
+   readonly children: ReactNode;
+ }) {
+-  useDocumentTitle(app?.name ?? "App");
++  const brand = useProductBrand();
++  useDocumentTitle((app && appDisplayName(app, brand)) ?? "App");
+   return (
+     <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
+@@ -108,13 +111,13 @@ export function AppDetailLayout({
+             <h1
+               className="min-w-0 truncate text-2xl font-semibold tracking-tight max-[740px]:text-lg"
+-              title={app?.name}
++              title={app && appDisplayName(app, brand)}
+             >
+               {app ? (
+                 <BoundAppLink
+                   app={app.id}
+-                  aria-label={`${app.name} overview`}
++                  aria-label={`${appDisplayName(app, brand)} overview`}
+                   className="hover:underline"
+                 >
+-                  {app.name}
++                  {appDisplayName(app, brand)}
+                 </BoundAppLink>
+               ) : (
+diff --git a/packages/ui/src/implementation/dashboard/app-loading.tsx b/packages/ui/src/implementation/dashboard/app-loading.tsx
+index 99918a155..e075817b4 100644
+--- a/packages/ui/src/implementation/dashboard/app-loading.tsx
++++ b/packages/ui/src/implementation/dashboard/app-loading.tsx
+@@ -12,4 +12,6 @@ import { ToolBrowserLoading } from "./tools.tsx";
+ import { EmptyState } from "./empty-state.tsx";
+ import { cn } from "../lib/utils.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** Card contents load independently, without replacing a card with a table skeleton. */
+@@ -129,4 +131,5 @@ export function AppAccountsLoading({
+ /** Settings keeps its compact header and metadata cards, including a known copied origin. */
+ export function AppSettingsLoading({ app }: { readonly app?: App | undefined }) {
++  const brand = useProductBrand();
+   return (
+     <section role="status" aria-label="Loading settings" className="w-full">
+@@ -136,5 +139,5 @@ export function AppSettingsLoading({ app }: { readonly app?: App | undefined })
+             <h3 className="text-sm font-medium">App name</h3>
+             {app ? (
+-              <p className="text-sm text-muted-foreground">{app.name}</p>
++              <p className="text-sm text-muted-foreground">{appDisplayName(app, brand)}</p>
+             ) : (
+               <Skeleton className="h-5 w-36" />
+diff --git a/packages/ui/src/implementation/dashboard/app-settings.tsx b/packages/ui/src/implementation/dashboard/app-settings.tsx
+index d63693364..e3d72b091 100644
+--- a/packages/ui/src/implementation/dashboard/app-settings.tsx
++++ b/packages/ui/src/implementation/dashboard/app-settings.tsx
+@@ -1,4 +1,6 @@
+ import type { App } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** App metadata and removal live together; products supply only the actions they authorize. */
+@@ -18,4 +20,5 @@ export function AppSettings({
+   readonly children?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <div className="w-full">
+@@ -25,5 +28,7 @@ export function AppSettings({
+             <div className="min-w-0 flex-1 basis-48">
+               <h3 className="text-sm font-medium">App name</h3>
+-              <p className="mt-2 break-words text-sm text-muted-foreground">{app.name}</p>
++              <p className="mt-2 break-words text-sm text-muted-foreground">
++                {appDisplayName(app, brand)}
++              </p>
+             </div>
+             {renameAction}
+diff --git a/packages/ui/src/implementation/dashboard/app-skills.tsx b/packages/ui/src/implementation/dashboard/app-skills.tsx
+index dc2fda8a6..c5f2fa04e 100644
+--- a/packages/ui/src/implementation/dashboard/app-skills.tsx
++++ b/packages/ui/src/implementation/dashboard/app-skills.tsx
+@@ -32,4 +32,5 @@ import {
+ import { SkillWorkspace } from "./skill-workspace.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ type Skill = AppSkillBundle["skills"][number];
+@@ -190,5 +191,5 @@ function SkillCatalog<E>({
+           canEdit ? (
+             <CopyButton
+-              code={`Add skills to my ${brand.name} app ${JSON.stringify(app.name)} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
++              code={`Add skills to my ${brand.name} app ${JSON.stringify(appDisplayName(app, brand))} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
+               label="Copy prompt"
+               text="Copy prompt"
+diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/ui/src/implementation/dashboard/approvals.tsx
+index e5860c518..40b72a9aa 100644
+--- a/packages/ui/src/implementation/dashboard/approvals.tsx
++++ b/packages/ui/src/implementation/dashboard/approvals.tsx
+@@ -8,4 +8,6 @@ import type { ApprovalListItem } from "../../contracts/schedules.ts";
+ import { QueryView } from "./context.tsx";
+ import { Button } from "../components/button.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { productNamed } from "../../contracts/product-brand.ts";
+ 
+ /** Pending scheduled work uses the same review interaction in local and hosted dashboards. */
+@@ -19,4 +21,5 @@ export function ApprovalsPage<E>({
+   readonly review: (item: ApprovalListItem) => ReactNode;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <PageFrame>
+@@ -33,5 +36,7 @@ export function ApprovalsPage<E>({
+                 <div key={item.run.id} className="flex items-center justify-between gap-4 p-4">
+                   <div className="min-w-0">
+-                    <p className="text-sm font-medium break-words">{item.app.name}</p>
++                    <p className="text-sm font-medium break-words">
++                      {productNamed(item.app.name, brand)}
++                    </p>
+                     <p className="mt-1 text-xs text-muted-foreground">
+                       {item.run.name}
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+index cfa6c5cf0..026079ac5 100644
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -17,4 +17,6 @@ import {
+ import { AppIcon, Empty, SearchInput } from "./common.tsx";
+ import { Button } from "../components/button.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** A card for each configured app and its linked accounts. */
+@@ -93,6 +95,9 @@ function AppsList({
+   readonly pending?: ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const { AppLink } = useDashboard();
+-  const apps = data.apps.filter((app) => app.name.toLowerCase().includes(search.toLowerCase()));
++  const apps = data.apps.filter((app) =>
++    appDisplayName(app, brand).toLowerCase().includes(search.toLowerCase()),
++  );
+   return (
+     <>
+@@ -137,5 +142,5 @@ function AppsList({
+                   className="app-card flex min-h-[137px] flex-col min-w-0 p-[16px] border border-border rounded-[8px] bg-background [transition:border-color_120ms,_background-color_120ms] hover:border-input hover:bg-muted focus-visible:[outline:2px_solid_var(--ring)] focus-visible:outline-offset-[3px] max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-0.5 max-[600px]:px-3.5 max-[600px]:py-3"
+                   app={app.id}
+-                  aria-label={`Open ${app.name}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
++                  aria-label={`Open ${appDisplayName(app, brand)}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
+                 >
+                   <div className="app-card-heading flex items-center justify-between gap-3 max-[600px]:contents">
+@@ -143,5 +148,7 @@ function AppsList({
+                       <AppIcon app={app} />
+                       <div className="max-[600px]:col-start-2 max-[600px]:row-start-1 max-[600px]:self-end">
+-                        <strong title={app.name}>{app.name}</strong>
++                        <strong title={appDisplayName(app, brand)}>
++                          {appDisplayName(app, brand)}
++                        </strong>
+                       </div>
+                     </div>
+diff --git a/packages/ui/src/implementation/dashboard/browser-approval.tsx b/packages/ui/src/implementation/dashboard/browser-approval.tsx
+index 1f362bbc8..aec4b91bd 100644
+--- a/packages/ui/src/implementation/dashboard/browser-approval.tsx
++++ b/packages/ui/src/implementation/dashboard/browser-approval.tsx
+@@ -24,4 +24,5 @@ import { ApprovalCard } from "./loading.tsx";
+ import { Input } from "../components/input.tsx";
+ import { Spinner } from "../components/spinner.tsx";
++import { productNamed } from "../../contracts/product-brand.ts";
+ 
+ type Field = PendingInteraction["elicitation"]["requestedSchema"]["properties"][string];
+@@ -238,5 +239,5 @@ function ApprovalForm({
+       <header>
+         <p className="mb-2 text-sm text-muted-foreground">
+-          {appName === undefined ? tool : `${appName} · ${tool}`}
++          {appName === undefined ? tool : `${productNamed(appName, { name: product })} · ${tool}`}
+         </p>
+         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index 4f806b8cd..50d8cc9d3 100644
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -23,4 +23,6 @@ import {
+ import { Input } from "../components/input.tsx";
+ import { useIncrementalList } from "./incremental-list.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /**
+@@ -86,4 +88,7 @@ export function CatalogPage<E, IE>({
+   readonly open: (app: App) => ReactNode;
+ }) {
++  const brand = useProductBrand();
++  const entryName = (entry: { readonly name: string; readonly package: string }) =>
++    appDisplayName({ name: entry.name, copiedFrom: { name: entry.package } }, brand);
+   const result = useAtomValue(query);
+   const installedByPackage = installedCatalogApps(
+@@ -188,5 +193,5 @@ export function CatalogPage<E, IE>({
+                 <ProviderIcon name={entry.name} icons={entry.icons} />
+                 <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
+-                  <strong>{entry.name}</strong>
++                  <strong>{entryName(entry)}</strong>
+                   <span className="line-clamp-1">{entry.description}</span>
+                 </div>
+@@ -202,5 +207,5 @@ export function CatalogPage<E, IE>({
+                       variant="outline"
+                       size="sm"
+-                      aria-label={`Add ${entry.name}`}
++                      aria-label={`Add ${entryName(entry)}`}
+                       disabled={adding.has(entry.id)}
+                       onClick={() => void add(entry, entry.name)}
+diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
+index 6595d22d3..929e2545e 100644
+--- a/packages/ui/src/implementation/dashboard/common.tsx
++++ b/packages/ui/src/implementation/dashboard/common.tsx
+@@ -20,4 +20,5 @@ import { cn } from "@executor-js/ui/lib/utils";
+ import { Skeleton } from "../components/skeleton.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { builtInApp, isDefaultProductBrand } from "../../contracts/product-brand.ts";
+ const noIcons = Atom.make(noCatalogIcons);
+ 
+@@ -37,5 +38,9 @@ export function useAppIconSources(app: App | undefined): {
+ } {
+   const catalog = useCatalogIcons();
++  const brand = useProductBrand();
+   if (app === undefined) return { sources: null, pending: false };
++  // Under another name, the built-in app shows the product's logo instead of Executor's.
++  if (builtInApp(app) && !isDefaultProductBrand(brand))
++    return { sources: { light: brand.logo, dark: brand.logo }, pending: false };
+   const declared = appIconSources(app.requirements.icons);
+   if (declared !== null) return { sources: declared, pending: false };
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+index 1b1404ca3..180cd8362 100644
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -34,6 +34,11 @@ import cursorScreenshot from "./assistant-screenshots/cursor.webp";
+ 
+ /** The agent installs the product itself; the prompt carries everything it needs to start. */
+-export const mcpSetupPrompt = (endpoint: string, docs: string, next: string, product: string) =>
+-  `Help me connect to ${product} over MCP at ${endpoint}.\n\nRead the docs to understand the product at ${docs}, then ${next}.`;
++export const mcpSetupPrompt = (
++  endpoint: string,
++  docs: string | null,
++  next: string,
++  product: string,
++) =>
++  `Help me connect to ${product} over MCP at ${endpoint}.\n\n${docs === null ? `Then ${next}` : `Read the docs to understand the product at ${docs}, then ${next}`}.`;
+ 
+ const shellQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
+@@ -777,5 +782,6 @@ export function McpInstallInstructions({
+ }: {
+   readonly endpoint: string;
+-  readonly docs?: string;
++  /** `null` when the product has no docs to point the agent at. */
++  readonly docs?: string | null;
+   /** What the agent should do once connected. */
+   readonly next?: string;
+diff --git a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
+index b4f79a9ea..46e75547b 100644
+--- a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
++++ b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
+@@ -26,4 +26,6 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+ import { AppIcon } from "./common.tsx";
+ import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** One way an app can run: as one account the user can use with it. */
+@@ -127,4 +129,5 @@ export function ConnectionAppRow({
+   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
+ }) {
++  const brand = useProductBrand();
+   const id = useId();
+   const { app } = choices;
+@@ -154,6 +157,9 @@ export function ConnectionAppRow({
+           <AppIcon app={app} />
+           <span className="min-w-0">
+-            <span className="block truncate text-[13px] font-medium" title={app.name}>
+-              {app.name}
++            <span
++              className="block truncate text-[13px] font-medium"
++              title={appDisplayName(app, brand)}
++            >
++              {appDisplayName(app, brand)}
+             </span>
+             <span
+@@ -195,5 +201,5 @@ export function ConnectionAppRow({
+               <SelectTrigger
+                 size="sm"
+-                aria-label={`Tools for ${app.name}`}
++                aria-label={`Tools for ${appDisplayName(app, brand)}`}
+                 className="min-w-0 flex-1 text-xs sm:w-36 sm:flex-none"
+               >
+@@ -208,5 +214,5 @@ export function ConnectionAppRow({
+             {declaresEvents(app) && (
+               <EventsPicker
+-                appName={app.name}
++                appName={appDisplayName(app, brand)}
+                 names={declaredEventNames(app)}
+                 events={selection.events}
+@@ -221,5 +227,9 @@ export function ConnectionAppRow({
+                 selection.tools.kind === "selected" ? "" : "hidden sm:invisible sm:inline-flex"
+               }
+-              aria-label={expanded ? `Hide tools for ${app.name}` : `Show tools for ${app.name}`}
++              aria-label={
++                expanded
++                  ? `Hide tools for ${appDisplayName(app, brand)}`
++                  : `Show tools for ${appDisplayName(app, brand)}`
++              }
+               aria-expanded={expanded}
+               onClick={() => onExpandedChange(!expanded)}
+diff --git a/packages/ui/src/implementation/dashboard/copy-app.tsx b/packages/ui/src/implementation/dashboard/copy-app.tsx
+index e224d2852..f1d790226 100644
+--- a/packages/ui/src/implementation/dashboard/copy-app.tsx
++++ b/packages/ui/src/implementation/dashboard/copy-app.tsx
+@@ -6,4 +6,6 @@ import { AppCreateForm } from "./app-create.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Dialog, DialogContent, DialogTitle, DialogDescription } from "../components/dialog.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ /** Both owned and public apps copy through the same operation and naming form. */
+@@ -19,4 +21,5 @@ export function CopyApp<E>({
+   readonly onCopied: (app: App) => void | Promise<void>;
+ }) {
++  const brand = useProductBrand();
+   const [open, setOpen] = useState(false);
+   const mutation = atoms.copy({ app: app.id });
+@@ -41,5 +44,7 @@ export function CopyApp<E>({
+             mutation={mutation}
+             Failure={Failure}
+-            initialName={app.name.length <= 115 ? `${app.name} copy` : ""}
++            initialName={
++              appDisplayName(app, brand).length <= 115 ? `${appDisplayName(app, brand)} copy` : ""
++            }
+             input={(name) => ({ name, onApp })}
+             label="Make a copy"
+diff --git a/packages/ui/src/implementation/dashboard/grant-picker.tsx b/packages/ui/src/implementation/dashboard/grant-picker.tsx
+index 636a548fb..7f949472a 100644
+--- a/packages/ui/src/implementation/dashboard/grant-picker.tsx
++++ b/packages/ui/src/implementation/dashboard/grant-picker.tsx
+@@ -17,4 +17,5 @@ import {
+ } from "../components/select.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { productNamed } from "../../contracts/product-brand.ts";
+ 
+ /** A consent form needs at least one usable selection, or explicit all-app access. */
+@@ -110,9 +111,9 @@ export function GrantPicker<E>({
+                       key={app.id}
+                       className="grant-app border border-border rounded-[10px] overflow-hidden min-w-0"
+-                      aria-label={app.name}
++                      aria-label={productNamed(app.name, brand)}
+                     >
+                       <div className="grant-app-heading flex items-center justify-between gap-4 p-[16px] max-[480px]:p-[12px] max-[480px]:gap-2">
+                         <div className="grant-app-title flex flex-col gap-1 min-w-0 [&_strong]:text-[14px] [&_strong]:font-semibold [&_strong]:overflow-hidden [&_strong]:text-ellipsis [&_strong]:whitespace-nowrap [&_>_span]:text-[11px] [&_>_span]:text-muted-foreground">
+-                          <strong>{app.name}</strong>
++                          <strong>{productNamed(app.name, brand)}</strong>
+                           <span>
+                             {selected?.tools.kind === "all"
+@@ -135,5 +136,5 @@ export function GrantPicker<E>({
+                         >
+                           <SelectTrigger
+-                            aria-label={`Access to ${app.name}`}
++                            aria-label={`Access to ${productNamed(app.name, brand)}`}
+                             className="grant-app-select min-w-35 flex-none text-[12px] max-[740px]:text-[12px] max-[480px]:min-w-30"
+                           >
+@@ -149,5 +150,5 @@ export function GrantPicker<E>({
+                       {selected?.tools.kind === "selected" && (
+                         <ToolSelection
+-                          appName={app.name}
++                          appName={productNamed(app.name, brand)}
+                           tools={tools(app.id)}
+                           names={selected.tools.names}
+diff --git a/packages/ui/src/implementation/dashboard/publish-app.tsx b/packages/ui/src/implementation/dashboard/publish-app.tsx
+index fc76c153a..8dad8c008 100644
+--- a/packages/ui/src/implementation/dashboard/publish-app.tsx
++++ b/packages/ui/src/implementation/dashboard/publish-app.tsx
+@@ -28,4 +28,5 @@ import { QueryView, useQuery } from "./context.tsx";
+ import { cn } from "../lib/utils.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
+@@ -317,4 +318,5 @@ function PublishAction<E>({
+   readonly app: App;
+ }) {
++  const brand = useProductBrand();
+   const [open, setOpen] = useState(false);
+   // After an in-dialog rename, review the saved revision instead of the one first opened.
+@@ -339,5 +341,5 @@ function PublishAction<E>({
+             <div className="px-7 pb-6 pt-7 max-[740px]:px-5">
+               <DialogTitle className="pr-5 text-2xl leading-tight tracking-tight">
+-                Publish {app.name}
++                Publish {appDisplayName(app, brand)}
+               </DialogTitle>
+               <DialogDescription className="mt-2 leading-6">
+diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+index 67d984779..d274b2a05 100644
+--- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
++++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+@@ -61,4 +61,5 @@ import { McpInstallInstructions } from "./connect.tsx";
+ import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { appDisplayName, productNamed } from "../../contracts/product-brand.ts";
+ 
+ /** Each host supplies its existing authorized catalog read of the app's tools. */
+@@ -136,5 +137,6 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends
+   readonly agents?: ReactNode;
+   /** Documentation the setup prompt points agents to. */
+-  readonly docs?: string;
++  /** `null` when the product has no docs to point the agent at. */
++  readonly docs?: string | null;
+   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
+ }) {
+@@ -376,7 +378,10 @@ function ConnectionList<E>({
+   readonly onOpen: (connection: ConnectionId) => void;
+ }) {
++  const brand = useProductBrand();
+   const inventory = useAtomValue(query);
+   const names = new Map<AppId, string>(
+-    AsyncResult.isSuccess(inventory) ? inventory.value.apps.map((app) => [app.id, app.name]) : [],
++    AsyncResult.isSuccess(inventory)
++      ? inventory.value.apps.map((app) => [app.id, appDisplayName(app, brand)])
++      : [],
+   );
+   return (
+@@ -574,4 +579,5 @@ function ConnectionEditor<E, ES extends E>({
+   readonly onSaved: (connection: ConnectionView) => void;
+ }) {
++  const brand = useProductBrand();
+   const submit = useAtomSet(save, { mode: "promiseExit" });
+   const saving = useAtomValue(save);
+@@ -590,7 +596,7 @@ function ConnectionEditor<E, ES extends E>({
+         (a, b) =>
+           Number(pinned.has(b.app.id)) - Number(pinned.has(a.app.id)) ||
+-          a.app.name.localeCompare(b.app.name),
++          appDisplayName(a.app, brand).localeCompare(appDisplayName(b.app, brand)),
+       );
+-  }, [inventory, pinned]);
++  }, [inventory, pinned, brand]);
+   const byId = useMemo(
+     () => new Map<AppId, AppChoices>(choices.map((choice) => [choice.app.id, choice])),
+@@ -612,5 +618,5 @@ function ConnectionEditor<E, ES extends E>({
+         (filter === "selected" && selections.has(choice.app.id)) ||
+         (filter === "attention" && attention.has(choice.app.id))) &&
+-      (query === "" || choice.app.name.toLowerCase().includes(query)),
++      (query === "" || appDisplayName(choice.app, brand).toLowerCase().includes(query)),
+   );
+   const addable = visible.filter((choice) => !selections.has(choice.app.id));
+@@ -817,4 +823,5 @@ function ConnectionAccessList({
+   readonly inventory: Inventory;
+ }) {
++  const brand = useProductBrand();
+   const [search, setSearch] = useState("");
+   const [open, setOpen] = useState<AppId>();
+@@ -825,6 +832,6 @@ function ConnectionAccessList({
+   );
+   const visible = apps
+-    .filter((app) => query === "" || app.name.toLowerCase().includes(query))
+-    .toSorted((a, b) => a.name.localeCompare(b.name));
++    .filter((app) => query === "" || productNamed(app.name, brand).toLowerCase().includes(query))
++    .toSorted((a, b) => productNamed(a.name, brand).localeCompare(productNamed(b.name, brand)));
+   const { count, sentinel } = useIncrementalList(visible.length, query);
+   return (
+@@ -849,5 +856,7 @@ function ConnectionAccessList({
+                 <AppIcon app={app} name={selection.name} />
+                 <span className="min-w-0 flex-1 basis-48">
+-                  <span className="block truncate text-[13px] font-medium">{selection.name}</span>
++                  <span className="block truncate text-[13px] font-medium">
++                    {productNamed(selection.name, brand)}
++                  </span>
+                   <span className="block truncate text-xs text-muted-foreground">
+                     {app === undefined
+diff --git a/packages/ui/src/implementation/dashboard/shell.tsx b/packages/ui/src/implementation/dashboard/shell.tsx
+index 3565f8901..e00dd402e 100644
+--- a/packages/ui/src/implementation/dashboard/shell.tsx
++++ b/packages/ui/src/implementation/dashboard/shell.tsx
+@@ -17,6 +17,6 @@ export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
+ 
+ /** Executor's own feedback and source links appear only while the deployment presents Executor. */
+-const resources = (docsUrl: string, executor: boolean) => [
+-  { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
++const resources = (docsUrl: string | undefined, executor: boolean) => [
++  ...(docsUrl === undefined ? [] : [{ label: "Docs", href: docsUrl, icon: BookOpen01Icon }]),
+   ...(executor
+     ? [
+@@ -50,5 +50,5 @@ function ResourceLinks({
+   support,
+ }: {
+-  readonly docsUrl: string;
++  readonly docsUrl: string | undefined;
+   readonly support: ReactNode;
+ }) {
+@@ -83,6 +83,6 @@ export function DashboardShell({
+   children,
+ }: {
+-  /** The owning product chooses same-origin or public documentation. */
+-  readonly docsUrl: string;
++  /** The owning product chooses same-origin or public documentation; none hides the link. */
++  readonly docsUrl: string | undefined;
+   readonly brand: ReactNode;
+   readonly navigation: ReactNode;
+diff --git a/packages/utils/src/connection-failure.ts b/packages/utils/src/connection-failure.ts
+index 5664dcd85..74cee4dd1 100644
+--- a/packages/utils/src/connection-failure.ts
++++ b/packages/utils/src/connection-failure.ts
+@@ -28,10 +28,10 @@ export const ConnectionFailed = UserFacingError.define({
+   // Never served: the browser constructs it when no response arrived.
+   status: 503,
+-  title: "Can’t reach Executor",
+-  description: "Your browser did not get a response from Executor.",
++  title: "Can’t reach the server",
++  description: "Your browser did not get a response from the server.",
+   recovery: {
+     action: "Check your internet connection, then try again.",
+     instructions:
+-      "The browser received no response from Executor. Check the device’s network connection, VPN, proxy or browser extensions that block requests, then retry the operation.",
++      "The browser received no response from the server. Check the device’s network connection, VPN, proxy or browser extensions that block requests, then retry the operation.",
+   },
+   retryable: true,
+diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
+index e51cafadf..6788899d4 100644
+--- a/packages/utils/src/product-brand.ts
++++ b/packages/utils/src/product-brand.ts
+@@ -5,8 +5,12 @@ import { Config, Context, Effect, Schema } from "effect";
+  * What a deployment calls itself in its pages, emails, OAuth client metadata and MCP server
+  * description. `logo` is a square image URL, absolute or a path on the deployment's own origin.
++ * `docs`, `privacy` and `terms` are the deployment's own pages behind those links.
+  */
+ export const ProductBrand = Schema.Struct({
+   name: Schema.NonEmptyString,
+   logo: Schema.NonEmptyString,
++  docs: Schema.optional(Schema.NonEmptyString),
++  privacy: Schema.optional(Schema.NonEmptyString),
++  terms: Schema.optional(Schema.NonEmptyString),
+ });
+ export type ProductBrand = typeof ProductBrand.Type;
+@@ -21,4 +25,14 @@ export const isDefaultProductBrand = (brand: ProductBrand) =>
+   brand.name === defaultProductBrand.name;
+ 
++/**
++ * The deployment's own docs or legal page when it names one. Executor's own `fallback` applies
++ * only while the deployment presents Executor; under another name an unset link is not shown.
++ */
++export const productLink = (
++  brand: ProductBrand,
++  link: "docs" | "privacy" | "terms",
++  fallback: string,
++): string | undefined => brand[link] ?? (isDefaultProductBrand(brand) ? fallback : undefined);
++
+ /** The name an MCP client lists this server under, such as `executor`. */
+ export const productServerName = (brand: ProductBrand) =>
+@@ -34,22 +48,50 @@ export const productLogoUrl = (brand: ProductBrand, origin: string) =>
+ 
+ /** A setting left empty or blank counts as unset. */
+-const setting = (name: string, fallback: string) =>
++const setting = (name: string) =>
+   Config.String(name).pipe(
+     Config.withDefault(""),
+-    Config.map((value) => value.trim() || fallback),
++    Config.map((value) => value.trim() || undefined),
+   );
+ 
++/** An absolute http(s) URL, or a path on this origin starting with `/`. */
++const isUrlOrPath = (value: string) => {
++  if (value.startsWith("/") && !value.startsWith("//")) return true;
++  const url = URL.parse(value);
++  return url !== null && (url.protocol === "https:" || url.protocol === "http:");
++};
++
++const urlOrPath = (name: string, value: string | undefined) =>
++  value === undefined || isUrlOrPath(value)
++    ? Effect.succeed(value)
++    : Effect.die(new Error(`${name} must be an absolute http(s) URL or a path starting with /`));
++
++/** The settings a host reads its brand from; every one is optional. */
++export const productBrandSettings = {
++  name: "EXECUTOR_PRODUCT_NAME",
++  logo: "EXECUTOR_PRODUCT_LOGO_URL",
++  docs: "EXECUTOR_PRODUCT_DOCS_URL",
++  privacy: "EXECUTOR_PRODUCT_PRIVACY_URL",
++  terms: "EXECUTOR_PRODUCT_TERMS_URL",
++} as const;
++
+ /**
+- * The operator's brand from `EXECUTOR_PRODUCT_NAME` and `EXECUTOR_PRODUCT_LOGO_URL`, each
+- * falling back to Executor's own. A logo that is neither a URL nor a path stops startup.
++ * The operator's brand from `productBrandSettings`, the name and logo falling back to Executor's
++ * own. A logo or link that is neither an http(s) URL nor a `/` path stops startup.
+  */
+ export const productBrandConfig = Effect.gen(function* () {
+-  const name = yield* setting("EXECUTOR_PRODUCT_NAME", defaultProductBrand.name);
+-  const logo = yield* setting("EXECUTOR_PRODUCT_LOGO_URL", defaultProductBrand.logo);
+-  if (URL.parse(logo, "https://origin.invalid") === null)
+-    return yield* Effect.die(
+-      new Error("EXECUTOR_PRODUCT_LOGO_URL must be an absolute URL or a path"),
++  const name = (yield* setting(productBrandSettings.name)) ?? defaultProductBrand.name;
++  const logo = yield* urlOrPath(
++    productBrandSettings.logo,
++    (yield* setting(productBrandSettings.logo)) ?? defaultProductBrand.logo,
++  );
++  const links: { docs?: string; privacy?: string; terms?: string } = {};
++  for (const link of ["docs", "privacy", "terms"] as const) {
++    const value = yield* urlOrPath(
++      productBrandSettings[link],
++      yield* setting(productBrandSettings[link]),
+     );
+-  return { name, logo } satisfies ProductBrand;
++    if (value !== undefined) links[link] = value;
++  }
++  return { name, logo: logo ?? defaultProductBrand.logo, ...links } satisfies ProductBrand;
+ });
+ 
+diff --git a/packages/utils/src/user-facing-error.ts b/packages/utils/src/user-facing-error.ts
+index dd82d8ed2..317c3c056 100644
+--- a/packages/utils/src/user-facing-error.ts
++++ b/packages/utils/src/user-facing-error.ts
+@@ -156,5 +156,5 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
+         const details = presentation(this);
+         return [
+-          "Diagnose and fix this problem in Executor. Use the current app context where relevant.",
++          "Diagnose and fix this problem. Use the current app context where relevant.",
+           `Error: ${details.title}\nError code: ${this.code}\nKnown cause: ${details.description}${details.detail === undefined ? "" : `\n${details.detail.label}: ${details.detail.value}`}`,
+           `Investigation and recovery:\n${details.recovery.instructions}`,
+@@ -225,9 +225,9 @@ export const UnexpectedError = define({
+   status: 500,
+   title: "Action unavailable",
+-  description: "Executor could not complete this action because of an unexpected error.",
++  description: "Could not complete this action because of an unexpected error.",
+   recovery: {
+     action: "Try again. If this continues, copy the fix prompt into your agent to investigate.",
+     instructions:
+-      "Reproduce the failed operation and inspect safe diagnostics to identify its cause. This error category does not establish a specific cause. Distinguish app configuration, service availability, and Executor defects before choosing a fix.",
++      "Reproduce the failed operation and inspect safe diagnostics to identify its cause. This error category does not establish a specific cause. Distinguish app configuration, service availability, and platform defects before choosing a fix.",
+   },
+   retryable: true,

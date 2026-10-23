@@ -16,8 +16,8 @@ export const brand = {
   /** Sign-in codes and invitations come from no-reply at this domain, under `name`. */
   emailDomain: "auth.signalbox.run",
   /**
-   * The brand's own pages behind the tools service's Docs, Privacy and Terms links. Unset, those
-   * links answer 404 instead of reaching the tools service's pages.
+   * The brand's own docs, privacy and terms pages, as absolute URLs. The tools service links
+   * each one only when it is set; the router also sends those paths here.
    */
   links: {
     docs: null as string | null,

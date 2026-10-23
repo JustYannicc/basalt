@@ -16,7 +16,7 @@ This repository deploys the cloud build of [Executor v2](https://github.com/Usef
 
 The router preserves incoming URLs, headers and bodies, and streams responses through a private service binding. OAuth callbacks and discovery documents reach the same tools service. Only the router owns the public custom domain. Cloudflare provisions it from the existing zone through the deploy token.
 
-The tools service's Worker also serves its own marketing site, docs and legal pages on every host. The router never forwards them: a signed-out `/` goes to sign-in, and the Docs, Privacy and Terms links redirect to the brand's own pages once `brand.links` names them, and answer 404 until then.
+The tools service's Worker also serves its own marketing site, docs and legal pages on every host. The router never forwards them: a signed-out `/` goes to sign-in, and the Docs, Privacy and Terms paths redirect to the brand's own pages once `brand.links` names them, and answer 404 until then. The tools service shows those links only when they are set.
 
 [brand.ts](brand.ts) is the one brand config: the name, logo, host and zone, MCP entry name, OAuth app name, email domain and the brand's own docs and legal links. A rename changes it and the files in [public/](public); every place the tools service shows a name follows. [upstream.json](upstream.json) is the only tools-service commit pin. The generated upstream checkout and dependencies are ignored by Git.
 
@@ -107,6 +107,7 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0004-encrypted-workflow-results.patch`: encrypts persisted Workflow values and callback failures with the existing credential key, and hashes checkpoint names. Replay uses stable per-name occurrence identities.
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 - `0006-product-brand.patch`: a configurable product name and logo, so the tools service presents the brand from [brand.ts](brand.ts) in its pages, emails, OAuth and MCP metadata. Offered upstream in [executor#2350](https://github.com/UsefulSoftwareCo/executor/pull/2350). The deployment patch no longer names the email sender; this patch does.
+- `0007-product-brand-surfaces.patch`: the built-in app, its account and key, and approvals show the brand's name and logo; Docs, Privacy and Terms links appear only when `brand.links` names them; error and status copy no longer names the tools service. Offered upstream in [executor#2352](https://github.com/UsefulSoftwareCo/executor/pull/2352).
 
 A patch change that alters workflow step names requires existing runs to be drained before deployment.
 
