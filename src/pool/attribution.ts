@@ -166,8 +166,8 @@ export class PoolControl implements ControlAttribution {
   async handle(request: Request): Promise<Response> {
     const deadline = Date.now() + callbackWaitMs;
     try {
-      const { routeKey } = await authorizeControl(request, this.deps.signingKey, this.deps.previousSigningKey);
-      if (routeKey === "GET /pool") return handleControl(request, { ...this.deps, client: this.client, attribution: null });
+      const { routeKey, isRead } = await authorizeControl(request, this.deps.signingKey, this.deps.previousSigningKey);
+      if (isRead) return handleControl(request, { ...this.deps, client: this.client, attribution: null });
       const callback = routeKey === "POST /sign-ins/callback";
       for (;;) {
         const result = await this.run(async () => {
