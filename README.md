@@ -83,6 +83,8 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch.
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 
+A patch change that alters workflow step names requires existing runs to be drained before deployment.
+
 The public cloud runtime remains upstream code. Each carried patch is applied against the one pinned source. Remove patches when their upstream equivalents are included by a later pin.
 
 ## Verification and remaining work
