@@ -47,7 +47,7 @@ function assignmentOperator(kind: ts.SyntaxKind): boolean {
 }
 
 function authorityMutation(name: string): boolean {
-  return ["host", "hostname", "protocol", "port", "username", "password"].includes(name);
+  return ["href", "host", "hostname", "protocol", "port", "username", "password"].includes(name);
 }
 
 /** Reads a closed set of parsed source files. It never evaluates or imports the inspected program. */

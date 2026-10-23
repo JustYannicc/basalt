@@ -128,6 +128,15 @@ test("computed fetch traces a const URL host with a dynamic path and query mutat
   expect(result.dependencies.map(dependency => `${dependency.source}->${dependency.target}`)).toEqual(["deployment->cloudflare"]);
 });
 
+test("replacing URL href cannot retain the original modelled host", () => {
+  const root = fixture({
+    "scripts/ensure-artifacts.ts": 'const url = new URL("https://api.example.test/v1"); url.href = process.env.API_URL; fetch(url);',
+  });
+  const result = sourceDependencies(root, [module("deployment", "scripts/ensure-artifacts.ts")],
+    [{ id: "provider", hosts: ["api.example.test"], sdks: [] }]);
+  expect(result.errors).toContain("scripts/ensure-artifacts.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter");
+});
+
 test("unknown, reassigned, and shadowed computed fetch hosts fail closed", () => {
   const root = fixture({
     "scripts/unknown.ts": "export {}; const origin = `https://${process.env.API_HOST}/v1`; fetch(origin);",
