@@ -21,6 +21,10 @@ const resource = await fetch(`${origin}/.well-known/oauth-protected-resource/mcp
 assert.equal((await resource.json()).resource_name, brand.name, "MCP metadata must name the brand");
 const pool = await fetch(`${origin}/v1/models`);
 assert.equal(pool.status, 401, "Pool backend must reject an unauthenticated model request");
+for (const path of ["/v0/management", "/v0/management/config", "/v8/management", "/v8/management/config"]) {
+  const management = await fetch(`${origin}${path}`, { redirect: "manual" });
+  assert.equal(management.status, 404, `${path} must not expose Home management publicly`);
+}
 const mcp = await fetch(`${origin}/mcp`, { redirect: "manual" });
 assert.equal(mcp.status, 401, "MCP must require authentication");
 console.log(

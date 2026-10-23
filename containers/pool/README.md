@@ -23,7 +23,7 @@ Required environment:
 
 Optional environment:
 
-- <code>POOL_MANAGEMENT_ALLOW_REMOTE</code>: defaults to <code>false</code>. The parent app sets <code>true</code> when exposing Home management through its private service binding. Home still requires the management key.
+- <code>POOL_MANAGEMENT_ALLOW_REMOTE</code>: defaults to <code>false</code>. The parent app sets <code>true</code> for Home management over the private controller path. The public router and pool Worker reject direct <code>/v0/management/*</code> and <code>/v8/management/*</code> requests. The Durable Object retains the internal mapping to port 8327; Home still requires the management key.
 
 The supervisor verifies that /dev/shm is tmpfs before writing secrets. It keeps the PostgreSQL DSN, exchange config, Home JWT, and node certificate material in memory-backed storage. It imports the small exchange config only after Home exits with its explicit empty-database-config diagnostic, then deletes that file. Normal restarts use Home's database as the authority and PATCH only server port, routing, and remote-management fields. The patch does not include provider credentials, client API keys, or the stored management key.
 

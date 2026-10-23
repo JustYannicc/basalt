@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PoolLifecycle, poolLifecycle, poolPort, type RuntimeDriver, type RuntimeStorage } from "./lifecycle.ts";
+import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort, type RuntimeDriver, type RuntimeStorage } from "./lifecycle.ts";
 
 function fixture() {
   let time = 0;
@@ -88,4 +88,14 @@ test("management and model traffic use separate listeners with exact path bounda
   assert.equal(poolPort("/v8/management-other"), undefined);
   assert.equal(poolPort("/v10/responses"), undefined);
   assert.equal(poolPort("/"), undefined);
+});
+
+test("public model gate excludes internal management while preserving its DO listener", () => {
+  for (const path of ["/v1", "/v1/", "/v1/models", "/v1/responses"]) {
+    assert.equal(isPublicModelPath(path), true, path);
+  }
+  for (const path of ["/v0/management", "/v8/management/config", "/__warm", "/v10", "/v1foo"]) {
+    assert.equal(isPublicModelPath(path), false, path);
+  }
+  assert.equal(poolPort("/v8/management/config"), 8327);
 });
