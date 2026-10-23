@@ -1,0 +1,190 @@
+specification {
+  element system {
+    notation "System boundary"
+    style { color slate; opacity 8% }
+  }
+  element person {
+    notation "Person"
+    style { shape person; color green }
+  }
+  element client {
+    notation "Client"
+    style { shape browser; color secondary }
+  }
+  element door {
+    notation "Transport boundary"
+    style { color indigo }
+  }
+  element actor {
+    notation "Stateful actor"
+    style { shape component; color amber }
+  }
+  element module {
+    notation "Deep module"
+    style { color primary }
+  }
+  element adapter {
+    notation "Adapter at a seam"
+    style { color muted; size sm }
+  }
+  element iface {
+    notation "Module interface"
+    style { color green; icon bootstrap:box-arrow-in-right }
+  }
+  element part {
+    notation "Hidden part or seam"
+    style { color slate; size sm }
+  }
+  element store {
+    notation "Store or projection"
+    style { shape storage; color gray; size sm }
+  }
+  element external {
+    notation "External service"
+    style { color gray; border dashed }
+  }
+  element toplevel {
+    notation "A person's top level"
+    style { icon bootstrap:house-door; color blue }
+  }
+  element folder {
+    notation "Folder"
+    style { icon bootstrap:folder; color sky }
+  }
+  element thread {
+    notation "Thread"
+    style { icon bootstrap:chat-dots; shape component; color amber }
+  }
+  element app {
+    notation "App"
+    style { icon bootstrap:window-stack; shape component; color secondary }
+  }
+  element state {
+    notation "State"
+    style { color blue; size sm }
+  }
+  element entity {
+    notation "Domain entity"
+    style { color indigo; size sm }
+  }
+
+  deploymentNode stage {
+    notation "Deployment stage"
+    style { color gray }
+  }
+  deploymentNode zone {
+    notation "Provider or network zone"
+    style { color slate }
+  }
+  deploymentNode worker {
+    notation "Worker process"
+    style { color primary }
+  }
+  deploymentNode durableObject {
+    notation "Stateful actor class"
+    style { color amber }
+  }
+  deploymentNode isolate {
+    notation "Isolate"
+    style { color secondary }
+  }
+  deploymentNode container {
+    notation "Container"
+    style { color red }
+  }
+  deploymentNode workflow {
+    notation "Workflow engine"
+    style { color indigo }
+  }
+  deploymentNode queue {
+    notation "Queue"
+    style { shape queue; color amber }
+  }
+  deploymentNode storage {
+    notation "Object or database storage"
+    style { shape storage; color gray }
+  }
+  deploymentNode vm {
+    notation "Machine"
+    style { color blue }
+  }
+  deploymentNode device {
+    notation "Person's device"
+    style { shape mobile; color green }
+  }
+
+  relationship sync {
+    notation "Call"
+    color gray;
+    line solid
+  }
+  relationship async {
+    notation "Asynchronous delivery"
+    color amber;
+    line dashed
+  }
+  relationship model {
+    notation "Model request"
+    color red;
+    line solid
+  }
+  relationship tool {
+    notation "Tool call"
+    color indigo;
+    line solid
+  }
+  relationship reach {
+    notation "Placement reach"
+    color green;
+    line dotted
+  }
+  relationship lend {
+    notation "Explicit loan"
+    color secondary;
+    line dashed
+  }
+  relationship mount {
+    notation "Mount"
+    color primary;
+    line solid;
+    head diamond
+  }
+  relationship transition {
+    notation "State transition"
+    color slate;
+    line solid
+  }
+  relationship owns {
+    notation "Ownership"
+    color slate;
+    line solid;
+    head crow
+  }
+
+  tag v1 { color green }
+  tag deep { color primary }
+  tag shallow { color amber }
+  tag passthrough { color red }
+  tag hypothetical-seam { color red }
+  tag planned { color muted }
+  tag decided { color green }
+  tag assumption { color amber }
+  tag smell { color red }
+  tag port { color green }
+  tag publishable { color sky }
+  tag funnel { color green }
+  tag basalt { color indigo }
+  tag external { color gray }
+}
+
+global {
+  styleGroup depth {
+    style element.tag = #planned { opacity 40%; border dashed }
+    style element.tag = #hypothetical-seam { color red; border dashed }
+  }
+  styleGroup smells {
+    style element.tag = #shallow { color amber }
+    style element.tag = #passthrough { color red }
+    style element.tag = #hypothetical-seam { color red; border dashed }
+  }
+}

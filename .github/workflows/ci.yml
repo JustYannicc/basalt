@@ -26,16 +26,38 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
+      - run: bun install --cwd scripts/architecture --frozen-lockfile
+      - name: Architecture format and validation
+        run: |
+          npm run architecture:format
+          npm run architecture:validate
+      - name: Architecture model and code references
+        run: |
+          npm run architecture:model
+          npm run architecture:typecheck
       - run: npm run check
       - name: Check the pool bootstrap
         run: python3 -m unittest containers.pool.test_bootstrap
       - run: npm run prepare:upstream
+      - name: Architecture deployment generation
+        run: |
+          bun run --cwd .upstream/apps/hosted/cloud framework:build
+          npm run architecture:deployment
+          git diff --exit-code -- architecture/gen
+          test -z "$(git ls-files --others --exclude-standard architecture/gen)"
+          npm run architecture:validate
+      - name: Architecture fitness functions
+        env:
+          ARCHITECTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: npm run architecture:test
       - name: Build the pinned pool image
         run: docker build --tag basalt-1409-pool:test containers/pool
       - name: Check the pool runtime and database contracts

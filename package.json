@@ -9,7 +9,14 @@
     "build": "node scripts/build.ts",
     "check:build": "node --test scripts/build-tests/*.test.ts",
     "deploy": "node scripts/deploy.ts",
-    "check:upstream": "node --test scripts/upstream-tests/*.test.ts"
+    "check:upstream": "node --test scripts/upstream-tests/*.test.ts",
+    "architecture:format": "bun run --cwd scripts/architecture format",
+    "architecture:validate": "bun run --cwd scripts/architecture validate",
+    "architecture:model": "bun run --cwd scripts/architecture model",
+    "architecture:typecheck": "bun run --cwd scripts/architecture typecheck",
+    "architecture:deployment": "bun run --cwd scripts/architecture deployment",
+    "architecture:test": "bun run --cwd scripts/architecture test",
+    "architecture:inventory": "bun run --cwd scripts/architecture inventory"
   },
   "engines": {
     "node": ">=24.3.0"

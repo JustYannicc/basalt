@@ -7,3 +7,5 @@ node_modules
 !.env.example
 .DS_Store
 .t3/
+
+/scripts/architecture/gen/

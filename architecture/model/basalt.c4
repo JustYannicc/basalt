@@ -1,0 +1,180 @@
+model {
+  basalt = system "Basalt" {
+    #basalt
+
+    router = module "Router" {
+      #basalt #v1 #passthrough #port
+      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
+    }
+
+    brandConfig = part "Brand configuration" {
+      metadata { code "brand.ts"; configuration "true" }
+    }
+
+    build = module "Build" {
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml"; libraries "@effect/platform-node|alchemy" }
+    }
+
+    deployment = module "Deployment" {
+      metadata {
+        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml"
+      }
+    }
+
+    toolsGateway = module "Tools gateway" {
+      #basalt #v1 #deep #port #funnel
+      metadata { code ".upstream/apps/hosted/cloud" }
+    }
+
+    publicIdentity = iface "Public identity" { #v1 }
+    publicConnectors = iface "Public connectors" { #v1 }
+    publicVault = iface "Public vault" { #v1 }
+
+    identity = module "Identity interface" {
+      #basalt #planned #deep
+      metadata { status "planned Basalt-facing interface" }
+    }
+
+    modelGateway = module "Model gateway" {
+      #basalt #v1 #deep #port #funnel
+      metadata {
+        code "src/pool"
+        bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime"
+      }
+    }
+
+    poolController = actor "Pool controller" {
+      #basalt #v1
+      metadata { jurisdiction "eu"; singleton "control-plane" }
+    }
+
+    pool = module "Pool" {
+      #basalt #planned #deep
+      metadata { status "planned app integration" }
+    }
+
+    poolRuntime = module "Pool runtime" {
+      #basalt #v1 #deep
+      metadata {
+        code "containers/pool"
+        releaseManifest "containers/pool/releases.json"
+        schedulingPolicy "default"
+        jurisdiction "eu"
+        regions "EEUR|WEUR"
+        maxInstances "1"
+      }
+    }
+
+    poolDatabase = store "Pool database" {
+      #basalt #v1
+      metadata { database "basalt_pool"; region "eu-central" }
+    }
+
+    connection = module "Connection interface" {
+      #basalt #planned #deep
+      metadata { status "planned Basalt-facing interface" }
+    }
+
+    vault = module "Vault interface" {
+      #basalt #planned #deep
+      metadata { status "planned Basalt-facing interface" }
+    }
+  }
+
+  poolOwner = person "Pool owner" { #v1 }
+  poolMember = person "Pool member" { #v1 }
+  localClient = client "Local client" { #v1 }
+
+  outsideServices = external "Outside services" {
+    #external
+    metadata { hosts "dynamic"; sdks "upstream" }
+  }
+
+  modelProviders = external "Model providers" {
+    #external
+    metadata { hosts "dynamic"; sdks "upstream" }
+  }
+
+  appHosting = external "App hosting" {
+    #external #planned
+    metadata { hosts "apps.signalbox.run"; status "disabled origin configuration" }
+  }
+
+  basalt.deployment -[sync]-> appHosting "configure origin" { #planned }
+  basalt.router -[sync]-> basalt.brandConfig "read brand configuration"
+  basalt.deployment -[sync]-> basalt.brandConfig "read deployment configuration"
+  basalt.build -[sync]-> basalt.brandConfig "read build configuration"
+  basalt.build -[sync]-> basalt.deployment "read deployment settings"
+  basalt.deployment -[sync]-> basalt.build "run deployment commands"
+  basalt.deployment -[sync]-> basalt.modelGateway "provision pool"
+  basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
+  basalt.deployment -[sync]-> basalt.toolsGateway "provision tools"
+  basalt.deployment -[sync]-> basalt.router "check public routes"
+  basalt.build -[sync]-> basalt.poolRuntime "build pool image"
+
+  poolOwner -[sync]-> localClient "uses"
+  poolMember -[sync]-> localClient "uses"
+  localClient -[sync]-> basalt.router "HTTP request"
+  basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE"
+  basalt.toolsGateway -[sync]-> basalt.publicIdentity "sign in"
+  basalt.toolsGateway -[tool]-> basalt.publicConnectors "connectors"
+  basalt.toolsGateway -[sync]-> basalt.publicVault "secret custody"
+  basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
+
+  basalt.router -[model]-> basalt.modelGateway "POOL_SERVICE: /v1 and /v1/*"
+  basalt.modelGateway -[sync]-> basalt.poolController "singleton EU control-plane"
+  basalt.poolController -[model]-> basalt.poolRuntime "inference on port 8317"
+  basalt.poolController -[sync]-> basalt.poolRuntime "management on port 8327"
+  basalt.poolController -[sync]-> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
+  basalt.modelGateway -[sync]-> basalt.poolRuntime "container port bindings"
+  basalt.modelGateway -[model]-> basalt.pool "serve request" {
+    #planned
+  }
+  basalt.pool -[sync]-> basalt.poolRuntime "invoke runtime" {
+    #planned
+  }
+  basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
+  basalt.poolRuntime -[model]-> modelProviders "provider request"
+
+  basalt.toolsGateway -[tool]-> basalt.pool "manage pool app" {
+    #planned
+  }
+  basalt.toolsGateway -[tool]-> basalt.connection "resolve caller connection" {
+    #planned
+  }
+  basalt.connection -[tool]-> basalt.publicConnectors "use public connectors" {
+    #planned
+  }
+  basalt.connection -[sync]-> basalt.vault "read secret" {
+    #planned
+  }
+  basalt.vault -[sync]-> basalt.publicVault "use public vault" {
+    #planned
+  }
+  basalt.identity -[sync]-> basalt.publicIdentity "use public identity" {
+    #planned
+  }
+
+  localClient -[sync]-> poolOwner "shows result"
+  localClient -[sync]-> poolMember "shows result"
+  basalt.router -[sync]-> localClient "HTTP response"
+  basalt.toolsGateway -[sync]-> basalt.router "service response"
+  basalt.pool -[tool]-> basalt.toolsGateway "pool result" {
+    #planned
+  }
+  basalt.modelGateway -[model]-> basalt.router "stream reply"
+  basalt.poolRuntime -[model]-> basalt.poolController "stream reply"
+  basalt.poolRuntime -[sync]-> basalt.poolController "management response or readiness identity"
+  basalt.poolController -[model]-> basalt.modelGateway "stream reply"
+  basalt.poolController -[sync]-> basalt.modelGateway "prewarm result"
+  basalt.pool -[model]-> basalt.modelGateway "pool result" {
+    #planned
+  }
+  basalt.poolRuntime -[sync]-> basalt.pool "runtime result" {
+    #planned
+  }
+  basalt.poolDatabase -[sync]-> basalt.poolRuntime "state result"
+  modelProviders -[model]-> basalt.poolRuntime "provider result"
+  outsideServices -[tool]-> basalt.toolsGateway "outside result"
+  basalt.publicConnectors -[tool]-> basalt.toolsGateway "connector result"
+}

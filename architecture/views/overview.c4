@@ -1,0 +1,149 @@
+views {
+  view current_runtime {
+    title "Basalt/Current runtime"
+
+    include basalt.router, basalt.toolsGateway, basalt.modelGateway
+    exclude * -> *
+
+    include basalt.router -> basalt.toolsGateway
+    include basalt.router -> basalt.modelGateway
+
+    style basalt.router { color primary }
+    style basalt.toolsGateway { color indigo }
+    style basalt.modelGateway { color primary }
+    autoLayout LeftRight
+  }
+
+  view current_tools_dependency {
+    title "Basalt/Current tools dependency"
+
+    include
+      basalt.toolsGateway,
+      basalt.publicIdentity,
+      basalt.publicConnectors,
+      basalt.publicVault,
+      outsideServices
+    exclude * -> *
+
+    include basalt.toolsGateway -> basalt.publicIdentity
+    include basalt.toolsGateway -> basalt.publicConnectors
+    include basalt.toolsGateway -> basalt.publicVault
+    include basalt.toolsGateway -> outsideServices
+
+    style basalt.toolsGateway { color indigo }
+    style outsideServices { color gray }
+    autoLayout TopBottom
+  }
+
+  view current_inference {
+    title "Basalt/Current inference"
+    description "Implemented transport and backend. One singleton EU control-plane actor forwards to one warm EU container; pool app integration is planned."
+
+    include
+      basalt.router,
+      basalt.modelGateway,
+      basalt.poolController,
+      basalt.poolRuntime,
+      basalt.poolDatabase,
+      modelProviders
+    exclude * -> *
+
+    include basalt.router -> basalt.modelGateway
+    include basalt.modelGateway -> basalt.poolController
+    include basalt.poolController -> basalt.poolRuntime
+    include basalt.poolRuntime -> basalt.poolDatabase
+    include basalt.poolRuntime -> modelProviders
+
+    style basalt.router { color primary }
+    style basalt.modelGateway { color primary }
+    style basalt.poolController { color amber }
+    style basalt.poolRuntime { color amber }
+    style basalt.poolDatabase, modelProviders { color gray }
+    autoLayout TopBottom
+  }
+
+  view planned_pool_integration {
+    #planned
+    title "Basalt/Planned pool integration"
+
+    include basalt.toolsGateway, basalt.modelGateway, basalt.pool, basalt.poolRuntime
+    exclude * -> *
+
+    include basalt.toolsGateway -> basalt.pool
+    include basalt.modelGateway -> basalt.pool
+    include basalt.pool -> basalt.poolRuntime
+
+    style basalt.toolsGateway { color indigo }
+    style basalt.modelGateway { color primary }
+    style basalt.poolRuntime { color amber }
+    style basalt.pool { color muted; opacity 40%; border dashed }
+    autoLayout TopBottom
+  }
+
+  view planned_identity_connectors {
+    #planned
+    title "Basalt/Planned identity and connectors"
+
+    include
+      basalt.toolsGateway,
+      basalt.publicIdentity,
+      basalt.publicConnectors,
+      basalt.publicVault
+    include basalt.identity, basalt.connection, basalt.vault
+    exclude * -> *
+
+    include basalt.identity -> basalt.publicIdentity
+    include basalt.connection -> basalt.publicConnectors
+    include basalt.connection -> basalt.vault
+    include basalt.vault -> basalt.publicVault
+
+    style basalt.toolsGateway { color indigo }
+    style basalt.identity, basalt.connection, basalt.vault { color muted }
+    autoLayout TopBottom
+  }
+}
+
+views {
+  view infrastructure_services {
+    title "Basalt/Infrastructure services"
+    include basalt.toolsGateway
+    include identityProvider with { technology "" }
+    include sourceService with { technology "" }
+    include databaseService with { technology "" }
+    include emailService with { technology "" }
+    include assetsService with { technology "" }
+    exclude * -> *
+    include basalt.toolsGateway -> identityProvider
+    include basalt.toolsGateway -> sourceService
+    include basalt.toolsGateway -> databaseService
+    include basalt.toolsGateway -> emailService
+    include basalt.toolsGateway -> assetsService
+    autoLayout TopBottom
+  }
+}
+
+views {
+  view build_and_deployment {
+    title "Basalt/Build and deployment"
+    include basalt.build, basalt.deployment, basalt.brandConfig
+    include releaseSource with { technology "" }
+    include deploymentProvider with { technology "" }
+    include databaseService with { technology "" }
+    include databaseProvider with { technology "" }
+    include containerRegistry with { technology "" }
+    include packageSource with { technology "" }
+    include basalt.router
+    exclude * -> *
+    include basalt.build -> releaseSource
+    include basalt.deployment -> deploymentProvider
+    include basalt.deployment -> databaseService
+    include basalt.deployment -> databaseProvider
+    include basalt.build -> containerRegistry
+    include basalt.build -> packageSource
+    include basalt.build -> basalt.deployment
+    include basalt.build -> basalt.brandConfig
+    include basalt.deployment -> basalt.brandConfig
+    include basalt.deployment -> basalt.router
+    autoLayout TopBottom
+  }
+}

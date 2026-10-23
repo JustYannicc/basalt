@@ -1,0 +1,391 @@
+views {
+  dynamic view v1_current_model_request {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current /v1 request"
+    description """
+      Status: Implemented in source. Inference routes through the pool service, its singleton EU actor and
+      one warm EU container. The released backend authenticates client keys. Output streams without buffering;
+      ordinary responses carry X-Signalbox-Pool-Boot. Startup or readiness failures return 503 with Retry-After: 5.
+      Live subscription and idle/restart acceptance remain separate.
+    """
+
+    include poolOwner, localClient, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, modelProviders
+    poolOwner -> localClient "sends model request"
+    localClient -> basalt.router "POST /v1"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE"
+    basalt.modelGateway -> basalt.poolController "select singleton EU control-plane"
+    basalt.poolController -> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
+    basalt.poolController <- basalt.poolRuntime "boot identity when healthy"
+    basalt.poolController -> basalt.poolRuntime "client-key request on port 8317"
+    basalt.poolRuntime -> modelProviders "provider request"
+    basalt.poolRuntime <- modelProviders "streamed result"
+    basalt.poolController <- basalt.poolRuntime "streamed result"
+    basalt.modelGateway <- basalt.poolController "stream with boot identity"
+    basalt.router <- basalt.modelGateway "stream with boot identity"
+    localClient <- basalt.router "stream reply"
+    poolOwner <- localClient "shows reply"
+  }
+
+  dynamic view current_pool_management {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Internal pool management"
+    description """
+      Status: Internal endpoint. The controller retains management path handling on port 8327.
+      Both public entry points reject /v0/management and /v8/management. Backend management still
+      requires its deployment key. The signed pool control API remains a planned app integration.
+    """
+
+    include basalt.poolController, basalt.poolRuntime, basalt.poolDatabase
+    basalt.poolController -> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
+    basalt.poolController <- basalt.poolRuntime "boot identity when healthy"
+    basalt.poolController -> basalt.poolRuntime "internal management-key request on port 8327"
+    basalt.poolRuntime -> basalt.poolDatabase "read or write backend state"
+    basalt.poolRuntime <- basalt.poolDatabase "state result"
+    basalt.poolController <- basalt.poolRuntime "internal management response"
+  }
+
+  dynamic view current_router_entry {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current router entry policy"
+    description """
+      Status: Implemented. A signed-out homepage visit redirects to /login with its query preserved.
+      Public management paths return 404. Brand assets are served locally, and the tools service's
+      marketing, documentation and legal pages are blocked or redirected by the brand configuration.
+    """
+
+    include poolOwner, localClient, basalt.router
+    poolOwner -> localClient "opens homepage without a session"
+    localClient -> basalt.router "GET / with query"
+    localClient <- basalt.router "302 /login with query"
+    localClient -> basalt.router "public management path"
+    localClient <- basalt.router "404"
+  }
+
+  dynamic view current_pool_prewarm {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current pool prewarm"
+    description """
+      Status: Implemented in source. A five-minute scheduled trigger selects the singleton EU actor via
+      /__warm; actor alarms also refresh warmth every five minutes. The actor starts or reuses one EU
+      container and refreshes its two-hour inactivity timeout. Changed image or secrets force a restart.
+      Startup has a 180-second readiness budget and schedules another recovery alarm even after failure.
+      The container's default scheduling policy constrains jurisdiction eu and regions EEUR/WEUR independently
+      of the actor. Edge processes have no enforced location. Live warm persistence remains unverified here.
+    """
+
+    include basalt.modelGateway, basalt.poolController, basalt.poolRuntime, basalt.poolDatabase
+    basalt.modelGateway -> basalt.poolController "five-minute cron: singleton /__warm"
+    basalt.poolController -> basalt.poolRuntime "start or reuse; refresh two-hour inactivity timeout"
+    opt "container startup" {
+      basalt.poolRuntime -> basalt.poolDatabase "load durable state; migrate or bootstrap when needed"
+      basalt.poolRuntime <- basalt.poolDatabase "backend state"
+    }
+    basalt.poolController -> basalt.poolRuntime "authenticated GET /ready on port 8318"
+    basalt.poolController <- basalt.poolRuntime "healthy boot_id and started_at"
+    basalt.modelGateway <- basalt.poolController "204 after readiness; next alarm in five minutes"
+  }
+
+  dynamic view current_tools_passthrough {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current tools request"
+    description """
+      Status: Implemented. Dashboard, MCP and OAuth requests pass through the service binding to the
+      public tools dependency. Entry redirects, brand pages and blocked public management paths stay
+      in the router.
+    """
+
+    include poolOwner, localClient, basalt.router, basalt.toolsGateway
+    poolOwner -> localClient "opens service"
+    localClient -> basalt.router "tools or app request"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.router <- basalt.toolsGateway "service response"
+    localClient <- basalt.router "HTTP response"
+    poolOwner <- localClient "shows response"
+  }
+
+  dynamic view v1_sign_in_empty_pool {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Sign in and empty pool"
+    description """
+      Status: The public identity flow exists in the dependency. Basalt's onboarding path that creates an
+      empty pool is planned.
+    """
+
+    include
+      poolOwner,
+      localClient,
+      basalt.router,
+      basalt.toolsGateway,
+      basalt.publicIdentity,
+      basalt.pool
+    poolOwner -> localClient "signs in"
+    localClient -> basalt.router "sign-in request"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.publicIdentity "authenticate"
+    basalt.toolsGateway -> basalt.pool "create empty pool"
+    basalt.toolsGateway <- basalt.pool "empty pool"
+    basalt.router <- basalt.toolsGateway "signed-in session"
+    localClient <- basalt.router "shows empty pool"
+    poolOwner <- localClient "starts with own pool"
+  }
+
+  dynamic view v1_connect_model_subscription {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Connect model subscription"
+    description """
+      Status: Planned. The pool runtime uses the released pool binary's supported sign-in flow. Providers are
+      represented as one boundary, with no provider-specific path.
+    """
+
+    include
+      poolOwner,
+      localClient,
+      basalt.router,
+      basalt.toolsGateway,
+      basalt.pool,
+      basalt.poolRuntime,
+      modelProviders
+    poolOwner -> localClient "connects a subscription"
+    localClient -> basalt.router "connect account"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "connect subscription"
+    basalt.pool -> basalt.poolRuntime "start account login"
+    basalt.poolRuntime -> modelProviders "provider login"
+    basalt.poolRuntime <- modelProviders "login callback"
+    basalt.pool <- basalt.poolRuntime "account stored"
+    basalt.toolsGateway <- basalt.pool "account connected"
+    basalt.router <- basalt.toolsGateway "connection result"
+    localClient <- basalt.router "shows connected account"
+    poolOwner <- localClient "sees account"
+  }
+
+  dynamic view v1_invite_pool {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Invite to a pool"
+    description """
+      Status: Planned. The public tools dependency already provides identity and sharing. Basalt's pool
+      binding and invitation flow are planned.
+    """
+
+    include poolOwner, poolMember, localClient, basalt.router, basalt.toolsGateway, basalt.pool
+    poolOwner -> localClient "creates invite"
+    localClient -> basalt.router "share pool"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "create invite"
+    poolMember -> localClient "accepts invite"
+    localClient -> basalt.router "accept invite"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "grant pool access"
+    basalt.toolsGateway <- basalt.pool "member access granted"
+    basalt.router <- basalt.toolsGateway "invite result"
+    localClient <- basalt.router "shows shared pool"
+    poolMember <- localClient "opens pool"
+  }
+
+  dynamic view v1_remove_member_denied_next_request {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Remove member and deny next request"
+    description """
+      Status: Planned. Removing a member must make their next model request fail clearly.
+    """
+
+    include
+      poolOwner,
+      poolMember,
+      localClient,
+      basalt.router,
+      basalt.toolsGateway,
+      basalt.modelGateway,
+      basalt.pool
+    poolOwner -> localClient "removes member"
+    localClient -> basalt.router "remove access"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "remove member"
+    poolMember -> localClient "sends next request"
+    localClient -> basalt.router "POST /v1"
+    basalt.router -> basalt.modelGateway "route"
+    basalt.modelGateway -> basalt.pool "serve request"
+    basalt.modelGateway <- basalt.pool "deny removed member"
+    basalt.router <- basalt.modelGateway "denied"
+    localClient <- basalt.router "clear denial"
+    poolMember <- localClient "request fails"
+  }
+
+  dynamic view v1_usage_visibility {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Usage visibility"
+    description """
+      Status: Planned. Owners see usage by member, model, and time. Members see only their own usage.
+    """
+
+    include poolOwner, poolMember, localClient, basalt.router, basalt.toolsGateway, basalt.pool
+    poolOwner -> localClient "opens pool usage"
+    localClient -> basalt.router "owner view"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "read usage"
+    basalt.toolsGateway <- basalt.pool "member, model, and time"
+    basalt.router <- basalt.toolsGateway "owner usage"
+    localClient <- basalt.router "shows pool usage"
+    poolMember -> localClient "opens own usage"
+    localClient -> basalt.router "member view"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "read own usage"
+    basalt.toolsGateway <- basalt.pool "member's usage"
+    basalt.router <- basalt.toolsGateway "member usage"
+    localClient <- basalt.router "shows own usage"
+    poolMember <- localClient "sees own usage"
+  }
+
+  dynamic view v1_connect_personal_account {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Connect personal account"
+    description """
+      Status: The public connector flow exists in the dependency. Basalt's Connection interface and app
+      integration are planned; the account remains personal.
+    """
+
+    include
+      poolMember,
+      localClient,
+      basalt.router,
+      basalt.toolsGateway,
+      basalt.publicConnectors,
+      basalt.publicVault,
+      outsideServices
+    poolMember -> localClient "connects own account"
+    localClient -> basalt.router "connect account"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.publicConnectors "start hosted connection"
+    basalt.toolsGateway -> outsideServices "account consent"
+    basalt.toolsGateway <- outsideServices "consent result"
+    basalt.toolsGateway -> basalt.publicVault "store secret"
+    basalt.router <- basalt.toolsGateway "account connected"
+    localClient <- basalt.router "shows connection"
+    poolMember <- localClient "uses own account"
+  }
+
+  dynamic view v1_setup_computer {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Set up a computer"
+    description """
+      Status: Planned. A one-time setup link mints a computer key bound to the pool selected for that
+      computer.
+    """
+
+    include poolOwner, localClient, basalt.router, basalt.toolsGateway, basalt.pool
+    poolOwner -> localClient "chooses a pool for this computer"
+    localClient -> basalt.router "setup request"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "mint pool-bound key"
+    basalt.toolsGateway <- basalt.pool "computer key"
+    basalt.router <- basalt.toolsGateway "one-time setup link"
+    localClient <- basalt.router "setup instructions"
+    poolOwner <- localClient "sets up computer"
+  }
+
+  dynamic view v1_revoke_key {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Revoke a computer key"
+    description """
+      Status: Planned. A revoked key must fail on the next request.
+    """
+
+    include
+      poolOwner,
+      poolMember,
+      localClient,
+      basalt.router,
+      basalt.toolsGateway,
+      basalt.modelGateway,
+      basalt.pool
+    poolOwner -> localClient "revokes computer key"
+    localClient -> basalt.router "revoke key"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.pool "revoke key"
+    poolMember -> localClient "sends next request"
+    localClient -> basalt.router "POST /v1"
+    basalt.router -> basalt.modelGateway "route"
+    basalt.modelGateway -> basalt.pool "serve request"
+    basalt.modelGateway <- basalt.pool "deny revoked key"
+    basalt.router <- basalt.modelGateway "denied"
+    localClient <- basalt.router "clear denial"
+    poolMember <- localClient "request fails"
+  }
+
+  dynamic view v1_disconnect_personal_account {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Disconnect personal account"
+    description """
+      Status: The public connector flow exists in the dependency. Basalt's Connection integration is
+      planned; the next call through a disconnected account must fail clearly.
+    """
+
+    include
+      poolMember,
+      localClient,
+      basalt.router,
+      basalt.toolsGateway,
+      basalt.publicConnectors
+    poolMember -> localClient "disconnects own account"
+    localClient -> basalt.router "disconnect account"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.publicConnectors "disconnect account"
+    poolMember -> localClient "sends next tool request"
+    localClient -> basalt.router "tool request"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
+    basalt.toolsGateway -> basalt.publicConnectors "resolve account"
+    basalt.toolsGateway <- basalt.publicConnectors "connection missing"
+    basalt.router <- basalt.toolsGateway "clear failure"
+    localClient <- basalt.router "shows failure"
+    poolMember <- localClient "sees failure"
+  }
+
+  dynamic view v1_model_request {
+    #v1 #planned
+    variant sequence
+    title "Workflows/Basalt/Model request"
+    description """
+      Status: Planned pool app integration. The current inference transport and backend are implemented;
+      routing through the logical Pool module's ownership and sharing rules remains planned. The existing
+      singleton EU actor, warm EU container and separate logical pool database provide the transport and storage.
+    """
+
+    include
+      poolOwner,
+      localClient,
+      basalt.router,
+      basalt.modelGateway,
+      basalt.pool,
+      basalt.poolRuntime,
+      basalt.poolDatabase,
+      modelProviders
+    poolOwner -> localClient "sends model request"
+    localClient -> basalt.router "POST /v1"
+    basalt.router -> basalt.modelGateway "route"
+    basalt.modelGateway -> basalt.pool "serve pool request"
+    basalt.pool -> basalt.poolRuntime "invoke pool runtime"
+    basalt.poolRuntime -> basalt.poolDatabase "read or write state"
+    basalt.poolRuntime -> modelProviders "provider request"
+    basalt.poolRuntime <- basalt.poolDatabase "state result"
+    basalt.poolRuntime <- modelProviders "streamed result"
+    basalt.pool <- basalt.poolRuntime "runtime result"
+    basalt.modelGateway <- basalt.pool "pool result"
+    basalt.router <- basalt.modelGateway "stream reply"
+    localClient <- basalt.router "stream reply"
+    poolOwner <- localClient "shows reply"
+  }
+}
