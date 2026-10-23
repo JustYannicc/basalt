@@ -8,6 +8,7 @@ export interface PoolEnvironment {
   POOL_DATABASE_URL: string;
   POOL_MANAGEMENT_KEY: string;
   POOL_APP_SIGNING_KEY: string;
+  POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_IMAGE_HASH: string;
 }
 
@@ -22,6 +23,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.lifecycle = this.createLifecycle(ctx, env);
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       defer: (work) => ctx.waitUntil(work),
       home: async (path, init) => {
         if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");

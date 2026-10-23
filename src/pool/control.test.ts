@@ -82,7 +82,9 @@ class FakeHome {
         this.files.set(id, { ...body, uuid: id, id, provider: body.type });
         return Response.json({ status: "ok", name: `${id}.json` });
       }
-      if (method === "DELETE") { this.files.delete(url.searchParams.get("id")!); return Response.json({ status: "ok" }); }
+      if (method === "DELETE") {
+        return this.files.delete(url.searchParams.get("id")!) ? Response.json({ status: "ok" }) : Response.json({ error: "not_found" }, { status: 404 });
+      }
       return Response.json({ files: [...this.files.values()] });
     }
     if (endpoint === "/quota/credentials") {
@@ -112,7 +114,7 @@ class FakeHome {
         this.members.push(member);
         return Response.json({ channel_group_detail: member });
       }
-      return Response.json({ channel_group_details: this.members.filter((item) => item.channel_group_id === Number(url.searchParams.get("channel_group_id"))) });
+      return Response.json({ channel_group_details: this.members.filter((item) => !url.searchParams.has("channel_group_id") || item.channel_group_id === Number(url.searchParams.get("channel_group_id"))) });
     }
     if (endpoint.startsWith("/channel-group-details/") && method === "DELETE") {
       this.members = this.members.filter((item) => item.id !== Number(endpoint.split("/").at(-1)));
@@ -134,7 +136,7 @@ async function fixture() {
   const home = new FakeHome();
   const storage = new MemoryStorage();
   let time = Date.parse("2026-01-01T00:00:00.000Z");
-  const deps = { signingKey, home: home.fetch, now: () => new Date(time) };
+  const deps = { signingKey, previousSigningKey: undefined as string | undefined, home: home.fetch, now: () => new Date(time) };
   let control = new PoolControl(storage, deps);
   const tokens = new Map<string, string>();
   async function request(path: string, options: Options = {}): Promise<Request> {
@@ -302,20 +304,20 @@ test("different providers can exchange in parallel", async () => {
   await status(results[1]!, { status: "connected", accountId: "two" });
 });
 
-for (const release of ["cancel", "expiry", "abandon"] as const) {
+for (const release of ["cancel", "expiry"] as const) {
   test(`device lock blocks a second pool and releases after ${release}`, async () => {
     const f = await fixture(); f.home.flow = "device";
     const first = await f.start();
     await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
     assert.equal(f.home.sessions.size, 1);
     if (release === "cancel") await f.call(`/sign-ins?session=${encodeURIComponent(first.session)}`, { method: "DELETE" });
-    else { f.advance(release === "expiry" ? 20 * 60_000 : 60_000); await f.expire(); }
+    else { f.advance(16 * 60_000); await f.expire(); }
     assert.ok(f.home.calls.some((call) => call.method === "DELETE" && call.path.includes(`/oauth/session?state=${state(first)}`)));
     await f.start("pool-b");
   });
 }
 
-test("device polling extends the 60 second lease, including across DO restart", async () => {
+test("device sign-ins stay alive without polling through Home's 16 minute deadline and DO restart", async () => {
   const f = await fixture(); f.home.flow = "device";
   const started = await f.start();
   assert.equal(f.storage.alarm, Date.parse("2026-01-01T00:00:30.000Z"));
@@ -323,6 +325,9 @@ test("device polling extends the 60 second lease, including across DO restart", 
   assert.ok(f.home.sessions.has(state(started)));
   await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
   f.advance(40_000); await f.expire();
+  assert.equal(f.home.sessions.get(state(started))?.status, "wait");
+  assert.equal(f.home.calls.filter((call) => call.path.includes("/oauth/session?")).length, 0);
+  f.advance(16 * 60_000 - 110_000); await f.expire();
   await f.start("pool-b");
 });
 
@@ -422,9 +427,9 @@ test("future explicit ids cannot attach an account already owned by another pool
   assert.equal(f.home.members.length, 1);
 });
 
-test("a definite auth-url rejection releases its pre-session reservation without retry", async () => {
+for (const rejection of [400, 500, 503]) test(`a definite auth-url ${rejection} releases its pre-session reservation without retry`, async () => {
   const f = await fixture();
-  f.home.override = (path) => path.includes("/oauth/auth-url") ? Response.json({ error: "rejected" }, { status: 400 }) : undefined;
+  f.home.override = (path) => path.includes("/oauth/auth-url") ? Response.json({ error: "rejected" }, { status: rejection }) : undefined;
   await error(await f.call("/sign-ins", { body: { provider } }), "backend_unavailable", 503);
   assert.equal(f.home.calls.filter((call) => call.path.includes("/oauth/auth-url")).length, 1);
   f.home.override = undefined;
@@ -550,7 +555,7 @@ for (const failure of ["network", "500", "401"] as const) {
   test(`expiry cleanup isolates ${failure} cancellation failures across providers`, async () => {
     const f = await fixture(); f.home.flow = "device";
     const first = await f.start(); const second = await f.start("pool-b", otherProvider);
-    f.advance(60_000);
+    f.advance(16 * 60_000);
     f.home.override = (path) => {
       if (path.includes(`/oauth/session?state=${state(first)}`)) {
         if (failure === "network") throw new Error("fake cancellation outage");
@@ -562,7 +567,7 @@ for (const failure of ["network", "500", "401"] as const) {
     assert.ok(f.home.sessions.has(state(first)), "the failed cancellation keeps its stale lock");
     assert.equal(f.home.sessions.get(state(second))?.status, "error", "another provider is still cancelled");
     await f.start("pool-b", otherProvider);
-    await error(await f.call("/sign-ins", { body: { provider } }), "busy", 409);
+    await error(await f.call("/sign-ins", { pool: "pool-c", body: { provider } }), "busy", 409);
     // Hard expiry releases even when cancelling the backend throws again.
     f.advance(20 * 60_000); await f.expire();
     await f.start();
@@ -640,25 +645,18 @@ test("pool view reads credentials and quota concurrently and reuses cached chann
   assert.deepEqual(view.accounts.map((account) => account.id), ["account"]);
 });
 
-test("global memberships use bounded concurrency and add reuses the ownership snapshot", async () => {
+test("global ownership reads every membership in one call and reuses the snapshot for add", async () => {
   const f = await fixture();
   for (let i = 1; i <= 9; i++) f.home.addGroup(i === 1 ? "pool-a" : `other-${i}`, i, []);
-  let active = 0; let maximum = 0;
-  f.home.override = async (path) => {
-    if (path.includes("/channel-group-details?")) {
-      active++; maximum = Math.max(maximum, active); await nextTurn(); active--;
-    }
-    return undefined;
-  };
   const started = await f.start(); f.home.addFile("new-account");
   Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "new-account" });
   await status(await f.poll(started), { status: "connected", accountId: "new-account" });
-  assert.equal(maximum, 4);
-  assert.equal(f.home.calls.filter((call) => call.path.includes("/channel-group-details?")).length, 9);
+  assert.equal(f.home.calls.filter((call) => call.path === "/v8/management/channel-group-details" && call.method === "GET").length, 1);
+  assert.equal(f.home.calls.filter((call) => call.path.includes("/channel-group-details?")).length, 0);
   assert.equal(f.home.calls.filter((call) => call.path.endsWith("/channel-groups")).length, 1);
 });
 
-test("an early shared alarm re-arms the current device grace after polling extends it", async () => {
+test("an early shared alarm re-arms device status checks without cancelling an unpolled session", async () => {
   const f = await fixture(); f.home.flow = "device";
   const started = await f.start();
   f.advance(50_000); await f.poll(started);
@@ -669,6 +667,8 @@ test("an early shared alarm re-arms the current device grace after polling exten
   assert.equal(f.storage.alarm, Date.parse("2026-01-01T00:01:20.000Z"));
   assert.ok(f.home.sessions.has(state(started)));
   f.advance(50_000); await f.expire();
+  assert.equal(f.home.sessions.get(state(started))?.status, "wait");
+  f.advance(16 * 60_000 - 110_000); await f.expire();
   assert.equal(f.home.sessions.get(state(started))?.status, "error");
 });
 
@@ -707,19 +707,21 @@ test("legacy assignment migration preserves pending adds and active diffs", asyn
   assert.deepEqual(current.assigned, ["pending-sign-in"]);
 });
 
-test("confirmed membership removal clears assignment markers even if credential deletion fails", async () => {
+test("a failed credential delete preserves membership and retry authority", async () => {
   const f = await fixture();
   f.home.addGroup("pool-a", 1, ["partial-remove"]); f.home.addFile("partial-remove");
   f.storage.values.set(attributionStorageKey, { version: 2, locks: {}, sessions: {}, assigned: ["partial-remove"] });
   f.home.override = (path, init) => path.includes("/credentials?id=") && init?.method === "DELETE"
     ? Response.json({ error: "fake delete failure" }, { status: 503 }) : undefined;
   await error(await f.call("/accounts/partial-remove", { method: "DELETE" }), "backend_unavailable", 503);
+  assert.equal(f.home.members.length, 1);
+  assert.equal(f.home.files.has("partial-remove"), true);
+  assert.deepEqual((f.storage.values.get(attributionStorageKey) as { assigned: string[] }).assigned, ["partial-remove"]);
+  f.home.override = undefined;
+  assert.equal((await f.call("/accounts/partial-remove", { method: "DELETE" })).status, 200);
   assert.equal(f.home.members.length, 0);
+  assert.equal(f.home.files.has("partial-remove"), false);
   assert.deepEqual((f.storage.values.get(attributionStorageKey) as { assigned: string[] }).assigned, []);
-  f.home.override = (path, init) => path.endsWith("/credentials") && init?.method === "POST"
-    ? Response.json({ status: "ok", name: "partial-remove.json" }) : undefined;
-  assert.equal((await f.call("/login-files", { body: { type: provider } })).status, 200);
-  assert.deepEqual(f.home.members.map((member) => member.auth_id), ["partial-remove"]);
 });
 
 test("a failed credential deletion cannot expose the removed upload to an overlapping sign-in", async () => {
@@ -731,7 +733,7 @@ test("a failed credential deletion cannot expose the removed upload to an overla
   f.home.override = undefined;
   f.home.sessions.get(state(started))!.status = "ok";
   assert.equal((await (await f.poll(started, "pool-b")).json() as SignInStatus).status, "failed");
-  assert.equal(f.home.members.length, 0);
+  assert.deepEqual(f.home.members.map((member) => member.auth_id), [uploaded.accountId]);
 });
 
 test("a pending sign-in cannot resurrect an account removed and reuploaded into another pool", async () => {
@@ -751,8 +753,15 @@ test("a pending sign-in cannot resurrect an account removed and reuploaded into 
   f.home.override = (path, init) => path.includes("/credentials?id=") && init?.method === "DELETE"
     ? Response.json({ error: "fake delete failure" }, { status: 503 }) : undefined;
   await error(await f.call("/accounts/moved-account", { method: "DELETE" }), "backend_unavailable", 503);
-  f.home.override = (path, init) => path.endsWith("/credentials") && init?.method === "POST"
-    ? Response.json({ status: "ok", name: "moved-account.json" }) : undefined;
+  f.home.override = undefined;
+  assert.equal((await f.call("/accounts/moved-account", { method: "DELETE" })).status, 200);
+  f.home.override = (path, init) => {
+    if (path.endsWith("/credentials") && init?.method === "POST") {
+      f.home.addFile("moved-account");
+      return Response.json({ status: "ok", name: "moved-account.json" });
+    }
+    return undefined;
+  };
   assert.equal((await f.call("/login-files", { pool: "pool-b", body: { type: provider } })).status, 200);
   f.restart();
   const result = await (await f.poll(started)).json() as SignInStatus;
@@ -847,14 +856,16 @@ test("completion racing the stale-session cancellation is attributed before unlo
     }
     return undefined;
   };
-  f.advance(60_000); await f.expire();
+  f.advance(6 * 60_000); await f.expire();
   await status(await f.poll(started), { status: "connected", accountId: "racing-completion" });
   assert.deepEqual(f.home.members.map((member) => member.auth_id), ["racing-completion"]);
 });
 
-test("an abandoned pasted callback cancels after its polling grace and releases its provider", async () => {
+test("an unattended pasted callback waits six minutes before final cancellation and release", async () => {
   const f = await fixture(); const started = await f.start(); await f.callback(started);
   f.advance(60_000); await f.expire();
+  assert.equal(f.home.sessions.get(state(started))!.status, "wait");
+  f.advance(5 * 60_000); await f.expire();
   assert.equal(f.home.sessions.get(state(started))!.status, "error");
   const value = await (await f.poll(started)).json() as SignInStatus;
   assert.equal(value.status, "failed");
@@ -962,4 +973,141 @@ test("a pending membership write can finish after Home forgets the completed ses
   await error(await f.poll(started), "backend_unavailable", 503);
   f.home.override = undefined; f.home.sessions.delete(state(started)); f.restart();
   await status(await f.poll(started), { status: "connected", accountId: "pending-membership" });
+});
+
+
+test("an unpolled device result survives Home's completed record and DO restart", async () => {
+  const f = await fixture(); f.home.flow = "device";
+  const started = await f.start();
+  f.advance(2 * 60_000); await f.expire();
+  assert.equal(f.home.sessions.get(state(started))?.status, "wait");
+  f.advance(8 * 60_000);
+  f.home.addFile("late-device-account"); f.home.sessions.get(state(started))!.status = "ok";
+  await f.expire();
+  f.home.sessions.delete(state(started)); f.restart(); f.advance(2 * 60_000);
+  await status(await f.poll(started), { status: "connected", accountId: "late-device-account" });
+  assert.deepEqual(f.home.members.map((member) => member.auth_id), ["late-device-account"]);
+  await f.start("pool-b");
+});
+
+for (const failure of ["500", "network"] as const) {
+  test(`a callback ${failure} can be resent without resetting its snapshot or six minute deadline`, async () => {
+    const f = await fixture(); const started = await f.start();
+    f.home.override = (path) => {
+      if (!path.endsWith("/oauth/callback")) return undefined;
+      if (failure === "network") throw new Error("fake lost callback response");
+      return Response.json({ error: "fake callback failure" }, { status: 500 });
+    };
+    await error(await f.callback(started), "backend_unavailable", 503);
+    const before = structuredClone(f.storage.values.get(attributionStorageKey)) as { locks: Record<string, { expires: number; snapshot: string[] }> };
+    f.home.addFile("exchange-account"); f.advance(60_000); f.home.override = undefined;
+    await status(await f.callback(started), { status: "waiting" });
+    const after = f.storage.values.get(attributionStorageKey) as typeof before;
+    assert.equal(after.locks[provider]!.expires, before.locks[provider]!.expires);
+    assert.deepEqual(after.locks[provider]!.snapshot, before.locks[provider]!.snapshot);
+    assert.equal(f.home.calls.filter((call) => call.path.endsWith("/oauth/callback")).length, 2);
+    await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
+    f.home.sessions.get(state(started))!.status = "ok";
+    await status(await f.poll(started), { status: "connected", accountId: "exchange-account" });
+  });
+}
+
+test("callback deadline starts when pasted and fails clearly while the result stays readable", async () => {
+  const f = await fixture(); const started = await f.start();
+  f.advance(4 * 60_000); await f.callback(started);
+  f.advance(5 * 60_000); await f.expire();
+  assert.equal(f.home.sessions.get(state(started))?.status, "wait");
+  f.advance(60_000); await f.expire(); f.restart();
+  const result = await (await f.poll(started)).json() as SignInStatus;
+  assert.equal(result.status, "failed");
+  if (result.status === "failed") assert.match(result.message, /timed out/);
+  await f.start("pool-b");
+});
+
+for (const final of ["completed", "ceiling"] as const) {
+  test(`an expired callback retains its lock through outage until ${final}`, async () => {
+    const f = await fixture(); const started = await f.start(); await f.callback(started);
+    f.home.override = (path) => { if (path.includes("/oauth/status?")) throw new Error("fake Home outage"); return undefined; };
+    f.advance(6 * 60_000); await f.expire(); f.restart();
+    await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
+    f.advance(4 * 60_000); await f.expire();
+    await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
+    if (final === "completed") {
+      f.home.override = undefined;
+      f.home.addFile("recovered-callback"); f.home.sessions.get(state(started))!.status = "ok";
+      f.advance(30_000); await f.expire();
+      await status(await f.poll(started), { status: "connected", accountId: "recovered-callback" });
+    } else {
+      f.advance(60_000); await f.expire();
+      f.home.override = undefined;
+      const result = await (await f.poll(started)).json() as SignInStatus;
+      assert.equal(result.status, "failed");
+    }
+    await f.start("pool-b");
+  });
+}
+
+test("a credential already deleted is harmless on retry after membership cleanup fails", async () => {
+  const f = await fixture(); f.home.addGroup("pool-a", 1, ["delete-retry"]); f.home.addFile("delete-retry");
+  f.home.override = (path, init) => path.includes("/channel-group-details/") && init?.method === "DELETE"
+    ? Response.json({ error: "fake membership outage" }, { status: 503 }) : undefined;
+  await error(await f.call("/accounts/delete-retry", { method: "DELETE" }), "backend_unavailable", 503);
+  assert.equal(f.home.files.has("delete-retry"), false); assert.equal(f.home.members.length, 1);
+  const mutations = f.home.calls.filter((call) => call.method === "DELETE");
+  assert.match(mutations[0]!.path, /credentials\?id=/);
+  f.home.override = undefined; f.restart();
+  assert.equal((await f.call("/accounts/delete-retry", { method: "DELETE" })).status, 200);
+  assert.equal(f.home.members.length, 0);
+});
+
+for (const committed of [false, true]) {
+  test(`a failed upload membership write retries its saved id after restart, committed=${committed}`, async () => {
+    const f = await fixture(); const payload = { type: provider, refresh_token: "obviously-fake-retry-token" };
+    f.home.override = (path, init) => {
+      if (path.endsWith("/channel-group-details") && init?.method === "POST") {
+        if (committed) {
+          const member = JSON.parse(String(init.body)) as Member;
+          f.home.members.push({ ...member, id: 100 });
+        }
+        return Response.json({ error: "fake lost membership acknowledgement" }, { status: 503 });
+      }
+      return undefined;
+    };
+    await error(await f.call("/login-files", { body: payload }), "backend_unavailable", 503);
+    const id = [...f.home.files.keys()][0]!;
+    assert.equal(f.home.files.size, 1);
+    const saved = JSON.stringify(f.storage.values.get(attributionStorageKey));
+    assert.equal(saved.includes(payload.refresh_token), false, "pending retries persist no login-file secrets");
+    f.restart(); f.home.override = undefined;
+    const retry = await f.call("/login-files", { body: { refresh_token: payload.refresh_token, type: payload.type } });
+    assert.equal(retry.status, 200, await retry.clone().text());
+    assert.deepEqual(await retry.json(), { accountId: id });
+    assert.equal(f.home.calls.filter((call) => call.path.endsWith("/credentials") && call.method === "POST").length, 1);
+    assert.deepEqual(f.home.members.map((member) => member.auth_id), [id]);
+    assert.deepEqual((f.storage.values.get(attributionStorageKey) as { assigned: string[] }).assigned, []);
+  });
+}
+
+for (const flow of ["device", "callback"] as const) {
+  test(`a pool replaces its ${flow} sign-in and stores at most one session`, async () => {
+    const f = await fixture(); f.home.flow = flow;
+    const first = await f.start(); if (flow === "callback") await f.callback(first);
+    for (let i = 0; i < 12; i++) await f.start();
+    const saved = f.storage.values.get(attributionStorageKey) as { sessions: Record<string, unknown>; locks: Record<string, { pool: string }> };
+    assert.equal(Object.keys(saved.sessions).length, 1);
+    assert.ok(Object.values(saved.locks).length <= 1);
+    assert.equal(f.home.sessions.get(state(first))?.status, "error");
+    await error(await f.poll(first), "invalid_session");
+  });
+}
+
+test("pool tokens and signed sessions survive signing key rotation", async () => {
+  const f = await fixture(); const started = await f.start();
+  f.deps.signingKey = "cd".repeat(32); f.deps.previousSigningKey = signingKey; f.restart();
+  await status(await f.callback(started), { status: "waiting" });
+  f.home.addFile("rotation-account"); f.home.sessions.get(state(started))!.status = "ok";
+  await status(await f.poll(started), { status: "connected", accountId: "rotation-account" });
+  assert.equal((await f.call("/pool")).status, 200);
+  f.deps.previousSigningKey = undefined; f.restart();
+  await error(await f.call("/pool"), "unauthorized", 401);
 });

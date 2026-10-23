@@ -51,7 +51,7 @@ export async function signEnvelope(secret: string, prefix: string, value: unknow
 }
 
 /** The payload of a validly signed envelope of this kind, or undefined for anything else. */
-export async function openEnvelope(secret: string, prefix: string, envelope: string): Promise<unknown> {
+export async function openEnvelope(secret: string, prefix: string, envelope: string, previousSecret?: string): Promise<unknown> {
   const parts = envelope.split(".");
   if (parts.length !== 3 || parts[0] !== prefix) return undefined;
   const signature = fromBase64url(parts[2]!);
@@ -60,7 +60,7 @@ export async function openEnvelope(secret: string, prefix: string, envelope: str
   const valid = await crypto.subtle.verify(
     "HMAC", await signingKey(secret, "verify"), signature, encoder.encode(`${prefix}.${parts[1]}`),
   );
-  if (!valid) return undefined;
+  if (!valid) return previousSecret ? openEnvelope(previousSecret, prefix, envelope) : undefined;
   try {
     return JSON.parse(new TextDecoder().decode(payload));
   } catch {
@@ -76,15 +76,35 @@ function validClaims(value: unknown): value is PoolClaims {
   );
 }
 
+async function keyId(secret: string): Promise<string> {
+  if (!isSigningKey(secret)) throw new Error("Pool signing key must be 32 bytes of hex");
+  const raw = Uint8Array.from(secret.match(/../g)!, (pair) => Number.parseInt(pair, 16));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", raw));
+  return Array.from(digest.slice(0, 4), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export async function signPoolToken(secret: string, claims: PoolClaims): Promise<string> {
   if (!validClaims(claims)) throw new Error("Pool claims are incomplete");
   return signEnvelope(secret, poolPrefix, {
-    pool: claims.pool, owner: claims.owner, organization: claims.organization,
+    pool: claims.pool, owner: claims.owner, organization: claims.organization, kid: await keyId(secret),
   });
 }
 
 /** Returns the claims of a valid token, or undefined for anything else. */
-export async function verifyPoolToken(secret: string, token: string): Promise<PoolClaims | undefined> {
-  const claims = await openEnvelope(secret, poolPrefix, token);
-  return validClaims(claims) ? claims : undefined;
+export async function verifyPoolToken(secret: string, token: string, previousSecret?: string): Promise<PoolClaims | undefined> {
+  try {
+    const payload = fromBase64url(token.split(".")[1] ?? "");
+    if (!payload) return undefined;
+    const hint: unknown = JSON.parse(new TextDecoder().decode(payload));
+    let selected = secret;
+    let fallback = previousSecret;
+    if (typeof hint === "object" && hint !== null && "kid" in hint) {
+      // The untrusted id only selects a key. The signature still authorizes every claim.
+      if (hint.kid === await keyId(secret)) fallback = undefined;
+      else if (previousSecret && hint.kid === await keyId(previousSecret)) { selected = previousSecret; fallback = undefined; }
+      else return undefined;
+    }
+    const claims = await openEnvelope(selected, poolPrefix, token, fallback);
+    return validClaims(claims) ? { pool: claims.pool, owner: claims.owner, organization: claims.organization } : undefined;
+  } catch { return undefined; }
 }

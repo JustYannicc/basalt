@@ -43,6 +43,7 @@ test("management calls share readiness for 30 seconds and rewarm when the contai
         assert.notEqual(request.headers.get("Authorization"), `Bearer ${token}`);
         management++;
         const path = new URL(request.url).pathname;
+        if (path.endsWith("/oauth/session")) return Response.json({ status: "ok", cancelled: true });
         if (path.endsWith("/credentials")) return Response.json({ files: [] });
         if (path.endsWith("/oauth/auth-url")) return Response.json({ state: `fake-state-${management}`, url: "https://login.example/start?redirect_uri=http%3A%2F%2Flocalhost%2Fend" });
         if (path.endsWith("/channel-groups")) return Response.json({ channel_groups: [] });

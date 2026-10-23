@@ -17,6 +17,7 @@ import { BackendFailure, ControlFailure, fail, failureResponse, json, object, po
 
 export interface HomeDependencies {
   signingKey: string;
+  previousSigningKey?: string;
   home: (path: string, init?: RequestInit) => Promise<Response>;
   now?: () => Date;
   /** Keep best-effort work alive after a response without holding the attribution queue. */
@@ -28,12 +29,14 @@ export interface ControlAttribution {
   reserve(home: HomeClient, provider: string, pool: string, now: Date): Promise<void>;
   discard(provider: string): Promise<void>;
   rejectedCallback(session: Session): Promise<void>;
+  acceptedCallback(session: Session): Promise<void>;
   status(home: PoolHome, session: Session): Promise<SignInStatus>;
   cancel(home: PoolHome, session: Session): Promise<void>;
   started(session: Session): Promise<void>;
   uploadStarted(): Promise<string>;
   uploadFinished(upload: string): Promise<void>;
-  uploaded(home: PoolHome, id: string, upload: string): Promise<void>;
+  retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
+  uploaded(home: PoolHome, id: string, upload: string, key: string): Promise<void>;
   removed(id: string): Promise<void>;
   cached(session: Session): SignInStatus | undefined;
   callback(home: HomeClient, session: Session): Promise<boolean>;
@@ -69,8 +72,8 @@ function positiveId(value: unknown): value is number {
 async function signSession(secret: string, session: Session): Promise<string> {
   return signEnvelope(secret, sessionPrefix, session);
 }
-async function readSession(secret: string, opaque: string | null, pool: string, now: Date): Promise<Session> {
-  const value = opaque ? await openEnvelope(secret, sessionPrefix, opaque).catch(() => undefined) : undefined;
+async function readSession(secret: string, opaque: string | null, pool: string, now: Date, previousSecret?: string): Promise<Session> {
+  const value = opaque ? await openEnvelope(secret, sessionPrefix, opaque, previousSecret).catch(() => undefined) : undefined;
   if (!object(value) || value.pool !== pool || !text(value.provider) || !text(value.state)
     || (value.flow !== "callback" && value.flow !== "device") || typeof value.expiresAt !== "string"
     || !Number.isFinite(Date.parse(value.expiresAt)) || Date.parse(value.expiresAt) <= now.getTime()) {
@@ -164,7 +167,12 @@ export class HomeClient {
   }
   async allMembership(): Promise<Membership> {
     const groups = await this.allPoolGroups();
-    return { groups, members: await this.members(groups) };
+    // Home accepts an empty filter and returns the complete membership table.
+    const members = rows((await this.data("/channel-group-details")).channel_group_details).map((row) => {
+      if (!positiveId(row.id) || !positiveId(row.channel_group_id) || !text(row.auth_id)) return unavailable();
+      return { id: row.id, channel_group_id: row.channel_group_id, auth_id: row.auth_id as string };
+    });
+    return { groups, members };
   }
   async quota(ids: string[]): Promise<Json[]> {
     const items: Json[] = [];
@@ -191,11 +199,13 @@ export class HomeClient {
 
 /** Pool membership and the public account view, with no attribution state. */
 export class PoolHome {
+  readonly pool: string;
   private client: HomeClient;
   private name: string;
   private added: (ids: string[]) => void;
   constructor(client: HomeClient, pool: string, added: (ids: string[]) => void = () => {}) {
     this.client = client;
+    this.pool = pool;
     this.name = `${poolGroupPrefix}${pool}`;
     this.added = added;
   }
@@ -265,9 +275,14 @@ export class PoolHome {
   async remove(id: string, detached: () => Promise<void>): Promise<void> {
     const members = (await this.membership()).members.filter((member) => member.auth_id === id);
     if (!members.length) return fail(404, "not_found", "This account is not in this pool.");
-    for (const member of members) await this.client.data(`/channel-group-details/${member.id}`, { method: "DELETE" });
+    // Keep membership as retry authority until the credential deletion is acknowledged.
+    const deleted = await this.client.response(`/credentials?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!deleted.ok && deleted.status !== 404) throw new BackendFailure(deleted.status);
     await detached();
-    await this.client.data(`/credentials?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    for (const member of members) {
+      const response = await this.client.response(`/channel-group-details/${member.id}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) throw new BackendFailure(response.status);
+    }
   }
 }
 function finite(value: unknown): value is number {
@@ -295,7 +310,7 @@ interface RouteContext {
 }
 function attribution(ctx: RouteContext): ControlAttribution { return ctx.deps.attribution ?? unavailable(); }
 async function sessionFor(ctx: RouteContext, opaque = ctx.url.searchParams.get("session")): Promise<Session> {
-  return readSession(ctx.deps.signingKey, opaque, ctx.pool, ctx.now);
+  return readSession(ctx.deps.signingKey, opaque, ctx.pool, ctx.now, ctx.deps.previousSigningKey);
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
@@ -313,8 +328,8 @@ const routes: Record<string, Route> = {
       return fail(400, "unknown_provider", "This provider is not available.");
     }
     if (!response.ok) {
-      // A rejected start cannot exchange a credential. An ambiguous failure retains the lock.
-      if (response.status >= 400 && response.status < 500) await state.discard(provider);
+      // Home returns its errors before starting a waiter. Only a lost response is ambiguous.
+      await state.discard(provider);
       return unavailable();
     }
     const started: unknown = await response.json();
@@ -333,8 +348,15 @@ const routes: Record<string, Route> = {
     if (!providers.some((provider) => provider.id === value.type)) return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
     // uuid.go:25-50 reuses a root uuid. Strip all caller-supplied credential selectors.
     const { uuid: _uuid, id: _id, auth_index: _authIndex, ...credential } = value;
+    const raw = JSON.stringify(credential);
+    const identity = JSON.stringify([ctx.pool, credential], (_key, entry: unknown) => object(entry)
+      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)));
+    const key = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const pending = await state.retryUpload(ctx.home, key);
+    if (pending) return json({ accountId: pending });
     const upload = await state.uploadStarted();
-    const response = await ctx.client.response("/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(credential) });
+    const response = await ctx.client.response("/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: raw });
     if (response.status === 400) {
       await state.uploadFinished(upload);
       return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
@@ -343,7 +365,7 @@ const routes: Record<string, Route> = {
     const saved: unknown = await response.json();
     if (!object(saved) || typeof saved.name !== "string" || !saved.name.endsWith(".json") || saved.name.length <= 5) return unavailable();
     const id = saved.name.slice(0, -5);
-    await state.uploaded(ctx.home, id, upload);
+    await state.uploaded(ctx.home, id, upload, key);
     return json({ accountId: id });
   },
   "DELETE /accounts/:id": async (ctx) => {
@@ -370,6 +392,7 @@ const routes: Record<string, Route> = {
       return fail(400, "invalid_callback", "This callback could not be accepted. Check the URL or start again.");
     }
     if (!response.ok) return unavailable();
+    await state.acceptedCallback(session);
     return json({ status: "waiting" } satisfies SignInStatus);
   },
   "DELETE /sign-ins": async (ctx) => {
@@ -380,9 +403,9 @@ const routes: Record<string, Route> = {
 };
 
 /** Check the request before it can wait for, load or mutate attribution state. */
-export async function authorizeControl(request: Request, signingKey: string) {
+export async function authorizeControl(request: Request, signingKey: string, previousSigningKey?: string) {
   const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "");
-  const claims = bearer ? await verifyPoolToken(signingKey, bearer[1]!) : undefined;
+  const claims = bearer ? await verifyPoolToken(signingKey, bearer[1]!, previousSigningKey) : undefined;
   if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
   const url = new URL(request.url);
   const path = url.pathname.slice(base.length);
@@ -397,7 +420,7 @@ export async function authorizeControl(request: Request, signingKey: string) {
 
 export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
   try {
-    const { claims, url, route, routeKey, isOwner } = await authorizeControl(request, deps.signingKey);
+    const { claims, url, route, routeKey, isOwner } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added);
     if (routeKey !== "GET /pool") await (deps.attribution ?? unavailable()).expireLocked(client);
