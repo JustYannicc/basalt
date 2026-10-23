@@ -114,8 +114,8 @@ test("preserves a POST body and headers and returns the streamed tools response"
   assert.equal(await response.text(), "first second");
 });
 
-test("forwards model and authenticated management paths unchanged to the pool", async () => {
-  const paths = ["/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses", "/v8/management/config", "/v0/management/config"];
+test("forwards model paths unchanged to the pool", async () => {
+  const paths = ["/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses"];
   const env = envWithToolsService(async () => { throw new Error("unexpected tools request"); });
   for (const path of paths) {
     const request = new Request(`https://app.signalbox.run${path}`);
@@ -128,6 +128,26 @@ test("forwards model and authenticated management paths unchanged to the pool", 
     };
     assert.strictEqual(await handleRequest(request, env), upstream);
   }
+});
+
+test("public management requests never reach either service binding", async () => {
+  let forwarded = 0;
+  const service = { fetch: async () => { forwarded += 1; return new Response("upstream"); } };
+  const paths = [
+    "/v0/management", "/v0/management/", "/v0/management/config",
+    "/v8/management", "/v8/management/oauth/callback?state=example",
+    "/v8/management/credentials", "/V8/MANAGEMENT/config",
+    "//v8/management/config", "/%76%38/management/config",
+  ];
+  for (const path of paths) {
+    for (const method of ["GET", "POST", "OPTIONS"]) {
+      const response = await handleRequest(new Request(`https://app.signalbox.run${path}`, {
+        method, headers: { "X-Management-Key": "example" },
+      }), { TOOLS_SERVICE: service, POOL_SERVICE: service });
+      assert.equal(response.status, 404, `${method} ${path}`);
+    }
+  }
+  assert.equal(forwarded, 0);
 });
 
 test("sends signed-out visitors from the homepage to sign-in, keeping the query", async () => {

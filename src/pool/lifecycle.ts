@@ -86,3 +86,7 @@ export function poolPort(pathname: string): 8317 | 8327 | undefined {
   if (/^\/v(?:0|8)\/management(?:\/|$)/.test(pathname)) return 8327;
   return undefined;
 }
+
+export function isPublicModelPath(pathname: string): boolean {
+  return poolPort(pathname) === 8317;
+}

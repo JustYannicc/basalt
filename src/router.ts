@@ -130,7 +130,10 @@ export function handleRequest(request: Request, env: RouterEnv): Promise<Respons
   const url = new URL(request.url);
   const { search } = url;
   const pathname = servicePath(url.pathname);
-  if (isPoolPath(pathname) || isPoolManagementPath(pathname)) {
+  if (isPoolManagementPath(pathname)) {
+    return Promise.resolve(new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }));
+  }
+  if (isPoolPath(pathname)) {
     return env.POOL_SERVICE.fetch(request);
   }
   // Signed out, the tools service's homepage is its marketing page; sign-in sends people on.

@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { PoolLifecycle, poolPort } from "./lifecycle.ts";
+import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 
 export interface PoolEnvironment {
   PoolContainer: DurableObjectNamespace;
@@ -88,7 +88,7 @@ function singleton(env: PoolEnvironment) {
 
 export default {
   fetch(request: Request, env: PoolEnvironment) {
-    if (!poolPort(new URL(request.url).pathname)) return new Response(null, { status: 404 });
+    if (!isPublicModelPath(new URL(request.url).pathname)) return new Response(null, { status: 404 });
     return singleton(env).fetch(request);
   },
   async scheduled(_event: ScheduledEvent, env: PoolEnvironment) {
