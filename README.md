@@ -12,7 +12,7 @@ This repository deploys the cloud build of [Executor v2](https://github.com/Usef
 | Brand files        | The logo and favicon, from [public/](public)                        |
 | `/mcp`             | Tools gateway, with upstream authentication                         |
 | `/v1` and `/v1/*`  | Model gateway, with the pool backend's client-key authentication    |
-| `/v8/management/*` and `/v0/management/*` | Pool management API, requiring the deploy management key |
+| `/v8/management/*` and `/v0/management/*` | Not public; 404. Home management uses the internal controller path |
 
 The router preserves incoming URLs, headers and bodies, and streams responses through a private service binding. OAuth callbacks and discovery documents reach the same tools service. Only the router owns the public custom domain. Cloudflare provisions it from the existing zone through the deploy token.
 
