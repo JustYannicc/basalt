@@ -9,24 +9,29 @@ import { containerInputs } from "./container-files.ts";
 // Include local imports and referenced source URLs, the dependency pin and patches.
 // Build outputs and the architecture tooling cannot feed back into this digest.
 export function stackFingerprint(root: string): string {
-  const sources = new Map<string, string>();
+  const sources = new Map<string, Buffer>();
+  const directories = new Set<string>();
   const visit = (path: string): void => {
     const file = relative(root, path).replaceAll("\\", "/");
     if (file.startsWith("../") || file.startsWith("scripts/architecture/") ||
         /(?:^|\/)(?:node_modules|dist|generated|\.generated|\.alchemy)\//.test(file) || sources.has(file)) return;
     if (!existsSync(path)) return;
     if (statSync(path).isDirectory()) {
-      if (existsSync(join(path, "Dockerfile"))) for (const input of containerInputs(path)) visit(input);
+      if (directories.has(file)) return;
+      directories.add(file);
+      const inputs = existsSync(join(path, "Dockerfile")) ? containerInputs(path) : filesBelow(path);
+      for (const input of inputs) visit(input);
       return;
     }
-    const text = readFileSync(path, "utf8");
+    const text = readFileSync(path);
     sources.set(file, text);
     if (!/\.[cm]?tsx?$/.test(path)) return;
-    const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+    const source = ts.createSourceFile(path, text.toString("utf8"), ts.ScriptTarget.Latest, true);
     const visitNode = (node: ts.Node): void => {
       if (ts.isStringLiteralLike(node) && node.text.startsWith(".")) {
         const reference = resolve(dirname(path), node.text.replace(/\.js$/, ".ts"));
-        if (existsSync(reference) && statSync(reference).isDirectory() && existsSync(join(reference, "Dockerfile"))) visit(reference);
+        if (ts.isNewExpression(node.parent) && node.parent.expression.getText(source) === "URL" &&
+            node.parent.arguments?.[0] === node && existsSync(reference) && statSync(reference).isDirectory()) visit(reference);
         for (const candidate of [reference, `${reference}.ts`, join(reference, "index.ts")]) {
           if (/\.(?:[cm]?tsx?|json)$/.test(candidate) && existsSync(candidate)) {
             visit(candidate);

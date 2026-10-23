@@ -29,8 +29,9 @@ export function filesBelow(path: string): string[] {
     name === "node_modules" || name.startsWith(".") ? [] : filesBelow(join(path, name)));
 }
 
-export function runtimeFiles(root: string): string[] {
-  return ["src", "packages", "containers"].flatMap(dir => filesBelow(join(root, dir)))
+export function runtimeFiles(root: string, modules: Module[] = []): string[] {
+  const owned = modules.filter(module => module.code !== ".upstream" && !module.code.startsWith(".upstream/")).flatMap(module => filesBelow(join(root, module.code)));
+  return [...new Set([...owned, ...["src", "packages", "containers"].flatMap(dir => filesBelow(join(root, dir)))])]
     .filter(path => /\.[cm]?[jt]sx?$/.test(path) && !/\.(test|spec)\.|\.d\.ts$/.test(path));
 }
 
@@ -59,7 +60,7 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
         errors.push(`Unmodelled module: ${code}`);
     }
   }
-  for (const path of runtimeFiles(root)) {
+  for (const path of runtimeFiles(root, modules)) {
     const file = relative(root, path);
     if (!owner(file, modules)) errors.push(`Unmodelled code: ${file}`);
   }
@@ -105,7 +106,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
   const errors: string[] = [];
   const add = (source: string, target: string, evidence: string) =>
     dependencies.push({ source, target, evidence });
-  for (const path of runtimeFiles(root)) {
+  for (const path of runtimeFiles(root, modules)) {
     const file = relative(root, path);
     const module = owner(file, modules);
     if (!module) continue;

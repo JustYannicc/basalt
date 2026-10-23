@@ -71,3 +71,9 @@ test("bound container and actor transports ignore placeholder HTTP hosts", () =>
   expect(result.errors).toEqual([]);
   expect(result.dependencies.map(d => `${d.source}->${d.target}`)).toEqual(["gateway->runtime", "gateway->runtime"]);
 });
+
+test("declared runtime code outside conventional folders participates in source checks", () => {
+  const root = fixture({ "brand.ts": "fetch('https://unmodelled.invalid/v1');", ".upstream/runtime.ts": "fetch(destination);" });
+  const result = sourceDependencies(root, [module("router", "brand.ts"), module("tools", ".upstream")], []);
+  expect(result.errors).toEqual(["brand.ts:1: Unmodelled outside host: unmodelled.invalid"]);
+});

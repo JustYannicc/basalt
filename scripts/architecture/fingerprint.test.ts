@@ -64,3 +64,16 @@ test("container context inputs from every stage participate in deployment drift"
     expect(stackFingerprint(root), file).not.toBe(before);
   }
 });
+
+test("referenced public assets hash their bytes and include newly added files", () => {
+  const { root, write } = fixture();
+  write("alchemy.run.ts", 'new URL("./public/", import.meta.url);');
+  write("public/logo.png", "");
+  writeFileSync(join(root, "public/logo.png"), Buffer.from([0xff]));
+  const before = stackFingerprint(root);
+  writeFileSync(join(root, "public/logo.png"), Buffer.from([0xfe]));
+  const changed = stackFingerprint(root);
+  expect(changed).not.toBe(before);
+  write("public/redirects", "/old /new 302");
+  expect(stackFingerprint(root)).not.toBe(changed);
+});

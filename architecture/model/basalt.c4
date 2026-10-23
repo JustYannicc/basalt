@@ -4,7 +4,7 @@ model {
 
     router = module "Router" {
       #basalt #v1 #passthrough #port
-      metadata { code "src/router.ts"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
+      metadata { code "src/router.ts|brand.ts"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
     }
 
     toolsGateway = module "Tools gateway" {
@@ -80,6 +80,13 @@ model {
     #external
     metadata { hosts "dynamic"; sdks "upstream" }
   }
+
+  appHosting = external "App hosting" {
+    #external #planned
+    metadata { hosts "apps.signalbox.run"; status "disabled origin configuration" }
+  }
+
+  basalt.router -[sync]-> appHosting "configure origin" { #planned }
 
   poolOwner -[sync]-> localClient "uses"
   poolMember -[sync]-> localClient "uses"
