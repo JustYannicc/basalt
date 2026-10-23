@@ -112,7 +112,7 @@ The managed path needs an existing Advanced Certificate Manager subscription and
 
 Keep the encryption key stable. Replacing `EXECUTOR_ENCRYPTION_KEY` without re-encrypting existing credentials makes them unreadable. Rotating `BETTER_AUTH_SECRET` can invalidate sessions.
 
-Rotate the pool signing key in two deploys. First copy `POOL_APP_SIGNING_KEY` into `POOL_APP_SIGNING_KEY_PREVIOUS`, set a new random 32-byte hex `POOL_APP_SIGNING_KEY` and deploy. Member setup re-signs and re-links every pool's token, while the Worker still accepts old ones. Once that has run, delete `POOL_APP_SIGNING_KEY_PREVIOUS` and deploy again; old tokens stop working.
+Rotate the pool signing key in two deploys. First copy `POOL_APP_SIGNING_KEY` into `POOL_APP_SIGNING_KEY_PREVIOUS`, set a new random 32-byte hex `POOL_APP_SIGNING_KEY` and deploy. About 15 minutes after the deploy, member setup re-signs and re-links every pool's token, so the pool Worker has the new key before any pool uses it. The Worker keeps accepting old tokens meanwhile. Wait at least an hour before you delete `POOL_APP_SIGNING_KEY_PREVIOUS` and deploy again; after that, old tokens stop working. A pool whose token still names the old key at that point gets 401 until its next member setup re-signs it.
 
 Rotate MCP signing keys over three deploys. First put a new random signing key in `MCP_SESSION_KEY_PREVIOUS` and deploy. Next swap `MCP_SESSION_KEY_CURRENT` and `MCP_SESSION_KEY_PREVIOUS` and deploy. Finally replace `MCP_SESSION_KEY_PREVIOUS` and deploy again. Both keys are independently generated 32-byte hex strings. Retiring a key causes sessions signed only by it to initialize again.
 
