@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
-import { dirname, join, relative } from "node:path";
+import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Dependency, Module, OutsideService } from "./source.ts";
-import { filesBelow, owner } from "./source.ts";
-import { containerRuntimeFiles } from "./container-files.ts";
+import { owner } from "./source.ts";
+import { executionFiles } from "./execution-files.ts";
 
 type Location = { file: string; line: number };
 type Scan = {
@@ -18,19 +18,15 @@ const matches = (name: string, candidates: string[]) =>
   candidates.some(candidate => name === candidate || name.startsWith(candidate + "."));
 const networkStdlib = /^(?:socket|ssl|http\.client|ftplib|smtplib|imaplib|poplib|telnetlib|xmlrpc\.client|asyncio)(?:\.|$)/;
 
-// Only source-owned Python participates. Build-stage release acquisition and the
-// released executable have separate ownership from this runtime source check.
+// Build, deployment and runtime Python share the owned execution boundary.
+// Released executables remain opaque dependencies represented by the model.
 export function pythonDependencies(root: string, modules: Module[], services: OutsideService[]): {
   dependencies: Dependency[];
   errors: string[];
 } {
   const dependencies: Dependency[] = [];
   const errors: string[] = [];
-  const paths = new Set(["src", "packages"].flatMap(dir => filesBelow(join(root, dir))));
-  for (const dockerfile of filesBelow(join(root, "containers")).filter(file => file.endsWith("/Dockerfile"))) {
-    try { for (const file of containerRuntimeFiles(dirname(dockerfile))) paths.add(file); }
-    catch (error) { errors.push(`${relative(root, dockerfile)}: ${String(error)}`); }
-  }
+  const paths = executionFiles(root, modules);
   const texts: Record<string, string> = {};
   for (const path of [...paths].sort()) {
     const file = relative(root, path).replaceAll("\\", "/");

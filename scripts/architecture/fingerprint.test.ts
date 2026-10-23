@@ -75,7 +75,10 @@ test("referenced public assets hash their bytes and include newly added files", 
   const changed = stackFingerprint(root);
   expect(changed).not.toBe(before);
   write("public/redirects", "/old /new 302");
-  expect(stackFingerprint(root)).not.toBe(changed);
+  const withRedirect = stackFingerprint(root);
+  expect(withRedirect).not.toBe(changed);
+  write("public/.well-known/config.json", "{}");
+  expect(stackFingerprint(root)).not.toBe(withRedirect);
 });
 
 test("dependency checkout state is represented by its pin and patches", () => {
@@ -91,4 +94,14 @@ test("dependency checkout state is represented by its pin and patches", () => {
   expect(next).not.toBe(before);
   write("patches/change.patch", "changed deployment source");
   expect(stackFingerprint(root)).not.toBe(next);
+});
+
+test("workflow and command declarations participate in deployment drift", () => {
+  const { root, write } = fixture();
+  const before = stackFingerprint(root);
+  write(".github/workflows/deploy.yml", "steps:\n  - run: npm run deploy\n");
+  const workflow = stackFingerprint(root);
+  expect(workflow).not.toBe(before);
+  write("package.json", '{"scripts":{"deploy":"node scripts/deploy.ts"}}');
+  expect(stackFingerprint(root)).not.toBe(workflow);
 });

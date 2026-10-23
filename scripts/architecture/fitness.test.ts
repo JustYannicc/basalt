@@ -8,6 +8,7 @@ import { moduleErrors, sourceDependencies, values } from "./source.ts";
 import { glossaryValues, hasVendor, languageErrors } from "./language.ts";
 import { discoverStackInventory } from "./native-stack.ts";
 import { serviceArchitecture } from "../../src/router.ts";
+import { pipelineDependencies } from "./pipeline.ts";
 
 const routerId: $ElementId = "basalt.router";
 const root = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
@@ -25,6 +26,8 @@ const modules = () => [...model.elements()].flatMap(element =>
     id: element.id, code,
     bindings: values(element.metadata.bindings),
     libraries: values(element.metadata.libraries),
+    configuration: values(element.metadata.configuration).includes("true"),
+    endpointHosts: values(element.metadata.endpointHosts),
   })));
 
 test("deployed resources and deployment instances correspond in both directions", () => {
@@ -45,13 +48,15 @@ test("deployed resources and deployment instances correspond in both directions"
 });
 
 test("outside hosts, SDKs and service bindings have caller relationships", () => {
-  const services = [...model.elements()].filter(e => e.isTagged("external")).map(element => ({
-    id: element.id, hosts: values(element.metadata.hosts), sdks: values(element.metadata.sdks),
+  const services = [...model.elements()].filter(e => e.isTagged("external") || values(e.metadata.endpointHosts).length).map(element => ({
+    id: element.id, hosts: [...values(element.metadata.hosts), ...values(element.metadata.endpointHosts)], sdks: values(element.metadata.sdks),
   }));
   const router = modules().find(module => module.id === routerId);
   expect(router?.bindings.sort()).toEqual(Object.entries(serviceArchitecture).map(([binding, id]) => `${binding}=${id}`).sort());
-  const { dependencies, errors } = sourceDependencies(root, modules(), services);
-  expect(errors).toEqual([]);
+  const source = sourceDependencies(root, modules(), services);
+  const pipeline = pipelineDependencies(root, modules(), services);
+  expect([...source.errors, ...pipeline.errors]).toEqual([]);
+  const dependencies = [...source.dependencies, ...pipeline.dependencies];
   const relationships = new Set([...model.relationships()].map(r => `${r.source.id}->${r.target.id}`));
   for (const module of modules()) {
     for (const binding of module.bindings) {
@@ -97,6 +102,10 @@ test("kinds, tags and domain language match the glossary", () => {
     expect(allowedElements.has(element.kind), element.id).toBe(true);
     expect(element.tags.every(tag => allowedTags.has(tag)), element.id).toBe(true);
     if (element.technology && hasVendor(element.technology)) expect(element.kind, element.id).toBe("adapter");
+    if ([...values(element.metadata.hosts), ...values(element.metadata.sdks)].some(hasVendor)) {
+      expect(element.kind, element.id).toBe("adapter");
+      expect(element.isTagged("external"), element.id).toBe(true);
+    }
   }
   for (const node of model.deployment.nodes()) expect(allowedDeployments.has(node.kind), node.id).toBe(true);
   for (const relation of model.relationships()) expect(hasVendor(relation.technology ?? ""), relation.id).toBe(false);

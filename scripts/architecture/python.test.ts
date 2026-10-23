@@ -96,7 +96,7 @@ test("imported own helper arguments are checked at all callers", () => {
   expect(result.dependencies).toEqual(expect.arrayContaining([expect.objectContaining({ source: "a", target: "b" })]));
 });
 
-test("builder Python and tests are excluded by ownership, final-stage Python is scanned", () => {
+test("build-stage and runtime Python are scanned while tests retain separate ownership", () => {
   const root = fixture({
     "containers/pool/Dockerfile": "FROM python:3 AS builder\nCOPY fetch.py ./\nFROM python:3\nCOPY run.py tests /app/\n",
     "containers/pool/fetch.py": 'import unknown_build_sdk\nURL = "https://build.example.invalid"',
@@ -105,15 +105,21 @@ test("builder Python and tests are excluded by ownership, final-stage Python is 
     "src/test_runtime.py": "import unknown_test_sdk",
   });
   const result = pythonDependencies(root, [module("pool", "containers/pool"), module("tests", "src")], []);
-  expect(result.errors).toEqual(["containers/pool/run.py:1: Unmodelled outside host: runtime.example.invalid"]);
+  expect(result.errors.join("\n")).toContain("Unmodelled SDK or library: unknown_build_sdk");
+  expect(result.errors.join("\n")).toContain("Unmodelled outside host: build.example.invalid");
+  expect(result.errors.join("\n")).toContain("Unmodelled outside host: runtime.example.invalid");
+  expect(result.errors.join("\n")).not.toContain("unknown_test_sdk");
 });
 
-test("the actual final-stage pool wrapper passes without importing or executing inspected source", () => {
+test("the actual build downloader and pool wrapper require a release service", () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const files = Object.fromEntries(["Dockerfile", "releases.json", "fetch_releases.py", "supervisor.py", "pool_contract.py", "readiness.py", "healthcheck.py", "__init__.py"].map(file =>
     [`containers/pool/${file}`, readFileSync(join(root, "containers/pool", file), "utf8")]));
   const copy = fixture(files);
-  expect(pythonDependencies(copy, [module("pool", "containers/pool")], [])).toEqual({ dependencies: [], errors: [] });
+  expect(pythonDependencies(copy, [module("pool", "containers/pool")], []).errors.join("\n")).toContain("Unmodelled outside host: github.com");
+  const result = pythonDependencies(copy, [module("pool", "containers/pool")], [{ id: "releases", hosts: ["github.com"], sdks: [] }]);
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies).toContainEqual(expect.objectContaining({ source: "pool", target: "releases" }));
 });
 
 test.each([

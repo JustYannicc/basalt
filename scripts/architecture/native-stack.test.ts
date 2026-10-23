@@ -154,4 +154,3 @@ test("a caught unmatched fetch still fails with no request values in the error",
   expect(String(failure)).toMatch(/Native stack inventory evaluate failed/);
   expect(String(failure)).not.toMatch(/secret.invalid|token-value/);
 }, 60_000);
-

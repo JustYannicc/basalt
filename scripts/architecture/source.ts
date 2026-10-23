@@ -1,13 +1,21 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
+import { configurationIssues } from "./configuration.ts";
+import { executionFiles, isExecutionPath } from "./execution-files.ts";
+import { filesBelow } from "./files.ts";
 import { pythonDependencies } from "./python.ts";
+import { StaticValues } from "./static-values.ts";
+
+export { filesBelow } from "./files.ts";
 
 export interface Module {
   id: string;
   code: string;
   bindings: string[];
   libraries: string[];
+  configuration?: boolean;
+  endpointHosts?: string[];
 }
 export interface OutsideService {
   id: string;
@@ -22,17 +30,9 @@ export interface Dependency {
 export const values = (value: string | string[] | undefined): string[] =>
   (Array.isArray(value) ? value : value?.split("|") ?? []).map(v => v.trim()).filter(Boolean);
 
-export function filesBelow(path: string): string[] {
-  if (!existsSync(path)) return [];
-  if (!statSync(path).isDirectory()) return [path];
-  return readdirSync(path).sort().flatMap(name =>
-    name === "node_modules" || name.startsWith(".") ? [] : filesBelow(join(path, name)));
-}
-
 export function runtimeFiles(root: string, modules: Module[] = []): string[] {
-  const owned = modules.filter(module => module.code !== ".upstream" && !module.code.startsWith(".upstream/")).flatMap(module => filesBelow(join(root, module.code)));
-  return [...new Set([...owned, ...["src", "packages", "containers"].flatMap(dir => filesBelow(join(root, dir)))])]
-    .filter(path => /\.[cm]?[jt]sx?$/.test(path) && !/\.(test|spec)\.|\.d\.ts$/.test(path));
+  return executionFiles(root, modules)
+    .filter(path => /\.[cm]?[jt]sx?$/.test(path));
 }
 
 export function owner(file: string, modules: Module[]): Module | undefined {
@@ -53,15 +53,15 @@ export function moduleErrors(root: string, modules: Module[]): string[] {
   for (const parent of ["src", "packages", "containers"]) {
     const path = join(root, parent);
     if (!existsSync(path)) continue;
-    for (const entry of readdirSync(path)) {
+    for (const entry of readdirSync(path).sort()) {
       const code = `${parent}/${entry}`;
-      if (entry.startsWith(".") || /\.(test|spec)\.|\.d\.ts$/.test(entry)) continue;
+      if (!isExecutionPath(code)) continue;
       if (!modules.some(m => m.code === code || m.code.startsWith(code + "/")))
         errors.push(`Unmodelled module: ${code}`);
     }
   }
   for (const path of runtimeFiles(root, modules)) {
-    const file = relative(root, path);
+    const file = relative(root, path).replaceAll("\\", "/");
     if (!owner(file, modules)) errors.push(`Unmodelled code: ${file}`);
   }
   return errors;
@@ -87,7 +87,7 @@ function fetchBinding(call: ts.CallExpression, module: Module, source: ts.Source
   if (ts.isCallExpression(receiver)) names.push(receiver.expression.getText(source));
   return module.bindings.find(binding => {
     const name = binding.split("=")[0];
-    return names.some(receiver => receiver === name || receiver === `env.${name}` || receiver === `this.env.${name}`);
+    return names.some(candidate => candidate === name || candidate === `env.${name}` || candidate === `this.env.${name}`);
   });
 }
 
@@ -97,7 +97,22 @@ function usesBoundTransport(node: ts.Node, module: Module, source: ts.SourceFile
   return false;
 }
 
-// Runtime source only. The pinned dependency is one module with its own implementation.
+function isGlobalFetch(expression: ts.Expression, values: StaticValues): boolean {
+  return (ts.isIdentifier(expression) && expression.text === "fetch" && values.isUnshadowedGlobal(expression)) ||
+    (ts.isPropertyAccessExpression(expression) && expression.name.text === "fetch" &&
+      ts.isIdentifier(expression.expression) && expression.expression.text === "globalThis" &&
+      values.isUnshadowedGlobal(expression.expression));
+}
+
+function isGlobalRequire(expression: ts.Expression, values: StaticValues): boolean {
+  return ts.isIdentifier(expression) && expression.text === "require" && values.isUnshadowedGlobal(expression);
+}
+
+function matchesHost(host: string, hosts: string[]): boolean {
+  return hosts.some(candidate => host === candidate || (candidate.startsWith("*.") && host.endsWith(candidate.slice(1))));
+}
+
+// Source checks parse owned code and bind only that closed file set. They never execute source.
 export function sourceDependencies(root: string, modules: Module[], services: OutsideService[]): {
   dependencies: Dependency[];
   errors: string[];
@@ -106,21 +121,29 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
   const errors: string[] = [];
   const add = (source: string, target: string, evidence: string) =>
     dependencies.push({ source, target, evidence });
-  for (const path of runtimeFiles(root, modules)) {
-    const file = relative(root, path);
+  const paths = runtimeFiles(root, modules);
+  const staticValues = new StaticValues(paths);
+  for (const path of paths) {
+    const file = relative(root, path).replaceAll("\\", "/");
     const module = owner(file, modules);
     if (!module) continue;
-    const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+    const source = staticValues.source(path);
+    if (!source) {
+      errors.push(`${file}: Unable to parse source file`);
+      continue;
+    }
     const report = (node: ts.Node, message: string) => {
       const line = source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
       errors.push(`${file}:${line}: ${message}`);
     };
-    const checkImport = (node: ts.Node, specifier: string) => {
+    if (module.configuration) {
+      for (const issue of configurationIssues(source)) report(issue.node, issue.message);
+      continue;
+    }
+    const checkImport = (node: ts.Node, specifier: string, dynamicPackage = false) => {
       if (specifier === "cloudflare:workers") return;
       if (specifier.startsWith("node:") && !["node:http", "node:https", "node:http2", "node:net", "node:tls"].includes(specifier)) return;
-      // These implement effects, deployment declarations and local service bindings.
-      // They do not identify an outside API. Concrete network destinations still count.
-      if (["effect", "alchemy", "@cloudflare/containers"].some(library => specifier === library || specifier.startsWith(library + "/"))) return;
+      const declaredLibrary = module.libraries.some(lib => specifier === lib || specifier.startsWith(lib + "/"));
       const local = resolveImport(root, file, specifier);
       if (local === "scripts/architecture/gen/model.ts") return;
       if (local !== undefined) {
@@ -131,44 +154,67 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
       }
       const service = services.find(s => s.sdks.some(sdk => specifier === sdk || specifier.startsWith(sdk + "/")));
       if (service) add(module.id, service.id, `${file}: ${specifier}`);
-      else if (!module.libraries.some(lib => specifier === lib || specifier.startsWith(lib + "/")))
+      else if (dynamicPackage && !declaredLibrary) report(node, `Unmodelled dynamic package import: ${specifier}`);
+      else if (!dynamicPackage && !declaredLibrary &&
+        !["effect", "alchemy", "@cloudflare/containers"].some(library => specifier === library || specifier.startsWith(library + "/")))
         report(node, `Unmodelled SDK or library: ${specifier}`);
     };
-    const visit = (node: ts.Node) => {
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
-        checkImport(node, node.moduleSpecifier.text);
+    const observedHosts = new Set<string>();
+    const addHost = (node: ts.Node, host: string) => {
+      if (usesBoundTransport(node, module, source)) return;
+      const service = services.find(candidate => matchesHost(host, candidate.hosts));
+      if (service) {
+        add(module.id, service.id, `${file}: ${host}`);
+        observedHosts.add(host);
+        return;
       }
-      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || node.expression.getText(source) === "require")) {
+      const endpoint = modules.find(candidate => candidate.id !== module.id && candidate.endpointHosts?.includes(host));
+      if (endpoint) {
+        add(module.id, endpoint.id, `${file}: ${host}`);
+        observedHosts.add(host);
+        return;
+      }
+      report(node, `Unmodelled outside host: ${host}`);
+    };
+    const visit = (node: ts.Node) => {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier))
+        checkImport(node, node.moduleSpecifier.text);
+      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || isGlobalRequire(node.expression, staticValues))) {
         const argument = node.arguments[0];
-        if (argument && ts.isStringLiteralLike(argument)) checkImport(node, argument.text);
-        else report(node, "Dynamic import needs a statically known module");
+        const specifier = argument && staticValues.moduleSpecifier(argument);
+        if (specifier === undefined) report(node, "Dynamic import needs a statically known module");
+        else checkImport(node, specifier, argument !== undefined && staticValues.packageSpecifier(argument));
       }
       if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) {
-        const text = ts.isTemplateExpression(node) ? node.head.text : node.text;
-        if (/^(?:https?|wss?):\/\//.test(text)) {
-          try {
-            const host = new URL(text).hostname;
-            if (usesBoundTransport(node, module, source)) return;
-            const service = services.find(s => s.hosts.some(h => host === h || (h.startsWith("*.") && host.endsWith(h.slice(1)))));
-            if (service) add(module.id, service.id, `${file}: ${host}`);
-            else report(node, `Unmodelled outside host: ${host}`);
-          } catch { report(node, "Outside URL has a dynamic host"); }
+        const prefix = ts.isTemplateExpression(node) ? node.head.text : node.text;
+        if (/^(?:https?|wss?):\/\//.test(prefix)) {
+          if (usesBoundTransport(node, module, source)) return;
+          const host = staticValues.urlHost(node);
+          if (host) addHost(node, host);
+          else report(node, "Outside URL has a dynamic host");
         }
       }
-      if (ts.isVariableDeclaration(node) && node.initializer && ["fetch", "globalThis.fetch"].includes(node.initializer.getText(source)))
+      if (ts.isVariableDeclaration(node) && node.initializer && isGlobalFetch(node.initializer, staticValues))
         report(node, "Aliased outbound fetch needs an explicit gateway adapter");
-      if (ts.isCallExpression(node)) {
-        const expression = node.expression.getText(source);
-        if (expression === "fetch" || expression === "globalThis.fetch") {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "fetch" &&
+        !isGlobalFetch(node.expression, staticValues)) {
+        const binding = fetchBinding(node, module, source);
+        if (binding) add(module.id, binding.split("=")[1]!, `${file}: ${node.expression.expression.getText(source)}`);
+        else report(node, `Unmodelled fetch binding: ${node.expression.expression.getText(source)}`);
+      }
+      if (ts.isCallExpression(node) && isGlobalFetch(node.expression, staticValues)) {
+        const binding = fetchBinding(node, module, source);
+        if (binding) {
+          add(module.id, binding.split("=")[1]!, `${file}: ${node.expression.getText(source)}`);
+        } else {
           const argument = node.arguments[0];
-          // Literal URLs are checked above. Computed destinations must cross a modelled gateway.
-          if (!argument || !ts.isStringLiteralLike(argument))
-            report(node, "Computed outbound fetch needs an explicit gateway adapter");
-        } else if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "fetch") {
-          const receiver = node.expression.expression.getText(source);
-          const binding = fetchBinding(node, module, source);
-          if (binding) add(module.id, binding.split("=")[1]!, `${file}: ${receiver}`);
-          else report(node, `Unmodelled fetch binding: ${receiver}`);
+          const literalUrl = argument && (ts.isStringLiteralLike(argument) || ts.isTemplateExpression(argument));
+          if (!argument) report(node, "Computed outbound fetch needs an explicit gateway adapter");
+          else if (!literalUrl) {
+            const host = staticValues.urlHost(argument);
+            if (!host) report(node, "Computed outbound fetch needs a statically known host or an explicit gateway adapter");
+            else if (!observedHosts.has(host)) addHost(node, host);
+          }
         }
       }
       ts.forEachChild(node, visit);

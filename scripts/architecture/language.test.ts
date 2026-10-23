@@ -20,6 +20,14 @@ test("underlying adapter technology may name its product", () => {
   const root = fixture("model.c4", 'model { adapter runtime "Runtime adapter" { technology "Cloudflare Workers" } }');
   expect(languageErrors(root)).toEqual([]);
 });
+test("exact adapter host and SDK evidence does not rename the interface", () => {
+  const root = fixture("model.c4", 'model { adapter release "Release source" { metadata { hosts "github.com"; sdks "@vendor/sdk" } } }');
+  expect(languageErrors(root)).toEqual([]);
+});
+test("source paths retain their exact code identifiers", () => {
+  const root = fixture("model.c4", 'model { module build "Build" { metadata { code ".github/workflows/ci.yml|scripts/ensure-artifacts.ts" } } }');
+  expect(languageErrors(root)).toEqual([]);
+});
 test("prose has no technology-string exemption", () => {
   const root = fixture("README.md", 'technology "Executor"');
   expect(languageErrors(root)[0]).toContain("tools gateway");

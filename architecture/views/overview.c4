@@ -120,6 +120,30 @@ views {
     include basalt.toolsGateway -> assetsService
     autoLayout TopBottom
   }
+}
 
-
+views {
+  view build_and_deployment {
+    title "Basalt/Build and deployment"
+    include basalt.build, basalt.deployment, basalt.brandConfig
+    include releaseSource with { technology "" }
+    include deploymentProvider with { technology "" }
+    include databaseService with { technology "" }
+    include databaseProvider with { technology "" }
+    include containerRegistry with { technology "" }
+    include packageSource with { technology "" }
+    include basalt.router
+    exclude * -> *
+    include basalt.build -> releaseSource
+    include basalt.deployment -> deploymentProvider
+    include basalt.deployment -> databaseService
+    include basalt.deployment -> databaseProvider
+    include basalt.build -> containerRegistry
+    include basalt.build -> packageSource
+    include basalt.build -> basalt.deployment
+    include basalt.build -> basalt.brandConfig
+    include basalt.deployment -> basalt.brandConfig
+    include basalt.deployment -> basalt.router
+    autoLayout TopBottom
+  }
 }

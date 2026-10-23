@@ -85,6 +85,11 @@ The model uses the names and identifiers below. Planned parts are not current de
 
 | Term | Meaning |
 | --- | --- |
+| Build | The owned programs that prepare source, verify downloads and bundle the product. |
+| Deployment | The owned orchestration and provisioning programs that publish and check the product. |
+| Brand configuration | Shared literal data read by runtime, build and deployment programs. |
+| Release source | The outside service that supplies verified release archives during the image build. |
+| Deployment provider | The outside control-plane API used to provision hosting resources. |
 | Identity interface | Basalt's planned interface; the dependency already provides public identity behavior. |
 | Model gateway | The current single entry point for model requests. |
 | Tools gateway | The current public dependency boundary for identity, connectors, vault, and tools. |

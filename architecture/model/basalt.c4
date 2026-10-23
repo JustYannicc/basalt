@@ -4,7 +4,21 @@ model {
 
     router = module "Router" {
       #basalt #v1 #passthrough #port
-      metadata { code "src/router.ts|brand.ts"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
+      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
+    }
+
+    brandConfig = part "Brand configuration" {
+      metadata { code "brand.ts"; configuration "true" }
+    }
+
+    build = module "Build" {
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml"; libraries "@effect/platform-node|alchemy" }
+    }
+
+    deployment = module "Deployment" {
+      metadata {
+        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml"
+      }
     }
 
     toolsGateway = module "Tools gateway" {
@@ -86,7 +100,17 @@ model {
     metadata { hosts "apps.signalbox.run"; status "disabled origin configuration" }
   }
 
-  basalt.router -[sync]-> appHosting "configure origin" { #planned }
+  basalt.deployment -[sync]-> appHosting "configure origin" { #planned }
+  basalt.router -[sync]-> basalt.brandConfig "read brand configuration"
+  basalt.deployment -[sync]-> basalt.brandConfig "read deployment configuration"
+  basalt.build -[sync]-> basalt.brandConfig "read build configuration"
+  basalt.build -[sync]-> basalt.deployment "read deployment settings"
+  basalt.deployment -[sync]-> basalt.build "run deployment commands"
+  basalt.deployment -[sync]-> basalt.modelGateway "provision pool"
+  basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
+  basalt.deployment -[sync]-> basalt.toolsGateway "provision tools"
+  basalt.deployment -[sync]-> basalt.router "check public routes"
+  basalt.build -[sync]-> basalt.poolRuntime "build pool image"
 
   poolOwner -[sync]-> localClient "uses"
   poolMember -[sync]-> localClient "uses"

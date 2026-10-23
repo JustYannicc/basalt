@@ -1,9 +1,19 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
-import { filesBelow } from "./source.ts";
+import { filesBelow } from "./files.ts";
 import { containerInputs } from "./container-files.ts";
+
+function assetFiles(path: string, root: string, seen = new Set<string>()): string[] {
+  const actual = realpathSync(path);
+  const offset = relative(realpathSync(root), actual);
+  if (offset === ".." || offset.startsWith("../")) throw new Error("Asset input escapes repository");
+  if (seen.has(actual)) return [];
+  seen.add(actual);
+  return statSync(path).isDirectory()
+    ? readdirSync(path).sort().flatMap(name => assetFiles(join(path, name), root, seen)) : [path];
+}
 
 // Hash source rather than resolved values: no credentials or providers are needed.
 // Include local imports and referenced source URLs, the dependency pin and patches.
@@ -21,7 +31,7 @@ export function stackFingerprint(root: string): string {
     if (statSync(path).isDirectory()) {
       if (directories.has(file)) return;
       directories.add(file);
-      const inputs = existsSync(join(path, "Dockerfile")) ? containerInputs(path) : filesBelow(path);
+      const inputs = existsSync(join(path, "Dockerfile")) ? containerInputs(path) : assetFiles(path, root);
       for (const input of inputs) visit(input);
       return;
     }
@@ -48,6 +58,8 @@ export function stackFingerprint(root: string): string {
   visit(join(root, "alchemy.run.ts"));
   visit(join(root, "scripts/environment.ts"));
   visit(join(root, "upstream.json"));
+  visit(join(root, "package.json"));
+  for (const workflow of filesBelow(join(root, ".github/workflows")).filter(file => /\.ya?ml$/.test(file))) visit(workflow);
   for (const patch of filesBelow(join(root, "patches")).filter(file => file.endsWith(".patch"))) visit(patch);
   const hash = createHash("sha256");
   for (const [file, text] of [...sources].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))

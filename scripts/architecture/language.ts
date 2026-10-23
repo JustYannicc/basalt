@@ -25,7 +25,11 @@ export function languageErrors(root: string): string[] {
     const text = readFileSync(file, "utf8");
     // Only adapter technology may name a replaceable product. The API check also
     // rejects product technology attached to any other kind of element.
-    const withoutTechnology = file.endsWith(".md") ? text : text.replace(/\btechnology\s+(['"])(?:\\.|(?!\1)[\s\S])*?\1/g, "");
+    const withoutTechnology = file.endsWith(".md") ? text : text
+      .replace(/\btechnology\s+(['"])(?:\\.|(?!\1)[\s\S])*?\1/g, "")
+      // Exact host and package names are evidence keys, not diagram language.
+      // The model API check restricts these keys to external adapters.
+      .replace(/\b(?:code|hosts|sdks)\s+(['"])(?:\\.|(?!\1)[\s\S])*?\1/g, "");
     withoutTechnology.split("\n").forEach((line, index) => {
       const match = line.match(vendors);
       if (match) {
