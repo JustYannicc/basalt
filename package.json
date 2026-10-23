@@ -7,6 +7,7 @@
     "check": "node --test src/*.test.ts src/pool/*.test.ts scripts/*.test.ts",
     "typecheck": "node scripts/typecheck.ts",
     "build": "node scripts/build.ts",
+    "check:build": "node --test scripts/build-tests/*.test.ts",
     "deploy": "node scripts/deploy.ts",
     "check:upstream": "node --test scripts/upstream-tests/*.test.ts"
   },

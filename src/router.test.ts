@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import router, { handleRequest, type RouterEnv } from "./router.ts";
+import router, { handleRequest, notFoundPage, type RouterEnv } from "./router.ts";
 
 function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]): RouterEnv {
   return {
@@ -11,8 +11,10 @@ function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]):
 
 test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
   const paths = [
-    "/",
     "/settings?tab=keys",
+    "/login",
+    "/org/team/apps",
+    "/.well-known/agent-skills/index.json",
     "/mcp",
     "/mcp/tools/call",
     "/.well-known/oauth-authorization-server",
@@ -126,4 +128,111 @@ test("forwards model and authenticated management paths unchanged to the pool", 
     };
     assert.strictEqual(await handleRequest(request, env), upstream);
   }
+});
+
+test("sends signed-out visitors from the homepage to sign-in, keeping the query", async () => {
+  const env = envWithToolsService(async () => new Response("marketing"));
+  const response = await handleRequest(new Request("https://app.signalbox.run/?ref=mail"), env);
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "/login?ref=mail");
+  for (const path of ["/;", "//", "///", "/;x=1"]) {
+    const variant = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
+    assert.equal(variant.status, 302, path);
+  }
+});
+
+test("forwards the homepage of a signed-in browser to the tools service", async () => {
+  for (const cookie of [
+    "__Secure-executor-hosted.session_token=abc",
+    "theme=dark; executor-hosted.session_token=abc",
+  ]) {
+    const request = new Request("https://app.signalbox.run/", { headers: { cookie } });
+    const dashboard = new Response("dashboard");
+    const response = await handleRequest(
+      request,
+      envWithToolsService(async () => dashboard),
+    );
+    assert.strictEqual(response, dashboard, cookie);
+  }
+});
+
+test("never forwards the tools service's marketing, docs or legal pages", async () => {
+  let toolsCalls = 0;
+  const env = envWithToolsService(async () => {
+    toolsCalls += 1;
+    return new Response("tools service site");
+  });
+  for (const path of [
+    "/home",
+    "/pricing",
+    "/llms.txt",
+    "/docs",
+    "/docs/",
+    "/docs/api-keys/",
+    "/blog",
+    "/blog/launch",
+    "/apps",
+    "/apps/github",
+    "/about-executor",
+    "/privacy",
+    "/privacy/",
+    "/terms",
+    "/index.html",
+    "/404.html",
+    "/pricing/index.html",
+    "/_astro/site.js",
+    "/og-image.png",
+    "//pricing",
+    "/PRICING",
+    "/%70ricing",
+    "/pricing;x",
+  ]) {
+    const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
+    assert.equal(response.status, 404, path);
+  }
+  assert.equal(toolsCalls, 0);
+});
+
+test("sends a homepage visit to sign-in without the tools service's own session cookie", async () => {
+  for (const cookie of [
+    "executor-hosted.session_token=",
+    "better-auth.session_token=abc",
+    "other-app.session_token=abc",
+  ]) {
+    const request = new Request("https://app.signalbox.run/", { headers: { cookie } });
+    const response = await handleRequest(request, envWithToolsService(async () => new Response()));
+    assert.equal(response.status, 302, cookie);
+  }
+});
+
+test("replaces the tools service's marketing 404 page and keeps the dashboard's", async () => {
+  const marketing = await handleRequest(
+    new Request("https://app.signalbox.run/typo"),
+    envWithToolsService(
+      async () =>
+        new Response("<title>Page not found</title>", {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        }),
+    ),
+  );
+  assert.equal(marketing.status, 404);
+  assert.equal(await marketing.text(), await notFoundPage().text());
+  const dashboard = await handleRequest(
+    new Request("https://app.signalbox.run/org/team/missing"),
+    envWithToolsService(
+      async () =>
+        new Response('<html data-dashboard="">missing</html>', {
+          status: 404,
+          headers: { "content-type": "text/html" },
+        }),
+    ),
+  );
+  assert.equal(await dashboard.text(), '<html data-dashboard="">missing</html>');
+  const api = new Response("{}", { status: 404, headers: { "content-type": "application/json" } });
+  const passed = await handleRequest(
+    new Request("https://app.signalbox.run/api/missing"),
+    envWithToolsService(async () => api),
+  );
+  assert.strictEqual(passed, api);
 });

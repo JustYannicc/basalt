@@ -157,25 +157,16 @@ diff --git a/apps/hosted/cloud/src/infrastructure/blobs.ts b/apps/hosted/cloud/s
 diff --git a/apps/hosted/cloud/src/infrastructure/email.ts b/apps/hosted/cloud/src/infrastructure/email.ts
 --- a/apps/hosted/cloud/src/infrastructure/email.ts
 +++ b/apps/hosted/cloud/src/infrastructure/email.ts
-@@ -51,2 +51,3 @@
- export const cloudEmail = Effect.gen(function* () {
-+  const senderName = yield* Config.NonEmptyString("AUTH_EMAIL_NAME");
-   const from = `no-reply@${yield* emailDomain}`;
-@@ -111,3 +112,3 @@
+@@ -111,3 +111,3 @@
    const binding = yield* Cloudflare.Email.SendEmail("AuthEmail", {
 -    allowedSenderAddresses: [from, founder],
 +    allowedSenderAddresses: [from],
    });
-@@ -119,3 +120,3 @@
-       client.send({
--        from: { name: "Executor", email: from },
-+        from: { name: senderName, email: from },
-         to: email.to,
-@@ -134,4 +135,3 @@
+@@ -134,4 +134,3 @@
        client.send({
 -        from: { name: "Rhys at Executor", email: founder },
 -        replyTo: founder,
-+        from: { name: senderName, email: from },
++        from: { name: "Executor", email: from },
          to: email.to,
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts

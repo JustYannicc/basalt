@@ -46,6 +46,8 @@ export default Alchemy.Stack(
     const pool = yield* poolWorker;
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
+      // The brand's logo and favicon; every other path reaches the router code.
+      assets: fileURLToPath(new URL("./public/", import.meta.url)),
       domain: brand.host,
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
