@@ -1,18 +1,17 @@
 diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
 --- a/apps/hosted/cloud/src/implementation/default-app.ts
 +++ b/apps/hosted/cloud/src/implementation/default-app.ts
-@@ -2,7 +2,9 @@
+@@ -2,7 +2,8 @@
  import { organizationDefaults } from "@executor-js/hosted-server";
  import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
  import type { Executor } from "@executor-js/sdk/core";
 -import type { Effect } from "effect";
 +import { Effect, type Option, type Redacted } from "effect";
-+import { poolDefaults } from "@executor-js/hosted-server/pool-defaults";
-+import { SqlClient } from "effect/sql";
++import { withPoolDefaults } from "@executor-js/hosted-server/pool-defaults";
  export { executorCloudApiDocument } from "../contracts/api.ts";
  
  /** Load the management contract behind this feature's module boundary. */
-@@ -10,4 +12,23 @@
+@@ -10,4 +11,9 @@
    executor: Executor,
    origin: string,
    document: Effect.Effect<HostedApiDocument>,
@@ -20,22 +19,8 @@ diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/c
 +  poolKey: Option.Option<Redacted.Redacted<string>>,
 +) =>
 +  Effect.gen(function* () {
-+    const sql = yield* SqlClient.SqlClient;
 +    const initialize = yield* organizationDefaults(executor, origin, document);
-+    return (
-+      organization: Parameters<typeof initialize>[0],
-+      user?: Parameters<typeof initialize>[1],
-+    ) =>
-+      initialize(organization, user).pipe(
-+        // Defaults commit first. A pool failure retries this member job without undoing them.
-+        Effect.andThen(
-+          user === undefined
-+            ? Effect.void
-+            : poolDefaults(executor, poolKey, organization, user.userId).pipe(
-+                Effect.provideService(SqlClient.SqlClient, sql),
-+              ),
-+        ),
-+      );
++    return yield* withPoolDefaults(executor, poolKey, initialize);
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
 --- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
@@ -191,7 +176,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hoste
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,282 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -207,12 +192,14 @@ new file mode 100644
 +import { Config, Effect, Option, type Redacted, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
++import type { OrganizationDefaults } from "../contracts/organization-defaults.ts";
++import { PoolTokenRotation } from "../contracts/pool-defaults.ts";
 +import { ScheduleWakeup } from "../contracts/schedules.ts";
 +import { lockAppLinks } from "./app-accounts.ts";
 +import { poolAppSetup } from "./resource-lifecycle.ts";
 +import { poolAppFiles, poolAppVersion } from "./pool-app-source.ts";
 +import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
-+import { productBrandSettings } from "@executor-js/utils/product-brand";
++import { defaultProductBrand, productBrandSettings } from "@executor-js/utils/product-brand";
 +
 +const basaltPools = "basaltPools";
 +const Pools = Schema.Struct({
@@ -244,6 +231,7 @@ new file mode 100644
 +  key: Option.Option<Redacted.Redacted<string>>,
 +  organization: OrganizationId,
 +  user: string,
++  rotationOnly = false,
 +) => {
 +  let intent = false;
 +  return Effect.gen(function* () {
@@ -263,23 +251,26 @@ new file mode 100644
 +      join "user" on "user".id = member."userId"
 +      where member."organizationId" = ${organization} and member."userId" = ${user}
 +        and member.role = 'owner' and "user"."emailVerified" = true`;
-+    if (members.length !== 1) return;
-+    const member = yield* Schema.decodeUnknownEffect(Member)(members[0]);
++    const rotating = saved !== undefined && saved.tokenKeyVersion !== tokenKeyVersion;
++    if (rotationOnly && !rotating) return;
++    if (members.length !== 1 && !rotating) return;
 +    // Only metadata and credentials need the provisioning transaction. Copy/deploy own their
 +    // short SDK transactions and release their connections before compilation.
-+    const lockedState = Effect.gen(function* () {
-+      const rows =
-+        yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
++    const lockedState = (requireOwner = true) =>
++      Effect.gen(function* () {
++        const rows =
++          yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
 +        from organization where id = ${organization} for no key update`;
-+      if (rows.length !== 1) return undefined;
-+      const state = yield* Schema.decodeUnknownEffect(Pools)(rows[0]);
-+      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`basalt-pool:${organization}:${user}`}, 0))`;
-+      const eligible = yield* sql`select member.id from member
++        if (rows.length !== 1) return undefined;
++        const state = yield* Schema.decodeUnknownEffect(Pools)(rows[0]);
++        yield* sql`select pg_advisory_xact_lock(hashtextextended(${`basalt-pool:${organization}:${user}`}, 0))`;
++        const eligible = yield* sql`select member.id from member
 +        join "user" on "user".id = member."userId"
 +        where member."organizationId" = ${organization} and member."userId" = ${user}
-+          and member.role = 'owner' and "user"."emailVerified" = true for share of member, "user"`;
-+      return eligible.length === 1 ? state : undefined;
-+    });
++          and (${requireOwner} = false or (member.role = 'owner' and "user"."emailVerified" = true))
++          for share of member, "user"`;
++        return eligible.length === 1 ? state : undefined;
++      });
 +    const record = (pools: typeof Pools.Type.pools, pool: (typeof Pools.Type.pools)[string]) =>
 +      sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
 +        array[${basaltPools}], ${JSON.stringify({ ...pools, [user]: pool })}::jsonb)::text
@@ -293,7 +284,12 @@ new file mode 100644
 +      let version = saved.version;
 +      let bundle = saved.bundle;
 +      // Owner deployments and workspace edits keep their source; credentials can still be repaired.
-+      if (saved.bundle !== poolAppVersion && app.activeVersion === saved.version) {
++      if (
++        !rotationOnly &&
++        members.length === 1 &&
++        saved.bundle !== poolAppVersion &&
++        app.activeVersion === saved.version
++      ) {
 +        const source = yield* executor.apps.source({ owner, app: app.id });
 +        if (source.id === app.activeVersion) {
 +          if (sourceFilesEqual(source.files, poolAppFiles)) bundle = poolAppVersion;
@@ -317,7 +313,7 @@ new file mode 100644
 +      }
 +      yield* executor[StorageHost].transaction(
 +        Effect.gen(function* () {
-+          const current = yield* lockedState;
++          const current = yield* lockedState(!rotating);
 +          if (current === undefined) return;
 +          const recorded = Object.hasOwn(current.pools, user) ? current.pools[user] : undefined;
 +          // Another installer may have advanced the record while this compile was in flight.
@@ -346,6 +342,7 @@ new file mode 100644
 +            user,
 +            locked,
 +            saved.account,
++            rotating,
 +          );
 +          if (repaired.changed) intent = true;
 +          yield* record(current.pools, {
@@ -359,10 +356,11 @@ new file mode 100644
 +      );
 +      return;
 +    }
++    const member = yield* Schema.decodeUnknownEffect(Member)(members[0]);
 +    const productName = (yield* Config.String(productBrandSettings.name).pipe(
 +      Config.withDefault(""),
 +    )).trim();
-+    const origin = { ...poolSource, name: `${productName || "Signalbox"} pool` };
++    const origin = { ...poolSource, name: `${productName || defaultProductBrand.name} pool` };
 +    let candidate: App | undefined;
 +    for (let suffix = 1; suffix <= 100; suffix++) {
 +      const name = poolName(member.name, member.email, suffix);
@@ -401,7 +399,7 @@ new file mode 100644
 +    const app = candidate;
 +    const changed = yield* executor[StorageHost].transaction(
 +      Effect.gen(function* () {
-+        const current = yield* lockedState;
++        const current = yield* lockedState();
 +        if (
 +          current === undefined ||
 +          Object.hasOwn(current.pools, user) ||
@@ -442,47 +440,98 @@ new file mode 100644
 +    Effect.ensuring(Effect.suspend(() => (intent ? Effect.flatten(ScheduleWakeup) : Effect.void))),
 +  );
 +};
++
++/** Ordinary setup commits first; rotation jobs have authority only to renew existing pool tokens. */
++export const withPoolDefaults = (
++  executor: Executor,
++  key: Option.Option<Redacted.Redacted<string>>,
++  initialize: Parameters<typeof OrganizationDefaults.of>[0],
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return (organization: OrganizationId, user?: Parameters<typeof initialize>[1]) =>
++      Effect.gen(function* () {
++        const rotationOnly = yield* PoolTokenRotation;
++        if (!rotationOnly) yield* initialize(organization, user);
++        if (user !== undefined)
++          yield* poolDefaults(executor, key, organization, user.userId, rotationOnly).pipe(
++            Effect.provideService(SqlClient.SqlClient, sql),
++          );
++      });
++  });
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,71 @@
 +import { Effect, type Redacted } from "effect";
 +import { SqlClient } from "effect/sql";
++import { poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
 +import { poolTokenKeyVersion } from "./pool-account.ts";
 +import { poolAppVersion } from "./pool-app-source.ts";
 +
-+/** One rollout per bundle and signing key; the closure belongs to one initialized Worker isolate. */
++/** Bundle upgrades wait for replacement servers; key rotations repair recorded pools immediately. */
 +export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version = poolAppVersion) => {
 +  let completed = false;
-+
 +  return Effect.gen(function* () {
 +    if (completed) return;
-+    const name = `basalt-pools:${version}:${yield* poolTokenKeyVersion(key)}`;
++    const keyVersion = yield* poolTokenKeyVersion(key);
 +    const sql = yield* SqlClient.SqlClient;
-+    // A fresh isolate checks the existing journal's primary key before reading any memberships.
-+    const done = yield* sql`select 1 from private_hosted_data_steps
-+      where name = ${name} and run = 'apply' and completed_at is not null`;
-+    if (done.length === 0) {
-+      yield* sql.withTransaction(
-+        Effect.gen(function* () {
-+          // Concurrent isolates serialize on this marker, without locking organization rows.
-+          yield* sql`insert into private_hosted_data_steps (name, run, mode)
-+          values (${name}, 'apply', 'apply') on conflict do nothing`;
-+          const pending = yield* sql`select 1 from private_hosted_data_steps
-+          where name = ${name} and run = 'apply' and completed_at is null for update`;
-+          if (pending.length === 0) return;
-+          // Jobs and completion commit together. The delay lets the replacement Worker take over.
-+          yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
++    const steps = [
++      {
++        name: "basalt-pool-tokens",
++        cursor: keyVersion,
++        jobs: sql`insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++          select ${poolRotationJobPrefix} || ${keyVersion} || ':' || gen_random_uuid()::text,
++            'member', team.id, pool.key, now() from organization team
++          cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++          where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}`,
++      },
++      {
++        name: `basalt-pools:${version}`,
++        cursor: null,
++        jobs: sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
 +          select 'member', member."organizationId", member."userId", now() + interval '15 minutes'
 +          from member join "user" on "user".id = member."userId"
-+          where member.role = 'owner' and "user"."emailVerified" = true`;
-+          yield* sql`update private_hosted_data_steps set completed_at = now()
-+          where name = ${name} and run = 'apply'`;
++          where member.role = 'owner' and "user"."emailVerified" = true`,
++      },
++    ];
++    // Fresh isolates read only the journal when both rollouts have already completed.
++    const done = yield* sql<{
++      name: string;
++      cursor: string | null;
++    }>`select name, cursor from private_hosted_data_steps
++      where ${sql.in(
++        "name",
++        steps.map((step) => step.name),
++      )}
++        and run = 'apply' and completed_at is not null`;
++    const pending = steps.filter(
++      (step) =>
++        !done.some(
++          (row) => row.name === step.name && (step.cursor === null || row.cursor === step.cursor),
++        ),
++    );
++    if (pending.length > 0)
++      yield* sql.withTransaction(
++        Effect.gen(function* () {
++          for (const step of pending) {
++            // Jobs and completion commit together; concurrent isolates serialize on each marker.
++            yield* sql`insert into private_hosted_data_steps (name, run, mode)
++          values (${step.name}, 'apply', 'apply') on conflict do nothing`;
++            const [locked] = yield* sql<{ completed: boolean; cursor: string | null }>`select
++              completed_at is not null as completed, cursor from private_hosted_data_steps
++              where name = ${step.name} and run = 'apply' for update`;
++            if (locked?.completed && (step.cursor === null || locked.cursor === step.cursor))
++              continue;
++            yield* step.jobs;
++            yield* sql`update private_hosted_data_steps set cursor = ${step.cursor},
++              pass = pass + case when completed_at is null then 0 else 1 end, completed_at = now()
++              where name = ${step.name} and run = 'apply'`;
++          }
 +        }),
 +      );
-+    }
-+    // No promises or invocation-owned I/O are retained; failures leave the next tick eligible.
++    // No invocation-owned I/O is retained; failures leave the next tick eligible.
 +    completed = true;
 +  });
 +};
@@ -490,7 +539,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-account.ts
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,118 @@
 +/** Credential repair stays in the member setup transaction, after locking the pool's app. */
 +import { AccountId, StorageError, type App, type Executor } from "@executor-js/sdk/core";
 +import { Effect, Redacted, Schema } from "effect";
@@ -527,6 +576,7 @@ new file mode 100644
 +  user: string,
 +  app: App,
 +  recordedAccount?: AccountId,
++  force = false,
 +) =>
 +  Effect.gen(function* () {
 +    const requirement = app.requirements.accounts.pool;
@@ -561,8 +611,9 @@ new file mode 100644
 +      });
 +    const isOurs = (claims: Awaited<ReturnType<typeof verifyPoolToken>>) =>
 +      claims?.pool === app.id && claims.owner === user && claims.organization === organization;
-+    for (const { account } of linked)
-+      if (isOurs(yield* claimsFor(account))) return { account, changed: false };
++    if (!force)
++      for (const { account } of linked)
++        if (isOurs(yield* claimsFor(account))) return { account, changed: false };
 +    // Legacy records have no account ID. An unlinked account is ours only when its signed
 +    // claims prove it, never because its label happens to look like pool access.
 +    const candidates = yield* Schema.decodeUnknownEffect(
@@ -713,3 +764,58 @@ diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implemen
            const row = yield* query(() =>
              tx.findFirst("apps", {
                where: (b) =>
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -4,2 +4,3 @@
+ import { SqlClient } from "effect/sql";
++import { PoolTokenRotation, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
+ import { OrganizationId } from "../contracts/organization.ts";
+@@ -131,3 +132,8 @@
+-/** Owners and admins whose managed key member setup links; read live. */
+-const managers = (organization: OrganizationId, requireVerifiedEmail: boolean, user?: string) =>
++/** Team setup reads managers; token jobs may revisit an existing pool holder of any role. */
++const managers = (
++  organization: OrganizationId,
++  requireVerifiedEmail: boolean,
++  user?: string,
++  rotationOnly = false,
++) =>
+   Effect.gen(function* () {
+@@ -137,5 +143,7 @@
+       and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
+-      and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)`.pipe(
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))),
+-    );
++      and ((member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
++        or (${rotationOnly} = true and ${user ?? null}::text is not null and exists (
++          select 1 from organization pool_team where pool_team.id = member."organizationId"
++          and coalesce(pool_team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) ? member."userId"
++        )))`.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))));
+   });
+@@ -178,2 +186,3 @@
+           const initialize = yield* OrganizationDefaults;
++          const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
+           const [member] = yield* managers(
+@@ -182,4 +191,8 @@
+             job.user_id,
++            rotationOnly,
+           );
+-          if (member !== undefined) yield* initialize(job.organization_id, member);
++          if (member !== undefined)
++            yield* initialize(job.organization_id, member).pipe(
++              Effect.provideService(PoolTokenRotation, rotationOnly),
++            );
+           return;
+diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-defaults.ts
+@@ -0,0 +1,7 @@
++import { Context } from "effect";
++
++/** Durable token-only jobs bypass ordinary organization setup and never install or upgrade apps. */
++export const poolRotationJobPrefix = "basalt-pool-token:";
++export const PoolTokenRotation = Context.Reference<boolean>("hosted/PoolTokenRotation", {
++  defaultValue: () => false,
++});

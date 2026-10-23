@@ -28,7 +28,7 @@ const { AccountId, AppId, AppNameTaken, AppNotFound, AccountNotFound, StorageHos
 const { OrganizationId } = organizationContracts;
 const { ScheduleWakeup } = scheduleContracts;
 const { hostedResourceLifecycle } = lifecycleModule;
-const { poolDefaults, poolName } = defaults;
+const { poolDefaults, poolName, withPoolDefaults } = defaults;
 const { poolAppFiles, poolAppVersion } = source;
 const { queuePoolAppUpgrades } = upgrades;
 const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementation/pool-account.ts");
@@ -264,6 +264,11 @@ test("installs an owner's private app and personal linked account with a verifia
       assert.equal(apps.length, 1);
       assert.equal(apps[0]!.name, "Alex's pool");
       assert.equal(accounts.length, 1);
+      const payload = JSON.parse(
+        Buffer.from(accounts[0]!.token.split(".")[1]!, "base64url").toString(),
+      );
+      assert.equal(typeof payload.kid, "string");
+      assert.ok(payload.kid.length > 0, "minted tokens carry the signing-key id");
       assert.deepEqual(
         yield* Effect.promise(() => verifyPoolToken(Redacted.value(key), accounts[0]!.token)),
         {
@@ -358,7 +363,7 @@ test("upgrades an untouched recorded version and preserves owner deployments and
   );
 });
 
-test("bundle and key rollouts queue every verified owner once with delayed durable jobs", async () => {
+test("bundle rollouts queue verified owners once while rotation has its own journal", async () => {
   await fixture(({ sql }) =>
     Effect.gen(function* () {
       const queue = queuePoolAppUpgrades(key);
@@ -374,9 +379,10 @@ test("bundle and key rollouts queue every verified owner once with delayed durab
         yield* sql`select name, completed_at is not null as completed from private_hosted_data_steps`;
       assert.deepEqual(markers, [
         {
-          name: `basalt-pools:${poolAppVersion}:${yield* poolTokenKeyVersion(key)}`,
+          name: "basalt-pool-tokens",
           completed: true,
         },
+        { name: `basalt-pools:${poolAppVersion}`, completed: true },
       ]);
       yield* queuePoolAppUpgrades(key, "next-bundle");
       assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
@@ -596,7 +602,7 @@ test("promotion installs once; demotion leaves the pool, token and pending upgra
       const before = yield* sql`select * from organization`;
       const apps = yield* sql`select * from executor_apps`;
       const accounts = yield* sql`select * from executor_accounts`;
-      yield* setup("invited", Redacted.make("cd".repeat(32)));
+      yield* setup("invited");
       assert.deepEqual(yield* sql`select * from organization`, before);
       assert.deepEqual(yield* sql`select * from executor_apps`, apps);
       assert.deepEqual(yield* sql`select * from executor_accounts`, accounts);
@@ -640,11 +646,6 @@ test("a rotated signing key re-mints and re-links once, retires the old account 
       }>`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
       assert.equal(state!.pool.tokenKeyVersion, yield* poolTokenKeyVersion(rotated));
       assert.equal(state!.pool.account, link!.account);
-      yield* queuePoolAppUpgrades(key);
-      yield* queuePoolAppUpgrades(rotated);
-      yield* queuePoolAppUpgrades(rotated);
-      assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
-      assert.equal((yield* sql`select * from private_hosted_data_steps`).length, 2);
     }),
   );
 });
@@ -716,7 +717,7 @@ test("key rotation and a missing link never recreate a deleted pool", async () =
   );
 });
 
-test("pool copy origin reads the product name and falls back to Signalbox", async () => {
+test("pool copy origin reads the product name and falls back to upstream branding", async () => {
   const { ConfigProvider } = await import("effect");
   for (const name of ["Basalt", ""]) {
     await fixture(({ sql, setup }) =>
@@ -730,7 +731,7 @@ test("pool copy origin reads the product name and falls back to Signalbox", asyn
         const [app] = yield* sql<{
           copied_from: { name: string };
         }>`select copied_from from executor_apps`;
-        assert.equal(app!.copied_from.name, `${name || "Signalbox"} pool`);
+        assert.equal(app!.copied_from.name, `${name || "Executor"} pool`);
       }),
     );
   }
@@ -845,3 +846,223 @@ for (const legacyUnlinked of [false, true]) {
     );
   });
 }
+
+test("rotation jobs run immediately for recorded pools, including demoted and unverified holders", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      // Finish this bundle's delayed rollout before rotating its key.
+      yield* queuePoolAppUpgrades(key);
+      yield* sql`delete from hosted_provisioning`;
+      yield* setup();
+      yield* setup("person-b");
+      yield* sql`update member set role = 'owner' where "userId" = 'invited'`;
+      yield* setup("invited");
+      const [deleted] =
+        yield* sql`select app.id from executor_apps app join hosted_app_access access
+      on access.id = app.id where access.creator_id = 'invited'`;
+      yield* sql`delete from executor_apps where id = ${deleted!.id}`;
+      const [deletedRecord] =
+        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'invited' as pool from organization`;
+      yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
+      yield* sql`update member set role = 'admin' where "userId" = 'person-b'`;
+      yield* sql`update "user" set "emailVerified" = false where id = 'person-b'`;
+      const old = JSON.stringify([{ path: "index.ts", content: "retained pool source" }]);
+      yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      const apps = yield* sql`select * from executor_apps order by id`;
+      const rotated = Redacted.make("cd".repeat(32));
+      yield* queuePoolAppUpgrades(rotated);
+      yield* queuePoolAppUpgrades(rotated);
+      const jobs = yield* sql<{ id: string; user_id: string; ready: boolean }>`select id, user_id,
+      available_at <= now() as ready from hosted_provisioning order by user_id`;
+      assert.deepEqual(
+        jobs.map(({ user_id, ready }) => ({ user_id, ready })),
+        [
+          { user_id: "invited", ready: true },
+          { user_id: "person-a", ready: true },
+          { user_id: "person-b", ready: true },
+        ],
+      );
+      let ordinarySetupCalls = 0;
+      const initialize = yield* withPoolDefaults(executor, Option.some(rotated), () =>
+        Effect.sync(() => {
+          ordinarySetupCalls++;
+        }),
+      );
+      for (const job of jobs) {
+        yield* provision(job.id, {
+          ...selfHostProvisioningServices,
+          requireVerifiedEmail: true,
+        }).pipe(Effect.provideService(OrganizationDefaults, initialize));
+      }
+      assert.equal(
+        ordinarySetupCalls,
+        0,
+        "rotation jobs cannot invoke ordinary organization setup",
+      );
+      assert.deepEqual(yield* sql`select * from executor_apps order by id`, apps);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 5);
+      const links = yield* sql<{
+        token: string;
+        personal_user_id: string;
+        app: string;
+      }>`select a.token,
+      p.personal_user_id, l.app from hosted_app_account_links l
+      join executor_accounts a on a.id = l.account join hosted_account_access p on p.account_id = a.id
+      where l.app <> ${deleted!.id} order by p.personal_user_id`;
+      for (const link of links) {
+        assert.deepEqual(
+          yield* Effect.promise(() => verifyPoolToken(Redacted.value(rotated), link.token)),
+          {
+            pool: link.app,
+            owner: link.personal_user_id,
+            organization,
+          },
+        );
+      }
+      assert.equal(links.length, 2);
+      const [state] = yield* sql<{
+        pools: Record<string, { tokenKeyVersion?: string; bundle?: string }>;
+      }>`select
+      metadata::jsonb -> 'basaltPools' as pools from organization`;
+      const version = yield* poolTokenKeyVersion(rotated);
+      assert.equal(state!.pools["person-a"]!.tokenKeyVersion, version);
+      assert.equal(state!.pools["person-b"]!.tokenKeyVersion, version);
+      assert.equal(state!.pools["person-a"]!.bundle, "previous-bundle");
+      assert.deepEqual(state!.pools.invited, deletedRecord!.pool);
+      // A fresh bundle retains its delay and only targets the remaining verified owner.
+      yield* queuePoolAppUpgrades(rotated, "next-bundle");
+      const delayed = yield* sql`select user_id from hosted_provisioning
+      where available_at > now() + interval '14 minutes'`;
+      assert.deepEqual(delayed, [{ user_id: "invited" }]);
+    }),
+  );
+});
+
+test("legacy completed rollout markers do not hide stale recorded tokens", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
+      const rotated = Redacted.make("cd".repeat(32));
+      const version = yield* poolTokenKeyVersion(rotated);
+      yield* sql`insert into private_hosted_data_steps (name, run, mode, completed_at)
+      values (${`basalt-pools:${poolAppVersion}:${version}`}, 'apply', 'apply', now())`;
+      yield* queuePoolAppUpgrades(rotated);
+      const immediate =
+        yield* sql`select user_id from hosted_provisioning where available_at <= now()`;
+      assert.deepEqual(immediate, [{ user_id: "person-a" }]);
+    }),
+  );
+});
+
+test("a stale key-version record rotates a demoted holder once even if its old token still verifies", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [original] = yield* sql`select id from executor_accounts`;
+      yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
+      yield* sql`update organization set metadata = (metadata::jsonb #- '{basaltPools,person-a,tokenKeyVersion}')::text`;
+      yield* setup();
+      yield* setup();
+      const [link] = yield* sql`select account from hosted_app_account_links`;
+      assert.notEqual(link!.account, original!.id);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 2);
+      assert.equal((yield* sql`select * from executor_apps`).length, 1);
+    }),
+  );
+});
+
+test("returning to a previous signing key queues a fresh token-only rotation", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      yield* queuePoolAppUpgrades(key);
+      yield* sql`delete from hosted_provisioning`;
+      yield* setup();
+      yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
+      const next = Redacted.make("cd".repeat(32));
+      for (const signingKey of [next, key, next]) {
+        yield* queuePoolAppUpgrades(signingKey);
+        yield* queuePoolAppUpgrades(signingKey);
+        const jobs = yield* sql<{
+          id: string;
+        }>`select id from hosted_provisioning where status = 'queued' and available_at <= now()`;
+        assert.equal(jobs.length, 1);
+        const initialize = yield* withPoolDefaults(executor, Option.some(signingKey), () =>
+          Effect.die("ordinary setup must not run"),
+        );
+        yield* provision(jobs[0]!.id, selfHostProvisioningServices).pipe(
+          Effect.provideService(OrganizationDefaults, initialize),
+        );
+        const [linked] = yield* sql<{ token: string }>`select a.token from executor_accounts a
+        join hosted_app_account_links l on l.account = a.id`;
+        assert.ok(
+          yield* Effect.promise(() => verifyPoolToken(Redacted.value(signingKey), linked!.token)),
+        );
+      }
+      assert.equal((yield* sql`select * from executor_accounts`).length, 4);
+      const [marker] =
+        yield* sql`select pass from private_hosted_data_steps where name = 'basalt-pool-tokens'`;
+      assert.equal(marker!.pass, 4);
+    }),
+  );
+});
+
+test("token-only jobs cannot create a pool for an unrecorded owner", async () => {
+  await fixture(({ sql, executor }) =>
+    Effect.gen(function* () {
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+      values ('basalt-pool-token:unrecorded', 'member', ${organization}, 'person-a')`;
+      const initialize = yield* withPoolDefaults(executor, Option.some(key), () =>
+        Effect.die("ordinary setup must not run"),
+      );
+      yield* provision("basalt-pool-token:unrecorded", selfHostProvisioningServices).pipe(
+        Effect.provideService(OrganizationDefaults, initialize),
+      );
+      assert.equal((yield* sql`select * from executor_apps`).length, 0);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 0);
+    }),
+  );
+});
+
+test("an owner's immediate token job preserves source until its delayed bundle job runs", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      yield* queuePoolAppUpgrades(key);
+      yield* sql`delete from hosted_provisioning`;
+      yield* setup();
+      const old = [{ path: "index.ts", content: "previous pool" }];
+      yield* sql`update executor_apps set files = ${JSON.stringify(old)}::jsonb, workspace = ${JSON.stringify(old)}::jsonb`;
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      const rotated = Redacted.make("cd".repeat(32));
+      yield* queuePoolAppUpgrades(rotated, "next-bundle");
+      let ordinarySetupCalls = 0;
+      const initialize = yield* withPoolDefaults(executor, Option.some(rotated), () =>
+        Effect.sync(() => {
+          ordinarySetupCalls++;
+        }),
+      );
+      const [rotation] = yield* sql<{
+        id: string;
+      }>`select id from hosted_provisioning where available_at <= now()`;
+      yield* provision(rotation!.id, selfHostProvisioningServices).pipe(
+        Effect.provideService(OrganizationDefaults, initialize),
+      );
+      assert.equal(ordinarySetupCalls, 0);
+      assert.deepEqual((yield* sql`select files from executor_apps`)[0]!.files, old);
+      const [bundle] = yield* sql<{
+        id: string;
+      }>`select id from hosted_provisioning where user_id = 'person-a'
+      and available_at > now() + interval '14 minutes'`;
+      yield* sql`update hosted_provisioning set available_at = now() where id = ${bundle!.id}`;
+      yield* provision(bundle!.id, selfHostProvisioningServices).pipe(
+        Effect.provideService(OrganizationDefaults, initialize),
+      );
+      assert.equal(ordinarySetupCalls, 1);
+      assert.deepEqual((yield* sql`select files from executor_apps`)[0]!.files, poolAppFiles);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 2);
+    }),
+  );
+});
