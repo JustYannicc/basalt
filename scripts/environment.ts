@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { appHosting, brand, deployment } from "../brand.ts";
+import { poolFrameworkVersion } from "./pool-app-bundle.ts";
+import { isSigningKey } from "../src/pool/token.ts";
 
 export const requiredSecrets = [
   "CLOUDFLARE_ACCOUNT_ID",
@@ -17,6 +20,7 @@ export const requiredSecrets = [
   "MCP_SESSION_KEY_PREVIOUS",
   "APP_DOMAIN_CONTROL_SECRET",
   "POOL_MANAGEMENT_KEY",
+  "POOL_APP_SIGNING_KEY",
 ] as const;
 
 export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
@@ -30,6 +34,8 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
   for (const name of requiredSecrets) {
     if (!source[name]?.trim()) throw new Error(`Missing GitHub Actions secret: ${name}`);
   }
+  if (!isSigningKey(source.POOL_APP_SIGNING_KEY!))
+    throw new Error("POOL_APP_SIGNING_KEY must be 32 bytes of lowercase hex");
   if (appHosting.enabled && !source.APP_DOMAIN_CONTROLLER_TOKEN?.trim()) {
     throw new Error("Missing GitHub Actions secret: APP_DOMAIN_CONTROLLER_TOKEN");
   }
@@ -58,6 +64,10 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     PLANETSCALE_CLUSTER_SIZE: deployment.databaseClusterSize,
     CLOUD_PLACEMENT_REGION: deployment.placementRegion,
     EXECUTOR_BUILD_VERSION: commit,
+    EXECUTOR_APPS_VERSION: poolFrameworkVersion,
+    EXECUTOR_APPS_FRAMEWORK: fileURLToPath(
+      new URL("../.upstream/.local/basalt-framework", import.meta.url),
+    ),
     CLOUD_DATA_STEPS: "apply",
     SENTRY_ENABLED: "false",
     POSTHOG_ENABLED: "false",

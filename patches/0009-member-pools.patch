@@ -1,0 +1,473 @@
+diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
+--- a/apps/hosted/cloud/src/implementation/default-app.ts
++++ b/apps/hosted/cloud/src/implementation/default-app.ts
+@@ -2,7 +2,9 @@
+ import { organizationDefaults } from "@executor-js/hosted-server";
+ import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
+ import type { Executor } from "@executor-js/sdk/core";
+-import type { Effect } from "effect";
++import { Effect, type Option, type Redacted } from "effect";
++import { poolDefaults } from "@executor-js/hosted-server/pool-defaults";
++import { SqlClient } from "effect/sql";
+ export { executorCloudApiDocument } from "../contracts/api.ts";
+ 
+ /** Load the management contract behind this feature's module boundary. */
+@@ -10,4 +12,23 @@
+   executor: Executor,
+   origin: string,
+   document: Effect.Effect<HostedApiDocument>,
+-) => organizationDefaults(executor, origin, document);
++  poolKey: Option.Option<Redacted.Redacted<string>>,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const initialize = yield* organizationDefaults(executor, origin, document);
++    return (
++      organization: Parameters<typeof initialize>[0],
++      user?: Parameters<typeof initialize>[1],
++    ) =>
++      initialize(organization, user).pipe(
++        // Defaults commit first. A pool failure retries this member job without undoing them.
++        Effect.andThen(
++          user === undefined
++            ? Effect.void
++            : poolDefaults(executor, poolKey, organization, user.userId).pipe(
++                Effect.provideService(SqlClient.SqlClient, sql),
++              ),
++        ),
++      );
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
+--- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
++++ b/apps/hosted/cloud/src/infrastructure/data-steps.ts
+@@ -18,9 +18,11 @@
+   hostedAppCopies,
+   ScheduleWakeup,
+ } from "@executor-js/hosted-server";
+-import { Clock, Config, Effect } from "effect";
++import { Clock, Config, Effect, Option } from "effect";
++import { queuePoolAppUpgrades } from "@executor-js/hosted-server/pool-app-upgrades";
+ import { SqlClient } from "effect/sql";
+ import { cloudBlobs } from "./blobs.ts";
++import { PoolAppSigningKey } from "../contracts/pools.ts";
+ 
+ /** A tick stops starting items after this long, then resumes from its cursor on the next tick. */
+ const tickBudgetMs = 20_000;
+@@ -56,11 +58,14 @@
+     const applyThrough = named === "" ? reviewedThrough : named;
+     // The build framework step rewrites retained builds in the same bucket the executor reads.
+     const blobs = yield* cloudBlobs;
++    const queuePools = queuePoolAppUpgrades();
+     return Effect.gen(function* () {
+       // A redeploy leaves its app's webhook sources pending; the job wakes reconciliation for them.
+       const wake = yield* ScheduleWakeup;
+       const { executor } = yield* Effect.flatten(AppManagementHost);
+       const sql = yield* Effect.flatten(GroupDatabase);
++      if (Option.isSome(yield* PoolAppSigningKey))
++        yield* queuePools.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+       const deadline = (yield* Clock.currentTimeMillis) + tickBudgetMs;
+       const steps = hostDataSteps({
+         executor,
+diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
+--- a/apps/hosted/cloud/src/infrastructure/product.ts
++++ b/apps/hosted/cloud/src/infrastructure/product.ts
+@@ -19,7 +19,7 @@
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+ import { RuntimeContext } from "alchemy";
+ import type * as Cloudflare from "alchemy/Cloudflare";
+-import { Effect, Layer } from "effect";
++import { Config, Effect, Layer } from "effect";
+ import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
+ import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
+ import { UiFailed } from "apps/ui/contracts";
+@@ -28,6 +28,7 @@
+ import { cloudAppSources } from "./source.ts";
+ import { cloudHosts } from "./stage.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
++import { PoolAppSigningKey } from "../contracts/pools.ts";
+ 
+ /**
+  * Every hosted service the cloud Workers provide, composed over {@link cloudProductServices}. The
+@@ -57,6 +58,7 @@
+   // Keep the default management app's API document, templates and authoring files off the
+   // startup path of requests that do not install it. The document depends only on the origin, so the isolate keeps the first one
+   // generated for later provisioning runs instead of regenerating it per execution.
++  const poolKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+   let document: HostedApiDocument | undefined;
+   const defaults = yield* makeExecutionMemo(
+     Effect.gen(function* () {
+@@ -68,6 +70,7 @@
+           yield* sdk,
+           apiOrigin,
+           Effect.sync(() => (document ??= executorCloudApiDocument(apiOrigin))),
++          poolKey,
+         ),
+       );
+     }).pipe(
+@@ -82,6 +85,7 @@
+   );
+   return Layer.mergeAll(
+     services,
++    Layer.succeed(PoolAppSigningKey, poolKey),
+     Layer.succeed(
+       AppManagementHost,
+       Effect.all({
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -26,7 +26,9 @@
+     "./browser": "./src/browser.ts",
+     "./browser/contracts": "./src/contracts/browser.ts",
+     "./app-management": "./src/app-management.ts",
+-    "./document": "./src/implementation/document.ts"
++    "./document": "./src/implementation/document.ts",
++    "./pool-defaults": "./src/implementation/pool-defaults.ts",
++    "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts"
+   },
+   "dependencies": {
+     "@better-auth/api-key": "1.7.5",
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -23,7 +23,7 @@
+     organization_id: OrganizationId,
+   }),
+ ]);
+-const Manager = Schema.Struct({ userId: Schema.String, name: Schema.String });
++const Member = Schema.Struct({ userId: Schema.String, name: Schema.String });
+ /** A safe failure projection for background logs and workflow retries. */
+ export class ProvisioningFailed extends Schema.TaggedError<ProvisioningFailed>()(
+   "ProvisioningFailed",
+@@ -129,15 +129,27 @@
+   );
+ 
+ /** Owners and admins whose managed key member setup links; read live. */
+-const managers = (organization: OrganizationId, requireVerifiedEmail: boolean, user?: string) =>
++const managers = (organization: OrganizationId, requireVerifiedEmail: boolean) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
+     return yield* sql`select "user".id as "userId", "user".name from member join "user" on "user".id = member."userId"
+       where member."organizationId" = ${organization}
+-      and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
+       and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)`.pipe(
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))),
+-    );
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Member))),
++    );
++  });
++
++/** A member job may set up any role; eligibility is read again before credentials are committed. */
++const member = (organization: OrganizationId, user: string, requireVerifiedEmail: boolean) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows =
++      yield* sql`select "user".id as "userId", "user".name from member join "user" on "user".id = member."userId"
++      where member."organizationId" = ${organization} and member."userId" = ${user}
++      and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)`.pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Member))),
++      );
++    return rows[0];
+   });
+ 
+ /** Install the organization's defaults. Concurrent runs are safe: defaults install one app. */
+@@ -176,12 +188,12 @@
+           return yield* services.domain;
+         case "member": {
+           const initialize = yield* OrganizationDefaults;
+-          const [member] = yield* managers(
++          const current = yield* member(
+             job.organization_id,
++            job.user_id,
+             services.requireVerifiedEmail,
+-            job.user_id,
+           );
+-          if (member !== undefined) yield* initialize(job.organization_id, member);
++          if (current !== undefined) yield* initialize(job.organization_id, current);
+           return;
+         }
+       }
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -37,6 +37,14 @@
+ const AppCreation = Context.Reference<AppCreation>("hosted/AppCreation", {
+   defaultValue: () => ({ kind: "member" }),
+ });
++/** A background installer creates a private app as the named member. */
++export const memberAppCreation =
++  (user: string) =>
++  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++    effect.pipe(
++      Effect.provideService(AppCreation, { kind: "member" }),
++      Effect.provideService(CurrentUserId, user),
++    );
+ type AccountCreation =
+   | typeof ConnectionDestination.Type
+   | { readonly kind: "attributed-personal"; readonly user: string };
+diff --git a/apps/hosted/cloud/src/contracts/pools.ts b/apps/hosted/cloud/src/contracts/pools.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/contracts/pools.ts
+@@ -0,0 +1,7 @@
++import { Context, type Option, type Redacted } from "effect";
++
++/** Read once at Worker initialization and shared by member setup and rollout scheduling. */
++export class PoolAppSigningKey extends Context.Service<
++  PoolAppSigningKey,
++  Option.Option<Redacted.Redacted<string>>
++>()("cloud/PoolAppSigningKey") {}
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -0,0 +1,208 @@
++/** One private pool app per verified organization member. Compile before locking setup metadata. */
++import { pinnedOnly } from "@executor-js/app-management/data-steps";
++import {
++  AppId,
++  VersionId,
++  StorageError,
++  StorageHost,
++  sourceFilesEqual,
++  type App,
++  type Executor,
++} from "@executor-js/sdk/core";
++import { Effect, Option, Redacted, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
++import { ScheduleWakeup } from "../contracts/schedules.ts";
++import { linkAppAccount } from "./app-accounts.ts";
++import { memberAppCreation, personalAccountCreation } from "./resource-lifecycle.ts";
++import { poolAppFiles, poolAppVersion } from "./pool-app-source.ts";
++import { signPoolToken } from "./pool-token.ts";
++
++const basaltPools = "basaltPools";
++const Pools = Schema.Struct({
++  pools: Schema.Record(
++    Schema.String,
++    Schema.Struct({
++      app: AppId,
++      version: VersionId,
++      bundle: Schema.optionalKey(Schema.String),
++    }),
++  ),
++});
++const Member = Schema.Struct({ name: Schema.String, email: Schema.String });
++const poolSource = {
++  reference: "https://github.com/JustYannicc/basalt/tree/main/apps/pool",
++  name: "Signalbox pool",
++  commit: null,
++};
++
++/** Bound display names leave room for a numeric suffix under the SDK's 120-character limit. */
++export const poolName = (name: string, email: string, suffix = 1) => {
++  const person = name.trim() || email.split("@")[0] || "Your";
++  return `${person.slice(0, 100)}'s pool${suffix === 1 ? "" : ` ${suffix}`}`;
++};
++
++export const poolDefaults = (
++  executor: Executor,
++  key: Option.Option<Redacted.Redacted<string>>,
++  organization: OrganizationId,
++  user: string,
++) => {
++  let intent = false;
++  return Effect.gen(function* () {
++    if (Option.isNone(key)) {
++      yield* Effect.logWarning("Pool setup skipped: POOL_APP_SIGNING_KEY is missing");
++      return;
++    }
++    const sql = yield* SqlClient.SqlClient;
++    const owner = organizationOwner(organization);
++    const rows = yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
++      from organization where id = ${organization}`;
++    if (rows.length !== 1) return;
++    const { pools } = yield* Schema.decodeUnknownEffect(Pools)(rows[0]);
++    const saved = Object.hasOwn(pools, user) ? pools[user] : undefined;
++    if (saved?.bundle === poolAppVersion) return;
++    const members = yield* sql`select "user".name, "user".email from member
++      join "user" on "user".id = member."userId"
++      where member."organizationId" = ${organization} and member."userId" = ${user}
++        and "user"."emailVerified" = true`;
++    if (members.length !== 1) return;
++    const member = yield* Schema.decodeUnknownEffect(Member)(members[0]);
++    // Only metadata and credentials need the provisioning transaction. Copy/deploy own their
++    // short SDK transactions and release their connections before compilation.
++    const lockedState = Effect.gen(function* () {
++      const rows =
++        yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
++        from organization where id = ${organization} for no key update`;
++      if (rows.length !== 1) return undefined;
++      const state = yield* Schema.decodeUnknownEffect(Pools)(rows[0]);
++      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`basalt-pool:${organization}:${user}`}, 0))`;
++      const eligible = yield* sql`select member.id from member
++        join "user" on "user".id = member."userId"
++        where member."organizationId" = ${organization} and member."userId" = ${user}
++          and "user"."emailVerified" = true for share of member, "user"`;
++      return eligible.length === 1 ? state : undefined;
++    });
++    const record = (pools: typeof Pools.Type.pools, app: AppId, version: VersionId) =>
++      sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++        array[${basaltPools}], ${JSON.stringify({ ...pools, [user]: { app, version, bundle: poolAppVersion } })}::jsonb)::text
++        where id = ${organization}`;
++    if (saved !== undefined) {
++      const app = yield* executor.apps
++        .get({ owner, app: saved.app })
++        .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
++      // A recorded deletion or a deployment by its owner is deliberate.
++      if (app === undefined || app.activeVersion !== saved.version) return;
++      const source = yield* executor.apps.source({ owner, app: app.id });
++      if (source.id !== app.activeVersion) return;
++      let version = app.activeVersion;
++      if (!sourceFilesEqual(source.files, poolAppFiles)) {
++        const workspace = yield* executor.apps.workspace({ owner, app: app.id });
++        if (!pinnedOnly(workspace.files, source.files)) return;
++        const deployed = yield* executor.apps.deploy({ owner, app: app.id, files: poolAppFiles });
++        if (deployed.app.activeVersion === null) return yield* new StorageError();
++        version = deployed.app.activeVersion;
++        intent = true;
++      }
++      yield* executor[StorageHost].transaction(
++        Effect.gen(function* () {
++          const current = yield* lockedState;
++          if (current === undefined) return;
++          const recorded = Object.hasOwn(current.pools, user) ? current.pools[user] : undefined;
++          // Another installer may have advanced the record while this compile was in flight.
++          if (
++            recorded?.app !== saved.app ||
++            recorded.version !== saved.version ||
++            recorded.bundle !== saved.bundle
++          )
++            return;
++          yield* record(current.pools, app.id, version);
++        }),
++      );
++      return;
++    }
++    let candidate: App | undefined;
++    for (let suffix = 1; suffix <= 100; suffix++) {
++      const name = poolName(member.name, member.email, suffix);
++      candidate = yield* executor.apps
++        .copy({
++          owner,
++          name,
++          from: { files: poolAppFiles, origin: poolSource, activation: "deploy" },
++        })
++        .pipe(
++          memberAppCreation(user),
++          Effect.catchTags({
++            AppNameTaken: () => Effect.succeed(undefined),
++            AppSlugTaken: () => Effect.succeed(undefined),
++          }),
++        );
++      if (candidate !== undefined) break;
++      const existing = (yield* executor.apps.list({ owner, name }))[0];
++      // The SDK preserves a copy's origin in App.copiedFrom. Hosted app access records who
++      // created it and its audience; a matching name alone never makes it this member's pool.
++      if (existing?.copiedFrom?.reference !== poolSource.reference) continue;
++      const ours = yield* sql`select access.id from hosted_app_access access
++        join organization team on team.id = access.organization_id
++        where access.id = ${existing.id} and access.organization_id = ${organization}
++          and access.creator_id = ${user} and access.audience = 'private'
++          and not exists (
++            select 1 from jsonb_each(coalesce(team.metadata::jsonb -> ${basaltPools}, '{}'::jsonb)) saved
++            where saved.key <> ${user} and saved.value ->> 'app' = ${existing.id}
++          )`;
++      if (ours.length === 1) {
++        candidate = existing;
++        break;
++      }
++    }
++    if (candidate === undefined) return yield* new StorageError();
++    const app = candidate;
++    const changed = yield* executor[StorageHost].transaction(
++      Effect.gen(function* () {
++        const current = yield* lockedState;
++        if (
++          current === undefined ||
++          Object.hasOwn(current.pools, user) ||
++          Object.values(current.pools).some((pool) => pool.app === app.id)
++        ) {
++          // Compilation has already committed this candidate. Never delete it or mutate the
++          // winner when another job recorded a pool first, or membership changed meanwhile.
++          yield* Effect.logInfo("Pool setup skipped; leaving candidate app unchanged", {
++            app: app.id,
++          });
++          return false;
++        }
++        const requirement = app.requirements.accounts.pool;
++        if (requirement === undefined || app.activeVersion === null)
++          return yield* new StorageError();
++        const token = yield* Effect.tryPromise({
++          try: () =>
++            signPoolToken(Redacted.value(key.value), { pool: app.id, owner: user, organization }),
++          catch: () => new StorageError(),
++        });
++        const account = yield* executor.managedAccounts
++          .add({
++            owner,
++            provider: requirement.provider,
++            method: "token",
++            fields: Redacted.make({ token }),
++            label: "Pool access",
++          })
++          .pipe(personalAccountCreation(user));
++        yield* linkAppAccount(executor, sql, {
++          app: app.id,
++          requirement: "pool",
++          account: account.id,
++          linkedBy: user,
++        });
++        yield* record(current.pools, app.id, app.activeVersion);
++        return true;
++      }),
++    );
++    if (changed) intent = true;
++  }).pipe(
++    Effect.tapError(() => Effect.logWarning("Pool setup failed; member job will retry")),
++    Effect.mapError(() => new StorageError()),
++    Effect.ensuring(Effect.suspend(() => (intent ? Effect.flatten(ScheduleWakeup) : Effect.void))),
++  );
++};
+diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+@@ -0,0 +1,37 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { poolAppVersion } from "./pool-app-source.ts";
++
++/** One rollout per bundle; the closure belongs to one initialized Worker isolate. */
++export const queuePoolAppUpgrades = (version = poolAppVersion) => {
++  let completed = false;
++  const name = `basalt-pools:${version}`;
++  return Effect.gen(function* () {
++    if (completed) return;
++    const sql = yield* SqlClient.SqlClient;
++    // A fresh isolate checks the existing journal's primary key before reading any memberships.
++    const done = yield* sql`select 1 from private_hosted_data_steps
++      where name = ${name} and run = 'apply' and completed_at is not null`;
++    if (done.length === 0) {
++      yield* sql.withTransaction(
++        Effect.gen(function* () {
++          // Concurrent isolates serialize on this marker, without locking organization rows.
++          yield* sql`insert into private_hosted_data_steps (name, run, mode)
++          values (${name}, 'apply', 'apply') on conflict do nothing`;
++          const pending = yield* sql`select 1 from private_hosted_data_steps
++          where name = ${name} and run = 'apply' and completed_at is null for update`;
++          if (pending.length === 0) return;
++          // Jobs and completion commit together. The delay lets the replacement Worker take over.
++          yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
++          select 'member', member."organizationId", member."userId", now() + interval '15 minutes'
++          from member join "user" on "user".id = member."userId"
++          where "user"."emailVerified" = true`;
++          yield* sql`update private_hosted_data_steps set completed_at = now()
++          where name = ${name} and run = 'apply'`;
++        }),
++      );
++    }
++    // No promises or invocation-owned I/O are retained; failures leave the next tick eligible.
++    completed = true;
++  });
++};

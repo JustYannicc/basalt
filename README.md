@@ -2,16 +2,17 @@
 
 Basalt is Signalbox's identity, inference and connectors component. It deploys independently so the Signalbox OS can consume its gateways later.
 
-This repository deploys the cloud build of [Executor v2](https://github.com/UsefulSoftwareCo/executor) using its Alchemy stack. Upstream owns sign-in, workspaces, connections and MCP. Basalt supplies deployment configuration and a small public router. The model gateway runs the released pool backend. The pool app ships separately.
+This repository deploys the cloud build of [Executor v2](https://github.com/UsefulSoftwareCo/executor) using its Alchemy stack. Upstream owns sign-in, workspaces, connections and MCP. Basalt supplies deployment configuration and a small public router. The model gateway runs the released pool backend. Every person gets their own pool, an app in the tools service that connects subscriptions to that backend.
 
 ## Public endpoints
 
 | Path               | Handler                                                             |
 | ------------------ | ------------------------------------------------------------------- |
 | `/` and app routes | Tools service, including its own Google, GitHub and passkey sign-in |
-| Brand files        | The logo and favicon, from [public/](public)                        |
+| Brand files        | The logo, favicon and pool fonts, from [public/](public)            |
 | `/mcp`             | Tools gateway, with upstream authentication                         |
 | `/v1` and `/v1/*`  | Model gateway, with the pool backend's client-key authentication    |
+| `/pool/v1/*`       | Pool control API for pool apps, with a signed per-pool token        |
 | `/v8/management/*` and `/v0/management/*` | Not public; 404. Home management uses the internal controller path |
 
 The router preserves incoming URLs, headers and bodies, and streams responses through a private service binding. OAuth callbacks and discovery documents reach the same tools service. Only the router owns the public custom domain. Cloudflare provisions it from the existing zone through the deploy token.
@@ -42,6 +43,18 @@ A two-hour container inactivity timeout plus five-minute DO alarms and a five-mi
 
 Cloudflare's `durable_object` scheduling policy enables disk snapshots but rejects container placement constraints. This deployment uses the `default` policy to enforce EU placement. Faster scheduling and snapshot restore remain unavailable with that constraint. See [placement](https://developers.cloudflare.com/containers/concepts/placement/) and [scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/).
 
+## Pools
+
+Each person has their own pool from sign-in, empty at first. When a member with a verified email joins an organization, provisioning installs a private pool app for them from [apps/pool](apps/pool), named after them. It's one app instance per person and organization. Sharing a pool uses the tools service's own app sharing. A deleted pool isn't recreated, and a pool its owner has redeployed isn't upgraded. When Basalt's pool source changes, untouched pools are redeployed by delayed member jobs.
+
+The pool app never holds the pool backend's management key, because anyone who can edit an app's code could read it out. Provisioning signs a pool token with `POOL_APP_SIGNING_KEY`, naming the pool, its owner and its organization. It stores the token as the owner's personal account and links it as the app's account. The app sends it to `/pool/v1/*` along with the caller's id from `ctx.user.id`. The pool Worker verifies the token and scopes every call to that pool's channel group in Home. It refuses changes, such as starting a sign-in, pasting a callback, uploading a login file or removing an account, unless the caller owns the pool. Home management calls stay inside the control-plane DO, on the container's port 8327.
+
+Connect offers every provider Home can sign in. Home has no endpoint that lists them, so [src/pool/providers.json](src/pool/providers.json) mirrors the provider switch in Home's source at the pinned release. `npm run check:providers` fails when the table drifts from that source. The table only holds ids and display names. The sign-in flow comes from Home's own sign-in link at runtime: a `redirect_uri` on a local address means the person pastes back the address the browser lands on, and anything else is a device sign-in that Home finishes by itself. A login file Home exported can be uploaded instead. Pools take subscriptions only.
+
+Released Home v1.1.6 doesn't say which credential a sign-in saved ([CLIProxyAPIHome#168](https://github.com/router-for-me/CLIProxyAPIHome/pull/168) adds that). The control-plane DO serializes sign-ins for every pool. It holds one lock per provider while an exchange can produce a credential, and it files the one new credential by diffing the credential list. A second sign-in for the same provider waits or gets a retryable `busy`. A device sign-in that stops being polled for 60 seconds is cancelled. If the diff isn't exactly one credential, nothing is added. Switch to the credential id once a Home release includes it.
+
+The pool's screen follows the prototype's Accounts view: each account's usage windows, with a bar for what's left, a mark for how much of the window's time is left, and when it resets, plus capacity per provider. Its fonts are the dashboard's own Geist faces. The pool app bundler copies them from the pinned source into the router's static assets, under `/brand/fonts/`, and the page links them across origins. The app compiler drops font files from npm packages, and binary files in the bundled source would ride in the API Worker. The screen needs app UI hosting, which is off; see below.
+
 Container startup, management endpoints and release validation are documented in [containers/pool](containers/pool/README.md). Local routing and lifecycle tests do not establish live model service: release acceptance also needs test subscriptions, a streamed request, account-affinity and spread checks, and an hour of idle time with the same boot identity.
 
 ## GitHub Actions secrets
@@ -68,6 +81,7 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `MCP_SESSION_KEY_CURRENT`     | Active MCP session signing key                                          |
 | `MCP_SESSION_KEY_PREVIOUS`    | Previous MCP session verification key                                   |
 | `POOL_MANAGEMENT_KEY`         | Pool management API and local readiness authentication                 |
+| `POOL_APP_SIGNING_KEY`        | 32-byte lowercase hex key that signs pool tokens; shared by provisioning and the pool Worker |
 | `APP_DOMAIN_CONTROL_SECRET`   | App-domain lifecycle control key                                        |
 | `APP_DOMAIN_CONTROLLER_TOKEN` | Scoped DNS/certificate token, required only when app hosting is enabled |
 
@@ -85,7 +99,7 @@ Create a GitHub OAuth App named after `brand.oauthAppName` (Signalbox) with home
 
 ### App UI hosting
 
-App UI hosting is off in [brand.ts](brand.ts) until its domain and certificate setup is approved. Sign-in, connections and MCP remain available. Apps with screens report that no app domain is configured. The pool app needs this feature before its screens can ship.
+App UI hosting is off in [brand.ts](brand.ts) until its domain and certificate setup is approved. Sign-in, connections and MCP remain available. Apps with screens report that no app domain is configured. Pools are installed and work through their tools meanwhile; their screens show once hosting is on, with no other change.
 
 Set `appHosting.enabled`, `appHosting.origin` and `appHosting.zone` together to enable a selected domain. The deploy first applies upstream's app-domain foundation, then the cloud application. The scoped controller token comes from `APP_DOMAIN_CONTROLLER_TOKEN` in Actions secrets. It needs DNS Write, Zone Read, and SSL and Certificates Read for that zone. The lifecycle key comes from `APP_DOMAIN_CONTROL_SECRET`.
 
@@ -108,6 +122,8 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 - `0006-product-brand.patch`: a configurable product name and logo, so the tools service presents the brand from [brand.ts](brand.ts) in its pages, emails, OAuth and MCP metadata. Offered upstream in [executor#2350](https://github.com/UsefulSoftwareCo/executor/pull/2350). The deployment patch no longer names the email sender; this patch does.
 - `0007-product-brand-surfaces.patch`: the built-in app, its account and key, and approvals show the brand's name and logo; Docs, Privacy and Terms links appear only when `brand.links` names them; error and status copy no longer names the tools service. Offered upstream in [executor#2352](https://github.com/UsefulSoftwareCo/executor/pull/2352).
+- `0008-caller-identity.patch`: carries [executor#2346](https://github.com/UsefulSoftwareCo/executor/pull/2346), so app code reads the caller's id as `ctx.user.id` (host protocol 14). npm has no framework release with it, so production builds serve `apps@0.0.1-beta.104-basalt.1`, built from the patched checkout, through the compiler Worker's framework assets. `framework.release` reports that version, so people's own apps get it too.
+- `0009-member-pools.patch`: installs and upgrades one private pool per verified organization member, with its signed pool token as the owner's personal account.
 
 A patch change that alters workflow step names requires existing runs to be drained before deployment.
 
@@ -115,7 +131,7 @@ The public cloud runtime remains upstream code. Each carried patch is applied ag
 
 ## Verification and remaining work
 
-`npm run check` exercises routing and configuration without credentials. `npm run check:build` renders the built sign-in pages and the patched emails under the brand and under a swapped name, and fails if either shows the tools service's name. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run build` builds the upstream framework and pool Worker. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
+`npm run check` exercises routing, configuration, the pool control API and the pool screen's helpers without credentials. `npm run check:providers` compares the provider table with the pinned Home source. `npm run check:build` renders the built sign-in pages and the patched emails under the brand and under a swapped name, and fails if either shows the tools service's name. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run build` builds the upstream framework and pool Worker. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
 
 The deploy smoke test checks the homepage redirect, the branded sign-in page, logo and MCP metadata, the protected MCP endpoint and unauthenticated model-key rejection. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
 

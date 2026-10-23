@@ -1,0 +1,388 @@
+import { controlBasePath as base, type SignInFlow, type SignInStatus } from "../../apps/pool/contract.ts";
+import { type ControlAttribution, type HomeDependencies, HomeClient, handleControl, type Membership, PoolHome, type Session, signInTtlMs } from "./control.ts";
+import { fail, rows, text, unavailable, unavailableResponse } from "./json.ts";
+import providers from "./providers.json" with { type: "json" };
+
+export const attributionStorageKey = "pool-control-v1";
+export const deviceGraceMs = 60_000;
+const pollPersistMs = 15_000;
+const callbackWaitMs = 10_000;
+
+export interface ControlStorage {
+  get<T>(key: string): Promise<T | undefined>;
+  put(key: string, value: unknown): Promise<void>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(time: number): Promise<void>;
+}
+interface ProviderLock {
+  pool: string;
+  state: string | null;
+  snapshot: string[];
+  flow: SignInFlow | "starting";
+  expires: number;
+  lastPoll: number;
+  cancelBlocked?: boolean;
+  retryAfter?: number;
+  unconfirmedUploads?: string[];
+  unconfirmedRemoval?: boolean;
+}
+interface TrackedSession { session: Session; result?: SignInStatus; pendingIds?: string[] }
+interface AttributionState {
+  version?: 2;
+  locks: Record<string, ProviderLock>;
+  sessions: Record<string, TrackedSession>;
+  /** Only ids whose membership write is in flight. Home groups own completed assignments. */
+  assigned: string[];
+}
+interface LockSignal { released: Promise<void>; resolve: () => void }
+
+/** The one control-plane DO serializes attribution for every pool. Views stay outside it. */
+export class PoolControl implements ControlAttribution {
+  private storage: ControlStorage;
+  private deps: HomeDependencies;
+  private client: HomeClient;
+  private state!: AttributionState;
+  private loaded = false;
+  private dirty = false;
+  private alarmDirty = false;
+  private armedAlarm: number | null | undefined;
+  private pollWritten = new Map<string, number>();
+  private signals = new Map<string, LockSignal>();
+  private released = new Set<string>();
+  private blocked: Promise<void> | undefined;
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(storage: ControlStorage, deps: HomeDependencies) {
+    this.storage = storage;
+    this.deps = deps;
+    this.client = new HomeClient(deps.home);
+  }
+  private now(): number { return this.deps.now?.().getTime() ?? Date.now(); }
+  private changed(alarm = false): void { this.dirty = true; this.alarmDirty ||= alarm; }
+  private async run<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(async () => {
+      if (!this.loaded) {
+        this.state = await this.storage.get<AttributionState>(attributionStorageKey) ?? { version: 2, locks: {}, sessions: {}, assigned: [] };
+        await this.migrateAssignments();
+        this.loaded = true;
+        this.alarmDirty = Object.keys(this.state.locks).length > 0;
+      }
+      try { return await work(); }
+      finally {
+        await this.save();
+        await this.arm();
+        for (const provider of this.released) {
+          this.signals.get(provider)?.resolve();
+          this.signals.delete(provider);
+        }
+        this.released.clear();
+      }
+    });
+    this.queue = result.catch(() => {});
+    return result;
+  }
+  private async migrateAssignments(): Promise<void> {
+    if (this.state.version === 2) return;
+    if (Object.keys(this.state.locks).length) {
+      const credentials = rows((await this.client.data("/credentials")).files);
+      for (const [provider, lock] of Object.entries(this.state.locks)) {
+        const providerIds = new Set(credentials.filter((row) => (text(row.provider) ?? text(row.type)) === provider).map((row) => text(row.id)));
+        // Old assignments may protect a diff already in progress. Preserve that exclusion
+        // in its snapshot before dropping historical markers with no pending write.
+        lock.snapshot = [...new Set([...lock.snapshot, ...this.state.assigned])].filter((id) => providerIds.has(id));
+      }
+    }
+    const pending = new Set(Object.values(this.state.sessions)
+      .filter((tracked) => !tracked.result && Date.parse(tracked.session.expiresAt) > this.now())
+      .flatMap((tracked) => tracked.pendingIds ?? []));
+    this.state.assigned = this.state.assigned.filter((id) => pending.has(id));
+    this.state.version = 2;
+    this.changed();
+    await this.save();
+  }
+  private async save(): Promise<void> {
+    if (!this.dirty) return;
+    await this.storage.put(attributionStorageKey, this.state);
+    this.dirty = false;
+    // A save for any reason also persists the latest in-memory device polling times.
+    for (const [provider, lock] of Object.entries(this.state.locks)) this.pollWritten.set(provider, lock.lastPoll);
+  }
+  private async arm(): Promise<void> {
+    if (!this.alarmDirty) return;
+    const now = this.now();
+    const deadlines = Object.values(this.state.locks).map((lock) => {
+      const stale = lock.flow === "device" ? lock.lastPoll + deviceGraceMs : lock.expires;
+      return lock.cancelBlocked ? lock.expires : Math.min(lock.expires, Math.max(stale, lock.retryAfter ?? 0));
+    });
+    if (deadlines.length) {
+      const deadline = Math.max(now + 1_000, Math.min(...deadlines));
+      this.armedAlarm ??= await this.storage.getAlarm();
+      if (this.armedAlarm === null || this.armedAlarm <= now || deadline < this.armedAlarm) {
+        await this.storage.setAlarm(deadline);
+        this.armedAlarm = deadline;
+      }
+    }
+    this.alarmDirty = false;
+  }
+  private unlock(provider: string): void {
+    delete this.state.locks[provider];
+    this.pollWritten.delete(provider);
+    this.released.add(provider);
+    this.changed(true);
+  }
+  private async wait(released: Promise<void>, milliseconds: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        released.then(() => true),
+        new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), milliseconds); }),
+      ]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  }
+  async handle(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    if (request.method === "GET" && path === `${base}/pool`) {
+      return handleControl(request, { ...this.deps, client: this.client, attribution: null });
+    }
+    const callback = request.method === "POST" && path === `${base}/sign-ins/callback`;
+    const deadline = Date.now() + callbackWaitMs;
+    try {
+      for (;;) {
+        const added: string[] = [];
+        const result = await this.run(async () => {
+          this.blocked = undefined;
+          const response = await handleControl(callback ? request.clone() : request, {
+            ...this.deps, client: this.client, attribution: this, added: (ids) => added.push(...ids),
+          });
+          return { response, released: this.blocked };
+        });
+        // Start best-effort quota collection only after the serialized work has released the queue.
+        if (added.length) {
+          const work = this.client.refreshQuota(added);
+          this.deps.defer?.(work);
+        }
+        if (!callback || !result.released || Date.now() >= deadline) return result.response;
+        if (!await this.wait(result.released, deadline - Date.now())) return result.response;
+      }
+    } catch { return unavailableResponse(); }
+  }
+  async expire(): Promise<void> {
+    // The lifecycle shares this alarm and can have armed a later warm-up deadline.
+    await this.run(async () => {
+      this.armedAlarm = undefined;
+      this.alarmDirty = true;
+      await this.expireLocked(this.client);
+    });
+  }
+  async expireLocked(home: HomeClient): Promise<void> {
+    const now = this.now();
+    for (const [provider, lock] of Object.entries(this.state.locks)) {
+      const expired = lock.expires <= now;
+      const stale = lock.flow === "device" && lock.lastPoll + deviceGraceMs <= now;
+      if (!expired && (!stale || lock.cancelBlocked || (lock.retryAfter ?? 0) > now)) continue;
+      let cancelled = !lock.state;
+      if (lock.state && !lock.cancelBlocked) {
+        try {
+          const response = await home.response(`/oauth/session?state=${encodeURIComponent(lock.state)}`, { method: "DELETE" });
+          cancelled = response.ok || response.status === 404;
+          lock.cancelBlocked = response.status === 401 || response.status === 403;
+          await response.body?.cancel();
+        } catch { /* Keep a stale exchange locked until a later cancellation or its expiry. */ }
+      }
+      if (!expired && !cancelled) {
+        lock.retryAfter = now + deviceGraceMs;
+        this.changed(true);
+        continue;
+      }
+      if (lock.state && this.state.sessions[lock.state]) {
+        this.state.sessions[lock.state]!.result = { status: "failed", message: "This sign-in expired or stopped being checked. Start again." };
+      }
+      this.unlock(provider);
+    }
+    for (const [state, tracked] of Object.entries(this.state.sessions)) {
+      if (Date.parse(tracked.session.expiresAt) <= now) {
+        delete this.state.sessions[state];
+        this.changed();
+      }
+    }
+  }
+  private busy(provider: string): never {
+    let signal = this.signals.get(provider);
+    if (!signal) {
+      let resolve!: () => void;
+      const released = new Promise<void>((done) => { resolve = done; });
+      signal = { released, resolve };
+      this.signals.set(provider, signal);
+    }
+    this.blocked = signal.released;
+    const name = providers.find((item) => item.id === provider)?.name ?? "provider";
+    return fail(409, "busy", `Someone is connecting a ${name} account right now. Try again in a minute.`);
+  }
+  private async reserveLock(home: HomeClient, provider: string, pool: string, now: number): Promise<ProviderLock> {
+    if (this.state.locks[provider]) return this.busy(provider);
+    const snapshot = rows((await home.data("/credentials")).files)
+      .filter((row) => (text(row.provider) ?? text(row.type)) === provider)
+      .map((row) => text(row.id)).filter((id): id is string => id !== null);
+    const lock: ProviderLock = { pool, state: null, snapshot, flow: "starting", expires: now + signInTtlMs, lastPoll: now };
+    this.state.locks[provider] = lock;
+    this.changed(true);
+    return lock;
+  }
+  async reserve(home: HomeClient, provider: string, pool: string, now: Date): Promise<void> {
+    await this.reserveLock(home, provider, pool, now.getTime());
+    await this.save(); // A device exchange may start in Home's next call.
+  }
+  async discard(provider: string): Promise<void> { this.unlock(provider); }
+  async started(session: Session): Promise<void> {
+    const lock = this.state.locks[session.provider];
+    if (!lock || lock.pool !== session.pool) return unavailable();
+    this.state.sessions[session.state] = { session };
+    if (session.flow === "device") { lock.state = session.state; lock.flow = "device"; this.changed(true); }
+    else this.unlock(session.provider);
+  }
+  private tracked(session: Session): TrackedSession {
+    const tracked = this.state.sessions[session.state];
+    if (!tracked || tracked.session.pool !== session.pool || tracked.session.provider !== session.provider) {
+      return fail(400, "invalid_session", "This sign-in no longer exists. Start again.");
+    }
+    return tracked;
+  }
+  cached(session: Session): SignInStatus | undefined { return this.tracked(session).result; }
+  async callback(home: HomeClient, session: Session): Promise<void> {
+    if (this.tracked(session).result) return fail(400, "invalid_session", "This sign-in has already finished.");
+    const lock = this.state.locks[session.provider];
+    if (lock?.state === session.state && lock.pool === session.pool) return;
+    const reserved = await this.reserveLock(home, session.provider, session.pool, this.now());
+    reserved.state = session.state;
+    reserved.flow = "callback";
+    reserved.expires = Date.parse(session.expiresAt);
+    await this.save(); // Bind the snapshot before Home accepts a callback.
+  }
+  async polled(session: Session): Promise<void> {
+    this.tracked(session);
+    const lock = this.state.locks[session.provider];
+    if (lock?.state === session.state && lock.pool === session.pool && lock.flow === "device") {
+      lock.lastPoll = this.now();
+      if (lock.lastPoll - (this.pollWritten.get(session.provider) ?? 0) >= pollPersistMs) this.changed();
+      this.alarmDirty = true;
+    }
+  }
+  async finished(session: Session, result: SignInStatus = { status: "failed", message: "This sign-in has ended. Start again." }): Promise<void> {
+    this.tracked(session).result = result;
+    this.changed();
+    const lock = this.state.locks[session.provider];
+    if (lock?.state === session.state && lock.pool === session.pool) this.unlock(session.provider);
+  }
+  async uploadStarted(): Promise<string> {
+    const upload = crypto.randomUUID();
+    for (const lock of Object.values(this.state.locks)) {
+      lock.unconfirmedUploads = [...(lock.unconfirmedUploads ?? []), upload];
+      this.changed();
+    }
+    await this.save(); // A lost upload response must invalidate any overlapping diff.
+    return upload;
+  }
+  async uploadFinished(upload: string): Promise<void> {
+    for (const lock of Object.values(this.state.locks)) {
+      if (!lock.unconfirmedUploads?.includes(upload)) continue;
+      lock.unconfirmedUploads = lock.unconfirmedUploads.filter((id) => id !== upload);
+      this.changed();
+    }
+  }
+  private async assigned(ids: string[]): Promise<void> {
+    if (!ids.length) return;
+    this.state.assigned = [...new Set([...this.state.assigned, ...ids])];
+    this.changed();
+    await this.save(); // Recover membership writes whose outcome is unknown after eviction.
+  }
+  async removed(id: string): Promise<void> {
+    for (const tracked of Object.values(this.state.sessions)) {
+      if (!tracked.result && tracked.pendingIds?.includes(id)) {
+        await this.finished(tracked.session, { status: "failed", message: "This account was removed while the sign-in was being completed. Start a new sign-in." });
+      }
+    }
+    let failed = false;
+    if (Object.keys(this.state.locks).length) {
+      try {
+        const credential = rows((await this.client.data("/credentials")).files).find((row) => row.id === id);
+        const provider = credential && (text(credential.provider) ?? text(credential.type));
+        if (credential && !provider) return unavailable();
+        const lock = provider ? this.state.locks[provider] : undefined;
+        // A detached credential may survive a failed delete. It must not become a
+        // new candidate for a callback that predates its original upload.
+        if (lock && !lock.snapshot.includes(id)) { lock.snapshot.push(id); this.changed(); }
+      } catch {
+        failed = true;
+        for (const lock of Object.values(this.state.locks)) { lock.unconfirmedRemoval = true; this.changed(); }
+      }
+    }
+    this.unassign([id]);
+    await this.save(); // Membership is gone, even if the following credential delete fails.
+    if (failed) return unavailable();
+  }
+  private unassign(ids: string[]): void {
+    const removed = new Set(ids);
+    const remaining = this.state.assigned.filter((id) => !removed.has(id));
+    if (remaining.length === this.state.assigned.length) return;
+    this.state.assigned = remaining;
+    this.changed();
+  }
+  private async ownership(home: PoolHome): Promise<{ own: Membership; assigned: Set<string>; other: Set<string> }> {
+    const all = await home.allMembership();
+    const own = home.ownMembership(all);
+    const ownGroups = new Set(own.groups.map((group) => group.id));
+    return {
+      own,
+      assigned: new Set([...this.state.assigned, ...all.members.map((member) => member.auth_id)]),
+      other: new Set(all.members.filter((member) => !ownGroups.has(member.channel_group_id)).map((member) => member.auth_id)),
+    };
+  }
+  private conflicts(ids: string[], ownership: Awaited<ReturnType<PoolControl["ownership"]>>): boolean {
+    const ownIds = new Set(ownership.own.members.map((member) => member.auth_id));
+    return ids.some((id) => ownership.other.has(id) || (this.state.assigned.includes(id) && !ownIds.has(id)));
+  }
+  async uploaded(home: PoolHome, id: string, upload: string): Promise<void> {
+    const ownership = await this.ownership(home);
+    if (this.conflicts([id], ownership)) {
+      await this.uploadFinished(upload);
+      return fail(400, "invalid_login_file", "This account is already assigned to another pool.");
+    }
+    await this.assigned([id]);
+    await this.uploadFinished(upload);
+    await home.add([id], ownership.own);
+    this.unassign([id]);
+  }
+  async connected(home: PoolHome, session: Session, exactIds: string[]): Promise<SignInStatus> {
+    const tracked = this.tracked(session);
+    if (tracked.result) return tracked.result;
+    const failWith = async (message: string): Promise<SignInStatus> => {
+      const failed: SignInStatus = { status: "failed", message };
+      await this.finished(session, failed);
+      return failed;
+    };
+    let ids = tracked.pendingIds ?? [...new Set(exactIds)];
+    const ownership = await this.ownership(home);
+    if (ids.some((id) => ownership.other.has(id)) || (ids.length && !tracked.pendingIds && this.conflicts(ids, ownership))) {
+      return failWith("An account returned by this sign-in is already assigned. No account was added.");
+    }
+    if (!ids.length) {
+      const lock = this.state.locks[session.provider];
+      if (!lock || lock.state !== session.state || lock.pool !== session.pool) return failWith("The account could not be safely identified. Start a new sign-in.");
+      if (lock.unconfirmedRemoval) return failWith("An account removal could not be confirmed during this sign-in. No account was added. Start again.");
+      if (lock.unconfirmedUploads?.length) return failWith("A login-file upload could not be confirmed during this sign-in. No account was added. Start again or upload the intended login file.");
+      const before = new Set(lock.snapshot);
+      ids = [...new Set((await home.credentials()).flatMap((row) => {
+        const id = text(row.id);
+        return id && !before.has(id) && !ownership.assigned.has(id) && (text(row.provider) ?? text(row.type)) === session.provider ? [id] : [];
+      }))];
+      if (ids.length > 1) return failWith("More than one new account appeared. No account was added. Upload the login file to connect the intended account.");
+    }
+    tracked.pendingIds = ids;
+    this.changed();
+    await this.assigned(ids);
+    await home.add(ids, ownership.own);
+    this.unassign(ids);
+    const result: SignInStatus = { status: "connected", accountId: ids[0] ?? null };
+    await this.finished(session, result);
+    return result;
+  }
+}

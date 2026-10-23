@@ -1,3 +1,4 @@
+import { isControlPath } from "../apps/pool/contract.ts";
 import { brand } from "../brand.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
 
@@ -17,7 +18,7 @@ export interface RouterEnv {
 }
 
 function isPoolPath(pathname: string): boolean {
-  return pathname === "/v1" || pathname.startsWith("/v1/");
+  return pathname === "/v1" || pathname.startsWith("/v1/") || isControlPath(pathname);
 }
 
 function isPoolManagementPath(pathname: string): boolean {

@@ -14,8 +14,12 @@ test("missing credentials fail with a name and never a value", () => {
 
 test("deploy maps login secrets and pins EU production without hosted emulators", () => {
   const source = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
+  source.POOL_APP_SIGNING_KEY = "ab".repeat(32);
   const env = deployEnvironment(source);
   assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
+  assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
+  assert.equal(env.EXECUTOR_APPS_VERSION, "0.0.1-beta.104-basalt.1");
+  assert.ok(env.EXECUTOR_APPS_FRAMEWORK!.endsWith("/.upstream/.local/basalt-framework"));
   assert.equal(env.BETTER_AUTH_URL, "https://app.signalbox.run");
   assert.equal(env.ALCHEMY_STAGE, "production");
   assert.equal(env.PLANETSCALE_REGION, "eu-central");
@@ -27,6 +31,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
 
 test("production rejects emulator and foreign hosting overrides", () => {
   const credentials = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
+  credentials.POOL_APP_SIGNING_KEY = "ab".repeat(32);
   for (const name of [
     "EXECUTOR_EMULATORS",
     "TEST_STAGE_DATABASE_PROVIDER",
@@ -41,7 +46,10 @@ test("production rejects emulator and foreign hosting overrides", () => {
 });
 
 test("deploys hand the brand's name and logo to the tools service", () => {
-  const env = deployEnvironment(Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])));
+  const env = deployEnvironment({
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "0".repeat(64),
+  });
   assert.equal(env.EXECUTOR_PRODUCT_NAME, brand.name);
   assert.equal(env.EXECUTOR_PRODUCT_LOGO_URL, brand.logo);
   assert.equal(env.AUTH_EMAIL_DOMAIN, brand.emailDomain);
@@ -56,4 +64,15 @@ test("the brand's own links are absolute, so the router never redirects a path t
   for (const [name, link] of Object.entries(brand.links)) {
     if (link !== null) assert.match(link, /^https?:\/\//, name);
   }
+});
+
+test("pool signing key is required and malformed values are never printed", () => {
+  const credentials = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
+  assert.throws(
+    () => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY: "" }),
+    /Missing GitHub Actions secret: POOL_APP_SIGNING_KEY/,
+  );
+  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY: "secret-value" }), {
+    message: "POOL_APP_SIGNING_KEY must be 32 bytes of lowercase hex",
+  });
 });

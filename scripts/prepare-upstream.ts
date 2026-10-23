@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { run } from "./process.ts";
+import { bundlePoolApp } from "./pool-app-bundle.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const upstream = join(root, ".upstream");
@@ -31,6 +32,7 @@ for (const patch of readdirSync(join(root, "patches"))
   run("git", ["apply", "--check", path], upstream);
   run("git", ["apply", path], upstream);
 }
+bundlePoolApp(root, upstream);
 run("bun", ["install", "--frozen-lockfile"], upstream);
 const modules = join(root, "node_modules");
 if (!existsSync(modules)) symlinkSync(".upstream/apps/hosted/cloud/node_modules", modules, "dir");

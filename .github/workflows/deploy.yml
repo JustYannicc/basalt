@@ -30,6 +30,7 @@ jobs:
       MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
       MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
       APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+      POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
     steps:
       - uses: actions/checkout@v4

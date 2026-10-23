@@ -29,6 +29,7 @@ try {
     BETTER_AUTH_SECRET: "a".repeat(64), EXECUTOR_ENCRYPTION_KEY: "b".repeat(64),
     MCP_SESSION_KEY_CURRENT: "c".repeat(64), MCP_SESSION_KEY_PREVIOUS: "d".repeat(64),
     APP_DOMAIN_CONTROL_SECRET: "e".repeat(64), APP_DOMAIN_CONTROLLER_TOKEN: "fixture-app-domain-token",
+    POOL_APP_SIGNING_KEY: "f".repeat(64),
   });
   const settings = deployEnvironment(synthetic);
   phase = "import";

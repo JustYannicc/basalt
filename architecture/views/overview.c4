@@ -37,7 +37,7 @@ views {
 
   view current_inference {
     title "Basalt/Current inference"
-    description "Implemented transport and backend. One singleton EU control-plane actor forwards to one warm EU container; pool app integration is planned."
+    description "Implemented transport and backend. One singleton EU control-plane actor forwards to one warm EU container; model requests through the pool app remain planned."
 
     include
       basalt.router,
@@ -62,21 +62,37 @@ views {
     autoLayout TopBottom
   }
 
-  view planned_pool_integration {
-    #planned
-    title "Basalt/Planned pool integration"
+  view current_pool_app {
+    title "Basalt/Current pool app"
+    description "Implemented in source, live acceptance pending. The tools service installs private pool apps, runs their tools with the caller and supplies its patched apps framework to the compiler. Signed control calls go through the router; the controller scopes accounts to a channel group and enforces owner-only changes. Screen hosting is disabled."
 
-    include basalt.toolsGateway, basalt.modelGateway, basalt.pool, basalt.poolRuntime
+    include basalt.toolsGateway, basalt.pool, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
     exclude * -> *
 
     include basalt.toolsGateway -> basalt.pool
-    include basalt.modelGateway -> basalt.pool
-    include basalt.pool -> basalt.poolRuntime
+    include basalt.pool -> basalt.router
+    include basalt.router -> basalt.modelGateway where kind is sync
+    include basalt.modelGateway -> basalt.poolController
+    include basalt.poolController -> basalt.poolRuntime where kind is sync
 
     style basalt.toolsGateway { color indigo }
-    style basalt.modelGateway { color primary }
+    style basalt.poolController, basalt.poolRuntime { color amber }
+    autoLayout TopBottom
+  }
+
+  view planned_pool_integration {
+    #planned
+    title "Basalt/Planned model requests through pool app"
+    description "Streaming app endpoints upstream are still needed for model requests through the app. The pool app and its signed control API are implemented in source."
+
+    include basalt.modelGateway, basalt.pool, basalt.poolRuntime
+    exclude * -> *
+
+    include basalt.modelGateway -> basalt.pool where kind is model
+    include basalt.pool -> basalt.poolRuntime
+
+    style basalt.modelGateway, basalt.pool { color primary }
     style basalt.poolRuntime { color amber }
-    style basalt.pool { color muted; opacity 40%; border dashed }
     autoLayout TopBottom
   }
 
@@ -127,6 +143,7 @@ views {
     title "Basalt/Build and deployment"
     include basalt.build, basalt.deployment, basalt.brandConfig
     include releaseSource with { technology "" }
+    include providerSource with { technology "" }
     include deploymentProvider with { technology "" }
     include databaseService with { technology "" }
     include databaseProvider with { technology "" }
@@ -135,6 +152,7 @@ views {
     include basalt.router
     exclude * -> *
     include basalt.build -> releaseSource
+    include basalt.build -> providerSource
     include basalt.deployment -> deploymentProvider
     include basalt.deployment -> databaseService
     include basalt.deployment -> databaseProvider

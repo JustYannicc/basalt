@@ -32,6 +32,7 @@ export const poolWorker = Effect.gen(function* () {
       PoolContainer: image,
       POOL_DATABASE_URL: databaseUrl,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
+      POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
       POOL_IMAGE_HASH: application.hash.pipe(Output.map((hash) => {
         if (!hash?.image) throw new Error("The pool image has no build revision");
         return hash.image;

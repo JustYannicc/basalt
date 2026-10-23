@@ -1,0 +1,4 @@
+# Pool pages load the dashboard's fonts from here, across origins.
+/brand/fonts/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=86400
