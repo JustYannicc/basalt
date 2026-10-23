@@ -48,6 +48,8 @@ jobs:
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run check:build
+      - run: bun install --cwd scripts/architecture --frozen-lockfile
+      - run: npm run architecture:model
       - run: npm run typecheck
       - run: npm run deploy
         env:

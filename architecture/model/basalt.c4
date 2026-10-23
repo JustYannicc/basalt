@@ -1,0 +1,137 @@
+model {
+  basalt = system "Basalt" {
+    #basalt
+
+    router = module "Router" {
+      #basalt #v1 #passthrough #port
+      metadata { code "src/router.ts"; bindings "TOOLS_SERVICE=basalt.toolsGateway" }
+    }
+
+    toolsGateway = module "Tools gateway" {
+      #basalt #v1 #deep #port #funnel
+      metadata { code ".upstream/apps/hosted/cloud" }
+    }
+
+    publicIdentity = iface "Public identity" { #v1 }
+    publicConnectors = iface "Public connectors" { #v1 }
+    publicVault = iface "Public vault" { #v1 }
+
+    identity = module "Identity interface" {
+      #basalt #planned #deep
+      metadata { status "planned Basalt-facing interface" }
+    }
+
+    modelGateway = module "Model gateway" {
+      #basalt #planned #deep #port #funnel
+      metadata { plannedCode "src/pool/*"; status "planned" }
+    }
+
+    pool = module "Pool" {
+      #basalt #planned #deep
+      metadata { status "planned" }
+    }
+
+    poolRuntime = actor "Pool runtime" {
+      #basalt #planned
+      metadata { plannedCode "containers/pool/*"; releaseManifest "pool-releases.json" }
+    }
+
+    poolDatabase = store "Pool database" {
+      #basalt #planned
+      metadata { status "planned"; region "EU" }
+    }
+
+    connection = module "Connection interface" {
+      #basalt #planned #deep
+      metadata { status "planned Basalt-facing interface" }
+    }
+
+    vault = module "Vault interface" {
+      #basalt #planned #deep
+      metadata { status "planned Basalt-facing interface" }
+    }
+  }
+
+  poolOwner = person "Pool owner" { #v1 }
+  poolMember = person "Pool member" { #v1 }
+  localClient = client "Local client" { #v1 }
+
+  outsideServices = external "Outside services" {
+    #external
+    metadata { hosts "dynamic"; sdks "upstream" }
+  }
+
+  modelProviders = external "Model providers" {
+    #external #planned
+    metadata { hosts "provider-selected"; sdks "pool-runtime" }
+  }
+
+  poolOwner -[sync]-> localClient "uses"
+  poolMember -[sync]-> localClient "uses"
+  localClient -[sync]-> basalt.router "HTTP request"
+  basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE"
+  basalt.toolsGateway -[sync]-> basalt.publicIdentity "sign in"
+  basalt.toolsGateway -[tool]-> basalt.publicConnectors "connectors"
+  basalt.toolsGateway -[sync]-> basalt.publicVault "secret custody"
+  basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
+
+  basalt.router -[model]-> basalt.modelGateway "/v1" {
+    #planned
+  }
+  basalt.modelGateway -[model]-> basalt.pool "serve request" {
+    #planned
+  }
+  basalt.pool -[sync]-> basalt.poolRuntime "invoke runtime" {
+    #planned
+  }
+  basalt.poolRuntime -[sync]-> basalt.poolDatabase "read or write state" {
+    #planned
+  }
+  basalt.poolRuntime -[model]-> modelProviders "provider request" {
+    #planned
+  }
+
+  basalt.toolsGateway -[tool]-> basalt.pool "manage pool app" {
+    #planned
+  }
+  basalt.toolsGateway -[tool]-> basalt.connection "resolve caller connection" {
+    #planned
+  }
+  basalt.connection -[tool]-> basalt.publicConnectors "use public connectors" {
+    #planned
+  }
+  basalt.connection -[sync]-> basalt.vault "read secret" {
+    #planned
+  }
+  basalt.vault -[sync]-> basalt.publicVault "use public vault" {
+    #planned
+  }
+  basalt.identity -[sync]-> basalt.publicIdentity "use public identity" {
+    #planned
+  }
+
+  localClient -[sync]-> poolOwner "shows result"
+  localClient -[sync]-> poolMember "shows result"
+  basalt.router -[sync]-> localClient "HTTP response"
+  basalt.toolsGateway -[sync]-> basalt.router "service response"
+  basalt.pool -[tool]-> basalt.toolsGateway "pool result" {
+    #planned
+  }
+  basalt.modelGateway -[model]-> basalt.router "stream reply" {
+    #planned
+  }
+  basalt.pool -[model]-> basalt.modelGateway "pool result" {
+    #planned
+  }
+  basalt.poolRuntime -[sync]-> basalt.pool "runtime result" {
+    #planned
+  }
+  basalt.poolDatabase -[sync]-> basalt.poolRuntime "state result" {
+    #planned
+  }
+  modelProviders -[model]-> basalt.poolRuntime "provider result" {
+    #planned
+  }
+  outsideServices -[tool]-> basalt.toolsGateway "outside result"
+  basalt.publicConnectors -[tool]-> basalt.toolsGateway "connector result"
+}

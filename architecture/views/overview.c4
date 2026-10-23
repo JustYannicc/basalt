@@ -1,0 +1,105 @@
+views {
+  view current_runtime {
+    title "Basalt/Current runtime"
+
+    include basalt.router, basalt.toolsGateway
+    include outsideServices
+    exclude * -> *
+
+    include basalt.router -> basalt.toolsGateway
+    include basalt.toolsGateway -> outsideServices
+
+    style basalt.router { color primary }
+    style basalt.toolsGateway { color indigo }
+    style outsideServices { color gray }
+    autoLayout LeftRight
+  }
+
+  view current_tools_dependency {
+    title "Basalt/Current tools dependency"
+
+    include
+      basalt.toolsGateway,
+      basalt.publicIdentity,
+      basalt.publicConnectors,
+      basalt.publicVault,
+      outsideServices
+    exclude * -> *
+
+    include basalt.toolsGateway -> basalt.publicIdentity
+    include basalt.toolsGateway -> basalt.publicConnectors
+    include basalt.toolsGateway -> basalt.publicVault
+    include basalt.toolsGateway -> outsideServices
+
+    style basalt.toolsGateway { color indigo }
+    style outsideServices { color gray }
+    autoLayout TopBottom
+  }
+
+  view planned_inference {
+    title "Basalt/Planned inference"
+
+    include
+      basalt.router,
+      basalt.modelGateway,
+      basalt.pool,
+      basalt.poolRuntime,
+      basalt.poolDatabase,
+      modelProviders
+    exclude * -> *
+
+    include basalt.router -> basalt.modelGateway
+    include basalt.modelGateway -> basalt.pool
+    include basalt.pool -> basalt.poolRuntime
+    include basalt.poolRuntime -> basalt.poolDatabase
+    include basalt.poolRuntime -> modelProviders
+
+    style basalt.router { color primary }
+    style basalt.modelGateway, basalt.pool, basalt.poolRuntime, basalt.poolDatabase, modelProviders {
+      color muted
+    }
+    autoLayout TopBottom
+  }
+
+  view planned_identity_connectors {
+    title "Basalt/Planned identity and connectors"
+
+    include
+      basalt.toolsGateway,
+      basalt.publicIdentity,
+      basalt.publicConnectors,
+      basalt.publicVault
+    include basalt.identity, basalt.connection, basalt.vault
+    exclude * -> *
+
+    include basalt.identity -> basalt.publicIdentity
+    include basalt.connection -> basalt.publicConnectors
+    include basalt.connection -> basalt.vault
+    include basalt.vault -> basalt.publicVault
+
+    style basalt.toolsGateway { color indigo }
+    style basalt.identity, basalt.connection, basalt.vault { color muted }
+    autoLayout TopBottom
+  }
+}
+
+views {
+  view infrastructure_services {
+    title "Basalt/Infrastructure services"
+    include basalt.toolsGateway
+    include identityProvider with { technology "" }
+    include sourceService with { technology "" }
+    include databaseService with { technology "" }
+    include emailService with { technology "" }
+    include assetsService with { technology "" }
+    exclude * -> *
+    include basalt.toolsGateway -> identityProvider
+    include basalt.toolsGateway -> sourceService
+    include basalt.toolsGateway -> databaseService
+    include basalt.toolsGateway -> emailService
+    include basalt.toolsGateway -> assetsService
+    autoLayout TopBottom
+  }
+
+
+}

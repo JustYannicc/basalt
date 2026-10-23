@@ -1,0 +1,336 @@
+// Generated from the deployment stack. Do not edit.
+deployment {
+  stage deployed "Declared deployment" {
+    metadata { fingerprint "b3fd1070ff33deb6d6d63500d4fbac6052b9e4a17b791f8b09710488d228ac83"; bindings "b485d97f4907bc10fb01c7d5123dd6075b189949317b3deb947e6614c6c486c1" }
+    zone group-2703341ef73f1544 "Asset service" {
+      storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
+        app = instanceOf assetsService {
+          metadata { resource "resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638" }
+        }
+      }
+      storage resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b "Site Assets" {
+        app = instanceOf assetsService {
+          metadata { resource "resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b" }
+        }
+      }
+    }
+    zone group-9aae816a4d380e2d "Client assets" {
+      workflow resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb "Site" {
+        app = instanceOf basalt.clientAssets {
+          metadata { resource "resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb" }
+        }
+      }
+    }
+    zone group-bf8a1fdd7ff69e09 "Router" {
+      worker resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838 "Router" {
+        app = instanceOf basalt.router {
+          metadata { resource "resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838" }
+        }
+      }
+    }
+    zone group-e3fd948365456088 "Tool credentials" {
+      storage resource-4d6a87a50c6d9bbb841864427ebbc546acc14d3bfd0ac0be3d049b0fc010436c "Background Job Secret" {
+        app = instanceOf basalt.toolsCredentials {
+          metadata { resource "resource-4d6a87a50c6d9bbb841864427ebbc546acc14d3bfd0ac0be3d049b0fc010436c" }
+        }
+      }
+      storage resource-8bf709787a3800fd4c4deb9288495d258e227e7488a79bbc672421784df4081a "App Credential Key" {
+        app = instanceOf basalt.toolsCredentials {
+          metadata { resource "resource-8bf709787a3800fd4c4deb9288495d258e227e7488a79bbc672421784df4081a" }
+        }
+      }
+    }
+    zone group-b4510e9c00e2f70d "Tools gateway" {
+      worker resource-01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da "Formatter" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da" }
+        }
+      }
+      worker resource-1ec69d58ea8259e16b55a4794bc1d09e0401d95120426f195b2f0f85f61bc6b7 "App Data" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-1ec69d58ea8259e16b55a4794bc1d09e0401d95120426f195b2f0f85f61bc6b7" }
+        }
+        durableObject resource-a0c0d8fd4725be77ee6b6df5b48dfd8ccfe108a55bf0bf4a1c6b5c0b35f0fe24 "App Data Supervisor" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-a0c0d8fd4725be77ee6b6df5b48dfd8ccfe108a55bf0bf4a1c6b5c0b35f0fe24" }
+          }
+        }
+      }
+      worker resource-3c3d6f8e2f7140f64323df65164f1613071a2ff12ed0000b778751409fede05d "App Domain Controller" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-3c3d6f8e2f7140f64323df65164f1613071a2ff12ed0000b778751409fede05d" }
+        }
+        durableObject resource-54f2d6c997d2349593df7737932d4a59373e7ec25248b261e234fe025692fd2f "App Domain Coordinator" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-54f2d6c997d2349593df7737932d4a59373e7ec25248b261e234fe025692fd2f" }
+          }
+        }
+      }
+      worker resource-406d3b1e235893b7696e40cc3f50700cac93bd3166fb5bea90b814ec40722c64 "Mcp Server" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-406d3b1e235893b7696e40cc3f50700cac93bd3166fb5bea90b814ec40722c64" }
+        }
+        durableObject resource-acc8c422813408281fbd1c913d002a8fe71c8504e1abfbaed089c303e110a9ec "Mcp Session" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-acc8c422813408281fbd1c913d002a8fe71c8504e1abfbaed089c303e110a9ec" }
+          }
+        }
+      }
+      worker resource-6d81bde9d17414cc565429ed22d760aa1c7bf5eaa261665cf08438b76b050415 "Marketing" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-6d81bde9d17414cc565429ed22d760aa1c7bf5eaa261665cf08438b76b050415" }
+        }
+      }
+      worker resource-727aac0da862b390c3ba0e0a8460c46aab20a7b3622f4533a03dde1502a0c313 "Edge" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-727aac0da862b390c3ba0e0a8460c46aab20a7b3622f4533a03dde1502a0c313" }
+        }
+      }
+      worker resource-7f364888022c1c43fcbe11b269aa78fde2db078d4edcdaf288f4eeb3e6952091 "Api" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-7f364888022c1c43fcbe11b269aa78fde2db078d4edcdaf288f4eeb3e6952091" }
+        }
+        durableObject resource-d08c91344c79de2b3082a5d43358dcd958831119c762630dbc9da82ff9f18d2a "Organization Removal Recovery" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-d08c91344c79de2b3082a5d43358dcd958831119c762630dbc9da82ff9f18d2a" }
+          }
+        }
+        durableObject resource-e31e530c1ab33ddbb48e48f82d6a422e78123826720562a294a4acd2fe679bd8 "Schedule Coordinator" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-e31e530c1ab33ddbb48e48f82d6a422e78123826720562a294a4acd2fe679bd8" }
+          }
+        }
+        durableObject resource-f52f75ade97c55b09a6473e32e9e7963903567e6cbe862641672391b5a160373 "Placed Schedule Coordinator" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-f52f75ade97c55b09a6473e32e9e7963903567e6cbe862641672391b5a160373" }
+          }
+        }
+      }
+      worker resource-8697f3ce12570592ab1bd02ff7663caf9e9836f9e2139ae6c7323d4fbc0e64e3 "Authoring" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-8697f3ce12570592ab1bd02ff7663caf9e9836f9e2139ae6c7323d4fbc0e64e3" }
+        }
+      }
+      worker resource-ba14eb24f3e63904710f59e619cda23983594b638525b7dedcf798629d48cabc "App Compiler" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-ba14eb24f3e63904710f59e619cda23983594b638525b7dedcf798629d48cabc" }
+        }
+      }
+      worker resource-bbc7914d5b563e5e2ce29b499f8f60ef99e08ba217c1916c7765e8616a0374bf "App Outbound" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-bbc7914d5b563e5e2ce29b499f8f60ef99e08ba217c1916c7765e8616a0374bf" }
+        }
+      }
+      worker resource-c065d523336cd33212e7a04bdcda35d4954a2c8d97706d40fea5fb3cd8415928 "Tools gateway" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-c065d523336cd33212e7a04bdcda35d4954a2c8d97706d40fea5fb3cd8415928" }
+        }
+        durableObject resource-bff4ef8687419c16e34ec9c049a08dc4a2f16603614af3ec7fb3ac59edd36fea "Tools state" {
+          app = instanceOf basalt.toolsState {
+            metadata { resource "resource-bff4ef8687419c16e34ec9c049a08dc4a2f16603614af3ec7fb3ac59edd36fea" }
+          }
+        }
+      }
+      worker resource-c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35 "Invocation Telemetry" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35" }
+        }
+      }
+      worker resource-e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395 "Dashboard" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395" }
+        }
+      }
+    }
+    zone group-0492fe9825ed3b1f "Tools state" {
+      workflow resource-3d25ee1f2c01730263da8a24bac28d52fff18fe19288ff7ee584b2c938baddad "App Workflows" {
+        app = instanceOf basalt.toolsState {
+          metadata { resource "resource-3d25ee1f2c01730263da8a24bac28d52fff18fe19288ff7ee584b2c938baddad" }
+        }
+      }
+      workflow resource-663684837f99782a1de06b65be5fdbef1647f29b6fc8b8fa95846b7ddc2f898f "V1 Import" {
+        app = instanceOf basalt.toolsState {
+          metadata { resource "resource-663684837f99782a1de06b65be5fdbef1647f29b6fc8b8fa95846b7ddc2f898f" }
+        }
+      }
+      workflow resource-a3b731bbd35519abf87a820daf4127b5b4e3dcc20d9fa3c4b685bec470f605bf "Organization Removal" {
+        app = instanceOf basalt.toolsState {
+          metadata { resource "resource-a3b731bbd35519abf87a820daf4127b5b4e3dcc20d9fa3c4b685bec470f605bf" }
+        }
+      }
+      workflow resource-ba613b66a7b4f37d0133ed05f49fd8750a5f2cadd1ed322f8eeb3167167b495a "Provisioning" {
+        app = instanceOf basalt.toolsState {
+          metadata { resource "resource-ba613b66a7b4f37d0133ed05f49fd8750a5f2cadd1ed322f8eeb3167167b495a" }
+        }
+      }
+    }
+    zone group-7a68fb465f6d464b "Database service" {
+      storage resource-1c88d10b5de3bf460a8772c9b75e87b1842812974a3ff9bb89d9df69c8665e3f "Database Certificate Authority" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-1c88d10b5de3bf460a8772c9b75e87b1842812974a3ff9bb89d9df69c8665e3f" }
+        }
+      }
+      workflow resource-36bbc91f4c0cea36c4c284f46252363d08b5ca107887b7cab233616a66362be1 "Migrations" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-36bbc91f4c0cea36c4c284f46252363d08b5ca107887b7cab233616a66362be1" }
+        }
+      }
+      storage resource-a9cb94b268fa684a3dd66682aa60d53e10d404540387ac7879129c9d9c047e1c "Migration Role" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-a9cb94b268fa684a3dd66682aa60d53e10d404540387ac7879129c9d9c047e1c" }
+        }
+      }
+      storage resource-b54ed15a0aee795ccd57ee376d4787aecbcc971446c7fbcecc637019e478a1a8 "Database Connection" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-b54ed15a0aee795ccd57ee376d4787aecbcc971446c7fbcecc637019e478a1a8" }
+        }
+      }
+      storage resource-cb8878dc4c0d274e4dfdda3cfba8bbb5dc8ef2047aca690dac963a5c96a85c48 "Runtime Role" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-cb8878dc4c0d274e4dfdda3cfba8bbb5dc8ef2047aca690dac963a5c96a85c48" }
+        }
+      }
+      storage resource-d8bc2fd096ea426d22d32ec1458fd53de4ae99878a54a89bda962695910ed660 "Database" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-d8bc2fd096ea426d22d32ec1458fd53de4ae99878a54a89bda962695910ed660" }
+        }
+      }
+    }
+    zone group-d03b6d4b87976351 "Email service" {
+      storage resource-249700ccdc0fee7587e44a7ca777b3212bb64311fc5489b9d78e33644e16f439 "Auth Email Domain" {
+        app = instanceOf emailService {
+          metadata { resource "resource-249700ccdc0fee7587e44a7ca777b3212bb64311fc5489b9d78e33644e16f439" }
+        }
+      }
+    }
+    zone group-77a85078fa902320 "Source service" {
+      workflow resource-561022fd1743faee4f1492b1f4eae2dff59b7b92cdac9a76a5fc4bd852eb5e1f "App Source Namespace" {
+        app = instanceOf sourceService {
+          metadata { resource "resource-561022fd1743faee4f1492b1f4eae2dff59b7b92cdac9a76a5fc4bd852eb5e1f" }
+        }
+      }
+    }
+  }
+}
+views {
+  deployment view declared_deployment {
+    title "Basalt/Deployment"
+    include deployed.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_2703341ef73f1544 {
+    title "Basalt/Deployment/Asset service"
+    include deployed.group-2703341ef73f1544.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_9aae816a4d380e2d {
+    title "Basalt/Deployment/Client assets"
+    include deployed.group-9aae816a4d380e2d.*
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838 {
+    title "Basalt/Deployment/Router/Router"
+    include deployed.group-bf8a1fdd7ff69e09.resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838.**
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_bf8a1fdd7ff69e09 {
+    title "Basalt/Deployment/Router"
+    include deployed.group-bf8a1fdd7ff69e09.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_e3fd948365456088 {
+    title "Basalt/Deployment/Tool credentials"
+    include deployed.group-e3fd948365456088.*
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da {
+    title "Basalt/Deployment/Tools gateway/Formatter"
+    include deployed.group-b4510e9c00e2f70d.resource-01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_1ec69d58ea8259e16b55a4794bc1d09e0401d95120426f195b2f0f85f61bc6b7 {
+    title "Basalt/Deployment/Tools gateway/App Data"
+    include deployed.group-b4510e9c00e2f70d.resource-1ec69d58ea8259e16b55a4794bc1d09e0401d95120426f195b2f0f85f61bc6b7.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_3c3d6f8e2f7140f64323df65164f1613071a2ff12ed0000b778751409fede05d {
+    title "Basalt/Deployment/Tools gateway/App Domain Controller"
+    include deployed.group-b4510e9c00e2f70d.resource-3c3d6f8e2f7140f64323df65164f1613071a2ff12ed0000b778751409fede05d.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_406d3b1e235893b7696e40cc3f50700cac93bd3166fb5bea90b814ec40722c64 {
+    title "Basalt/Deployment/Tools gateway/Mcp Server"
+    include deployed.group-b4510e9c00e2f70d.resource-406d3b1e235893b7696e40cc3f50700cac93bd3166fb5bea90b814ec40722c64.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_6d81bde9d17414cc565429ed22d760aa1c7bf5eaa261665cf08438b76b050415 {
+    title "Basalt/Deployment/Tools gateway/Marketing"
+    include deployed.group-b4510e9c00e2f70d.resource-6d81bde9d17414cc565429ed22d760aa1c7bf5eaa261665cf08438b76b050415.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_727aac0da862b390c3ba0e0a8460c46aab20a7b3622f4533a03dde1502a0c313 {
+    title "Basalt/Deployment/Tools gateway/Edge"
+    include deployed.group-b4510e9c00e2f70d.resource-727aac0da862b390c3ba0e0a8460c46aab20a7b3622f4533a03dde1502a0c313.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_7f364888022c1c43fcbe11b269aa78fde2db078d4edcdaf288f4eeb3e6952091 {
+    title "Basalt/Deployment/Tools gateway/Api"
+    include deployed.group-b4510e9c00e2f70d.resource-7f364888022c1c43fcbe11b269aa78fde2db078d4edcdaf288f4eeb3e6952091.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_8697f3ce12570592ab1bd02ff7663caf9e9836f9e2139ae6c7323d4fbc0e64e3 {
+    title "Basalt/Deployment/Tools gateway/Authoring"
+    include deployed.group-b4510e9c00e2f70d.resource-8697f3ce12570592ab1bd02ff7663caf9e9836f9e2139ae6c7323d4fbc0e64e3.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_ba14eb24f3e63904710f59e619cda23983594b638525b7dedcf798629d48cabc {
+    title "Basalt/Deployment/Tools gateway/App Compiler"
+    include deployed.group-b4510e9c00e2f70d.resource-ba14eb24f3e63904710f59e619cda23983594b638525b7dedcf798629d48cabc.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_bbc7914d5b563e5e2ce29b499f8f60ef99e08ba217c1916c7765e8616a0374bf {
+    title "Basalt/Deployment/Tools gateway/App Outbound"
+    include deployed.group-b4510e9c00e2f70d.resource-bbc7914d5b563e5e2ce29b499f8f60ef99e08ba217c1916c7765e8616a0374bf.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_c065d523336cd33212e7a04bdcda35d4954a2c8d97706d40fea5fb3cd8415928 {
+    title "Basalt/Deployment/Tools gateway/Tools gateway"
+    include deployed.group-b4510e9c00e2f70d.resource-c065d523336cd33212e7a04bdcda35d4954a2c8d97706d40fea5fb3cd8415928.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35 {
+    title "Basalt/Deployment/Tools gateway/Invocation Telemetry"
+    include deployed.group-b4510e9c00e2f70d.resource-c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395 {
+    title "Basalt/Deployment/Tools gateway/Dashboard"
+    include deployed.group-b4510e9c00e2f70d.resource-e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395.**
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_b4510e9c00e2f70d {
+    title "Basalt/Deployment/Tools gateway"
+    include deployed.group-b4510e9c00e2f70d.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_0492fe9825ed3b1f {
+    title "Basalt/Deployment/Tools state"
+    include deployed.group-0492fe9825ed3b1f.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_7a68fb465f6d464b {
+    title "Basalt/Deployment/Database service"
+    include deployed.group-7a68fb465f6d464b.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_d03b6d4b87976351 {
+    title "Basalt/Deployment/Email service"
+    include deployed.group-d03b6d4b87976351.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_77a85078fa902320 {
+    title "Basalt/Deployment/Source service"
+    include deployed.group-77a85078fa902320.*
+    autoLayout TopBottom
+  }
+}

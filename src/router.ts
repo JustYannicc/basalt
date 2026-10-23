@@ -1,9 +1,15 @@
 import { brand } from "../brand.ts";
+import type { $ElementId } from "../scripts/architecture/gen/model.ts";
+
+// Service bindings name the same gateways as the architecture.
+export const serviceArchitecture = {
+  TOOLS_SERVICE: "basalt.toolsGateway",
+  POOL_SERVICE: "basalt.modelGateway",
+} satisfies Record<keyof RouterEnv, $ElementId>;
 
 interface Service {
   fetch(request: Request): Promise<Response>;
 }
-
 export interface RouterEnv {
   TOOLS_SERVICE: Service;
   POOL_SERVICE: Service;

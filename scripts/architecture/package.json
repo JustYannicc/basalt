@@ -1,0 +1,20 @@
+{
+  "name": "basalt-architecture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "likec4 format --check ../../architecture",
+    "validate": "likec4 validate --json ../../architecture",
+    "model": "likec4 gen model --skip-layout -o gen/model.ts ../../architecture",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "deployment": "node deployment.ts",
+    "test": "vitest run --maxWorkers=2",
+    "inventory": "node deployment.ts --inventory"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "likec4": "1.60.0",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  }
+}
