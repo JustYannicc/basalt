@@ -16,6 +16,7 @@ export const requiredSecrets = [
   "MCP_SESSION_KEY_CURRENT",
   "MCP_SESSION_KEY_PREVIOUS",
   "APP_DOMAIN_CONTROL_SECRET",
+  "POOL_MANAGEMENT_KEY",
 ] as const;
 
 export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {

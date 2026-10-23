@@ -2,7 +2,7 @@
 
 Basalt is Signalbox's identity, inference and connectors component. It deploys independently so the Signalbox OS can consume its gateways later.
 
-This repository deploys the cloud build of [Executor v2](https://github.com/UsefulSoftwareCo/executor) using its Alchemy stack. Upstream owns sign-in, workspaces, connections and MCP. Basalt supplies deployment configuration and a small public router. The pool backend and the pool app ship separately.
+This repository deploys the cloud build of [Executor v2](https://github.com/UsefulSoftwareCo/executor) using its Alchemy stack. Upstream owns sign-in, workspaces, connections and MCP. Basalt supplies deployment configuration and a small public router. The model gateway runs the released pool backend. The pool app ships separately.
 
 ## Public endpoints
 
@@ -10,7 +10,8 @@ This repository deploys the cloud build of [Executor v2](https://github.com/Usef
 | ------------------ | ------------------------------------------------------------------- |
 | `/` and app routes | Tools service, including its own Google, GitHub and passkey sign-in |
 | `/mcp`             | Tools gateway, with upstream authentication                         |
-| `/v1` and `/v1/*`  | Reserved model gateway, currently an empty `503` response           |
+| `/v1` and `/v1/*`  | Model gateway, with the pool backend's client-key authentication    |
+| `/v8/management/*` and `/v0/management/*` | Pool management API, requiring the deploy management key |
 
 The router preserves incoming URLs, headers and bodies, and streams responses through a private service binding. OAuth callbacks and discovery documents reach the same tools service. Only the router owns the public custom domain. Cloudflare provisions it from the existing zone through the deploy token.
 
@@ -22,9 +23,23 @@ A push to `main` runs [Deploy](.github/workflows/deploy.yml). It validates requi
 
 Pull requests run secretless checks and builds through [Check](.github/workflows/ci.yml). A patch that no longer applies or a failed build stops the deployment. The stack keeps Alchemy's Cloudflare state backend, so a new Actions runner sees the existing resources. Production Postgres and R2 resources are retained.
 
-Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending and Artifacts, PlanetScale Postgres, Google OAuth, and GitHub OAuth. Cloudflare Email Sending delivers sign-in codes, invitations and welcome messages through a sender on the configured sending subdomain. Passkeys use the tools service's defaults.
+Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending, Artifacts and Containers, PlanetScale Postgres, Google OAuth, and GitHub OAuth. Cloudflare Email Sending delivers sign-in codes, invitations and welcome messages through a sender on the configured sending subdomain. Passkeys use the tools service's defaults.
 
 Autumn billing, Axiom telemetry and Context.dev company suggestions are optional. When unconfigured, Basalt carries an upstream patch that allows product use without billing, exports no Axiom telemetry and skips company suggestions. It never substitutes hosted emulators. Sentry and PostHog configuration belongs to the analytics integration work.
+
+## Model gateway
+
+[containers/pool/releases.json](containers/pool/releases.json) pins Home and its node to released artifacts and SHA-256 digests. The image runs both unmodified binaries. Home stores credentials, keys, usage and routing state in its own logical Postgres database. The node handles provider requests. `/v1` responses stream through the router, the pool Worker and one Durable Object without buffering model output.
+
+New conversations use round-robin account selection. Session affinity is enabled with a one-hour TTL, and Home fails over when an account becomes unavailable or reaches quota. These defaults are applied at every container boot without replacing stored accounts or keys.
+
+The stack enforces `jurisdiction: "eu"` and `regions: ["EEUR", "WEUR"]` on the container application. The model gateway creates its one control-plane DO through an EU-jurisdiction namespace. These constrain the container and DO independently. They do not constrain the edge router or pool Worker's execution location. PlanetScale's region remains `eu-central` on the single existing cluster.
+
+A two-hour container inactivity timeout plus five-minute DO alarms and a five-minute Worker cron keep the pool warm while the DO sleeps. A host failure or deployment can still restart it. `X-Signalbox-Pool-Boot` on model responses identifies the supervisor boot so the idle acceptance check can detect a restart. A changed image, database credential or management key restarts the container and reloads its runtime secrets.
+
+Cloudflare's `durable_object` scheduling policy enables disk snapshots but rejects container placement constraints. This deployment uses the `default` policy to enforce EU placement. Faster scheduling and snapshot restore remain unavailable with that constraint. See [placement](https://developers.cloudflare.com/containers/concepts/placement/) and [scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/).
+
+Container startup, management endpoints and release validation are documented in [containers/pool](containers/pool/README.md). Local routing and lifecycle tests do not establish live model service: release acceptance also needs test subscriptions, a streamed request, account-affinity and spread checks, and an hour of idle time with the same boot identity.
 
 ## GitHub Actions secrets
 
@@ -49,6 +64,7 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `EXECUTOR_ENCRYPTION_KEY`     | Stored connection credential encryption                                 |
 | `MCP_SESSION_KEY_CURRENT`     | Active MCP session signing key                                          |
 | `MCP_SESSION_KEY_PREVIOUS`    | Previous MCP session verification key                                   |
+| `POOL_MANAGEMENT_KEY`         | Pool management API and local readiness authentication                 |
 | `APP_DOMAIN_CONTROL_SECRET`   | App-domain lifecycle control key                                        |
 | `APP_DOMAIN_CONTROLLER_TOKEN` | Scoped DNS/certificate token, required only when app hosting is enabled |
 
@@ -56,9 +72,9 @@ The workflow maps `AUTH_GITHUB_*` to upstream's `GITHUB_*` environment variables
 
 ### Account setup
 
-Create a Cloudflare token for the account owning the configured zone. Account permissions: Workers Scripts Edit, Workers R2 Storage Edit, Hyperdrive Edit, Account Settings Read, Secrets Store Edit, account SSL and Certificates Edit, Workers Observability Edit, and Artifacts Edit. Zone permissions: Zone Read, DNS Edit, Workers Routes Edit, SSL and Certificates Edit, and Email Sending Edit. Enable Workers paid usage and native Email Sending. Alchemy provisions the custom domain and sending subdomain; no manual app DNS record is needed.
+Create a Cloudflare token for the account owning the configured zone. Account permissions: Workers Scripts Edit, Workers R2 Storage Edit, Hyperdrive Edit, Account Settings Read, Secrets Store Edit, account SSL and Certificates Edit, Workers Observability Edit, Artifacts Edit, Containers Write and permission to publish container registry images. Zone permissions: Zone Read, DNS Edit, Workers Routes Edit, SSL and Certificates Edit, and Email Sending Edit. Enable Workers paid usage and native Email Sending. Alchemy provisions the custom domain and sending subdomain; no manual app DNS record is needed.
 
-Create a PlanetScale organization with Postgres enabled and an organization service token that can provision databases, branches and Postgres roles. Alchemy creates one retained cluster in its configured EU region, with separate runtime and migration roles. The tools service uses its `postgres` database. The pool backend will use a second logical database on that same cluster and connect directly; its provisioning belongs to the pool backend work. Workers use verified TLS Hyperdrive with query caching disabled. Durable Objects retain upstream's direct pooled Postgres connection path to the same EU cluster.
+Create a PlanetScale organization with Postgres enabled and an organization service token that can provision databases, branches and Postgres roles. Alchemy creates one retained cluster in its configured EU region, with separate runtime and migration roles. The tools service uses its `postgres` database. The pool backend uses `basalt_pool`, a second logical database on that same cluster, over a direct port 5432 connection with verified TLS. Its login inherits only the database owner role; the owner has no cluster administration privileges. Workers use verified TLS Hyperdrive with query caching disabled. Durable Objects retain upstream's direct pooled Postgres connection path to the same EU cluster.
 
 Create a Google OAuth Web application named Signalbox. Its authorized JavaScript origin is the configured public origin. Register `https://app.signalbox.run/api/auth/callback/google` as the exact redirect URI. Allow external Google accounts and add intended users if the consent screen remains in Testing. Sign-in requests only the normal identity scopes.
 
@@ -94,9 +110,9 @@ The public cloud runtime remains upstream code. Each carried patch is applied ag
 
 ## Verification and remaining work
 
-`npm run check` exercises routing and configuration without credentials. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts and router code; `npm run build` builds the upstream framework. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
+`npm run check` exercises routing and configuration without credentials. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run build` builds the upstream framework and pool Worker. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
 
-The deploy smoke test checks the upstream homepage, sign-in page, protected MCP endpoint and reserved model path. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
+The deploy smoke test checks the upstream homepage, sign-in page, protected MCP endpoint and unauthenticated model-key rejection. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
 
 The deployment model can be derived from [alchemy.run.ts](alchemy.run.ts). Architecture modeling and its CI checks attach there in separate work.
 

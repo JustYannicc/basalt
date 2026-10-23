@@ -7,8 +7,7 @@ assert.equal(root.status, 200, "Upstream signed-out homepage must load");
 const login = await fetch(`${origin}/login`);
 assert.equal(login.status, 200, "Sign-in page must load");
 const pool = await fetch(`${origin}/v1/models`);
-assert.equal(pool.status, 503, "Pool backend must stay unimplemented");
-assert.equal(await pool.text(), "");
+assert.equal(pool.status, 401, "Pool backend must reject an unauthenticated model request");
 const mcp = await fetch(`${origin}/mcp`, { redirect: "manual" });
 assert.equal(mcp.status, 401, "MCP must require authentication");
 console.log(

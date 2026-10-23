@@ -16,6 +16,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
