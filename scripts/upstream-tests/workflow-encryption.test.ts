@@ -166,38 +166,54 @@ test("parallel branch replay keeps per-name journal identities when completion o
   const executed: string[] = [];
   let releaseA!: () => void;
   const gateA = new Promise<void>((resolve) => (releaseA = resolve));
-  const makeInvocation = () =>
+  let releaseReplayB!: () => void;
+  const gateReplayB = new Promise<void>((resolve) => (releaseReplayB = resolve));
+  const makeInvocation = (completionOrder: string[], replay = false) =>
     Effect.gen(function* () {
       const results = yield* makeResults("wfr_parallel_fixture");
-      const task = (name: string, delay = 0) =>
-        runStep(results, journal, name, () =>
-          Effect.sleep(delay).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                executed.push(name);
-                if (name === "D") releaseA();
-              }),
+      const task = (name: string) =>
+        (replay && name === "B" ? Effect.promise(() => gateReplayB) : Effect.void).pipe(
+          Effect.andThen(runStep(results, journal, name, () =>
+            Effect.sync(() => executed.push(name)).pipe(
+              Effect.andThen(name === "A" ? Effect.promise(() => gateA) : Effect.void),
+              Effect.as({ name }),
             ),
-            Effect.andThen(
-              name === "A" ? Effect.promise(() => gateA) : Effect.void,
-            ),
-            Effect.as({ name }),
-          ),
+          )),
+          Effect.tap(() => Effect.sync(() => {
+            completionOrder.push(name);
+            if (name === "D") releaseA();
+            if (replay && name === "C") releaseReplayB();
+          })),
         );
       return yield* Effect.all(
         [
-          task("A", 0).pipe(Effect.flatMap(() => task("C"))),
+          task("A").pipe(Effect.flatMap(() => task("C"))),
           task("B").pipe(Effect.flatMap(() => task("D"))),
         ],
         { concurrency: "unbounded" },
       );
     });
 
-  const first = await runWithKey(firstKey, makeInvocation());
+  const firstOrder: string[] = [];
+  const first = await runWithKey(firstKey, makeInvocation(firstOrder));
+  assert.deepEqual(firstOrder, ["B", "D", "A", "C"]);
   assert.equal(journal.executions, 4);
   assert.equal(executed.length, 4);
-  const replay = await runWithKey(firstKey, makeInvocation());
-  assert.deepEqual(replay, first);
+  const replayOrder: string[] = [];
+  const replay = await runWithKey(firstKey, makeInvocation(replayOrder, true));
+  assert.deepEqual(replayOrder, ["A", "C", "B", "D"]);
+  assert.notDeepEqual(replayOrder, firstOrder);
+  assert.ok(Array.isArray(first));
+  assert.ok(Array.isArray(replay));
+  const namedEntry = (value: unknown): [string, unknown] => {
+    assert.ok(typeof value === "object" && value !== null && "name" in value);
+    assert.ok(typeof value.name === "string");
+    return [value.name, value];
+  };
+  assert.deepEqual(
+    Object.fromEntries(replay.map(namedEntry)),
+    Object.fromEntries(first.map(namedEntry)),
+  );
   assert.equal(journal.executions, 4, "cached C and D must not run again after branch order changes");
   assert.equal(executed.length, 4);
   assert.equal(journal.entries.size, 4);
@@ -253,6 +269,33 @@ test("retryable and non-retryable callback errors stay encrypted and decode on r
       assert.equal(rejected.reason, "engine");
       assert.equal(journal.executions, 1);
     }
+  }
+});
+
+test("a defect or non-retryable failure stops a mixed-cause step on first execution and replay", async () => {
+  for (const secondReason of ["defect", "non-retryable failure"]) {
+    const journal = makeJournal();
+    const retryable = new WorkflowFailure({ reason: "execution", retryable: true });
+    const other = secondReason === "defect"
+      ? Cause.die(new Error("private mixed-cause defect fixture"))
+      : Cause.fail(new WorkflowFailure({ reason: "execution", retryable: false }));
+    const cause = Cause.combine(Cause.fail(retryable), other);
+    const execute = () => Effect.gen(function* () {
+      const results = yield* makeResults(`wfr_mixed_${secondReason}`);
+      return yield* runStep(results, journal, "mixed cause", () => Effect.failCause(cause));
+    });
+
+    const first = await runWithKeyExit(firstKey, execute());
+    assert.ok(Exit.isFailure(first));
+    const persisted = [...journal.entries.values()][0];
+    assert.equal(persisted?.kind, "failure");
+    if (persisted?.kind !== "failure") assert.fail("expected an encrypted mixed failure");
+    assert.equal(persisted.cause, "die", `${secondReason} must stop native retries`);
+    assert.equal(persisted.message.includes("private mixed-cause"), false);
+    const replay = await runWithKeyExit(firstKey, execute());
+    assert.ok(Exit.isFailure(replay));
+    assert.equal(Cause.hasDies(replay.cause), true);
+    assert.equal(journal.executions, 1);
   }
 });
 

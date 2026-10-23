@@ -380,10 +380,10 @@ index 4f04296..c9b5680 100644
  ) {}
 diff --git a/apps/hosted/cloud/src/infrastructure/workflow-results.ts b/apps/hosted/cloud/src/infrastructure/workflow-results.ts
 new file mode 100644
-index 0000000..c8dee20
+index 0000000..9bc910d
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/workflow-results.ts
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,263 @@
 +/** Encrypt Workflows step and final results with the deployment's credential key. */
 +import * as Cloudflare from "alchemy/Cloudflare";
 +import {
@@ -588,7 +588,9 @@ index 0000000..c8dee20
 +              if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
 +              lastCause = cause;
 +              const error = Cause.squash(cause);
-+              const retryable = Cause.hasFails(cause) && input.isRetryable(error);
++              const retryable = cause.reasons.length > 0 && cause.reasons.every(
++                (reason) => Cause.isFailReason(reason) && input.isRetryable(reason.error),
++              );
 +              const payload = {
 +                message: input.encodeFailure(error),
 +                retryable,
