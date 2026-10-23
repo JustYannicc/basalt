@@ -7,6 +7,7 @@ import { Config, Effect } from "effect";
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
 import { brand } from "./brand.ts";
+import { poolWorker } from "./src/pool/deployment.ts";
 import {
   cloudDeployment,
   cloudProviders,
@@ -42,6 +43,7 @@ export default Alchemy.Stack(
     });
     yield* cloudDeployment;
     const api = yield* Api;
+    const pool = yield* poolWorker;
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
       domain: brand.host,
@@ -49,6 +51,7 @@ export default Alchemy.Stack(
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       env: {
         TOOLS_SERVICE: api,
+        POOL_SERVICE: pool,
         SOURCE_NAMESPACE_READY: namespace.hash.pipe(Output.map(() => "eu")),
       },
     });

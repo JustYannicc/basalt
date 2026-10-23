@@ -1,0 +1,37 @@
+{
+  "format_version": 1,
+  "artifacts": {
+    "home": {
+      "repository": "router-for-me/CLIProxyAPIHome",
+      "tag": "v1.1.6",
+      "commit": "eca75d683c89c1e66a07865d9de530c6cae3ef9f",
+      "binary": "cli-proxy-api",
+      "assets": {
+        "amd64": {
+          "name": "CLIProxyAPIHome_1.1.6_linux_amd64_no-plugin.tar.gz",
+          "sha256": "e437899f97c0c64dbda1d7e3483dbbd2375d2cb3c849b52309006c14da1074f4"
+        },
+        "arm64": {
+          "name": "CLIProxyAPIHome_1.1.6_linux_aarch64_no-plugin.tar.gz",
+          "sha256": "a8ca8efbe41b8de27fc933499312fd2f58c78fc3b888e4a73e5d838d851c12b5"
+        }
+      }
+    },
+    "node": {
+      "repository": "router-for-me/CLIProxyAPI",
+      "tag": "v8.0.40",
+      "commit": "d946c4fba6fc9a5cfbca1f3d85184d62ad2fb683",
+      "binary": "cli-proxy-api",
+      "assets": {
+        "amd64": {
+          "name": "CLIProxyAPI_8.0.40_linux_amd64_no-plugin.tar.gz",
+          "sha256": "9a9cc6c0304632f1f819a7d9f5765afe3768cb02cab69e2f06f42679ec8d9e5a"
+        },
+        "arm64": {
+          "name": "CLIProxyAPI_8.0.40_linux_aarch64_no-plugin.tar.gz",
+          "sha256": "b53c4132d4c278d92c453596039b541a0b3f3d2832a0ec81938296198e18b3b8"
+        }
+      }
+    }
+  }
+}

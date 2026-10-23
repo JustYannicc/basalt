@@ -11,6 +11,19 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.7-alpine
+        env:
+          POSTGRES_USER: fixture_root
+          POSTGRES_DB: postgres
+          POSTGRES_PASSWORD: fixture-only
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U fixture_root"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,7 +33,15 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: npm run check
+      - name: Check the pool bootstrap
+        run: python3 -m unittest containers.pool.test_bootstrap
       - run: npm run prepare:upstream
+      - name: Build the pinned pool image
+        run: docker build --tag basalt-1409-pool:test containers/pool
+      - name: Check the pool runtime and database contracts
+        run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
+        env:
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run typecheck

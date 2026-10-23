@@ -3,7 +3,10 @@ import { test } from "node:test";
 import router, { handleRequest, type RouterEnv } from "./router.ts";
 
 function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]): RouterEnv {
-  return { TOOLS_SERVICE: { fetch: fetchRequest } };
+  return {
+    TOOLS_SERVICE: { fetch: fetchRequest },
+    POOL_SERVICE: { fetch: async () => new Response("pool", { status: 202 }) },
+  };
 }
 
 test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
@@ -19,6 +22,8 @@ test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
     "/v10/models",
     "/v1foo",
     "/v1foo/models",
+    "/v8/management-other",
+    "/v0/management-other",
   ];
 
   for (const path of paths) {
@@ -107,21 +112,18 @@ test("preserves a POST body and headers and returns the streamed tools response"
   assert.equal(await response.text(), "first second");
 });
 
-test("reserves only /v1 and its descendants with an empty uncached 503", async () => {
-  const paths = ["/v1", "/v1?mode=reserved", "/v1/", "/v1/models", "/v1/models/list"];
-  let toolsCalls = 0;
-  const env = envWithToolsService(async () => {
-    toolsCalls += 1;
-    return new Response("unexpected tools response");
-  });
-
+test("forwards model and authenticated management paths unchanged to the pool", async () => {
+  const paths = ["/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses", "/v8/management/config", "/v0/management/config"];
+  const env = envWithToolsService(async () => { throw new Error("unexpected tools request"); });
   for (const path of paths) {
-    const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
-
-    assert.equal(response.status, 503, `${path} should be reserved`);
-    assert.equal(response.body, null, `${path} should have no body`);
-    assert.equal(response.headers.get("cache-control"), "no-store");
+    const request = new Request(`https://app.signalbox.run${path}`);
+    const upstream = new Response("data: response\n\n", {
+      headers: { "Content-Type": "text/event-stream" },
+    });
+    env.POOL_SERVICE.fetch = async (forwarded) => {
+      assert.strictEqual(forwarded, request);
+      return upstream;
+    };
+    assert.strictEqual(await handleRequest(request, env), upstream);
   }
-
-  assert.equal(toolsCalls, 0);
 });

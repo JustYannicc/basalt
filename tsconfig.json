@@ -14,5 +14,6 @@
       "./.upstream/apps/hosted/cloud/node_modules/@types"
     ]
   },
-  "include": ["brand.ts", "scripts/**/*.ts", "src/**/*.ts"]
+  "include": ["brand.ts", "scripts/**/*.ts", "src/**/*.ts"],
+  "exclude": ["src/pool/worker.ts"]
 }
