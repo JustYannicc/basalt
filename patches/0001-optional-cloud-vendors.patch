@@ -198,6 +198,21 @@ index b44141c35..e67fa7bd8 100644
      // GitHub reserves the GITHUB_ prefix in Actions secrets. Login clients are shared with
      // the existing OAuth proxy; previews still own their signing and encryption secrets.
      for (const name of ["GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"] as const)
+diff --git a/apps/hosted/cloud/scripts/development-web.ts b/apps/hosted/cloud/scripts/development-web.ts
+index ac90dd17b..05b7018e5 100644
+--- a/apps/hosted/cloud/scripts/development-web.ts
++++ b/apps/hosted/cloud/scripts/development-web.ts
+@@ -105,6 +105,10 @@ const main = Effect.scoped(
+       {
+         resourceOrigins: yield* resourceOriginsAt(origin.origin),
+         formerPasskeyHost: null,
++        // Alchemy supplies the capability. A standalone renderer defaults to no billing.
++        billingEnabled: yield* Config.Boolean("CLOUD_BILLING_ENABLED").pipe(
++          Config.withDefault(false),
++        ),
+         // The development dashboard proxies documentation to the Worker on its own origin.
+         documentation: new URL("/docs/", origin).href,
+       },
 diff --git a/apps/hosted/cloud/scripts/worker-sizes.ts b/apps/hosted/cloud/scripts/worker-sizes.ts
 index 03556620d..5ec174d55 100644
 --- a/apps/hosted/cloud/scripts/worker-sizes.ts
@@ -245,7 +260,7 @@ index 03556620d..5ec174d55 100644
      // The import requires v1's ID for every first-party client production offers.
      V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({ github: "unused" }),
 diff --git a/apps/hosted/cloud/src/contracts/billing.ts b/apps/hosted/cloud/src/contracts/billing.ts
-index b434885e5..34237853f 100644
+index b434885e5..87f55b3f4 100644
 --- a/apps/hosted/cloud/src/contracts/billing.ts
 +++ b/apps/hosted/cloud/src/contracts/billing.ts
 @@ -30,6 +30,8 @@ export const BillingPlan = Schema.Struct({
@@ -271,7 +286,16 @@ index b434885e5..34237853f 100644
  /** The requested plan is not in the available catalog. */
  export const BillingPlanUnavailable = ApiError.define({
    tag: "BillingPlanUnavailable",
-@@ -68,12 +77,12 @@ export class Billing extends Context.Service<
+@@ -59,6 +68,8 @@ export type BillingPlanUnavailable = typeof BillingPlanUnavailable.Type;
+ export class Billing extends Context.Service<
+   Billing,
+   {
++    /** Deployment capability, available without reading a customer or contacting Autumn. */
++    readonly enabled: boolean;
+     readonly overview: (
+       organization: OrganizationId,
+     ) => Effect.Effect<typeof BillingOverview.Type, BillingUnavailable>;
+@@ -68,12 +79,12 @@ export class Billing extends Context.Service<
        returnUrl: URL,
      ) => Effect.Effect<
        { readonly url: string | null },
@@ -286,7 +310,7 @@ index b434885e5..34237853f 100644
      /**
       * Cancel every paid subscription this organization still holds, for use when
       * the organization itself is being removed. Deletion also destroys the
-@@ -111,14 +120,19 @@ export const billingGroup = HttpApiGroup.make("billing")
+@@ -111,14 +122,19 @@ export const billingGroup = HttpApiGroup.make("billing")
        params: { organization: OrganizationReference },
        payload: Schema.Struct({ plan: Schema.NonEmptyString }),
        success: Schema.Struct({ url: Schema.NullOr(Schema.String) }),
@@ -329,7 +353,7 @@ index af11069c9..3154d061a 100644
  >()("cloud/CompanyLookup") {}
  
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
-index 1180ee435..cd523d474 100644
+index 1180ee435..194275ad2 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
 @@ -7,7 +7,7 @@ import {
@@ -349,7 +373,7 @@ index 1180ee435..cd523d474 100644
    BillingOverview,
    BillingPlanUnavailable,
    BillingUnavailable,
-@@ -56,7 +57,35 @@ const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
+@@ -56,7 +57,36 @@ const active = (customer: Subscriptions, plans: ReadonlyArray<string>) =>
  /** Resolve the selected Autumn environment once; each invocation owns its client. */
  export const billingLive = Effect.gen(function* () {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
@@ -368,6 +392,7 @@ index 1180ee435..cd523d474 100644
 +      Layer.succeed(
 +        Billing,
 +        Billing.of({
++          enabled: false,
 +          overview: () =>
 +            Effect.succeed({
 +              enabled: false,
@@ -386,7 +411,7 @@ index 1180ee435..cd523d474 100644
    // Test-stage settings resolve at runtime, so build the client inside the invocation, not here.
    const members = yield* billingMembers;
    const client = yield* makeExecutionMemo(
-@@ -87,6 +116,7 @@ export const billingLive = Effect.gen(function* () {
+@@ -87,6 +117,7 @@ export const billingLive = Effect.gen(function* () {
        // The billing provider lists plans in its own order; the page shows the smallest first.
        const offered = [catalog.free, catalog.team, catalog.enterprise];
        return yield* Schema.decodeUnknownEffect(BillingOverview)({
@@ -394,6 +419,14 @@ index 1180ee435..cd523d474 100644
          enterprise: active(customer, [catalog.enterprise]),
          plans: plans.list
            .filter((plan) => !plan.archived && offered.includes(plan.id))
+@@ -244,6 +275,7 @@ export const billingLive = Effect.gen(function* () {
+     Layer.succeed(
+       Billing,
+       Billing.of({
++        enabled: true,
+         overview,
+         checkout: (organization, plan, returnUrl) =>
+           Effect.gen(function* () {
 diff --git a/apps/hosted/cloud/src/implementation/company-profile.ts b/apps/hosted/cloud/src/implementation/company-profile.ts
 index 4d563988d..2358b1e4e 100644
 --- a/apps/hosted/cloud/src/implementation/company-profile.ts
@@ -408,6 +441,27 @@ index 4d563988d..2358b1e4e 100644
 +  CompanyLookup,
 +  CompanyLookup.of({ lookup: () => Effect.succeed(undefined) }),
 +);
+diff --git a/apps/hosted/cloud/src/implementation/dashboard.ts b/apps/hosted/cloud/src/implementation/dashboard.ts
+index a7ed741bb..10a69e10a 100644
+--- a/apps/hosted/cloud/src/implementation/dashboard.ts
++++ b/apps/hosted/cloud/src/implementation/dashboard.ts
+@@ -17,6 +17,8 @@ export interface CloudPageHosts {
+   readonly formerPasskeyHost: string | null;
+   /** Where the deployment serves its documentation, as an absolute URL ending in `/`. */
+   readonly documentation: string;
++  /** Whether this deployment offers billing, independent of organization access. */
++  readonly billingEnabled: boolean;
+ }
+ 
+ /**
+@@ -32,6 +34,7 @@ export const cloudDocumentContext =
+         entry,
+         formerPasskeyHost: hosts.formerPasskeyHost,
+         documentation: hosts.documentation,
++        billingEnabled: hosts.billingEnabled,
+       };
+     });
+ 
 diff --git a/apps/hosted/cloud/src/implementation/onboarding.ts b/apps/hosted/cloud/src/implementation/onboarding.ts
 index f956d4356..6eea4609c 100644
 --- a/apps/hosted/cloud/src/implementation/onboarding.ts
@@ -681,6 +735,29 @@ index 8a3d71fb3..bdf4d4ab0 100644
    if (Redacted.value(serverUrl) !== autumnServer)
      return provision(Output.asOutput(serverUrl), Output.asOutput(secretKey));
    const catalog = yield* Output.stackRef<BillingCatalog>("executor-next-billing", {
+diff --git a/apps/hosted/cloud/src/infrastructure/development.ts b/apps/hosted/cloud/src/infrastructure/development.ts
+index 60777e3b8..4a61670af 100644
+--- a/apps/hosted/cloud/src/infrastructure/development.ts
++++ b/apps/hosted/cloud/src/infrastructure/development.ts
+@@ -4,8 +4,9 @@ import * as Docker from "alchemy/Docker";
+ import * as Output from "alchemy/Output";
+ import { retain } from "alchemy/RemovalPolicy";
+ import { cloudSite } from "./site.ts";
+-import { Config, Effect, Schema } from "effect";
++import { Config, Effect, Option, Schema } from "effect";
+ import { cloudDevelopment } from "../contracts/development.ts";
++import { billingSettings } from "./billing.ts";
+ import { cloudDevelopmentDatabaseUrl } from "../contracts/database.ts";
+ 
+ /** Own a persistent local Postgres instance and apply schemas before the Worker connects to it. */
+@@ -75,6 +76,7 @@ export const developmentWeb = (apiUrl: Output.Output<string | undefined>) =>
+       command: "node scripts/development-web.ts",
+       env: {
+         NODE_ENV: "development",
++        CLOUD_BILLING_ENABLED: String(Option.isSome(yield* billingSettings.pipe(Effect.orDie))),
+         // The Site resource owns marketing output; do not start a second writer.
+         SITE_BUILD_HASH: site.hash.output,
+         DATABASE_URL: cloudDevelopmentDatabaseUrl(password, configuration.databasePort),
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
 index f81972762..332a0cfae 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
@@ -905,11 +982,84 @@ index abbee9979..13f6224a3 100644
      const config = yield* Schema.decodeUnknownEffect(
        Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
      )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 8bb6bfbd5..55ca0439d 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -30,6 +30,7 @@ import {
+   removalStallBindings,
+ } from "./infrastructure/organization-removal-stalls.ts";
+ import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
++import { Billing } from "./contracts/billing.ts";
+ import { BillingMeter } from "./contracts/billing-meter.ts";
+ import { billingBindings } from "./infrastructure/billing.ts";
+ import { frameworkDocumentation, registryRoutes, gitRoutes } from "@executor-js/app-management";
+@@ -345,6 +346,7 @@ export default Api.make(
+         : null,
+       // Documentation is a site page, served by the edge when the deployment has role hosts.
+       documentation: new URL("/docs/", auth.hosts.site).href,
++      billingEnabled: (yield* Billing.pipe(Effect.provide(billing))).enabled,
+     });
+     const appUi = hostedAppUi(
+       appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
+diff --git a/apps/hosted/cloud/web/src/contracts/billing.ts b/apps/hosted/cloud/web/src/contracts/billing.ts
+index 798e36835..1e063e90c 100644
+--- a/apps/hosted/cloud/web/src/contracts/billing.ts
++++ b/apps/hosted/cloud/web/src/contracts/billing.ts
+@@ -4,13 +4,19 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { observeBrowserTransport, observeBrowserResponse } from "@executor-js/telemetry/browser";
+ import { organizationHttpClient } from "@executor-js/hosted-web/contracts/organization-reference";
+ import { DashboardRuntime } from "@executor-js/hosted-web/contracts/telemetry";
+-import { Data, Duration } from "effect";
++import { Data, Duration, Schema } from "effect";
+ import { Atom, AtomHttpApi } from "effect/reactivity";
+ import { batchReads } from "@executor-js/dashboard-start/batch-browser";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import { ExecutorCloudApi } from "../../../src/contracts/api.ts";
+ import type { BillingOverview } from "../../../src/contracts/billing.ts";
+ 
++/** Deployment capability supplied with the document, shared by navigation and direct visits. */
++export const billingEnabledAtom = Atom.make(false).pipe(
++  Atom.serializable({ key: "cloud:billing-enabled", schema: Schema.Boolean }),
++  Atom.keepAlive,
++);
++
+ const batched = batchReads(ExecutorCloudApi);
+ 
+ /** Only the cloud browser imports the cloud API contract. Its reads batch with the page's others. */
+diff --git a/apps/hosted/cloud/web/src/contracts/document.ts b/apps/hosted/cloud/web/src/contracts/document.ts
+index 6101f8b6b..897349513 100644
+--- a/apps/hosted/cloud/web/src/contracts/document.ts
++++ b/apps/hosted/cloud/web/src/contracts/document.ts
+@@ -5,6 +5,8 @@ import type { CloudEntryPage } from "../../../src/contracts/entry.ts";
+ export interface CloudDocumentContext extends HostedDocument {
+   /** Sign-in or team setup data the Worker resolved for this page, if it is an entry page. */
+   readonly entry: CloudEntryPage | null;
++  /** Whether this deployment offers billing. No provider credentials enter the document. */
++  readonly billingEnabled: boolean;
+   /**
+    * The host whose passkeys no longer sign in here, once the dashboard has moved off it
+    * (`v2.executor.sh`); null while the dashboard still serves its own host.
 diff --git a/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx b/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
-index f2ba8503d..9ce4e5357 100644
+index f2ba8503d..28c7b6187 100644
 --- a/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/components/billing-settings.tsx
-@@ -28,7 +28,7 @@ function BillingSettingsCard({ children }: { readonly children: ReactNode }) {
+@@ -1,3 +1,5 @@
++import { useAtomValue } from "@effect/atom-react";
++import { billingEnabledAtom } from "../../contracts/billing.ts";
+ import { Link } from "@tanstack/react-router";
+ import { useOrganizationRoute } from "@executor-js/hosted-web/organization";
+ import { Button } from "@executor-js/ui/components/button";
+@@ -12,6 +14,8 @@ import type { ReactNode } from "react";
+ 
+ /** The billing card keeps its copy and dimensions while organization access loads. */
+ export function BillingSettingsPending() {
++  const enabled = useAtomValue(billingEnabledAtom);
++  if (!enabled) return null;
+   return (
+     <BillingSettingsCard>
+       <Button variant="outline" disabled>
+@@ -28,7 +32,7 @@ function BillingSettingsCard({ children }: { readonly children: ReactNode }) {
          <CardTitle>
            <h2>Billing</h2>
          </CardTitle>
@@ -918,11 +1068,90 @@ index f2ba8503d..9ce4e5357 100644
        </CardHeader>
        <CardFooter className="px-4 pb-4">{children}</CardFooter>
      </Card>
+@@ -38,6 +42,8 @@ function BillingSettingsCard({ children }: { readonly children: ReactNode }) {
+ /** Billing navigation uses the current route and verified organization role. */
+ export function BillingSettings() {
+   const organization = useOrganizationRoute();
++  const enabled = useAtomValue(billingEnabledAtom);
++  if (!enabled) return null;
+   return (
+     <BillingSettingsCard>
+       <Button
+diff --git a/apps/hosted/cloud/web/src/implementation/components/navigation.tsx b/apps/hosted/cloud/web/src/implementation/components/navigation.tsx
+index d04cc113f..a2057f579 100644
+--- a/apps/hosted/cloud/web/src/implementation/components/navigation.tsx
++++ b/apps/hosted/cloud/web/src/implementation/components/navigation.tsx
+@@ -1,3 +1,5 @@
++import { useAtomValue } from "@effect/atom-react";
++import { billingEnabledAtom } from "../../contracts/billing.ts";
+ import { Link } from "@tanstack/react-router";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { CreditCardIcon } from "@hugeicons/core-free-icons";
+@@ -13,6 +15,8 @@ export function CloudNavigation({
+   readonly organizationSlug?: string;
+   readonly pendingPage?: string;
+ }) {
++  const enabled = useAtomValue(billingEnabledAtom);
++  if (!enabled) return null;
+   const content = (
+     <>
+       <HugeiconsIcon icon={CreditCardIcon} strokeWidth={2} size={16} aria-hidden />
+diff --git a/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx b/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx
+index a1ddae39c..23026ed83 100644
+--- a/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx
++++ b/apps/hosted/cloud/web/src/implementation/components/page-pending.tsx
+@@ -1,9 +1,13 @@
++import { useAtomValue } from "@effect/atom-react";
++import { billingEnabledAtom } from "../../contracts/billing.ts";
+ import { PagePending } from "@executor-js/hosted-web/page-pending";
+ import { PageSkeleton } from "@executor-js/ui/dashboard/loading";
+ import { useLocation } from "@tanstack/react-router";
+ import { BillingSettingsPending } from "./billing-settings.tsx";
+ 
+ export function BillingPagePending() {
++  const enabled = useAtomValue(billingEnabledAtom);
++  if (!enabled) return null;
+   return <PageSkeleton title="Billing" />;
+ }
+ 
+diff --git a/apps/hosted/cloud/web/src/implementation/document.ts b/apps/hosted/cloud/web/src/implementation/document.ts
+index 37f6b1680..bcc24a234 100644
+--- a/apps/hosted/cloud/web/src/implementation/document.ts
++++ b/apps/hosted/cloud/web/src/implementation/document.ts
+@@ -8,6 +8,7 @@ import type { CloudDocumentContext } from "../contracts/document.ts";
+ import { entryTeamAtom } from "../contracts/onboarding.ts";
+ import { formerPasskeyHostAtom } from "../contracts/auth.ts";
+ import { documentationBaseAtom } from "@executor-js/hosted-web/contracts/documentation";
++import { billingEnabledAtom } from "../contracts/billing.ts";
+ import { documentPasskeyEnrollmentAtom } from "../contracts/passkey-enrollment.ts";
+ 
+ /** Server only: the context the Worker passed with this document request. */
+@@ -23,6 +24,7 @@ export const cloudServerValues = (document: CloudDocumentContext) => {
+   const entry = document.entry;
+   const shared = [
+     ...hostedServerValues(document),
++    Atom.initialValue(billingEnabledAtom, document.billingEnabled),
+     Atom.initialValue(formerPasskeyHostAtom, document.formerPasskeyHost),
+     Atom.initialValue(documentationBaseAtom, document.documentation),
+   ];
 diff --git a/apps/hosted/cloud/web/src/implementation/pages/billing.tsx b/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
-index 194bc7d6b..49340423e 100644
+index 194bc7d6b..73278a23f 100644
 --- a/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/pages/billing.tsx
-@@ -76,14 +76,15 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
+@@ -1,3 +1,4 @@
++import { useNavigate } from "@tanstack/react-router";
+ import { PageSkeleton, DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import { AsyncResult } from "effect/reactivity";
+ import { Alert, AlertDescription } from "@executor-js/ui/components/alert";
+@@ -13,6 +14,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Tick02Icon } from "@hugeicons/core-free-icons";
+ import {
+   billingAtom,
++  billingEnabledAtom,
+   checkoutAtom,
+   checkoutSettlementWindow,
+   planActive,
+@@ -76,14 +78,15 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
    const checkoutState = useAtomValue(checkoutAtom);
    const portalState = useAtomValue(portalAtom);
    const [error, setError] = useState<string | null>(null);
@@ -942,7 +1171,7 @@ index 194bc7d6b..49340423e 100644
    useEffect(() => {
      if (confirmed) onCheckoutSettled();
    }, [confirmed, onCheckoutSettled]);
-@@ -101,20 +102,22 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
+@@ -101,20 +104,22 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
          <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
            Billing
          </h1>
@@ -979,22 +1208,45 @@ index 194bc7d6b..49340423e 100644
        </div>
        {returned.organization && returned.organization !== organization.id && (
          <Alert className="notice border border-border rounded-[8px] py-[12px] px-[16px] my-[20px] mx-0 text-[13px]">
-@@ -161,7 +164,12 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
+@@ -161,7 +166,9 @@ function BillingDetails({ returned, onCheckoutSettled }: BillingProps) {
          pending={<DetailSkeleton label="Loading plans" />}
        >
          {(billing) =>
 -          billing.plans.length === 0 ? (
 +          !billing.enabled ? (
-+            <EmptyState title="Billing isn't configured">
-+              Your team can keep using Executor. Billing options will appear when this cloud
-+              deployment has billing configured.
-+            </EmptyState>
++            <BillingDisabled />
 +          ) : billing.plans.length === 0 ? (
              <EmptyState
                title="Plans unavailable"
                action={
+@@ -281,9 +288,25 @@ function BillingFailure({ retry }: { readonly retry?: (() => void) | undefined }
+     </EmptyState>
+   );
+ }
++/** A disabled deployment has no billing page, including when opened from an old bookmark. */
++function BillingDisabled() {
++  const { slug } = useOrganizationRoute();
++  const navigate = useNavigate();
++  useEffect(() => {
++    void navigate({
++      to: "/org/$organizationSlug/apps",
++      params: { organizationSlug: slug },
++      replace: true,
++    });
++  }, [navigate, slug]);
++  return null;
++}
++
+ /** Members never fetch billing; the backend independently enforces the same rule. */
+ export function BillingPage({ returned, onCheckoutSettled }: BillingProps) {
+   const organization = useOrganizationRoute();
++  const enabled = useAtomValue(billingEnabledAtom);
++  if (!enabled) return <BillingDisabled />;
+   if (organization.role === undefined) return <PageSkeleton title="Billing" />;
+   if (organization.role === "member")
+     return (
 diff --git a/e2e/tests/empty-state-billing.spec.ts b/e2e/tests/empty-state-billing.spec.ts
-index 392b611f4..cd0a5a5b7 100644
+index 392b611f4..78880ae47 100644
 --- a/e2e/tests/empty-state-billing.spec.ts
 +++ b/e2e/tests/empty-state-billing.spec.ts
 @@ -21,11 +21,12 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) =>
@@ -1011,7 +1263,7 @@ index 392b611f4..cd0a5a5b7 100644
              });
            }),
          );
-@@ -55,6 +56,23 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) =>
+@@ -55,6 +56,28 @@ layer(HostedLive, { excludeTestServices: true })("Billing empty state", (it) =>
            ]),
          );
          yield* Effect.sync(() => expect(reads).toBeGreaterThan(before));
@@ -1024,9 +1276,14 @@ index 392b611f4..cd0a5a5b7 100644
 +            page.getByRole("button", { name: "Refresh plans", exact: true }).click(),
 +          ]),
 +        );
-+        yield* browser.use("Explain that billing is disabled for this deployment", (page) =>
-+          page.getByRole("heading", { name: "Billing isn't configured", exact: true }).waitFor(),
++        yield* browser.use("Leave billing when the provider is disabled", (page) =>
++          page.waitForURL(`**/org/${actors.organization.slug}/apps`),
 +        );
++        expect(
++          yield* browser.use("Do not keep the billing page mounted", (page) =>
++            page.getByRole("heading", { name: "Billing", exact: true }).count(),
++          ),
++        ).toBe(0);
 +        expect(
 +          yield* browser.use("Do not offer a billing portal when disabled", (page) =>
 +            page.getByRole("button", { name: "Manage billing", exact: true }).count(),
