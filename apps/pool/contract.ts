@@ -71,6 +71,8 @@ export interface UsageRecord {
 
 /** Owner-only GET /usage?session=<wire X-Session-ID>&key=<Home API-key id>&limit=20&status=success.
  * At least session or key is required. Both filters are exact; neither includes child sessions.
+ * The node files a request under `X-Session-ID` only when the request carries no session source it
+ * ranks higher (such as a Claude Code session header), so send just `X-Session-ID` to find it here.
  */
 export interface UsageResponse {
   readonly records: readonly UsageRecord[];
