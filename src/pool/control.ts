@@ -71,31 +71,64 @@ const quotaBatchSize = 200;
 // Home v1.1.6 cluster/usage_observability.go:23.
 const usageMaxLimit = 200;
 interface UsageQuery { session?: string; key?: number; limit: number; status?: string }
+// Match Go strings.TrimSpace, including its treatment of U+FEFF as non-whitespace.
+function sessionTrim(value: string): string { return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""); }
+async function usageSession(raw: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const session = sessionTrim(raw);
+  // Node NormalizeExplicitID checks controls before trimming.
+  if (/\p{Cc}/u.test(raw) || !session || encoder.encode(session).length > 256) {
+    return fail(400, "invalid_query", "Provide a valid wire session id of at most 256 bytes.");
+  }
+  let clean = `header:${session}`;
+  const bytes = encoder.encode(clean);
+  // Node v8.0.40 session/info.go:929-943 bounds before the usage queue canonicalises.
+  if (bytes.length > 256) {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    let end = 190;
+    while ((bytes[end]! & 0xc0) === 0x80) end--;
+    clean = `${new TextDecoder().decode(bytes.slice(0, end))}#${hash}`;
+  }
+  // Pinned node session/identity.go:57-128; plugin.go:100 writes this canonical UUID.
+  const prefixes = ["lcp:v1:", "lcp:", "ctx:v1:", "ctx:", "codex:", "claude:", "header:", "session:",
+    "affinity:", "slot:", "task:", "conv:", "thread:", "clientreq:", "geminicache:", "pck:", "user:", "execution:", "agy:", "derived:"];
+  for (;;) {
+    const prefix = prefixes.find((value) => clean.startsWith(value));
+    if (!prefix) break;
+    clean = sessionTrim(clean.slice(prefix.length));
+  }
+  if (!clean) return fail(400, "invalid_query", "This wire session id has no canonical identity.");
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuid.test(clean)) return clean.toLowerCase();
+  const colon = clean.indexOf(":");
+  const candidate = sessionTrim(clean.slice(colon + 1));
+  if (colon > 0 && uuid.test(candidate)) return candidate.toLowerCase();
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(`cpa:canonical-uuid:v1\0${clean}`)));
+  const value = digest.slice(0, 16);
+  value[6] = (value[6]! & 0x0f) | 0x80;
+  value[8] = (value[8]! & 0x3f) | 0x80;
+  const hex = Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 async function usageQuery(url: URL): Promise<UsageQuery> {
-  const session = url.searchParams.get("session")?.trim() || undefined;
+  const rawSession = url.searchParams.get("session");
   const rawKey = url.searchParams.get("key");
   const key = rawKey === null ? undefined : Number(rawKey);
   const rawLimit = url.searchParams.get("limit") ?? "20";
-  if ((!session && key === undefined) || (rawKey !== null && (!/^[0-9]+$/.test(rawKey) || !positiveId(key)))
+  if ((rawSession === null && key === undefined) || (rawKey !== null && (!/^[0-9]+$/.test(rawKey) || !positiveId(key)))
     || !/^[1-9][0-9]*$/.test(rawLimit)) {
     return fail(400, "invalid_query", "Provide a session or a positive key id, and a positive integer limit.");
   }
-  let homeSession: string | undefined;
-  if (session) {
-    const encoder = new TextEncoder();
-    if (/\p{Cc}/u.test(session) || encoder.encode(session).length > 256) return fail(400, "invalid_query", "Provide a valid wire session id of at most 256 bytes.");
-    homeSession = `header:${session}`;
-    const bytes = encoder.encode(homeSession);
-    // Node v8.0.40 session/info.go:929-943 bounds the prefixed identity by UTF-8 bytes.
-    if (bytes.length > 256) {
-      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-      const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-      let end = 190;
-      while ((bytes[end]! & 0xc0) === 0x80) end--;
-      homeSession = `${new TextDecoder().decode(bytes.slice(0, end))}#${hash}`;
-    }
+  const rawStatus = url.searchParams.get("status")?.trim().toLowerCase();
+  let status = rawStatus;
+  if (rawStatus !== undefined) {
+    if (["success", "succeeded", "ok"].includes(rawStatus)) status = "success";
+    else if (["failed", "failure", "error"].includes(rawStatus)) status = "failed";
+    else if (!/^[1-5][0-9]{2}$/.test(rawStatus)) return fail(400, "invalid_query", "Provide a supported request outcome or a plain HTTP status code.");
   }
-  return { session: homeSession, key, limit: Math.min(usageMaxLimit, Number(rawLimit)), status: url.searchParams.get("status")?.trim() || undefined };
+  const session = rawSession === null ? undefined : await usageSession(rawSession);
+  return { session, key, limit: Math.min(usageMaxLimit, Number(rawLimit)), status };
 }
 function matchesUsageStatus(row: Json, status: string | undefined): boolean {
   if (!status) return true;
@@ -314,22 +347,24 @@ export class PoolHome {
     const accounts = new Set((await this.membership()).members.map((member) => member.auth_id));
     const records = new Map<string, UsageRecord>();
     if (!accounts.size) return { records: [] };
-    const params = new URLSearchParams({ limit: String(query.limit), sort: "timestamp_desc" });
+    const params = new URLSearchParams({ limit: String(usageMaxLimit), sort: "timestamp_desc" });
     if (query.session) params.set("session_id", query.session);
     if (query.key !== undefined) params.set("client_key_id", String(query.key));
     if (query.status) params.set("status", query.status);
     let offset = 0;
     let total = Infinity;
-    while (offset < total && records.size < query.limit) {
+    // At most five Home pages, or 1,000 scanned rows, per request.
+    for (let scannedPages = 0; scannedPages < 5 && offset < total && records.size < query.limit; scannedPages++) {
       params.set("offset", String(offset));
       const page = await this.client.data(`/usage/records?${params}`);
       const items = rows(page.items);
+      if (items.length > usageMaxLimit) return unavailable();
       if (typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0) return unavailable();
       total = Math.min(total, page.total);
       if (!items.length) break;
       for (const row of items) {
         const account = object(row.credential) ? text(row.credential.credential_id) : null;
-        // Home expands session keys to canonical aliases. This API promises the node's exact key.
+        // Compare the exact canonical key written by the node, never parent or root ids.
         if (!account || !accounts.has(account) || (query.session && row.session_id !== query.session)
           || (query.key !== undefined && (!object(row.client) || row.client.api_key_id !== query.key))
           || !matchesUsageStatus(row, query.status)) continue;

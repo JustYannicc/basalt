@@ -106,7 +106,7 @@ class FakeHome {
       const status = url.searchParams.get("status");
       const matches = this.usage.filter((row) => this.ignoreUsageFilters || ((!session || row.session_id === session)
         && (!key || (row.client as Row | undefined)?.api_key_id === Number(key))
-        && (!status || row.status === status)));
+        && (!status || row.status === status || (/^[1-5][0-9]{2}$/.test(status) && row.status_code === Number(status)))));
       return Response.json({ items: matches.slice(offset, offset + limit), total: matches.length, limit, offset, sort: "timestamp_desc" });
     }
     if (endpoint === "/credentials/quota/fetch") {
@@ -1194,7 +1194,7 @@ test("a late allowed callback resend keeps the lock until its new exchange finis
 });
 
 
-function usageRow(id: string, account: string, session = "header:fake-run", key = 17, status = "success"): Row {
+function usageRow(id: string, account: string, session = "b2dff7a4-658d-811d-ab12-7d8bbe4e6157", key = 17, status = "success"): Row {
   return {
     id, usage_id: Number(id), credential: { credential_id: account, auth_index: "different-index", api_key_preview: "obviously-fake-provider-key" },
     session_id: session, parent_session_id: "header:fake-parent", root_session_id: "header:fake-root", status,
@@ -1218,7 +1218,7 @@ test("owner usage returns only exact-session pool records and only four public f
   assert.equal(view.accounts[0]!.id, "own-account");
   const call = f.home.calls.find((call) => call.path.includes("/usage/records?"))!;
   const query = new URL(`https://home.example${call.path}`).searchParams;
-  assert.equal(query.get("session_id"), "header:fake-run"); assert.equal(query.get("limit"), "20");
+  assert.equal(query.get("session_id"), "b2dff7a4-658d-811d-ab12-7d8bbe4e6157"); assert.equal(query.get("limit"), "200");
   assert.equal(query.has("parent_session_id"), false); assert.equal(query.has("root_session_id"), false);
   assert.equal(f.storage.gets, 0); assert.equal(f.storage.puts, 0);
 });
@@ -1239,10 +1239,11 @@ test("usage for a missing session or an empty pool returns an empty list", async
   assert.deepEqual(await (await f.call("/usage?session=no-such-run")).json(), { records: [] });
 });
 
-test("usage excludes raw, canonical-alias, child and parent sessions even if Home returns them", async () => {
+test("usage accepts only the node's canonical session, excluding raw, child and parent sessions", async () => {
   const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]); f.home.ignoreUsageFilters = true;
   f.home.usage = [
-    usageRow("100", "own-account", "fake-run"), usageRow("101", "own-account", "header:fake-run:child"),
+    usageRow("99", "own-account", "header:fake-run"), usageRow("100", "own-account", "fake-run"),
+    usageRow("101", "own-account", "header:fake-run:child"),
     usageRow("102", "own-account", "header:fake-parent"), usageRow("103", "own-account", "header:fake-root"),
     usageRow("104", "own-account", "00000000-0000-8000-8000-000000000001"), usageRow("105", "own-account"),
   ];
@@ -1250,7 +1251,7 @@ test("usage excludes raw, canonical-alias, child and parent sessions even if Hom
   assert.equal(response.status, 200);
   const value = await response.json() as { records: { id: string }[] };
   assert.deepEqual(value.records.map((row) => row.id), ["105"]);
-  assert.equal(f.home.calls.filter((call) => call.path.includes("/usage/records?")).length, 6);
+  assert.equal(f.home.calls.filter((call) => call.path.includes("/usage/records?")).length, 1);
   for (const call of f.home.calls.filter((call) => call.path.includes("/usage/records?"))) {
     const query = new URL(`https://home.example${call.path}`).searchParams;
     assert.equal(query.has("parent_session_id"), false); assert.equal(query.has("root_session_id"), false);
@@ -1265,13 +1266,13 @@ for (const [suffix, count] of [["", 20], ["&limit=3", 3], ["&limit=999", 200]] a
     assert.equal(response.status, 200);
     assert.equal((await response.json() as { records: unknown[] }).records.length, count);
     const path = f.home.calls.find((call) => call.path.includes("/usage/records?"))!.path;
-    assert.equal(new URL(`https://home.example${path}`).searchParams.get("limit"), String(count));
+    assert.equal(new URL(`https://home.example${path}`).searchParams.get("limit"), "200");
   });
 }
 
 test("usage passes status to Home and excludes other outcomes before applying its limit", async () => {
   const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]); f.home.ignoreUsageFilters = true;
-  f.home.usage = [usageRow("101", "own-account", "header:fake-run", 17, "failed"), usageRow("102", "own-account"), usageRow("103", "own-account")];
+  f.home.usage = [usageRow("101", "own-account", "b2dff7a4-658d-811d-ab12-7d8bbe4e6157", 17, "failed"), usageRow("102", "own-account"), usageRow("103", "own-account")];
   const response = await f.call("/usage?session=fake-run&limit=1&status=success");
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json() as { records: { id: string }[] }).records.map((row) => row.id), ["102"]);
@@ -1283,7 +1284,7 @@ test("usage passes status to Home and excludes other outcomes before applying it
 for (const [query, expected] of [["key=17", ["101", "102"]], ["session=fake-run&key=17", ["101"]], ["key=18", []]] as const) {
   test(`usage key filter ${query} is exact and remains scoped to the pool`, async () => {
     const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]); f.home.addGroup("pool-b", 2, ["other-account"]);
-    f.home.usage = [usageRow("101", "own-account"), usageRow("102", "own-account", "header:another-run"), usageRow("103", "other-account", "header:fake-run", 18)];
+    f.home.usage = [usageRow("101", "own-account"), usageRow("102", "own-account", "header:another-run"), usageRow("103", "other-account", "b2dff7a4-658d-811d-ab12-7d8bbe4e6157", 18)];
     const response = await f.call(`/usage?${query}`);
     assert.equal(response.status, 200);
     assert.deepEqual((await response.json() as { records: { id: string }[] }).records.map((row) => row.id), expected);
@@ -1297,7 +1298,7 @@ for (const [query, expected] of [["key=17", ["101", "102"]], ["session=fake-run&
 
 test("usage checks the numeric client key id again when Home returns wider results", async () => {
   const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]); f.home.ignoreUsageFilters = true;
-  f.home.usage = [usageRow("100", "own-account", "header:fake-run", 117), usageRow("101", "own-account")];
+  f.home.usage = [usageRow("100", "own-account", "b2dff7a4-658d-811d-ab12-7d8bbe4e6157", 117), usageRow("101", "own-account")];
   const response = await f.call("/usage?key=17&limit=1");
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json() as { records: { id: string }[] }).records.map((row) => row.id), ["101"]);
@@ -1333,7 +1334,7 @@ test("usage bypasses an in-flight attribution request without touching its stora
 test("usage mirrors the pinned node's UTF-8 bound for a long wire session id", async () => {
   const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]);
   const wire = "é".repeat(128);
-  const stored = `header:${"é".repeat(91)}#62cacf02eda101bbf849902d01706b611be30fcf059f0a8c3e8e5d04a8fa1341`;
+  const stored = "d16a0b06-7664-8b67-ac0d-efa067bd7bed";
   f.home.usage = [usageRow("101", "own-account", stored)];
   const response = await f.call(`/usage?session=${encodeURIComponent(wire)}`);
   assert.equal(response.status, 200);
@@ -1341,3 +1342,76 @@ test("usage mirrors the pinned node's UTF-8 bound for a long wire session id", a
   const path = f.home.calls.find((call) => call.path.includes("/usage/records?"))!.path;
   assert.equal(new URL(`https://home.example${path}`).searchParams.get("session_id"), stored);
 });
+
+
+// Generated by running the pinned v8.0.40 Go NormalizeExplicitID,
+// BoundSessionIdentity and NormalizeToCanonicalUUID functions, in that order.
+const usageSessionVectors = [
+  ["run", "f155da03-d152-8924-be25-2d100c00c1d7"],
+  ["550E8400-E29B-41D4-A716-446655440000", "550e8400-e29b-41d4-a716-446655440000"],
+  ["derived:ctx:v1:run", "f155da03-d152-8924-be25-2d100c00c1d7"],
+  ["custom:550E8400-E29B-41D4-A716-446655440000", "550e8400-e29b-41d4-a716-446655440000"],
+  ["outer:inner:550E8400-E29B-41D4-A716-446655440000", "02639ad8-c182-8e20-a7cb-707e08105f0b"],
+  ["é".repeat(128), "d16a0b06-7664-8b67-ac0d-efa067bd7bed"],
+] as const;
+for (const [wire, expected] of usageSessionVectors) {
+  test(`usage canonical session matches pinned Go vector ${wire.slice(0, 55)}`, async () => {
+    const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]);
+    f.home.usage = [usageRow("101", "own-account", expected)];
+    const response = await f.call(`/usage?session=${encodeURIComponent(wire)}`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { records: unknown[] }).records.length, 1);
+    const path = f.home.calls.find((call) => call.path.includes("/usage/records?"))!.path;
+    assert.equal(new URL(`https://home.example${path}`).searchParams.get("session_id"), expected);
+  });
+}
+
+test("usage rejects controls before trimming a wire session", async () => {
+  const f = await fixture();
+  for (const wire of ["run\n", "\trun", "run\r", "run\u0085", "run\0", "header:"]) {
+    await error(await f.call(`/usage?session=${encodeURIComponent(wire)}&key=17`), "invalid_query");
+  }
+  assert.equal(f.home.calls.length, 0);
+});
+
+for (const [input, canonical, outcome, code] of [
+  ["success", "success", "success", 200], ["succeeded", "success", "success", 200], ["ok", "success", "success", 200],
+  ["failed", "failed", "failed", 503], ["failure", "failed", "failed", 503], ["error", "failed", "failed", 503],
+  ["200", "200", "success", 200], ["503", "503", "failed", 503],
+] as const) {
+  test(`usage status ${input} is sent as ${canonical} and preserves matching rows`, async () => {
+    const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]);
+    f.home.usage = [{ ...usageRow("101", "own-account", undefined, 17, outcome), status_code: code }];
+    const response = await f.call(`/usage?key=17&status=${input}`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as { records: unknown[] }).records.length, 1);
+    const path = f.home.calls.find((call) => call.path.includes("/usage/records?"))!.path;
+    assert.equal(new URL(`https://home.example${path}`).searchParams.get("status"), canonical);
+  });
+}
+
+test("usage rejects unknown outcomes and non-plain HTTP status codes locally", async () => {
+  const f = await fixture();
+  for (const status of ["", "unknown", "+200", "0200", "200.0", "200x", "99", "600", "-200"]) {
+    await error(await f.call(`/usage?key=17&status=${encodeURIComponent(status)}`), "invalid_query");
+  }
+  assert.equal(f.home.calls.length, 0);
+});
+
+for (const ownAtBoundary of [false, true]) {
+  test(`usage scans at most five 200-row pages and returns matches found, boundary=${ownAtBoundary}`, async () => {
+    const f = await fixture(); f.home.addGroup("pool-a", 1, ["own-account"]); f.home.addGroup("pool-b", 2, ["other-account"]);
+    f.home.usage = Array.from({ length: 1_001 }, (_, i) => usageRow(String(i + 1),
+      i === 0 || (ownAtBoundary && i === 999) || i === 1_000 ? "own-account" : "other-account"));
+    const response = await f.call("/usage?session=fake-run&limit=20");
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json() as { records: { id: string }[] }).records.map((row) => row.id), ownAtBoundary ? ["1", "1000"] : ["1"]);
+    const calls = f.home.calls.filter((call) => call.path.includes("/usage/records?"));
+    assert.equal(calls.length, 5);
+    assert.deepEqual(calls.map((call) => {
+      const query = new URL(`https://home.example${call.path}`).searchParams;
+      assert.equal(query.get("limit"), "200");
+      return Number(query.get("offset"));
+    }), [0, 200, 400, 600, 800]);
+  });
+}
