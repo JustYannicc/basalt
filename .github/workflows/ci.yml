@@ -44,4 +44,5 @@ jobs:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - run: npm run check:upstream
       - run: npm run build
+      - run: npm run check:build
       - run: npm run typecheck

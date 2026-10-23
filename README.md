@@ -9,13 +9,16 @@ This repository deploys the cloud build of [Executor v2](https://github.com/Usef
 | Path               | Handler                                                             |
 | ------------------ | ------------------------------------------------------------------- |
 | `/` and app routes | Tools service, including its own Google, GitHub and passkey sign-in |
+| Brand files        | The logo and favicon, from [public/](public)                        |
 | `/mcp`             | Tools gateway, with upstream authentication                         |
 | `/v1` and `/v1/*`  | Model gateway, with the pool backend's client-key authentication    |
 | `/v8/management/*` and `/v0/management/*` | Pool management API, requiring the deploy management key |
 
 The router preserves incoming URLs, headers and bodies, and streams responses through a private service binding. OAuth callbacks and discovery documents reach the same tools service. Only the router owns the public custom domain. Cloudflare provisions it from the existing zone through the deploy token.
 
-[brand.ts](brand.ts) holds the current name and host configuration. The broader configurable branding change is separate work. [upstream.json](upstream.json) is the only tools-service commit pin. The generated upstream checkout and dependencies are ignored by Git.
+The tools service's Worker also serves its own marketing site, docs and legal pages on every host. The router never forwards them: a signed-out `/` goes to sign-in, and the Docs, Privacy and Terms links redirect to the brand's own pages once `brand.links` names them, and answer 404 until then.
+
+[brand.ts](brand.ts) is the one brand config: the name, logo, host and zone, MCP entry name, OAuth app name, email domain and the brand's own docs and legal links. A rename changes it and the files in [public/](public); every place the tools service shows a name follows. [upstream.json](upstream.json) is the only tools-service commit pin. The generated upstream checkout and dependencies are ignored by Git.
 
 ## Deployment
 
@@ -23,7 +26,7 @@ A push to `main` runs [Deploy](.github/workflows/deploy.yml). It validates requi
 
 Pull requests run secretless checks and builds through [Check](.github/workflows/ci.yml). A patch that no longer applies or a failed build stops the deployment. The stack keeps Alchemy's Cloudflare state backend, so a new Actions runner sees the existing resources. Production Postgres and R2 resources are retained.
 
-Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending, Artifacts and Containers, PlanetScale Postgres, Google OAuth, and GitHub OAuth. Cloudflare Email Sending delivers sign-in codes, invitations and welcome messages through a sender on the configured sending subdomain. Passkeys use the tools service's defaults.
+Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending, Artifacts and Containers, PlanetScale Postgres, Google OAuth, and GitHub OAuth. Cloudflare Email Sending delivers sign-in codes and invitations from no-reply on the configured sending subdomain, under the brand's name. The tools service's own welcome note is not sent under another brand. Passkeys carry the brand's name.
 
 Autumn billing, Axiom telemetry and Context.dev company suggestions are optional. When unconfigured, Basalt carries an upstream patch that allows product use without billing, exports no Axiom telemetry and skips company suggestions. It never substitutes hosted emulators. Sentry and PostHog configuration belongs to the analytics integration work.
 
@@ -76,9 +79,9 @@ Create a Cloudflare token for the account owning the configured zone. Account pe
 
 Create a PlanetScale organization with Postgres enabled and an organization service token that can provision databases, branches and Postgres roles. Alchemy creates one retained cluster in its configured EU region, with separate runtime and migration roles. The tools service uses its `postgres` database. The pool backend uses `basalt_pool`, a second logical database on that same cluster, over a direct port 5432 connection with verified TLS. Its login inherits only the database owner role; the owner has no cluster administration privileges. Workers use verified TLS Hyperdrive with query caching disabled. Durable Objects retain upstream's direct pooled Postgres connection path to the same EU cluster.
 
-Create a Google OAuth Web application named Signalbox. Its authorized JavaScript origin is the configured public origin. Register `https://app.signalbox.run/api/auth/callback/google` as the exact redirect URI. Allow external Google accounts and add intended users if the consent screen remains in Testing. Sign-in requests only the normal identity scopes.
+Create a Google OAuth Web application named after `brand.oauthAppName` (Signalbox). Its authorized JavaScript origin is the configured public origin. Register `https://app.signalbox.run/api/auth/callback/google` as the exact redirect URI. Allow external Google accounts and add intended users if the consent screen remains in Testing. Sign-in requests only the normal identity scopes.
 
-Create a GitHub OAuth App named Signalbox with homepage `https://app.signalbox.run` and callback `https://app.signalbox.run/api/auth/callback/github`. Upstream requires both social providers at startup.
+Create a GitHub OAuth App named after `brand.oauthAppName` (Signalbox) with homepage `https://app.signalbox.run` and callback `https://app.signalbox.run/api/auth/callback/github`. Upstream requires both social providers at startup.
 
 ### App UI hosting
 
@@ -103,6 +106,7 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch.
 - `0004-encrypted-workflow-results.patch`: encrypts persisted Workflow values and callback failures with the existing credential key, and hashes checkpoint names. Replay uses stable per-name occurrence identities.
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
+- `0006-product-brand.patch`: a configurable product name and logo, so the tools service presents the brand from [brand.ts](brand.ts) in its pages, emails, OAuth and MCP metadata. Offered upstream in [executor#2350](https://github.com/UsefulSoftwareCo/executor/pull/2350). The deployment patch no longer names the email sender; this patch does.
 
 A patch change that alters workflow step names requires existing runs to be drained before deployment.
 
@@ -110,9 +114,9 @@ The public cloud runtime remains upstream code. Each carried patch is applied ag
 
 ## Verification and remaining work
 
-`npm run check` exercises routing and configuration without credentials. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run build` builds the upstream framework and pool Worker. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
+`npm run check` exercises routing and configuration without credentials. `npm run check:build` renders the built sign-in pages and the patched emails under the brand and under a swapped name, and fails if either shows the tools service's name. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run build` builds the upstream framework and pool Worker. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
 
-The deploy smoke test checks the upstream homepage, sign-in page, protected MCP endpoint and unauthenticated model-key rejection. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
+The deploy smoke test checks the homepage redirect, the branded sign-in page, logo and MCP metadata, the protected MCP endpoint and unauthenticated model-key rejection. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
 
 The deployment model can be derived from [alchemy.run.ts](alchemy.run.ts). Architecture modeling and its CI checks attach there in separate work.
 
