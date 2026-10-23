@@ -98,7 +98,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Outside services | Dynamic per-person destinations, reached only through the tools gateway. |
 | Fixed infrastructure adapter | A distinct adapter for each fixed outside service found in the stack declaration inventory. |
 
-The current router sends `/v1`, `/v0/management` and `/v8/management` through `POOL_SERVICE` to the model gateway. Other requests use `TOOLS_SERVICE`. The model gateway, pool controller, pool runtime and pool database are implemented. Pool app integration and the Basalt-facing identity, connection and vault interfaces remain planned.
+The current router sends `/v1` through `POOL_SERVICE` to the model gateway. Public `/v0/management` and `/v8/management` paths return 404; management port 8327 stays internal to the pool controller. Dashboard, MCP and OAuth requests use `TOOLS_SERVICE`, while entry redirects and brand pages stay in the router. The model gateway, pool controller, pool runtime and pool database are implemented. Pool app integration and the Basalt-facing identity, connection and vault interfaces remain planned.
 
 The `hosts` and `sdks` values `dynamic` and `upstream` describe the opaque, dynamically selected outside-service boundary. They do not enumerate concrete hosts or packages. Fixed infrastructure hosts and SDKs belong on their own adapter elements. Multiple values use `|` separators.
 

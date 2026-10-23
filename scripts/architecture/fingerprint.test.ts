@@ -77,3 +77,18 @@ test("referenced public assets hash their bytes and include newly added files", 
   write("public/redirects", "/old /new 302");
   expect(stackFingerprint(root)).not.toBe(changed);
 });
+
+test("dependency checkout state is represented by its pin and patches", () => {
+  const { root, write } = fixture();
+  write("alchemy.run.ts", 'import "./.upstream/stack.ts"; new URL("./.upstream/", import.meta.url);');
+  write("upstream.json", '{"commit":"first"}');
+  const before = stackFingerprint(root);
+  write(".upstream/stack.ts", 'new URL("./public/", import.meta.url);');
+  write(".upstream/public/generated.txt", "platform-specific build output");
+  expect(stackFingerprint(root)).toBe(before);
+  write("upstream.json", '{"commit":"next"}');
+  const next = stackFingerprint(root);
+  expect(next).not.toBe(before);
+  write("patches/change.patch", "changed deployment source");
+  expect(stackFingerprint(root)).not.toBe(next);
+});

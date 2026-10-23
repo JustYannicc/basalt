@@ -30,26 +30,38 @@ views {
   dynamic view current_pool_management {
     #v1
     variant sequence
-    title "Workflows/Basalt/Current pool management"
+    title "Workflows/Basalt/Internal pool management"
     description """
-      Status: Implemented in source. Both management path versions, including their base paths, route to
-      the same EU actor and container. The backend requires the deployment management key. This transport
-      does not implement the planned pool app's ownership, membership or sharing integration.
+      Status: Internal endpoint. The controller retains management path handling on port 8327.
+      Both public entry points reject /v0/management and /v8/management. Backend management still
+      requires its deployment key. The signed pool control API remains a planned app integration.
     """
 
-    include localClient, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, basalt.poolDatabase
-    localClient -> basalt.router "/v0/management or /v8/management"
-    basalt.router -> basalt.modelGateway "POOL_SERVICE"
-    basalt.modelGateway -> basalt.poolController "select singleton EU control-plane"
+    include basalt.poolController, basalt.poolRuntime, basalt.poolDatabase
     basalt.poolController -> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
     basalt.poolController <- basalt.poolRuntime "boot identity when healthy"
-    basalt.poolController -> basalt.poolRuntime "management-key request on port 8327"
+    basalt.poolController -> basalt.poolRuntime "internal management-key request on port 8327"
     basalt.poolRuntime -> basalt.poolDatabase "read or write backend state"
     basalt.poolRuntime <- basalt.poolDatabase "state result"
-    basalt.poolController <- basalt.poolRuntime "management response"
-    basalt.modelGateway <- basalt.poolController "management response"
-    basalt.router <- basalt.modelGateway "management response"
-    localClient <- basalt.router "HTTP response"
+    basalt.poolController <- basalt.poolRuntime "internal management response"
+  }
+
+  dynamic view current_router_entry {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current router entry policy"
+    description """
+      Status: Implemented. A signed-out homepage visit redirects to /login with its query preserved.
+      Public management paths return 404. Brand assets are served locally, and the tools service's
+      marketing, documentation and legal pages are blocked or redirected by the brand configuration.
+    """
+
+    include poolOwner, localClient, basalt.router
+    poolOwner -> localClient "opens homepage without a session"
+    localClient -> basalt.router "GET / with query"
+    localClient <- basalt.router "302 /login with query"
+    localClient -> basalt.router "public management path"
+    localClient <- basalt.router "404"
   }
 
   dynamic view current_pool_prewarm {
@@ -82,8 +94,9 @@ views {
     variant sequence
     title "Workflows/Basalt/Current tools request"
     description """
-      Status: Implemented. Requests outside the inference and management paths pass through the service
-      binding to the public tools dependency.
+      Status: Implemented. Dashboard, MCP and OAuth requests pass through the service binding to the
+      public tools dependency. Entry redirects, brand pages and blocked public management paths stay
+      in the router.
     """
 
     include poolOwner, localClient, basalt.router, basalt.toolsGateway

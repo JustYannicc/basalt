@@ -98,7 +98,6 @@ model {
   basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
 
   basalt.router -[model]-> basalt.modelGateway "POOL_SERVICE: /v1 and /v1/*"
-  basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: /v0/management and /v8/management"
   basalt.modelGateway -[sync]-> basalt.poolController "singleton EU control-plane"
   basalt.poolController -[model]-> basalt.poolRuntime "inference on port 8317"
   basalt.poolController -[sync]-> basalt.poolRuntime "management on port 8327"
@@ -140,11 +139,10 @@ model {
     #planned
   }
   basalt.modelGateway -[model]-> basalt.router "stream reply"
-  basalt.modelGateway -[sync]-> basalt.router "management response"
   basalt.poolRuntime -[model]-> basalt.poolController "stream reply"
   basalt.poolRuntime -[sync]-> basalt.poolController "management response or readiness identity"
   basalt.poolController -[model]-> basalt.modelGateway "stream reply"
-  basalt.poolController -[sync]-> basalt.modelGateway "management response or prewarm result"
+  basalt.poolController -[sync]-> basalt.modelGateway "prewarm result"
   basalt.pool -[model]-> basalt.modelGateway "pool result" {
     #planned
   }

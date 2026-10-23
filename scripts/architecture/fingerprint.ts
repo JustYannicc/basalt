@@ -13,8 +13,10 @@ export function stackFingerprint(root: string): string {
   const directories = new Set<string>();
   const visit = (path: string): void => {
     const file = relative(root, path).replaceAll("\\", "/");
-    if (file.startsWith("../") || file.startsWith("scripts/architecture/") ||
-        /(?:^|\/)(?:node_modules|dist|generated|\.generated|\.alchemy)\//.test(file) || sources.has(file)) return;
+    // The dependency's authoritative inputs are its pin and carried patches.
+    // Its generated checkout can contain platform-specific and built files.
+    if (file.startsWith("../") || file === ".upstream" || file.startsWith(".upstream/") || file.startsWith("scripts/architecture/") ||
+        /(?:^|\/)(?:node_modules|dist|generated|\.generated|\.alchemy)(?:\/|$)/.test(file) || sources.has(file)) return;
     if (!existsSync(path)) return;
     if (statSync(path).isDirectory()) {
       if (directories.has(file)) return;
@@ -48,7 +50,7 @@ export function stackFingerprint(root: string): string {
   visit(join(root, "upstream.json"));
   for (const patch of filesBelow(join(root, "patches")).filter(file => file.endsWith(".patch"))) visit(patch);
   const hash = createHash("sha256");
-  for (const [file, text] of [...sources].sort(([a], [b]) => a.localeCompare(b)))
+  for (const [file, text] of [...sources].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
     hash.update(file).update("\0").update(text).update("\0");
   return hash.digest("hex");
 }
