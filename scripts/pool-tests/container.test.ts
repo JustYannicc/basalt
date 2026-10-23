@@ -122,7 +122,6 @@ test("pinned Home/node stream, stick, spread, fail over at quota and retain keys
     assert.equal(richCatalog.status, 200);
     const rich = await richCatalog.json() as { models: { slug: string; service_tiers: unknown[] }[] };
     assert.deepEqual(rich.models.map((model) => model.slug), ["fixture-model"]);
-    assert.deepEqual(rich.models[0].service_tiers, []);
     async function turn(session: string) {
       const before = calls.length;
       const response = await fetch(`${node}/v1/chat/completions`, {

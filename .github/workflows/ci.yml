@@ -36,7 +36,7 @@ jobs:
       - name: Check the pool bootstrap
         run: python3 -m unittest containers.pool.test_bootstrap
       - run: npm run prepare:upstream
-      - name: Build the pinned pool image and check its carried patch
+      - name: Build the pinned pool image
         run: docker build --tag basalt-1409-pool:test containers/pool
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts

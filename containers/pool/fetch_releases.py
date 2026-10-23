@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the pinned Home binary and node source named in releases.json."""
+"""Fetch and verify the upstream release binaries named in releases.json."""
 
 from __future__ import annotations
 
@@ -11,13 +11,22 @@ import pathlib
 import tarfile
 import tempfile
 import urllib.request
+from typing import Any, Mapping
 
 
 ROOT = pathlib.Path(__file__).resolve().parent
 USER_AGENT = "basalt-cli-proxy-pool-release-fetcher"
 
 
-def download_verified(url: str, expected: str, output: pathlib.Path) -> None:
+def download_verified(
+    repository: str,
+    tag: str,
+    asset: Mapping[str, Any],
+    output: pathlib.Path,
+) -> None:
+    name = asset["name"]
+    expected = asset["sha256"].lower()
+    url = f"https://github.com/{repository}/releases/download/{tag}/{name}"
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     digest = hashlib.sha256()
 
@@ -35,7 +44,7 @@ def download_verified(url: str, expected: str, output: pathlib.Path) -> None:
             os.fsync(destination.fileno())
         actual = digest.hexdigest()
         if actual != expected:
-            raise ValueError(f"SHA-256 mismatch for {output.name}")
+            raise ValueError(f"SHA-256 mismatch for {name}")
         os.replace(temporary, output)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -74,30 +83,14 @@ def fetch(manifest_path: pathlib.Path, architecture: str, destination: pathlib.P
     if manifest.get("format_version") != 1:
         raise ValueError("unsupported releases.json format")
 
-    home = manifest["artifacts"]["home"]
-    asset = home["assets"][architecture]
-    archive = destination / "downloads" / asset["name"]
-    url = f'https://github.com/{home["repository"]}/releases/download/{home["tag"]}/{asset["name"]}'
-    download_verified(url, asset["sha256"], archive)
-    extract_binary(archive, home["binary"], destination / "home" / home["binary"])
-    archive.unlink()
-
-    node = manifest["artifacts"]["node"]
-    archive = destination / "downloads" / "node-source.tar.gz"
-    url = f'https://api.github.com/repos/{node["repository"]}/tarball/{node["commit"]}'
-    download_verified(url, node["source_sha256"], archive)
-    with tarfile.open(archive, mode="r:gz") as package:
-        # GitHub wraps the source in one directory. The data filter rejects
-        # paths and links that could escape the extraction directory.
-        roots = {pathlib.PurePosixPath(member.name).parts[0] for member in package.getmembers()}
-        if len(roots) != 1:
-            raise ValueError("expected one node source directory")
-        source_root = destination / "node-source"
-        source_root.mkdir(parents=True, exist_ok=True)
-        package.extractall(source_root, filter="data")
-        (source_root / roots.pop()).rename(destination / "source")
-        source_root.rmdir()
-    archive.unlink()
+    for name in ("home", "node"):
+        artifact = manifest["artifacts"][name]
+        asset = artifact["assets"][architecture]
+        archive = destination / "downloads" / asset["name"]
+        executable = destination / name / artifact["binary"]
+        download_verified(artifact["repository"], artifact["tag"], asset, archive)
+        extract_binary(archive, artifact["binary"], executable)
+        archive.unlink()
 
 
 def main() -> None:
