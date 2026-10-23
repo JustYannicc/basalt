@@ -1,0 +1,829 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts b/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
+index e5331d1..8e1ea0d 100644
+--- a/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
++++ b/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
+@@ -25,6 +25,12 @@ import { Billing } from "../contracts/billing.ts";
+ import { cloudSentry } from "../implementation/error-reporting.ts";
+ import { EventCleanup, sqlCancellation } from "./event-cleanup.ts";
+ import type { OrganizationRemovalRecovery } from "./organization-removal-recovery.ts";
++import {
++  encryptedWorkflowTask,
++  type WorkflowResults,
++  workflowEncryptionKey,
++  workflowResults,
++} from "./workflow-results.ts";
+ 
+ /** One failed attempt. The engine retries only typed failures it can serialize. */
+ class RemovalAttemptFailed extends Schema.TaggedError<RemovalAttemptFailed>()(
+@@ -40,33 +46,44 @@ class RemovalAttemptFailed extends Schema.TaggedError<RemovalAttemptFailed>()(
+ const runner =
+   (
+     organization: OrganizationId,
++    results: WorkflowResults,
+   ): OrganizationRemovalStepRunner<Cloudflare.Workflows.WorkflowStep> =>
+   <A>(
+     name: Parameters<OrganizationRemovalStepRunner>[0],
+     retries: Parameters<OrganizationRemovalStepRunner>[1],
+     work: Effect.Effect<A, unknown>,
+   ) =>
+-    Cloudflare.Workflows.task(
++    encryptedWorkflowTask({
++      results,
+       name,
+-      work.pipe(
+-        Effect.withSpan("organization.removal.step", {
+-          attributes: { "executor.organization.id": organization, "executor.removal.step": name },
+-        }),
+-        Effect.catchCause((cause) =>
+-          Cause.hasInterrupts(cause)
+-            ? Effect.interrupt
+-            : Effect.logError("Organization removal step failed", cause).pipe(
+-                Effect.andThen(Effect.fail(new RemovalAttemptFailed())),
+-              ),
++      options: { retries },
++      work: () =>
++        work.pipe(
++          Effect.withSpan("organization.removal.step", {
++            attributes: {
++              "executor.organization.id": organization,
++              "executor.removal.step": name,
++            },
++          }),
++          Effect.catchCause((cause) =>
++            Cause.hasInterrupts(cause)
++              ? Effect.interrupt
++              : Effect.logError("Organization removal step failed", cause).pipe(
++                  Effect.andThen(Effect.fail(new RemovalAttemptFailed())),
++                ),
++          ),
+         ),
+-      ),
+-      { retries },
+-    ).pipe(Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })));
++      encodeFailure: (error) => (error instanceof Error ? error.message : "Organization removal failed"),
++      isRetryable: (error) =>
++        !(typeof error === "object" && error !== null && "retryable" in error && error.retryable === false),
++      restoreFailure: () => new RemovalAttemptFailed(),
++    }).pipe(Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })));
+ 
+ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval>()(
+   "OrganizationRemoval",
+   Effect.gen(function* () {
+     const reportErrors = yield* cloudSentry;
++    const encryptionKey = yield* workflowEncryptionKey;
+     // The Worker that yields this class supplies the services; Alchemy captures them. Only
+     // these: the Worker's context also holds its own scope, and providing that to a run would
+     // replace the run's scope, so per-execution resources would outlive the run.
+@@ -92,7 +109,9 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
+     return (input: { organization: string }) =>
+       Effect.suspend(() => {
+         const organization = OrganizationId.make(input.organization);
+-        return removeOrganizationDurably(organization, runner(organization)).pipe(
++        return workflowResults(`organization-removal:${organization}`, encryptionKey).pipe(
++          Effect.flatMap((results) =>
++            removeOrganizationDurably(organization, runner(organization, results)).pipe(
+           Effect.provide(services),
+           Effect.provideService(OrganizationBilling, cancellation),
+           // Report through the same Sentry boundary the API uses, carrying the
+@@ -100,7 +119,9 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
+           // instance failed: nothing else watches a workflow that stops part
+           // way through an irreversible erasure.
+           reportErrors,
+-          Effect.orDie,
++              Effect.orDie,
++            ),
++          ),
+         );
+       });
+   }),
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+index 764e50e..c7efbb1 100644
+--- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
++++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+@@ -23,6 +23,11 @@ import { billingLive } from "../implementation/billing.ts";
+ import { BillingMeter } from "../contracts/billing-meter.ts";
+ import { cloudAnalytics } from "../implementation/product-analytics.ts";
+ import { cloudBackgroundJobs } from "./background-jobs.ts";
++import {
++  encryptedWorkflowTask,
++  workflowEncryptionKey,
++  workflowResults,
++} from "./workflow-results.ts";
+ 
+ /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
+ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -40,6 +45,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+     // workflow step is not placed, so it must not be the coordinator's first caller: it asks the
+     // placed handler to, in a step of its own that is retried until the handler has woken it.
+     const jobs = yield* cloudBackgroundJobs;
++    const encryptionKey = yield* workflowEncryptionKey;
+     const services: ProvisioningServices = {
+       requireVerifiedEmail: true,
+       user: (id) =>
+@@ -58,15 +64,19 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+         analytics.wrap(
+           Effect.gen(function* () {
+             const id = yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(input.id);
++            const results = yield* workflowResults(`provisioning:${id}`, encryptionKey);
+             const step = yield* Cloudflare.Workflows.WorkflowStep;
+             // Native step callbacks start a new Effect fiber; carry the invocation's host bindings.
+             const context = yield* Effect.context<never>();
+-            yield* step
+-              .do({
+-                name: "provision",
++            yield* encryptedWorkflowTask({
++              results,
++              name: "provision",
++              options: {
+                 retries: { limit: 8, delay: "5 seconds", backoff: "exponential" },
+                 timeout: "5 minutes",
+-                effect: Effect.gen(function* () {
++              },
++              work: () =>
++                Effect.gen(function* () {
+                   const sql = yield* Effect.flatten(GroupDatabase);
+                   yield* provision(id, services).pipe(
+                     Effect.provideService(SqlClient.SqlClient, sql),
+@@ -80,41 +90,53 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+                   // The engine retries typed failures only; a defect ends the workflow at once.
+                   Effect.mapError(() => new ProvisioningFailed()),
+                 ),
+-              })
+-              .pipe(
+-                Effect.catchCause((cause) =>
+-                  Cause.hasInterrupts(cause)
+-                    ? Effect.interrupt
+-                    : Effect.gen(function* () {
+-                        const sql = yield* Effect.flatten(GroupDatabase).pipe(
+-                          Effect.provide(executor),
+-                        );
+-                        yield* sql`update hosted_provisioning set status = 'failed', updated_at = now() where id = ${id} and status <> 'succeeded'`;
+-                        yield* Effect.logError("Provisioning workflow failed", { job: id });
+-                        return yield* Effect.die(new Error("Provisioning failed"));
+-                      }),
+-                ),
+-              );
++              encodeFailure: (error) =>
++                error instanceof Error ? error.message : "Provisioning failed",
++              isRetryable: (error) =>
++                !(typeof error === "object" && error !== null && "retryable" in error && error.retryable === false),
++              restoreFailure: () => new ProvisioningFailed(),
++            }).pipe(
++              Effect.provideService(Cloudflare.Workflows.WorkflowStep, step),
++              Effect.catchCause((cause) =>
++                Cause.hasInterrupts(cause)
++                  ? Effect.interrupt
++                  : Effect.gen(function* () {
++                      const sql = yield* Effect.flatten(GroupDatabase).pipe(
++                        Effect.provide(executor),
++                      );
++                      yield* sql`update hosted_provisioning set status = 'failed', updated_at = now() where id = ${id} and status <> 'succeeded'`;
++                      yield* Effect.logError("Provisioning workflow failed", { job: id });
++                      return yield* Effect.die(new Error("Provisioning failed"));
++                    }),
++              ),
++            );
+             // After every successful provisioning, not only an attempt that linked accounts: an
+             // earlier attempt may have committed them and failed later, and its retry finds
+             // nothing left to do. A wake with nothing to set up is one empty pass.
+-            yield* step
+-              .do({
+-                name: "schedule-wake",
++            yield* encryptedWorkflowTask({
++              results,
++              name: "schedule-wake",
++              options: {
+                 retries: { limit: 5, delay: "2 seconds", backoff: "exponential" },
+                 timeout: "1 minute",
+-                effect: jobs
+-                  .request("schedule-wake")
+-                  .pipe(Effect.provideContext(context), Effect.orDie),
+-              })
+-              .pipe(
+-                // Provisioning itself succeeded; the minute job wakes the coordinator anyway.
+-                Effect.catchCause((cause) =>
+-                  Cause.hasInterrupts(cause)
+-                    ? Effect.interrupt
+-                    : Effect.logError("Schedule wake after provisioning failed", { job: id }),
++              },
++              work: () =>
++                jobs.request("schedule-wake").pipe(
++                  Effect.provideContext(context),
++                  Effect.orDie,
+                 ),
+-              );
++              encodeFailure: (error) =>
++                error instanceof Error ? error.message : "Schedule wake failed",
++              isRetryable: () => false,
++              restoreFailure: (failure) => new Error(failure.message),
++            }).pipe(
++              Effect.provideService(Cloudflare.Workflows.WorkflowStep, step),
++              Effect.catchCause((cause) =>
++                Cause.hasInterrupts(cause)
++                  ? Effect.interrupt
++                  : Effect.logError("Schedule wake after provisioning failed", { job: id }),
++              ),
++            );
+           }).pipe(Effect.orDie),
+         ),
+       );
+diff --git a/apps/hosted/cloud/src/infrastructure/v1-import-workflow.ts b/apps/hosted/cloud/src/infrastructure/v1-import-workflow.ts
+index 4f04296..c9b5680 100644
+--- a/apps/hosted/cloud/src/infrastructure/v1-import-workflow.ts
++++ b/apps/hosted/cloud/src/infrastructure/v1-import-workflow.ts
+@@ -46,6 +46,13 @@ import { makeImportStore } from "../implementation/v1-import/store.ts";
+ import { importRefusal, movedFlag } from "../implementation/v1-import/writes.ts";
+ import { AppBuilds } from "./blobs.ts";
+ import type { V1ImportSettings } from "./onboarding.ts";
++import {
++  encryptedWorkflowResult,
++  encryptedWorkflowTask,
++  type WorkflowResults,
++  workflowEncryptionKey,
++  workflowResults,
++} from "./workflow-results.ts";
+ 
+ /** The importer this deployment runs, with where it keeps reports; none where v1 is unreachable. */
+ export class V1ImportConfiguration extends Context.Service<
+@@ -112,35 +119,13 @@ const runner =
+   (
+     params: V1ImportParams,
+     retries: V1ImportSettings["stepRetries"],
++    results: WorkflowResults,
+   ): V1ImportStep<Cloudflare.Workflows.WorkflowStep> =>
+   (name, work) =>
+-    Cloudflare.Workflows.task(
++    encryptedWorkflowTask({
++      results,
+       name,
+-      work.pipe(
+-        Effect.scoped,
+-        Effect.withSpan("v1_import.step", {
+-          attributes: {
+-            "executor.v1_import.organization": params.v1OrgId,
+-            "executor.v1_import.mode": params.mode,
+-            "executor.v1_import.step": name.split(" ")[0] ?? name,
+-          },
+-        }),
+-        Effect.catchCause((cause) =>
+-          Cause.hasInterrupts(cause)
+-            ? Effect.interrupt
+-            : Cause.hasFails(cause)
+-              ? Effect.logWarning("v1 import step attempt failed", {
+-                  step: name,
+-                  error: failureTag(cause),
+-                }).pipe(
+-                  Effect.andThen(
+-                    Effect.fail(new V1ImportAttemptFailed({ failure: failureTag(cause) })),
+-                  ),
+-                )
+-              : Effect.failCause(cause),
+-        ),
+-      ),
+-      {
++      options: {
+         retries: {
+           limit: retries.limit,
+           delay: `${retries.delaySeconds} seconds`,
+@@ -148,7 +133,41 @@ const runner =
+         },
+         timeout: "15 minutes",
+       },
+-    ).pipe(
++      work: () =>
++        work.pipe(
++          Effect.scoped,
++          Effect.withSpan("v1_import.step", {
++            attributes: {
++              "executor.v1_import.organization": params.v1OrgId,
++              "executor.v1_import.mode": params.mode,
++              "executor.v1_import.step": name.split(" ")[0] ?? name,
++            },
++          }),
++          Effect.catchCause((cause) =>
++            Cause.hasInterrupts(cause)
++              ? Effect.interrupt
++              : Cause.hasFails(cause)
++                ? Effect.logWarning("v1 import step attempt failed", {
++                    step: name,
++                    error: failureTag(cause),
++                  }).pipe(
++                    Effect.andThen(
++                      Effect.fail(new V1ImportAttemptFailed({ failure: failureTag(cause) })),
++                    ),
++                  )
++                : Effect.failCause(cause),
++          ),
++        ),
++      encodeFailure: (error) =>
++        Predicate.hasProperty(error, "failure") && typeof error.failure === "string"
++          ? error.failure
++          : error instanceof Error
++            ? error.message
++            : "V1 import step failed",
++      isRetryable: () => true,
++      restoreFailure: (failure) =>
++        new V1ImportAttemptFailed({ failure: failure.failure ?? "unknown" }),
++    }).pipe(
+       Effect.mapError(
+         (error) =>
+           new V1ImportStepFailed({
+@@ -168,6 +187,7 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
+   { limits: { steps: 10_000 } },
+   Effect.gen(function* () {
+     const reportErrors = yield* cloudSentry;
++    const encryptionKey = yield* workflowEncryptionKey;
+     // Only these services: the Worker's context also holds its own scope, which a run must not take.
+     const services = yield* Effect.context<
+       HostedExecutor | V1ImportDatabase | McpAuthentication | V1ImportConfiguration
+@@ -184,6 +204,8 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
+         if (Option.isNone(configuration))
+           return yield* Effect.die(new Error("This deployment has no v1 importer."));
+         const { settings, reports } = configuration.value;
++        const instance = v1ImportInstance(params);
++        const results = yield* workflowResults(`v1-import:${instance}`, encryptionKey);
+         const environment = V1ImportEnvironment.of({
+           source: settings.source.pipe(
+             Effect.flatMap(makeV1Source),
+@@ -197,8 +219,16 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
+           v1FirstPartyClients: settings.v1FirstPartyClients,
+           slugKey: settings.slugKey,
+         });
+-        return yield* runV1Import(params, runner(params, settings.stepRetries), (name, seconds) =>
+-          Cloudflare.Workflows.sleep(name, seconds * 1000),
++        const work = runV1Import(
++          params,
++          runner(params, settings.stepRetries, results),
++          (name, seconds) =>
++            results.storedStepName(name).pipe(
++              Effect.flatMap((storedName) =>
++                Cloudflare.Workflows.sleep(storedName, seconds * 1000),
++              ),
++              Effect.orDie,
++            ),
+         ).pipe(
+           Effect.provideService(V1ImportEnvironment, environment),
+           Effect.provide(services),
+@@ -210,6 +240,13 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
+             },
+           }),
+         );
++        return yield* encryptedWorkflowResult({
++          results,
++          work,
++          encodeFailure: (error) =>
++            error instanceof Error ? error.message : "V1 import workflow failed",
++          isRetryable: () => false,
++        });
+       }).pipe(reportErrors, Effect.orDie);
+   }),
+ ) {}
+diff --git a/apps/hosted/cloud/src/infrastructure/workflow-results.ts b/apps/hosted/cloud/src/infrastructure/workflow-results.ts
+new file mode 100644
+index 0000000..9bc910d
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/workflow-results.ts
+@@ -0,0 +1,263 @@
++/** Encrypt Workflows step and final results with the deployment's credential key. */
++import * as Cloudflare from "alchemy/Cloudflare";
++import {
++  aesGcmCredentials,
++  JsonObject,
++  WorkflowFailure,
++  WorkflowRunId,
++} from "@executor-js/sdk/core";
++import { Cause, Effect, Exit, Option, Redacted, Result, Schema } from "effect";
++import { Hex } from "effect/encoding";
++import { cloudEncryptionKey } from "./secrets.ts";
++
++const stepFailurePrefix = "ExecutorEncryptedWorkflowFailure(v1):";
++const workflowFailurePrefix = "ExecutorEncryptedWorkflowRunFailure(v1):";
++const FailurePayload = Schema.Struct({
++  message: Schema.String,
++  retryable: Schema.Boolean,
++  kind: Schema.Literals(["fail", "die"]),
++  failure: Schema.optionalKey(Schema.String),
++});
++const ValuePayload = Schema.Union([
++  Schema.Struct({ kind: Schema.Literal("value"), value: Schema.Unknown }),
++  Schema.Struct({ kind: Schema.Literal("undefined") }),
++]);
++const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: false });
++
++const failureCiphertext = (error: unknown, prefix: string) => {
++  if (!(error instanceof Error)) return Option.none<Uint8Array>();
++  const marker = error.message.lastIndexOf(prefix);
++  if (marker < 0) return Option.none<Uint8Array>();
++  const encoded = error.message.slice(marker + prefix.length);
++  if (!/^(?:[0-9a-f]{2})+$/i.test(encoded)) return Option.some(new Uint8Array());
++  const decoded = Hex.decode(encoded);
++  return Result.isSuccess(decoded)
++    ? Option.some(decoded.success)
++    : Option.some(new Uint8Array());
++};
++
++/** Resolve the existing key resource once; read its value inside every Worker invocation. */
++export const workflowEncryptionKey = Effect.gen(function* () {
++  const keyEffect = yield* cloudEncryptionKey;
++  const context = yield* Effect.context<never>();
++  return keyEffect.pipe(Effect.provideContext(context));
++}).pipe(Effect.orDie);
++export type WorkflowEncryptionKey = Effect.Success<typeof workflowEncryptionKey>;
++
++/** Read the captured key effect inside this workflow invocation. */
++export const workflowResults = (
++  run: string,
++  keyEffect: WorkflowEncryptionKey,
++) =>
++  Effect.gen(function* () {
++    const credentials = yield* keyEffect.pipe(
++      Effect.flatMap((key) => aesGcmCredentials(key, crypto)),
++      Effect.mapError(engineFailure),
++    );
++
++    const purpose = (item: string) => WorkflowRunId.make(`executor-workflow-v1:${run}:${item}`);
++    const seal = (item: string, value: unknown) =>
++      Schema.decodeUnknownEffect(JsonObject)(value).pipe(
++        Effect.mapError(engineFailure),
++        Effect.flatMap((payload) =>
++          credentials.encrypt(purpose(item), Redacted.make(payload)).pipe(
++            Effect.mapError(engineFailure),
++          ),
++        ),
++      );
++    const open = (item: string, value: unknown) =>
++      Effect.gen(function* () {
++        if (!(value instanceof Uint8Array)) return yield* Effect.fail(engineFailure());
++        const decrypted = yield* credentials
++          .decrypt(purpose(item), Redacted.make(Uint8Array.from(value)))
++          .pipe(Effect.mapError(engineFailure));
++        return Redacted.value(decrypted);
++      });
++
++    const occurrences = new Map<string, number>();
++    const stepIdentity = (name: string) => {
++      const occurrence = occurrences.get(name) ?? 0;
++      occurrences.set(name, occurrence + 1);
++      const identity = JSON.stringify([name, occurrence]);
++      return Effect.tryPromise({
++        try: async () => {
++          const digest = await crypto.subtle.digest(
++            "SHA-256",
++            new TextEncoder().encode(JSON.stringify([run, name, occurrence])),
++          );
++          return {
++            identity,
++            storedName: `executor-workflow-v1-${Hex.encode(new Uint8Array(digest))}`,
++          };
++        },
++        catch: engineFailure,
++      });
++    };
++
++    return {
++      sealStepValue: (identity: string, value: unknown) =>
++        seal(
++          `step:${identity}`,
++          value === undefined ? { kind: "undefined" } : { kind: "value", value },
++        ),
++      openStepValue: (identity: string, value: unknown) =>
++        open(`step:${identity}`, value).pipe(
++          Effect.flatMap((payload) =>
++            Schema.decodeUnknownEffect(ValuePayload)(payload).pipe(
++              Effect.map((decoded) =>
++                decoded.kind === "undefined" ? undefined : decoded.value,
++              ),
++              Effect.mapError(engineFailure),
++            ),
++          ),
++        ),
++      sealStepFailure: (identity: string, value: typeof FailurePayload.Type) =>
++        seal(`step:${identity}`, value).pipe(
++          Effect.map((ciphertext) => `${stepFailurePrefix}${Hex.encode(ciphertext)}`),
++        ),
++      openStepFailure: (identity: string, error: unknown) => {
++        const ciphertext = failureCiphertext(error, stepFailurePrefix);
++        if (Option.isNone(ciphertext)) return Effect.succeed(Option.none());
++        if (ciphertext.value.length === 0) return Effect.fail(engineFailure());
++        return open(`step:${identity}`, ciphertext.value).pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(FailurePayload)),
++          Effect.map(Option.some),
++          Effect.mapError(engineFailure),
++        );
++      },
++      sealWorkflowOutput: (value: unknown) =>
++        seal(
++          "final-output",
++          value === undefined ? { kind: "undefined" } : { kind: "value", value },
++        ),
++      openWorkflowOutput: (value: unknown) =>
++        open("final-output", value).pipe(
++          Effect.flatMap((payload) =>
++            Schema.decodeUnknownEffect(ValuePayload)(payload).pipe(
++              Effect.map((decoded) =>
++                decoded.kind === "undefined" ? undefined : decoded.value,
++              ),
++              Effect.mapError(engineFailure),
++            ),
++          ),
++        ),
++      sealWorkflowFailure: (message: string, retryable: boolean) =>
++        seal("final-failure", { message, retryable }).pipe(
++          Effect.map((ciphertext) => `${workflowFailurePrefix}${Hex.encode(ciphertext)}`),
++        ),
++      openWorkflowFailure: (error: unknown) => {
++        const ciphertext = failureCiphertext(error, workflowFailurePrefix);
++        if (Option.isNone(ciphertext)) return Effect.succeed(Option.none());
++        if (ciphertext.value.length === 0) return Effect.fail(engineFailure());
++        return open("final-failure", ciphertext.value).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ message: Schema.String, retryable: Schema.Boolean }),
++            ),
++          ),
++          Effect.map(Option.some),
++          Effect.mapError(engineFailure),
++        );
++      },
++      stepIdentity,
++      storedStepName: (name: string) =>
++        stepIdentity(name).pipe(Effect.map(({ storedName }) => storedName)),
++    };
++  });
++
++export type WorkflowResults = Effect.Success<ReturnType<typeof workflowResults>>;
++
++/**
++ * Cloudflare sees only ciphertext in its durable journal. The per-invocation sequence keeps
++ * repeated step names separate while keeping their hashed journal names stable on replay.
++ */
++export const encryptedWorkflowTask = <A, R>(input: {
++  readonly results: WorkflowResults;
++  readonly name: string;
++  readonly options?: {
++    readonly retries?: {
++      readonly limit: number;
++      readonly delay: string | number;
++      readonly backoff?: "constant" | "linear" | "exponential";
++    };
++    readonly timeout?: string | number;
++  };
++  readonly work: () => Effect.Effect<A, unknown, R>;
++  readonly encodeFailure: (error: unknown) => string;
++  readonly isRetryable: (error: unknown) => boolean;
++  readonly restoreFailure: (payload: typeof FailurePayload.Type) => unknown;
++}): Effect.Effect<A, unknown, R | Cloudflare.Workflows.WorkflowStep> =>
++  Effect.gen(function* () {
++    const step = yield* Cloudflare.Workflows.WorkflowStep;
++    const { identity, storedName } = yield* input.results.stepIdentity(input.name);
++    let lastCause: Cause.Cause<unknown> | undefined;
++    const persisted = yield* Effect.exit(
++      step.do({
++        name: storedName,
++        ...input.options,
++        effect: Effect.suspend(() =>
++          input.work().pipe(
++            Effect.flatMap((value) => input.results.sealStepValue(identity, value)),
++            Effect.catchCause((cause) => {
++              if (Cause.hasInterrupts(cause)) return Effect.failCause(cause);
++              lastCause = cause;
++              const error = Cause.squash(cause);
++              const retryable = cause.reasons.length > 0 && cause.reasons.every(
++                (reason) => Cause.isFailReason(reason) && input.isRetryable(reason.error),
++              );
++              const payload = {
++                message: input.encodeFailure(error),
++                retryable,
++                kind: retryable ? ("fail" as const) : ("die" as const),
++                ...(typeof error === "object" &&
++                error !== null &&
++                "failure" in error &&
++                typeof error.failure === "string"
++                  ? { failure: error.failure }
++                  : {}),
++              };
++              return input.results.sealStepFailure(identity, payload).pipe(
++                Effect.flatMap((encrypted) =>
++                  retryable
++                    ? Effect.fail(new Error(encrypted))
++                    : Effect.die(new Error(encrypted)),
++                ),
++              );
++            }),
++          ),
++        ),
++      }),
++    );
++
++    if (Exit.isSuccess(persisted))
++      return (yield* input.results.openStepValue(identity, persisted.value)) as A;
++    if (Cause.hasInterrupts(persisted.cause)) return yield* Effect.failCause(persisted.cause);
++    const failure = yield* input.results.openStepFailure(identity, Cause.squash(persisted.cause));
++    if (Option.isNone(failure)) return yield* Effect.failCause(persisted.cause);
++    if (lastCause !== undefined) return yield* Effect.failCause(lastCause);
++    const restored = input.restoreFailure(failure.value);
++    yield* (failure.value.kind === "fail"
++      ? Effect.fail(restored)
++      : Effect.die(restored));
++    return undefined as A;
++  });
++
++/** Encrypt the Workflow's terminal value or error before the engine records it. */
++export const encryptedWorkflowResult = <A, R>(input: {
++  readonly results: WorkflowResults;
++  readonly work: Effect.Effect<A, unknown, R>;
++  readonly encodeFailure: (error: unknown) => string;
++  readonly isRetryable: (error: unknown) => boolean;
++}): Effect.Effect<Uint8Array, never, R> =>
++  Effect.gen(function* () {
++    const exit = yield* Effect.exit(input.work);
++    if (Exit.isSuccess(exit)) return yield* input.results.sealWorkflowOutput(exit.value);
++    if (Cause.hasInterrupts(exit.cause)) return yield* Effect.failCause(exit.cause);
++    const error = Cause.squash(exit.cause);
++    const message = input.encodeFailure(error);
++    const marker = yield* input.results.sealWorkflowFailure(
++      message,
++      input.isRetryable(error),
++    );
++    return yield* Effect.die(new Error(marker));
++  }).pipe(Effect.orDie);
+diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
+index 564c85d..cd84a8c 100644
+--- a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
+@@ -10,6 +10,7 @@ import {
+ } from "@executor-js/sdk/core";
+ import { readNativeWorkflowStatus } from "../implementation/workflow-status.ts";
+ import { providerFailureCode } from "../implementation/provider-failure.ts";
++import { workflowEncryptionKey, workflowResults } from "./workflow-results.ts";
+ 
+ const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
+ const recover = decodeWorkflowFailure;
+@@ -36,9 +37,9 @@ const native = <A>(work: () => Promise<A>) =>
+   Effect.tryPromise({ try: work, catch: (error) => error });
+ 
+ /** Use the API-owned binding. App-page Workers bind the same workflow through their env. */
+-export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.WorkerEnvironment> =
+-  Effect.gen(function* () {
++export const cloudWorkflows = Effect.gen(function* () {
+     const environment = yield* Cloudflare.WorkerEnvironment;
++    const encryptionKey = yield* workflowEncryptionKey;
+     // Resolve native handles only during invocation, after Alchemy has installed bindings.
+     const binding = Effect.suspend(() =>
+       Schema.decodeUnknownEffect(NativeWorkflow)(environment.AppWorkflows),
+@@ -56,9 +57,20 @@ export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.Wo
+           ),
+         ),
+         Effect.flatMap((value) =>
+-          Schema.decodeUnknownEffect(WorkflowBackendState)(
+-            value.status === "unknown" ? { status: "missing" } : value,
+-          ).pipe(
++          Effect.gen(function* () {
++            if (value.status === "unknown")
++              return yield* Schema.decodeUnknownEffect(WorkflowBackendState)({
++                status: "missing",
++              });
++            if (value.status !== "complete")
++              return yield* Schema.decodeUnknownEffect(WorkflowBackendState)(value);
++            const results = yield* workflowResults(run, encryptionKey);
++            const output = yield* results.openWorkflowOutput(value.output);
++            return yield* Schema.decodeUnknownEffect(WorkflowBackendState)({
++              status: "complete",
++              output,
++            });
++          }).pipe(
+             Effect.tapError(() =>
+               Effect.annotateCurrentSpan({
+                 "executor.workflow.failure.phase": "decode_status",
+diff --git a/apps/hosted/cloud/src/infrastructure/workflows.ts b/apps/hosted/cloud/src/infrastructure/workflows.ts
+index ea15ed1..1cdabc2 100644
+--- a/apps/hosted/cloud/src/infrastructure/workflows.ts
++++ b/apps/hosted/cloud/src/infrastructure/workflows.ts
+@@ -6,39 +6,42 @@ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Clock, Effect, Exit, Schema } from "effect";
+ import { HostedExecutor } from "@executor-js/hosted-server";
+ import {
++  WorkflowFailure,
+   WorkflowHost,
+   WorkflowRunId,
++  decodeWorkflowFailure,
+   type WorkflowDriver,
+   workflowFailureMessage,
+ } from "@executor-js/sdk/core";
+ import { cloudProduct } from "./product.ts";
+ import { appDataSupervisors } from "./app-data.ts";
+ import { safe } from "./workflow-runtime.ts";
++import {
++  encryptedWorkflowResult,
++  encryptedWorkflowTask,
++  type WorkflowEncryptionKey,
++  workflowEncryptionKey,
++  workflowResults,
++} from "./workflow-results.ts";
+ 
+-/** A retryable step failure. The engine serializes its encoded message, so a replay decodes the same. */
+-class RetryableStepFailure extends Schema.TaggedError<RetryableStepFailure>()(
+-  "RetryableStepFailure",
+-  { message: Schema.String },
+-) {}
+-
+-const encode = workflowFailureMessage;
+-
+-const runWorkflow = (input: {
+-  run: string;
+-}): Effect.Effect<Schema.Json, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
++const runWorkflow = (
++  input: { run: string },
++  encryptionKey: WorkflowEncryptionKey,
++): Effect.Effect<Uint8Array, never, Cloudflare.Workflows.WorkflowServices | HostedExecutor> =>
+   Effect.gen(function* () {
+-    const { NonRetryableError } = yield* Effect.promise(() => import("cloudflare:workflows"));
+     const run = yield* Schema.decodeUnknownEffect(WorkflowRunId)(input.run);
++    const results = yield* workflowResults(run, encryptionKey);
+     const step = yield* Cloudflare.Workflows.WorkflowStep;
+     const services = yield* Effect.context<never>();
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const driver: WorkflowDriver = {
+       do: (name, options, work) =>
+         safe(
+-          step.do({
++          encryptedWorkflowTask({
++            results,
+             name,
+-            ...options,
+-            effect: Effect.suspend(() =>
++            options,
++            work: () =>
+               work().pipe(
+                 Effect.tapCause(reportCloudFailure),
+                 Effect.withSpan("workflow.step", {
+@@ -49,21 +52,27 @@ const runWorkflow = (input: {
+                   },
+                 }),
+                 Effect.provideContext(services),
+-                // The engine retries typed failures and stops at a defect.
+-                Effect.catch((error) =>
+-                  error.retryable
+-                    ? Effect.fail(new RetryableStepFailure({ message: encode(error) }))
+-                    : Effect.die(new NonRetryableError(encode(error))),
+-                ),
+               ),
+-            ),
+-          }),
++            encodeFailure: (error) =>
++              workflowFailureMessage(
++                Schema.is(WorkflowFailure)(error) ? error : decodeWorkflowFailure(error),
++              ),
++            isRetryable: (error) =>
++              Schema.is(WorkflowFailure)(error) ? error.retryable : true,
++            restoreFailure: (failure) => decodeWorkflowFailure(new Error(failure.message)),
++          }).pipe(Effect.provideService(Cloudflare.Workflows.WorkflowStep, step)),
++        ),
++      sleep: (name, duration) =>
++        Effect.flatMap(results.storedStepName(name), (storedName) =>
++          safe(step.sleep(storedName, duration)),
++        ),
++      sleepUntil: (name, timestamp) =>
++        Effect.flatMap(results.storedStepName(name), (storedName) =>
++          safe(step.sleepUntil(storedName, timestamp)),
+         ),
+-      sleep: (name, duration) => safe(step.sleep(name, duration)),
+-      sleepUntil: (name, timestamp) => safe(step.sleepUntil(name, timestamp)),
+     };
+     const started = yield* Clock.currentTimeMillis;
+-    return yield* executor[WorkflowHost].execute(run, driver).pipe(
++    const execution = executor[WorkflowHost].execute(run, driver).pipe(
+       Effect.onExit((exit) =>
+         Effect.flatMap(Clock.currentTimeMillis, (finished) =>
+           recordBackgroundUsage("workflow_attempt_completed", "workflows", {
+@@ -75,6 +84,16 @@ const runWorkflow = (input: {
+         ),
+       ),
+     );
++    return yield* encryptedWorkflowResult({
++      results,
++      work: execution,
++      encodeFailure: (error) =>
++        workflowFailureMessage(
++          Schema.is(WorkflowFailure)(error) ? error : decodeWorkflowFailure(error),
++        ),
++      isRetryable: (error) =>
++        Schema.is(WorkflowFailure)(error) ? error.retryable : true,
++    });
+   }).pipe(Effect.orDie);
+ /** Step callbacks run inside the app's Dynamic Worker; the Cloudflare engine owns the journal. */
+ export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
+@@ -86,11 +105,12 @@ export class AppWorkflows extends Cloudflare.Workflow<AppWorkflows>()(
+     );
+     const analytics = yield* cloudAnalytics;
+     const report = yield* cloudSentry;
++    const encryptionKey = yield* workflowEncryptionKey;
+     return (input: { run: string }) =>
+       Effect.scoped(
+         report(
+           analytics.wrap(
+-            runWorkflow(input).pipe(
++            runWorkflow(input, encryptionKey).pipe(
+               Effect.provide(executor),
+               Effect.tapCause(reportCloudFailure),
+               Effect.withSpan("workflow.attempt", {

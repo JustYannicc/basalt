@@ -1,0 +1,9 @@
+node_modules
+.upstream/
+.alchemy/
+.generated/
+.env
+.env.*
+!.env.example
+.DS_Store
+.t3/

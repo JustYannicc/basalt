@@ -1,0 +1,258 @@
+diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
+--- a/apps/hosted/cloud/alchemy.run.ts
++++ b/apps/hosted/cloud/alchemy.run.ts
+@@ -1 +1,2 @@
++import { axiomProviders } from "./src/infrastructure/axiom-provider.ts";
+ /** Cloud deployment: native API runtime, dashboard, and static marketing assets. */
+@@ -44,3 +45,2 @@
+ import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
+-import { axiomProviders } from "./src/infrastructure/axiom-provider.ts";
+ 
+@@ -62,65 +62,66 @@
+ 
++export const cloudProviders = Layer.mergeAll(
++  Cloudflare.providers(),
++  Command.providers(),
++  AppDomainLifecycleProvider(),
++  // No PlanetScale resources or credentials are needed for local cloud development.
++  Docker.providers(),
++  Layer.unwrap(
++    AlchemyContext.pipe(
++      Effect.map(({ dev }) =>
++        dev
++          ? Layer.empty
++          : Layer.mergeAll(Planetscale.providers(), Neon.providers(), axiomProviders),
++      ),
++    ),
++  ),
++);
++
++export const cloudDeployment = Effect.gen(function* () {
++  // Stops the deploy before anything changes when a setting would stop the Worker at startup.
++  yield* productionOAuthProxyCheck.pipe(Effect.orDie);
++  // Stops the deploy before anything changes when the release before this one is not live.
++  yield* mcpSessionRetirementGate.pipe(Effect.orDie);
++  // Provisioning settings resolve outside Worker initialization and are not bound into it.
++  yield* databaseInfrastructure;
++  if (!(yield* AlchemyContext).dev) yield* previewPoolSize;
++  yield* authEmailInfrastructure.pipe(Effect.orDie);
++  const api = yield* Api;
++  if (!(yield* AlchemyContext).dev) {
++    yield* Marketing;
++    yield* testStageRoleHostRecords;
++    // Production serves the official app feed every deployed stage reads.
++    if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
++    // A test stage plays v1's edge itself; production's edge is v1's.
++    if (Option.isSome(yield* testStageEdge)) yield* Edge;
++  }
++  const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
++  if (appBase !== undefined) {
++    const pages = yield* AppPages;
++    yield* uploadCloudSourceMaps("app-pages", pages.hash).pipe(Effect.orDie);
++    if (!(yield* AlchemyContext).dev) {
++      const controller = yield* AppDomainController;
++      const lifecycle = yield* AppDomainLifecycle("AppDomains", {
++        origin: yield* cloudOrigin.pipe(Effect.orDie),
++        workerName: api.workerName,
++        deployment: api.hash,
++        controller: controller.hash,
++      });
++      yield* ResumeAppDomains({
++        origin: lifecycle.origin,
++        secret: (yield* appDomainControlSecret).text,
++        deployment: api.hash,
++        controller: controller.hash,
++      });
++    }
++  }
++  yield* uploadCloudSourceMaps("api", api.hash).pipe(Effect.orDie);
++  yield* uploadCloudSourceMaps("mcp-server", (yield* McpServer).hash).pipe(Effect.orDie);
++  return { url: (yield* AlchemyContext).dev ? yield* developmentWeb(api.url) : api.url };
++});
++
+ export default Alchemy.Stack(
+   "executor-next-hosted",
+-  {
+-    providers: Layer.mergeAll(
+-      Cloudflare.providers(),
+-      Command.providers(),
+-      AppDomainLifecycleProvider(),
+-      // No PlanetScale resources or credentials are needed for local cloud development.
+-      Docker.providers(),
+-      Layer.unwrap(
+-        AlchemyContext.pipe(
+-          Effect.map(({ dev }) =>
+-            dev
+-              ? Layer.empty
+-              : Layer.mergeAll(Planetscale.providers(), Neon.providers(), axiomProviders),
+-          ),
+-        ),
+-      ),
+-    ),
+-    state: stackState,
+-  },
+-  Effect.gen(function* () {
+-    // Stops the deploy before anything changes when a setting would stop the Worker at startup.
+-    yield* productionOAuthProxyCheck.pipe(Effect.orDie);
+-    // Stops the deploy before anything changes when the release before this one is not live.
+-    yield* mcpSessionRetirementGate.pipe(Effect.orDie);
+-    // Provisioning settings resolve outside Worker initialization and are not bound into it.
+-    yield* databaseInfrastructure;
+-    if (!(yield* AlchemyContext).dev) yield* previewPoolSize;
+-    yield* authEmailInfrastructure.pipe(Effect.orDie);
+-    const api = yield* Api;
+-    if (!(yield* AlchemyContext).dev) {
+-      yield* Marketing;
+-      yield* testStageRoleHostRecords;
+-      // Production serves the official app feed every deployed stage reads.
+-      if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
+-      // A test stage plays v1's edge itself; production's edge is v1's.
+-      if (Option.isSome(yield* testStageEdge)) yield* Edge;
+-    }
+-    const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
+-    if (appBase !== undefined) {
+-      const pages = yield* AppPages;
+-      yield* uploadCloudSourceMaps("app-pages", pages.hash).pipe(Effect.orDie);
+-      if (!(yield* AlchemyContext).dev) {
+-        const controller = yield* AppDomainController;
+-        const lifecycle = yield* AppDomainLifecycle("AppDomains", {
+-          origin: yield* cloudOrigin.pipe(Effect.orDie),
+-          workerName: api.workerName,
+-          deployment: api.hash,
+-          controller: controller.hash,
+-        });
+-        yield* ResumeAppDomains({
+-          origin: lifecycle.origin,
+-          secret: (yield* appDomainControlSecret).text,
+-          deployment: api.hash,
+-          controller: controller.hash,
+-        });
+-      }
+-    }
+-    yield* uploadCloudSourceMaps("api", api.hash).pipe(Effect.orDie);
+-    yield* uploadCloudSourceMaps("mcp-server", (yield* McpServer).hash).pipe(Effect.orDie);
+-    return { url: (yield* AlchemyContext).dev ? yield* developmentWeb(api.url) : api.url };
+-  }).pipe(Effect.provide(cloudWorkers)),
++  { providers: cloudProviders, state: stackState },
++  cloudDeployment.pipe(Effect.provide(cloudWorkers)),
+ );
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -33,3 +33,5 @@
+   );
+-  return `executor-${stage}-apps`;
++  return yield* Config.NonEmptyString("CLOUD_SOURCE_NAMESPACE").pipe(
++    Config.withDefault(`executor-${stage}-apps`),
++  );
+ });
+diff --git a/apps/hosted/cloud/src/infrastructure/blobs.ts b/apps/hosted/cloud/src/infrastructure/blobs.ts
+--- a/apps/hosted/cloud/src/infrastructure/blobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/blobs.ts
+@@ -21,3 +21,3 @@
+   testStage.pipe(
+-    Effect.map((stage) => ({ forceDestroy: Option.isSome(stage) })),
++    Effect.map((stage) => ({ jurisdiction: "eu" as const, forceDestroy: Option.isSome(stage) })),
+     Effect.orDie,
+diff --git a/apps/hosted/cloud/src/infrastructure/email.ts b/apps/hosted/cloud/src/infrastructure/email.ts
+--- a/apps/hosted/cloud/src/infrastructure/email.ts
++++ b/apps/hosted/cloud/src/infrastructure/email.ts
+@@ -51,2 +51,3 @@
+ export const cloudEmail = Effect.gen(function* () {
++  const senderName = yield* Config.NonEmptyString("AUTH_EMAIL_NAME");
+   const from = `no-reply@${yield* emailDomain}`;
+@@ -111,3 +112,3 @@
+   const binding = yield* Cloudflare.Email.SendEmail("AuthEmail", {
+-    allowedSenderAddresses: [from, founder],
++    allowedSenderAddresses: [from],
+   });
+@@ -119,3 +120,3 @@
+       client.send({
+-        from: { name: "Executor", email: from },
++        from: { name: senderName, email: from },
+         to: email.to,
+@@ -134,4 +135,3 @@
+       client.send({
+-        from: { name: "Rhys at Executor", email: founder },
+-        replyTo: founder,
++        from: { name: senderName, email: from },
+         to: email.to,
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session-keys.ts
+@@ -1,20 +1,10 @@
+ /**
+- * The keys that sign MCP session ids (`implementation/mcp-session-id.ts`). Alchemy mints each one
+- * once per stage and binds it into the API Worker, which verifies, and the MCP server Worker, whose
+- * session objects sign. Nothing else receives them.
+- *
+- * Session objects keep their protocol sessions in storage, so an id outlives deploys. The gateway
+- * accepts an id only while the key that signed it is `current` or `previous`: after a rotation
+- * retires that key, the id is refused (404) and the client initializes again, which issues an id
+- * signed by a current key. `previous` covers the deploy skew between the API Worker and the MCP
+- * server Worker, which deploy separately, and ids issued before the swap. Rotation takes three deploys:
+- * 1. Give `previous` a new logical id. Alchemy mints a fresh key that only verifies.
+- * 2. Swap the two ids: the fresh key signs, the old one still verifies through the deploy's skew.
+- * 3. Give `previous` another new id, which retires the old key everywhere.
++ * Actions supplies both MCP signing keys. The current key signs new sessions and both keys
++ * verify existing sessions across deploy skew. Rotate previous, swap the keys, then retire
++ * the old previous key in separate deploys.
+  */
+-import { Random } from "alchemy";
+-import { Effect, Redacted } from "effect";
++import { Config, Effect, Redacted, Schema } from "effect";
+ import { importMcpSessionKey, type McpSessionKeys } from "../implementation/mcp-session-id.ts";
+ 
+-const keyIds = { current: "McpSessionKeyA", previous: "McpSessionKeyB" } as const;
++const SigningKey = Schema.Redacted(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/i)));
+ 
+@@ -22,4 +12,12 @@
+ export const mcpSessionKeys = Effect.gen(function* () {
+-  const current = yield* (yield* Random(keyIds.current, { bytes: 32 })).text;
+-  const previous = yield* (yield* Random(keyIds.previous, { bytes: 32 })).text;
++  const current = Effect.succeed(
++    yield* Config.Redacted("MCP_SESSION_KEY_CURRENT").pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(SigningKey)),
++    ),
++  );
++  const previous = Effect.succeed(
++    yield* Config.Redacted("MCP_SESSION_KEY_PREVIOUS").pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(SigningKey)),
++    ),
++  );
+   // CryptoKeys hold no I/O, so one import serves every later request of the isolate.
+@@ -34,2 +32,2 @@
+   );
+-});
++}).pipe(Effect.orDie);
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session-release.ts
+@@ -17,2 +17,3 @@
+ import { Stage } from "alchemy/Stage";
++import { StackName } from "alchemy/Stack";
+ import { Config, DateTime, Duration, Effect, FileSystem, Option, Schema, Stream } from "effect";
+@@ -45,3 +46,3 @@
+   const stage = yield* Stage;
+-  const owned = ["alchemy:stack:executor-next-hosted", `alchemy:stage:${stage}`];
++  const owned = [`alchemy:stack:${yield* StackName}`, `alchemy:stage:${stage}`];
+   const scripts = yield* listScripts.items({ accountId }).pipe(Stream.runCollect);
+diff --git a/apps/hosted/cloud/src/infrastructure/site-assets.ts b/apps/hosted/cloud/src/infrastructure/site-assets.ts
+--- a/apps/hosted/cloud/src/infrastructure/site-assets.ts
++++ b/apps/hosted/cloud/src/infrastructure/site-assets.ts
+@@ -23,2 +23,3 @@
+     Effect.map((stage) => ({
++      jurisdiction: "eu" as const,
+       forceDestroy: Option.isSome(stage),
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -119,3 +119,2 @@
+   cloudOrigin,
+-  customDomain,
+   productionApiWorkerName,
+@@ -184,3 +183,3 @@
+       // Auth callbacks and the dashboard share the configured canonical origin.
+-      ...(origin === undefined ? {} : { domain: yield* customDomain(origin) }),
++      workersDev: false,
+       // The role hosts are zone routes, not custom domains: they order no certificate.

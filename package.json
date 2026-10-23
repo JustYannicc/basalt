@@ -1,0 +1,16 @@
+{
+  "name": "basalt",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:upstream": "node scripts/prepare-upstream.ts",
+    "check": "node --test src/*.test.ts scripts/*.test.ts",
+    "typecheck": "node scripts/typecheck.ts",
+    "build": "node scripts/build.ts",
+    "deploy": "node scripts/deploy.ts",
+    "check:upstream": "node --test scripts/upstream-tests/*.test.ts"
+  },
+  "engines": {
+    "node": ">=24.3.0"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "lib": ["ES2023", "DOM"],
+    "typeRoots": [
+      "./.upstream/node_modules/@types",
+      "./.upstream/apps/hosted/cloud/node_modules/@types"
+    ]
+  },
+  "include": ["brand.ts", "scripts/**/*.ts", "src/**/*.ts"]
+}
