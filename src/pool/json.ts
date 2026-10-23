@@ -5,14 +5,16 @@ export type Json = Record<string, unknown>;
 export class ControlFailure extends Error {
   readonly status: number;
   readonly code: ControlErrorCode;
-  constructor(status: number, code: ControlErrorCode, message: string) {
+  readonly retryAfterSeconds?: number;
+  constructor(status: number, code: ControlErrorCode, message: string, retryAfterSeconds?: number) {
     super(message);
     this.status = status;
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
-export function fail(status: number, code: ControlErrorCode, message: string): never {
-  throw new ControlFailure(status, code, message);
+export function fail(status: number, code: ControlErrorCode, message: string, retryAfterSeconds?: number): never {
+  throw new ControlFailure(status, code, message, retryAfterSeconds);
 }
 const unavailableMessage = "The pool backend is unavailable. Try again later.";
 export function unavailable(): never {
@@ -49,6 +51,6 @@ export class BackendFailure extends ControlFailure {
 export function failureResponse(error: unknown): Response {
   if (!(error instanceof ControlFailure)) return unavailableResponse();
   const response = json({ error: error.code, message: error.message }, error.status);
-  if (error.code === "busy") response.headers.set("Retry-After", "10");
+  if (error.retryAfterSeconds !== undefined) response.headers.set("Retry-After", String(error.retryAfterSeconds));
   return response;
 }

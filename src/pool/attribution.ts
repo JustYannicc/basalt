@@ -278,7 +278,8 @@ export class PoolControl implements ControlAttribution {
     }
     this.blocked = signal.released;
     const name = providers.find((item) => item.id === provider)?.name ?? "provider";
-    return fail(409, "busy", `Someone is connecting a ${name} account right now. Try again in a minute.`);
+    const minutes = Math.max(1, Math.ceil((this.state.locks[provider]!.expires - this.now()) / 60_000));
+    return fail(409, "busy", `Someone is connecting a ${name} account right now. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`, minutes * 60);
   }
   private async reserveLock(home: HomeClient, provider: string, pool: string, now: number): Promise<ProviderLock> {
     if (this.state.locks[provider]) return this.busy(provider);
@@ -291,6 +292,8 @@ export class PoolControl implements ControlAttribution {
     return lock;
   }
   async reserve(home: HomeClient, provider: string, pool: string, now: Date): Promise<void> {
+    const targetLock = this.state.locks[provider];
+    if (targetLock && targetLock.pool !== pool) return this.busy(provider);
     // A pool keeps at most one session, including its readable completed result.
     // A start whose response was lost has no state to cancel safely.
     const unknown = Object.entries(this.state.locks).find(([, lock]) => lock.pool === pool && !lock.state);
@@ -331,8 +334,14 @@ export class PoolControl implements ControlAttribution {
     const lock = this.state.locks[session.provider];
     if (lock?.state === session.state && lock.pool === session.pool) {
       if (lock.callbackRetry !== true) return false;
+      const now = this.now();
+      if (lock.expires <= now) return fail(400, "invalid_session", "This callback exchange has expired. Start again.");
       lock.callbackResent = true;
-      this.changed();
+      lock.expires = now + callbackDeadlineMs;
+      lock.hardExpires = lock.expires + finalAnswerRetryMs;
+      lock.checkAt = now + statusCheckMs;
+      lock.retryAfter = undefined;
+      this.changed(true);
       await this.save();
       return true;
     }

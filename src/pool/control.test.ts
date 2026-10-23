@@ -455,7 +455,7 @@ test("a busy callback waits at most ten seconds without blocking the active exch
   t.mock.timers.tick(10_001);
   const response = await pending;
   await error(response, "busy", 409);
-  assert.equal(response.headers.get("Retry-After"), "10");
+  assert.equal(response.headers.get("Retry-After"), "360");
   assert.equal(f.home.calls.filter((call) => call.path.endsWith("/oauth/callback")).length, 1);
 });
 
@@ -991,7 +991,7 @@ test("an unpolled device result survives Home's completed record and DO restart"
 });
 
 for (const failure of ["500", "network"] as const) {
-  test(`a callback ${failure} can be resent without resetting its snapshot or six minute deadline`, async () => {
+  test(`a callback ${failure} resend preserves its snapshot and renews both deadlines`, async () => {
     const f = await fixture(); const started = await f.start();
     f.home.override = (path) => {
       if (!path.endsWith("/oauth/callback")) return undefined;
@@ -999,11 +999,12 @@ for (const failure of ["500", "network"] as const) {
       return Response.json({ error: "fake callback failure" }, { status: 500 });
     };
     await error(await f.callback(started), "backend_unavailable", 503);
-    const before = structuredClone(f.storage.values.get(attributionStorageKey)) as { locks: Record<string, { expires: number; snapshot: string[] }> };
+    const before = structuredClone(f.storage.values.get(attributionStorageKey)) as { locks: Record<string, { expires: number; hardExpires: number; snapshot: string[] }> };
     f.home.addFile("exchange-account"); f.advance(60_000); f.home.override = undefined;
     await status(await f.callback(started), { status: "waiting" });
     const after = f.storage.values.get(attributionStorageKey) as typeof before;
-    assert.equal(after.locks[provider]!.expires, before.locks[provider]!.expires);
+    assert.equal(after.locks[provider]!.expires, before.locks[provider]!.expires + 60_000);
+    assert.equal(after.locks[provider]!.hardExpires, before.locks[provider]!.hardExpires + 60_000);
     assert.deepEqual(after.locks[provider]!.snapshot, before.locks[provider]!.snapshot);
     assert.equal(f.home.calls.filter((call) => call.path.endsWith("/oauth/callback")).length, 2);
     await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
@@ -1110,4 +1111,70 @@ test("pool tokens and signed sessions survive signing key rotation", async () =>
   assert.equal((await f.call("/pool")).status, 200);
   f.deps.previousSigningKey = undefined; f.restart();
   await error(await f.call("/pool"), "unauthorized", 401);
+});
+
+
+for (const flow of ["device", "callback"] as const) {
+  test(`a busy replacement provider preserves the pool's open ${flow} sign-in`, async () => {
+    const f = await fixture(); f.home.flow = "device";
+    await f.start("pool-b", otherProvider);
+    f.home.flow = flow;
+    const original = await f.start(); if (flow === "callback") await f.callback(original);
+    const before = structuredClone(f.storage.values.get(attributionStorageKey));
+    const cancelled = f.home.calls.filter((call) => call.method === "DELETE").length;
+    await error(await f.call("/sign-ins", { body: { provider: otherProvider } }), "busy", 409);
+    assert.deepEqual(f.storage.values.get(attributionStorageKey), before);
+    assert.equal(f.home.calls.filter((call) => call.method === "DELETE").length, cancelled);
+    await status(await f.poll(original), { status: "waiting" });
+    f.home.addFile("preserved-account"); f.home.sessions.get(state(original))!.status = "ok";
+    await status(await f.poll(original), { status: "connected", accountId: "preserved-account" });
+  });
+}
+
+for (const [elapsed, minutes] of [[0, 16], [4 * 60_000 + 1, 12], [15 * 60_000 + 1, 1]] as const) {
+  test(`busy reports ${minutes} remaining minutes after ${elapsed}ms and matches Retry-After`, async () => {
+    const f = await fixture(); f.home.flow = "device"; await f.start();
+    f.advance(elapsed);
+    const response = await f.call("/sign-ins", { pool: "pool-b", body: { provider } });
+    assert.equal(response.status, 409);
+    assert.equal(response.headers.get("Retry-After"), String(minutes * 60));
+    assert.deepEqual(await response.json(), {
+      error: "busy",
+      message: `Someone is connecting a ${providers[0]!.name} account right now. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`,
+    });
+  });
+}
+
+test("an expired ambiguous callback cannot be resent while final status is unreachable", async () => {
+  const f = await fixture(); const started = await f.start();
+  f.home.override = (path) => path.endsWith("/oauth/callback") ? Response.json({ error: "fake failure" }, { status: 500 }) : undefined;
+  await error(await f.callback(started), "backend_unavailable", 503);
+  const before = structuredClone(f.storage.values.get(attributionStorageKey)) as { locks: Record<string, { expires: number; hardExpires: number }> };
+  f.advance(6 * 60_000);
+  f.home.override = (path) => { if (path.includes("/oauth/status?")) throw new Error("fake status outage"); return undefined; };
+  const response = await f.callback(started);
+  assert.equal(response.status, 400);
+  const value = await response.json() as Row;
+  assert.equal(value.error, "invalid_session"); assert.match(String(value.message), /expired.*Start again/);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/oauth/callback")).length, 1);
+  const after = f.storage.values.get(attributionStorageKey) as typeof before;
+  assert.equal(after.locks[provider]!.expires, before.locks[provider]!.expires);
+  assert.equal(after.locks[provider]!.hardExpires, before.locks[provider]!.hardExpires);
+  await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
+});
+
+test("a late allowed callback resend keeps the lock until its new exchange finishes", async () => {
+  const f = await fixture(); const started = await f.start();
+  f.home.override = (path) => path.endsWith("/oauth/callback") ? Response.json({ error: "fake failure" }, { status: 500 }) : undefined;
+  await error(await f.callback(started), "backend_unavailable", 503);
+  f.advance(5 * 60_000 + 30_000); f.home.override = undefined;
+  await status(await f.callback(started), { status: "waiting" }); f.restart();
+  f.advance(60_000); await f.expire();
+  assert.equal(f.home.sessions.get(state(started))?.status, "wait");
+  await error(await f.call("/sign-ins", { pool: "pool-b", body: { provider } }), "busy", 409);
+  f.advance(4 * 60_000);
+  f.home.addFile("resent-callback-account"); f.home.sessions.get(state(started))!.status = "ok";
+  await f.expire();
+  await status(await f.poll(started), { status: "connected", accountId: "resent-callback-account" });
+  assert.deepEqual(f.home.members.map((member) => member.auth_id), ["resent-callback-account"]);
 });
