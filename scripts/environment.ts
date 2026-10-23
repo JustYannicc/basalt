@@ -36,8 +36,9 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
   }
   if (!isSigningKey(source.POOL_APP_SIGNING_KEY!))
     throw new Error("POOL_APP_SIGNING_KEY must be 32 bytes of lowercase hex");
-  const previousSigningKey = source.POOL_APP_SIGNING_KEY_PREVIOUS?.trim();
-  if (previousSigningKey && !isSigningKey(previousSigningKey))
+  // Validated as deployed: the Worker reads the secret as it is, without trimming.
+  const previousSigningKey = source.POOL_APP_SIGNING_KEY_PREVIOUS;
+  if (previousSigningKey?.trim() && !isSigningKey(previousSigningKey))
     throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex");
   if (previousSigningKey === source.POOL_APP_SIGNING_KEY)
     throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY");

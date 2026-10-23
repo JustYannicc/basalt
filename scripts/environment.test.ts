@@ -87,6 +87,9 @@ test("a previous pool signing key is optional, hex, and never the current key", 
   assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "old-value" }), {
     message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
   });
+  assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: `${"cd".repeat(32)}\n` }), {
+    message: "POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex",
+  });
   assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "ab".repeat(32) }), {
     message: "POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY",
   });
