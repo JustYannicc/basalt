@@ -30,7 +30,9 @@ Autumn billing, Axiom telemetry and Context.dev company suggestions are optional
 
 GitHub Actions is authoritative for every deploy input; Alchemy-generated credentials, encrypted Cloudflare state and its bootstrap secrets are managed runtime copies, with plaintext scratch allowed only on ephemeral Actions runners and never in the repo, logs, artifacts or persisted developer storage.
 
-After state loss or state-key rotation, redeploy from Actions to adopt the existing named infrastructure and regenerate database roles.
+After resetting lost deployment metadata on a healthy state backend, redeploy from Actions to adopt named infrastructure and regenerate database roles.
+
+Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `AlchemyStateStoreEncryptionKey` as the Actions secret `ALCHEMY_STATE_ENCRYPTION_KEY_BACKUP` and restore the original value in Cloudflare before deploying again.
 
 | Secret name                   | Purpose                                                                 |
 | ----------------------------- | ----------------------------------------------------------------------- |
@@ -80,8 +82,8 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 
 ## Carried patches
 
-- `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls.
-- `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router, configures native mail senders,.
+- `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls. Offered upstream in [executor#2348](https://github.com/UsefulSoftwareCo/executor/pull/2348).
+- `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router and configures native mail senders.
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch.
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 
