@@ -20,6 +20,11 @@ test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
     "/.well-known/oauth-authorization-server",
     "/oauth/authorize?client_id=signalbox",
     "/oauth/callback?state=example",
+    "/pool/v10",
+    "/pool/v10/pool",
+    "/poolx",
+    "/pool/v1foo",
+    "/poolx/v1/pool",
     "/v10",
     "/v10/models",
     "/v1foo",
@@ -114,8 +119,8 @@ test("preserves a POST body and headers and returns the streamed tools response"
   assert.equal(await response.text(), "first second");
 });
 
-test("forwards model paths unchanged to the pool", async () => {
-  const paths = ["/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses"];
+test("forwards model and pool control paths unchanged to the pool", async () => {
+  const paths = ["/pool/v1", "/pool/v1/", "/pool/v1/pool", "/pool/v1/sign-ins?session=example", "/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses"];
   const env = envWithToolsService(async () => { throw new Error("unexpected tools request"); });
   for (const path of paths) {
     const request = new Request(`https://app.signalbox.run${path}`);

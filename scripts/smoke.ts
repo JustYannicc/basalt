@@ -25,6 +25,8 @@ for (const path of ["/v0/management", "/v0/management/config", "/v8/management",
   const management = await fetch(`${origin}${path}`, { redirect: "manual" });
   assert.equal(management.status, 404, `${path} must not expose Home management publicly`);
 }
+const control = await fetch(`${origin}/pool/v1/pool`);
+assert.equal(control.status, 401, "The pool control API must reject a request without a pool token");
 const mcp = await fetch(`${origin}/mcp`, { redirect: "manual" });
 assert.equal(mcp.status, 401, "MCP must require authentication");
 console.log(

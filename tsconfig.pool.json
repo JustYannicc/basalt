@@ -1,0 +1,48 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [],
+    "typeRoots": [
+      "./.upstream/playground/demo-apps/live-inbox/node_modules/@types"
+    ],
+    "paths": {
+      "apps": [
+        "./.upstream/packages/apps/dist/types/apps/src/index.d.ts"
+      ],
+      "apps/*": [
+        "./.upstream/packages/apps/dist/types/apps/src/*.d.ts"
+      ],
+      "react": [
+        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react"
+      ],
+      "react/*": [
+        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react/*"
+      ],
+      "react-dom/*": [
+        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom/*"
+      ],
+      "react-dom": [
+        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom"
+      ]
+    }
+  },
+  "include": [
+    "apps/pool/**/*.ts",
+    "apps/pool/**/*.tsx"
+  ],
+  "exclude": [
+    "apps/pool/**/*.test.ts"
+  ]
+}

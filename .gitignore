@@ -9,3 +9,5 @@ node_modules
 .t3/
 
 /scripts/architecture/gen/
+# Copied from the pinned tools service when the pool app is bundled.
+public/brand/fonts/

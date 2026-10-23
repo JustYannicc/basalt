@@ -39,7 +39,7 @@ model {
       #basalt #v1 #deep #port #funnel
       metadata {
         code "src/pool"
-        bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime"
+        bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime"
       }
     }
 
@@ -48,9 +48,10 @@ model {
       metadata { jurisdiction "eu"; singleton "control-plane" }
     }
 
-    pool = module "Pool" {
-      #basalt #planned #deep
-      metadata { status "planned app integration" }
+    pool = module "Pool app" {
+      #basalt #v1 #deep
+      description "One private app instance per person per organization, run by the tools service. The Accounts screen and owner-only account changes are implemented in source; screen hosting is disabled."
+      metadata { code "apps/pool"; libraries "apps|react|react-dom"; bindings "ctx=basalt.router" }
     }
 
     poolRuntime = module "Pool runtime" {
@@ -106,12 +107,30 @@ model {
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"
   basalt.build -[sync]-> basalt.deployment "read deployment settings"
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
-  basalt.deployment -[sync]-> basalt.modelGateway "provision pool"
+  basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY"
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
-  basalt.deployment -[sync]-> basalt.toolsGateway "provision tools"
+  basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY and patched apps framework"
   basalt.deployment -[sync]-> basalt.router "check public routes"
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
+  basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
+  basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
+  basalt.build -[sync]-> basalt.toolsGateway "copy app bundle and token signer; build patched apps framework for compiler"
+  basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
+  basalt.router -[sync]-> basalt.pool "import pool control path contract"
+  basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
 
+  poolOwner -[sync]-> appHosting "open pool screen" { #planned }
+  poolMember -[sync]-> appHosting "open shared pool screen" { #planned }
+  appHosting -[sync]-> basalt.pool "host pool screen" { #planned }
+  poolOwner -[sync]-> basalt.toolsGateway "call pool tools from hosted screen" { #planned }
+  basalt.toolsGateway -[sync]-> poolOwner "show pool tool result in hosted screen" { #planned }
+  poolOwner -[sync]-> modelProviders "sign in on the provider's page in own browser"
+  basalt.pool -[sync]-> basalt.router "pool control API: /pool/v1 with a pool token" {
+    description "Scoped to the pool's channel group; owner-only changes. The tools service supplies ctx.user.id as the caller."
+  }
+  basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
+  basalt.modelGateway -[sync]-> basalt.router "pool control response"
+  basalt.router -[sync]-> basalt.pool "pool control response"
   poolOwner -[sync]-> localClient "uses"
   poolMember -[sync]-> localClient "uses"
   localClient -[sync]-> basalt.router "HTTP request"
@@ -122,7 +141,9 @@ model {
   basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
 
   basalt.router -[model]-> basalt.modelGateway "POOL_SERVICE: /v1 and /v1/*"
-  basalt.modelGateway -[sync]-> basalt.poolController "singleton EU control-plane"
+  basalt.modelGateway -[sync]-> basalt.poolController "singleton EU control-plane" {
+    description "The pool control API verifies the pool token and caller; scoped to the pool's channel group; owner-only changes."
+  }
   basalt.poolController -[model]-> basalt.poolRuntime "inference on port 8317"
   basalt.poolController -[sync]-> basalt.poolRuntime "management on port 8327"
   basalt.poolController -[sync]-> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
@@ -136,9 +157,10 @@ model {
   basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
 
-  basalt.toolsGateway -[tool]-> basalt.pool "manage pool app" {
-    #planned
+  basalt.toolsGateway -[tool]-> basalt.pool "install and upgrade per member; link signed pool token" {
+    description "One private instance per verified member per organization. Sign the token with POOL_APP_SIGNING_KEY; sharing uses the tools service's built-in sharing."
   }
+  basalt.toolsGateway -[tool]-> basalt.pool "run pool app tools with the caller"
   basalt.toolsGateway -[tool]-> basalt.connection "resolve caller connection" {
     #planned
   }
@@ -159,14 +181,12 @@ model {
   localClient -[sync]-> poolMember "shows result"
   basalt.router -[sync]-> localClient "HTTP response"
   basalt.toolsGateway -[sync]-> basalt.router "service response"
-  basalt.pool -[tool]-> basalt.toolsGateway "pool result" {
-    #planned
-  }
+  basalt.pool -[tool]-> basalt.toolsGateway "pool tool result"
   basalt.modelGateway -[model]-> basalt.router "stream reply"
   basalt.poolRuntime -[model]-> basalt.poolController "stream reply"
   basalt.poolRuntime -[sync]-> basalt.poolController "management response or readiness identity"
   basalt.poolController -[model]-> basalt.modelGateway "stream reply"
-  basalt.poolController -[sync]-> basalt.modelGateway "prewarm result"
+  basalt.poolController -[sync]-> basalt.modelGateway "pool control or prewarm result"
   basalt.pool -[model]-> basalt.modelGateway "pool result" {
     #planned
   }

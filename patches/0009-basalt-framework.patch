@@ -1,0 +1,89 @@
+diff --git a/apps/hosted/cloud/src/implementation/test-stage-commands.ts b/apps/hosted/cloud/src/implementation/test-stage-commands.ts
+index 2a1ed7e..3b302f3 100644
+--- a/apps/hosted/cloud/src/implementation/test-stage-commands.ts
++++ b/apps/hosted/cloud/src/implementation/test-stage-commands.ts
+@@ -64,7 +64,6 @@ const PackedApps = Schema.fromJsonString(Schema.Struct({ version: Schema.NonEmpt
+  * stage then run the unpublished framework. The directory is named by the package's content.
+  */
+ const stageAppsFramework = Effect.gen(function* () {
+-  const fs = yield* FileSystem.FileSystem;
+   const path = yield* Path.Path;
+   const root = yield* path.fromFileUrl(new URL("../../../../..", import.meta.url));
+   for (const script of ["apps:build", "e2e:apps"])
+@@ -76,6 +75,14 @@ const stageAppsFramework = Effect.gen(function* () {
+         stderr: "inherit",
+       }),
+     );
++  return yield* packedAppsFramework;
++}).pipe(Effect.scoped);
++
++/** Convert the packed framework into the compiler's package-files asset map. */
++export const packedAppsFramework = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem;
++  const path = yield* Path.Path;
++  const root = yield* path.fromFileUrl(new URL("../../../../..", import.meta.url));
+   const packed = path.join(root, ".local/test-runtime/apps.tgz");
+   const unpacked = yield* fs.makeTempDirectoryScoped();
+   yield* runChild(ChildProcess.make("tar", ["-xzf", packed, "-C", unpacked]));
+diff --git a/bun.lock b/bun.lock
+index 04fd035..db33d48 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -486,7 +486,7 @@
+     },
+     "packages/apps": {
+       "name": "apps",
+-      "version": "0.0.1-beta.104",
++      "version": "0.0.1-beta.104-basalt.1",
+       "dependencies": {
+         "@cfworker/json-schema": "4.1.1",
+         "@csstools/css-tokenizer": "4.0.2",
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+index 570fd05..e51067d 100644
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "apps",
+-  "version": "0.0.1-beta.104",
++  "version": "0.0.1-beta.104-basalt.1",
+   "private": true,
+   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+   "type": "module",
+diff --git a/scripts/build-basalt-framework.ts b/scripts/build-basalt-framework.ts
+new file mode 100644
+index 0000000..1dc5410
+--- /dev/null
++++ b/scripts/build-basalt-framework.ts
+@@ -0,0 +1,31 @@
++/** Production uses the same unpublished framework package assets as hosted test stages. */
++import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Effect, FileSystem, Path } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { packedAppsFramework } from "../apps/hosted/cloud/src/implementation/test-stage-commands.ts";
++
++NodeRuntime.runMain(
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const path = yield* Path.Path;
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const archive = path.resolve(".local/test-runtime/apps.tgz");
++    yield* fs.makeDirectory(path.dirname(archive), { recursive: true });
++    const code = yield* processes.exitCode(
++      ChildProcess.make("bun", ["pm", "pack", "--ignore-scripts", "--filename", archive], {
++        cwd: path.resolve("packages/apps/dist"),
++        stdout: "inherit",
++        stderr: "inherit",
++      }),
++    );
++    if (Number(code) !== 0) return yield* Effect.die(new Error("Framework packing failed"));
++    const framework = yield* packedAppsFramework;
++    const destination = path.resolve(".local/basalt-framework");
++    yield* fs.makeDirectory(destination, { recursive: true });
++    yield* fs.copyFile(
++      path.join(framework.EXECUTOR_APPS_FRAMEWORK, "framework.json"),
++      path.join(destination, "framework.json"),
++    );
++  }).pipe(Effect.provide(NodeServices.layer)),
++);

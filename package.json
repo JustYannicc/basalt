@@ -4,11 +4,12 @@
   "type": "module",
   "scripts": {
     "prepare:upstream": "node scripts/prepare-upstream.ts",
-    "check": "node --test src/*.test.ts src/pool/*.test.ts scripts/*.test.ts",
+    "check": "node --test src/*.test.ts src/pool/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts",
     "typecheck": "node scripts/typecheck.ts",
     "build": "node scripts/build.ts",
     "check:build": "node --test scripts/build-tests/*.test.ts",
     "deploy": "node scripts/deploy.ts",
+    "check:providers": "node scripts/pool-providers.ts --check",
     "check:upstream": "node --test scripts/upstream-tests/*.test.ts",
     "architecture:format": "bun run --cwd scripts/architecture format",
     "architecture:validate": "bun run --cwd scripts/architecture validate",

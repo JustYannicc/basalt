@@ -88,12 +88,13 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Build | The owned programs that prepare source, verify downloads and bundle the product. |
 | Deployment | The owned orchestration and provisioning programs that publish and check the product. |
 | Brand configuration | Shared literal data read by runtime, build and deployment programs. |
+| Provider source | The outside service supplying pinned Home source for provider catalog checks. |
 | Release source | The outside service that supplies verified release archives during the image build. |
 | Deployment provider | The outside control-plane API used to provision hosting resources. |
 | Identity interface | Basalt's planned interface; the dependency already provides public identity behavior. |
-| Model gateway | The current single entry point for model requests. |
+| Model gateway | The current entry point for model requests and signed pool control API calls. |
 | Tools gateway | The current public dependency boundary for identity, connectors, vault, and tools. |
-| Pool | A set of model accounts served through the model gateway. |
+| Pool app | One private app instance per person per organization, run by the tools service. Its accounts are scoped to a channel group in the shared runtime. |
 | Pool controller | The singleton EU control-plane actor that owns readiness, warmth and recovery alarms. |
 | Pool runtime | The warm EU container running the released control-plane and inference binaries. |
 | Pool database | A separate logical pool database in the same EU cluster. |
@@ -103,7 +104,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Outside services | Dynamic per-person destinations, reached only through the tools gateway. |
 | Fixed infrastructure adapter | A distinct adapter for each fixed outside service found in the stack declaration inventory. |
 
-The current router sends `/v1` through `POOL_SERVICE` to the model gateway. Public `/v0/management` and `/v8/management` paths return 404; management port 8327 stays internal to the pool controller. Dashboard, MCP and OAuth requests use `TOOLS_SERVICE`, while entry redirects and brand pages stay in the router. The model gateway, pool controller, pool runtime and pool database are implemented. Pool app integration and the Basalt-facing identity, connection and vault interfaces remain planned.
+The current router sends `/v1` and `/pool/v1/*` through `POOL_SERVICE` to the model gateway. The pool app calls the public control API with a per-pool signed token and the tools caller identity. The controller scopes accounts to the pool's channel group; changes are owner-only. Public `/v0/management` and `/v8/management` paths return 404; management port 8327 stays internal to the pool controller. Dashboard, MCP and OAuth requests use `TOOLS_SERVICE`, while entry redirects and brand pages stay in the router. The model gateway, pool controller, pool runtime and pool database are implemented. The pool app's ownership checks and Accounts screen are implemented in source. The tools service installs and upgrades one private pool app per verified person per organization, links its signed token and runs its tools with the caller. Sharing uses the tools service's built-in sharing. App hosting, computer setup (#1411), usage analytics, model requests through the app and the Basalt-facing identity, connection and vault interfaces remain planned.
 
 The `hosts` and `sdks` values `dynamic` and `upstream` describe the opaque, dynamically selected outside-service boundary. They do not enumerate concrete hosts or packages. Fixed infrastructure hosts and SDKs belong on their own adapter elements. Multiple values use `|` separators.
 
@@ -117,7 +118,7 @@ The `hosts` and `sdks` values `dynamic` and `upstream` describe the opaque, dyna
 | Database adapter | The implementation used to read and write persistent records. |
 | Observability adapter | The implementation that records diagnostics and operational events. |
 | Record storage | The full durable record from which a working copy can be rebuilt. |
-| Model provider | An outside service serving inference behind a pool. |
+| Model provider | An outside service serving inference behind a pool; owners sign in on its page in their own browser. |
 | Outside service | A service reached through a gateway or an infrastructure adapter. |
 
 Infrastructure adapters carry provider names only in `technology`. Their resource mappings cover declarations evaluated for the checked-in deployment choices. They do not assert that the resources exist in the production account.

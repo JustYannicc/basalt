@@ -1,0 +1,30 @@
+[
+  {
+    "id": "claude",
+    "name": "Claude"
+  },
+  {
+    "id": "codex",
+    "name": "ChatGPT"
+  },
+  {
+    "id": "antigravity",
+    "name": "Antigravity"
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi"
+  },
+  {
+    "id": "xai",
+    "name": "Grok"
+  },
+  {
+    "id": "devin",
+    "name": "Devin"
+  },
+  {
+    "id": "meta",
+    "name": "Meta"
+  }
+]

@@ -55,6 +55,12 @@ model {
     technology "GitHub Releases"
     metadata { hosts "github.com" }
   }
+  providerSource = adapter "Provider source" {
+    #external
+    technology "GitHub raw source"
+    metadata { hosts "raw.githubusercontent.com" }
+  }
+  basalt.build -[sync]-> providerSource "check provider catalog against pinned Home source"
   deploymentProvider = adapter "Deployment provider" {
     #external
     technology "Cloudflare API"
