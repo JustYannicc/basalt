@@ -847,7 +847,7 @@ for (const legacyUnlinked of [false, true]) {
   });
 }
 
-test("rotation jobs run immediately for recorded pools, including demoted and unverified holders", async () => {
+test("rotation jobs wait 15 minutes for the pool Worker, including demoted and unverified holders", async () => {
   await fixture(({ sql, executor, setup }) =>
     Effect.gen(function* () {
       // Finish this bundle's delayed rollout before rotating its key.
@@ -874,14 +874,14 @@ test("rotation jobs run immediately for recorded pools, including demoted and un
       const rotated = Redacted.make("cd".repeat(32));
       yield* queuePoolAppUpgrades(rotated);
       yield* queuePoolAppUpgrades(rotated);
-      const jobs = yield* sql<{ id: string; user_id: string; ready: boolean }>`select id, user_id,
-      available_at <= now() as ready from hosted_provisioning order by user_id`;
+      const jobs = yield* sql<{ id: string; user_id: string; delayed: boolean }>`select id, user_id,
+      available_at > now() + interval '14 minutes' and available_at <= now() + interval '15 minutes' as delayed from hosted_provisioning order by user_id`;
       assert.deepEqual(
-        jobs.map(({ user_id, ready }) => ({ user_id, ready })),
+        jobs.map(({ user_id, delayed }) => ({ user_id, delayed })),
         [
-          { user_id: "invited", ready: true },
-          { user_id: "person-a", ready: true },
-          { user_id: "person-b", ready: true },
+          { user_id: "invited", delayed: true },
+          { user_id: "person-a", delayed: true },
+          { user_id: "person-b", delayed: true },
         ],
       );
       let ordinarySetupCalls = 0;
@@ -891,6 +891,7 @@ test("rotation jobs run immediately for recorded pools, including demoted and un
         }),
       );
       for (const job of jobs) {
+        yield* sql`update hosted_provisioning set available_at = now() where id = ${job.id}`;
         yield* provision(job.id, {
           ...selfHostProvisioningServices,
           requireVerifiedEmail: true,
@@ -950,9 +951,10 @@ test("legacy completed rollout markers do not hide stale recorded tokens", async
       yield* sql`insert into private_hosted_data_steps (name, run, mode, completed_at)
       values (${`basalt-pools:${poolAppVersion}:${version}`}, 'apply', 'apply', now())`;
       yield* queuePoolAppUpgrades(rotated);
-      const immediate =
-        yield* sql`select user_id from hosted_provisioning where available_at <= now()`;
-      assert.deepEqual(immediate, [{ user_id: "person-a" }]);
+      const rotation =
+        yield* sql`select user_id, available_at > now() + interval '14 minutes' as delayed
+        from hosted_provisioning where id like 'basalt-pool-token:%'`;
+      assert.deepEqual(rotation, [{ user_id: "person-a", delayed: true }]);
     }),
   );
 });
@@ -987,8 +989,9 @@ test("returning to a previous signing key queues a fresh token-only rotation", a
         yield* queuePoolAppUpgrades(signingKey);
         const jobs = yield* sql<{
           id: string;
-        }>`select id from hosted_provisioning where status = 'queued' and available_at <= now()`;
+        }>`select id from hosted_provisioning where status = 'queued' and id like 'basalt-pool-token:%'`;
         assert.equal(jobs.length, 1);
+        yield* sql`update hosted_provisioning set available_at = now() where id = ${jobs[0]!.id}`;
         const initialize = yield* withPoolDefaults(executor, Option.some(signingKey), () =>
           Effect.die("ordinary setup must not run"),
         );
@@ -1026,7 +1029,7 @@ test("token-only jobs cannot create a pool for an unrecorded owner", async () =>
   );
 });
 
-test("an owner's immediate token job preserves source until its delayed bundle job runs", async () => {
+test("an owner's token-only job preserves source until its bundle job runs", async () => {
   await fixture(({ sql, executor, setup }) =>
     Effect.gen(function* () {
       yield* queuePoolAppUpgrades(key);
@@ -1046,7 +1049,8 @@ test("an owner's immediate token job preserves source until its delayed bundle j
       );
       const [rotation] = yield* sql<{
         id: string;
-      }>`select id from hosted_provisioning where available_at <= now()`;
+      }>`select id from hosted_provisioning where id like 'basalt-pool-token:%'`;
+      yield* sql`update hosted_provisioning set available_at = now() where id = ${rotation!.id}`;
       yield* provision(rotation!.id, selfHostProvisioningServices).pipe(
         Effect.provideService(OrganizationDefaults, initialize),
       );

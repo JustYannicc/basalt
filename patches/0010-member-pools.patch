@@ -470,7 +470,7 @@ new file mode 100644
 +import { poolTokenKeyVersion } from "./pool-account.ts";
 +import { poolAppVersion } from "./pool-app-source.ts";
 +
-+/** Bundle upgrades wait for replacement servers; key rotations repair recorded pools immediately. */
++/** Delay both rollouts: the pool Worker can deploy after tools; previous-key tokens keep working. */
 +export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version = poolAppVersion) => {
 +  let completed = false;
 +  return Effect.gen(function* () {
@@ -483,7 +483,7 @@ new file mode 100644
 +        cursor: keyVersion,
 +        jobs: sql`insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
 +          select ${poolRotationJobPrefix} || ${keyVersion} || ':' || gen_random_uuid()::text,
-+            'member', team.id, pool.key, now() from organization team
++            'member', team.id, pool.key, now() + interval '15 minutes' from organization team
 +          cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
 +          where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}`,
 +      },
