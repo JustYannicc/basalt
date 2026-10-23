@@ -25,6 +25,8 @@ try {
   } else if (Object.values(existingOwner.rows[0]).some(Boolean)) {
     throw new Error("The pool database owner has unexpected privileges");
   }
+  // CREATEDB alone cannot assign another owner. PlanetScale's postgres is not a superuser.
+  await admin.query(`GRANT ${owner} TO postgres`);
   const existingDatabase = await admin.query(
     "SELECT pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1",
     [poolDatabase.name],

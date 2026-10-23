@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import pg from "pg";
 import { poolDatabase } from "../../src/pool/database-settings.ts";
+import { managedMigrationUrl } from "./managed-postgres.ts";
 
 const adminUrl = process.env.POOL_TEST_ADMIN_URL;
 if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname)) {
@@ -50,9 +51,10 @@ test("released Home/node stream, stick, spread, fail over at quota and retain ke
   });
   await new Promise<void>((resolve) => upstream.listen(0, "0.0.0.0", resolve));
   try {
+    const migrationUrl = await managedMigrationUrl(admin, adminUrl!);
     await admin.query("CREATE ROLE pool_container_test LOGIN PASSWORD 'fixture-only'");
     const provision = spawnSync(process.execPath, ["scripts/ensure-pool-database.ts"], {
-      env: { ...process.env, POOL_DATABASE_ADMIN_URL: adminUrl, POOL_DATABASE_RUNTIME_ROLE: "pool_container_test" },
+      env: { ...process.env, POOL_DATABASE_ADMIN_URL: migrationUrl, POOL_DATABASE_RUNTIME_ROLE: "pool_container_test" },
       encoding: "utf8",
     });
     assert.equal(provision.status, 0, provision.stderr);

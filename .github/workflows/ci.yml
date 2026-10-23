@@ -15,10 +15,12 @@ jobs:
       postgres:
         image: postgres:17.7-alpine
         env:
+          POSTGRES_USER: fixture_root
+          POSTGRES_DB: postgres
           POSTGRES_PASSWORD: fixture-only
         ports: [5432:5432]
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U fixture_root"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -39,7 +41,7 @@ jobs:
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
-          POOL_TEST_ADMIN_URL: postgresql://postgres:fixture-only@localhost:5432/postgres
+          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run typecheck
