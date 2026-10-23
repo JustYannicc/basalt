@@ -100,14 +100,23 @@ test("the router keeps the tools service's own site off the public host", async 
     await import("../../src/router.ts");
   assert.deepEqual([...toolsServiceSitePages], sitePageRoutes, "update the router's site pages");
   assert.deepEqual([...toolsServiceSiteFiles], siteFiles, "update the router's site files");
-  const auth = readFileSync(`${upstream}apps/hosted/server/src/implementation/auth.ts`, "utf8");
-  assert.ok(auth.includes(`cookiePrefix: "${sessionCookiePrefix}"`), "session cookie prefix");
+  const { cloudSessionCookiePrefix } = await import(
+    `${upstream}apps/hosted/cloud/src/contracts/browser.ts`
+  );
+  assert.equal(
+    cloudSessionCookiePrefix(`https://${brand.host}`),
+    sessionCookiePrefix,
+    "the router's session cookie prefix must be the cloud deployment's",
+  );
   // The tools service's built 404 page is the one the router replaces; the replacement is ours.
   const marketing = readFileSync(`${upstream}apps/hosted/cloud/.generated/site/404.html`, "utf8");
   assert.match(visibleText(marketing), executor, "the built 404 page is still the tools service's");
-  const replacement = await notFoundPage().text();
-  assert.ok(replacement.includes(brand.name));
-  assert.doesNotMatch(visibleText(replacement), executor);
+  for (const product of [brand, swapped]) {
+    const replacement = await notFoundPage(product).text();
+    assert.ok(visibleText(replacement).includes(product.name), product.name);
+    assert.ok(replacement.includes(`href="${product.logo}"`), product.name);
+    assert.doesNotMatch(visibleText(replacement), executor);
+  }
   // The icon paths the tools service's site uses all show the brand's logo.
   const redirects = readFileSync(new URL("../../public/_redirects", import.meta.url), "utf8");
   for (const icon of ["/favicon.png", "/favicon-32.png", "/favicon-192.png", "/apple-touch-icon.png"])

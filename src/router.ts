@@ -83,10 +83,10 @@ const escapeHtml = (value: string) =>
   value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 
 /** The brand's own not-found page, in place of the tools service's marketing one. */
-export function notFoundPage(): Response {
-  const name = escapeHtml(brand.name);
+export function notFoundPage(product: { name: string; logo: string } = brand): Response {
+  const name = escapeHtml(product.name);
   return new Response(
-    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page not found · ${name}</title><link rel="icon" href="${escapeHtml(brand.logo)}"><body style="font-family:system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh"><main style="text-align:center"><img src="${escapeHtml(brand.logo)}" alt="" width="40" height="40"><h1 style="font-size:20px">Page not found</h1><p><a href="/">Open ${name}</a></p></main></body></html>`,
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page not found · ${name}</title><link rel="icon" href="${escapeHtml(product.logo)}"><body style="font-family:system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh"><main style="text-align:center"><img src="${escapeHtml(product.logo)}" alt="" width="40" height="40"><h1 style="font-size:20px">Page not found</h1><p><a href="/">Open ${name}</a></p></main></body></html>`,
     { status: 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } },
   );
 }
@@ -111,8 +111,25 @@ function brandPage(pathname: string): string | null {
   return null;
 }
 
+/**
+ * The path as the tools service's router matches it: cut at `;`, repeated slashes merged,
+ * decoded and lowercased. `/;` and `//pricing` would otherwise reach its homepage and site.
+ */
+function servicePath(pathname: string): string {
+  const path = pathname.split(";")[0]!.replace(/\/{2,}/g, "/");
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    // A malformed escape reaches the tools service, which refuses it.
+  }
+  return decoded.toLowerCase() || "/";
+}
+
 export function handleRequest(request: Request, env: RouterEnv): Promise<Response> {
-  const { pathname, search } = new URL(request.url);
+  const url = new URL(request.url);
+  const { search } = url;
+  const pathname = servicePath(url.pathname);
   if (isPoolPath(pathname) || isPoolManagementPath(pathname)) {
     return env.POOL_SERVICE.fetch(request);
   }

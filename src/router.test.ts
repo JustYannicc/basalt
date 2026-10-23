@@ -135,6 +135,10 @@ test("sends signed-out visitors from the homepage to sign-in, keeping the query"
   const response = await handleRequest(new Request("https://app.signalbox.run/?ref=mail"), env);
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "/login?ref=mail");
+  for (const path of ["/;", "//", "///", "/;x=1"]) {
+    const variant = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
+    assert.equal(variant.status, 302, path);
+  }
 });
 
 test("forwards the homepage of a signed-in browser to the tools service", async () => {
@@ -178,6 +182,10 @@ test("never forwards the tools service's marketing, docs or legal pages", async 
     "/pricing/index.html",
     "/_astro/site.js",
     "/og-image.png",
+    "//pricing",
+    "/PRICING",
+    "/%70ricing",
+    "/pricing;x",
   ]) {
     const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
     assert.equal(response.status, 404, path);
