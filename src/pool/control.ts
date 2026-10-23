@@ -13,7 +13,7 @@ import {
 import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
 
-import { ControlFailure, fail, json, object, post, rows, text, unavailable, unavailableResponse, type Json } from "./json.ts";
+import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 
 export interface HomeDependencies {
   signingKey: string;
@@ -27,13 +27,16 @@ export interface ControlAttribution {
   expireLocked(home: HomeClient): Promise<void>;
   reserve(home: HomeClient, provider: string, pool: string, now: Date): Promise<void>;
   discard(provider: string): Promise<void>;
+  rejectedCallback(session: Session): Promise<void>;
+  status(home: PoolHome, session: Session): Promise<SignInStatus>;
+  cancel(home: PoolHome, session: Session): Promise<void>;
   started(session: Session): Promise<void>;
   uploadStarted(): Promise<string>;
   uploadFinished(upload: string): Promise<void>;
   uploaded(home: PoolHome, id: string, upload: string): Promise<void>;
   removed(id: string): Promise<void>;
   cached(session: Session): SignInStatus | undefined;
-  callback(home: HomeClient, session: Session): Promise<void>;
+  callback(home: HomeClient, session: Session): Promise<boolean>;
   polled(session: Session): Promise<void>;
   finished(session: Session, result?: SignInStatus): Promise<void>;
   connected(home: PoolHome, session: Session, ids: string[]): Promise<SignInStatus>;
@@ -58,6 +61,8 @@ export const signInTtlMs = 20 * 60_000;
 const management = "/v8/management";
 const sessionPrefix = "sbs1";
 const memberConcurrency = 4;
+// Home v1.1.6 management/quota_snapshots.go:18-19 caps each list at 200.
+const quotaBatchSize = 200;
 function positiveId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
@@ -118,7 +123,7 @@ export class HomeClient {
     const response = await this.response(path, init);
     if (!response.ok) {
       if (response.status === 404) fail(404, "not_found", "The backend resource no longer exists.");
-      return unavailable();
+      throw new BackendFailure(response.status);
     }
     try {
       const value: unknown = await response.json();
@@ -161,6 +166,18 @@ export class HomeClient {
     const groups = await this.allPoolGroups();
     return { groups, members: await this.members(groups) };
   }
+  async quota(ids: string[]): Promise<Json[]> {
+    const items: Json[] = [];
+    for (let offset = 0; offset < ids.length; offset += quotaBatchSize) {
+      const batch = ids.slice(offset, offset + quotaBatchSize);
+      const query = new URLSearchParams({ ids: batch.join(","), limit: String(batch.length) });
+      items.push(...rows((await this.data(`/quota/credentials?${query}`)).items));
+    }
+    return items;
+  }
+  async signInStatus(state: string): Promise<Json> {
+    return this.data(`/oauth/status?state=${encodeURIComponent(state)}`);
+  }
   async refreshQuota(ids: string[]): Promise<void> {
     for (const id of new Set(ids)) {
       try {
@@ -189,6 +206,12 @@ export class PoolHome {
   }
   async allMembership(): Promise<Membership> { return this.client.allMembership(); }
   async credentials(): Promise<Json[]> { return rows((await this.client.data("/credentials")).files); }
+  async status(state: string): Promise<Json> { return this.client.signInStatus(state); }
+  async cancel(state: string): Promise<boolean> {
+    const result = await this.client.data(`/oauth/session?state=${encodeURIComponent(state)}`, { method: "DELETE" });
+    if (typeof result.cancelled !== "boolean") return unavailable();
+    return result.cancelled;
+  }
   async membership(): Promise<Membership> {
     const groups = await this.client.poolGroups(this.name);
     try { return { groups, members: await this.client.members(groups) }; }
@@ -221,10 +244,10 @@ export class PoolHome {
     if (!ids.size) return { isOwner, providers, accounts: [] };
     const [files, usage] = await Promise.all([
       this.credentials(),
-      this.client.data(`/quota/credentials?ids=${encodeURIComponent([...ids].sort().join(","))}`),
+      this.client.quota([...ids].sort()),
     ]);
     const credentials = files.filter((row) => typeof row.id === "string" && ids.has(row.id));
-    const byId = new Map(rows(usage.items).map((row) => [row.credential_id, row]));
+    const byId = new Map(usage.map((row) => [row.credential_id, row]));
     const accounts = credentials.map((row): Account => {
       const quota = byId.get(row.id);
       return {
@@ -305,9 +328,13 @@ const routes: Record<string, Route> = {
   },
   "POST /login-files": async (ctx) => {
     const state = attribution(ctx);
-    const { raw } = await body(ctx.request, "invalid_login_file");
+    const { value } = await body(ctx.request, "invalid_login_file");
+    // Home v1.1.6 oauth_login.go emits each table id as metadata.type. No alias mapping.
+    if (!providers.some((provider) => provider.id === value.type)) return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
+    // uuid.go:25-50 reuses a root uuid. Strip all caller-supplied credential selectors.
+    const { uuid: _uuid, id: _id, auth_index: _authIndex, ...credential } = value;
     const upload = await state.uploadStarted();
-    const response = await ctx.client.response("/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: raw });
+    const response = await ctx.client.response("/credentials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(credential) });
     if (response.status === 400) {
       await state.uploadFinished(upload);
       return fail(400, "invalid_login_file", "This file is not a supported OAuth login file.");
@@ -334,78 +361,46 @@ const routes: Record<string, Route> = {
       if (new URL(value.redirectUrl as string).searchParams.get("state") !== session.state) throw new Error("Wrong state");
     } catch { return fail(400, "invalid_callback", "This callback belongs to a different sign-in."); }
     const state = attribution(ctx);
-    await state.callback(ctx.client, session);
+    if (!await state.callback(ctx.client, session)) return json({ status: "waiting" } satisfies SignInStatus);
     const response = await ctx.client.response("/oauth/callback", post({ provider: session.provider, redirect_url: value.redirectUrl }));
     if ([400, 404, 409].includes(response.status)) {
-      if (response.status !== 409) await state.finished(session);
+      if (response.status === 400) await state.rejectedCallback(session);
+      else if (response.status === 409) await state.cancel(ctx.home, session);
+      else await state.finished(session);
       return fail(400, "invalid_callback", "This callback could not be accepted. Check the URL or start again.");
     }
     if (!response.ok) return unavailable();
     return json({ status: "waiting" } satisfies SignInStatus);
   },
   "DELETE /sign-ins": async (ctx) => {
-    const session = await sessionFor(ctx);
-    const state = attribution(ctx);
-    state.cached(session);
-    const response = await ctx.client.response(`/oauth/session?state=${encodeURIComponent(session.state)}`, { method: "DELETE" });
-    if (response.status === 404) {
-      await state.finished(session);
-      return fail(400, "invalid_session", "This sign-in no longer exists.");
-    }
-    if (!response.ok) return unavailable();
-    await state.finished(session);
+    await attribution(ctx).cancel(ctx.home, await sessionFor(ctx));
     return json(null);
   },
-  "GET /sign-ins/status": async (ctx) => {
-    const session = await sessionFor(ctx);
-    const state = attribution(ctx);
-    const cached = state.cached(session);
-    if (cached) return json(cached);
-    await state.polled(session);
-    const response = await ctx.client.response(`/oauth/status?state=${encodeURIComponent(session.state)}`);
-    if (response.status === 404) {
-      await state.finished(session);
-      return fail(400, "invalid_session", "This sign-in no longer exists.");
-    }
-    if (!response.ok) return unavailable();
-    const status: unknown = await response.json();
-    if (!object(status)) return unavailable();
-    if (status.status === "wait") return json({ status: "waiting" } satisfies SignInStatus);
-    if (status.status === "error") {
-      const failed: SignInStatus = { status: "failed", message: "Sign-in failed. Start again and approve access on the provider's page." };
-      await state.finished(session, failed);
-      return json(failed);
-    }
-    if (status.status !== "ok") return unavailable();
-    const ids = Array.isArray(status.auth_ids) ? status.auth_ids.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
-    if (text(status.auth_id)) ids.push(status.auth_id as string);
-    return json(await state.connected(ctx.home, session, ids));
-  },
+  "GET /sign-ins/status": async (ctx) => json(await attribution(ctx).status(ctx.home, await sessionFor(ctx))),
 };
+
+/** Check the request before it can wait for, load or mutate attribution state. */
+export async function authorizeControl(request: Request, signingKey: string) {
+  const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "");
+  const claims = bearer ? await verifyPoolToken(signingKey, bearer[1]!) : undefined;
+  if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
+  const url = new URL(request.url);
+  const path = url.pathname.slice(base.length);
+  const routePath = /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
+  const routeKey = `${request.method} ${routePath}`;
+  const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
+  if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
+  const isOwner = request.headers.get(callerHeader) === claims.owner;
+  if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can change accounts or sign-ins.");
+  return { claims, url, route, routeKey, isOwner };
+}
 
 export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
   try {
-    const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "");
-    const claims = bearer ? await verifyPoolToken(deps.signingKey, bearer[1]!) : undefined;
-    if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
-    const url = new URL(request.url);
-    const path = url.pathname.slice(base.length);
-    const routePath = /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
-    const routeKey = `${request.method} ${routePath}`;
-    const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
-    if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
-    const isOwner = request.headers.get(callerHeader) === claims.owner;
-    if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can change accounts or sign-ins.");
+    const { claims, url, route, routeKey, isOwner } = await authorizeControl(request, deps.signingKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added);
     if (routeKey !== "GET /pool") await (deps.attribution ?? unavailable()).expireLocked(client);
     return await route({ request, url, deps, client, home, pool: claims.pool, isOwner, now: deps.now?.() ?? new Date() });
-  } catch (error) {
-    if (error instanceof ControlFailure) {
-      const response = json({ error: error.code, message: error.message }, error.status);
-      if (error.code === "busy") response.headers.set("Retry-After", "10");
-      return response;
-    }
-    return unavailableResponse();
-  }
+  } catch (error) { return failureResponse(error); }
 }

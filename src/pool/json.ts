@@ -37,3 +37,18 @@ export function rows(value: unknown): Json[] {
 export function post(value: unknown): RequestInit {
   return { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) };
 }
+
+/** Backend status stays internal; callers receive the fixed unavailable message. */
+export class BackendFailure extends ControlFailure {
+  readonly backendStatus: number;
+  constructor(status: number) {
+    super(503, "backend_unavailable", unavailableMessage);
+    this.backendStatus = status;
+  }
+}
+export function failureResponse(error: unknown): Response {
+  if (!(error instanceof ControlFailure)) return unavailableResponse();
+  const response = json({ error: error.code, message: error.message }, error.status);
+  if (error.code === "busy") response.headers.set("Retry-After", "10");
+  return response;
+}

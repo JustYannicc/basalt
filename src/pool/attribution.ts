@@ -1,12 +1,14 @@
 import { controlBasePath as base, type SignInFlow, type SignInStatus } from "../../apps/pool/contract.ts";
-import { type ControlAttribution, type HomeDependencies, HomeClient, handleControl, type Membership, PoolHome, type Session, signInTtlMs } from "./control.ts";
-import { fail, rows, text, unavailable, unavailableResponse } from "./json.ts";
+import { type ControlAttribution, type HomeDependencies, HomeClient, authorizeControl, handleControl, type Membership, PoolHome, type Session, signInTtlMs } from "./control.ts";
+import { BackendFailure, fail, failureResponse, rows, text, unavailable } from "./json.ts";
 import providers from "./providers.json" with { type: "json" };
 
 export const attributionStorageKey = "pool-control-v1";
 export const deviceGraceMs = 60_000;
 const pollPersistMs = 15_000;
 const callbackWaitMs = 10_000;
+// Home retains completed sessions for only one minute (oauth_sessions.go:16-17).
+const statusCheckMs = 30_000;
 
 export interface ControlStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -21,6 +23,7 @@ interface ProviderLock {
   flow: SignInFlow | "starting";
   expires: number;
   lastPoll: number;
+  checkAt?: number;
   cancelBlocked?: boolean;
   retryAfter?: number;
   unconfirmedUploads?: string[];
@@ -50,6 +53,7 @@ export class PoolControl implements ControlAttribution {
   private signals = new Map<string, LockSignal>();
   private released = new Set<string>();
   private blocked: Promise<void> | undefined;
+  private added: (ids: string[]) => void = () => {};
   private queue: Promise<unknown> = Promise.resolve();
   constructor(storage: ControlStorage, deps: HomeDependencies) {
     this.storage = storage;
@@ -58,15 +62,18 @@ export class PoolControl implements ControlAttribution {
   }
   private now(): number { return this.deps.now?.().getTime() ?? Date.now(); }
   private changed(alarm = false): void { this.dirty = true; this.alarmDirty ||= alarm; }
-  private async run<T>(work: () => Promise<T>): Promise<T> {
+  private async run<T>(work: () => Promise<T>): Promise<{ value: T; added: string[] }> {
     const result = this.queue.then(async () => {
+      const added: string[] = [];
+      this.added = (ids) => added.push(...ids);
       if (!this.loaded) {
         this.state = await this.storage.get<AttributionState>(attributionStorageKey) ?? { version: 2, locks: {}, sessions: {}, assigned: [] };
         await this.migrateAssignments();
         this.loaded = true;
         this.alarmDirty = Object.keys(this.state.locks).length > 0;
       }
-      try { return await work(); }
+      let value: T;
+      try { value = await work(); }
       finally {
         await this.save();
         await this.arm();
@@ -76,6 +83,7 @@ export class PoolControl implements ControlAttribution {
         }
         this.released.clear();
       }
+      return { value, added };
     });
     this.queue = result.catch(() => {});
     return result;
@@ -110,8 +118,10 @@ export class PoolControl implements ControlAttribution {
     if (!this.alarmDirty) return;
     const now = this.now();
     const deadlines = Object.values(this.state.locks).map((lock) => {
-      const stale = lock.flow === "device" ? lock.lastPoll + deviceGraceMs : lock.expires;
-      return lock.cancelBlocked ? lock.expires : Math.min(lock.expires, Math.max(stale, lock.retryAfter ?? 0));
+      if (lock.cancelBlocked) return lock.expires;
+      const active = lock.flow === "device" || lock.flow === "callback";
+      const next = active ? Math.min(lock.lastPoll + deviceGraceMs, lock.checkAt ?? lock.lastPoll + statusCheckMs) : lock.expires;
+      return Math.min(lock.expires, Math.max(next, lock.retryAfter ?? 0));
     });
     if (deadlines.length) {
       const deadline = Math.max(now + 1_000, Math.min(...deadlines));
@@ -138,72 +148,108 @@ export class PoolControl implements ControlAttribution {
       ]);
     } finally { if (timer !== undefined) clearTimeout(timer); }
   }
-  async handle(request: Request): Promise<Response> {
-    const path = new URL(request.url).pathname;
-    if (request.method === "GET" && path === `${base}/pool`) {
-      return handleControl(request, { ...this.deps, client: this.client, attribution: null });
+  private collectQuota(ids: string[]): void {
+    if (ids.length) {
+      const work = this.client.refreshQuota(ids);
+      this.deps.defer?.(work);
     }
-    const callback = request.method === "POST" && path === `${base}/sign-ins/callback`;
+  }
+  async handle(request: Request): Promise<Response> {
     const deadline = Date.now() + callbackWaitMs;
     try {
+      const { routeKey } = await authorizeControl(request, this.deps.signingKey);
+      if (routeKey === "GET /pool") return handleControl(request, { ...this.deps, client: this.client, attribution: null });
+      const callback = routeKey === "POST /sign-ins/callback";
       for (;;) {
-        const added: string[] = [];
         const result = await this.run(async () => {
           this.blocked = undefined;
           const response = await handleControl(callback ? request.clone() : request, {
-            ...this.deps, client: this.client, attribution: this, added: (ids) => added.push(...ids),
+            ...this.deps, client: this.client, attribution: this, added: this.added,
           });
           return { response, released: this.blocked };
         });
-        // Start best-effort quota collection only after the serialized work has released the queue.
-        if (added.length) {
-          const work = this.client.refreshQuota(added);
-          this.deps.defer?.(work);
-        }
-        if (!callback || !result.released || Date.now() >= deadline) return result.response;
-        if (!await this.wait(result.released, deadline - Date.now())) return result.response;
+        // Neither request nor alarm quota collection holds the attribution queue.
+        this.collectQuota(result.added);
+        if (!callback || !result.value.released || Date.now() >= deadline) return result.value.response;
+        if (!await this.wait(result.value.released, deadline - Date.now())) return result.value.response;
       }
-    } catch { return unavailableResponse(); }
+    } catch (error) { return failureResponse(error); }
   }
   async expire(): Promise<void> {
-    // The lifecycle shares this alarm and can have armed a later warm-up deadline.
-    await this.run(async () => {
+    const result = await this.run(async () => {
       this.armedAlarm = undefined;
       this.alarmDirty = true;
       await this.expireLocked(this.client);
     });
+    this.collectQuota(result.added);
   }
-  async expireLocked(home: HomeClient): Promise<void> {
+  async expireLocked(client: HomeClient): Promise<void> {
     const now = this.now();
     for (const [provider, lock] of Object.entries(this.state.locks)) {
       const expired = lock.expires <= now;
-      const stale = lock.flow === "device" && lock.lastPoll + deviceGraceMs <= now;
-      if (!expired && (!stale || lock.cancelBlocked || (lock.retryAfter ?? 0) > now)) continue;
-      let cancelled = !lock.state;
+      const active = lock.flow === "device" || lock.flow === "callback";
+      const stale = active && lock.lastPoll + deviceGraceMs <= now;
+      const checkDue = active && (lock.checkAt ?? lock.lastPoll + statusCheckMs) <= now;
+      if (!expired && (lock.cancelBlocked || (lock.retryAfter ?? 0) > now || (!stale && !checkDue))) continue;
       if (lock.state && !lock.cancelBlocked) {
-        try {
-          const response = await home.response(`/oauth/session?state=${encodeURIComponent(lock.state)}`, { method: "DELETE" });
-          cancelled = response.ok || response.status === 404;
-          lock.cancelBlocked = response.status === 401 || response.status === 403;
-          await response.body?.cancel();
-        } catch { /* Keep a stale exchange locked until a later cancellation or its expiry. */ }
-      }
-      if (!expired && !cancelled) {
-        lock.retryAfter = now + deviceGraceMs;
-        this.changed(true);
-        continue;
+        const tracked = this.state.sessions[lock.state];
+        if (tracked) {
+          const home = new PoolHome(client, tracked.session.pool, this.added);
+          try {
+            const result = await this.resolveStatus(home, tracked.session);
+            if (result.status !== "waiting") continue;
+            if (expired || stale) await this.cancel(home, tracked.session);
+            else { lock.checkAt = now + statusCheckMs; this.changed(true); }
+            continue;
+          } catch (error) {
+            lock.cancelBlocked = error instanceof BackendFailure && (error.backendStatus === 401 || error.backendStatus === 403);
+            if (!expired) { lock.retryAfter = now + statusCheckMs; this.changed(true); continue; }
+          }
+        }
       }
       if (lock.state && this.state.sessions[lock.state]) {
-        this.state.sessions[lock.state]!.result = { status: "failed", message: "This sign-in expired or stopped being checked. Start again." };
+        this.state.sessions[lock.state]!.result = { status: "failed", message: "This sign-in expired or could not be confirmed. Start again." };
       }
       this.unlock(provider);
     }
     for (const [state, tracked] of Object.entries(this.state.sessions)) {
-      if (Date.parse(tracked.session.expiresAt) <= now) {
-        delete this.state.sessions[state];
-        this.changed();
+      // Preserve unresolved attribution while its lock is held, including retries after Home failure.
+      if (Date.parse(tracked.session.expiresAt) <= now && this.state.locks[tracked.session.provider]?.state !== state) {
+        delete this.state.sessions[state]; this.changed();
       }
     }
+  }
+  private async resolveStatus(home: PoolHome, session: Session): Promise<SignInStatus> {
+    // A previous ok already identified these ids. A retry only needs to finish membership,
+    // even if Home's one-minute completed-session record has since disappeared.
+    if (this.tracked(session).pendingIds?.length) return this.connected(home, session, []);
+    const status = await home.status(session.state);
+    if (status.status === "wait") return { status: "waiting" };
+    if (status.status === "error") {
+      const failed: SignInStatus = { status: "failed", message: "Sign-in failed or expired. Start again and approve access on the provider's page." };
+      await this.finished(session, failed);
+      return failed;
+    }
+    if (status.status !== "ok") return unavailable();
+    const ids = Array.isArray(status.auth_ids) ? status.auth_ids.filter((id): id is string => typeof id === "string" && id.length > 0) : [];
+    if (text(status.auth_id)) ids.push(status.auth_id as string);
+    return this.connected(home, session, ids);
+  }
+  async status(home: PoolHome, session: Session): Promise<SignInStatus> {
+    const cached = this.cached(session);
+    if (cached) return cached;
+    await this.polled(session);
+    return this.resolveStatus(home, session);
+  }
+  async cancel(home: PoolHome, session: Session): Promise<void> {
+    if (this.cached(session)) return;
+    if (await home.cancel(session.state)) await this.finished(session);
+    else if ((await this.resolveStatus(home, session)).status === "waiting") return unavailable();
+  }
+  async rejectedCallback(session: Session): Promise<void> {
+    this.tracked(session);
+    const lock = this.state.locks[session.provider];
+    if (lock?.state === session.state && lock.pool === session.pool) this.unlock(session.provider);
   }
   private busy(provider: string): never {
     let signal = this.signals.get(provider);
@@ -236,7 +282,7 @@ export class PoolControl implements ControlAttribution {
     const lock = this.state.locks[session.provider];
     if (!lock || lock.pool !== session.pool) return unavailable();
     this.state.sessions[session.state] = { session };
-    if (session.flow === "device") { lock.state = session.state; lock.flow = "device"; this.changed(true); }
+    if (session.flow === "device") { lock.state = session.state; lock.flow = "device"; lock.checkAt = this.now() + statusCheckMs; this.changed(true); }
     else this.unlock(session.provider);
   }
   private tracked(session: Session): TrackedSession {
@@ -247,20 +293,22 @@ export class PoolControl implements ControlAttribution {
     return tracked;
   }
   cached(session: Session): SignInStatus | undefined { return this.tracked(session).result; }
-  async callback(home: HomeClient, session: Session): Promise<void> {
+  async callback(home: HomeClient, session: Session): Promise<boolean> {
     if (this.tracked(session).result) return fail(400, "invalid_session", "This sign-in has already finished.");
     const lock = this.state.locks[session.provider];
-    if (lock?.state === session.state && lock.pool === session.pool) return;
+    if (lock?.state === session.state && lock.pool === session.pool) return false;
     const reserved = await this.reserveLock(home, session.provider, session.pool, this.now());
     reserved.state = session.state;
     reserved.flow = "callback";
+    reserved.checkAt = this.now() + statusCheckMs;
     reserved.expires = Date.parse(session.expiresAt);
     await this.save(); // Bind the snapshot before Home accepts a callback.
+    return true;
   }
   async polled(session: Session): Promise<void> {
     this.tracked(session);
     const lock = this.state.locks[session.provider];
-    if (lock?.state === session.state && lock.pool === session.pool && lock.flow === "device") {
+    if (lock?.state === session.state && lock.pool === session.pool && (lock.flow === "device" || lock.flow === "callback")) {
       lock.lastPoll = this.now();
       if (lock.lastPoll - (this.pollWritten.get(session.provider) ?? 0) >= pollPersistMs) this.changed();
       this.alarmDirty = true;
@@ -374,6 +422,7 @@ export class PoolControl implements ControlAttribution {
         const id = text(row.id);
         return id && !before.has(id) && !ownership.assigned.has(id) && (text(row.provider) ?? text(row.type)) === session.provider ? [id] : [];
       }))];
+      if (ids.length === 0) return failWith("Sign-in completed, but no new account could be identified. No account was added. Start again or upload the login file.");
       if (ids.length > 1) return failWith("More than one new account appeared. No account was added. Upload the login file to connect the intended account.");
     }
     tracked.pendingIds = ids;
