@@ -1,0 +1,271 @@
+diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
+index 5a48162cef457760f2fee6605fb349f138a370d3..529f73cf55cea5fb328f99ffac32b8653e5ba977 100644
+--- a/internal/api/server_routes.go
++++ b/internal/api/server_routes.go
+@@ -726,13 +726,14 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
+ 		applyPatchCapabilityForModel = homeApplyPatchCapabilityForModel(entries, manager)
+ 	}
+ 	optimizeMultiAgentV2 := cfg != nil && cfg.Client.Codex.OptimizeMultiAgentV2
++	providersForModel := homeProvidersForModel(entries)
+ 	var payload map[string]any
+ 	if responsesclaude.ClientToolSearchEnabled() {
+-		payload = codexmodels.BuildResponseForClientWithSearchToolRoutes(models, nil, homeProvidersForModel(entries), webSearchCapabilityForModel, applyPatchCapabilityForModel, homeToolSearchCapabilityForModel(entries), optimizeMultiAgentV2, clientVersion)
++		payload = codexmodels.BuildResponseForClientWithServiceTierRoutes(models, providersForModel, providersForModel, webSearchCapabilityForModel, applyPatchCapabilityForModel, homeToolSearchCapabilityForModel(entries), optimizeMultiAgentV2, clientVersion)
+ 	} else {
+-		// upstream.claude.tool-search off keeps the catalog that predates
+-		// tool_search, which never consulted Home routes for search support.
+-		payload = codexmodels.BuildResponseForClientWithToolCapabilities(models, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, nil, optimizeMultiAgentV2, clientVersion)
++		// Keep Home-scoped provider routes for service-tier metadata even when
++		// native tool search is off.
++		payload = codexmodels.BuildResponseForClientWithServiceTierRoutes(models, providersForModel, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, nil, optimizeMultiAgentV2, clientVersion)
+ 	}
+ 	body, errMarshal := codexmodels.MarshalCompact(payload)
+ 	if errMarshal != nil {
+diff --git a/internal/api/server_test.go b/internal/api/server_test.go
+index 69e6919f4452274947a039d0333facdb26edd1ca..995096320c08787f8394acdc1b8c9556366c31ac 100644
+--- a/internal/api/server_test.go
++++ b/internal/api/server_test.go
+@@ -3520,7 +3520,8 @@ func TestModelsWithClientVersionHomeApplyPatchRouting(t *testing.T) {
+ 	client := newHomeCatalogClient(t, `{
+ 		"codex":[{"id":"gpt-5.5"},{"id":"gpt-reserve"},{"id":"gpt-image-2"},{"id":"home-patch-mixed"},{"id":"home-patch-partial"}],
+ 		"home-custom":[{"id":"home-patch-supported"},{"id":"home-patch-mixed"},{"id":"team/gpt-5.5"}],
+-		"remote":[{"id":"home-patch-local-only"},{"id":"home-patch-partial"}]
++		"remote":[{"id":"home-patch-local-only"},{"id":"home-patch-partial"}],
++		"claude":[{"id":"home-claude-fast"}]
+ 	}`)
+ 	previousHome := home.Current()
+ 	home.SetCurrent(client)
+@@ -3560,6 +3561,14 @@ func TestModelsWithClientVersionHomeApplyPatchRouting(t *testing.T) {
+ 			if search, _ := entries["gpt-5.5"]["supports_search_tool"].(bool); !search {
+ 				t.Error("legacy Home template search support changed")
+ 			}
++			claudeTiers, ok := entries["home-claude-fast"]["service_tiers"].([]any)
++			if !ok || len(claudeTiers) != 1 {
++				t.Fatalf("Home-scoped Claude service_tiers = %#v, want one Fast tier", entries["home-claude-fast"]["service_tiers"])
++			}
++			claudeTier, ok := claudeTiers[0].(map[string]any)
++			if !ok || claudeTier["id"] != "priority" || claudeTier["name"] != "Fast" || claudeTier["description"] != "Requires an Anthropic Fast-capable route and usage credits; the provider may reject requests when either condition is absent." {
++				t.Errorf("Home-scoped Claude Fast tier = %#v", claudeTiers[0])
++			}
+ 			for _, id := range []string{"home-patch-supported", "home-patch-mixed"} {
+ 				entry := entries[id]
+ 				if entry["supports_search_tool"] != false || entry["prefer_websockets"] != false || len(entry["service_tiers"].([]any)) != 0 {
+diff --git a/internal/client/codex/models/models.go b/internal/client/codex/models/models.go
+index d15faca40e17e0740108eebc6145932f767a832b..ebe74d73bcdf1200077d4882897f50caa03a3a97 100644
+--- a/internal/client/codex/models/models.go
++++ b/internal/client/codex/models/models.go
+@@ -85,7 +85,16 @@ func BuildResponseForClientWithToolCapabilities(availableModels []map[string]any
+ // toolSearchCapabilityForModel keeps Claude routes from advertising search.
+ func BuildResponseForClientWithSearchToolRoutes(availableModels []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
+ 	return map[string]any{
+-		"models": buildCodexClientModelsWithToolCapabilities(availableModels, providersForModel, searchToolProvidersForModel, webSearchCapabilityForModel, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion),
++		"models": buildCodexClientModelsWithToolCapabilities(availableModels, providersForModel, searchToolProvidersForModel, true, nil, webSearchCapabilityForModel, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion),
++	}
++}
++
++// BuildResponseForClientWithServiceTierRoutes lets Home supply scoped routes
++// for service-tier metadata without changing other provider capabilities or
++// the legacy search-tool routing when searchToolProvidersForModel is nil.
++func BuildResponseForClientWithServiceTierRoutes(availableModels []map[string]any, serviceTierProvidersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
++	return map[string]any{
++		"models": buildCodexClientModelsWithToolCapabilities(availableModels, nil, searchToolProvidersForModel, false, serviceTierProvidersForModel, webSearchCapabilityForModel, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion),
+ 	}
+ }
+ 
+@@ -102,15 +111,15 @@ func MarshalCompact(payload any) ([]byte, error) {
+ }
+ 
+ func buildCodexClientModels(models []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
+-	return buildCodexClientModelsWithToolCapabilities(models, providersForModel, nil, webSearchCapabilityForModel, nil, nil, optimizeMultiAgentV2, clientVersion)
++	return buildCodexClientModelsWithToolCapabilities(models, providersForModel, nil, true, nil, webSearchCapabilityForModel, nil, nil, optimizeMultiAgentV2, clientVersion)
+ }
+ 
+-func buildCodexClientModelsWithToolCapabilities(models []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
++func buildCodexClientModelsWithToolCapabilities(models []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, useProviderRoutesForSearch bool, serviceTierProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
+ 	templates, defaultTemplate, errLoadCodexClientModelTemplates := loadCodexClientModelTemplates()
+ 	if errLoadCodexClientModelTemplates != nil || defaultTemplate == nil {
+ 		return nil
+ 	}
+-	if searchToolProvidersForModel == nil {
++	if useProviderRoutesForSearch && searchToolProvidersForModel == nil {
+ 		searchToolProvidersForModel = providersForModel
+ 	}
+ 
+@@ -137,6 +146,7 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
+ 				applyCodexClientThinkingMetadata(entry, thinkingSupport, clientVersion)
+ 			}
+ 			applyCodexClientProviderCapabilities(entry, id, providersForModel)
++			applyCodexClientServiceTiers(entry, id, serviceTierProvidersForModel)
+ 			applyCodexClientSearchToolSupport(entry, id, true, searchToolProvidersForModel, toolSearchCapabilityForModel)
+ 			applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
+ 			sanitizeCodexClientReasoningMetadata(entry, clientVersion)
+@@ -152,6 +162,8 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
+ 
+ 		entry := cloneCodexClientModelMap(defaultTemplate)
+ 		applyCodexClientModelMetadata(entry, id, model, optimizeMultiAgentV2, clientVersion)
++		applyCodexClientProviderCapabilities(entry, id, providersForModel)
++		applyCodexClientServiceTiers(entry, id, serviceTierProvidersForModel)
+ 		applyCodexClientMaxTokens(entry, model)
+ 		applyCodexClientSearchToolSupport(entry, id, false, searchToolProvidersForModel, toolSearchCapabilityForModel)
+ 		applyCPAWebSearchCapability(entry, id, webSearchCapabilityForModel, clientVersion)
+@@ -558,6 +570,8 @@ func applyCPAWebSearchCapability(entry map[string]any, id string, capabilityForM
+ 	}
+ }
+ 
++const claudeFastServiceTierDescription = "Requires an Anthropic Fast-capable route and usage credits; the provider may reject requests when either condition is absent."
++
+ func applyCodexClientProviderCapabilities(entry map[string]any, id string, providersForModel ProvidersForModelFunc) {
+ 	if providersForModel != nil && !isPureCodexProvider(id, providersForModel) {
+ 		entry["prefer_websockets"] = false
+@@ -566,6 +580,21 @@ func applyCodexClientProviderCapabilities(entry map[string]any, id string, provi
+ 	}
+ }
+ 
++func applyCodexClientServiceTiers(entry map[string]any, id string, providersForModel ProvidersForModelFunc) {
++	if providersForModel == nil || isPureCodexProvider(id, providersForModel) {
++		return
++	}
++	if isPureClaudeProvider(id, providersForModel) {
++		entry["service_tiers"] = []any{map[string]any{
++			"id":          "priority",
++			"name":        "Fast",
++			"description": claudeFastServiceTierDescription,
++		}}
++	} else {
++		entry["service_tiers"] = []any{}
++	}
++}
++
+ // nullCodexClientRequiredOptions clears capabilities that non-Codex models must not advertise.
+ // Codex requires these keys to be present; omitting them rejects the entire catalog.
+ func nullCodexClientRequiredOptions(entry map[string]any) {
+@@ -601,6 +630,10 @@ func isPureCodexProvider(id string, providersForModel ProvidersForModelFunc) boo
+ 	return allCodexClientProvidersAre(codexClientModelProviders(id, providersForModel), "codex")
+ }
+ 
++func isPureClaudeProvider(id string, providersForModel ProvidersForModelFunc) bool {
++	return providersForModel != nil && allCodexClientProvidersAre(codexClientModelProviders(id, providersForModel), "claude")
++}
++
+ // codexClientModelProviders resolves the providers serving a model, falling
+ // back to the base ID for prefixed aliases.
+ func codexClientModelProviders(id string, providersForModel ProvidersForModelFunc) []string {
+diff --git a/internal/client/codex/models/models_test.go b/internal/client/codex/models/models_test.go
+index d3b40311818ef73b25b5548f4d1ccf3f996de5ea..008c14e3f8899eafa5f72fb0b23f3c43c2a8cd52 100644
+--- a/internal/client/codex/models/models_test.go
++++ b/internal/client/codex/models/models_test.go
+@@ -1854,3 +1854,44 @@ func TestCodexClientModelsResponse_DoesNotLeakResponsesLiteOrCodeModeToNonCodexR
+ 		}
+ 	}
+ }
++
++func TestCodexClientModelsResponse_ClaudeFastTierRequiresPureClaudeRoute(t *testing.T) {
++	available := []map[string]any{
++		{"id": "claude-opus-4-6"},
++		{"id": "gpt-5.5"},
++		{"id": "mixed-route-model"},
++		{"id": "claude-named-openai-route"},
++	}
++	providers := map[string][]string{
++		"claude-opus-4-6":           {"claude"},
++		"gpt-5.5":                   {"claude"},
++		"mixed-route-model":         {"claude", "openai-compatible"},
++		"claude-named-openai-route": {"openai-compatible"},
++	}
++	response := BuildResponseForClientWithServiceTierRoutes(available, func(id string) []string { return providers[id] }, nil, nil, nil, nil, false, "cpa")
++	models, ok := response["models"].([]map[string]any)
++	if !ok {
++		t.Fatalf("models = %T, want []map[string]any", response["models"])
++	}
++	bySlug := make(map[string]map[string]any, len(models))
++	for _, model := range models {
++		bySlug[stringModelValue(model, "slug")] = model
++	}
++
++	for _, slug := range []string{"claude-opus-4-6", "gpt-5.5"} {
++		tiers, ok := bySlug[slug]["service_tiers"].([]any)
++		if !ok || len(tiers) != 1 {
++			t.Fatalf("%s service_tiers = %#v, want one conditional Fast tier", slug, bySlug[slug]["service_tiers"])
++		}
++		tier, ok := tiers[0].(map[string]any)
++		if !ok || tier["id"] != "priority" || tier["name"] != "Fast" || tier["description"] != claudeFastServiceTierDescription {
++			t.Errorf("%s Fast tier = %#v", slug, tiers[0])
++		}
++	}
++	for _, slug := range []string{"mixed-route-model", "claude-named-openai-route"} {
++		tiers, ok := bySlug[slug]["service_tiers"].([]any)
++		if !ok || len(tiers) != 0 {
++			t.Errorf("%s service_tiers = %#v, want none for non-pure Claude routes", slug, bySlug[slug]["service_tiers"])
++		}
++	}
++}
+diff --git a/internal/runtime/executor/claude_executor_beta_policy_test.go b/internal/runtime/executor/claude_executor_beta_policy_test.go
+index 98608849255a29051037f682219ccf44edc68fc6..7a1e7d9d471a4ee1d11e8549ae4e0f62788868e8 100644
+--- a/internal/runtime/executor/claude_executor_beta_policy_test.go
++++ b/internal/runtime/executor/claude_executor_beta_policy_test.go
+@@ -11,7 +11,9 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	responsesclaude "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/claude/openai/responses"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+@@ -202,6 +204,55 @@ func TestApplyClaudeHeaders_FastModeBetaMatchesAcrossStreamModes(t *testing.T) {
+ 	}
+ }
+ 
++func TestClaudeFastCatalogTierTranslatesToAnthropicSpeedAndBeta(t *testing.T) {
++	const model = "claude-opus-4-6"
++	catalog := codexmodels.BuildResponseForClientWithServiceTierRoutes(
++		[]map[string]any{{"id": model}},
++		func(id string) []string {
++			if id == model {
++				return []string{"claude"}
++			}
++			return nil
++		},
++		nil, nil, nil, nil, false, "cpa",
++	)
++	models, ok := catalog["models"].([]map[string]any)
++	if !ok || len(models) != 1 {
++		t.Fatalf("catalog models = %#v, want one model", catalog["models"])
++	}
++	tiers, ok := models[0]["service_tiers"].([]any)
++	if !ok || len(tiers) != 1 {
++		t.Fatalf("catalog service_tiers = %#v, want one Fast tier", models[0]["service_tiers"])
++	}
++	tier, ok := tiers[0].(map[string]any)
++	if !ok || tier["name"] != "Fast" {
++		t.Fatalf("catalog tier = %#v, want Fast", tiers[0])
++	}
++	tierID, ok := tier["id"].(string)
++	if !ok || tierID == "" {
++		t.Fatalf("catalog tier id = %#v, want non-empty id", tier["id"])
++	}
++
++	requestBody := []byte(fmt.Sprintf(`{"model":%q,"service_tier":%q,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`, model, tierID))
++	upstreamBody, err := responsesclaude.ConvertOpenAIResponsesRequestToClaude(model, requestBody, false)
++	if err != nil {
++		t.Fatalf("ConvertOpenAIResponsesRequestToClaude() error = %v", err)
++	}
++	if got := gjson.GetBytes(upstreamBody, "speed").String(); got != "fast" {
++		t.Fatalf("translated speed = %q, want fast; body=%s", got, upstreamBody)
++	}
++
++	apiKey := "key-catalog-fast"
++	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": apiKey}}
++	upstreamRequest := newClaudeHeaderTestRequest(t, nil)
++	if err := applyClaudeHeaders(upstreamRequest, auth, apiKey, false, nil, upstreamBody, nil, nil, false); err != nil {
++		t.Fatalf("applyClaudeHeaders() error = %v", err)
++	}
++	if got := upstreamRequest.Header.Get("Anthropic-Beta"); !strings.Contains(got, claudeFastModeBeta) {
++		t.Fatalf("Anthropic-Beta = %q, want %s for the catalog tier", got, claudeFastModeBeta)
++	}
++}
++
+ // The current OAuth CLI profile places fast-mode immediately before the
+ // extended-cache-ttl trailer.
+ func TestApplyClaudeHeaders_FastModePrecedesOAuthTrailer(t *testing.T) {

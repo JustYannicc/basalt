@@ -35,7 +35,10 @@ class BootstrapContractTests(unittest.TestCase):
         config = bootstrap_yaml(False)
         self.assertIn("strategy: round-robin", config)
         self.assertIn("session-affinity: true", config)
+        self.assertIn("session-affinity-ttl: 1h", config)
         self.assertIn("request-retry: 3", config)
+        self.assertIn("max-retry-credentials: 0", config)
+        self.assertIn("max-retry-interval: 30", config)
         self.assertNotIn("secret-key", config)
         self.assertNotIn("api-keys:", config)
         self.assertNotIn("auth-dir:", config)
@@ -43,8 +46,12 @@ class BootstrapContractTests(unittest.TestCase):
     def test_restart_patch_leaves_credentials_and_keys_out(self) -> None:
         patch = pool_config_patch(False)
         self.assertEqual(patch["server"], {"port": 8317})
-        self.assertEqual(patch["routing"]["strategy"], "round-robin")
-        self.assertTrue(patch["routing"]["session-affinity"])
+        self.assertEqual(patch["routing"], {
+            "strategy": "round-robin",
+            "session-affinity": True,
+            "session-affinity-ttl": "1h",
+            "retry": {"request-retry": 3, "max-retry-credentials": 0, "max-retry-interval": 30},
+        })
         self.assertNotIn("api-keys", patch)
         self.assertNotIn("codex-api-key", patch)
         self.assertNotIn("secret-key", patch["management"])

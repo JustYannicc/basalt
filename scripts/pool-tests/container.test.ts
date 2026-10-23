@@ -29,7 +29,7 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 60_000): 
   throw new Error("The pool did not satisfy its readiness contract within the test budget");
 }
 
-test("released Home/node stream, stick, spread, fail over at quota and retain keys after restart", { timeout: 240_000 }, async () => {
+test("pinned Home/node stream, stick, spread, fail over at quota and retain keys after restart", { timeout: 240_000 }, async () => {
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   let containerId: string | undefined;
@@ -118,6 +118,11 @@ test("released Home/node stream, stick, spread, fail over at quota and retain ke
       return response.ok && payload.data?.some((model) => model.id === "fixture-model") ? true : undefined;
     }
     await until(catalog);
+    const richCatalog = await fetch(`${node}/v1/models?client_version=cpa`, { headers: { Authorization: "Bearer fixture-client-key" } });
+    assert.equal(richCatalog.status, 200);
+    const rich = await richCatalog.json() as { models: { slug: string; service_tiers: unknown[] }[] };
+    assert.deepEqual(rich.models.map((model) => model.slug), ["fixture-model"]);
+    assert.deepEqual(rich.models[0].service_tiers, []);
     async function turn(session: string) {
       const before = calls.length;
       const response = await fetch(`${node}/v1/chat/completions`, {

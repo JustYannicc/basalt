@@ -16,7 +16,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
@@ -42,11 +41,15 @@ jobs:
           bun-version: 1.4.4
       - name: Validate credentials
         run: node --input-type=module -e 'import { deployEnvironment } from "./scripts/environment.ts"; deployEnvironment();'
+        env:
+          POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
       - run: npm run check
       - run: npm run prepare:upstream
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run typecheck
       - run: npm run deploy
+        env:
+          POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
       - name: Check public routes
         run: node scripts/smoke.ts

@@ -2,7 +2,7 @@
 
 This image runs one Home control plane and one CLIProxyAPI node in one container. Deploy it as a Cloudflare Container with jurisdiction <code>eu</code>, regions <code>EEUR/WEUR</code>, and the default placement policy. The parent app owns that placement and keeps the container warm. Snapshot placement is out of scope.
 
-The only upstream artifact pins and SHA-256 values live in releases.json. The build downloads the upstream Linux no-plugin release assets and verifies each digest before extracting the two binaries. These assets support Alpine/musl and do not load dynamic plugins.
+The upstream release pins, source digest, and carried patch list live in releases.json. The build verifies the Home no-plugin binary and node source archive. It applies the node patch, runs the affected catalog/API tests and the Claude tier translation regression, then builds with CGO disabled using the pinned Go image. The runtime image contains the two executables and their licenses.
 
 ## Build context
 
@@ -47,9 +47,9 @@ Home's public <code>GET /user/models</code> returns every model the cluster can 
 
 Authenticated <code>GET /user/models/accessible</code> returns the subset allowed by the user's API keys and, when pricing is configured, <code>pricing.providers[].tiers[].service_tier</code>. These values describe configured pricing rules, not a guaranteed complete list of upstream speed options. Do not infer an unlisted speed tier from a model ID.
 
-The normal <code>GET /v1/models</code> contract does not expose a universal speed-tier matrix. CPA also supports <code>GET /v1/models?client_version=cpa</code> for its richer Codex-client catalog. In the pinned source, template service tiers are retained for pure Codex-provider models and cleared for non-Codex or mixed-provider models. This does not establish complete Claude Fast coverage; that catalog path still needs review. Keep ordinary clients on the default <code>/v1/models</code> response unless they explicitly consume the CPA-specific schema.
+Authenticated <code>GET /v1/models</code> lists the models allowed by the calling key. Clients that need speed tiers use <code>GET /v1/models?client_version=cpa</code>. This richer catalog uses Home's key-scoped provider routes. It keeps the published Codex tiers for pure Codex routes. Pure Claude routes advertise the optional <code>priority</code> tier as Fast, with an explicit requirement for an Anthropic Fast-capable route and usage credits. Mixed, unknown, and other-provider routes do not claim Fast support. The provider can reject Fast when its model or account is ineligible.
 
-The bootstrap unit tests use only Python's standard library and can be run from the repository root with <code>python3 -m unittest containers.pool.test_bootstrap</code>. The parent owns the Docker/PostgreSQL integration run.
+The carried node patch supplies provider routes only to tier selection, preserving the existing search capability behavior. Its producer/consumer regression reads the advertised tier ID and verifies that the request translator emits Claude <code>speed=fast</code> and the <code>fast-mode-2026-02-01</code> beta header. Home itself uses its unchanged release binary. Default model requests continue to use the provider's default speed.
 
 ## Compatibility caveat
 
