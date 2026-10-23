@@ -3,6 +3,7 @@ import type { Account, PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
 import { ConnectDialog } from "./connect.tsx";
+import { productName } from "../deployment.ts";
 import { Button, Problem } from "./controls.tsx";
 import { duration, lastReading } from "./usage.ts";
 
@@ -75,7 +76,7 @@ export function App({ api }: { api: PoolApi }) {
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 max-[540px]:px-4">
       <header className="flex h-14 items-center justify-between border-b border-border">
         <span className="text-sm font-semibold tracking-[-0.01em]">
-          Signalbox <span className="font-normal text-muted-foreground">/ Pool</span>
+          {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
         {view?.isOwner && view.accounts.length > 0 && (
           <Button size="sm" onClick={() => setConnecting(true)}>

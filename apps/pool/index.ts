@@ -21,12 +21,12 @@ import {
   type SignInStarted,
   type SignInStatus,
 } from "./contract.ts";
-import { poolOrigin } from "./deployment.ts";
+import { poolOrigin, productName } from "./deployment.ts";
 
 // The tools service links this account for everyone when it installs a pool.
 // Its token works for this one pool only; the pool Worker holds the backend's key.
 const pool = defineProvider({
-  name: "Signalbox pool",
+  name: `${productName} pool`,
   hosts: [new URL(poolOrigin).host],
   auth: {
     token: secrets({

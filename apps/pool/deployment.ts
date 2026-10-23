@@ -1,2 +1,3 @@
-// The public origin the pool app calls. Basalt writes this from brand.ts when it bundles the app.
+// Basalt writes these from brand.ts when it bundles the app.
 export const poolOrigin = "https://app.signalbox.run";
+export const productName = "Signalbox";

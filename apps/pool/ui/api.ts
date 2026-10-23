@@ -10,6 +10,7 @@ import type {
   startSignIn,
   view,
 } from "../index.ts";
+import { productName } from "../deployment.ts";
 import type { LoginFileAdded, PoolView, SignInStarted, SignInStatus } from "../contract.ts";
 
 const client = createAppClient();
@@ -20,7 +21,7 @@ function read<T>(promise: Promise<Result<T>>): Promise<Result<T>> {
   return promise.catch(() => ({
     ok: false,
     error: "backend_unavailable",
-    message: "Signalbox couldn't reach your pool. Try again.",
+    message: `${productName} couldn't reach your pool. Try again.`,
   }));
 }
 

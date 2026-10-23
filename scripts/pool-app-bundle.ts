@@ -51,7 +51,7 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
         if (name === "ui/public/fonts.css") continue;
         let content = readFileSync(path, "utf8");
         if (name === "deployment.ts")
-          content = `export const poolOrigin = ${JSON.stringify(`https://${brand.host}`)};\n`;
+          content = `export const poolOrigin = ${JSON.stringify(`https://${brand.host}`)};\nexport const productName = ${JSON.stringify(brand.name)};\n`;
         if (name === "package.json") {
           const manifest = JSON.parse(content);
           manifest.dependencies = { ...manifest.dependencies, apps: framework.version };

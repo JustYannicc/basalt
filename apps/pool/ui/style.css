@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Signalbox's dashboard tokens, so the pool reads as part of the same product. */
+/* The dashboard's tokens, so the pool reads as part of the same product. */
 @theme inline {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;

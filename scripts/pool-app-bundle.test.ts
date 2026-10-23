@@ -46,7 +46,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     assert.match(fonts, /font-family: "Geist Mono";/);
     for (const [file, content] of [["geist-sans.woff2", "sans"], ["geist-mono.woff2", "mono"], ["LICENSE.txt", "Open Font License"]])
       assert.equal(readFileSync(join(root, "public/brand/fonts", file), "utf8"), content);
-    assert.equal(files[0]!.content, `export const poolOrigin = "https://${brand.host}";\n`);
+    assert.equal(files[0]!.content, `export const poolOrigin = "https://${brand.host}";\nexport const productName = ${JSON.stringify(brand.name)};\n`);
     assert.deepEqual(JSON.parse(files[2]!.content).dependencies, {
       apps: "0.0.1-beta.104-basalt.1",
       react: "19",
@@ -75,4 +75,10 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
 test("the router lets pool pages on app origins load the brand fonts", () => {
   const headers = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
   assert.match(headers, /^\/brand\/fonts\/\*\n  Access-Control-Allow-Origin: \*$/m);
+});
+
+test("the checked-in pool deployment values match the brand the bundler writes", () => {
+  const source = readFileSync(new URL("../apps/pool/deployment.ts", import.meta.url), "utf8");
+  assert.match(source, new RegExp(`poolOrigin = "https://${brand.host.replaceAll(".", "\\.")}"`));
+  assert.match(source, new RegExp(`productName = "${brand.name}"`));
 });
