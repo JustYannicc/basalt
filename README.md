@@ -85,6 +85,7 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls. Offered upstream in [executor#2348](https://github.com/UsefulSoftwareCo/executor/pull/2348).
 - `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router and configures native mail senders.
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch.
+- `0004-encrypted-workflow-results.patch`: encrypts persisted Workflow values and callback failures with the existing credential key, and hashes checkpoint names. Replay uses stable per-name occurrence identities.
 - `0005-app-hosting.patch`: gives the optional app-domain foundation its own stack name and takes controller credentials from Actions.
 
 A patch change that alters workflow step names requires existing runs to be drained before deployment.
@@ -93,7 +94,7 @@ The public cloud runtime remains upstream code. Each carried patch is applied ag
 
 ## Verification and remaining work
 
-`npm run check` exercises routing and configuration without credentials. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter; `npm run typecheck` checks Basalt scripts and router code; `npm run build` builds the upstream framework. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
+`npm run check` exercises routing and configuration without credentials. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts and router code; `npm run build` builds the upstream framework. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.
 
 The deploy smoke test checks the upstream homepage, sign-in page, protected MCP endpoint and reserved model path. It does not prove interactive Google sign-in. The broad upstream source typecheck has existing dependency/type failures; it is not a passing gate here. Release acceptance also requires signing in with Google into an empty workspace and reading back the actual Postgres region, R2 jurisdiction and Durable Object jurisdiction from the deployed resources. Source settings and placement hints alone are insufficient.
 
@@ -101,4 +102,4 @@ The deployment model can be derived from [alchemy.run.ts](alchemy.run.ts). Archi
 
 Artifacts app-source repositories use a separate namespace that the stack creates with immutable EU jurisdiction before exposing the public router. Deploys reject an existing namespace outside the EU. App source and compiled builds are separate stores; both require their own EU configuration.
 
-Cloudflare Workflows persist app step results. Those results can contain user content or tool results, and no Workflow jurisdiction control is currently configured or documented. Inputs and final outputs are encrypted in Postgres separately. This remains an unresolved residency limitation requiring an explicit release decision before merge. The legacy import workflow is disabled for this deployment.
+Cloudflare Workflows have no configured EU jurisdiction. The carried patch encrypts step values, callback failure payloads and terminal results before journal persistence, and hashes checkpoint names. Workflow metadata still has no enforced EU placement. Inputs and final outputs are encrypted in Postgres separately. The legacy import workflow is disabled for this deployment.
