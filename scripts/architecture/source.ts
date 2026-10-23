@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
+import { pythonDependencies } from "./python.ts";
 
 export interface Module {
   id: string;
@@ -78,6 +79,23 @@ function resolveImport(root: string, file: string, specifier: string): string | 
   return relative(root, path);
 }
 
+function fetchBinding(call: ts.CallExpression, module: Module, source: ts.SourceFile): string | undefined {
+  if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "fetch") return undefined;
+  const receiver = call.expression.expression;
+  const names = [receiver.getText(source)];
+  if (ts.isCallExpression(receiver)) names.push(receiver.expression.getText(source));
+  return module.bindings.find(binding => {
+    const name = binding.split("=")[0];
+    return names.some(receiver => receiver === name || receiver === `env.${name}` || receiver === `this.env.${name}`);
+  });
+}
+
+function usesBoundTransport(node: ts.Node, module: Module, source: ts.SourceFile): boolean {
+  for (let parent = node.parent; parent && !ts.isStatement(parent); parent = parent.parent)
+    if (ts.isCallExpression(parent) && fetchBinding(parent, module, source)) return true;
+  return false;
+}
+
 // Runtime source only. The pinned dependency is one module with its own implementation.
 export function sourceDependencies(root: string, modules: Module[], services: OutsideService[]): {
   dependencies: Dependency[];
@@ -97,6 +115,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
       errors.push(`${file}:${line}: ${message}`);
     };
     const checkImport = (node: ts.Node, specifier: string) => {
+      if (specifier === "cloudflare:workers") return;
       if (specifier.startsWith("node:") && !["node:http", "node:https", "node:http2", "node:net", "node:tls"].includes(specifier)) return;
       // These implement effects, deployment declarations and local service bindings.
       // They do not identify an outside API. Concrete network destinations still count.
@@ -128,6 +147,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
         if (/^(?:https?|wss?):\/\//.test(text)) {
           try {
             const host = new URL(text).hostname;
+            if (usesBoundTransport(node, module, source)) return;
             const service = services.find(s => s.hosts.some(h => host === h || (h.startsWith("*.") && host.endsWith(h.slice(1)))));
             if (service) add(module.id, service.id, `${file}: ${host}`);
             else report(node, `Unmodelled outside host: ${host}`);
@@ -145,10 +165,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
             report(node, "Computed outbound fetch needs an explicit gateway adapter");
         } else if (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "fetch") {
           const receiver = node.expression.expression.getText(source);
-          const binding = module.bindings.find(b => {
-            const name = b.split("=")[0];
-            return receiver === name || receiver === `env.${name}` || receiver === `this.env.${name}`;
-          });
+          const binding = fetchBinding(node, module, source);
           if (binding) add(module.id, binding.split("=")[1]!, `${file}: ${receiver}`);
           else report(node, `Unmodelled fetch binding: ${receiver}`);
         }
@@ -157,5 +174,6 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
     };
     visit(source);
   }
-  return { dependencies, errors };
+  const python = pythonDependencies(root, modules, services);
+  return { dependencies: [...dependencies, ...python.dependencies], errors: [...errors, ...python.errors] };
 }

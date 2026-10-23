@@ -4,14 +4,77 @@ views {
     variant sequence
     title "Workflows/Basalt/Current /v1 request"
     description """
-      Status: Implemented. The router returns HTTP 503 for `/v1` and `/v1/*`. The pool path is not invoked.
+      Status: Implemented in source. Inference routes through the pool service, its singleton EU actor and
+      one warm EU container. The released backend authenticates client keys. Output streams without buffering;
+      ordinary responses carry X-Signalbox-Pool-Boot. Startup or readiness failures return 503 with Retry-After: 5.
+      Live subscription and idle/restart acceptance remain separate.
     """
 
-    include poolOwner, localClient, basalt.router
+    include poolOwner, localClient, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, modelProviders
     poolOwner -> localClient "sends model request"
     localClient -> basalt.router "POST /v1"
-    localClient <- basalt.router "503 Service Unavailable"
-    poolOwner <- localClient "shows failure"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE"
+    basalt.modelGateway -> basalt.poolController "select singleton EU control-plane"
+    basalt.poolController -> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
+    basalt.poolController <- basalt.poolRuntime "boot identity when healthy"
+    basalt.poolController -> basalt.poolRuntime "client-key request on port 8317"
+    basalt.poolRuntime -> modelProviders "provider request"
+    basalt.poolRuntime <- modelProviders "streamed result"
+    basalt.poolController <- basalt.poolRuntime "streamed result"
+    basalt.modelGateway <- basalt.poolController "stream with boot identity"
+    basalt.router <- basalt.modelGateway "stream with boot identity"
+    localClient <- basalt.router "stream reply"
+    poolOwner <- localClient "shows reply"
+  }
+
+  dynamic view current_pool_management {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current pool management"
+    description """
+      Status: Implemented in source. Both management path versions, including their base paths, route to
+      the same EU actor and container. The backend requires the deployment management key. This transport
+      does not implement the planned pool app's ownership, membership or sharing integration.
+    """
+
+    include localClient, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, basalt.poolDatabase
+    localClient -> basalt.router "/v0/management or /v8/management"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE"
+    basalt.modelGateway -> basalt.poolController "select singleton EU control-plane"
+    basalt.poolController -> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
+    basalt.poolController <- basalt.poolRuntime "boot identity when healthy"
+    basalt.poolController -> basalt.poolRuntime "management-key request on port 8327"
+    basalt.poolRuntime -> basalt.poolDatabase "read or write backend state"
+    basalt.poolRuntime <- basalt.poolDatabase "state result"
+    basalt.poolController <- basalt.poolRuntime "management response"
+    basalt.modelGateway <- basalt.poolController "management response"
+    basalt.router <- basalt.modelGateway "management response"
+    localClient <- basalt.router "HTTP response"
+  }
+
+  dynamic view current_pool_prewarm {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Current pool prewarm"
+    description """
+      Status: Implemented in source. A five-minute scheduled trigger selects the singleton EU actor via
+      /__warm; actor alarms also refresh warmth every five minutes. The actor starts or reuses one EU
+      container and refreshes its two-hour inactivity timeout. Changed image or secrets force a restart.
+      Startup has a 180-second readiness budget and schedules another recovery alarm even after failure.
+      The container's default scheduling policy constrains jurisdiction eu and regions EEUR/WEUR independently
+      of the actor. Edge processes have no enforced location. Live warm persistence remains unverified here.
+    """
+
+    include basalt.modelGateway, basalt.poolController, basalt.poolRuntime, basalt.poolDatabase
+    basalt.modelGateway -> basalt.poolController "five-minute cron: singleton /__warm"
+    basalt.poolController -> basalt.poolRuntime "start or reuse; refresh two-hour inactivity timeout"
+    opt "container startup" {
+      basalt.poolRuntime -> basalt.poolDatabase "load durable state; migrate or bootstrap when needed"
+      basalt.poolRuntime <- basalt.poolDatabase "backend state"
+    }
+    basalt.poolController -> basalt.poolRuntime "authenticated GET /ready on port 8318"
+    basalt.poolController <- basalt.poolRuntime "healthy boot_id and started_at"
+    basalt.modelGateway <- basalt.poolController "204 after readiness; next alarm in five minutes"
   }
 
   dynamic view current_tools_passthrough {
@@ -19,12 +82,13 @@ views {
     variant sequence
     title "Workflows/Basalt/Current tools request"
     description """
-      Status: Implemented. Non-`/v1` requests pass through the service binding to the public tools dependency.
+      Status: Implemented. Requests outside the inference and management paths pass through the service
+      binding to the public tools dependency.
     """
 
     include poolOwner, localClient, basalt.router, basalt.toolsGateway
     poolOwner -> localClient "opens service"
-    localClient -> basalt.router "non-/v1 request"
+    localClient -> basalt.router "tools or app request"
     basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
     basalt.router <- basalt.toolsGateway "service response"
     localClient <- basalt.router "HTTP response"
@@ -282,9 +346,9 @@ views {
     variant sequence
     title "Workflows/Basalt/Model request"
     description """
-      Status: Planned. The current `/v1` route returns 503. The target uses one singleton EU actor and one
-      warm EU container running the released pool binary and its runtime adapter. A separate logical pool database
-      stays in the same EU cluster.
+      Status: Planned pool app integration. The current inference transport and backend are implemented;
+      routing through the logical Pool module's ownership and sharing rules remains planned. The existing
+      singleton EU actor, warm EU container and separate logical pool database provide the transport and storage.
     """
 
     include

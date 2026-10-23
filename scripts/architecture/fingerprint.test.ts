@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test } from "vitest";
@@ -48,4 +48,19 @@ test("deployment environment mapping participates even when resource names do no
   const before = stackFingerprint(root);
   write("scripts/environment.ts", 'export const deployment = { region: "changed" };');
   expect(stackFingerprint(root)).not.toBe(before);
+});
+
+test("container context inputs from every stage participate in deployment drift", () => {
+  const { root, write } = fixture();
+  write("alchemy.run.ts", 'new URL("./containers/pool/", import.meta.url);');
+  write("containers/pool/Dockerfile", "FROM python AS build\nCOPY releases.json fetch.py ./\nFROM python\nCOPY runtime.py ./\n");
+  write("containers/pool/releases.json", "{}");
+  write("containers/pool/fetch.py", "# release acquisition");
+  write("containers/pool/runtime.py", "# runtime");
+  for (const file of ["releases.json", "fetch.py", "runtime.py", "Dockerfile"]) {
+    const before = stackFingerprint(root);
+    const path = `containers/pool/${file}`;
+    write(path, readFileSync(join(root, path), "utf8") + "\n# changed\n");
+    expect(stackFingerprint(root), file).not.toBe(before);
+  }
 });

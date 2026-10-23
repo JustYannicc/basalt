@@ -45,6 +45,61 @@ test("binding values and deferred Outputs stay opaque", () => {
   expect(JSON.stringify(result)).not.toContain("secret.invalid");
 });
 
+test("local namespace classes use className and deduplicate exports and binding contributions", () => {
+  const w = { ...worker({ Local: { kind: "durableObject" } }), Props: {
+    exports: { Local: { kind: "durableObject" } },
+    bindings: [{ name: "LocalAlias", type: "durable_object_namespace", className: "Local" }],
+  } };
+  const result = inventoryDeclarations([w], {
+    "Parent/Worker": [{ data: { bindings: [
+      { name: "RepeatedAlias", type: "durable_object_namespace", className: "Local" },
+      { name: "ExternalClassAlias", type: "durable_object_namespace", className: "ExternalClass" },
+      { name: "RemoteAlias", type: "durable_object_namespace", className: "RemoteClass", scriptName: "remote-worker" },
+      { name: "NamespaceIdOnly", type: "durable_object_namespace", namespaceId: "opaque" },
+    ] } }],
+  });
+  expect(result.resources.filter(resource => resource.type === "Cloudflare.DurableObject")).toEqual([
+    { type: "Cloudflare.DurableObject", fqn: "Parent/Worker/exports/ExternalClass", declaredName: "ExternalClass" },
+    { type: "Cloudflare.DurableObject", fqn: "Parent/Worker/exports/Local", declaredName: "Local" },
+  ]);
+  expect(result.workers[0]!.bindings).toContainEqual({ name: "RemoteAlias", kind: "durable_object_namespace:remote" });
+  expect(JSON.stringify(result)).not.toContain("opaque");
+});
+
+test("deferred namespace metadata cannot invent local classes and remains counted", () => {
+  const deferred = () => { throw new Error("must not execute"); };
+  const result = inventoryDeclarations([worker()], {
+    "Parent/Worker": [{ data: { bindings: [deferred,
+      { name: "UnknownHost", type: "durable_object_namespace", className: "UnknownClass", scriptName: deferred },
+      { name: "UnknownClass", type: "durable_object_namespace", className: deferred },
+    ] } }],
+  }, value => value === deferred);
+  expect(result.resources).toHaveLength(1);
+  expect(result.workers[0]).toEqual({ fqn: "Parent/Worker", deferredBindingCount: 3, bindings: [
+    { name: "UnknownClass", kind: "durable_object_namespace:unresolved" },
+    { name: "UnknownHost", kind: "durable_object_namespace:unresolved" },
+  ] });
+});
+
+test("an actual external Worker Container binding declares its class without Props.exports", () => {
+  const f = fixture(`
+    const image = Cloudflare.Container("Image", { image: "fixture/image:local", className: "ContainerClass" });
+    yield* Cloudflare.Worker("ExternalWorker", {
+      main: new URL("./worker.ts", import.meta.url).pathname,
+      env: { ContainerAlias: image },
+    });
+  `);
+  const result = discoverStackDetails(f.root);
+  expect(result.inventory).toEqual(expect.arrayContaining([
+    { id: resourceId("Cloudflare.Container", "Image"), kind: "Container", source: "alchemy.run.ts", declaredName: "Image" },
+    { id: resourceId("Cloudflare.DurableObject", "ExternalWorker/exports/ContainerClass"), kind: "DurableObject", source: "alchemy.run.ts", declaredName: "ContainerClass", ownerId: resourceId("Cloudflare.Worker", "ExternalWorker") },
+  ]));
+  expect(result.workers).toEqual([{ fqn: "ExternalWorker", deferredBindingCount: 0, bindings: [
+    { name: "ContainerAlias", kind: "durable_object_namespace:local" },
+    { name: "ContainerAlias", kind: "env" },
+  ] }]);
+}, 40_000);
+
 test("invalid names, duplicate identities and extra envelope fields fail closed", () => {
   for (const name of ["https://secret.invalid", "two words", "line\nbreak", "x\0y"])
     expect(() => safeName(name)).toThrow("Invalid native declaration name");
@@ -71,9 +126,13 @@ test("actual root keeps Workers and their stateful classes in the inventory", ()
   const result = discoverStackDetails(root);
   const workers = result.inventory.filter(resource => resource.kind === "Worker");
   expect(workers.length).toBeGreaterThanOrEqual(14);
-  expect(workers.map(resource => resource.declaredName)).toEqual(expect.arrayContaining(["Api", "Router"]));
+  expect(workers.map(resource => resource.declaredName)).toEqual(expect.arrayContaining(["Api", "Router", "PoolWorker"]));
   const objects = result.inventory.filter(resource => resource.kind === "DurableObject");
-  expect(objects.map(resource => resource.declaredName)).toEqual(expect.arrayContaining(["ScheduleCoordinator", "AppDataSupervisor", "McpSession"]));
+  expect(objects.map(resource => resource.declaredName)).toEqual(expect.arrayContaining(["ScheduleCoordinator", "AppDataSupervisor", "McpSession", "PoolContainer"]));
+  expect(objects.find(resource => resource.declaredName === "PoolContainer")).toEqual({
+    id: resourceId("Cloudflare.DurableObject", "PoolWorker/exports/PoolContainer"), kind: "DurableObject", source: "alchemy.run.ts", declaredName: "PoolContainer", ownerId: resourceId("Cloudflare.Worker", "PoolWorker"),
+  });
+  expect(result.workers.find(worker => worker.fqn === "PoolWorker")!.bindings).toContainEqual({ name: "PoolContainer", kind: "durable_object_namespace:local" });
   for (const object of objects) expect(workers.some(worker => worker.id === object.ownerId)).toBe(true);
   expect(new Set(result.inventory.map(resource => resource.id)).size).toBe(result.inventory.length);
   expect(result.workers.flatMap(worker => worker.bindings).length).toBeGreaterThan(0);

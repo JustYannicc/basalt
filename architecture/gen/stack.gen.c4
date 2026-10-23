@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { fingerprint "b3fd1070ff33deb6d6d63500d4fbac6052b9e4a17b791f8b09710488d228ac83"; bindings "b485d97f4907bc10fb01c7d5123dd6075b189949317b3deb947e6614c6c486c1" }
+    metadata { fingerprint "b446d754d7eaa7fbf76cafe6d3bc5e9d75685a851696cc3983cb81cf5e9a3288"; bindings "db6a1cb8dceeefb8f5bc1e37795a0bf293f215b7608d09317a19e5717e1d8e20" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -18,6 +18,37 @@ deployment {
       workflow resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb "Site" {
         app = instanceOf basalt.clientAssets {
           metadata { resource "resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb" }
+        }
+      }
+    }
+    zone group-174079402e0ed306 "Model gateway" {
+      worker resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b "Pool Worker" {
+        app = instanceOf basalt.modelGateway {
+          metadata { resource "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }
+        }
+        durableObject resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2 "Pool Container" {
+          app = instanceOf basalt.poolController {
+            metadata { resource "resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2" }
+          }
+        }
+      }
+    }
+    zone group-8ffa1e011c499571 "Pool database" {
+      storage resource-705f006b9cd1e8eae2e4a8a7a40c30f19aa5bfc5efdfc5da06e1b33b91779029 "Pool Database Role" {
+        app = instanceOf basalt.poolDatabase {
+          metadata { resource "resource-705f006b9cd1e8eae2e4a8a7a40c30f19aa5bfc5efdfc5da06e1b33b91779029" }
+        }
+      }
+      workflow resource-f629d04a7705fb979431998422c538087cb454323f88176937abce5605ff7fed "Pool Database" {
+        app = instanceOf basalt.poolDatabase {
+          metadata { resource "resource-f629d04a7705fb979431998422c538087cb454323f88176937abce5605ff7fed" }
+        }
+      }
+    }
+    zone group-ba4de6fcfc9c3e22 "Pool runtime" {
+      container resource-9da12b05962b959677245d27a3cc6790722e323c264570de2bee2647a1414bed "Pool Container" {
+        app = instanceOf basalt.poolRuntime {
+          metadata { resource "resource-9da12b05962b959677245d27a3cc6790722e323c264570de2bee2647a1414bed" }
         }
       }
     }
@@ -226,6 +257,26 @@ views {
   deployment view deployment_group_9aae816a4d380e2d {
     title "Basalt/Deployment/Client assets"
     include deployed.group-9aae816a4d380e2d.*
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b {
+    title "Basalt/Deployment/Model gateway/Pool Worker"
+    include deployed.group-174079402e0ed306.resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b.**
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_174079402e0ed306 {
+    title "Basalt/Deployment/Model gateway"
+    include deployed.group-174079402e0ed306.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_8ffa1e011c499571 {
+    title "Basalt/Deployment/Pool database"
+    include deployed.group-8ffa1e011c499571.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_ba4de6fcfc9c3e22 {
+    title "Basalt/Deployment/Pool runtime"
+    include deployed.group-ba4de6fcfc9c3e22.*
     autoLayout TopBottom
   }
   deployment view worker_resource_721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838 {

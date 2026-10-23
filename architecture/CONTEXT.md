@@ -86,10 +86,11 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Term | Meaning |
 | --- | --- |
 | Identity interface | Basalt's planned interface; the dependency already provides public identity behavior. |
-| Model gateway | Basalt's planned single entry point for model requests. |
+| Model gateway | The current single entry point for model requests. |
 | Tools gateway | The current public dependency boundary for identity, connectors, vault, and tools. |
 | Pool | A set of model accounts served through the model gateway. |
-| Pool runtime | The planned singleton EU actor and its warm container process. |
+| Pool controller | The singleton EU control-plane actor that owns readiness, warmth and recovery alarms. |
+| Pool runtime | The warm EU container running the released control-plane and inference binaries. |
 | Pool database | A separate logical pool database in the same EU cluster. |
 | Connection interface | Basalt's planned interface; the dependency already provides public connectors. |
 | Vault interface | Basalt's planned interface; the dependency already provides public secret custody. |
@@ -97,7 +98,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Outside services | Dynamic per-person destinations, reached only through the tools gateway. |
 | Fixed infrastructure adapter | A distinct adapter for each fixed outside service found in the stack declaration inventory. |
 
-The current router returns HTTP 503 for `/v1` and `/v1/*`. Non-`/v1` requests pass through `TOOLS_SERVICE` to the tools gateway. Only Basalt-facing model, pool, identity, connection, and vault interfaces are planned; the dependency's public behavior remains current.
+The current router sends `/v1`, `/v0/management` and `/v8/management` through `POOL_SERVICE` to the model gateway. Other requests use `TOOLS_SERVICE`. The model gateway, pool controller, pool runtime and pool database are implemented. Pool app integration and the Basalt-facing identity, connection and vault interfaces remain planned.
 
 The `hosts` and `sdks` values `dynamic` and `upstream` describe the opaque, dynamically selected outside-service boundary. They do not enumerate concrete hosts or packages. Fixed infrastructure hosts and SDKs belong on their own adapter elements. Multiple values use `|` separators.
 

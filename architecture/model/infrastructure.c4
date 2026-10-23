@@ -49,4 +49,16 @@ model {
     technology "Google OAuth · GitHub OAuth"
   }
   basalt.toolsGateway -[sync]-> identityProvider "sign in"
+  extend basalt.modelGateway {
+    metadata { resources "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }
+  }
+  extend basalt.poolController {
+    metadata { resources "resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2" }
+  }
+  extend basalt.poolRuntime {
+    metadata { resources "resource-9da12b05962b959677245d27a3cc6790722e323c264570de2bee2647a1414bed" }
+  }
+  extend basalt.poolDatabase {
+    metadata { resources "resource-705f006b9cd1e8eae2e4a8a7a40c30f19aa5bfc5efdfc5da06e1b33b91779029|resource-f629d04a7705fb979431998422c538087cb454323f88176937abce5605ff7fed" }
+  }
 }

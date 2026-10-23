@@ -62,3 +62,12 @@ test("network SDKs and aliased fetch cannot bypass outside-service coverage", ()
   const result = sourceDependencies(root, [module("router", "src/router.ts")], []);
   expect(result.errors).toHaveLength(2);
 });
+
+
+test("bound container and actor transports ignore placeholder HTTP hosts", () => {
+  const root = fixture({ "src/router.ts": "container.getTcpPort(port).fetch('http://pool/ready'); singleton(env).fetch('http://pool/__warm');" });
+  const caller = { ...module("gateway", "src/router.ts"), bindings: ["container.getTcpPort=runtime", "singleton=runtime"] };
+  const result = sourceDependencies(root, [caller], []);
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map(d => `${d.source}->${d.target}`)).toEqual(["gateway->runtime", "gateway->runtime"]);
+});

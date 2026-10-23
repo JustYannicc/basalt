@@ -42,6 +42,7 @@ export function inventoryDeclarations(resources: readonly unknown[], bindings: R
     if (type !== "Cloudflare.Worker") continue;
     const props = resource.Props == null ? {} : record(resource.Props, "props");
     const names = new Map<string, Set<string>>();
+    const localClasses = new Set<string>();
     let deferredBindingCount = 0;
     const add = (name: unknown, kind: string) => {
       const key = safeName(name);
@@ -58,9 +59,20 @@ export function inventoryDeclarations(resources: readonly unknown[], bindings: R
           if (isDeferred(value)) { deferredBindingCount++; continue; }
           const binding = record(value, "binding");
           const kind = safeName(binding.type);
-          // A remote namespace reference does not declare a local class.
-          add(binding.name, kind === "durable_object_namespace"
-            ? `${kind}:${binding.scriptName === undefined ? "local" : "remote"}` : kind);
+          if (kind !== "durable_object_namespace") {
+            add(binding.name, kind);
+            continue;
+          }
+          // WorkerProvider merges export and binding declarations by className.
+          // An unresolved scriptName cannot establish that the class is local.
+          if (isDeferred(binding.scriptName) || isDeferred(binding.className)) {
+            add(binding.name, `${kind}:unresolved`);
+            deferredBindingCount++;
+            continue;
+          }
+          const local = binding.scriptName === undefined;
+          add(binding.name, `${kind}:${local ? "local" : "remote"}`);
+          if (local && binding.className !== undefined) localClasses.add(safeName(binding.className));
         }
       }
     };
@@ -76,13 +88,15 @@ export function inventoryDeclarations(resources: readonly unknown[], bindings: R
       if (name === "default") continue;
       const exported = record(value, "export");
       if (exported.kind === "durableObject") {
-        result.resources.push({ type: "Cloudflare.DurableObject", fqn: `${fqn}/exports/${safeName(name)}`, declaredName: safeName(name) });
+        localClasses.add(safeName(name));
       } else if (exported.kind === "workflow") {
         if (!workflows.has(name)) throw new Error("Unmatched native workflow export");
       } else if (exported.kind !== "sqlMigrations") {
         throw new Error("Unknown native Worker export kind");
       }
     }
+    for (const name of localClasses)
+      result.resources.push({ type: "Cloudflare.DurableObject", fqn: `${fqn}/exports/${name}`, declaredName: name });
     result.workers.push({ fqn, deferredBindingCount, bindings: [...names].flatMap(([name, kinds]) =>
       [...kinds].map(kind => ({ name, kind }))).sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind)) });
   }

@@ -2,16 +2,15 @@ views {
   view current_runtime {
     title "Basalt/Current runtime"
 
-    include basalt.router, basalt.toolsGateway
-    include outsideServices
+    include basalt.router, basalt.toolsGateway, basalt.modelGateway
     exclude * -> *
 
     include basalt.router -> basalt.toolsGateway
-    include basalt.toolsGateway -> outsideServices
+    include basalt.router -> basalt.modelGateway
 
     style basalt.router { color primary }
     style basalt.toolsGateway { color indigo }
-    style outsideServices { color gray }
+    style basalt.modelGateway { color primary }
     autoLayout LeftRight
   }
 
@@ -36,32 +35,53 @@ views {
     autoLayout TopBottom
   }
 
-  view planned_inference {
-    title "Basalt/Planned inference"
+  view current_inference {
+    title "Basalt/Current inference"
+    description "Implemented transport and backend. One singleton EU control-plane actor forwards to one warm EU container; pool app integration is planned."
 
     include
       basalt.router,
       basalt.modelGateway,
-      basalt.pool,
+      basalt.poolController,
       basalt.poolRuntime,
       basalt.poolDatabase,
       modelProviders
     exclude * -> *
 
     include basalt.router -> basalt.modelGateway
-    include basalt.modelGateway -> basalt.pool
-    include basalt.pool -> basalt.poolRuntime
+    include basalt.modelGateway -> basalt.poolController
+    include basalt.poolController -> basalt.poolRuntime
     include basalt.poolRuntime -> basalt.poolDatabase
     include basalt.poolRuntime -> modelProviders
 
     style basalt.router { color primary }
-    style basalt.modelGateway, basalt.pool, basalt.poolRuntime, basalt.poolDatabase, modelProviders {
-      color muted
-    }
+    style basalt.modelGateway { color primary }
+    style basalt.poolController { color amber }
+    style basalt.poolRuntime { color amber }
+    style basalt.poolDatabase, modelProviders { color gray }
+    autoLayout TopBottom
+  }
+
+  view planned_pool_integration {
+    #planned
+    title "Basalt/Planned pool integration"
+
+    include basalt.toolsGateway, basalt.modelGateway, basalt.pool, basalt.poolRuntime
+    exclude * -> *
+
+    include basalt.toolsGateway -> basalt.pool
+    include basalt.modelGateway -> basalt.pool
+    include basalt.pool -> basalt.poolRuntime
+
+    style basalt.toolsGateway { color indigo }
+    style basalt.modelGateway { color primary }
+    style basalt.poolRuntime { color amber }
+    style basalt.pool { color muted; opacity 40%; border dashed }
     autoLayout TopBottom
   }
 
   view planned_identity_connectors {
+    #planned
     title "Basalt/Planned identity and connectors"
 
     include
