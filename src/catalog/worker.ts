@@ -1,10 +1,13 @@
-import { mergeFeed, type FeedAddition, type Feed } from "./feed.ts";
+import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
+import { aws } from "./aws/index.ts";
 import { zendeskAddition, unavailableZendeskAddition } from "./zendesk/source.ts";
 import { isZendeskSubdomain } from "./zendesk/tenant.ts";
 
+// AWS source stays in the catalog until maintainers identify a maintained destination.
+const sourceAdditions: readonly Addition[] = [aws];
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
@@ -23,7 +26,7 @@ function configuredAdditions(
   const zendesk = ready.zendesk && zendeskSubdomain !== undefined && isZendeskSubdomain(zendeskSubdomain)
     ? zendeskAddition(zendeskSubdomain)
     : unavailableZendeskAddition();
-  return [...additions, zendesk];
+  return [...additions, ...sourceAdditions, zendesk];
 }
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
