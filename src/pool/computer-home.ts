@@ -31,6 +31,7 @@ export class ComputerHome {
     return user.id;
   }
   async group(pool: string): Promise<number> {
+    if (typeof pool !== "string" || !pool.trim()) return unavailable();
     const name = `${poolGroupPrefix}${pool}`;
     let groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === name);
     if (!groups.length) {
@@ -42,14 +43,21 @@ export class ComputerHome {
     if (!groups.length || !id(groups[0]?.id)) return unavailable();
     return groups[0].id;
   }
+  private async writeScopedKey(pool: string, input: Json, method: "POST" | "PATCH"): Promise<Json> {
+    const group = await this.group(pool);
+    // Home treats empty channels as unrestricted. Verify the exact pool group at the write boundary.
+    if (!id(group) || !(await this.client.allPoolGroups()).some((row) =>
+      row.id === group && row.channel_name === `${poolGroupPrefix}${pool}`)) return unavailable();
+    const channels: [number] = [group];
+    return this.client.data("/access/api-keys", { ...post({ ...input, channels }), method });
+  }
   async mint(person: string, pool: string, computer: string): Promise<{ key: string; keyId: number; userId: number }> {
     const userId = await this.user(person);
-    const group = await this.group(pool);
     const key = randomSecret(brand.setup.keyPrefix);
-    const data = await this.client.data("/access/api-keys", post({
+    const data = await this.writeScopedKey(pool, {
       api_key: key, display_name: `${brand.setup.id}:${computer}`, user_id: userId,
-      channels: [group], model_groups: [],
-    }));
+      model_groups: [],
+    }, "POST");
     const created = data.api_key;
     if (!object(created) || !id(created.api_key_id ?? created.id) || created.user_id !== userId) return unavailable();
     return { key, keyId: (created.api_key_id ?? created.id) as number, userId };
@@ -61,10 +69,7 @@ export class ComputerHome {
       .map((key) => key.api_key_id ?? key.id).filter(id);
   }
   async rebind(keyId: number, pool: string): Promise<void> {
-    const group = await this.group(pool);
-    await this.client.data("/access/api-keys", {
-      ...post({ api_key_id: keyId, channels: [group] }), method: "PATCH",
-    });
+    await this.writeScopedKey(pool, { api_key_id: keyId }, "PATCH");
   }
   async revoke(keyId: number): Promise<void> {
     const response = await this.client.response(`/access/api-keys?id=${keyId}`, { method: "DELETE" });

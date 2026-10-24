@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../../brand.ts";
 import { ComputerHome, digest } from "./computer-home.ts";
-import { HomeClient } from "./control.ts";
+import { HomeClient, poolGroupPrefix } from "./control.ts";
 import { BackendFailure } from "./json.ts";
 
 type Json = Record<string, unknown>;
@@ -18,6 +18,8 @@ class FakeHomeServer {
   nextKeyId = 73;
   deleteStatus = 200;
   deleteBody: Json = { status: "ok" };
+  groupReads = 0;
+  readGroups: ((read: number) => Json[]) | undefined;
 
   fetch = async (path: string, init?: RequestInit): Promise<Response> => {
     const method = init?.method ?? "GET";
@@ -39,7 +41,7 @@ class FakeHomeServer {
         this.groups.push(group);
         return Response.json({ channel_group: group });
       }
-      return Response.json({ channel_groups: this.groups });
+      return Response.json({ channel_groups: this.readGroups?.(++this.groupReads) ?? this.groups });
     }
     if (endpoint === "/access/api-keys") {
       if (method === "POST") {
@@ -108,6 +110,50 @@ test("rebind patches the same Home key after resolving the destination group", a
   assert.equal(Object.hasOwn(server.calls[keyPatch]!.body!, "api_key"), false);
   assert.equal(server.calls.some((call) => call.method === "POST" && call.path === "/v8/management/access/api-keys"), false);
 });
+
+for (const operation of ["mint", "rebind"] as const) {
+  const write = (home: ComputerHome, pool: string) => operation === "mint"
+    ? home.mint("tools-user-42", pool, "computer-uuid") : home.rebind(73, pool);
+  const noKeyWrite = (server: FakeHomeServer) => assert.equal(server.calls.some((call) =>
+    call.path === "/v8/management/access/api-keys" && ["POST", "PATCH"].includes(call.method)), false);
+
+  test(`${operation} refuses an empty pool before creating a group or changing a key`, async () => {
+    for (const pool of ["", "   "]) {
+      const server = new FakeHomeServer();
+      await assert.rejects(write(server.client(), pool));
+      noKeyWrite(server);
+      assert.equal(server.calls.some((call) => call.path.endsWith("/channel-groups")), false);
+    }
+  });
+
+  test(`${operation} refuses a missing group even when group creation reports success`, async () => {
+    const server = new FakeHomeServer();
+    server.readGroups = () => [];
+    await assert.rejects(write(server.client(), "pool-a"));
+    noKeyWrite(server);
+    assert.ok(server.calls.some((call) => call.path.endsWith("/channel-groups") && call.method === "POST"));
+  });
+
+  test(`${operation} refuses an empty or invalid group id`, async () => {
+    for (const groupId of [undefined, null, "", [], 0, -1]) {
+      const server = new FakeHomeServer();
+      server.groups = [{ id: groupId, channel_name: `${poolGroupPrefix}pool-a` }];
+      await assert.rejects(write(server.client(), "pool-a"));
+      noKeyWrite(server);
+    }
+  });
+
+  test(`${operation} refuses a group that disappears or changes pool before the key write`, async () => {
+    for (const remaining of [[], [{ id: 31, channel_name: `${poolGroupPrefix}other-pool` }]]) {
+      const server = new FakeHomeServer();
+      server.readGroups = (read) => read === 1
+        ? [{ id: 31, channel_name: `${poolGroupPrefix}pool-a` }] : remaining;
+      await assert.rejects(write(server.client(), "pool-a"));
+      noKeyWrite(server);
+      assert.equal(server.groupReads, 2);
+    }
+  });
+}
 
 test("interrupted mint recovery looks up only the computer display tag", async () => {
   const server = new FakeHomeServer();
