@@ -5,6 +5,7 @@ import {
   assertPatchManifestMatchesFiles,
   parsePatchManifest,
   parsePatchManifestV3,
+  patchMappingKey,
   removedPatchRecords,
   sha256PatchContent,
   updatedManifest,
@@ -152,4 +153,33 @@ test("format 2 remains parseable for historical readers but cannot pass the form
   };
   assert.equal(parsePatchManifest(JSON.stringify(legacy)).format_version, 2);
   assert.throws(() => parsePatchManifestV3(JSON.stringify(legacy)), /Format 3/);
+});
+
+
+test("an upstream issue tracks provenance without allowing automatic patch retirement", async () => {
+  const issueTracked = {
+    ...patchManifest.patches[0]!,
+    kind: "upstream",
+    upstream_pull_request: null,
+    upstream_issue: 2364,
+  };
+  const manifest = parsePatchManifestV3(JSON.stringify({ ...patchManifest, patches: [issueTracked] }));
+  assert.equal(manifest.patches[0]?.upstream_issue, 2364);
+  assert.notEqual(patchMappingKey(manifest.repository, manifest.patches[0]!),
+    patchMappingKey(manifest.repository, { ...manifest.patches[0]!, upstream_issue: 2375 }));
+  const decisions = await decidePatchRemovals(manifest, [issueTracked.file], sha("e"), {
+    async get() { assert.fail("an issue is not a pull request and cannot authorize retirement"); },
+    async compare() { assert.fail("an issue has no merge commit to compare"); },
+  });
+  assert.equal(decisions[0]?.remove, false);
+  assert.equal(decisions[0]?.reason, "no-upstream-pull-request");
+});
+
+test("upstream issue provenance must be a positive integer", () => {
+  for (const issue of [0, -1, 1.5, "2364", null]) {
+    assert.throws(() => parsePatchManifestV3(JSON.stringify({
+      ...patchManifest,
+      patches: [{ ...patchManifest.patches[0], upstream_issue: issue }],
+    })), /Invalid/);
+  }
 });

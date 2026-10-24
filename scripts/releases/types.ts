@@ -20,6 +20,7 @@ export type ReleasePins = {
 };
 
 type PatchRecordBase = {
+  upstream_issue?: number;
   identity: string;
   file: string;
   content_sha256: string;
@@ -35,7 +36,6 @@ export type UpstreamPatchRecord = PatchRecordBase & {
 export type OverlayPatchRecord = PatchRecordBase & {
   kind: "overlay";
   upstream_pull_request: null;
-  upstream_issue?: number;
   remove_with?: string;
   requires?: string;
 };
