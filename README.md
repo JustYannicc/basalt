@@ -200,7 +200,7 @@ The hosted clients cover US, EU, India, Australia, Japan, Canada, Saudi Arabia a
 
 The [carried Slack source](src/catalog/slack.json) is reproduced from its frozen published package plus [the app patch](src/catalog/slack.patch). Its [upstream contribution](https://github.com/UsefulSoftwareCo/executor/issues/2368) asks for the maintained app-source destination; an app-source PR is pending that answer.
 
-For Slack, run `node scripts/check-slack.ts --preflight`, then `node scripts/check-slack.ts` after preparing the pinned self-host test runtime. The fixture uses the carried app's actual auth, health check, OpenAPI tools and approvals against a local Slack mock. It checks the first user OAuth method, nested user grant, reads and posts, and private account isolation between two people in the same Slack workspace. The installed local client uses the production `signalbox` configuration with a simulated model. Live Slack acceptance remains separate.
+For Slack, run `node scripts/check-slack.ts --preflight`, then `node scripts/check-slack.ts` after preparing the pinned self-host test runtime. The fixture uses the carried app's actual auth, health check, OpenAPI tools and approvals against a local Slack mock. It checks the first user OAuth method, nested user grant, reads and posts, and private account isolation between two people in the same Slack workspace. The actual setup client writes an isolated test configuration with synthetic credentials and a local MCP endpoint. The full run requires installed Claude to read and post through `signalbox` using a simulated model. Live Slack acceptance remains separate.
 
 ### App UI hosting
 

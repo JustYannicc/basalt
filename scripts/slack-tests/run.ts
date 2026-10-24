@@ -76,6 +76,9 @@ export async function runSlackProof({ root, upstream, commit, installDiagnostic 
       ? value?.callbackDiagnostic === true
       : value?.catalogOneClickMethod === "user" && value?.sameOrganizationIsolation === true);
   if (!report || typeof report.checks !== "number") throw new Error("Slack runtime proof did not report full completion.");
+  if (!installDiagnostic && !callbackDiagnostic
+    && (report.installedClaude !== true || report.installedClaudeRead !== true || report.installedClaudePost !== true))
+    throw new Error("Slack runtime proof requires installed Claude to read and post through Signalbox.");
   console.log(JSON.stringify(report));
   return {
     checks: report.checks,

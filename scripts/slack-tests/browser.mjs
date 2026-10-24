@@ -220,7 +220,11 @@ export async function connectOwnerFromCatalog({
       ]);
       await authorizationPage.getByRole("dialog", { name: "Name this account", exact: true })
         .waitFor({ state: "visible", timeout: Math.max(1, deadline - Date.now()) });
-      connectedText = await authorizationPage.getByRole("dialog", { name: "Name this account", exact: true }).innerText();
+      const connectedDialog = authorizationPage.getByRole("dialog", { name: "Name this account", exact: true });
+      await connectedDialog.getByText(/is connected\./).waitFor({
+        state: "visible", timeout: Math.max(1, deadline - Date.now()),
+      });
+      connectedText = await connectedDialog.innerText();
       check(connectedText.includes("is connected."), "The dashboard did not show the connected Slack account");
       check(callbackRequest.hasCode && callbackRequest.hasState, "The callback omitted its authorization code or state");
       equal(callbackResponse.status, 302, "The callback did not redirect to the dashboard");

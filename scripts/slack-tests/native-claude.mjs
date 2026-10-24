@@ -14,11 +14,12 @@ async function binary(name) {
   return undefined;
 }
 
-export async function installedClaudeAvailable() {
-  for (const name of ["claude", "heavy-slot", "sandbox-exec", "env"]) {
-    if (!await binary(name)) return { ready: false, reason: `required local binary missing: ${name}` };
-  }
-  return { ready: true };
+async function requireInstalledClaude() {
+  const required = ["claude", "heavy-slot", "sandbox-exec", "env"];
+  const found = Object.fromEntries(await Promise.all(required.map(async (name) => [name, await binary(name)])));
+  const missing = required.filter((name) => !found[name]);
+  assert.deepEqual(missing, [], `Installed Claude proof prerequisites are missing: ${missing.join(", ")}`);
+  return found.claude;
 }
 
 async function launch(command, args, env, cwd, report) {
@@ -78,7 +79,21 @@ function containsText(value, expected, depth = 0) {
 }
 
 /** The installed CLI reads the real setup entry and calls the local self-host MCP endpoint. */
-export async function proveInstalledClaude({ root, directory, origin, token, slug, toolPath, marker, channel }) {
+export async function proveInstalledClaude({
+  root,
+  directory,
+  origin,
+  token,
+  slug,
+  historyPath,
+  postPath,
+  marker,
+  peerMarker,
+  channel,
+  postText,
+  mock,
+}) {
+  const cli = await requireInstalledClaude();
   const home = join(directory, "native-claude");
   const env = {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -90,7 +105,12 @@ export async function proveInstalledClaude({ root, directory, origin, token, slu
   const cwd = join(home, "work");
   for (const path of [cwd, env.TMPDIR, env.CODEX_HOME, env.CLAUDE_CONFIG_DIR])
     await mkdir(path, { recursive: true, mode: 0o700 });
-  let turns = 0, searchReturned = false, callReturned = false;
+  let turns = 0;
+  let historyPathReturned = false;
+  let historyReadReturned = false;
+  let postPathReturned = false;
+  let postReturned = false;
+  const completionText = "slack-local-proof-ok";
   const failures = [], trace = [];
   const server = createServer(async (request, response) => {
     try {
@@ -108,24 +128,38 @@ export async function proveInstalledClaude({ root, directory, origin, token, slu
       trace.push({ toolResults: (body.messages ?? []).flatMap((entry) => Array.isArray(entry.content) ? entry.content : []).filter((entry) => entry.type === "tool_result") });
       const offered = (body.tools ?? []).map((tool) => tool.name);
       const turn = ++turns;
-      assert.ok(turn <= 3, "Claude exceeded three local model turns");
+      assert.ok(turn <= 5, "Claude exceeded five local model turns");
       let tool, input;
       if (turn === 1) {
         tool = offered.find((name) => name === "mcp__signalbox__search");
         assert.ok(tool, "Claude did not load the configured Signalbox search tool");
-        input = { query: slug };
+        input = { query: "conversations.history" };
       } else if (turn === 2) {
-        searchReturned = results.some((entry) => containsText(entry.content, toolPath));
-        assert.ok(searchReturned, "The real Slack history tool path was not returned to Claude");
+        historyPathReturned = results.some((entry) => containsText(entry.content, historyPath));
+        assert.ok(historyPathReturned, "Signalbox search did not return conversations.history to Claude");
         tool = offered.find((name) => name === "mcp__signalbox__call");
-        assert.ok(tool, "Claude did not load the configured Signalbox call tool");
-        input = { calls: { path: toolPath, input: { channel } } };
+        assert.ok(tool, "Claude did not load the configured Signalbox call tool for the history read");
+        input = { calls: { path: historyPath, input: { channel } } };
+      } else if (turn === 3) {
+        historyReadReturned = results.some((entry) => containsText(entry.content, marker));
+        assert.ok(historyReadReturned, "The real synthetic Slack history did not reach Claude");
+        assert.ok(!results.some((entry) => containsText(entry.content, peerMarker)),
+          "Claude's Slack history result included the peer account marker");
+        tool = offered.find((name) => name === "mcp__signalbox__search");
+        assert.ok(tool, "Claude did not load the configured Signalbox search tool for chat.postMessage");
+        input = { query: "chat.postMessage" };
+      } else if (turn === 4) {
+        postPathReturned = results.some((entry) => containsText(entry.content, postPath));
+        assert.ok(postPathReturned, "Signalbox search did not return chat.postMessage to Claude");
+        tool = offered.find((name) => name === "mcp__signalbox__call");
+        assert.ok(tool, "Claude did not load the approved Signalbox call tool for chat.postMessage");
+        input = { calls: { path: postPath, input: { channel, text: postText } } };
       } else {
-        callReturned = results.some((entry) => containsText(entry.content, marker));
-        assert.ok(callReturned, "The real synthetic Slack history did not reach Claude");
+        postReturned = results.some((entry) => containsText(entry.content, postText));
+        assert.ok(postReturned, "The expected Slack post result did not return to Claude");
       }
       response.setHeader("content-type", "text/event-stream");
-      response.end(modelMessage(body.model, tool, input, "slack-local-proof-ok"));
+      response.end(modelMessage(body.model, tool, input, completionText));
     } catch (error) {
       failures.push(String(error));
       response.writeHead(400);
@@ -147,19 +181,33 @@ export async function proveInstalledClaude({ root, directory, origin, token, slu
     const mcp = join(env.CLAUDE_CONFIG_DIR, ".claude.json");
     const config = JSON.parse(await readFile(mcp, "utf8"));
     assert.equal(config.mcpServers.signalbox.url, `${origin}/mcp`);
-    const output = await launch(await binary("claude"), [
+    const postsBefore = mock.observations().api.filter((item) => item.operation === "chat.postMessage");
+    const output = await launch(cli, [
       "--bare", "--print", "--no-session-persistence", "--setting-sources", "",
       "--settings", settings, "--strict-mcp-config", "--mcp-config", mcp,
       "--tools", "", "--allowedTools", "mcp__signalbox__search", "mcp__signalbox__call",
       "--model", "claude-sonnet-4-6", "--output-format", "json",
-      "Search Signalbox for the Slack app, read conversations.history, then reply slack-local-proof-ok.",
+      `Find the ${slug} app through Signalbox. Read conversations.history and confirm it contains ${marker}. Then discover chat.postMessage, post the exact text ${postText} to ${channel} using the connected owner's Slack user account, and reply ${completionText}.`,
     ], env, cwd, join(home, "claude.json"));
-    assert.equal(JSON.parse(output).result, "slack-local-proof-ok");
+    assert.equal(JSON.parse(output).result, completionText);
     assert.deepEqual(failures, []);
-    assert.ok(searchReturned && callReturned);
-    assert.equal(turns, 3);
+    assert.ok(historyPathReturned && historyReadReturned && postPathReturned && postReturned);
+    assert.equal(turns, 5);
+    const postsAfter = mock.observations().api.filter((item) => item.operation === "chat.postMessage");
+    assert.equal(postsAfter.length, postsBefore.length + 1,
+      "Installed Claude did not produce exactly one Slack chat.postMessage call");
+    assert.equal(postsAfter.at(-1)?.actor, "owner", "Installed Claude posted as the wrong Slack user");
+    assert.equal(postsAfter.at(-1)?.authKind, "user", "Installed Claude posted with a bot or missing token");
+    return {
+      installedClaude: true,
+      installedClaudeRead: true,
+      installedClaudePost: true,
+      installedClaudeModel: "local simulated Anthropic Messages API fixture",
+    };
   } finally {
-    await writeFile(join(home, "model-observations.json"), JSON.stringify({ failures, trace, turns, searchReturned, callReturned }), { mode: 0o600 });
+    await writeFile(join(home, "model-observations.json"), JSON.stringify({
+      failures, trace, turns, historyPathReturned, historyReadReturned, postPathReturned, postReturned,
+    }), { mode: 0o600 });
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }

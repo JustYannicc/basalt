@@ -2,9 +2,10 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { installedClaudeAvailable, proveInstalledClaude } from "./native-claude.mjs";
+import { proveInstalledClaude } from "./native-claude.mjs";
 
 const textOf = (value) => JSON.stringify(value?.structuredContent ?? value?.content ?? value);
+const slackPostCount = (mock) => mock.observations().api.filter((item) => item.operation === "chat.postMessage").length;
 
 function toolPath(items, parts, operation) {
   const path = items?.find((item) => {
@@ -76,7 +77,8 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       check(!secondSearch.isError, "Native MCP could not search for chat.postMessage");
       const currentPost = toolPath(secondSearch.structuredContent?.items ?? [], ["chat", "postmessage"], "chat.postMessage");
       historyPath ??= currentHistory;
-      postPath ??= currentPost;
+      if (postPath === undefined) postPath = currentPost;
+      else equal(currentPost, postPath, "Slack clients did not discover the same chat.postMessage operation");
 
       const described = yield* Effect.promise(() => client.callTool({ name: "describe", arguments: { paths: [currentHistory, currentPost] } }));
       check(!described.isError && !textOf(described).includes(peerAccount), "Native describe exposed peer account details");
@@ -95,6 +97,27 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       } }));
       check(textOf(executeForgery).includes("AccountChoiceUnsupported"), "MCP execute allowed selecting the peer Slack account");
 
+      const peerWriteInput = {
+        channel: "C_SYNTHETIC",
+        text: `synthetic_forbidden_${index}_post`,
+        $accounts: { slack: peerAccount },
+      };
+      const postsBeforePeerWrite = slackPostCount(mock);
+      const peerWrite = yield* Effect.promise(() => client.callTool({ name: "call", arguments: {
+        calls: { path: currentPost, input: peerWriteInput },
+      } }));
+      check(textOf(peerWrite).includes("AccountChoiceUnsupported"),
+        "Native MCP call allowed chat.postMessage with the peer Slack account");
+      equal(slackPostCount(mock), postsBeforePeerWrite,
+        "A rejected peer-account call reached Slack chat.postMessage");
+      const peerExecute = yield* Effect.promise(() => client.callTool({ name: "execute", arguments: {
+        code: `return await ${currentPost}(${JSON.stringify(peerWriteInput)});`,
+      } }));
+      check(textOf(peerExecute).includes("AccountChoiceUnsupported"),
+        "MCP execute allowed chat.postMessage with the peer Slack account");
+      equal(slackPostCount(mock), postsBeforePeerWrite,
+        "A rejected peer-account execute reached Slack chat.postMessage");
+
       const actor = index === 0 ? actors.owner : actors.member;
       const inspectPeer = yield* request(actor, "GET", `${prefix}/accounts/${peerAccount}`);
       check(inspectPeer.status === 403 || inspectPeer.status === 404, "A person could read the peer account record");
@@ -110,19 +133,21 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       && callToolDefinition?.annotations?.openWorldHint === true,
     "Native MCP call did not carry caller approval annotations");
     const writeInput = { channel: "C_SYNTHETIC", text: "synthetic_owner_post" };
-    const callsBeforeApproval = mock.observations().api.filter((item) => item.operation === "chat.postMessage").length;
+    const callsBeforeApproval = slackPostCount(mock);
     const executeWrite = yield* Effect.promise(() => standard.callTool({ name: "execute", arguments: {
       code: `return await ${postPath}(${JSON.stringify(writeInput)});`,
     } }));
     const pendingText = textOf(executeWrite);
     check(pendingText.includes("approval-required") || pendingText.includes("ToolApprovalRequired"),
       "The maintained mutation approval flow did not pause chat.postMessage");
-    equal(mock.observations().api.filter((item) => item.operation === "chat.postMessage").length,
+    equal(slackPostCount(mock),
       callsBeforeApproval, "chat.postMessage reached Slack before approval");
     const posted = yield* Effect.promise(() => nativeClients[0].callTool({ name: "call", arguments: {
       calls: { path: postPath, input: writeInput },
     } }));
     check(!posted.isError && textOf(posted).includes("synthetic_owner_post"), "Native MCP did not post as the caller");
+    equal(slackPostCount(mock), callsBeforeApproval + 1,
+      "The approved native MCP write did not reach Slack exactly once");
     const writeCall = mock.observations().api.filter((item) => item.operation === "chat.postMessage").at(-1);
     equal(writeCall?.actor, "owner", "chat.postMessage used the wrong person's user token");
     equal(writeCall?.authKind, "user", "chat.postMessage used a bot token");
@@ -151,15 +176,22 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
     check(observations.catalog.some((entry) => entry.path === "/catalog/apps/slack.json"), "The catalog did not serve the local maintained package");
     check(observations.catalog.some((entry) => entry.path === "/catalog/specs/slack-openapi.json"), "The host did not load the local vendor OpenAPI fixture");
 
-    const modelProof = yield* Effect.promise(async () => {
-      const available = await installedClaudeAvailable();
-      if (!available.ready) return { installedClaude: false, reason: available.reason };
-      await proveInstalledClaude({
-        root, directory, origin: target.metadata.origin, token: issued[0].key,
-        slug: app.slug, toolPath: historyPath, marker: "synthetic_owner_history", channel: "C_SYNTHETIC",
-      });
-      return { installedClaude: true };
-    });
-    return { installedClaude: modelProof.installedClaude, ...(modelProof.reason ? { installedClaudeReason: modelProof.reason } : {}) };
+    const modelProof = yield* Effect.promise(() => proveInstalledClaude({
+      root,
+      directory,
+      origin: target.metadata.origin,
+      token: issued[0].key,
+      slug: app.slug,
+      historyPath,
+      postPath,
+      marker: "synthetic_owner_history",
+      peerMarker: "synthetic_member_history",
+      channel: "C_SYNTHETIC",
+      postText: "synthetic_owner_post",
+      mock,
+    }));
+    check(modelProof.installedClaude && modelProof.installedClaudeRead && modelProof.installedClaudePost,
+      "Installed Claude did not complete its Slack read and post through MCP");
+    return modelProof;
   });
 }
