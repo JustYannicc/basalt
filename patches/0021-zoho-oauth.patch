@@ -15,8 +15,8 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
 +  ...zohoOAuthClients,
    {
-     id: "github",
-     label: "Executor for GitHub",
+     id: "gitlab",
+     label: "Executor for GitLab",
 @@ -229,7 +231,8 @@
  
  /** The two settings that hold the credentials of the client `id`. */

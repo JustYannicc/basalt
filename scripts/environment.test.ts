@@ -249,9 +249,8 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   assert.equal(env.GOOGLE_CONNECTOR_READY, "true");
   assert.equal(env.GITHUB_CONNECTOR_READY, "true");
   assert.deepEqual(connectorWarnings(env), []);
-  for (const provider of ["GOOGLE", "GITHUB_OAUTH", "ZOHO"]) {
-    for (const part of ["ID", "SECRET"]) {
-      const name = `EXECUTOR_OAUTH_${provider}_CLIENT_${part}`;
+  for (const connector of optionalConnectorClients) {
+    for (const name of [connector.id, connector.secret]) {
       assert.equal(env[name], source[name as keyof typeof source]);
       const missing = deployEnvironment({ ...source, [name]: "" });
       const client = optionalConnectorClients.find(client => client.id === name || client.secret === name)!;
