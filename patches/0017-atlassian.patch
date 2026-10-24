@@ -1,0 +1,50 @@
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -105,6 +105,14 @@
+   "files:write",
+ ];
+
++/** Read-only Jira and Confluence access, renewed through Atlassian's rotating refresh tokens. */
++const atlassianScopes = [
++  "offline_access",
++  "read:jira-work",
++  "read:confluence-content.all",
++  "search:confluence",
++];
++
+ /** OAuth App scopes declared by the official GitHub REST app. */
+ const githubRestScopes = [
+   "repo",
+@@ -188,6 +196,20 @@
+     placement: { hosts: ["*.googleapis.com"] },
+   },
+   {
++    id: "atlassian",
++    label: "Atlassian",
++    server: {
++      authorizationUrl: "https://auth.atlassian.com/authorize",
++      tokenUrl: "https://auth.atlassian.com/oauth/token",
++      authorizationParams: { audience: "api.atlassian.com", prompt: "consent" },
++      tokenRequestFormat: "json",
++    },
++    tokenEndpointAuthMethod: "client_secret_post",
++    defaultScopes: atlassianScopes,
++    allowedScopes: atlassianScopes,
++    placement: { hosts: ["api.atlassian.com"] },
++  },
++  {
+     id: "slack",
+     label: "Executor for Slack",
+     server: {
+@@ -312,7 +334,9 @@
+             ? "GitHub"
+             : definition.id === "slack"
+               ? "Slack"
+-              : undefined;
++              : definition.id === "atlassian"
++                ? "Atlassian"
++                : undefined;
+       clients.push(
+         service === undefined
+           ? client.value
