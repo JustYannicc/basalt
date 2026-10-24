@@ -1,4 +1,5 @@
 import { mergeFeed, type Addition, type Feed } from "./feed.ts";
+import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
 
 // Missing connectors add their published package here. Existing official apps stay upstream's.
@@ -14,7 +15,7 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
 });
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
-export async function handleCatalog(request: Request, fetcher: typeof fetch = fetch): Promise<Response> {
+export async function handleCatalog(request: Request, fetcher: typeof fetch = fetch, ready: ConnectorAvailability = { google: false, github: false }): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
   const path = new URL(request.url).pathname;
@@ -31,7 +32,7 @@ export async function handleCatalog(request: Request, fetcher: typeof fetch = fe
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(await response.json() as Feed, additions))
+      ? JSON.stringify(mergeFeed(await response.json() as Feed, additions, ready))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
@@ -39,4 +40,5 @@ export async function handleCatalog(request: Request, fetcher: typeof fetch = fe
   }
 }
 
-export default { fetch: (request: Request) => handleCatalog(request) };
+export default { fetch: (request: Request, env: { GOOGLE_CONNECTOR_READY?: string; GITHUB_CONNECTOR_READY?: string }) =>
+  handleCatalog(request, fetch, { google: env.GOOGLE_CONNECTOR_READY === "true", github: env.GITHUB_CONNECTOR_READY === "true" }) };
