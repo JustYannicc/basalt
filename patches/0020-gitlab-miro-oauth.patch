@@ -54,3 +54,81 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
        clients.push(
          service === undefined
            ? client.value
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index a30e0d647..39b6fe31c 100644
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -1376,6 +1376,8 @@ export const OAuthGrant = Schema.Union([
+     /** The stored client signed in with. The grant keeps its own copy for renewal. */
+     oauthClient: Schema.optionalKey(OAuthClientId),
+     refreshToken: Schema.optional(Schema.NonEmptyString),
++    /** The original callback, sent again by services such as GitLab on renewal. Older grants omit it. */
++    redirectUri: Schema.optional(HttpUrl),
+     /**
+      * Scopes each refresh asks for again, space-separated. Only imported grants carry them, as the
+      * product that issued the grant sent them; other refreshes ask for none, keeping what was
+@@ -1409,6 +1411,8 @@ export const OAuthGrant = Schema.Union([
+     expiresAt: Schema.optional(Schema.Number),
+     fields: JsonObject,
+     refreshToken: Schema.optional(Schema.NonEmptyString),
++    /** The callback used by the issuing sign-in, retained across host callback changes. */
++    redirectUri: Schema.optional(HttpUrl),
+     /**
+      * Scopes each refresh asks for again. Only imported grants carry them, as the product that
+      * issued the grant sent them; see the other authorization code grant's `scopes`.
+diff --git a/packages/sdk/src/implementation/oauth-protocol.ts b/packages/sdk/src/implementation/oauth-protocol.ts
+index db9da9e76..e57f4a22e 100644
+--- a/packages/sdk/src/implementation/oauth-protocol.ts
++++ b/packages/sdk/src/implementation/oauth-protocol.ts
+@@ -1740,6 +1740,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+       server: OAuthServer;
+       client: OAuthRegistration;
+       refreshToken: string;
++      redirectUri?: string | undefined;
+       resource?: string | undefined;
+       /** Asked for again only when the grant names them; see `OAuthGrant`. */
+       scopes?: readonly string[] | undefined;
+@@ -1750,6 +1751,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
+         async (settings) => {
+           const server = metadata(input.server);
+           const additionalParameters = {
++            ...(input.redirectUri === undefined ? {} : { redirect_uri: input.redirectUri }),
+             ...(input.scopes === undefined || input.scopes.length === 0
+               ? {}
+               : { scope: input.scopes.join(" ") }),
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index c7fdded55..d4168d1a9 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -2089,6 +2089,7 @@ export const makeOAuth = (
+       const issued = {
+         response: attempt.response,
+         fields,
++        redirectUri: attempt.redirectUri,
+         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
+         ...expiry(completedAt, tokens.expires_in),
+       };
+@@ -3074,6 +3075,7 @@ export const makeOAuth = (
+           ? {}
+           : { refreshToken: Redacted.value(input.refreshToken) };
+       const scopes = renewal.scopes.length === 0 ? {} : { scopes: renewal.scopes };
++      const redirect = input.redirectUri === undefined ? {} : { redirectUri: input.redirectUri };
+       const createdAt = yield* Clock.currentTimeMillis;
+       const account = yield* decode(Account, {
+         id: AccountId.make(`acc_${yield* nextId}`),
+@@ -3150,6 +3152,7 @@ export const makeOAuth = (
+                         : { tokenResponse: discovered.tokenResponse }),
+                       fields,
+                       ...refresh,
++                      ...redirect,
+                       generation: 0,
+                       ...expires,
+                     };
+@@ -3186,6 +3189,7 @@ export const makeOAuth = (
+                     fields,
+                     ...refresh,
+                     ...scopes,
++                    ...redirect,
+                     generation: 0,
+                     ...expires,
+                   }
