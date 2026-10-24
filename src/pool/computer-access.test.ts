@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { performance } from "node:perf_hooks";
 import { PoolDirectory } from "./directory.ts";
+import { accessGrace } from "./access-contract.ts";
+import { setupTtl } from "./setup-links.ts";
 import { Computers } from "./computers.ts";
 import { signEnvelope } from "./token.ts";
 import { fixture, member, owner, pool, signingKey } from "./test/computers.ts";
@@ -9,6 +11,83 @@ import { fixture, member, owner, pool, signingKey } from "./test/computers.ts";
 const audience = (users = pool.users) => ({ action: "audience" as const, pools: [{ ...pool, users }] });
 const own = { pool: "personal-pool", organization: "personal-organization" };
 const entry = async (f: ReturnType<typeof fixture>) => (await PoolDirectory.load(f.storage, f.now())).entry(pool.pool)!;
+
+test("a successful removal retry renews refusal for bound pools and uncertain switch targets", async () => {
+  for (const switching of [false, true]) {
+    const f = fixture();
+    const personal = { ...own, owner: member };
+    await f.access(audience());
+    const other = await f.create(member, personal);
+    const computer = await f.create(member, switching ? personal : pool);
+    if (switching) {
+      f.server.patchReplyFailure = true;
+      assert.equal((await f.action("switch", member, computer.intent, { id: computer.computer.id, pool: pool.pool })).status, 503);
+    }
+    f.server.revokeFailure = true;
+    assert.equal((await f.access(audience([owner]))).status, 503);
+    f.advance(accessGrace + 1);
+    f.restart();
+    f.server.revokeFailure = false;
+    assert.equal((await f.access(audience([owner]))).status, 200);
+    assert.equal((await f.registry())[computer.computer.id]!.state, "removed");
+    f.advance(1);
+    // The host read this audience before committing the retry, then stamped it afterward.
+    assert.equal((await f.access(audience())).status, 200);
+    assert.deepEqual((await entry(f)).users, [owner]);
+    const fresh = await f.intent(member, personal);
+    assert.equal((await f.action("switch", member, fresh, { id: other.computer.id, pool: pool.pool })).status, 403);
+    assert.equal((await f.registry())[other.computer.id]!.state, "active");
+  }
+});
+
+test("cancelled removal preserves a person's unfinished revoke", async () => {
+  const f = fixture();
+  const computer = await f.create();
+  f.server.revokeFailure = true;
+  assert.equal((await f.action("revoke", member, computer.intent, { id: computer.computer.id })).status, 503);
+  assert.equal((await f.access(audience([owner]))).status, 503);
+  f.restart();
+  f.advance(1);
+  assert.equal((await f.access(audience())).status, 200);
+  const restored = (await f.registry())[computer.computer.id]!;
+  assert.equal(restored.state, "revoking");
+  assert.equal(restored.removalPending, undefined);
+  assert.equal(restored.beforeRemoval, undefined);
+  assert.equal(restored.link, undefined);
+  assert.equal(f.server.keys.length, 1);
+  f.server.revokeFailure = false;
+  assert.equal((await f.action("revoke", member, computer.intent, { id: computer.computer.id })).status, 200);
+  assert.equal(f.server.keys.length, 0);
+});
+
+test("cancelled removal keeps an unclaimed computer issuing and restores only a valid link", async () => {
+  for (const delay of [1, setupTtl]) {
+    const f = fixture();
+    const computer = await f.create(member, pool, false);
+    const original = (await f.registry())[computer.computer.id]!.link;
+    f.server.revokeFailure = true;
+    assert.equal((await f.access(audience([owner]))).status, 503);
+    assert.equal((await f.registry())[computer.computer.id]!.link, undefined);
+    assert.equal((await f.action("claim", member, undefined, { token: computer.token })).status, 410);
+    // A repeated failed removal must keep the original state and link.
+    assert.equal((await f.access(audience([owner]))).status, 503);
+    f.restart();
+    f.advance(delay);
+    assert.equal((await f.access(audience())).status, 200);
+    const restored = (await f.registry())[computer.computer.id]!;
+    assert.equal(restored.state, "issuing");
+    assert.equal(restored.removalPending, undefined);
+    assert.equal(restored.beforeRemoval, undefined);
+    assert.deepEqual(restored.link, delay < setupTtl ? original : undefined);
+    assert.equal((await f.action("claim", member, undefined, { token: computer.token, format: "json" })).status,
+      delay < setupTtl ? 200 : 410);
+    if (delay === setupTtl) {
+      f.server.revokeFailure = false;
+      assert.equal((await f.action("revoke", member, await f.intent(), { id: computer.computer.id })).status, 200);
+      assert.equal(f.server.keys.length, 0);
+    }
+  }
+});
 
 test("a newer audience cancels failed removal with the same Home key, including during grace", async () => {
   for (const delay of [1, 60_001]) {

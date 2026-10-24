@@ -8,6 +8,7 @@ export interface StoredComputer {
   firstModelRequestAt: string | null; firstToolCallAt: string | null; revokedAt: string | null;
   firstModelRequestEverAt?: string | null; modelObservationCheckedAt?: number; setupCompletedAt?: string | null;
   removedAt?: string | null; removalPending?: boolean; removalAt?: number; switching?: string[]; switchingTo?: string; link?: SealedLink;
+  beforeRemoval?: { state: StoredComputer["state"]; link?: SealedLink };
 }
 export interface ComputerStorage {
   get<T>(key: string): Promise<T | undefined>;

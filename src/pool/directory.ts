@@ -8,6 +8,7 @@ import type { PoolClaims } from "./token.ts";
 
 interface PoolEntry extends Omit<PoolAudience, "users"> {
   users: string[]; at: number; pending: string[]; provisioned?: string[]; refuseBefore?: number; deleted?: boolean;
+  ownerSource?: "token" | "audience" | "own";
 }
 interface DirectoryState {
   pools: Record<string, PoolEntry>; refusals: Record<string, number>; people: Record<string, number>; refusalsVersion?: 2;
@@ -46,18 +47,24 @@ export class PoolDirectory {
   }
   async learn(claims: PoolClaims, user: string) {
     const existing = this.entry(claims.pool);
-    if (!existing) this.state.pools[key(claims.pool)] = { ...claims, name: "", users: [user], at: -1, pending: [] };
+    if (!existing || !existing.ownerSource || existing.ownerSource === "own") {
+      // Unverified metadata must not keep its claimed owner or membership after trusted claims arrive.
+      this.state.pools[key(claims.pool)] = { ...claims, name: existing?.name ?? "", users: [user],
+        at: existing?.at ?? -1, pending: [], refuseBefore: existing?.refuseBefore, ownerSource: "token" };
+    }
     else if (!existing.users.includes(user)) existing.users = [...existing.users, user];
     await this.save();
   }
-  /** Only the setup host's signed browser-session payload can supply this value. */
+  /** The host signs this metadata, but the person may have supplied its organization fields. */
   async learnOwn(value: unknown, user: string, now: number) {
     if (!object(value)) return;
     const pool = text(value.pool), organization = text(value.organization);
     if (!pool?.trim() || !organization?.trim() || !this.allowed(pool, user, now)) return;
-    const claims = { pool, organization, owner: user };
-    await this.learn(claims, user);
-    Object.assign(this.entry(claims.pool)!, claims);
+    const existing = this.entry(pool);
+    if (existing && (existing.owner !== user || existing.organization !== organization)) return;
+    if (!existing) this.state.pools[key(pool)] = { pool, organization, owner: user,
+      name: "", users: [user], at: -1, pending: [], ownerSource: "own" };
+    else if (!existing.users.includes(user)) existing.users = [...existing.users, user];
     await this.save();
   }
   choices(user: string, issuedAt: number, own: PoolClaims): PoolChoice[] {
@@ -90,7 +97,7 @@ export class PoolDirectory {
     }
     this.state.pools[key(pool)] = { pool, owner: old?.owner ?? "", organization: old?.organization ?? "",
       name: old?.name ?? "", users: [], at: Math.max(at, old?.at ?? -1), pending: [],
-      refuseBefore: Math.max(old?.refuseBefore ?? 0, now + accessGrace) };
+      refuseBefore: Math.max(old?.refuseBefore ?? 0, now + accessGrace), ownerSource: old?.ownerSource };
   }
   private confirmsPending(pool: string, user: string, at: number, registry: Registry): boolean {
     // A failed member removal can roll back before grace expires. Deletions still refuse it.
@@ -109,7 +116,9 @@ export class PoolDirectory {
     const exists = computer.keyId ? keys.includes(computer.keyId) : keys.length > 0;
     if (exists) {
       computer.keyId ??= keys[0];
-      computer.state = "active";
+      computer.state = computer.state === "revoked" ? "revoked" : computer.beforeRemoval?.state ?? "revoking";
+      if (computer.state === "issuing" && (computer.beforeRemoval?.link?.expiresAt ?? 0) > now)
+        computer.link = computer.beforeRemoval!.link;
     } else {
       computer.state = "removed";
       computer.removedAt ??= new Date(now).toISOString();
@@ -119,6 +128,7 @@ export class PoolDirectory {
     for (const pool of pools) delete this.state.refusals[key([pool, computer.user])];
     delete computer.removalPending;
     delete computer.removalAt;
+    delete computer.beforeRemoval;
     await this.save();
     return true;
   }
@@ -144,11 +154,11 @@ export class PoolDirectory {
         const pending = new Set(old?.pending ?? []);
         for (const user of users) if (user !== audience.owner && !old?.provisioned?.includes(user)) pending.add(user);
         this.state.pools[key(audience.pool)] = { ...audience, users, at: change.at, provisioned: old?.provisioned ?? [],
-          pending: [...pending].filter((user) => users.includes(user)), refuseBefore: old?.refuseBefore };
+          pending: [...pending].filter((user) => users.includes(user)), refuseBefore: old?.refuseBefore, ownerSource: "audience" };
         selected.add(audience.pool);
         for (const computer of Object.values(registry)) {
           if (!boundPools(computer).includes(audience.pool) || users.includes(computer.user)) continue;
-          if (!computer.removalPending && computer.state !== "removed" && computer.state !== "revoked") this.refuse(audience.pool, computer.user, now);
+          this.refuse(audience.pool, computer.user, now);
           remove.add(computer);
         }
       }
@@ -158,7 +168,7 @@ export class PoolDirectory {
     } else {
       this.state.people[key(change.user)] = Math.max(this.state.people[key(change.user)] ?? 0, now + accessGrace);
       for (const pool of Object.values(this.state.pools)) {
-        if (pool.owner === change.user) {
+        if (pool.owner === change.user && (pool.ownerSource === "token" || pool.ownerSource === "audience")) {
           this.deletePool(pool.pool, change.at, registry, now, remove);
           selected.add(pool.pool);
           continue;
@@ -173,6 +183,7 @@ export class PoolDirectory {
     await this.save(); // Refusals survive every backend failure, but expire after old intents do.
     for (const computer of remove) {
       if (computer.state === "revoked" || (computer.state === "removed" && !computer.removalPending)) continue;
+      if (!computer.removalPending) computer.beforeRemoval = { state: computer.state, link: computer.link };
       computer.removalPending = true;
       computer.removalAt = Math.max(computer.removalAt ?? -1, change.at);
       computer.state = "revoking";
@@ -194,6 +205,7 @@ export class PoolDirectory {
       computer.state = "removed"; computer.removedAt ??= new Date(now).toISOString();
       delete computer.removalPending;
       delete computer.removalAt;
+      delete computer.beforeRemoval;
       delete computer.switching;
       delete computer.switchingTo;
       await saveRegistry();
