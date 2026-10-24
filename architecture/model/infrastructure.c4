@@ -69,6 +69,13 @@ model {
   }
   basalt.toolsGateway -[sync]-> cloudAccountApi "sign and call with the person's own temporary or IAM credentials"
 
+  crmService = adapter "CRM service" {
+    #external
+    technology "Zoho CRM API and regional OAuth"
+    metadata { hosts "accounts.zoho.com|accounts.zoho.eu|accounts.zoho.in|accounts.zoho.com.au|accounts.zoho.jp|accounts.zohocloud.ca|accounts.zoho.sa|accounts.zoho.com.cn|www.zohoapis.com|www.zohoapis.eu|www.zohoapis.in|www.zohoapis.com.au|www.zohoapis.jp|www.zohoapis.ca|www.zohoapis.sa|www.zohoapis.com.cn" }
+  }
+  basalt.toolsGateway -[sync]-> crmService "authorize and call the person's regional CRM account"
+
   emailService = adapter "Email service" {
     #external
     technology "Cloudflare Email"

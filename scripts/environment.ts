@@ -26,6 +26,7 @@ export const requiredSecrets = [
 ] as const;
 
 export const optionalConnectorClients = [
+  { name: "Zoho CRM", id: "EXECUTOR_OAUTH_ZOHO_CLIENT_ID", secret: "EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET", ready: "ZOHO_CONNECTOR_READY" },
   { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
   { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },
   { name: "Atlassian", id: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID", secret: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET", ready: "ATLASSIAN_CONNECTOR_READY" },

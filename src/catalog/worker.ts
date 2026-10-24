@@ -43,5 +43,5 @@ export async function handleCatalog(request: Request, fetcher: typeof fetch = fe
   }
 }
 
-export default { fetch: (request: Request, env: { GOOGLE_CONNECTOR_READY?: string; GITHUB_CONNECTOR_READY?: string; ATLASSIAN_CONNECTOR_READY?: string }) =>
-  handleCatalog(request, fetch, { google: env.GOOGLE_CONNECTOR_READY === "true", github: env.GITHUB_CONNECTOR_READY === "true", atlassian: env.ATLASSIAN_CONNECTOR_READY === "true" }) };
+export default { fetch: (request: Request, env: { GOOGLE_CONNECTOR_READY?: string; GITHUB_CONNECTOR_READY?: string; ATLASSIAN_CONNECTOR_READY?: string; ZOHO_CONNECTOR_READY?: string }) =>
+  handleCatalog(request, fetch, { google: env.GOOGLE_CONNECTOR_READY === "true", github: env.GITHUB_CONNECTOR_READY === "true", atlassian: env.ATLASSIAN_CONNECTOR_READY === "true", zoho: env.ZOHO_CONNECTOR_READY === "true" }) };
