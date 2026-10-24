@@ -7,7 +7,7 @@ import { handleCatalog } from "../../src/catalog/worker.ts";
 import { slackCatalogEntry } from "./catalog.mjs";
 
 const person = (id) => ({
-  id: id === "owner" ? "U_SYNTHETIC_OWNER" : "U_SYNTHETIC_MEMBER",
+  id: id === "owner" ? "UOWNER001" : "UMEMBER001",
   name: id === "owner" ? "Synthetic Owner" : "Synthetic Member",
   token: `xoxp-synthetic-${id}`,
   bot: `xoxb-synthetic-${id}`,
@@ -154,25 +154,27 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
         if (!actor) return output(response, 401, { ok: false, error: "invalid_auth" });
         const user = person(actor);
         if (operation === "auth.test")
-          return output(response, 200, { ok: true, user_id: user.id, user: user.name, team_id: "T_SYNTHETIC", team: "Example team", url: "https://example.test/" });
+          return output(response, 200, { ok: true, user_id: user.id, user: user.name, team_id: "T000000001", team: "Example team", url: "https://example.test/" });
         if (operation === "conversations.history") {
-          if (channel !== "C_SYNTHETIC") return output(response, 200, { ok: false, error: "channel_not_found" });
+          if (channel !== "C000000001") return output(response, 200, { ok: false, error: "channel_not_found" });
           return output(response, 200, {
             ok: true,
-            channel,
-            messages: [{ type: "message", user: user.id, ts: actor === "owner" ? "1.000001" : "2.000002", text: user.message }],
+            messages: [{ type: "message", user: user.id, ts: actor === "owner" ? "0000000001.000001" : "0000000002.000002", text: user.message }],
             has_more: false,
-            response_metadata: { next_cursor: "" },
+            pin_count: 0,
+            channel_actions_ts: 0,
+            channel_actions_count: 0,
           });
         }
         if (operation === "chat.postMessage") {
-          if (channel !== "C_SYNTHETIC" || typeof data.text !== "string")
+          if (channel !== "C000000001" || typeof data.text !== "string")
             return output(response, 200, { ok: false, error: "invalid_arguments" });
+          const ts = `0000000003.${String(++sequence).padStart(6, "0")}`;
           return output(response, 200, {
             ok: true,
             channel,
-            ts: `3.${++sequence}`,
-            message: { type: "message", user: user.id, text: data.text },
+            ts,
+            message: { type: "message", user: user.id, ts, text: data.text },
           });
         }
         return output(response, 404, { ok: false, error: "unknown_method" });

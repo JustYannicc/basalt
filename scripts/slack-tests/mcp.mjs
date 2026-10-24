@@ -7,14 +7,54 @@ import { proveInstalledClaude } from "./native-claude.mjs";
 
 const textOf = (value) => JSON.stringify(value?.structuredContent ?? value?.content ?? value);
 const slackPostCount = (mock) => mock.observations().api.filter((item) => item.operation === "chat.postMessage").length;
+const slackApiCount = (mock) => mock.observations().api.length;
+const channel = "C000000001";
+const syntheticUserToken = (actor) => `xoxp-synthetic-${actor}`;
 
-function toolPath(items, parts, operation) {
-  const path = items?.find((item) => {
-    const normalized = item.path.toLowerCase().replace(/[^a-z0-9]/g, "");
+function toolItem(items, parts, operation) {
+  const item = items?.find((candidate) => {
+    const normalized = candidate.path.toLowerCase().replace(/[^a-z0-9]/g, "");
     return parts.every((part) => normalized.includes(part));
-  })?.path;
-  if (!path) throw new Error(`OpenAPI search did not return ${operation}`);
-  return path;
+  });
+  if (!item) throw new Error(`OpenAPI search did not return ${operation}`);
+  return item;
+}
+
+function selectedAccountId(result, item, schemaKey, expected, peer, label, check, equal) {
+  const namespace = result.structuredContent?.namespaces?.find(
+    (entry) => entry.path === "tools.slack" && entry.app === "Slack",
+  );
+  check(typeof namespace?.accounts === "string", `${label} did not return the Slack account namespace`);
+  const schema = item[schemaKey];
+  check(typeof schema === "string", `${label} did not return the ${schemaKey} account signature`);
+  const accountId = /accountId:\s*["']([^"']+)["']/.exec(schema)?.[1];
+  check(typeof accountId === "string", `${label} did not name the selected accountId`);
+  equal(accountId, expected, `${label} selected the wrong personal Slack account`);
+  check(namespace.accounts.includes(accountId), `${label} namespace omitted its selected Slack account`);
+  check(!namespace.accounts.includes(peer), `${label} namespace exposed the peer Slack account`);
+  check(!schema.includes(peer), `${label} signature exposed the peer Slack account`);
+  return accountId;
+}
+
+function operationSucceeded(result) {
+  const execution = result?.structuredContent?.execution;
+  return result?.isError === false && execution?.ok === true && execution.value?.ok === true;
+}
+
+function isAccountInputInvalid(result) {
+  const execution = result?.structuredContent?.execution;
+  const value = execution?.value;
+  const error = value?.error;
+  return result?.isError === false
+    && execution?.ok === true
+    && value?.ok === false
+    && error?.kind === "ToolFailure"
+    && error.response?.code === "InputInvalid"
+    && error.response?.status === 422;
+}
+
+function executeCall(path, input) {
+  return `return await ${path}(JSON.parse(${JSON.stringify(JSON.stringify(input))}));`;
 }
 
 async function createClient(upstream, origin, token, organization, native) {
@@ -70,64 +110,95 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
 
     let historyPath;
     let postPath;
+    let ownerHistoryAccountId;
+    let ownerPostAccountId;
     for (const [index, client] of nativeClients.entries()) {
       const peerAccount = index === 0 ? memberAccount : ownerAccount;
+      const ownAccount = index === 0 ? ownerAccount : memberAccount;
       const ownMarker = index === 0 ? "synthetic_owner_history" : "synthetic_member_history";
       const peerMarker = index === 0 ? "synthetic_member_history" : "synthetic_owner_history";
       const search = yield* Effect.promise(() => callMcp(client, { name: "search", arguments: { query: "conversations.history" } }));
       check(!search.isError, "Native MCP could not search Slack OpenAPI tools");
       const searchText = textOf(search);
       check(!searchText.includes(peerAccount), "Native MCP exposed the peer account during discovery");
-      const currentHistory = toolPath(search.structuredContent?.items ?? [], ["conversations", "history"], "conversations.history");
+      const historyTool = toolItem(search.structuredContent?.items ?? [], ["conversations", "history"], "conversations.history");
+      const currentHistory = historyTool.path;
+      const historyAccountId = selectedAccountId(search, historyTool, "input", ownAccount, peerAccount, "History search", check, equal);
       const secondSearch = yield* Effect.promise(() => callMcp(client, { name: "search", arguments: { query: "chat.postMessage" } }));
       check(!secondSearch.isError, "Native MCP could not search for chat.postMessage");
-      const currentPost = toolPath(secondSearch.structuredContent?.items ?? [], ["chat", "postmessage"], "chat.postMessage");
+      const postTool = toolItem(secondSearch.structuredContent?.items ?? [], ["chat", "postmessage"], "chat.postMessage");
+      const currentPost = postTool.path;
+      const postAccountId = selectedAccountId(secondSearch, postTool, "input", ownAccount, peerAccount, "chat.postMessage search", check, equal);
       historyPath ??= currentHistory;
       if (postPath === undefined) postPath = currentPost;
       else equal(currentPost, postPath, "Slack clients did not discover the same chat.postMessage operation");
 
       const described = yield* Effect.promise(() => callMcp(client, { name: "describe", arguments: { paths: [currentHistory, currentPost] } }));
       check(!described.isError && !textOf(described).includes(peerAccount), "Native describe exposed peer account details");
+      const describedHistory = toolItem(described.structuredContent?.items ?? [], ["conversations", "history"], "described conversations.history");
+      const describedPost = toolItem(described.structuredContent?.items ?? [], ["chat", "postmessage"], "described chat.postMessage");
+      equal(selectedAccountId(described, describedHistory, "signature", ownAccount, peerAccount, "History describe", check, equal), historyAccountId,
+        "History search and describe selected different Slack accounts");
+      equal(selectedAccountId(described, describedPost, "signature", ownAccount, peerAccount, "chat.postMessage describe", check, equal), postAccountId,
+        "chat.postMessage search and describe selected different Slack accounts");
+      if (index === 0) {
+        ownerHistoryAccountId = historyAccountId;
+        ownerPostAccountId = postAccountId;
+      }
+
+      const historyInput = { accountId: historyAccountId, input: { query: { channel } } };
       const read = yield* Effect.promise(() => callMcp(client, { name: "call", arguments: {
-        calls: { path: currentHistory, input: { channel: "C_SYNTHETIC" } },
+        calls: { path: currentHistory, input: historyInput },
       } }));
       const readText = textOf(read);
-      check(!read.isError && readText.includes(ownMarker) && !readText.includes(peerMarker), "Native MCP read the wrong Slack account");
+      check(operationSucceeded(read) && readText.includes(ownMarker) && !readText.includes(peerMarker),
+        "Native MCP history call did not return the caller's Slack messages");
 
-      const readForgery = yield* Effect.promise(() => callMcp(client, { name: "call", arguments: {
-        calls: { path: currentHistory, input: { channel: "C_SYNTHETIC", $accounts: { slack: peerAccount } } },
+      const executedRead = yield* Effect.promise(() => callMcp(client, { name: "execute", arguments: {
+        code: `return await ${currentHistory}(${JSON.stringify(historyInput)});`,
       } }));
-      check(textOf(readForgery).includes("AccountChoiceUnsupported"), "Native MCP allowed selecting the peer Slack account");
-      const executeForgery = yield* Effect.promise(() => callMcp(client, { name: "execute", arguments: {
-        code: `return await ${currentHistory}({ channel: "C_SYNTHETIC", $accounts: { slack: ${JSON.stringify(peerAccount)} } });`,
+      const executedReadText = textOf(executedRead);
+      check(operationSucceeded(executedRead) && executedReadText.includes(ownMarker) && !executedReadText.includes(peerMarker),
+        "MCP execute history call did not return the caller's Slack messages");
+
+      const peerHistoryInput = { accountId: peerAccount, input: { query: { channel } } };
+      const apiBeforePeerRead = slackApiCount(mock);
+      const peerRead = yield* Effect.promise(() => callMcp(client, { name: "call", arguments: {
+        calls: { path: currentHistory, input: peerHistoryInput },
       } }));
-      check(textOf(executeForgery).includes("AccountChoiceUnsupported"), "MCP execute allowed selecting the peer Slack account");
+      check(isAccountInputInvalid(peerRead), "Native MCP call did not reject the peer account with SDK InputInvalid (422)");
+      equal(slackApiCount(mock), apiBeforePeerRead, "Rejected peer-account history call reached Slack");
+
+      const peerReadExecute = yield* Effect.promise(() => callMcp(client, { name: "execute", arguments: {
+        code: executeCall(currentHistory, peerHistoryInput),
+      } }));
+      check(isAccountInputInvalid(peerReadExecute), "MCP execute did not reject the peer account with SDK InputInvalid (422)");
+      equal(slackApiCount(mock), apiBeforePeerRead, "Rejected peer-account history execute reached Slack");
 
       const peerWriteInput = {
-        channel: "C_SYNTHETIC",
-        text: `synthetic_forbidden_${index}_post`,
-        $accounts: { slack: peerAccount },
+        accountId: peerAccount,
+        input: {
+          contentType: "application/x-www-form-urlencoded",
+          body: { channel, text: `synthetic_forbidden_${index}_post` },
+          headers: { token: syntheticUserToken(index === 0 ? "member" : "owner") },
+        },
       };
-      const postsBeforePeerWrite = slackPostCount(mock);
+      const apiBeforePeerWrite = slackApiCount(mock);
       const peerWrite = yield* Effect.promise(() => callMcp(client, { name: "call", arguments: {
         calls: { path: currentPost, input: peerWriteInput },
       } }));
-      check(textOf(peerWrite).includes("AccountChoiceUnsupported"),
-        "Native MCP call allowed chat.postMessage with the peer Slack account");
-      equal(slackPostCount(mock), postsBeforePeerWrite,
-        "A rejected peer-account call reached Slack chat.postMessage");
+      check(isAccountInputInvalid(peerWrite), "Native MCP call did not reject peer chat.postMessage with SDK InputInvalid (422)");
+      equal(slackApiCount(mock), apiBeforePeerWrite, "Rejected peer-account chat.postMessage call reached Slack");
       const peerExecute = yield* Effect.promise(() => callMcp(client, { name: "execute", arguments: {
-        code: `return await ${currentPost}(${JSON.stringify(peerWriteInput)});`,
+        code: executeCall(currentPost, peerWriteInput),
       } }));
-      check(textOf(peerExecute).includes("AccountChoiceUnsupported"),
-        "MCP execute allowed chat.postMessage with the peer Slack account");
-      equal(slackPostCount(mock), postsBeforePeerWrite,
-        "A rejected peer-account execute reached Slack chat.postMessage");
+      check(isAccountInputInvalid(peerExecute), "MCP execute did not reject peer chat.postMessage with SDK InputInvalid (422)");
+      equal(slackApiCount(mock), apiBeforePeerWrite, "Rejected peer-account chat.postMessage execute reached Slack");
 
-      const actor = index === 0 ? actors.owner : actors.member;
-      const inspectPeer = yield* request(actor, "GET", `${prefix}/accounts/${peerAccount}`);
+      const sessionActor = index === 0 ? actors.owner : actors.member;
+      const inspectPeer = yield* request(sessionActor, "GET", `${prefix}/accounts/${peerAccount}`);
       check(inspectPeer.status === 403 || inspectPeer.status === 404, "A person could read the peer account record");
-      const linkPeer = yield* request(actor, "PUT",
+      const linkPeer = yield* request(sessionActor, "PUT",
         `${prefix}/apps/${app.id}/accounts/user/slack/${encodeURIComponent(peerAccount)}`);
       check(linkPeer.status === 403 || linkPeer.status === 404, "A person could link the peer account");
     }
@@ -138,7 +209,14 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       && callToolDefinition?.annotations?.destructiveHint === true
       && callToolDefinition?.annotations?.openWorldHint === true,
     "Native MCP call did not carry caller approval annotations");
-    const writeInput = { channel: "C_SYNTHETIC", text: "synthetic_owner_post" };
+    const writeInput = {
+      accountId: ownerPostAccountId,
+      input: {
+        contentType: "application/x-www-form-urlencoded",
+        body: { channel, text: "synthetic_owner_post" },
+        headers: { token: syntheticUserToken("owner") },
+      },
+    };
     const callsBeforeApproval = slackPostCount(mock);
     const executeWrite = yield* Effect.promise(() => callMcp(standard, { name: "execute", arguments: {
       code: `return await ${postPath}(${JSON.stringify(writeInput)});`,
@@ -151,7 +229,7 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
     const posted = yield* Effect.promise(() => callMcp(nativeClients[0], { name: "call", arguments: {
       calls: { path: postPath, input: writeInput },
     } }));
-    check(!posted.isError && textOf(posted).includes("synthetic_owner_post"), "Native MCP did not post as the caller");
+    check(operationSucceeded(posted) && textOf(posted).includes("synthetic_owner_post"), "Native MCP did not post as the caller");
     equal(slackPostCount(mock), callsBeforeApproval + 1,
       "The approved native MCP write did not reach Slack exactly once");
     const writeCall = mock.observations().api.filter((item) => item.operation === "chat.postMessage").at(-1);
@@ -190,9 +268,13 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       slug: app.slug,
       historyPath,
       postPath,
+      historyAccountId: ownerHistoryAccountId,
+      postAccountId: ownerPostAccountId,
+      peerAccountId: memberAccount,
+      userToken: syntheticUserToken("owner"),
       marker: "synthetic_owner_history",
       peerMarker: "synthetic_member_history",
-      channel: "C_SYNTHETIC",
+      channel,
       postText: "synthetic_owner_post",
       mock,
     }));

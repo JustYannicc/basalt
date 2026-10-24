@@ -87,6 +87,10 @@ export async function proveInstalledClaude({
   slug,
   historyPath,
   postPath,
+  historyAccountId,
+  postAccountId,
+  peerAccountId,
+  userToken,
   marker,
   peerMarker,
   channel,
@@ -137,9 +141,15 @@ export async function proveInstalledClaude({
       } else if (turn === 2) {
         historyPathReturned = results.some((entry) => containsText(entry.content, historyPath));
         assert.ok(historyPathReturned, "Signalbox search did not return conversations.history to Claude");
+        assert.ok(results.some((entry) => containsText(entry.content, historyAccountId))
+          && !results.some((entry) => containsText(entry.content, peerAccountId)),
+        "Claude's history search did not select only its owner's Slack account");
         tool = offered.find((name) => name === "mcp__signalbox__call");
         assert.ok(tool, "Claude did not load the configured Signalbox call tool for the history read");
-        input = { calls: { path: historyPath, input: { channel } } };
+        input = { calls: { path: historyPath, input: {
+          accountId: historyAccountId,
+          input: { query: { channel } },
+        } } };
       } else if (turn === 3) {
         historyReadReturned = results.some((entry) => containsText(entry.content, marker));
         assert.ok(historyReadReturned, "The real synthetic Slack history did not reach Claude");
@@ -151,9 +161,19 @@ export async function proveInstalledClaude({
       } else if (turn === 4) {
         postPathReturned = results.some((entry) => containsText(entry.content, postPath));
         assert.ok(postPathReturned, "Signalbox search did not return chat.postMessage to Claude");
+        assert.ok(results.some((entry) => containsText(entry.content, postAccountId))
+          && !results.some((entry) => containsText(entry.content, peerAccountId)),
+        "Claude's post search did not select only its owner's Slack account");
         tool = offered.find((name) => name === "mcp__signalbox__call");
         assert.ok(tool, "Claude did not load the approved Signalbox call tool for chat.postMessage");
-        input = { calls: { path: postPath, input: { channel, text: postText } } };
+        input = { calls: { path: postPath, input: {
+          accountId: postAccountId,
+          input: {
+            contentType: "application/x-www-form-urlencoded",
+            body: { channel, text: postText },
+            headers: { token: userToken },
+          },
+        } } };
       } else {
         postReturned = results.some((entry) => containsText(entry.content, postText));
         assert.ok(postReturned, "The expected Slack post result did not return to Claude");
