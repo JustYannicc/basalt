@@ -54,12 +54,12 @@ async function launch(command, args, env, cwd, report) {
   }
 }
 
-function modelMessage(model, tool, input, text) {
+function modelMessage(model, turn, tool, input, text) {
   const events = [
-    { type: "message_start", message: { id: "msg_slack_fixture", type: "message", role: "assistant", model,
+    { type: "message_start", message: { id: `msg_slack_fixture_${turn}`, type: "message", role: "assistant", model,
       content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
     { type: "content_block_start", index: 0, content_block: tool
-      ? { type: "tool_use", id: `tool_${tool}`, name: tool, input: {} } : { type: "text", text: "" } },
+      ? { type: "tool_use", id: `tool_slack_fixture_${turn}`, name: tool, input: {} } : { type: "text", text: "" } },
     { type: "content_block_delta", index: 0, delta: tool
       ? { type: "input_json_delta", partial_json: JSON.stringify(input) } : { type: "text_delta", text } },
     { type: "content_block_stop", index: 0 },
@@ -179,7 +179,7 @@ export async function proveInstalledClaude({
         assert.ok(postReturned, "The expected Slack post result did not return to Claude");
       }
       response.setHeader("content-type", "text/event-stream");
-      response.end(modelMessage(body.model, tool, input, completionText));
+      response.end(modelMessage(body.model, turn, tool, input, completionText));
     } catch (error) {
       failures.push(String(error));
       response.writeHead(400);
