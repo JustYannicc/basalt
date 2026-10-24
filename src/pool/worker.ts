@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
+import type { ProductEventCallback } from "../setup/product-events.ts";
 import { isControlPath } from "../../apps/pool/contract.ts";
 import { PoolControl } from "./attribution.ts";
 import { HomeClient } from "./control.ts";
@@ -6,7 +8,12 @@ import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 
-export interface PoolEnvironment {
+const modelObservationPaths = new Set([
+  "/v1/responses", "/v1/messages", "/v1/chat/completions", "/v1/completions",
+  "/messages", "/chat/completions", "/completions",
+]);
+
+export interface PoolEnvironment extends TelemetryEnv {
   PoolContainer: DurableObjectNamespace;
   POOL_DATABASE_URL: string;
   POOL_MANAGEMENT_KEY: string;
@@ -25,6 +32,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
     this.lifecycle = this.createLifecycle(ctx, env);
+    const onProductEvent: ProductEventCallback = (event: ProductEvent, accountId: string) => {
+      ctx.waitUntil(captureProduct(env, event, accountId));
+    };
     const home = async (path: string, init?: RequestInit) => {
         if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
         await this.managementReady();
@@ -37,11 +47,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      defer: (work) => ctx.waitUntil(work), home,
+      defer: (work) => ctx.waitUntil(work), home, onProductEvent,
     });
     this.computers = new Computers({
-      storage: ctx.storage, home: new ComputerHome(new HomeClient(home)),
+      storage: ctx.storage, home: new ComputerHome(new HomeClient(home), onProductEvent),
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      onProductEvent,
     });
   }
 
@@ -101,6 +112,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   async alarm() {
     await this.computers.expire();
     await (await this.lifecycle).warm();
+    await this.computers.observeUsage();
     await this.control.expire();
   }
 
@@ -117,6 +129,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       const container = this.ctx.container;
       if (!container || !port) throw new Error("Pool container unavailable");
       const response = await container.getTcpPort(port).fetch(request);
+      if (request.method === "POST" && modelObservationPaths.has(pathname) && response.ok)
+        this.ctx.waitUntil(this.computers.observeUsage());
       if (response.status === 101) return response;
       const headers = new Headers(response.headers);
       headers.set("X-Signalbox-Pool-Boot", status.boot_id);

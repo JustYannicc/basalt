@@ -1,0 +1,389 @@
+diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+index 4f5e3f3..bf4d237 100644
+--- a/apps/hosted/cloud/src/implementation/error-reporting.ts
++++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
+@@ -1,6 +1,6 @@
+ /** Error-only Sentry integration with one client and isolated scope per Worker request. */
+ import { CloudflareClient, Scope, createTransport } from "@sentry/cloudflare";
+-import { createStackParser, nodeStackLineParser } from "@sentry/core";
++import { createStackParser, nodeStackLineParser, type ErrorEvent } from "@sentry/core";
+ import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
+ import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
+ import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
+@@ -41,7 +41,52 @@ const Settings = Schema.Struct({
+   dsn: Schema.String,
+   environment: Schema.String,
+   release: Schema.String,
++  strictPrivacy: Schema.optional(Schema.Boolean),
+ });
++type SentrySettings = typeof Settings.Type;
++
++const boundedLabel = (value: unknown, maxLength: number): string | undefined =>
++  typeof value === "string" && value.length <= maxLength && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)
++    ? value
++    : undefined;
++
++const opaqueUserId = (value: unknown): value is string =>
++  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
++
++const traceId = (value: unknown, length: number): string | undefined =>
++  typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value) && !/^0+$/.test(value)
++    ? value.toLowerCase()
++    : undefined;
++
++/** A direct DSN reports one fixed discriminator and only bounded deployment/correlation IDs. */
++export const sentryBeforeSend = (settings: SentrySettings) =>
++  settings.strictPrivacy === true
++    ? (event: ErrorEvent): ErrorEvent => {
++        const userId = opaqueUserId(event.user?.id) ? event.user.id : undefined;
++        const trace = event.contexts?.trace;
++        const safeTraceId = traceId(trace?.trace_id, 32);
++        const safeSpanId = traceId(trace?.span_id, 16);
++        const release = boundedLabel(settings.release, 128);
++        const environment = boundedLabel(settings.environment, 64);
++        const eventId = traceId(event.event_id, 32);
++        return {
++          ...(eventId === undefined ? {} : { event_id: eventId }),
++          timestamp: Date.now() / 1000,
++          level: "error",
++          platform: "javascript",
++          message: "UnhandledFailure",
++          exception: { values: [{ type: "UnhandledFailure" }] },
++          fingerprint: ["basalt", "UnhandledFailure"],
++          type: undefined,
++          ...(release === undefined ? {} : { release }),
++          ...(environment === undefined ? {} : { environment }),
++          ...(userId === undefined ? {} : { user: { id: userId } }),
++          ...(safeTraceId === undefined || safeSpanId === undefined
++            ? {}
++            : { contexts: { trace: { trace_id: safeTraceId, span_id: safeSpanId } } }),
++        };
++      }
++    : undefined;
+ /** The reporting boundary never replaces the failure of a product operation. */
+ export class SentryTransportFailed extends Schema.TaggedError<SentryTransportFailed>()(
+   "SentryTransportFailed",
+@@ -75,6 +120,7 @@ export const withCloudSentry = <A, E, R>(
+           tracesSampleRate: 0,
+           sendDefaultPii: false,
+           stackParser: workerStackParser,
++          beforeSend: sentryBeforeSend(config),
+           transport: (options) =>
+             createTransport(options, async (request) => {
+               const response = await fetch(options.url, {
+diff --git a/apps/hosted/cloud/src/infrastructure/sentry.ts b/apps/hosted/cloud/src/infrastructure/sentry.ts
+index ee5a60c..c6b141b 100644
+--- a/apps/hosted/cloud/src/infrastructure/sentry.ts
++++ b/apps/hosted/cloud/src/infrastructure/sentry.ts
+@@ -3,11 +3,73 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
+ import * as Output from "alchemy/Output";
+ import * as Command from "alchemy/Command";
+ import { Stage } from "alchemy/Stage";
+-import { Config, Effect, Option, Schema } from "effect";
++import { Config, Effect, Option, Redacted, Schema } from "effect";
+ import type { SentryOutput } from "./sentry-output.ts";
+ import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
+ import { pinnedInProduction } from "./site-telemetry.ts";
+ 
++/** The public key, EU ingest host, and numeric project encoded by a strict Sentry DSN. */
++export interface DirectSentryDsn {
++  readonly dsn: string;
++  readonly publicKey: string;
++  readonly host: string;
++  readonly projectId: string;
++}
++
++/** The configured direct OTLP trace endpoint and its Sentry public-key auth header. */
++export interface DirectSentryOtlpTarget {
++  readonly url: string;
++  readonly authHeader: string;
++}
++
++/** The operator DSN must be HTTPS on one Sentry EU ingest host and one numeric project. */
++export function parseDirectSentryDsn(value: unknown): DirectSentryDsn | undefined {
++  if (typeof value !== "string" || value === "" || value.trim() === "") return undefined;
++  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(value);
++  if (!match) return undefined;
++  try {
++    const url = new URL(value);
++    const [, publicKey, host, projectId] = match;
++    if (
++      url.protocol !== "https:" || url.username !== publicKey || url.password !== "" ||
++      url.port !== "" || url.search !== "" || url.hash !== "" ||
++      url.hostname.toLowerCase() !== host!.toLowerCase() || url.pathname !== `/${projectId}`
++    ) return undefined;
++    return { dsn: value, publicKey: publicKey!, host: host!.toLowerCase(), projectId: projectId! };
++  } catch {
++    return undefined;
++  }
++}
++
++/**
++ * The OTLP URL comes from Project settings → Client Keys (DSN), not from a derived DSN path.
++ * Requiring the same EU ingest host keeps a copied endpoint in the DSN's residency region.
++ */
++export function parseDirectSentryOtlpEndpoint(
++  dsn: DirectSentryDsn,
++  value: unknown,
++): DirectSentryOtlpTarget | undefined {
++  if (typeof value !== "string" || value === "" || value.trim() === "") return undefined;
++  const match = /^https:\/\/([^/?#]+)(\/[^?#]+)$/i.exec(value);
++  if (!match || match[1]!.includes("@") || match[1]!.includes(":")) return undefined;
++  try {
++    const url = new URL(value);
++    if (
++      url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "" ||
++      url.search !== "" || url.hash !== "" || url.hostname.toLowerCase() !== dsn.host
++    ) return undefined;
++    return { url: url.href, authHeader: `sentry sentry_key=${dsn.publicKey}` };
++  } catch {
++    return undefined;
++  }
++}
++
++const disabledSentryBindings = () => ({
++  env: { EXECUTOR_SENTRY: Output.asOutput(null) },
++  build: {},
++  errorTunnel: Output.asOutput<string | null>(null),
++});
++
+ /** Disabled stages do not read Sentry state or require management credentials. */
+ export const sentryBindings = Effect.gen(function* () {
+   const dev = (yield* AlchemyContext).dev;
+@@ -38,13 +100,23 @@ export const sentryBindings = Effect.gen(function* () {
+       errorTunnel: Output.asOutput<string | null>("/api/fedcba9876543210/submit"),
+     };
+   }
+-  const enabled = !dev && (yield* Config.Boolean("SENTRY_ENABLED").pipe(Config.withDefault(false)));
+-  if (!enabled)
++  const directDsn = yield* Config.Redacted("SENTRY_DSN").pipe(Config.option);
++  if (Option.isSome(directDsn) && Redacted.value(directDsn.value).trim() !== "") {
++    const parsed = parseDirectSentryDsn(Redacted.value(directDsn.value));
++    if (!parsed) return disabledSentryBindings();
++    const environment = yield* Stage;
++    const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
+     return {
+-      env: { EXECUTOR_SENTRY: Output.asOutput(null) },
++      env: {
++        EXECUTOR_SENTRY: Output.asOutput({ dsn: parsed.dsn, environment, release, strictPrivacy: true }),
++      },
++      // The direct public key is server-only here. Browser reporting requires the managed tunnel.
+       build: {},
+       errorTunnel: Output.asOutput<string | null>(null),
+     };
++  }
++  const enabled = !dev && (yield* Config.Boolean("SENTRY_ENABLED").pipe(Config.withDefault(false)));
++  if (!enabled) return disabledSentryBindings();
+   const environment = yield* Stage;
+   const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
+   const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
+@@ -102,11 +174,10 @@ export const uploadCloudSourceMaps = (
+   bundle: Output.Output<unknown>,
+ ) =>
+   Effect.gen(function* () {
+-    if (
+-      (yield* AlchemyContext).dev ||
+-      !(yield* Config.Boolean("SENTRY_ENABLED").pipe(Config.withDefault(false)))
+-    )
+-      return;
++    if ((yield* AlchemyContext).dev) return;
++    const directDsn = yield* Config.Redacted("SENTRY_DSN").pipe(Config.option);
++    if (Option.isSome(directDsn) && Redacted.value(directDsn.value).trim() !== "") return;
++    if (!(yield* Config.Boolean("SENTRY_ENABLED").pipe(Config.withDefault(false)))) return;
+     const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
+     yield* Config.Redacted("SENTRY_AUTH_TOKEN");
+     yield* Command.Exec(sourceMapUploads[worker], {
+diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+index 13f6224..eedea4a 100644
+--- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
++++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+@@ -15,9 +15,23 @@ import { testStage } from "./stage.ts";
+ import { InvocationTelemetry } from "./invocation-telemetry.ts";
+ import { sqlTracing } from "../implementation/sql-tracing.ts";
+ import { axiomSettings } from "./axiom-settings.ts";
++import { parseDirectSentryDsn, parseDirectSentryOtlpEndpoint } from "./sentry.ts";
+ 
+ const binding = "EXECUTOR_TELEMETRY";
+ 
++/** A configured direct DSN is an explicit sink override; bad or missing OTLP disables traces. */
++const directSentryOtlp = Effect.gen(function* () {
++  const configured = yield* Config.Redacted("SENTRY_DSN").pipe(Config.option);
++  if (Option.isNone(configured) || Redacted.value(configured.value).trim() === "")
++    return { configured: false as const };
++  const dsn = parseDirectSentryDsn(Redacted.value(configured.value));
++  if (!dsn) return { configured: true as const, target: undefined };
++  const endpoint = yield* Config.String("SENTRY_OTLP_ENDPOINT").pipe(Config.option);
++  if (Option.isNone(endpoint) || endpoint.value.trim() === "")
++    return { configured: true as const, target: undefined };
++  return { configured: true as const, target: parseDirectSentryOtlpEndpoint(dsn, endpoint.value) };
++});
++
+ /**
+  * Configured stages own their datasets and never adopt the original Executor's telemetry.
+  * Test stages share one retained set and are told apart by the environment field, so a
+@@ -120,6 +134,12 @@ export const telemetryResources = Effect.gen(function* () {
+ export const cloudObservability = Effect.gen(function* () {
+   if ((yield* AlchemyContext).dev) return {};
+   const stage = yield* Stage;
++  const direct = yield* directSentryOtlp;
++  if (direct.configured) {
++    // Cloudflare platform spans may contain raw URLs and addresses. Direct Sentry mode exports
++    // only the Effect spans after packages/telemetry/src/isolate.ts applies strict allowlisting.
++    return {};
++  }
+   const resources = yield* telemetryResources;
+   if (Option.isNone(resources)) return {};
+   const { names, traces, ingest } = resources.value;
+@@ -155,6 +175,25 @@ export const telemetryBindings = Effect.gen(function* () {
+     const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
+     return { [binding]: Output.asOutput(Redacted.make(encoded)) };
+   }
++  const direct = yield* directSentryOtlp;
++  if (direct.configured) {
++    if (!direct.target) return { [binding]: Output.asOutput(Redacted.make("null")) };
++    const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
++    const environment = yield* Stage;
++    return {
++      [binding]: Output.asOutput(Redacted.make(JSON.stringify({
++        service: "executor-cloud",
++        clock: "cloudflare-io",
++        version,
++        environment,
++        strictPrivacy: true,
++        traces: {
++          url: direct.target.url,
++          headers: { "x-sentry-auth": direct.target.authHeader },
++        },
++      }))),
++    };
++  }
+   const resources = yield* telemetryResources;
+   if (Option.isNone(resources)) return { [binding]: Output.asOutput(Redacted.make("null")) };
+   const { names, traces, logs, metrics, ingest } = resources.value;
+diff --git a/packages/telemetry/src/config.ts b/packages/telemetry/src/config.ts
+index fa12c34..07043e1 100644
+--- a/packages/telemetry/src/config.ts
++++ b/packages/telemetry/src/config.ts
+@@ -37,6 +37,8 @@ export const TelemetryConfig = Schema.Struct({
+   logs: Schema.optional(TelemetryTarget),
+   metrics: Schema.optional(TelemetryTarget),
+   metricsProtocol: Schema.optional(Schema.Literals(["http/json", "http/protobuf"])),
++  /** Rebuild trace payloads from a strict allowlist before a direct Sentry export. */
++  strictPrivacy: Schema.optional(Schema.Boolean),
+ });
+ /** Resolved telemetry configuration. */
+ export type TelemetryConfig = typeof TelemetryConfig.Type;
+diff --git a/packages/telemetry/src/isolate.ts b/packages/telemetry/src/isolate.ts
+index 1e06fd8..bafe3dc 100644
+--- a/packages/telemetry/src/isolate.ts
++++ b/packages/telemetry/src/isolate.ts
+@@ -36,6 +36,96 @@ interface Pending {
+   metrics: Array<ResourceMetrics>;
+ }
+ 
++const traceMethods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
++const safeRouteWords = new Set([
++  "api", "v1", "v2", "v8", "auth", "oauth", "organizations", "organization", "apps", "app",
++  "files", "data", "telemetry", "setup", "tools", "mcp", "pool", "models", "requests", "billing",
++  "accounts", "account", "computers", "sessions", "invitations", "invites", "status", "health", "ready",
++  "sign-ins", "callback", "logout", "login", "signup", "feedback", "traces", "metrics", "logs", "operations",
++  "workflows", "webhooks", "projects", "deployments", "usage", "connectors", "providers", "teams", "members",
++  "current", "me", "claim", "finish", "start", "cancel", "remove", "search", "list", "create", "update",
++  "delete", "index", "home", "docs", "terms", "privacy", "static", "healthz", "readyz", "openapi.json",
++]);
++
++const traceId = (value: unknown, length: number): value is string =>
++  typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value) && !/^0+$/.test(value);
++
++const safeLabel = (value: unknown, max: number): value is string =>
++  typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
++
++const routeTemplate = (value: unknown): string | undefined => {
++  if (typeof value !== "string" || value.length > 192 || !value.startsWith("/") || value.startsWith("//")) return undefined;
++  const segments = value.split("/").slice(1);
++  if (segments.length > 8 || segments.some((segment) => segment === "")) return undefined;
++  const safeSegments = segments.map((segment) => {
++    if (safeRouteWords.has(segment.toLowerCase())) return segment.toLowerCase();
++    return ":segment";
++  });
++  return `/${safeSegments.join("/")}`;
++};
++
++const attribute = (
++  attributes: ReadonlyArray<{ key: string; value: { stringValue?: string | null; intValue?: string | number | null; doubleValue?: number | null } }>,
++  key: string,
++) => attributes.find((entry) => entry.key === key)?.value;
++
++/** Rebuild direct Sentry trace payloads from safe IDs, timings, route labels and service labels. */
++export function strictPrivacyTraceData(
++  data: OtlpTracer.TraceData,
++  config: Pick<TelemetryConfig, "service" | "version" | "environment">,
++): OtlpTracer.TraceData {
++  const resourceAttributes = [{ key: "service.name", value: { stringValue: safeLabel(config.service, 64) ? config.service : "service" } }];
++  if (safeLabel(config.version, 128)) resourceAttributes.push({ key: "service.version", value: { stringValue: config.version } });
++  if (safeLabel(config.environment, 64)) resourceAttributes.push({ key: "deployment.environment.name", value: { stringValue: config.environment } });
++  const resource = { attributes: resourceAttributes, droppedAttributesCount: 0 };
++  return {
++    resourceSpans: data.resourceSpans.map((resourceSpan) => ({
++      resource,
++      scopeSpans: resourceSpan.scopeSpans.map((scopeSpan) => ({
++        scope: { name: "basalt.telemetry" },
++        spans: scopeSpan.spans.flatMap((span) => {
++          if (!traceId(span.traceId, 32) || !traceId(span.spanId, 16)) return [];
++          const start = /^\d{1,20}$/.test(span.startTimeUnixNano) ? BigInt(span.startTimeUnixNano) : undefined;
++          const end = /^\d{1,20}$/.test(span.endTimeUnixNano) ? BigInt(span.endTimeUnixNano) : undefined;
++          if (start === undefined || end === undefined || end < start) return [];
++          const methodValue = attribute(span.attributes, "http.request.method")?.stringValue;
++          const method = typeof methodValue === "string" && traceMethods.has(methodValue) ? methodValue : undefined;
++          const route = routeTemplate(attribute(span.attributes, "http.route")?.stringValue);
++          const statusValue = attribute(span.attributes, "http.response.status_code");
++          const statusCode = statusValue?.intValue ?? statusValue?.doubleValue;
++          const status = typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
++            ? statusCode
++            : undefined;
++          const attributes = [
++            ...(method === undefined ? [] : [{ key: "http.request.method", value: { stringValue: method } }]),
++            ...(route === undefined ? [] : [{ key: "http.route", value: { stringValue: route } }]),
++            ...(status === undefined ? [] : [{ key: "http.response.status_code", value: { intValue: status } }]),
++          ];
++          const parentSpanId = traceId(span.parentSpanId, 16) ? span.parentSpanId : undefined;
++          const kind = Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
++          const statusCodeSafe = [0, 1, 2].includes(span.status.code) ? span.status.code : 0;
++          return [{
++            traceId: span.traceId.toLowerCase(),
++            spanId: span.spanId.toLowerCase(),
++            parentSpanId,
++            name: route === undefined ? "operation" : `${method ?? "HTTP"} ${route}`,
++            kind,
++            startTimeUnixNano: start.toString(),
++            endTimeUnixNano: end.toString(),
++            attributes,
++            droppedAttributesCount: 0,
++            events: [],
++            droppedEventsCount: 0,
++            status: { code: statusCodeSafe },
++            links: [],
++            droppedLinksCount: 0,
++          }];
++        }),
++      })),
++    })),
++  };
++}
++
+ /**
+  * Effect's exporters serialize each batch immediately before posting it. Here
+  * serialization keeps the batch object and the post goes nowhere, so a flush
+@@ -158,7 +248,11 @@ export const isolateTelemetry = (
+           [
+             config.traces === undefined || traces.length === 0
+               ? Effect.void
+-              : post("OtlpTracer", config.traces, json.traces({ resourceSpans: traces })),
++              : post("OtlpTracer", config.traces, json.traces({
++                  resourceSpans: config.strictPrivacy === true
++                    ? strictPrivacyTraceData({ resourceSpans: traces }, config).resourceSpans
++                    : traces,
++                })),
+             config.logs === undefined || logs.length === 0
+               ? Effect.void
+               : post("OtlpLogger", config.logs, json.logs({ resourceLogs: logs })),

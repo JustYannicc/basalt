@@ -1,10 +1,12 @@
 import { signEnvelope } from "../pool/token.ts";
+import { emitProductEvent, type ProductEventCallback } from "./product-events.ts";
 
 interface Service { fetch(request: Request): Promise<Response> }
 export interface SetupEnv {
   TOOLS_SERVICE: Service;
   POOL_SERVICE: Service;
   POOL_APP_SIGNING_KEY: string;
+  onProductEvent?: ProductEventCallback;
 }
 
 const security = {
@@ -211,7 +213,9 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
       if (input.computerId !== undefined) return linkResponse(request, await body(await pool(request, env, "refresh", {
         user: payload.user, intent: input.intent, id: input.computerId,
       })));
-      return await createLink(request, env, payload, selection);
+      const response = await createLink(request, env, payload, selection);
+      if (response.ok) emitProductEvent(env.onProductEvent, "setup_started", payload.user);
+      return response;
     }
     if (method === "GET") {
       const result = await body(await pool(request, env, "computers", payload));

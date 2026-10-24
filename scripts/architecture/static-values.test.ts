@@ -53,13 +53,51 @@ test("mutable, shadowed, and URL-host-mutated aliases stay unknown", () => {
       `let destination = process.env.API_URL; fetch(destination);`,
       `const url = new URL("https://api.example.test/v1");`,
       `const alias = url; alias.hostname = process.env.API_HOST; fetch(url);`,
+      `const escaped = new URL("https://api.example.test/v1"); rewrite(escaped); fetch(escaped);`,
+      `const assigned = new URL("https://api.example.test/v1"); const assignedAlias = assigned; Object.assign(assignedAlias, { hostname: process.env.API_HOST }); fetch(assigned);`,
       `const origin = "https://api.example.test/v1";`,
       `function send(origin: string) { fetch(origin); }`,
     ].join("\n"),
   });
   const source = values.source(paths[0]!);
   const args = expressions(source!, call => call.expression.getText(source!) === "fetch");
-  expect(args.map(argument => values.urlHost(argument))).toEqual([undefined, undefined, undefined]);
+  expect(args.map(argument => values.urlHost(argument))).toEqual([undefined, undefined, undefined, undefined, undefined]);
+});
+
+test("bounded URL proofs follow a regex-validated HTTPS host to a returned URL", () => {
+  const { paths, values } = fixture({
+    "src/telemetry.ts": [
+      "function parseDsn(value: string) {",
+      String.raw`  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/.exec(value);`,
+      "  if (!match) return undefined;",
+      "  const [, publicKey, host, projectId] = match;",
+      "  const url = new URL(value);",
+      "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== publicKey || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '' || url.pathname !== `/${projectId}`) return undefined;",
+      "  return { publicKey, host: host.toLowerCase(), projectId };",
+      "}",
+      "function sentryTarget(env: { DSN: string }) {",
+      "  const dsn = parseDsn(env.DSN);",
+      "  if (!dsn) return undefined;",
+      "  return { url: `https://${dsn.host}/api/${dsn.projectId}/envelope/` };",
+      "}",
+      "function otlpTarget(env: { DSN: string; ENDPOINT: string }) {",
+      "  const dsn = parseDsn(env.DSN);",
+      "  if (!dsn || !env.ENDPOINT) return undefined;",
+      "  const url = new URL(env.ENDPOINT);",
+      "  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '' || url.hostname.toLowerCase() !== dsn.host) return undefined;",
+      "  return { url: url.href };",
+      "}",
+      "const sentry = sentryTarget(env);",
+      "const otlp = otlpTarget(env);",
+      "fetch(sentry.url);",
+      "fetch(otlp.url);",
+    ].join("\n"),
+  });
+  const source = values.source(paths[0]!);
+  const args = expressions(source!, call => call.expression.getText(source!) === "fetch");
+  expect(args.map(argument => values.boundedUrlHost(argument))).toEqual([
+    "*.ingest.de.sentry.io", "*.ingest.de.sentry.io",
+  ]);
 });
 
 test("package-base URL resolution requires a bounded relative prefix", () => {

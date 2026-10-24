@@ -56,7 +56,7 @@ class FakeHomeServer {
     throw new Error(`Unexpected Home request ${method} ${endpoint}`);
   };
 
-  client() { return new ComputerHome(new HomeClient(this.fetch)); }
+  client(onProductEvent?: (event: string, accountId: string) => void) { return new ComputerHome(new HomeClient(this.fetch), onProductEvent); }
 }
 
 test("Home user identity is stable for a tools user and defaults to uncapped credits", async () => {
@@ -95,6 +95,24 @@ test("mint creates the pool group before one nonempty channel-scoped Home key", 
   assert.equal(key.api_key, result.key);
   assert.equal(result.keyId, 73);
   assert.equal(server.calls.filter((call) => call.path === "/v8/management/access/api-keys" && call.method === "POST").length, 1);
+});
+
+test("setup-created pools emit once after Home confirms the durable group", async () => {
+  const server = new FakeHomeServer();
+  const events: [string, string][] = [];
+  const home = server.client((event, accountId) => events.push([event, accountId]));
+
+  await home.mint("tools-user-42", "pool-a", "computer-one");
+  await home.mint("tools-user-42", "pool-a", "computer-two");
+
+  assert.deepEqual(events, [["pool_created", "tools-user-42"]]);
+});
+
+test("rebind reports a pool created for the signed setup person", async () => {
+  const server = new FakeHomeServer();
+  const events: [string, string][] = [];
+  await server.client((event, accountId) => events.push([event, accountId])).rebind(73, "pool-b", "tools-user-42");
+  assert.deepEqual(events, [["pool_created", "tools-user-42"]]);
 });
 
 test("rebind patches the same Home key after resolving the destination group", async () => {

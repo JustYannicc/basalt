@@ -1,7 +1,14 @@
 import { isControlPath } from "../apps/pool/contract.ts";
+import { isPublicModelPath } from "./pool/lifecycle.ts";
 import { brand } from "../brand.ts";
 import { handleSetup } from "./setup/host.ts";
 import { observeToolCall } from "./setup/tool-observation.ts";
+import { handleFeedback } from "./feedback/host.ts";
+import { injectFeedback } from "./feedback/ui.ts";
+import { handleRelay, type RelayEnv } from "./telemetry/relay.ts";
+import { captureProduct } from "./telemetry/product.ts";
+import { traceRequest, type TraceEnv } from "./telemetry/traces.ts";
+import { validSentryDsn } from "./telemetry/sentry.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
 
 // Service bindings name the same gateways as the architecture.
@@ -15,7 +22,7 @@ interface Service {
   fetch(request: Request): Promise<Response>;
 }
 
-export interface RouterEnv {
+export interface RouterEnv extends RelayEnv, TraceEnv {
   TOOLS_SERVICE: Service;
   CATALOG_SERVICE: Service;
   POOL_SERVICE: Service;
@@ -23,7 +30,7 @@ export interface RouterEnv {
 }
 
 function isPoolPath(pathname: string): boolean {
-  return pathname === "/v1" || pathname.startsWith("/v1/") || isControlPath(pathname);
+  return isPublicModelPath(pathname) || isControlPath(pathname);
 }
 
 function isPoolManagementPath(pathname: string): boolean {
@@ -139,12 +146,20 @@ function servicePath(pathname: string): string {
   return decoded.toLowerCase() || "/";
 }
 
-export function handleRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
+function routeRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
   const url = new URL(request.url);
   const { search } = url;
   const pathname = servicePath(url.pathname);
   if (pathname.startsWith("/catalog/")) return env.CATALOG_SERVICE.fetch(request);
-  if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/")) return handleSetup(request, env);
+  if (pathname.startsWith("/feedback/v1/")) return handleFeedback(request, env);
+  if (pathname.startsWith("/__telemetry/")) return handleRelay(request, env);
+  if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/")) return handleSetup(request, {
+    ...env,
+    onProductEvent: (event, accountId) => {
+      const work = captureProduct(env, event, accountId);
+      context?.waitUntil(work);
+    },
+  });
   // Internal setup assertions are sent only through the private binding by the setup host.
   if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());
   if (isPoolManagementPath(pathname)) {
@@ -180,6 +195,13 @@ export function handleRequest(request: Request, env: RouterEnv, context?: { wait
     if (observed && context) context.waitUntil(observeToolCall(observed, response.clone(), env));
     return response;
   });
+}
+
+export async function handleRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
+  // Relays contain explicit feedback and must not recursively instrument their own exports.
+  if (!validSentryDsn(env.SENTRY_DSN)) return routeRequest(request, env, context);
+  const response = await traceRequest(env, request, (forwarded) => routeRequest(forwarded, env, context), context);
+  return injectFeedback(response);
 }
 
 export default { fetch: handleRequest };

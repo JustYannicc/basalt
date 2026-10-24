@@ -23,6 +23,7 @@ export interface RuntimeStorage {
   getAlarm(): Promise<number | null>;
   setAlarm(time: number): Promise<void>;
 }
+const unversionedModelPaths = new Set(["/messages", "/chat/completions", "/completions"]);
 
 /** One controller owns startup, secret rotation, and the next recovery alarm. */
 export class PoolLifecycle {
@@ -83,6 +84,7 @@ export class PoolLifecycle {
 
 export function poolPort(pathname: string): 8317 | 8327 | undefined {
   if (pathname === "/v1" || pathname.startsWith("/v1/")) return 8317;
+  if (unversionedModelPaths.has(pathname)) return 8317;
   if (/^\/v(?:0|8)\/management(?:\/|$)/.test(pathname)) return 8327;
   return undefined;
 }
