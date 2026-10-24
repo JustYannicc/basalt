@@ -126,7 +126,7 @@ model {
   basalt.toolsGateway -[sync]-> poolOwner "show pool tool result in hosted screen" { #planned }
   poolOwner -[sync]-> modelProviders "sign in on the provider's page in own browser"
   basalt.pool -[sync]-> basalt.router "pool control API: /pool/v1 with a pool token" {
-    description "Scoped to the pool's channel group; owner-only changes. The tools service supplies ctx.user.id as the caller."
+    description "Scoped to the pool's channel group; owner-only changes and owner-only usage reads by exact client session or key (GET /pool/v1/usage). The tools service supplies ctx.user.id as the caller."
   }
   basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
   basalt.modelGateway -[sync]-> basalt.router "pool control response"
