@@ -5,8 +5,9 @@ views {
     title "Workflows/Basalt/Hosted connector catalog"
     description """
       Status: Implemented in source. A separate read-only feed Worker serves the official app index
-      with provider notices and published additions. App source remains unchanged. The tools API
-      Worker receives only the catalog URL and hosted client settings. Live acceptance is pending.
+      with provider notices, published additions and a pinned messaging package carrying a personal
+      OAuth method. Other official app documents pass through unchanged. The tools API Worker
+      receives only the catalog URL and hosted client settings. Live acceptance is pending.
     """
 
     include basalt.toolsGateway, basalt.catalog, catalogSource
@@ -14,10 +15,8 @@ views {
     basalt.catalog -> catalogSource "read official index"
     basalt.catalog <- catalogSource "entries and relative icon URLs"
     basalt.toolsGateway <- basalt.catalog "entries with absolute icons and provider notices"
-    basalt.toolsGateway -> basalt.catalog "read selected app source"
-    basalt.catalog -> catalogSource "read official app document"
-    basalt.catalog <- catalogSource "unmodified source"
-    basalt.toolsGateway <- basalt.catalog "install through the ordinary catalog path"
+    basalt.toolsGateway -> basalt.catalog "read selected messaging app source"
+    basalt.toolsGateway <- basalt.catalog "install the pinned user-token package through the ordinary catalog path"
   }
 
   dynamic view v1_current_model_request {
@@ -306,10 +305,10 @@ views {
     variant sequence
     title "Workflows/Basalt/Connect personal account"
     description """
-      Status: Hosted OAuth clients and catalog configuration are implemented. Existing official provider apps stay
-      unchanged. Zendesk source is added only when its trusted tenant and OAuth client are configured. Each
-      connection is personal; live provider acceptance awaits a real user connection.
-      The published messaging app uses a bot grant and is not yet a one-click personal connection.
+      Status: Hosted OAuth clients and catalog configuration are implemented. The official messaging app carries a contributed user-only OAuth method. Each connection is personal;
+      real-provider acceptance awaits client registration. Messaging requests only user scopes and stores
+      the nested user token. Missing hosted credentials show that the connection is not set up yet.
+      Zendesk source is added only when its trusted tenant and OAuth client are configured.
       Zendesk uses PKCE S256 and JSON token requests through a tenant-specific OAuth client.
     """
 

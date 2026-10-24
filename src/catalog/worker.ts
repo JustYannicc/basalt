@@ -2,6 +2,7 @@ import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.t
 import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
+import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { aws } from "./aws/index.ts";
 import { zendeskAddition, unavailableZendeskAddition } from "./zendesk/source.ts";
 import { isZendeskSubdomain } from "./zendesk/tenant.ts";
@@ -43,6 +44,8 @@ export async function handleCatalog(
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
+  if (relative === "apps/slack.json")
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(slackSource), { headers });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) {
     if (!added.source)
@@ -59,7 +62,7 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(await response.json() as Feed, additions, ready))
+      ? JSON.stringify(mergeFeed(withSlackUserAuth(await response.json() as Feed), additions, ready))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
@@ -75,6 +78,7 @@ export default {
       GITHUB_CONNECTOR_READY?: string;
       ATLASSIAN_CONNECTOR_READY?: string;
       ZOHO_CONNECTOR_READY?: string;
+      SLACK_CONNECTOR_READY?: string;
       ZENDESK_CONNECTOR_READY?: string;
       GITLAB_CONNECTOR_READY?: string;
       MIRO_CONNECTOR_READY?: string;
@@ -89,6 +93,7 @@ export default {
         github: env.GITHUB_CONNECTOR_READY === "true",
         atlassian: env.ATLASSIAN_CONNECTOR_READY === "true",
         zoho: env.ZOHO_CONNECTOR_READY === "true",
+        slack: env.SLACK_CONNECTOR_READY === "true",
         zendesk: env.ZENDESK_CONNECTOR_READY === "true",
         gitlab: env.GITLAB_CONNECTOR_READY === "true",
         miro: env.MIRO_CONNECTOR_READY === "true",

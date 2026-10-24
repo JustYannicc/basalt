@@ -1,0 +1,13 @@
+{
+  "package": "@executor.sh/slack",
+  "publishedUrl": "https://catalog.executor.sh/apps/slack.json",
+  "publishedSha256": "c138a9ce254fcb00b4cd6d901d64d230167a52b1d353b45da1c91b744e5fb071",
+  "carriedSha256": "8a190aaf72e5fd66ea7c5be7369df5df72847a25350e01d2efce4b47c60af326",
+  "patchSha256": "c14e20f28592f8a5cebc1e66bb14d53d51597e85e01dea3d82d709fedaad8a09",
+  "contribution": {
+    "kind": "issue",
+    "url": "https://github.com/UsefulSoftwareCo/executor/issues/2368",
+    "state": "PR pending maintainer source direction"
+  },
+  "license": "Not declared in the published package"
+}
