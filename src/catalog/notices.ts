@@ -26,6 +26,7 @@ export interface ConnectorAvailability {
   readonly google: boolean;
   readonly github: boolean;
   readonly zoho?: boolean;
+  readonly atlassian?: boolean;
 }
 
 /** Readiness is public feed data. Client credentials never reach this Worker. */

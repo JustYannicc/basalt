@@ -1,9 +1,8 @@
-import { mergeFeed, type Addition, type Feed } from "./feed.ts";
+import { mergeFeed, type Feed } from "./feed.ts";
 import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
+import { atlassianAddition } from "./atlassian/index.ts";
 
-// Missing connectors add their published package here. Existing official apps stay upstream's.
-const additions: readonly Addition[] = [];
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
@@ -22,6 +21,7 @@ export async function handleCatalog(request: Request, fetcher: typeof fetch = fe
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
+  const additions = [atlassianAddition(ready.atlassian === true)];
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) return new Response(request.method === "HEAD" ? null : JSON.stringify(added.source), { headers });
   try {
@@ -40,5 +40,5 @@ export async function handleCatalog(request: Request, fetcher: typeof fetch = fe
   }
 }
 
-export default { fetch: (request: Request, env: { GOOGLE_CONNECTOR_READY?: string; GITHUB_CONNECTOR_READY?: string; ZOHO_CONNECTOR_READY?: string }) =>
-  handleCatalog(request, fetch, { google: env.GOOGLE_CONNECTOR_READY === "true", github: env.GITHUB_CONNECTOR_READY === "true", zoho: env.ZOHO_CONNECTOR_READY === "true" }) };
+export default { fetch: (request: Request, env: { GOOGLE_CONNECTOR_READY?: string; GITHUB_CONNECTOR_READY?: string; ATLASSIAN_CONNECTOR_READY?: string; ZOHO_CONNECTOR_READY?: string }) =>
+  handleCatalog(request, fetch, { google: env.GOOGLE_CONNECTOR_READY === "true", github: env.GITHUB_CONNECTOR_READY === "true", atlassian: env.ATLASSIAN_CONNECTOR_READY === "true", zoho: env.ZOHO_CONNECTOR_READY === "true" }) };

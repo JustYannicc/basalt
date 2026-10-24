@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/UsefulSoftwareCo/executor",
+  "revision": "8e7ce4b6fedd6a4dfc8940a9c13dbd7e658081aa",
+  "directory": "playground/demo-apps/atlassian",
+  "license": "MIT",
+  "files": {
+    "index.ts": "bbbc619b8fa4bf6b99534982dc64ff76f61c2e4b094f0062d0368da653feac1e",
+    "package.json": "2035cf919732116d500b5d97c770cb1d8f2cca734d9dfebce99edf6674efc252"
+  },
+  "snapshotSha256": "ee4d0ba02296be43b2403f7618fdb7b7288bac36964fee43b07a9e7b7cf13ad7"
+}
