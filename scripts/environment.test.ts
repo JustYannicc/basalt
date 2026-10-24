@@ -121,6 +121,12 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32),
     OAUTH_PROXY_SECRET: "production-proxy-secret-must-not-pass-through",
+    PREVIEW_CLAUDE_AUTH_JSON: "private-claude-login",
+    PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: "private-codex-subscription",
+    PREVIEW_CODEX_CLI_AUTH_JSON: "private-codex-native",
+    EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "private-production-connector",
+    RELEASE_UPDATE_TOKEN: "private-repository-token",
+    UNKNOWN_FUTURE_SECRET: "must-not-pass-through",
   });
 
   const first = previewEnvironment(1419, source);
@@ -138,6 +144,10 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
   assert.equal(first.deploy.PREVIEW_SMOKE_PASSWORD, undefined);
   assert.equal(first.deploy.PREVIEW_STATE_KEY, undefined);
+  for (const key of ["PREVIEW_CLAUDE_AUTH_JSON", "PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON",
+    "PREVIEW_CODEX_CLI_AUTH_JSON", "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", "RELEASE_UPDATE_TOKEN", "UNKNOWN_FUTURE_SECRET"])
+    assert.equal(first.deploy[key], undefined, key);
+  assert.equal(first.deploy.EXECUTOR_CATALOG_URL, `${first.origin}/catalog/index.json`);
   assert.equal(first.deploy.POOL_APP_SIGNING_KEY_PREVIOUS, undefined);
   for (const name of [
     "GOOGLE_CLIENT_SECRET",

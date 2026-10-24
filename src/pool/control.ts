@@ -14,6 +14,7 @@ import {
 } from "../../apps/pool/contract.ts";
 import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
+import { exportLoginFile } from "./login-export.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 
@@ -421,6 +422,7 @@ type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
   "GET /pool": async ({ home, isOwner }) => json(await home.view(isOwner)),
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
+  "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
   "POST /sign-ins": async (ctx) => {
     const { request, client, pool, now, deps } = ctx;
     const state = attribution(ctx);
@@ -515,13 +517,14 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
   const url = new URL(request.url);
   const path = url.pathname.slice(base.length);
-  const routePath = /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
+  const routePath = /^\/accounts\/[^/]+\/export$/.test(path) ? "/accounts/:id/export"
+    : /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
   const routeKey = `${request.method} ${routePath}`;
   const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
   if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
-  const isRead = routeKey === "GET /pool" || routeKey === "GET /usage";
+  const isRead = routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
   return { claims, url, route, routeKey, isOwner, isRead };
 }
 

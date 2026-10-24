@@ -18,6 +18,7 @@ const environment: NodeJS.ProcessEnv = {
 };
 
 assert.equal(previewProof(environment, true).origin, origin);
+assert.throws(() => previewProof({ ...environment, TEST_STAGE_DOMAIN: undefined }, true), /Missing preview auth input/);
 assert.throws(() =>
   previewProof({ ...environment, BETTER_AUTH_URL: `https://${stage.slice(5)}.${domain}` }, true),
 );

@@ -57,7 +57,7 @@ export function previewProof(
     throw new Error("Unsafe preview stage");
 
   const slug = stage.slice(testStagePrefix.length);
-  const domain = env.TEST_STAGE_DOMAIN ?? "executor.engineering";
+  const domain = required(env, "TEST_STAGE_DOMAIN");
   if (
     domain.length === 0 ||
     domain.includes("/") ||

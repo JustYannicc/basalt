@@ -193,25 +193,13 @@ export function previewEnvironment(
     readFileSync(new URL("../upstream.json", import.meta.url), "utf8"),
   ).commit as string;
 
-  const deploy: NodeJS.ProcessEnv = { ...source };
+  const deploy: NodeJS.ProcessEnv = {};
   for (const name of [
-    "BETTER_AUTH_SECRET",
-    "EXECUTOR_ENCRYPTION_KEY",
-    "MCP_SESSION_KEY_CURRENT",
-    "MCP_SESSION_KEY_PREVIOUS",
-    "APP_DOMAIN_CONTROL_SECRET",
-    "POOL_MANAGEMENT_KEY",
-    "POOL_APP_SIGNING_KEY",
-    "POOL_APP_SIGNING_KEY_PREVIOUS",
-    "OAUTH_PROXY_PRODUCTION_URL",
-    "OAUTH_PROXY_SECRET",
-    "GOOGLE_CLIENT_SECRET",
-    "GITHUB_CLIENT_SECRET",
-    "AUTH_GITHUB_CLIENT_SECRET",
-    "PREVIEW_STATE_KEY",
-    "PREVIEW_SMOKE_EMAIL",
-    "PREVIEW_SMOKE_PASSWORD",
-  ]) delete deploy[name];
+    "PATH", "HOME", "TMPDIR", "LANG", "BUN_INSTALL", "ALCHEMY_HOME", "RUNNER_TEMP", "GITHUB_ACTIONS",
+    ...requiredPreviewSecrets,
+  ]) {
+    if (source[name] !== undefined) deploy[name] = source[name];
+  }
 
   Object.assign(deploy, generated, {
     ALCHEMY_STAGE: stage,
@@ -223,6 +211,7 @@ export function previewEnvironment(
     TEST_STAGE_DATABASE: databaseName,
     TEST_STAGE_PASSWORD_SIGN_IN: "true",
     BETTER_AUTH_URL: origin,
+    EXECUTOR_CATALOG_URL: `${origin}${catalog.path}index.json`,
     AUTH_EMAIL_DOMAIN: `auth.${slug}.${domain}`,
     AUTH_EMAIL_PROVISION_SUBDOMAIN: "false",
     GOOGLE_CLIENT_ID: source.GOOGLE_CLIENT_ID,
