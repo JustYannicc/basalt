@@ -4,7 +4,7 @@ model {
 
     router = module "Router" {
       #basalt #v1 #passthrough #port
-      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
+      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
     }
 
     brandConfig = part "Brand configuration" {
@@ -24,6 +24,12 @@ model {
     toolsGateway = module "Tools gateway" {
       #basalt #v1 #deep #port #funnel
       metadata { code ".upstream/apps/hosted/cloud" }
+    }
+
+    catalog = module "Connector catalog" {
+      #basalt #v1
+      description "Read-only feed in a separate Worker. Merges the official catalog with published additions and provider notices. No person credentials; official app implementations stay unchanged."
+      metadata { code "src/catalog" }
     }
 
     publicIdentity = iface "Public identity" { #v1 }
@@ -119,6 +125,11 @@ model {
   }
 
   basalt.deployment -[sync]-> appHosting "configure origin" { #planned }
+  basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
+  basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
+  basalt.catalog -[sync]-> basalt.brandConfig "read connector copy brand"
+  basalt.deployment -[sync]-> basalt.catalog "provision read-only feed Worker"
+  basalt.build -[sync]-> basalt.catalog "read catalog configuration"
   basalt.router -[sync]-> basalt.brandConfig "read brand configuration"
   basalt.deployment -[sync]-> basalt.brandConfig "read deployment configuration"
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"

@@ -1,0 +1,22 @@
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -5,6 +5,7 @@
+  * (the ID in upper case, `-` as `_`), and a client is offered only when both are set. Reviewed
+  * client labels use `EXECUTOR_PRODUCT_NAME`, which defaults to `Executor`.
+  */
++import { productBrandConfig } from "@executor-js/utils/product-brand";
+ import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
+ import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
+ import { FirstPartyOAuthClientsInvalid } from "../contracts/oauth-client-metadata.ts";
+@@ -260,9 +261,7 @@
+  */
+ export const firstPartyOAuthClients = (options: { readonly testDefinitions: boolean }) =>
+   Effect.gen(function* () {
+-    const productName = yield* Config.NonEmptyString("EXECUTOR_PRODUCT_NAME").pipe(
+-      Config.withDefault("Executor"),
+-    );
++    const productName = (yield* productBrandConfig).name;
+     const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
+       firstPartyOAuthClientDefinitions,
+     ).pipe(Effect.orDie);

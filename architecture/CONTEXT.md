@@ -107,6 +107,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Connection interface | Basalt's planned interface; the dependency already provides public connectors. |
 | Vault interface | Basalt's planned interface; the dependency already provides public secret custody. |
 | Organization | A sharing boundary in the dependency; not a Basalt module or element kind. |
+| Connector catalog | Read-only Worker serving the official app feed plus operator notices and published additions. Its configuration and feed data are outside the tools API Worker. |
 | Outside services | Dynamic per-person destinations, reached only through the tools gateway. |
 | Fixed infrastructure adapter | A distinct adapter for each fixed outside service found in the stack declaration inventory. |
 
@@ -128,3 +129,6 @@ The `hosts` and `sdks` values `dynamic` and `upstream` describe the opaque, dyna
 | Outside service | A service reached through a gateway or an infrastructure adapter. |
 
 Infrastructure adapters carry provider names only in `technology`. Their resource mappings cover declarations evaluated for the checked-in deployment choices. They do not assert that the resources exist in the production account.
+
+
+The connector catalog is served under `/catalog/` through its own service binding. The tools gateway reads that feed and uses the hosted identity and repository OAuth clients. Sign-in clients are separate. Official provider app source stays unchanged. The identity connector is published but unverified with its project lifetime user cap shown before consent. The published messaging app returns a bot grant and is not yet offered as a one-click personal connection; its user-token flow is separate work. Source checks do not establish live connection or client acceptance.

@@ -4,6 +4,7 @@ import router, { handleRequest, notFoundPage, type RouterEnv } from "./router.ts
 
 function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]): RouterEnv {
   return {
+    CATALOG_SERVICE: { fetch: async () => new Response("catalog") },
     TOOLS_SERVICE: { fetch: fetchRequest },
     POOL_SERVICE: { fetch: async () => new Response("pool", { status: 202 }) },
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
@@ -155,7 +156,7 @@ test("public management requests never reach either service binding", async () =
     for (const method of ["GET", "POST", "OPTIONS"]) {
       const response = await handleRequest(new Request(`https://app.signalbox.run${path}`, {
         method, headers: { "X-Management-Key": "example" },
-      }), { TOOLS_SERVICE: service, POOL_SERVICE: service, POOL_APP_SIGNING_KEY: "ab".repeat(32) });
+      }), { CATALOG_SERVICE: service, TOOLS_SERVICE: service, POOL_SERVICE: service, POOL_APP_SIGNING_KEY: "ab".repeat(32) });
       assert.equal(response.status, 404, `${method} ${path}`);
     }
   }
@@ -267,4 +268,14 @@ test("replaces the tools service's marketing 404 page and keeps the dashboard's"
     envWithToolsService(async () => api),
   );
   assert.strictEqual(passed, api);
+});
+
+
+test("the catalog uses its own binding without forwarding to the tools API", async () => {
+  let received: Request | undefined;
+  const request = new Request("https://app.signalbox.run/catalog/index.json");
+  const env = envWithToolsService(async () => { throw new Error("catalog reached tools"); });
+  env.CATALOG_SERVICE = { fetch: async value => { received = value; return new Response("catalog"); } };
+  assert.equal(await (await handleRequest(request, env)).text(), "catalog");
+  assert.equal(received, request);
 });

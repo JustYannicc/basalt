@@ -19,14 +19,20 @@ const { WorkerBundle }: {
 } = await import(module.href);
 const program = Effect.gen(function* () {
   const bundler = yield* WorkerBundle;
-  yield* bundler.build({
-    id: "PoolWorker",
-    main: fileURLToPath(new URL("../src/pool/worker.ts", import.meta.url)),
-    compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
-    entry: { kind: "external" },
-    stack: { name: "basalt", stage: "production" },
-    extraOptions: undefined,
-  });
+  // Both owned Workers use the same provider bundler as deployment.
+  for (const [id, entrypoint] of [
+    ["PoolWorker", "../src/pool/worker.ts"],
+    ["Catalog", "../src/catalog/worker.ts"],
+  ]) {
+    yield* bundler.build({
+      id,
+      main: fileURLToPath(new URL(entrypoint, import.meta.url)),
+      compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+      entry: { kind: "external" },
+      stack: { name: "basalt", stage: "production" },
+      extraOptions: undefined,
+    });
+  }
 });
 NodeRuntime.runMain(program.pipe(
   Effect.provide(AlchemyContextLive.pipe(Layer.provideMerge(NodeServices.layer))),

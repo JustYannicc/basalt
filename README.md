@@ -91,6 +91,10 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `PLANETSCALE_API_TOKEN`       | Database and role provisioning                                          |
 | `GOOGLE_CLIENT_ID`            | Google sign-in OAuth client                                             |
 | `GOOGLE_CLIENT_SECRET`        | Google sign-in OAuth secret                                             |
+| `EXECUTOR_OAUTH_GOOGLE_CLIENT_ID` | Hosted Google connector Web client, separate from sign-in |
+| `EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET` | Hosted Google connector secret |
+| `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID` | Hosted GitHub connector OAuth App client |
+| `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET` | Hosted GitHub connector OAuth App secret |
 | `AUTH_GITHUB_CLIENT_ID`       | GitHub sign-in OAuth client                                             |
 | `AUTH_GITHUB_CLIENT_SECRET`   | GitHub sign-in OAuth secret                                             |
 | `BETTER_AUTH_SECRET`          | Session signing                                                         |
@@ -114,6 +118,35 @@ Create a PlanetScale organization with Postgres enabled and an organization serv
 Create a Google OAuth Web application named after `brand.oauthAppName` (Signalbox). Its authorized JavaScript origin is the configured public origin. Register `https://app.signalbox.run/api/auth/callback/google` as the exact redirect URI. Allow external Google accounts and add intended users if the consent screen remains in Testing. Sign-in requests only the normal identity scopes.
 
 Create a GitHub OAuth App named after `brand.oauthAppName` (Signalbox) with homepage `https://app.signalbox.run` and callback `https://app.signalbox.run/api/auth/callback/github`. Upstream requires both social providers at startup.
+
+### Hosted connectors
+
+The tools service reads `https://app.signalbox.run/catalog/index.json`. A separate read-only Worker serves the official catalog plus operator notices and published additions. App source stays upstream's. Relative icons resolve to the official publisher. The feed and provider notices are outside the tools API Worker bundle; the existing 5.45 MB upload budget stays unchanged.
+
+Create the Google connector as a separate OAuth Web application named Signalbox in a separate Cloud project from sign-in. Choose External audience, publish it as Production, and leave it unverified. Testing status expires refresh tokens after seven days. Register `https://app.signalbox.run/api/oauth/callback` and the authorized JavaScript origin `https://app.signalbox.run`. Enable Gmail, Calendar, Drive, Docs, Sheets and Slides APIs. The consent scope union for these catalog apps is:
+
+- `openid`, `email`, `profile`
+- `https://mail.google.com/`
+- `https://www.googleapis.com/auth/gmail.settings.basic`
+- `https://www.googleapis.com/auth/calendar`
+- `https://www.googleapis.com/auth/drive`
+- `https://www.googleapis.com/auth/documents`
+- `https://www.googleapis.com/auth/spreadsheets`
+- `https://www.googleapis.com/auth/presentations`
+
+A connection requests only its selected app's scopes. The connect screen explains the unverified warning, the project's lifetime cap of 100 users and Workspace admin restrictions. Full Gmail and Drive access is intentional. The identity-only sign-in client stays independent of connector grants, consent and rotation. Two clients in one project would still share the project's user cap.
+
+Create a separate GitHub OAuth App named Signalbox with homepage `https://app.signalbox.run` and callback `https://app.signalbox.run/api/oauth/callback`. The official REST app requests `repo`, `read:org`, `workflow`, `gist`, `notifications`, `read:user` and `user:email`. The host's optional `github-oauth` client matches this app; its older GitHub App client remains separate. No app review is required. Organization approval and SAML sign-in can still limit repository access.
+
+Google and GitHub connector credentials use the four `EXECUTOR_OAUTH_*` secrets above. GitHub Actions supplies them and Alchemy writes their runtime copies. No person enters a client secret to connect their account.
+
+Slack is not yet one-click. The official Web API app's OAuth method requests bot scopes and uses a bot token. A hosted personal connection needs a separate user-token method using `user_scope` and `authed_user.access_token`, plus matching health and API credential mappings. Setting `user_scope` beside the existing bot scopes would still create a bot grant. The connect notice states this gap, workspace approval rules, and the unlisted history/replies limit of one request per minute and 15 items per request. The existing unlisted Slack MCP client is unchanged. Do not register a connector Slack app until the user-token method is available.
+
+Run `node scripts/check-connectors.ts --preflight` to verify that the prepared runtime matches `upstream.json`, every carried patch, and the generated pool source. For the local connector proof, prepare upstream's E2E runtime with `bun run e2e:prepare` from `.upstream`, then run `node scripts/check-connectors.ts` from this repository. The pinned E2E collector requires Bun 1.4.2 on PATH. Chromium and an installed Claude Code CLI are required. The runner acquires heavy slots for its install and native CLI processes; start the runner normally so its local servers do not hold a slot.
+
+The proof uses the published Google emulator and a synthetic app with Gmail's scopes. OAuth, token storage, per-person organization-pinned PATs, and MCP authorization use the real pinned runtime. Two users share the hosted app while their account links stay private. Claude loads the production installer configuration, searches the real MCP server, and calls the synthetic Gmail tool; only its model endpoint is simulated. Private diagnostics stay under `.generated/connectors-proof`.
+
+This does not prove the unchanged official Gmail app against Google's production endpoints, or two people sharing a Basalt pool. Those remain live acceptance checks after deployment and provider clients exist. Shipping source does not close that acceptance.
 
 ### App UI hosting
 
