@@ -61,4 +61,8 @@ Code naming model elements imports `$ElementId` from the generated module under 
 
 Dynamic-view steps are checked against model relationships. Real trace comparison and live provider-state comparison are outside this check.
 
+Release automation accepts published tools versions, verifies CI on the exact merge commit against current main, and serializes only its own merge workflow. It refreshes stale release branches and waits for new proofs. Dedicated subscription exports use the existing owner-scoped pool control API and write directly into Actions secrets from a protected trusted-main workflow. Database rollback restores remain manual; the rollback dispatch validates the latest successful or failed database deployment before rebuilding and deploying its previous commit.
+
 Deployment enables `EXECUTOR_ENCRYPTED_WORKFLOW_STARTS` for the fresh tools-service installation. Its dependency patch versions native app Workflow identities and authenticates persisted results. Existing upstream installations need a separate dispatcher cutover before enabling that setting.
+
+The release gate serializes its own squash merges and checks current main plus exact merge-result CI immediately before the expected-head merge request. V1 accepts a main advance between that check and the request. Production deployment waits for a successful main push Check from the CI workflow and uses that run's exact SHA for checkout, reporting and deployment. Failed main CI cannot trigger deployment. Patch identities bind content digests and upstream mappings; numbered paths are locators that owners renumber against actual main at merge.

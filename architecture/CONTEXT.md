@@ -90,6 +90,8 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Brand configuration | Shared literal data read by runtime, build and deployment programs. |
 | Provider source | The outside service supplying pinned Home source for provider catalog checks. |
 | Release source | The outside service that supplies verified release archives during the image build. |
+| Update source | The outside source of release metadata, patch merge ancestry, pull requests and exact-head workflow evidence. |
+| Release updates | Proposes pinned versions, verifies disposable previews, and checks current green proofs before an expected-head squash merge. V1 accepts a main advance after the final check; deployment waits for successful CI on the exact merged main commit. |
 | Deployment provider | The outside control-plane API used to provision hosting resources. |
 | Identity interface | Basalt's planned interface; the dependency already provides public identity behavior. |
 | Model gateway | The current entry point for model requests, signed pool control calls and private signed setup actions. It owns computer registration and encrypted one-time credentials through the pool controller. |
@@ -137,4 +139,4 @@ Infrastructure adapters carry provider names only in `technology`. Their resourc
 
 The connector catalog is served under `/catalog/` through its own service binding. The tools gateway reads that feed and uses hosted connector OAuth clients. Sign-in clients are separate. Official app documents pass through except for the pinned messaging package, which carries a contributed user-only OAuth method selected first in the feed. Its hosted client requests user scopes and stores the nested personal grant. Missing client credentials leave a setup notice. The identity connector is published but unverified with its project lifetime user cap shown before consent. Source checks do not establish live connection or client acceptance.
 
-The catalog also carries a read-only knowledge and issue app offered upstream. Each caller links a personal account for both APIs. Its OAuth identity and API endpoints have separate outside adapters; managed access tokens go only to the API host. Missing hosted client credentials leave the app listed with a setup notice. App source remains in the catalog Worker. Live consent and client acceptance remain pending.
+The catalog also carries a read-only knowledge and issue app offered upstream. Its provenance records a public fork revision and source hashes. The app source awaits a maintained contribution destination; the hosted-client definition is a separate runtime patch. Each caller links a personal account for both APIs. Its OAuth identity and API endpoints have separate outside adapters; managed access tokens go only to the API host. Missing hosted client credentials leave the app listed with a setup notice. App source remains in the catalog Worker. Live consent and client acceptance remain pending.

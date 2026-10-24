@@ -1,0 +1,98 @@
+diff --git a/apps/hosted/cloud/scripts/check-preview-password-sign-in.ts b/apps/hosted/cloud/scripts/check-preview-password-sign-in.ts
+new file mode 100644
+index 00000000..8593415d
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/check-preview-password-sign-in.ts
+@@ -0,0 +1,13 @@
++import assert from "node:assert/strict";
++import { previewEmailAndPassword } from "../src/infrastructure/stage.ts";
++
++const disabled = { enabled: false } as const;
++const enabled = { enabled: true, disableSignUp: true } as const;
++
++assert.deepEqual(previewEmailAndPassword("v2", true), disabled);
++assert.deepEqual(previewEmailAndPassword("test-preview-123", true), enabled);
++assert.deepEqual(previewEmailAndPassword("test-preview-123", false), disabled);
++assert.deepEqual(previewEmailAndPassword("staging", true), disabled);
++assert.deepEqual(previewEmailAndPassword(undefined, true), disabled);
++
++console.log("Preview password sign-in stays off outside opted-in test stages.");
+diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
+index ac5369d0..f8bed9c8 100644
+--- a/apps/hosted/cloud/src/implementation/auth-options.ts
++++ b/apps/hosted/cloud/src/implementation/auth-options.ts
+@@ -3,7 +3,7 @@ import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
+ import type { BetterAuthOptions } from "better-auth";
+ import { APIError } from "better-auth/api";
+ import { authOptions, type GrantObservers } from "@executor-js/hosted-server";
+-import { cloudHosts } from "../infrastructure/stage.ts";
++import { cloudHosts, previewEmailAndPassword, stageName } from "../infrastructure/stage.ts";
+ import { passkey } from "@better-auth/passkey";
+ import { emailOTP } from "better-auth/plugins/email-otp";
+ import { organization } from "better-auth/plugins/organization";
+@@ -32,6 +32,10 @@ const emailCodeSignInPath = "/sign-in/email-otp";
+ /** Require both cloud social providers and reject blank credentials at startup. */
+ export const cloudAuthSettings = Effect.gen(function* () {
+   const hosts = yield* cloudHosts;
++  const stage = Option.getOrUndefined(yield* stageName);
++  const testStagePasswordSignIn = yield* Config.Boolean("TEST_STAGE_PASSWORD_SIGN_IN").pipe(
++    Config.withDefault(false),
++  );
+   const url = hosts.browser;
+   const resourceOrigins = hosts.resourceOrigins;
+   const callbackOrigin = socialCallbackOrigin(hosts);
+@@ -96,6 +100,8 @@ export const cloudAuthSettings = Effect.gen(function* () {
+   });
+   return {
+     url,
++    stage,
++    testStagePasswordSignIn,
+     hosts,
+     resourceOrigins,
+     issuer: hosts.issuer,
+@@ -142,6 +148,7 @@ export const cloudAuthOptions = (
+       : { redirectURI: `${settings.callbackOrigin}/api/auth/callback/${provider}` };
+   return {
+     ...base,
++    emailAndPassword: previewEmailAndPassword(settings.stage, settings.testStagePasswordSignIn),
+     rateLimit: { ...base.rateLimit, enabled: settings.rateLimitEnabled },
+     account: { ...base.account, storeStateStrategy: "database" as const },
+     advanced: {
+diff --git a/apps/hosted/cloud/src/infrastructure/stage.ts b/apps/hosted/cloud/src/infrastructure/stage.ts
+index f80295d3..19dcf6bf 100644
+--- a/apps/hosted/cloud/src/infrastructure/stage.ts
++++ b/apps/hosted/cloud/src/infrastructure/stage.ts
+@@ -7,6 +7,12 @@ import { Config, Effect, Option, Schema } from "effect";
+ 
+ export const testStagePrefix = "test-";
+ 
++/** Password sign-in is an explicit capability for dedicated test stages only. */
++export const previewEmailAndPassword = (stage: string | undefined, enabled: boolean) =>
++  enabled && stage?.startsWith(testStagePrefix) === true
++    ? { enabled: true as const, disableSignUp: true as const }
++    : { enabled: false as const };
++
+ /** The stage every push to `main` deploys. It serves real customers. */
+ export const productionStage = "v2";
+ 
+diff --git a/package.json b/package.json
+index 4e24fca7..247376d2 100644
+--- a/package.json
++++ b/package.json
+@@ -71,7 +71,7 @@
+     "format:check": "oxfmt --check .",
+     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings",
+     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
+-    "check": "bun run patches:check && bun run versions:check && bun run format:check && bun run lint && bun run typecheck && bun run apps:protocols && bun run apps:telemetry && bun run api:errors && bun run auth:rate-limit && bun run v1-import:access && node packages/apps/scripts/browser-scripts.mjs --check && node packages/app-templates/scripts/executor-intro.ts --check && node scripts/check-no-unit-tests.ts && node packages/sdk/scripts/check-storage-versions.ts && node scripts/check-local-data-steps.ts && node apps/hosted/cloud/scripts/edge-contract.ts --check && node e2e/check-boundary.ts",
++    "check": "bun run patches:check && bun run versions:check && bun run format:check && bun run lint && bun run typecheck && bun run apps:protocols && bun run apps:telemetry && bun run api:errors && bun run auth:rate-limit && bun run auth:preview-password && bun run v1-import:access && node packages/apps/scripts/browser-scripts.mjs --check && node packages/app-templates/scripts/executor-intro.ts --check && node scripts/check-no-unit-tests.ts && node packages/sdk/scripts/check-storage-versions.ts && node scripts/check-local-data-steps.ts && node apps/hosted/cloud/scripts/edge-contract.ts --check && node e2e/check-boundary.ts",
+     "edge:contract": "node apps/hosted/cloud/scripts/edge-contract.ts",
+     "e2e:prepare": "node scripts/e2e-prepare.ts",
+     "e2e:runtime": "node scripts/build-test-runtime.ts",
+@@ -121,6 +121,7 @@
+     "apps:telemetry": "node scripts/check-app-telemetry.ts",
+     "api:errors": "node scripts/check-api-errors.ts",
+     "auth:rate-limit": "node apps/hosted/cloud/scripts/check-auth-rate-limit.ts",
++    "auth:preview-password": "node apps/hosted/cloud/scripts/check-preview-password-sign-in.ts",
+     "v1-import:access": "node apps/hosted/cloud/scripts/check-v1-import-access.ts",
+     "patches:check": "node scripts/check-patches.ts",
+     "versions:check": "node scripts/check-exact-versions.ts",

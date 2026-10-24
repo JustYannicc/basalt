@@ -110,6 +110,17 @@ export interface LoginFileAdded {
 
 /** DELETE /accounts/:id removes an account from this pool and the backend. */
 
+/** Owner-only GET /accounts/:id/export?provider=claude|codex.
+ * Uses the existing signed pool token and owner caller header, including for opaque native app ids.
+ * The exact account must belong to that pool and match the provider. Returns the unmodified Home
+ * login-file JSON object, with no Result wrapper and Cache-Control: no-store. Maximum 1 MiB.
+ * Bad selectors return 400 invalid_query; absent/wrong-pool/wrong-provider accounts return 404
+ * not_found. Invalid auth returns 401 unauthorized or 403 not_owner; backend failures return
+ * sanitized 503 backend_unavailable. The route neither imports nor refreshes subscriptions.
+ * The protected Actions exporter owns dedicated-account confirmation and repository secret writes.
+ * This is a direct control endpoint, not a tool exposed by the installed pool app.
+ */
+
 export type ControlErrorCode =
   | "unauthorized"
   | "not_owner"
