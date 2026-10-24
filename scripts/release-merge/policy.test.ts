@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { validateChangedFiles, validateCheckRunReceipt, validatePreviewReceipt, validatePullRequestIdentity, type ChangedFile, type FileContents, type ReleasePins } from "./policy.ts";
+import { sha256PatchContent } from "../releases/patch-registry.ts";
+import type { PatchRemovalReceipt } from "../releases/types.ts";
 
 const basePins: ReleasePins = {
   tools: { repository: "UsefulSoftwareCo/executor", commit: "1".repeat(40) },
@@ -29,13 +31,13 @@ function artifact(binary: string, commitStart: string) {
   };
 }
 
-function releaseReceipt(source: "tools" | "home" | "node", base: ReleasePins, candidate: ReleasePins, removedPatches: string[] = []) {
+function releaseReceipt(source: "tools" | "home" | "node", base: ReleasePins, candidate: ReleasePins, removedPatches: PatchRemovalReceipt[] = []) {
   const normalizeReceiptPins = (pins: ReleasePins) => ({
     ...pins,
     tools: { ...pins.tools, repository: `https://github.com/${pins.tools.repository}.git` },
   });
   return JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     source,
     releaseKey: `${source}-v1.2.3`,
     basePins: normalizeReceiptPins(base),
@@ -80,12 +82,31 @@ test("accepts one tools pin update whose receipt matches the exact pin snapshots
 });
 
 test("accepts removal-only carried patch and matching logical manifest removal", () => {
+  const removedContent = "upstream patch one\n";
+  const retainedContent = "overlay patch two\n";
+  const removedRecord = {
+    identity: "executor-patch-one",
+    file: "0001.patch",
+    content_sha256: sha256PatchContent(removedContent),
+    kind: "upstream",
+    upstream_pull_request: 2348,
+    database_sensitive: false,
+    workflow_sensitive: false,
+  };
   const manifest = {
-    format_version: 2,
+    format_version: 3,
     repository: "UsefulSoftwareCo/executor",
     patches: [
-      { file: "0001.patch", kind: "upstream", upstream_pull_request: 2348, database_sensitive: false, workflow_sensitive: false },
-      { file: "0002.patch", kind: "overlay", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false },
+      removedRecord,
+      {
+        identity: "basalt-overlay-two",
+        file: "0002.patch",
+        content_sha256: sha256PatchContent(retainedContent),
+        kind: "overlay",
+        upstream_pull_request: null,
+        database_sensitive: false,
+        workflow_sensitive: false,
+      },
     ],
   };
   const remaining = { ...manifest, patches: manifest.patches.slice(1) };
@@ -94,7 +115,13 @@ test("accepts removal-only carried patch and matching logical manifest removal",
     "upstream.json": { base: baseUpstream, candidate: baseUpstream },
     "containers/pool/releases.json": { base: poolText, candidate: poolText },
     "scripts/releases/patches.json": { base: JSON.stringify(manifest), candidate: JSON.stringify(remaining) },
-    "scripts/releases/receipts/tools.json": { candidate: releaseReceipt("tools", basePins, basePins, ["0001.patch"]) },
+    "scripts/releases/receipts/tools.json": {
+      candidate: releaseReceipt("tools", basePins, basePins, [{
+        identity: removedRecord.identity,
+        content_sha256: removedRecord.content_sha256,
+      }]),
+    },
+    "patches/0001.patch": { base: removedContent },
   };
   assert.equal(validateChangedFiles(files, contents).allowed, true);
 });
@@ -144,9 +171,17 @@ test("rejects modified patches, forged workflows, and provider table edits witho
 
 test("rejects changed manifest records and receipts that claim unrelated pins", () => {
   const manifest = {
-    format_version: 2,
+    format_version: 3,
     repository: "UsefulSoftwareCo/executor",
-    patches: [{ file: "0001.patch", kind: "upstream", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false }],
+    patches: [{
+      identity: "executor-unmapped-patch",
+      file: "0001.patch",
+      content_sha256: "a".repeat(64),
+      kind: "upstream",
+      upstream_pull_request: null,
+      database_sensitive: false,
+      workflow_sensitive: false,
+    }],
   };
   const edited = { ...manifest, patches: [{ ...manifest.patches[0], database_sensitive: true }] };
   const files = [file("scripts/releases/patches.json"), ...toolsPinCandidate().files];

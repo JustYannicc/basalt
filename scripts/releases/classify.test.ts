@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { classifySnapshots, compareSourceSnapshots } from "./classify.ts";
-import { artifact, patchManifest, pins, sha } from "./fixtures.test-helpers.ts";
+import { artifact, pins, sha } from "./fixtures.test-helpers.ts";
+import { sha256PatchContent } from "./patch-registry.ts";
+import type { PatchManifestV3 } from "./types.ts";
 
 test("reports exact Git and pin candidates and keeps an unproven Home update database-unknown", () => {
   const base = pins();
@@ -147,14 +149,161 @@ test("arbitrary tools runtime DDL callers and Workflow callers stay unknown", ()
 test("a carried encrypted Workflow patch removal flags both data and Workflow safety", () => {
   const base = pins();
   const candidate = structuredClone(base);
+  const content = "+workflowStep encrypted\n+schema migration";
+  const manifest: PatchManifestV3 = {
+    format_version: 3,
+    repository: "UsefulSoftwareCo/executor",
+    patches: [{
+      identity: "executor-encrypted-workflow",
+      file: "0004-workflow.patch",
+      content_sha256: sha256PatchContent(content),
+      kind: "upstream",
+      upstream_pull_request: 14,
+      database_sensitive: true,
+      workflow_sensitive: true,
+    }],
+  };
   const report = classifySnapshots({
     baseGitCommit: sha("1"), candidateGitCommit: sha("2"), basePins: base, candidatePins: candidate,
     localChangedPaths: ["patches/0004-workflow.patch"],
-    basePatchManifest: patchManifest,
-    patchContents: { "0004-workflow.patch": { base: "+workflowStep encrypted\n+schema migration", candidate: undefined } },
+    basePatchManifest: manifest,
+    patchContents: { "0004-workflow.patch": { base: content, candidate: undefined } },
   });
   assert.equal(report.databaseChanged, true);
   assert.equal(report.workflowChanged, true);
+});
+
+test("same content renumbered from a manifestless base keeps its exact candidate mapping", () => {
+  const base = pins();
+  const content = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-old\n+new\n";
+  const candidateManifest: PatchManifestV3 = {
+    format_version: 3,
+    repository: "UsefulSoftwareCo/executor",
+    patches: [{
+      identity: "executor-worker-change",
+      file: "0013-worker-change.patch",
+      content_sha256: sha256PatchContent(content),
+      kind: "upstream",
+      upstream_pull_request: 20,
+      database_sensitive: false,
+      workflow_sensitive: false,
+    }],
+  };
+  const report = classifySnapshots({
+    baseGitCommit: sha("1"),
+    candidateGitCommit: sha("2"),
+    basePins: base,
+    candidatePins: structuredClone(base),
+    basePatchManifest: undefined,
+    candidatePatchManifest: candidateManifest,
+    localChangedPaths: ["patches/0001-worker-change.patch", "patches/0013-worker-change.patch"],
+    patchContents: {
+      "0001-worker-change.patch": { base: content, candidate: undefined },
+      "0013-worker-change.patch": { base: undefined, candidate: content },
+    },
+  });
+  assert.equal(report.databaseChanged, false);
+  assert.equal(report.workflowChanged, false);
+});
+
+test("changed legacy bytes without an exact candidate digest become unknown", () => {
+  const base = pins();
+  const before = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-old\n+prior\n";
+  const after = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-prior\n+current\n";
+  const candidateManifest: PatchManifestV3 = {
+    format_version: 3,
+    repository: "UsefulSoftwareCo/executor",
+    patches: [{
+      identity: "executor-worker-change",
+      file: "0001-worker-change.patch",
+      content_sha256: sha256PatchContent(after),
+      kind: "upstream",
+      upstream_pull_request: 20,
+      database_sensitive: false,
+      workflow_sensitive: false,
+    }],
+  };
+  const report = classifySnapshots({
+    baseGitCommit: sha("1"),
+    candidateGitCommit: sha("2"),
+    basePins: base,
+    candidatePins: structuredClone(base),
+    candidatePatchManifest: candidateManifest,
+    localChangedPaths: ["patches/0001-worker-change.patch"],
+    patchContents: { "0001-worker-change.patch": { base: before, candidate: after } },
+  });
+  assert.equal(report.databaseChanged, true);
+  assert.equal(report.workflowChanged, true);
+  assert.ok(report.evidence.database.sources.some((source) => source.state === "unknown"));
+  assert.ok(report.evidence.workflow.sources.some((source) => source.state === "unknown"));
+});
+
+test("a reused filename cannot lend its old mapping to bytes with a stale digest", () => {
+  const base = pins();
+  const before = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-old\n+reviewed\n";
+  const replacement = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-reviewed\n+unreviewed\n";
+  const oldManifest: PatchManifestV3 = {
+    format_version: 3,
+    repository: "UsefulSoftwareCo/executor",
+    patches: [{
+      identity: "executor-reviewed-change",
+      file: "0001-reused.patch",
+      content_sha256: sha256PatchContent(before),
+      kind: "upstream",
+      upstream_pull_request: 10,
+      database_sensitive: false,
+      workflow_sensitive: false,
+    }],
+  };
+  const report = classifySnapshots({
+    baseGitCommit: sha("1"),
+    candidateGitCommit: sha("2"),
+    basePins: base,
+    candidatePins: structuredClone(base),
+    basePatchManifest: oldManifest,
+    candidatePatchManifest: oldManifest,
+    localChangedPaths: ["patches/0001-reused.patch"],
+    patchContents: { "0001-reused.patch": { base: before, candidate: replacement } },
+  });
+  assert.equal(report.databaseChanged, true);
+  assert.equal(report.workflowChanged, true);
+  assert.ok(report.evidence.database.sources.some((source) => source.state === "unknown"));
+  assert.ok(report.evidence.workflow.sources.some((source) => source.state === "unknown"));
+});
+
+test("adapted bytes keep stable identity and mapping while their new digest is classified", () => {
+  const base = pins();
+  const before = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-WorkflowStep old\n+work old\n";
+  const after = "diff --git a/packages/worker.ts b/packages/worker.ts\n@@ -1 +1 @@\n-work old\n+WorkflowStep new\n";
+  const record = {
+    identity: "executor-worker-workflow",
+    file: "0008-worker-workflow.patch",
+    kind: "upstream" as const,
+    upstream_pull_request: 21,
+    database_sensitive: false,
+    workflow_sensitive: false,
+  };
+  const baseManifest: PatchManifestV3 = {
+    format_version: 3,
+    repository: "UsefulSoftwareCo/executor",
+    patches: [{ ...record, content_sha256: sha256PatchContent(before) }],
+  };
+  const candidateManifest: PatchManifestV3 = {
+    ...baseManifest,
+    patches: [{ ...record, content_sha256: sha256PatchContent(after) }],
+  };
+  const report = classifySnapshots({
+    baseGitCommit: sha("1"),
+    candidateGitCommit: sha("2"),
+    basePins: base,
+    candidatePins: structuredClone(base),
+    basePatchManifest: baseManifest,
+    candidatePatchManifest: candidateManifest,
+    localChangedPaths: ["patches/0008-worker-workflow.patch"],
+    patchContents: { "0008-worker-workflow.patch": { base: before, candidate: after } },
+  });
+  assert.equal(report.workflowChanged, true);
+  assert.equal(report.databaseChanged, true);
 });
 
 test("a pin rollback reports the exact previous candidate and its reverse migration impact", () => {

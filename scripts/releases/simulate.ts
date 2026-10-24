@@ -106,7 +106,7 @@ function reconcileExistingBranch(root: string, plan: Awaited<ReturnType<typeof p
   assert.equal(previousAuthor, "Release proof");
   const receiptText = git(root, ["show", `${branch}:scripts/releases/receipts/tools.json`]);
   const receipt = JSON.parse(receiptText);
-  assert.equal(receipt.schemaVersion, 1);
+  assert.equal(receipt.schemaVersion, 2);
   assert.equal(receipt.source, plan.source);
   assert.equal(receipt.releaseKey, plan.releaseKey);
   assert.equal(receipt.candidatePins.tools.commit, plan.candidatePins.tools.commit);

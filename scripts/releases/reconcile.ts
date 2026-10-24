@@ -3,7 +3,8 @@ import { classifyRefs } from "./classify.ts";
 import { git, pushReleaseBranch } from "./git.ts";
 import { type ManualHoldOwnership, manualReleaseLabel, reconcileMetadata, managedRiskLabelsInBody, releaseUpdateLabel, sanitizePublicPreparationFailure, updateSafetySection } from "./metadata.ts";
 import { RELEASE_MERGE_POLICY, validateChangedFiles } from "../release-merge/policy.ts";
-import { sameJson, validateReleaseReceipt } from "../release-merge/metadata.ts";
+import { sameJson } from "../release-merge/metadata.ts";
+import { samePatchRemovalReceipts, validateReleaseReceipt } from "./receipts.ts";
 import type { UpdatePlan, UpdateSource } from "./update.ts";
 import type { ClassificationReport, ReleasePins } from "./types.ts";
 const ownerBot = "github-actions[bot]";
@@ -197,6 +198,8 @@ async function validateBranchSnapshot(
     "upstream.json", "containers/pool/releases.json", "src/pool/providers.json", "scripts/releases/patches.json",
     `scripts/releases/receipts/${source}.json`,
   ]);
+  for (const file of files)
+    if (/^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.patch$/.test(file.filename)) contentPaths.add(file.filename);
   for (const file of files) if (contentPaths.has(file.filename)) {
     const [before, after] = await Promise.all([
       readGitHubFile(api, repository, file.filename, base),
@@ -217,10 +220,16 @@ async function validateBranchSnapshot(
   const receiptText = contents[`scripts/releases/receipts/${source}.json`]?.candidate;
   if (!receiptText) policy.reasons.push("existing branch receipt is missing");
   else {
-    const parsed = (await import("../release-merge/metadata.ts")).validateReleaseReceipt(receiptText, source);
+    const parsed = validateReleaseReceipt(receiptText, source);
     if (!parsed.ok) policy.reasons.push(`existing branch receipt is invalid: ${parsed.reason}`);
     else if (!sameJson((parsed.receipt.candidatePins as ReleasePins)[source], plan.candidatePins[source]))
       policy.reasons.push("existing branch receipt does not target this released source pin");
+    else if (!samePatchRemovalReceipts(
+      parsed.receipt.removedPatches,
+      plan.patchDecisions.filter(({ remove }) => remove)
+        .map(({ identity, content_sha256 }) => ({ identity, content_sha256 }))
+        .sort((left, right) => left.identity.localeCompare(right.identity)),
+    )) policy.reasons.push("existing branch receipt does not match the removed patch identities");
   }
   policy.allowed = policy.reasons.length === 0;
   return policy;

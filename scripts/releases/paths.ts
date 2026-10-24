@@ -1,4 +1,4 @@
-import type { ChangedFile, Evidence, PatchManifest, SourceComparison } from "./types.ts";
+import type { ChangedFile, Evidence, PatchManifestV3, PatchRecord, SourceComparison } from "./types.ts";
 
 const databasePath = /(^|\/)(migrations?|schema|schema_migration|[^/]*_migration)(\/|\.|$)/i;
 const databaseModelPath = /(^|\/)internal\/cluster\//i;
@@ -85,8 +85,8 @@ export function mergeEvidence(sources: Evidence["sources"]): Evidence {
   };
 }
 
-export function patchManifestByFile(manifest: PatchManifest | undefined): Map<string, PatchManifest["patches"][number]> {
-  return new Map((manifest?.patches ?? []).map((patch) => [patch.file, patch]));
+export function patchManifestByIdentity(manifest: PatchManifestV3 | undefined): Map<string, PatchRecord> {
+  return new Map((manifest?.patches ?? []).map((patch) => [patch.identity, patch]));
 }
 
 export function changedPatchFiles(paths: string[]): string[] {

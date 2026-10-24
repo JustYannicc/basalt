@@ -1,7 +1,8 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ArtifactPin, PatchManifest, ReleasePins } from "./types.ts";
+import type { ArtifactPin, PatchManifestV3, ReleasePins } from "./types.ts";
+import { sha256PatchContent } from "./patch-registry.ts";
 
 export const sha = (digit: string) => digit.repeat(40);
 export const digest = (digit: string) => digit.repeat(64);
@@ -29,14 +30,34 @@ export function pins(): ReleasePins {
   };
 }
 
-export const patchManifest: PatchManifest = {
-  format_version: 2,
+export const patchManifest: PatchManifestV3 = {
+  format_version: 3,
   repository: "UsefulSoftwareCo/executor",
   patches: [
-    { file: "0001-review.patch", kind: "upstream", upstream_pull_request: 10, database_sensitive: false, workflow_sensitive: false },
-    { file: "0004-workflow.patch", kind: "upstream", upstream_pull_request: 14, database_sensitive: true, workflow_sensitive: true },
+    {
+      identity: "executor-review",
+      file: "0001-review.patch",
+      content_sha256: sha256PatchContent(patchFixtureContent("0001-review.patch")),
+      kind: "upstream",
+      upstream_pull_request: 10,
+      database_sensitive: false,
+      workflow_sensitive: false,
+    },
+    {
+      identity: "executor-workflow",
+      file: "0004-workflow.patch",
+      content_sha256: sha256PatchContent(patchFixtureContent("0004-workflow.patch")),
+      kind: "upstream",
+      upstream_pull_request: 14,
+      database_sensitive: true,
+      workflow_sensitive: true,
+    },
   ],
 };
+
+export function patchFixtureContent(file: string): string {
+  return `placeholder patch ${file}\n`;
+}
 
 export function makeReleaseRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "basalt-release-test-"));
@@ -52,7 +73,7 @@ export function makeReleaseRoot(): string {
   }, null, 2)}\n`);
   writeFileSync(join(root, "scripts/releases/patches.json"), `${JSON.stringify(patchManifest, null, 2)}\n`);
   writeFileSync(join(root, "src/pool/providers.json"), '[\n  {"id":"claude","name":"Claude"}\n]\n');
-  for (const patch of patchManifest.patches) writeFileSync(join(root, "patches", patch.file), "placeholder patch\n");
+  for (const patch of patchManifest.patches) writeFileSync(join(root, "patches", patch.file), patchFixtureContent(patch.file));
   return root;
 }
 

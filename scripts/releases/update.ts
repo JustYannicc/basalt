@@ -2,10 +2,11 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { GitHubApi } from "./github.ts";
-import { activePatchFiles, decidePatchRemovals, patchManifestPath, readPatchManifest, updatedManifest } from "./patches.ts";
+import { activePatchFiles, decidePatchRemovals, readPatchManifest } from "./patches.ts";
+import { patchManifestPath, updatedManifest } from "./patch-registry.ts";
 import { githubRepository, latestReleasedArtifact, latestToolsCandidate, sameArtifact } from "./sources.ts";
 import { buildProviderTable, extractCanonicalOAuthProviderIds, renderProviderTable, type PoolProvider } from "../pool-providers.ts";
-import type { ArtifactPin, ReleasePins } from "./types.ts";
+import type { ArtifactPin, PatchRemovalReceipt, ReleasePins } from "./types.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -28,13 +29,16 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
   const poolPath = join(rootPath, "containers/pool/releases.json");
   const upstream = JSON.parse(readFileSync(upstreamPath, "utf8")) as { repository: string; commit: string };
   const pool = JSON.parse(readFileSync(poolPath, "utf8")) as PoolReleases;
+  const manifest = readPatchManifest(rootPath);
+  if (manifest.repository !== githubRepository(upstream.repository))
+    throw new Error("Patch manifest repository does not match upstream.json");
   const basePins = releasePins(upstream, pool);
   const candidatePins = structuredClone(basePins);
   const files: PlannedFile[] = [];
   let releaseKey = "";
   let patchDecisions: UpdatePlan["patchDecisions"] = [];
   let providerTableGenerationFailed = false;
-  let removedPatches: string[] = [];
+  let removedPatches: PatchRemovalReceipt[] = [];
 
   if (source === "tools") {
     const candidate = await latestToolsCandidate(api, upstream.repository);
@@ -47,14 +51,15 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
       });
     }
 
-    const manifest = readPatchManifest(rootPath);
-    if (manifest.repository !== githubRepository(upstream.repository)) throw new Error("Patch manifest repository does not match upstream.json");
     patchDecisions = await decidePatchRemovals(manifest, activePatchFiles(rootPath), candidate.commit, api);
-    const removed = new Set(patchDecisions.filter((decision) => decision.remove).map((decision) => decision.file));
-    removedPatches = [...removed].sort();
-    for (const file of removed) files.push({ path: `patches/${file}`, content: null });
-    if (removed.size) {
-      const updated = updatedManifest(manifest, removed);
+    const removed = patchDecisions.filter((decision) => decision.remove);
+    const removedIdentities = new Set(removed.map((decision) => decision.identity));
+    removedPatches = removed
+      .map(({ identity, content_sha256 }) => ({ identity, content_sha256 }))
+      .sort((left, right) => left.identity.localeCompare(right.identity));
+    for (const patch of removed) files.push({ path: `patches/${patch.file}`, content: null });
+    if (removed.length) {
+      const updated = updatedManifest(manifest, removedIdentities);
       files.push({ path: patchManifestPath, content: `${JSON.stringify(updated, null, 2)}\n` });
     }
   } else {
@@ -86,7 +91,7 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
   if (changes.length) {
     const receiptPath = `scripts/releases/receipts/${source}.json`;
     const receipt = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       source,
       releaseKey,
       basePins,

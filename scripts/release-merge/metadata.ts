@@ -1,4 +1,4 @@
-import { parsePatchManifest } from "../releases/patches.ts";
+import { parsePatchManifest } from "../releases/patch-registry.ts";
 import type { PatchManifest } from "../releases/types.ts";
 
 export type ReleasePins = {

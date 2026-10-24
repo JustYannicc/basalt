@@ -2,10 +2,15 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { GitHubApi } from "./github.ts";
-import { changedPatchFiles, isDatabasePath, isPotentialRuntimePath, localDatabasePaths, localWorkflowPaths, mergeEvidence, nodeDatabasePathState, patchManifestByFile, patchTouchesDatabase, patchTouchesWorkflow, sourceEvidence, toolsDatabasePathState, toolsWorkflowPathState } from "./paths.ts";
-import { assertPatchManifestMatchesFiles, parsePatchManifest } from "./patches.ts";
+import { changedPatchFiles, isDatabasePath, localDatabasePaths, localWorkflowPaths, mergeEvidence, nodeDatabasePathState, sourceEvidence, toolsDatabasePathState, toolsWorkflowPathState } from "./paths.ts";
+import { classifyPatchChanges } from "./classify-patches.ts";
+import {
+  assertPatchManifestContentMatchesFiles,
+  assertPatchManifestMatchesFiles,
+  parsePatchManifest,
+} from "./patch-registry.ts";
 import { githubRepository, sameArtifact } from "./sources.ts";
-import type { ArtifactPin, ClassificationReport, Evidence, PatchManifest, ReleasePins, SourceComparison } from "./types.ts";
+import type { ArtifactPin, ClassificationReport, Evidence, PatchManifestV3, ReleasePins, SourceComparison } from "./types.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -18,9 +23,9 @@ export type ClassificationInput = {
   homeComparison?: SourceComparison;
   nodeComparison?: SourceComparison;
   localChangedPaths?: string[];
-  basePatchManifest?: PatchManifest;
-  candidatePatchManifest?: PatchManifest;
-  patchContents?: Record<string, { base?: string; candidate?: string }>;
+  basePatchManifest?: PatchManifestV3;
+  candidatePatchManifest?: PatchManifestV3;
+  patchContents?: Record<string, { base?: string | Uint8Array; candidate?: string | Uint8Array }>;
 };
 
 export async function classifyRefs(
@@ -33,7 +38,7 @@ export async function classifyRefs(
   const candidateGitCommit = resolveCommit(repositoryRoot, candidateRef);
   const basePins = readPinsAt(repositoryRoot, baseGitCommit);
   const candidatePins = readPinsAt(repositoryRoot, candidateGitCommit);
-  const localChangedPaths = git(repositoryRoot, ["diff", "--name-only", baseGitCommit, candidateGitCommit]).trim().split("\n").filter(Boolean);
+  const localChangedPaths = git(repositoryRoot, ["diff", "--name-only", "--no-renames", baseGitCommit, candidateGitCommit]).trim().split("\n").filter(Boolean);
   const basePatchManifest = readManifestAt(repositoryRoot, baseGitCommit);
   const candidatePatchManifest = readManifestAt(repositoryRoot, candidateGitCommit);
   const patchContents: ClassificationInput["patchContents"] = {};
@@ -41,8 +46,8 @@ export async function classifyRefs(
   for (const path of changedPatchFiles(localChangedPaths)) {
     const file = path.slice("patches/".length);
     patchContents[file] = {
-      base: readOptionalAt(repositoryRoot, baseGitCommit, path),
-      candidate: readOptionalAt(repositoryRoot, candidateGitCommit, path),
+      base: readOptionalBytesAt(repositoryRoot, baseGitCommit, path),
+      candidate: readOptionalBytesAt(repositoryRoot, candidateGitCommit, path),
     };
   }
 
@@ -145,53 +150,6 @@ export function classifySnapshots(input: ClassificationInput): ClassificationRep
   };
 }
 
-function classifyPatchChanges(input: ClassificationInput): { database?: Evidence["sources"][number]; workflow?: Evidence["sources"][number] } {
-  const contents = input.patchContents ?? {};
-  const names = Object.keys(contents).sort();
-  if (!names.length) return {};
-  const records = new Map([
-    ...patchManifestByFile(input.basePatchManifest),
-    ...patchManifestByFile(input.candidatePatchManifest),
-  ]);
-  const db: string[] = [];
-  const workflow: string[] = [];
-  const unknown: string[] = [];
-
-  for (const name of names) {
-    const pair = contents[name]!;
-    const record = records.get(name);
-    if (!record) {
-      unknown.push(name);
-      continue;
-    }
-    const combined = `${pair.base ?? ""}\n${pair.candidate ?? ""}`;
-    if (record.database_sensitive || patchTouchesDatabase(combined)) db.push(`patches/${name}`);
-    else if (patchHasRuntimePath(combined)) unknown.push(name);
-    if (record.workflow_sensitive || patchTouchesWorkflow(combined)) workflow.push(`patches/${name}`);
-    else if (patchHasRuntimePath(combined)) unknown.push(name);
-  }
-
-  const source = (state: Evidence["sources"][number]["state"], paths: string[], reason?: string) => ({
-    name: "carried patches",
-    state,
-    base: input.baseGitCommit,
-    candidate: input.candidateGitCommit,
-    changedPaths: paths,
-    ...(reason ? { reason } : {}),
-  });
-  return {
-    ...(db.length || unknown.length ? { database: source(db.length ? "changed" : "unknown", db.length ? db : unknown, unknown.length ? "changed patch has no tracking record" : undefined) } : {}),
-    ...(workflow.length || unknown.length ? { workflow: source(workflow.length ? "changed" : "unknown", workflow.length ? workflow : unknown, unknown.length ? "changed patch has no tracking record" : undefined) } : {}),
-  };
-}
-
-function patchHasRuntimePath(patch: string): boolean {
-  return patch.split("\n").some((line) => {
-    const match = /^diff --git a\/([^ ]+) b\//.exec(line);
-    return match ? isPotentialRuntimePath(match[1]!) : false;
-  });
-}
-
 export async function compareSourceSnapshots(
   api: Pick<GitHubApi, "compare" | "compareTrees">,
   repository: string,
@@ -218,13 +176,29 @@ function readPinsAt(repositoryRoot: string, commit: string): ReleasePins {
   return { tools: upstream, home: pool.artifacts.home, node: pool.artifacts.node };
 }
 
-function readManifestAt(repositoryRoot: string, commit: string): PatchManifest | undefined {
+function readManifestAt(repositoryRoot: string, commit: string): PatchManifestV3 | undefined {
   const source = readOptionalAt(repositoryRoot, commit, "scripts/releases/patches.json");
   if (source === undefined) return undefined;
-  const manifest = parsePatchManifest(source);
-  const files = git(repositoryRoot, ["ls-tree", "-r", "--name-only", commit, "--", "patches"])
-    .trim().split("\n").filter((path) => path.endsWith(".patch")).map((path) => path.slice("patches/".length));
+  const parsed = parsePatchManifest(source);
+  if (parsed.format_version === 2) return undefined;
+  const manifest = parsed;
+  const rows = git(repositoryRoot, ["ls-tree", "-r", "--format=%(objectmode) %(path)", commit, "--", "patches"])
+    .trim().split("\n").filter(Boolean).map((line) => {
+      const separator = line.indexOf(" ");
+      return { mode: line.slice(0, separator), path: line.slice(separator + 1) };
+    });
+  for (const { mode, path } of rows) {
+    if (path.endsWith(".patch") && mode !== "100644" && mode !== "100755")
+      throw new Error(`Carried patch is not a regular Git blob: ${path}`);
+  }
+  const files = rows.filter(({ path }) => path.endsWith(".patch"))
+    .map(({ path }) => path.slice("patches/".length));
   assertPatchManifestMatchesFiles(manifest, files);
+  const contentByFile = Object.fromEntries(manifest.patches.map(({ file }) => [
+    file,
+    gitBuffer(repositoryRoot, ["show", `${commit}:patches/${file}`]),
+  ]));
+  assertPatchManifestContentMatchesFiles(manifest, contentByFile);
   return manifest;
 }
 
@@ -239,15 +213,24 @@ function readAt(repositoryRoot: string, commit: string, path: string): string {
 }
 
 function readOptionalAt(repositoryRoot: string, commit: string, path: string): string | undefined {
-  try {
-    return readAt(repositoryRoot, commit, path);
-  } catch {
-    return undefined;
-  }
+  return pathExistsAt(repositoryRoot, commit, path) ? readAt(repositoryRoot, commit, path) : undefined;
+}
+
+function readOptionalBytesAt(repositoryRoot: string, commit: string, path: string): Buffer | undefined {
+  return pathExistsAt(repositoryRoot, commit, path) ? gitBuffer(repositoryRoot, ["show", `${commit}:${path}`]) : undefined;
+}
+
+function pathExistsAt(repositoryRoot: string, commit: string, path: string): boolean {
+  return git(repositoryRoot, ["ls-tree", "-r", "--name-only", commit, "--", path])
+    .trim().split("\n").filter(Boolean).includes(path);
 }
 
 function git(repositoryRoot: string, args: string[]): string {
   return execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function gitBuffer(repositoryRoot: string, args: string[]): Buffer {
+  return execFileSync("git", args, { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 function parseArgs(args: string[]): { base: string; candidate: string } {

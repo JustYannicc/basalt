@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GitHubApi } from "./github.ts";
-import type { ArtifactPin, PatchManifest } from "./types.ts";
+import type { ArtifactPin, PatchManifestV3 } from "./types.ts";
 
 const toolRepository = "UsefulSoftwareCo/executor";
 const toolRepositoryUrl = "https://github.com/UsefulSoftwareCo/executor.git";
@@ -79,10 +79,18 @@ export function createBasaltFixture(path: string, toolBase: string, homeCommit: 
   const node = artifact("node", "v8.0.40", "c".repeat(40), "2");
   writeFileSync(join(path, "upstream.json"), `${JSON.stringify({ repository: toolRepositoryUrl, commit: toolBase }, null, 2)}\n`);
   writeFileSync(join(path, "containers/pool/releases.json"), `${JSON.stringify({ format_version: 1, artifacts: { home, node } }, null, 2)}\n`);
-  const manifest: PatchManifest = {
-    format_version: 2,
+  const manifest: PatchManifestV3 = {
+    format_version: 3,
     repository: toolRepository,
-    patches: [{ file: "0001-fixture.patch", kind: "upstream", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false }],
+    patches: [{
+      identity: "executor-fixture",
+      file: "0001-fixture.patch",
+      content_sha256: createHash("sha256").update(patch).digest("hex"),
+      kind: "upstream",
+      upstream_pull_request: null,
+      database_sensitive: false,
+      workflow_sensitive: false,
+    }],
   };
   writeFileSync(join(path, "scripts/releases/patches.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(path, "patches/0001-fixture.patch"), patch);

@@ -1,12 +1,13 @@
 import {
   readReleasePins,
-  removedManifestRecords,
   sameJson,
   validatePoolPins,
-  validateReleaseReceipt,
   validateUpstreamPins,
   validProviderTable,
 } from "./metadata.ts";
+import { removedPatchRecords, sha256PatchContent, type PatchManifestRemoval } from "../releases/patch-registry.ts";
+import { samePatchRemovalReceipts, validateReleaseReceipt } from "../releases/receipts.ts";
+import type { PatchRemovalReceipt } from "../releases/types.ts";
 
 export type { ReleasePins } from "./metadata.ts";
 
@@ -66,7 +67,7 @@ export type CandidatePolicyResult = {
   reasons: string[];
   source?: "tools" | "home" | "node";
   releaseKey?: string;
-  removedPatches?: string[];
+  removedPatches?: PatchRemovalReceipt[];
 };
 
 const SHA = /^[a-f0-9]{40}$/i;
@@ -110,7 +111,7 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
   let homeChanged = false;
   let nodeChanged = false;
   let toolsChanged = false;
-  let manifestRemoved: string[] = [];
+  let manifestRemoved: PatchManifestRemoval[] = [];
   const receiptFiles: Array<{ source: "tools" | "home" | "node"; path: string }> = [];
 
   for (const file of files) {
@@ -140,7 +141,7 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
     }
     if (filename === RELEASE_MERGE_POLICY.patchManifestPath) {
       if (file.status !== "modified") reasons.push("patch manifest must be modified in place");
-      const change = removedManifestRecords(contents[filename]);
+      const change = removedPatchRecords(contents[filename]);
       if (!change.ok) reasons.push(`${filename}: ${change.reason}`);
       else manifestRemoved = change.removed;
       continue;
@@ -167,11 +168,18 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
 
   if (receiptFiles.length !== 1) reasons.push("exactly one source receipt is required");
   if (new Set(patchRemovals).size !== patchRemovals.length) reasons.push("patch removal list contains duplicates");
-  if (!sameStringSet(patchRemovals, manifestRemoved)) reasons.push("patch file and tracking manifest removals differ");
+  if (!sameStringSet(patchRemovals, manifestRemoved.map(({ file }) => file)))
+    reasons.push("patch file and tracking manifest removals differ");
+  for (const patch of manifestRemoved) {
+    const content = contents[`patches/${patch.file}`]?.base;
+    if (content === undefined) reasons.push(`patches/${patch.file}: base patch content is missing`);
+    else if (sha256PatchContent(content) !== patch.content_sha256)
+      reasons.push(`patches/${patch.file}: base patch content digest does not match its registry identity`);
+  }
 
   let source: "tools" | "home" | "node" | undefined;
   let releaseKey: string | undefined;
-  let receiptRemoved: string[] | undefined;
+  let receiptRemoved: PatchRemovalReceipt[] | undefined;
   const receipt = receiptFiles[0];
   const rawReceipt = receipt ? contents[receipt.path]?.candidate : undefined;
   if (receipt && rawReceipt) {
@@ -186,7 +194,10 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
       if (!basePins || !candidatePins) reasons.push("release pin snapshots are missing or invalid");
       else if (!sameJson(decoded.receipt.basePins, basePins) || !sameJson(decoded.receipt.candidatePins, candidatePins))
         reasons.push("release receipt pins do not match the changed source files");
-      if (!sameStringSet(decoded.receipt.removedPatches, patchRemovals)) reasons.push("release receipt patch list does not match removed files");
+      if (!samePatchRemovalReceipts(
+        decoded.receipt.removedPatches,
+        manifestRemoved.map(({ identity, content_sha256 }) => ({ identity, content_sha256 })),
+      )) reasons.push("release receipt patch identities do not match removed registry records");
       if (receipt.source === "tools" && (!toolsChanged && patchRemovals.length === 0 || homeChanged || nodeChanged))
         reasons.push("tools receipt must describe a tools pin change or patch removal only");
       if (receipt.source === "home" && (!homeChanged || toolsChanged || nodeChanged || patchRemovals.length > 0))
@@ -203,7 +214,10 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
   if ((homeChanged && source !== "home") || (nodeChanged && source !== "node") || (toolsChanged && source !== "tools"))
     reasons.push("changed pins do not match the source receipt");
   if (patchRemovals.length > 0 && source !== "tools") reasons.push("carried patch removals require a tools receipt");
-  if (receiptRemoved && !sameStringSet(receiptRemoved, patchRemovals)) reasons.push("release receipt patch list is inconsistent");
+  if (receiptRemoved && !samePatchRemovalReceipts(
+    receiptRemoved,
+    manifestRemoved.map(({ identity, content_sha256 }) => ({ identity, content_sha256 })),
+  )) reasons.push("release receipt patch identities are inconsistent");
   if (receipt && receipt.source === "tools" && !changedUpstream && patchRemovals.length === 0)
     reasons.push("tools receipt has no pin or patch change");
   if (receipt && releaseKey && receipt.path !== `${RELEASE_MERGE_POLICY.releaseReceiptPrefix}${source}.json`)
