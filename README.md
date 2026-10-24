@@ -115,6 +115,9 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET` | Optional hosted Google connector secret |
 | `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID` | Optional hosted GitHub connector OAuth App client |
 | `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET` | Optional hosted GitHub connector OAuth App secret |
+| `EXECUTOR_ZENDESK_SUBDOMAIN` | Optional trusted Zendesk tenant label |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Optional hosted Zendesk OAuth client |
+| `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Optional hosted Zendesk OAuth client secret |
 | `AUTH_GITHUB_CLIENT_ID`       | GitHub sign-in OAuth client                                             |
 | `AUTH_GITHUB_CLIENT_SECRET`   | GitHub sign-in OAuth secret                                             |
 | `BETTER_AUTH_SECRET`          | Session signing                                                         |
@@ -141,7 +144,7 @@ Create a GitHub OAuth App named after `brand.oauthAppName` (Signalbox) with home
 
 ### Hosted connectors
 
-The tools service reads `https://app.signalbox.run/catalog/index.json`. A separate read-only Worker serves the official catalog plus operator notices and published additions. App source stays upstream's. Relative icons resolve to the official publisher. The feed and provider notices are outside the tools API Worker bundle; the existing 5.45 MB upload budget stays unchanged.
+The tools service reads `https://app.signalbox.run/catalog/index.json`. A separate read-only Worker serves the official catalog plus operator notices and published additions. Official app source stays upstream's; the tenant-bound Zendesk source is served only by the Catalog Worker. Relative icons resolve to the official publisher. The feed and provider notices are outside the tools API Worker bundle; the existing 5.45 MB upload budget stays unchanged.
 
 Create the Google connector as a separate OAuth Web application named Signalbox in a separate Cloud project from sign-in. Choose External audience, publish it as Production, and leave it unverified. Testing status expires refresh tokens after seven days. Register `https://app.signalbox.run/api/oauth/callback` and the authorized JavaScript origin `https://app.signalbox.run`. Enable Gmail, Calendar, Drive, Docs, Sheets and Slides APIs. The consent scope union for these catalog apps is:
 
@@ -163,6 +166,8 @@ Google and GitHub connector credentials are optional and use the four `EXECUTOR_
 Slack is not yet one-click. The official Web API app's OAuth method requests bot scopes and uses a bot token. A hosted personal connection needs a separate user-token method using `user_scope` and `authed_user.access_token`, plus matching health and API credential mappings. Setting `user_scope` beside the existing bot scopes would still create a bot grant. The connect notice states this gap, workspace approval rules, and the unlisted history/replies limit of one request per minute and 15 items per request. The existing unlisted Slack MCP client is unchanged. Do not register a connector Slack app until the user-token method is available.
 
 ElevenLabs uses the existing official catalog app with each person's own API key. Enter it through the secure native connection form; no hosted OAuth app or deployment secret is needed. The key must permit `GET https://api.elevenlabs.io/v1/user` for its health check and any selected tools. Keys can have endpoint restrictions and expiry. The app uses `api.elevenlabs.io`; regional residency hosts are not supported by this catalog version. This source integration does not establish a live call from a local agent.
+
+Zendesk appears in the catalog only when all three optional settings are present: `EXECUTOR_ZENDESK_SUBDOMAIN`, `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` and `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET`. Missing any keeps deployment available, removes the whole Zendesk setting set and leaves its entry out of the catalog with a warning. Create a confidential local OAuth client in that tenant named Signalbox, register `https://app.signalbox.run/api/oauth/callback`, and allow `tickets:read tickets:write users:read`. Each caller connects their own Zendesk user; ticket creation requires approval.
 
 Run `node scripts/check-connectors.ts --preflight` to verify that the prepared runtime matches `upstream.json`, every carried patch, and the generated pool source. For the local connector proof, prepare upstream's E2E runtime with `bun run e2e:prepare` from `.upstream`, then run `node scripts/check-connectors.ts` from this repository. The pinned E2E collector requires Bun 1.4.2 on PATH. Chromium and an installed Claude Code CLI are required. The runner acquires heavy slots for its install and native CLI processes; start the runner normally so its local servers do not hold a slot.
 

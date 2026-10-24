@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { mergeFeed, type Feed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
+import sourceSnapshot from "./zendesk/source.json" with { type: "json" };
+import sourceProvenance from "./zendesk/provenance.json" with { type: "json" };
+import { zendeskAddition } from "./zendesk/source.ts";
 
 const official: Feed = {
   version: 1,
@@ -113,4 +118,91 @@ test("ElevenLabs uses its official personal API-key app without hosted-client re
   assert.doesNotMatch(result.connectionNotices![0]!.message, /not set up yet/);
   const source = '{"package":"@executor.sh/elevenlabs","files":[]}';
   assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"), async () => new Response(source))).text(), source);
+});
+
+test("Zendesk source snapshot matches its provenance digests", () => {
+  const snapshotBytes = readFileSync(new URL("./zendesk/source.json", import.meta.url));
+  assert.equal(
+    createHash("sha256").update(snapshotBytes).digest("hex"),
+    sourceProvenance.snapshotSha256,
+  );
+  assert.equal(sourceSnapshot.package, "@signalbox/zendesk");
+  assert.equal(sourceProvenance.package, sourceSnapshot.package);
+  for (const file of sourceSnapshot.files) {
+    assert.equal(
+      createHash("sha256").update(file.content).digest("hex"),
+      sourceProvenance.catalogFileSha256[file.path],
+      file.path,
+    );
+  }
+  assert.equal(sourceProvenance.tenantTemplate.setting, "EXECUTOR_ZENDESK_SUBDOMAIN");
+  assert.equal(sourceProvenance.tenantTemplate.marker, "example");
+});
+
+test("Zendesk appears only for trusted configuration and its source cannot take a tenant from the request", async () => {
+  const trustedTenant = "synthetic-tenant";
+  const requestTenant = "untrusted-tenant";
+  const ready = { google: false, github: false, zendesk: true };
+  const response = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/index.json?tenant=" + requestTenant),
+    async input => {
+      assert.equal(String(input), "https://catalog.executor.sh/index.json");
+      return Response.json(official);
+    },
+    ready,
+    trustedTenant,
+  );
+  assert.equal(response.status, 200);
+  const feed = await response.json() as Feed;
+  const entry = feed.apps.find(app => app.id === "zendesk");
+  assert.ok(entry);
+  assert.equal(entry.package, "@signalbox/zendesk");
+  assert.equal(entry.source, "apps/zendesk.json");
+  assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
+  const notice = entry.connectionNotices?.[0]?.message ?? "";
+  assert.match(notice, /Signalbox/);
+  assert.doesNotMatch(notice, /synthetic-tenant|untrusted-tenant|CLIENT_ID|CLIENT_SECRET|.zendesk.com/);
+
+  const sourceResponse = await handleCatalog(
+    new Request(
+      "https://app.signalbox.run/catalog/apps/zendesk.json?tenant=" + requestTenant,
+    ),
+    async () => {
+      throw new Error("the configured source must be served locally");
+    },
+    ready,
+    trustedTenant,
+  );
+  assert.equal(sourceResponse.status, 200);
+  const source = await sourceResponse.json() as {
+    package: string;
+    files: { path: string; content: string }[];
+  };
+  assert.equal(source.package, entry.package);
+  const index = source.files.find(file => file.path === "index.ts")?.content ?? "";
+  assert.match(index, /createZendeskApp\("synthetic-tenant"\)/);
+  assert.doesNotMatch(index, /untrusted-tenant|example/);
+  assert.equal(
+    source.files.find(file => file.path === "configuration.ts")?.content,
+    sourceSnapshot.files.find(file => file.path === "configuration.ts")?.content,
+  );
+
+  const unavailable = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/index.json"),
+    async () => Response.json(official),
+    { google: false, github: false, zendesk: false },
+    trustedTenant,
+  );
+  assert.equal(
+    ((await unavailable.json()) as Feed).apps.some(app => app.id === "zendesk"),
+    false,
+  );
+  const unavailableSource = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/apps/zendesk.json"),
+    async () => new Response(null, { status: 404 }),
+    { google: false, github: false, zendesk: false },
+    trustedTenant,
+  );
+  assert.equal(unavailableSource.status, 404);
+  assert.throws(() => zendeskAddition("two.labels"), /one lowercase DNS label/);
 });

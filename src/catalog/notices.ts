@@ -24,6 +24,7 @@ const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> =
 export interface ConnectorAvailability {
   readonly google: boolean;
   readonly github: boolean;
+  readonly zendesk?: boolean;
 }
 
 /** Readiness is public feed data. Client credentials never reach this Worker. */

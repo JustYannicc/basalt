@@ -306,9 +306,11 @@ views {
     variant sequence
     title "Workflows/Basalt/Connect personal account"
     description """
-      Status: Hosted OAuth clients and catalog configuration are implemented. Official provider apps stay
-      unchanged. Each connection is personal; real-provider acceptance awaits client registration.
+      Status: Hosted OAuth clients and catalog configuration are implemented. Existing official provider apps stay
+      unchanged. Zendesk source is added only when its trusted tenant and OAuth client are configured. Each
+      connection is personal; live provider acceptance awaits a real user connection.
       The published messaging app uses a bot grant and is not yet a one-click personal connection.
+      Zendesk uses PKCE S256 and JSON token requests through a tenant-specific OAuth client.
     """
 
     include
@@ -318,13 +320,15 @@ views {
       basalt.toolsGateway,
       basalt.publicConnectors,
       basalt.publicVault,
-      outsideServices
+      outsideServices,
+      zendeskTenant
     poolMember -> localClient "connects own account"
     localClient -> basalt.router "connect account"
     basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
     basalt.toolsGateway -> basalt.publicConnectors "start hosted connection"
     basalt.toolsGateway -> outsideServices "account consent"
     basalt.toolsGateway <- outsideServices "consent result"
+    basalt.toolsGateway -> zendeskTenant "authorize, exchange JSON tokens and call each person's tenant-bound grant"
     basalt.toolsGateway -> basalt.publicVault "store secret"
     basalt.router <- basalt.toolsGateway "account connected"
     localClient <- basalt.router "shows connection"

@@ -116,11 +116,15 @@ test("optional telemetry destinations never block the first deployment", () => {
 });
 
 test("connector credentials are separate from sign-in and the feed belongs to this deployment", () => {
-  const source = {
+  const source: NodeJS.ProcessEnv = {
     ...Object.fromEntries(requiredSecrets.map(name => [name, `fixture-${name}`])),
-    ...Object.fromEntries(optionalConnectorClients.flatMap(client => [[client.id, `fixture-${client.id}`], [client.secret, `fixture-${client.secret}`]])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
   };
+  for (const client of optionalConnectorClients) {
+    source[client.id] = `fixture-${client.id}`;
+    source[client.secret] = `fixture-${client.secret}`;
+    if ("tenant" in client) source[client.tenant] = "trusted-tenant";
+  }
   const env = deployEnvironment(source);
   assert.equal(env.EXECUTOR_CATALOG_URL, "https://app.signalbox.run/catalog/index.json");
   assert.notEqual(env.GOOGLE_CLIENT_ID, env.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID);
@@ -128,18 +132,51 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   assert.equal(env.GOOGLE_CONNECTOR_READY, "true");
   assert.equal(env.GITHUB_CONNECTOR_READY, "true");
   assert.deepEqual(connectorWarnings(env), []);
-  for (const provider of ["GOOGLE", "GITHUB_OAUTH"]) {
-    for (const part of ["ID", "SECRET"]) {
-      const name = `EXECUTOR_OAUTH_${provider}_CLIENT_${part}`;
-      assert.equal(env[name], source[name as keyof typeof source]);
+  for (const client of optionalConnectorClients) {
+    const names = [
+      client.id,
+      client.secret,
+      ...("tenant" in client ? [client.tenant] : []),
+    ];
+    for (const name of names) {
+      assert.equal(env[name], source[name]);
       const missing = deployEnvironment({ ...source, [name]: "" });
-      const client = optionalConnectorClients.find(client => client.id === name || client.secret === name)!;
       assert.equal(missing[client.id], undefined);
       assert.equal(missing[client.secret], undefined);
+      if ("tenant" in client) assert.equal(missing[client.tenant], undefined);
       assert.equal(missing[client.ready], "false");
       assert.equal(connectorWarnings(missing).length, 1);
-      assert.match(connectorWarnings(missing)[0]!, new RegExp(client.name));
+      const warning = connectorWarnings(missing)[0]!;
+      assert.match(warning, new RegExp(client.name));
+      assert.ok(!warning.includes("trusted-tenant"));
+      assert.ok(!warning.includes(source[client.secret]!));
     }
+  }
+});
+
+test("Zendesk accepts only a plain tenant label and keeps the whole optional triple unset on omission", () => {
+  const base: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(requiredSecrets.map(name => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "synthetic-client",
+    EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "synthetic-secret",
+  };
+  const partial = deployEnvironment(base);
+  assert.equal(partial.ZENDESK_CONNECTOR_READY, "false");
+  assert.equal(partial.EXECUTOR_ZENDESK_SUBDOMAIN, undefined);
+  assert.equal(partial.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID, undefined);
+  assert.equal(partial.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET, undefined);
+  assert.ok(!requiredSecrets.some(name => name.includes("ZENDESK")));
+
+  for (const tenant of ["tenant.zendesk.com", "Uppercase", "-invalid", "two.labels"]) {
+    assert.throws(
+      () => deployEnvironment({ ...base, EXECUTOR_ZENDESK_SUBDOMAIN: tenant }),
+      error => {
+        assert.match(error.message, /EXECUTOR_ZENDESK_SUBDOMAIN/);
+        assert.ok(!error.message.includes(tenant));
+        return true;
+      },
+    );
   }
 });
 
@@ -151,6 +188,6 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
   assert.equal(env.GOOGLE_CONNECTOR_READY, "false");
   assert.equal(env.GITHUB_CONNECTOR_READY, "false");
-  assert.equal(connectorWarnings(env).length, 2);
+  assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
   assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
 });
