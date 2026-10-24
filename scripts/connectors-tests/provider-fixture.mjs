@@ -77,6 +77,24 @@ const definitions = {
         openapi: "3.0.3",
         info: { title: "Miro local proof API", version: "fixture" },
         paths: {
+          // The official app removes these paths before compiling the document.
+          ...Object.fromEntries([
+            "/Users", "/Users/{id}", "/Groups", "/Groups/{id}", "/ServiceProviderConfig",
+            "/ResourceTypes", "/ResourceTypes/{resource}", "/Schemas", "/Schemas/{uri}",
+            "/v1/oauth/revoke",
+          ].map(path => [path, {}])),
+          ...Object.fromEntries(["metrics", "metrics-total"].map(metric => [
+            `/v2-experimental/apps/{app_id}/${metric}`,
+            { get: {
+              operationId: metric === "metrics" ? "fixtureAppMetrics" : "fixtureAppMetricsTotal",
+              parameters: [{ name: "app_id", in: "path", required: true, schema: { type: "string" } }],
+              responses: { "204": { description: "Fixture patch target, never invoked" } },
+            } },
+          ])),
+          "/v2/oauth/revoke": { post: {
+            operationId: "fixtureRevoke",
+            responses: { "204": { description: "Fixture patch target, never invoked" } },
+          } },
           "/boards": {
             get: {
               operationId: "getBoards",
