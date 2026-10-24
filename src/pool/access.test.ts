@@ -183,7 +183,7 @@ test("person deletion removes computers in all pools, unregistered Home keys, th
   const secondPool = { pool: "pool-b", owner, organization: "organization-b" };
   const second = await f.create(member, secondPool, false);
   await f.create(owner);
-  const userId = await f.home.user(member);
+  const userId = await f.home.user(member, pool.pool);
   f.server.keys.push({ id: 900, api_key_id: 900, user_id: userId, display_name: "unregistered" });
   const response = await f.access({ action: "person-deleted", user: member });
   assert.equal(response.status, 200, await response.clone().text());

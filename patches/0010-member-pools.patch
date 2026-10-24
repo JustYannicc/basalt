@@ -68,35 +68,41 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud
  import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
  import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
  import { UiFailed } from "apps/ui/contracts";
-@@ -28,6 +28,7 @@
+@@ -28,6 +28,9 @@
  import { cloudAppSources } from "./source.ts";
  import { cloudHosts } from "./stage.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
++import { PoolAppSource } from "@executor-js/hosted-server/pool-defaults";
++import { cloudPoolAppSource } from "./pool-app-source.ts";
 +import { PoolAppSigningKey } from "../contracts/pools.ts";
  
  /**
   * Every hosted service the cloud Workers provide, composed over {@link cloudProductServices}. The
-@@ -57,6 +58,7 @@
+@@ -57,6 +60,8 @@
    // Keep the default management app's API document, templates and authoring files off the
    // startup path of requests that do not install it. The document depends only on the origin, so the isolate keeps the first one
    // generated for later provisioning runs instead of regenerating it per execution.
++  const poolSource = yield* cloudPoolAppSource;
 +  const poolKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
    let document: HostedApiDocument | undefined;
    const defaults = yield* makeExecutionMemo(
      Effect.gen(function* () {
-@@ -68,6 +70,7 @@
+@@ -68,7 +73,8 @@
            yield* sdk,
            apiOrigin,
            Effect.sync(() => (document ??= executorCloudApiDocument(apiOrigin))),
+-        ),
 +          poolKey,
-         ),
++        ).pipe(Effect.provideService(PoolAppSource, poolSource)),
        );
      }).pipe(
-@@ -82,6 +85,7 @@
+       Effect.mapError(() => new StorageError()),
+@@ -82,6 +88,8 @@
    );
    return Layer.mergeAll(
      services,
 +    Layer.succeed(PoolAppSigningKey, poolKey),
++    Layer.succeed(PoolAppSource, poolSource),
      Layer.succeed(
        AppManagementHost,
        Effect.all({
@@ -176,7 +182,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hoste
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,289 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -193,11 +199,12 @@ new file mode 100644
 +import { SqlClient } from "effect/sql";
 +import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
 +import type { OrganizationDefaults } from "../contracts/organization-defaults.ts";
-+import { PoolTokenRotation } from "../contracts/pool-defaults.ts";
++import { PoolAppSource, PoolTokenRotation } from "../contracts/pool-defaults.ts";
 +import { ScheduleWakeup } from "../contracts/schedules.ts";
 +import { lockAppLinks } from "./app-accounts.ts";
 +import { poolAppSetup } from "./resource-lifecycle.ts";
-+import { poolAppFiles, poolAppVersion } from "./pool-app-source.ts";
++export { PoolAppSource } from "../contracts/pool-defaults.ts";
++export { poolAppVersion, poolAppAssetPath } from "./pool-app-source.ts";
 +import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
 +import { defaultProductBrand, productBrandSettings } from "@executor-js/utils/product-brand";
 +
@@ -239,6 +246,8 @@ new file mode 100644
 +      yield* Effect.logWarning("Pool setup skipped: POOL_APP_SIGNING_KEY is missing");
 +      return;
 +    }
++    const poolSeed = yield* PoolAppSource;
++    const poolAppVersion = poolSeed.version;
 +    const sql = yield* SqlClient.SqlClient;
 +    const owner = organizationOwner(organization);
 +    const rows = yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
@@ -292,6 +301,7 @@ new file mode 100644
 +      ) {
 +        const source = yield* executor.apps.source({ owner, app: app.id });
 +        if (source.id === app.activeVersion) {
++          const poolAppFiles = yield* poolSeed.files;
 +          if (sourceFilesEqual(source.files, poolAppFiles)) bundle = poolAppVersion;
 +          else {
 +            const workspace = yield* executor.apps.workspace({ owner, app: app.id });
@@ -361,6 +371,7 @@ new file mode 100644
 +      Config.withDefault(""),
 +    )).trim();
 +    const origin = { ...poolSource, name: `${productName || defaultProductBrand.name} pool` };
++    const poolAppFiles = yield* poolSeed.files;
 +    let candidate: App | undefined;
 +    for (let suffix = 1; suffix <= 100; suffix++) {
 +      const name = poolName(member.name, member.email, suffix);
@@ -449,6 +460,7 @@ new file mode 100644
 +) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
++    const poolSeed = yield* PoolAppSource;
 +    return (organization: OrganizationId, user?: Parameters<typeof initialize>[1]) =>
 +      Effect.gen(function* () {
 +        const rotationOnly = yield* PoolTokenRotation;
@@ -456,6 +468,7 @@ new file mode 100644
 +        if (user !== undefined)
 +          yield* poolDefaults(executor, key, organization, user.userId, rotationOnly).pipe(
 +            Effect.provideService(SqlClient.SqlClient, sql),
++            Effect.provideService(PoolAppSource, poolSeed),
 +          );
 +      });
 +  });
@@ -466,15 +479,15 @@ new file mode 100644
 @@ -0,0 +1,71 @@
 +import { Effect, type Redacted } from "effect";
 +import { SqlClient } from "effect/sql";
-+import { poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
++import { PoolAppSource, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
 +import { poolTokenKeyVersion } from "./pool-account.ts";
-+import { poolAppVersion } from "./pool-app-source.ts";
 +
 +/** Delay both rollouts: the pool Worker can deploy after tools; previous-key tokens keep working. */
-+export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version = poolAppVersion) => {
++export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: string) => {
 +  let completed = false;
 +  return Effect.gen(function* () {
 +    if (completed) return;
++    const poolAppVersion = version ?? (yield* PoolAppSource).version;
 +    const keyVersion = yield* poolTokenKeyVersion(key);
 +    const sql = yield* SqlClient.SqlClient;
 +    const steps = [
@@ -488,7 +501,7 @@ new file mode 100644
 +          where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}`,
 +      },
 +      {
-+        name: `basalt-pools:${version}`,
++        name: `basalt-pools:${poolAppVersion}`,
 +        cursor: null,
 +        jobs: sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
 +          select 'member', member."organizationId", member."userId", now() + interval '15 minutes'
@@ -811,11 +824,156 @@ diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/ser
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/pool-defaults.ts
-@@ -0,0 +1,7 @@
-+import { Context } from "effect";
+@@ -0,0 +1,17 @@
++import type { SourceFiles, StorageError } from "@executor-js/sdk/core";
++import { Context, type Effect } from "effect";
 +
 +/** Durable token-only jobs bypass ordinary organization setup and never install or upgrade apps. */
 +export const poolRotationJobPrefix = "basalt-pool-token:";
 +export const PoolTokenRotation = Context.Reference<boolean>("hosted/PoolTokenRotation", {
 +  defaultValue: () => false,
 +});
++
++/** The host supplies verified seed files lazily; checking the current version performs no I/O. */
++export class PoolAppSource extends Context.Service<
++  PoolAppSource,
++  {
++    readonly version: string;
++    readonly files: Effect.Effect<SourceFiles, StorageError>;
++  }
++>()("hosted/PoolAppSource") {}
+diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts/build-site.ts
+--- a/apps/hosted/cloud/scripts/build-site.ts
++++ b/apps/hosted/cloud/scripts/build-site.ts
+@@ -41,5 +41,6 @@
+   // that build ships, not just the HTML: llms.txt, llms-full.txt and the .md
+   // and .mdx variant of every page are the agent-facing half of the site.
+   const docs = path.join(root, "apps/docs/dist");
++  const pool = path.join(root, "apps/hosted/cloud/.generated/pool-app");
+   const docsPrefix = "docs";
+   const output = path.join(root, "apps/hosted/cloud/.generated/site");
+@@ -72,4 +73,5 @@
+   const marketingAssets = yield* listAssets(marketing);
+   const dashboardAssets = yield* listAssets(dashboard);
+   const docsAssets = yield* listAssets(docs);
++  const poolAssets = yield* listAssets(pool);
+   const assets = new Map<string, Array<Asset>>();
+@@ -85,6 +87,8 @@
+     existing.push({ ...asset, relative });
+     assets.set(relative, existing);
+   };
++  // The hash-named pool seed is public source, separate from dashboard document routes.
++  for (const asset of poolAssets) addAsset(asset, path.join("_basalt", asset.relative));
+   for (const asset of marketingAssets) addAsset(asset);
+   for (const asset of dashboardAssets) addAsset(asset);
+   for (const asset of docsAssets) addAsset(asset, path.join(docsPrefix, asset.relative));
+diff --git a/apps/hosted/cloud/src/implementation/pool-app-assets.ts b/apps/hosted/cloud/src/implementation/pool-app-assets.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/pool-app-assets.ts
+@@ -0,0 +1,51 @@
++/** Only a verified, immutable seed is cached. Failures and invocation-owned I/O never are. */
++import { SourceFiles, StorageError } from "@executor-js/sdk/core";
++import {
++  poolAppVersion,
++  poolAppAssetPath,
++  type PoolAppSource,
++} from "@executor-js/hosted-server/pool-defaults";
++import { Effect, Schema } from "effect";
++
++type AssetResponse = { readonly ok: boolean; readonly json: () => Promise<unknown> };
++
++export const makePoolAppSource = (
++  asset: (path: string) => Effect.Effect<AssetResponse, StorageError>,
++  version = poolAppVersion,
++  path = poolAppAssetPath,
++): Parameters<typeof PoolAppSource.of>[0] => {
++  let verified: SourceFiles | undefined;
++  return {
++    version,
++    files: Effect.suspend(() =>
++      verified === undefined
++        ? Effect.gen(function* () {
++            const response = yield* asset(path);
++            if (!response.ok) return yield* new StorageError();
++            const value = yield* Effect.tryPromise({
++              try: () => response.json(),
++              catch: () => new StorageError(),
++            });
++            const files = yield* Schema.decodeUnknownEffect(SourceFiles)(value).pipe(
++              Effect.mapError(() => new StorageError()),
++            );
++            const digest = yield* Effect.tryPromise({
++              try: () =>
++                crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++              catch: () => new StorageError(),
++            });
++            const hash = Array.from(new Uint8Array(digest), (byte) =>
++              byte.toString(16).padStart(2, "0"),
++            ).join("");
++            if (hash !== version) return yield* new StorageError();
++            verified = files;
++            return files;
++          }).pipe(
++            Effect.tapError(() =>
++              Effect.logWarning("Pool app seed is missing or invalid; setup will retry", { path }),
++            ),
++          )
++        : Effect.succeed(verified),
++    ),
++  };
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-app-source.ts b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/pool-app-source.ts
+@@ -0,0 +1,29 @@
++/** The static asset binding serves the seed without an external HTTP request. */
++import type { Fetcher } from "@cloudflare/workers-types";
++import * as Cloudflare from "alchemy/Cloudflare";
++import { StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { makePoolAppSource } from "../implementation/pool-app-assets.ts";
++
++const Assets = Schema.declare(
++  (value): value is Pick<Fetcher, "fetch"> =>
++    typeof value === "object" &&
++    value !== null &&
++    "fetch" in value &&
++    typeof value.fetch === "function",
++);
++
++export const cloudPoolAppSource = Effect.gen(function* () {
++  const environment = yield* Cloudflare.WorkerEnvironment;
++  return makePoolAppSource((path) =>
++    Effect.gen(function* () {
++      const assets = yield* Schema.decodeUnknownEffect(Assets)(environment.ASSETS).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      return yield* Effect.tryPromise({
++        try: () => assets.fetch(new URL(path, "https://assets.invalid").href),
++        catch: () => new StorageError(),
++      });
++    }),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/src/infrastructure/site.ts
+--- a/apps/hosted/cloud/src/infrastructure/site.ts
++++ b/apps/hosted/cloud/src/infrastructure/site.ts
+@@ -3,6 +3,7 @@
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+ import { Stage } from "alchemy/Stage";
+ import { Effect, Option } from "effect";
++import { poolAppVersion } from "@executor-js/hosted-server/pool-defaults";
+ import { chatGptSettings } from "../implementation/chatgpt-sign-in.ts";
+ import { postHogBindings } from "./posthog.ts";
+ import { sentryBindings } from "./sentry.ts";
+@@ -24,6 +25,8 @@
+     command: "bun run hosted:cloud:site:build",
+     outdir: "apps/hosted/cloud/.generated/site",
+     env: {
++      // Generated assets are outside tracked source; the version invalidates Command.Build's input hash.
++      BASALT_POOL_APP_VERSION: poolAppVersion,
+       ...analytics.build,
+       ...sentry.build,
+       ...environment,

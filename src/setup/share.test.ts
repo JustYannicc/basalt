@@ -182,3 +182,64 @@ test("cancelling an invitation; writes need this origin and JSON; bearer request
   assert.equal((await strict.request("/share/v1/elsewhere")).status, 404);
   assert.equal(strict.calls.length, 0);
 });
+
+const cap = { weekly: 5, used: 1, remaining: 4, resetAt: "2026-10-26T00:00:00Z" };
+const amount = { requests: 1, tokens: { input: 10, cacheRead: 2, cacheWrite: 0, output: 3, total: 15 }, cost: 0.02, unpriced: 0 };
+const model = { provider: "claude", model: "fixture-model", ...amount };
+function usagePool({ path }: Call) {
+  if (path.endsWith("/usage")) return json({ scope: "pool", from: "2026-09-25T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", members: [
+    { member: "owner-1", ...amount, cap, models: [], days: [] },
+    { member: "user-2", ...amount, cap, models: [model], days: [] },
+    { member: "foreign-user", ...amount, cap, models: [], days: [] },
+  ] });
+  if (path.endsWith("/cap")) return json(null);
+}
+
+test("usage maps tools-service users to member ids, drops foreign rows and suppresses the owner's cap", async () => {
+  const f = fixture({ pool: usagePool });
+  const response = await f.request("/share/v1/usage?intent=signed");
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const value = await response.json();
+  assert.deepEqual(value, { from: "2026-09-25T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", members: {
+    "member-owner": { usage: amount, models: [], days: [], cap: null }, "member-2": { usage: amount, models: [model], days: [], cap },
+  } });
+  for (const id of ["owner-1", "user-2", "foreign-user"]) assert.equal(JSON.stringify(value).includes(id), false);
+  const call = f.calls.find((call) => call.path.endsWith("/usage"))!;
+  assert.equal(call.input.user, "owner-1"); assert.equal(call.input.intent, "signed");
+  assert.deepEqual(call.input.members, ["owner-1", "user-2"]);
+});
+
+test("a non-owner browser session cannot read usage or set a cap", async () => {
+  const f = fixture({ tools: ({ path }) => path === "/api/auth/get-session" ? json({ user: { id: "user-2", emailVerified: true } }) : undefined });
+  assert.equal((await f.request("/share/v1/usage?intent=signed")).status, 403);
+  assert.equal((await f.write("/share/v1/members/member-2/cap", { intent: "signed", weekly: 5 }, "PUT")).status, 403);
+  assert.deepEqual(f.calls.map((call) => call.path), ["/api/auth/get-session", "/__setup/v1/validate", "/api/auth/get-session", "/__setup/v1/validate"]);
+});
+
+test("owner sets and clears a member cap using only its page id; owner and unknown targets are refused", async () => {
+  const f = fixture({ pool: usagePool });
+  for (const weekly of [5, null]) {
+    const response = await f.write("/share/v1/members/member-2/cap", { intent: "signed", weekly }, "PUT");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { success: true });
+    const call = f.calls.filter((call) => call.path.endsWith("/cap")).at(-1)!;
+    assert.equal(call.input.member, "user-2"); assert.equal(call.input.weekly, weekly);
+    assert.equal(call.input.user, "owner-1"); assert.equal(call.input.intent, "signed");
+  }
+  for (const [id, status] of [["member-owner", 409], ["missing", 404], ["user-2", 404]] as const) {
+    assert.equal((await f.write(`/share/v1/members/${id}/cap`, { intent: "signed", weekly: 5 }, "PUT")).status, status);
+  }
+  assert.equal(f.calls.filter((call) => call.path.endsWith("/cap")).length, 2);
+});
+
+test("cap writes reject extra keys, invalid amounts and cross-origin requests before reaching the pool", async () => {
+  const f = fixture({ pool: usagePool }), path = "/share/v1/members/member-2/cap";
+  for (const extra of [{ user: "owner-1" }, { member: "user-2" }, { pool: "other-pool" }, { role: "owner" }]) {
+    assert.equal((await f.write(path, { intent: "signed", weekly: 5, ...extra }, "PUT")).status, 400);
+  }
+  assert.equal((await f.write(path, { intent: "signed", weekly: 5 }, "PUT", { origin: "https://other.example.test" })).status, 403);
+  assert.equal(f.calls.length, 0);
+  for (const weekly of [0, -1, 100_001, "5", {}]) assert.equal((await f.write(path, { intent: "signed", weekly }, "PUT")).status, 400);
+  assert.equal(f.calls.some((call) => call.path.endsWith("/cap")), false);
+});

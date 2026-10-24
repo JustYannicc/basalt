@@ -7,6 +7,7 @@ import { productName } from "../deployment.ts";
 import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 import { duration, lastReading } from "./usage.ts";
 import { Computers } from "./computers.tsx";
+import { Usage } from "./usage-view.tsx";
 import type { ComputersApi } from "./computer-types.ts";
 
 const refresh = 60_000;
@@ -161,6 +162,7 @@ export function App({ api }: { api: PoolApi }) {
             />
           </>
         )}
+        {view !== undefined && <Usage load={api.usage} providers={view.providers} now={now} shareHref={shareHref} />}
         <Computers api={computers} setup={{ kind: "link", href: () => setupHref ?? "#", manageHref: () => setupHref ?? "#" }} />
       </main>
 

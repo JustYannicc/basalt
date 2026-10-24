@@ -4,7 +4,8 @@ import { Context, Deferred, Effect, Option, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { resolve, basename } from "node:path";
+import { readFileSync } from "node:fs";
 import type { App } from "../../.upstream/packages/sdk/src/contracts/apps.ts";
 import type { Account } from "../../.upstream/packages/sdk/src/contracts/account.ts";
 import type { Executor } from "../../.upstream/packages/sdk/src/contracts/executor.ts";
@@ -28,8 +29,16 @@ const { AccountId, AppId, AppNameTaken, AppNotFound, AccountNotFound, StorageHos
 const { OrganizationId } = organizationContracts;
 const { ScheduleWakeup } = scheduleContracts;
 const { hostedResourceLifecycle } = lifecycleModule;
-const { poolDefaults, poolName, withPoolDefaults } = defaults;
-const { poolAppFiles, poolAppVersion } = source;
+const { poolDefaults, poolName, withPoolDefaults, PoolAppSource } = defaults;
+const { poolAppVersion, poolAppAssetPath } = source;
+const poolAppFiles: SourceFiles = Schema.decodeUnknownSync(sdk.SourceFiles)(
+  JSON.parse(
+    readFileSync(
+      resolve(upstream, "apps/hosted/cloud/.generated/pool-app", basename(poolAppAssetPath)),
+      "utf8",
+    ),
+  ),
+);
 const { queuePoolAppUpgrades } = upgrades;
 const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementation/pool-account.ts");
 const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
@@ -63,6 +72,7 @@ const fixture = <A>(
   }) => Effect.Effect<A, unknown, unknown>,
   options: {
     raceCopies?: boolean;
+    poolSource?: { version: string; files: Effect.Effect<SourceFiles, unknown> };
     beforeCopyCommit?: (sql: SqlClient.SqlClient) => Effect.Effect<unknown, unknown>;
     beforeDeployCommit?: (sql: SqlClient.SqlClient) => Effect.Effect<unknown, unknown>;
   } = {},
@@ -148,7 +158,7 @@ const fixture = <A>(
                     const version = Schema.decodeUnknownSync(VersionId)(`dpl_fixture_${++nextId}`);
                     assert.ok(typeof input.from !== "string" && "files" in input.from);
                     yield* sql`insert into executor_apps values (${id}, ${input.owner}, ${input.name}, ${version},
-                    ${JSON.stringify(poolAppFiles)}::jsonb, ${JSON.stringify(poolAppFiles)}::jsonb,
+                    ${JSON.stringify(input.from.files)}::jsonb, ${JSON.stringify(input.from.files)}::jsonb,
                     ${JSON.stringify(input.from.origin)}::jsonb)`;
                     yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb)`;
                     const app = yield* get(id as AppIdentity);
@@ -250,6 +260,10 @@ const fixture = <A>(
       }),
     ).pipe(
       Effect.provideService(ScheduleWakeup, Effect.void),
+      Effect.provideService(
+        PoolAppSource,
+        options.poolSource ?? { version: poolAppVersion, files: Effect.succeed(poolAppFiles) },
+      ),
       Effect.provide(pgliteLayer()),
     ) as Effect.Effect<A, unknown>,
   );
@@ -1075,5 +1089,96 @@ test("an owner's token-only job preserves source until its bundle job runs", asy
       assert.deepEqual((yield* sql`select files from executor_apps`)[0]!.files, poolAppFiles);
       assert.equal((yield* sql`select * from executor_accounts`).length, 2);
     }),
+  );
+});
+
+test("installs and upgrades use verified asset files; a current bundle never fetches the seed", async () => {
+  const { createHash } = await import("node:crypto");
+  const { makePoolAppSource } = await load(
+    "apps/hosted/cloud/src/implementation/pool-app-assets.ts",
+  );
+  const first = [{ path: "index.ts", content: "first seed" }];
+  const second = [{ path: "index.ts", content: "upgraded seed" }];
+  const hash = (files: typeof first) =>
+    createHash("sha256").update(JSON.stringify(files)).digest("hex");
+  let firstReads = 0;
+  let upgradeReads = 0;
+  let fastReads = 0;
+  const initial = makePoolAppSource(
+    () =>
+      Effect.sync(() => {
+        firstReads++;
+        return new Response(JSON.stringify(first));
+      }),
+    hash(first),
+  );
+  const upgrade = makePoolAppSource(
+    () =>
+      Effect.sync(() => {
+        upgradeReads++;
+        return new Response(JSON.stringify(second));
+      }),
+    hash(second),
+  );
+  const forbidden = makePoolAppSource(
+    () =>
+      Effect.sync(() => {
+        fastReads++;
+        throw new Error("fast path fetched");
+      }),
+    hash(second),
+  );
+  await fixture(
+    ({ sql, executor, setup }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        assert.deepEqual((yield* sql`select files from executor_apps`)[0]!.files, first);
+        assert.equal(firstReads, 1);
+        yield* poolDefaults(executor, Option.some(key), organization, "person-a").pipe(
+          Effect.provideService(PoolAppSource, upgrade),
+        );
+        assert.deepEqual((yield* sql`select files from executor_apps`)[0]!.files, second);
+        assert.equal(upgradeReads, 1);
+        yield* poolDefaults(executor, Option.some(key), organization, "person-a").pipe(
+          Effect.provideService(PoolAppSource, forbidden),
+        );
+        assert.equal(fastReads, 0);
+        assert.equal((yield* sql`select * from executor_apps`).length, 1);
+        assert.equal((yield* sql`select * from executor_accounts`).length, 1);
+      }),
+    { poolSource: initial },
+  );
+});
+
+test("a missing asset leaves member setup retryable and never deploys unverified source", async () => {
+  const { makePoolAppSource } = await load(
+    "apps/hosted/cloud/src/implementation/pool-app-assets.ts",
+  );
+  let reads = 0;
+  const seed = makePoolAppSource(() =>
+    Effect.sync(() =>
+      ++reads === 1
+        ? new Response(null, { status: 404 })
+        : new Response(JSON.stringify(poolAppFiles)),
+    ),
+  );
+  await fixture(
+    ({ sql, executor }) =>
+      Effect.gen(function* () {
+        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+      values ('seed-retry', 'member', ${organization}, 'person-a')`;
+        const initialize = yield* withPoolDefaults(executor, Option.some(key), () => Effect.void);
+        const run = provision("seed-retry", selfHostProvisioningServices).pipe(
+          Effect.provideService(OrganizationDefaults, initialize),
+        );
+        assert.equal((yield* Effect.exit(run))._tag, "Failure");
+        assert.equal((yield* sql`select * from executor_apps`).length, 0);
+        assert.equal((yield* sql`select status from hosted_provisioning`)[0]!.status, "queued");
+        yield* run;
+        assert.equal(reads, 2);
+        assert.equal((yield* sql`select * from executor_apps`).length, 1);
+        assert.equal((yield* sql`select status from hosted_provisioning`)[0]!.status, "succeeded");
+      }),
+    { poolSource: seed },
   );
 });
