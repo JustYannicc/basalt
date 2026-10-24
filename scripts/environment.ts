@@ -73,6 +73,8 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     ...connectors,
     CI: "true",
     DO_NOT_TRACK: source.POSTHOG_PROJECT_KEY?.trim() ? "0" : "1",
+    // Fresh deployment: no earlier dispatcher can create the legacy native instance.
+    EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
     ALCHEMY_STAGE: deployment.stage,
     CLOUD_SOURCE_NAMESPACE: deployment.sourceNamespace,
     BETTER_AUTH_URL: `https://${brand.host}`,

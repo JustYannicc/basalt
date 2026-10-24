@@ -60,3 +60,5 @@ Each owned module has `metadata { code '<relative path>' }`. `bindings` maps sou
 Code naming model elements imports `$ElementId` from the generated module under `scripts/architecture/gen/`. That module is rebuilt in CI and ignored by Git. Renaming an element without updating its code references fails typechecking. The source check requires an explicit relationship for cross-module imports and service bindings, and an external element plus caller relationship for concrete outside hosts and SDKs. Unresolved computed fetch destinations fail instead of being assumed safe.
 
 Dynamic-view steps are checked against model relationships. Real trace comparison and live provider-state comparison are outside this check.
+
+Deployment enables `EXECUTOR_ENCRYPTED_WORKFLOW_STARTS` for the fresh tools-service installation. Its dependency patch versions native app Workflow identities and authenticates persisted results. Existing upstream installations need a separate dispatcher cutover before enabling that setting.
