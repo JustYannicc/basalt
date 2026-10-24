@@ -7,7 +7,8 @@ or MCP servers a computer already has.
 ## Before starting
 
 Keep the old setup running. Wait for the deploy owner to report the first live
-deployment and for the coordinator to collect the first release's live evidence:
+deployment. Then import the login files and set up each computer as described
+below. Before shutdown, the coordinator collects the first release's live evidence:
 
 - Sign-in creates an empty personal pool. Claude, ChatGPT and Grok connect and
   serve requests. Every supported subscription provider appears in Connect.
@@ -20,14 +21,16 @@ deployment and for the coordinator to collect the first release's live evidence:
 - Revoking a computer key or disconnecting an account stops the next request.
 
 Record the deployment revision and evidence privately. The owner's computers
-must already work on v1 before the coordinator sends the explicit **GO shutdown**.
-That message is the hard gate for this cutover. Missing evidence keeps the old
-resources running. This document never authorizes shutdown by itself.
+must already work on v1, with the imported accounts verified, before the
+coordinator sends the explicit **GO shutdown**. That message authorizes changes
+to old resources only. Import, setup and v1 verification happen before it.
+Missing evidence keeps the old resources running. This document never
+authorizes shutdown by itself.
 
 ## Import the login files
 
-Run the import after the coordinator releases the cutover. Export the current
-pool's login files using its authenticated, read-only export mechanism through
+Run the import once the destination deployment is live, before **GO shutdown**.
+Export the current pool's login files using its authenticated, read-only export mechanism through
 the operator's approved tools. Do not change the old pool. Keep credentials in
 private files outside the checkout, owned by the operator with mode `0600`.
 Never paste credentials into chat, command arguments, logs, issues or PRs.
