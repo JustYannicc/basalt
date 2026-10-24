@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { backendUserName } from "../../src/pool/backend-users.ts";
+import { brand } from "../../brand.ts";
+import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { capMessage, rewriteCapResponse } from "../../src/pool/cap-message.ts";
 import { readCap, setCap } from "../../src/pool/caps.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
@@ -21,9 +22,18 @@ test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolat
     }
     assert.deepEqual(await fixture.data("/billing/settings"), { service_tier_source: "request", report_timezone: "UTC" });
     const member = "fixture-member";
-    const shared = await home.mint(member, "pool-a", "shared-computer");
-    const own = await home.mint(member, "own-pool", "own-computer");
-    assert.notEqual(shared.userId, own.userId);
+    const legacyName = `${brand.setup.id}-${await digest(member)}`;
+    await fixture.data("/users", "POST", { username: legacyName, credits_unlimited: true });
+    const legacyId = (await fixture.users()).find((user) => user.username === legacyName)!.id;
+    async function legacyKey(pool: string, computer: string) {
+      const key = `${brand.setup.keyPrefix}${crypto.randomUUID()}`;
+      await fixture.data("/access/api-keys", "POST", { api_key: key, display_name: `${brand.setup.id}:${computer}`,
+        user_id: legacyId, channels: [await home.group(pool)], model_groups: [] });
+      return { key, keyId: (await fixture.keys()).find((row) => row.api_key === key)!.api_key_id };
+    }
+    const shared = await legacyKey("pool-a", "shared-computer");
+    const own = await legacyKey("own-pool", "own-computer");
+    assert.ok((await fixture.keys()).filter((key) => [shared.keyId, own.keyId].includes(key.api_key_id)).every((key) => key.user_id === legacyId));
     async function turn(key: string, session: string, expected: string) {
       const response = await fixture.model(key, session);
       const rewritten = await rewriteCapResponse(response, "/v1/chat/completions");
@@ -49,6 +59,11 @@ test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolat
     await fixture.data("/billing/model-prices", "POST", { provider: record.provider, model: record.model,
       request_price: 0.02, source: "manual" });
     await setCap(client, member, "pool-a", 0.01);
+    assert.ok(!(await fixture.users()).some((user) => user.id === legacyId));
+    const migratedKeys = await fixture.keys();
+    const ownUserId = migratedKeys.find((key) => key.api_key_id === own.keyId)!.user_id;
+    assert.notEqual(migratedKeys.find((key) => key.api_key_id === shared.keyId)!.user_id, ownUserId);
+    console.log("PASS migration: both legacy keys now own distinct pool users; legacy user deleted");
     await turn(shared.key, "cross-cap", "P1");
     const deadline = Date.now() + 30000;
     while ((await readCap(client, member, "pool-a"))!.used < 0.02 && Date.now() < deadline) await delay(200);
@@ -79,10 +94,10 @@ test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolat
     const patches = fixture.events.slice(beforeSwitch).filter((event) => event.method === "PATCH" && event.path.endsWith("/access/api-keys"));
     assert.equal(patches.length, 1);
     const key = (await fixture.keys()).find((key) => key.api_key_id === shared.keyId)!;
-    assert.equal(key.user_id, own.userId); assert.equal(key.api_key, shared.key);
+    assert.equal(key.user_id, ownUserId); assert.equal(key.api_key, shared.key);
     assert.deepEqual(key.channels, [await home.group("own-pool")]);
     const ownName = await backendUserName(member, "own-pool");
-    assert.equal((await fixture.users()).find((user) => user.username === ownName)?.id, own.userId);
+    assert.equal((await fixture.users()).find((user) => user.username === ownName)?.id, ownUserId);
     await turn(shared.key, "switch-while-capped", "P2");
     console.log("PASS 4: member's own pool remains uncapped; one PATCH moved the same key to its user and channel");
     await setCap(client, member, "pool-a", null);

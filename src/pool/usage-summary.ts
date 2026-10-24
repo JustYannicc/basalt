@@ -179,7 +179,7 @@ export class UsageLedger {
             const { row, day, hash } = item;
             const credential = object(row.credential) ? text(row.credential.credential_id) : null;
             const user = parseBackendUserName(object(row.client) ? row.client.username : undefined);
-            const pool = (credential ? pools.get(credential) : undefined) ?? (user ? tags.get(user.pool) : undefined);
+            const pool = (credential ? pools.get(credential) : undefined) ?? (user ? (user.pool === null ? "" : tags.get(user.pool)) : undefined);
             const seen = stored.get(receiptKey(day, hash)) as Record<string, number> | undefined;
             if (pool !== undefined && day >= cutoff && !Object.hasOwn(seen ?? {}, hash)) { bucketKeys.add(poolKey(pool, day)); metaKeys.add(seenKey(day)); }
             return { ...item, pool, user };
@@ -202,7 +202,8 @@ export class UsageLedger {
             const meta = load<Receipts>(seenKey(day), { pools: [] });
             if (!meta.pools.includes(pool)) meta.pools.push(pool);
             const buckets: Bucket[] = load<Bucket[]>(poolKey(pool, day), []);
-            const person = user?.person ?? "other";
+            // Empty pool is the unassigned "other" bucket. Shared receipts prevent later reassignment.
+            const person = pool === "" ? "other" : user?.person ?? "other";
             const model = text(row.model) ?? "", provider = text(row.provider) ?? "";
             const index = buckets.findIndex((bucket) => bucket.person === person && bucket.model === model && bucket.provider === provider);
             const amount = object(row.billing) ? row.billing.amount : null;
@@ -246,7 +247,7 @@ export class UsageLedger {
       const dayKeys = Array.from({ length: days }, (_, i) => dayOf(start + i * dayMs));
       const stored = await this.storage.getMany<unknown>([cursorKey, ...dayKeys.map((day) => poolKey(pool, day))]);
       for (const day of dayKeys) {
-        for (const bucket of stored.get(poolKey(pool, day)) as Bucket[] | undefined ?? []) {
+        for (const bucket of (pool ? stored.get(poolKey(pool, day)) : undefined) as Bucket[] | undefined ?? []) {
           if (caller === owner || bucket.person === person) buckets.push({ ...bucket, day });
         }
       }

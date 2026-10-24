@@ -1,8 +1,16 @@
 import { isWeeklyCap, type Cap } from "../../apps/pool/contract.ts";
-import { backendUserName } from "./backend-users.ts";
+import { backendUserName, personPrefix } from "./backend-users.ts";
 import { ComputerHome } from "./computer-home.ts";
 import type { HomeClient } from "./control.ts";
 import { fail, post, rows, unavailable, type Json } from "./json.ts";
+
+async function migratePerson(home: HomeClient, person: string): Promise<void> {
+  try {
+    if (!(await new ComputerHome(home).migrateLegacy(person)).complete) throw new Error("Migration pending");
+  } catch {
+    return fail(503, "backend_unavailable", "Moving this person's pool keys did not finish. Try again.", 5);
+  }
+}
 
 function nonNegative(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value) && value >= 0; }
 
@@ -10,7 +18,10 @@ export async function setCap(home: HomeClient, person: string, pool: string, wee
   if (weekly !== null && !isWeeklyCap(weekly)) {
     return fail(400, "invalid_query", "Enter a weekly cap between $0.01 and $100,000, in whole cents.");
   }
+  await migratePerson(home, person);
   const id = await new ComputerHome(home).user(person, pool);
+  // Home v1.1.6 user_period_limit.go:475-484 sums charges by user. A newly set
+  // cap excludes pre-migration spend; charges on the pool user count from its migration.
   // Home v1.1.6 internal/cluster/management/users.go:39-54, 24-29: null clears the limit.
   await home.data(`/users/${id}`, { ...post({ limit_7d_credits: weekly, window_mode_7d: "calendar",
     timezone: "UTC", week_reset_day: 1, week_reset_hour: 0 }), method: "PATCH" });
@@ -29,13 +40,19 @@ async function capForUser(home: HomeClient, user: Json): Promise<Cap | null> {
   return { weekly: weekly.limit, used: weekly.used, remaining: weekly.remaining, resetAt: weekly.reset_at };
 }
 
-/** One user list, then live period totals only for members with a configured cap. */
+/** Migrate legacy users first; query live totals only for members with a configured cap. */
 export async function readCaps(home: HomeClient, pool: string, people: readonly string[]): Promise<Map<string, Cap | null>> {
   const caps = new Map<string, Cap | null>();
   if (!people.length) return caps;
-  const users = rows((await home.data("/users")).users);
-  const byName = new Map(users.map((user) => [user.username, user]));
+  let users = rows((await home.data("/users")).users);
   const unique = [...new Set(people)];
+  let migrated = false;
+  for (const person of unique) {
+    const legacy = (await personPrefix(person)).slice(0, -1);
+    if (users.some((user) => user.username === legacy)) { await migratePerson(home, person); migrated = true; }
+  }
+  if (migrated) users = rows((await home.data("/users")).users);
+  const byName = new Map(users.map((user) => [user.username, user]));
   // Bound Home's concurrent usage queries for large owner lists.
   for (let start = 0; start < unique.length; start += 4) {
     await Promise.all(unique.slice(start, start + 4).map(async (person) => {

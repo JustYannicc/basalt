@@ -2,7 +2,7 @@ import { brand } from "../../brand.ts";
 import { HomeClient, PoolHome, poolGroupPrefix } from "./control.ts";
 import { BackendFailure, object, post, rows, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
-import { backendUserName, personPrefix } from "./backend-users.ts";
+import { backendUserName, digest, parseBackendUserName, personPrefix, scopedUserName } from "./backend-users.ts";
 
 const id = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 export { digest } from "./backend-users.ts";
@@ -18,16 +18,16 @@ export class ComputerHome {
     this.client = client;
     this.onProductEvent = onProductEvent;
   }
-  private async findUser(person: string, pool: string, signal?: AbortSignal) {
+  private async findUser(username: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (typeof pool !== "string" || !pool.trim()) return unavailable();
-    const username = await backendUserName(person, pool);
     return rows((await this.client.data("/users", { signal })).users).find((row) => row.username === username);
   }
   async user(person: string, pool: string, created?: () => void, signal?: AbortSignal): Promise<number> {
     if (typeof pool !== "string" || !pool.trim()) return unavailable();
-    const username = await backendUserName(person, pool);
-    let user = await this.findUser(person, pool, signal);
+    return this.ensureUser(await backendUserName(person, pool), created, signal);
+  }
+  private async ensureUser(username: string, created?: () => void, signal?: AbortSignal): Promise<number> {
+    let user = await this.findUser(username, signal);
     signal?.throwIfAborted();
     let provisioned = false;
     if (!user) {
@@ -37,7 +37,7 @@ export class ComputerHome {
       if (!response.ok && response.status !== 409) throw new BackendFailure(response.status);
       provisioned = response.ok;
       await response.body?.cancel();
-      user = await this.findUser(person, pool, signal);
+      user = await this.findUser(username, signal);
     }
     signal?.throwIfAborted();
     if (!id(user?.id)) return unavailable();
@@ -100,10 +100,58 @@ export class ComputerHome {
     }
     if (!response.bodyUsed) await response.body?.cancel();
   }
+  /** One legacy user, at most 20 key moves. Home's remaining ownership is the resume state. */
+  async migrateLegacy(person?: string, after = 0, moved?: (keyId: number, userId: number) => Promise<void>): Promise<{ complete: boolean; cursor: number }> {
+    const users = rows((await this.client.data("/users")).users);
+    const personDigest = person === undefined ? undefined : await digest(person);
+    const legacy = users.filter((user) => {
+      const name = parseBackendUserName(user.username);
+      return name?.pool === null && (personDigest === undefined || name.person === personDigest);
+    }).sort((a, b) => Number(a.id) - Number(b.id));
+    if (legacy.some((user) => !id(user.id))) return unavailable();
+    const user = legacy.find((user) => Number(user.id) > after) ?? legacy[0];
+    // Reconcile registry writes lost after a PATCH, including moves made by setCap.
+    const keys = legacy.length || moved ? rows((await this.client.data("/access/api-keys")).items) : [];
+    if (moved) {
+      const scoped = new Set(users.filter((user) => parseBackendUserName(user.username)?.pool).map((user) => user.id));
+      for (const key of keys) if (scoped.has(key.user_id) && id(key.api_key_id ?? key.id) && id(key.user_id))
+        await moved((key.api_key_id ?? key.id) as number, key.user_id);
+    }
+    if (!user) return { complete: true, cursor: 0 };
+    const name = parseBackendUserName(user.username)!;
+    const groups = new Map((await this.client.allPoolGroups()).map((group) => [group.id, group.channel_name.slice(poolGroupPrefix.length)]));
+    const owned = keys.filter((key) => key.user_id === user.id);
+    const destinations = new Map<string, number>();
+    let remaining = owned.length, writes = 0, pending = false;
+    for (const key of owned) {
+      const channels = key.channels;
+      const pool = Array.isArray(channels) && channels.length === 1 ? groups.get(channels[0]) : undefined;
+      if (!pool) { console.warn("Legacy pool key migration skipped: ambiguous channels", key.api_key_id ?? key.id); continue; }
+      if (writes >= 20) { pending = true; continue; }
+      const keyId = key.api_key_id ?? key.id;
+      if (!id(keyId)) return unavailable();
+      const userId = destinations.get(pool) ?? await this.ensureUser(await scopedUserName(name.person, pool));
+      destinations.set(pool, userId);
+      // Home v1.1.6 management/api_keys.go:79-98: keep channel scope in the same write.
+      await this.client.data("/access/api-keys", { ...post({ api_key_id: keyId, user_id: userId, channels }), method: "PATCH" });
+      await moved?.(keyId, userId);
+      writes++; remaining--;
+    }
+    if (!remaining) await this.deleteUser(user.id as number);
+    return { complete: !remaining, cursor: pending ? after : user.id as number };
+  }
+  private async deleteUser(userId: number): Promise<void> {
+    const response = await this.client.response(`/users/${userId}`, { method: "DELETE" });
+    if (!response.ok) {
+      const error: unknown = await response.json().catch(() => ({}));
+      if (response.status !== 404 || !object(error) || error.error !== "not_found") throw new BackendFailure(response.status);
+    }
+    if (!response.bodyUsed) await response.body?.cancel();
+  }
   async deletePerson(person: string): Promise<number> {
     const prefix = await personPrefix(person);
     const users = rows((await this.client.data("/users")).users).filter((row) =>
-      typeof row.username === "string" && row.username.startsWith(prefix));
+      typeof row.username === "string" && (row.username.startsWith(prefix) || row.username === prefix.slice(0, -1)));
     if (!users.length) return 0;
     if (users.some((user) => !id(user.id))) return unavailable();
     const ids = new Set(users.map((user) => user.id));
@@ -113,14 +161,7 @@ export class ComputerHome {
       if (!id(keyId)) return unavailable();
       await this.revoke(keyId);
     }
-    for (const user of users) {
-      const response = await this.client.response(`/users/${user.id}`, { method: "DELETE" });
-      if (!response.ok) {
-        const error: unknown = await response.json().catch(() => ({}));
-        if (response.status !== 404 || !object(error) || error.error !== "not_found") throw new BackendFailure(response.status);
-      }
-      if (!response.bodyUsed) await response.body?.cancel();
-    }
+    for (const user of users) await this.deleteUser(user.id as number);
     return keys.length;
   }
 

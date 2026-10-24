@@ -42,6 +42,19 @@ export class Computers {
     return next;
   }
   private save(registry: Registry) { return this.deps.storage.put(storageKey, registry); }
+  async migrateLegacy(): Promise<void> {
+    await this.run(async (registry) => {
+      const key = "legacy-user-migration-cursor";
+      const result = await this.deps.home.migrateLegacy(undefined, await this.deps.storage.get<number>(key) ?? 0,
+        async (keyId, userId) => {
+          const computer = Object.values(registry).find((computer) => computer.keyId === keyId);
+          if (!computer || computer.userId === userId) return;
+          computer.userId = userId;
+          await this.save(registry);
+        });
+      await this.deps.storage.put(key, result.cursor);
+    });
+  }
   async expire(): Promise<void> {
     await this.run(async (registry) => {
       let changed = false;
