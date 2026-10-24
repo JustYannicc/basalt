@@ -289,8 +289,9 @@ function Progress({ computer }: { computer: Computer | undefined }) {
     "tools-only": "A tool call arrived. Waiting for a model request.",
     revoking: "Revoking hasn't finished, so this computer may still work. Retry it from your list of computers.",
     revoked: "This computer was revoked. Its requests fail.",
+    removed: "You no longer have this computer's pool, so its model requests fail.",
   }[status];
-  const settled = status === "revoked" || status === "revoking";
+  const settled = status === "revoked" || status === "revoking" || status === "removed";
   return (
     <p className={`flex items-center gap-2 text-sm ${status === "revoking" ? "text-warning" : "text-muted-foreground"}`} aria-live="polite">
       {!settled && <Spinner />}

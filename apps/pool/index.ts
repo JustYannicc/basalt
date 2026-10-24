@@ -22,7 +22,7 @@ import {
   type SignInStatus,
 } from "./contract.ts";
 import { poolOrigin, productName } from "./deployment.ts";
-import type { Computer } from "./ui/computer-types.ts";
+import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 // The tools service links this account for everyone when it installs a pool.
 // Its token works for this one pool only; the pool Worker holds the backend's key.
@@ -120,9 +120,21 @@ export const removeAccount = mutation(
   async (ctx: Context, { id }) => control<null>(ctx, `/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
 );
 
+export interface ComputerContext {
+  readonly href: string;
+  readonly computers: Computer[];
+  readonly pools?: PoolChoice[];
+  readonly undoPrompt: string;
+  /** The owner's link to invite people and remove them. */
+  readonly shareHref?: string;
+}
+
 export const computerContext = query(
-  { description: "Your computers in this pool and a short-lived link to set up this computer", input: object({}) },
-  async (ctx: Context) => control<{ href: string; computers: Computer[]; undoPrompt: string }>(ctx, "/setup-context"),
+  {
+    description: "Your computers in every pool you use, the pools you can pick for each, and short-lived links: `href` sets up this computer or switches a computer's pool in one click, and for the pool's owner `shareHref` invites people to this pool or removes them.",
+    input: object({}),
+  },
+  async (ctx: Context) => control<ComputerContext>(ctx, "/setup-context"),
 );
 
 export default defineApp(requirements, {

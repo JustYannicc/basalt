@@ -77,5 +77,9 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
   );
   // The provisioning signer and pool Worker's verifier always use the same implementation.
   copyFileSync(join(root, "src/pool/token.ts"), join(dirname(destination), "pool-token.ts"));
+  copyFileSync(
+    join(root, "src/pool/access-contract.ts"),
+    join(dirname(destination), "pool-access-contract.ts"),
+  );
   return files;
 }
