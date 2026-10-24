@@ -179,6 +179,16 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-zendesk-oauth",
+      "file": "0020-zendesk-hosted-oauth.patch",
+      "content_sha256": "f6b1984e44c5e73eb965a4c1f1e51f88063c4b8753469cc3df50f7030a37b43a",
+      "kind": "upstream",
+      "upstream_pull_request": 2376,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "upstream_issue": 2374
+    },
+    {
       "identity": "executor-zoho-oauth",
       "file": "0021-zoho-oauth.patch",
       "content_sha256": "2995b1c6826d9922d62da0c17cf8cce75eeaa3136f0fcd0c2f8648a7c98650af",
