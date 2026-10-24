@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "exactOptionalPropertyTypes": true
+  },
+  "include": [
+    "alchemy.run.ts",
+    "scripts/preview/stack/**/*.ts",
+    ".upstream/packages/sdk/src/contracts/workerd-modules.d.ts"
+  ],
+  "exclude": []
+}

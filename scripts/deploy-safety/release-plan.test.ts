@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { currentCommit } from "./release-plan.ts";
+import { currentCommit, gitRepositoryRoot } from "./release-plan.ts";
 
 test("candidate SHA comes from checked-out HEAD, not workflow_dispatch GITHUB_SHA", () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-candidate-sha-"));
@@ -30,6 +30,20 @@ test("candidate SHA comes from checked-out HEAD, not workflow_dispatch GITHUB_SH
     restore("GITHUB_SHA", prior.githubSha);
     restore("BASALT_RELEASE_CANDIDATE_SHA", prior.candidateSha);
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release classifier source root stays on the trusted runner checkout", () => {
+  const trustedRoot = realpathSync(gitRepositoryRoot());
+  const candidateRoot = mkdtempSync(join(tmpdir(), "basalt-candidate-source-"));
+  const previousDirectory = process.cwd();
+  try {
+    process.chdir(candidateRoot);
+    assert.equal(realpathSync(gitRepositoryRoot()), trustedRoot);
+    assert.notEqual(realpathSync(process.cwd()), trustedRoot);
+  } finally {
+    process.chdir(previousDirectory);
+    rmSync(candidateRoot, { recursive: true, force: true });
   }
 });
 

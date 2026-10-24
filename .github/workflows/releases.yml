@@ -1,0 +1,45 @@
+name: Release updates
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-updates
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        source: [tools, home, node]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Reconcile the current release candidate
+        run: node scripts/releases/run.ts --source="$RELEASE_UPDATE_SOURCE"
+        env:
+          RELEASE_UPDATE_SOURCE: ${{ matrix.source }}
+          RELEASE_UPDATE_TOKEN: ${{ secrets.RELEASE_UPDATE_TOKEN }}

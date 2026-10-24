@@ -8,14 +8,14 @@ export const patchManifestPath = "scripts/releases/patches.json";
 export type PatchDecision = { file: string; remove: boolean; reason: string };
 
 export function readPatchManifest(root: string): PatchManifest {
-  const manifest = JSON.parse(readFileSync(join(root, patchManifestPath), "utf8")) as PatchManifest;
+  const manifest = JSON.parse(readFileSync(join(root, patchManifestPath), "utf8")) as unknown;
   validateManifest(manifest);
   assertPatchManifestMatchesFiles(manifest, activePatchFiles(root));
   return manifest;
 }
 
 export function parsePatchManifest(source: string): PatchManifest {
-  const manifest = JSON.parse(source) as PatchManifest;
+  const manifest = JSON.parse(source) as unknown;
   validateManifest(manifest);
   return manifest;
 }
@@ -33,6 +33,14 @@ export async function decidePatchRemovals(
 
   for (const patch of manifest.patches) {
     if (!active.has(patch.file)) continue;
+    if (patch.kind === "overlay") {
+      decisions.push({
+        file: patch.file,
+        remove: false,
+        reason: patch.remove_with ? "overlay-retirement-proof-unavailable" : "overlay-does-not-auto-retire",
+      });
+      continue;
+    }
     if (patch.upstream_pull_request === null) {
       decisions.push({ file: patch.file, remove: false, reason: "no-upstream-pull-request" });
       continue;
@@ -78,8 +86,10 @@ export function updatedManifest(manifest: PatchManifest, removed: Set<string>): 
   return { ...manifest, patches: manifest.patches.filter((patch) => !removed.has(patch.file)) };
 }
 
-function validateManifest(value: PatchManifest): void {
-  if (value.format_version !== 1 || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value.repository) || !Array.isArray(value.patches))
+function validateManifest(value: unknown): asserts value is PatchManifest {
+  if (!isRecord(value) || !hasExactKeys(value, ["format_version", "repository", "patches"]) ||
+    value.format_version !== 2 || typeof value.repository !== "string" ||
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value.repository) || !Array.isArray(value.patches))
     throw new Error("Invalid scripts/releases/patches.json manifest");
   const names = new Set<string>();
   for (const patch of value.patches) {
@@ -88,10 +98,41 @@ function validateManifest(value: PatchManifest): void {
   }
 }
 
-function isPatchRecord(value: PatchRecord): boolean {
-  return /^[0-9A-Za-z_.-]+\.patch$/.test(value.file) &&
-    (value.upstream_pull_request === null || Number.isInteger(value.upstream_pull_request) && value.upstream_pull_request > 0) &&
-    typeof value.database_sensitive === "boolean" && typeof value.workflow_sensitive === "boolean";
+function isPatchRecord(value: unknown): value is PatchRecord {
+  if (!isRecord(value) || typeof value.file !== "string" || !/^[0-9A-Za-z_.-]+\.patch$/.test(value.file) ||
+    typeof value.database_sensitive !== "boolean" || typeof value.workflow_sensitive !== "boolean") return false;
+  const common = ["file", "kind", "upstream_pull_request", "database_sensitive", "workflow_sensitive"];
+  if (value.kind === "upstream") {
+    return hasExactKeys(value, common) && validPullRequest(value.upstream_pull_request);
+  }
+  if (value.kind !== "overlay" || value.upstream_pull_request !== null ||
+    !hasOnlyKeys(value, common, ["upstream_issue", "remove_with", "requires"])) return false;
+  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue)) return false;
+  const hasRemovalCondition = value.remove_with !== undefined || value.requires !== undefined;
+  return !hasRemovalCondition ||
+    typeof value.remove_with === "string" && value.remove_with !== value.file && /^[0-9A-Za-z_.-]+\.patch$/.test(value.remove_with) &&
+    typeof value.requires === "string" && value.requires.length > 0 && value.requires.length <= 240 && !/[\r\n\0]/.test(value.requires);
+}
+
+function validPullRequest(value: unknown): boolean {
+  return value === null || validPositiveInteger(value);
+}
+
+function validPositiveInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return keys.length === Object.keys(value).length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, required: string[], optional: string[]): boolean {
+  return required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 type PullRequest = { merged: boolean; merge_commit_sha: string | null };

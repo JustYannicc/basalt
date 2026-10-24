@@ -57,7 +57,7 @@ export interface PreviewEnvironment {
   /** Passed to Alchemy. It contains no production runtime secrets or smoke credentials. */
   readonly deploy: NodeJS.ProcessEnv;
   /** Passed only to the one-shot database seeder. */
-  readonly seed?: NodeJS.ProcessEnv;
+  readonly seed: NodeJS.ProcessEnv;
 }
 
 export interface PreviewCleanupEnvironment {
@@ -282,6 +282,16 @@ export function previewCleanupEnvironment(
   };
 }
 
+/** Preview addresses use the router's HTTPS scheme and a validated, explicitly supplied zone. */
+export function previewStageOrigin(slug: string, domain: string, app = true): string {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(slug))
+    throw new Error("Invalid preview stage slug");
+  const zone = previewDomain(domain);
+  const url = new URL("/", `https://${brand.host}`);
+  url.hostname = `${app ? "app." : ""}${slug}.${zone}`;
+  return url.origin;
+}
+
 /** Deterministic stage identity; it reads no provider credentials and performs no I/O. */
 export function previewIdentity(
   pullRequest: number,
@@ -295,6 +305,6 @@ export function previewIdentity(
     stage: `test-${slug}`,
     sourceNamespace: `basalt-preview-${slug}-apps`,
     databaseName: `basalt-preview-${slug}`,
-    origin: `https://app.${slug}.${domain}`,
+    origin: previewStageOrigin(slug, domain),
   };
 }

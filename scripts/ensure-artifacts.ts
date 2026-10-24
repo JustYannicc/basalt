@@ -35,7 +35,7 @@ export function cloudflareArtifactsApi(
   fetcher: ArtifactsFetch = fetch,
 ): ArtifactsApi {
   const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(account)}/artifacts`;
-  const request = (url: string, method: string, body?: unknown) =>
+  const request = (url: string | URL, method: string, body?: unknown) =>
     fetcher(url, {
       method,
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -108,6 +108,15 @@ async function allPages<T>(read: (cursor?: string) => Promise<Page<T>>): Promise
 
 const hasNamespace = async (api: ArtifactsApi, name: string) =>
   (await allPages((cursor) => api.listNamespaces(cursor))).find((item) => item.namespace === name);
+
+/** A successful paginated provider read must confirm the namespace itself is gone. */
+export async function euNamespaceExists(api: ArtifactsApi, name: string): Promise<boolean> {
+  return (await hasNamespace(api, name)) !== undefined;
+}
+
+export async function requireEuNamespaceAbsent(api: ArtifactsApi, name: string): Promise<void> {
+  if (await euNamespaceExists(api, name)) throw new Error("Preview Artifacts namespace is still present");
+}
 
 /** Every page is inspected before creating a namespace with immutable EU jurisdiction. */
 export async function ensureEuNamespace(api: ArtifactsApi, name: string): Promise<void> {

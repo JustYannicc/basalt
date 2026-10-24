@@ -19,15 +19,29 @@ export type ReleasePins = {
   node: ArtifactPin;
 };
 
-export type PatchRecord = {
+type PatchRecordBase = {
   file: string;
-  upstream_pull_request: number | null;
   database_sensitive: boolean;
   workflow_sensitive: boolean;
 };
 
+export type UpstreamPatchRecord = PatchRecordBase & {
+  kind: "upstream";
+  upstream_pull_request: number | null;
+};
+
+export type OverlayPatchRecord = PatchRecordBase & {
+  kind: "overlay";
+  upstream_pull_request: null;
+  upstream_issue?: number;
+  remove_with?: string;
+  requires?: string;
+};
+
+export type PatchRecord = UpstreamPatchRecord | OverlayPatchRecord;
+
 export type PatchManifest = {
-  format_version: 1;
+  format_version: 2;
   repository: string;
   patches: PatchRecord[];
 };

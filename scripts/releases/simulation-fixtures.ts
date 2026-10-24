@@ -80,9 +80,9 @@ export function createBasaltFixture(path: string, toolBase: string, homeCommit: 
   writeFileSync(join(path, "upstream.json"), `${JSON.stringify({ repository: toolRepositoryUrl, commit: toolBase }, null, 2)}\n`);
   writeFileSync(join(path, "containers/pool/releases.json"), `${JSON.stringify({ format_version: 1, artifacts: { home, node } }, null, 2)}\n`);
   const manifest: PatchManifest = {
-    format_version: 1,
+    format_version: 2,
     repository: toolRepository,
-    patches: [{ file: "0001-fixture.patch", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false }],
+    patches: [{ file: "0001-fixture.patch", kind: "upstream", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false }],
   };
   writeFileSync(join(path, "scripts/releases/patches.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(path, "patches/0001-fixture.patch"), patch);

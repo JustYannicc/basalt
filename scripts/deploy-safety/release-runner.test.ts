@@ -128,6 +128,7 @@ test("manual mode requires a trusted main workflow dispatch", () => {
   assert.throws(() => assertReleaseMode(report({ workflowChanged: true }), "manual", "workflow_dispatch", "refs/pull/12/merge"), /trusted main/);
   assert.doesNotThrow(() => assertReleaseMode(report({ workflowChanged: true }), "manual", "workflow_dispatch", "refs/heads/main"));
   assert.doesNotThrow(() => assertReleaseMode(report(), "automatic", "workflow_dispatch", "refs/heads/main"));
+  assert.throws(() => assertReleaseMode(report({ databaseChanged: true }), "automatic", "workflow_dispatch", "refs/heads/main"), /require manual release mode/);
   assert.throws(() => assertReleaseMode(report(), "automatic", "push", "refs/heads/release"), /main branch/);
 });
 

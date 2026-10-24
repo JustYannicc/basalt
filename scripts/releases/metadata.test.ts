@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { reconcileLabels, reconcileMetadata, updateSafetySection } from "./metadata.ts";
+import { reconcileLabels, reconcileMetadata, sanitizePublicPreparationFailure, updateSafetySection } from "./metadata.ts";
 import { pins, sha } from "./fixtures.test-helpers.ts";
 import type { ClassificationReport } from "./types.ts";
 
@@ -61,6 +61,29 @@ test("uses the prior marked section to remove only machine-owned risk labels", (
   assert.deepEqual(result.labels, ["release-update"]);
   assert.deepEqual(result.removed, ["database-change", "manual-release", "workflow-identity-change"]);
   assert.ok(result.body.startsWith("Keep these notes."));
+});
+
+test("public safety metadata keeps safe source paths and withholds unknown diagnostics", () => {
+  const report = classified(false, false);
+  report.evidence.database = {
+    state: "unknown",
+    sources: [{
+      name: "upstream",
+      state: "unknown",
+      base: sha("a"),
+      candidate: sha("b"),
+      changedPaths: ["apps/hosted/cloud/src/database.ts", "/Users/runner/private/build.log"],
+      reason: "private token ghp_123456789012345678901234567890 at /Users/runner/private",
+    }],
+  };
+  const body = updateSafetySection("", report, [], "none");
+  const failure = sanitizePublicPreparationFailure(new Error("GH_TOKEN=secret /private/tmp/build.log"));
+
+  assert.match(body, /apps\/hosted\/cloud\/src\/database\.ts/);
+  assert.match(body, /additional evidence details omitted/);
+  assert.doesNotMatch(body, /\/Users\/runner|ghp_123|private token/);
+  assert.equal(failure, "Candidate preparation failed. See the Release updates workflow run for details.");
+  assert.doesNotMatch(failure ?? "", /secret|\/private/);
 });
 
 function classified(databaseChanged: boolean, workflowChanged: boolean): ClassificationReport {

@@ -1,3 +1,6 @@
+import { parsePatchManifest } from "../releases/patches.ts";
+import type { PatchManifest } from "../releases/types.ts";
+
 export type ReleasePins = {
   tools: { repository: string; commit: string };
   home: ArtifactPin;
@@ -12,11 +15,6 @@ export type ArtifactPin = {
   assets: Record<"amd64" | "arm64", { name: string; sha256: string }>;
 };
 
-type Manifest = {
-  format_version: number;
-  repository: string;
-  patches: Array<Record<string, unknown> & { file: string }>;
-};
 
 const SHA = /^[a-f0-9]{40}$/i;
 const DIGEST = /^[a-f0-9]{64}$/i;
@@ -98,6 +96,11 @@ export function removedManifestRecords(contents?: { base?: string; candidate?: s
       return { ok: false, reason: "manifest record order cannot change", removed: [] };
     const removed = base.patches.map((patch) => patch.file).filter((file) => !candidateNames.has(file));
     if (removed.length === 0) return { ok: false, reason: "manifest change removes no records", removed: [] };
+    for (const name of removed) {
+      const patch = baseByFile.get(name)!;
+      if (patch.kind === "overlay")
+        return { ok: false, reason: "overlay retirement requires a separate reviewed update", removed: [] };
+    }
     return { ok: true, reason: "", removed };
   } catch {
     return { ok: false, reason: "invalid JSON", removed: [] };
@@ -162,15 +165,9 @@ function parseAsset(value: unknown): { name: string; sha256: string } | undefine
   return { name: value.name, sha256: value.sha256 };
 }
 
-function parseManifest(text: string): Manifest | undefined {
-  const value = parseJson(text);
-  if (!isRecord(value) || !hasExactKeys(value, ["format_version", "repository", "patches"]) || value.format_version !== 1 || typeof value.repository !== "string" || !isRepository(value.repository) || !Array.isArray(value.patches)) return undefined;
-  const patches: Manifest["patches"] = [];
-  for (const record of value.patches) {
-    if (!isRecord(record) || !hasExactKeys(record, ["file", "upstream_pull_request", "database_sensitive", "workflow_sensitive"]) || typeof record.file !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.patch$/.test(record.file) || !(record.upstream_pull_request === null || Number.isSafeInteger(record.upstream_pull_request)) || typeof record.database_sensitive !== "boolean" || typeof record.workflow_sensitive !== "boolean") return undefined;
-    patches.push(record as Record<string, unknown> & { file: string });
-  }
-  return { format_version: 1, repository: value.repository, patches };
+function parseManifest(text: string): PatchManifest | undefined {
+  try { return parsePatchManifest(text); }
+  catch { return undefined; }
 }
 
 function readReleasePinsFromValue(value: unknown): ReleasePins | undefined {

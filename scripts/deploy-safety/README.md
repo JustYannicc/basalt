@@ -19,12 +19,15 @@ Pass the built-in `GITHUB_TOKEN` and `GITHUB_REPOSITORY`. PlanetScale calls use 
 
 ```sh
 node scripts/deploy-safety/release.ts latest-base
-node scripts/deploy-safety/release.ts report --candidate "$CANDIDATE_SHA" > "$RUNNER_TEMP/release-report.json"
+node scripts/deploy-safety/release.ts report \
+  --candidate "$CANDIDATE_SHA" \
+  --candidate-root "$RUNNER_TEMP/candidate" \
+  > "$RUNNER_TEMP/release-report.json"
 ```
 
 `latest-base` reports the last successful production commit. If the latest deployment is unresolved, it reports the prior successful baseline with an unresolved state; every release guard still blocks until that deployment is reconciled. With no deployment record, the runner checks PlanetScale and accepts an initial baseline only when the production database is absent.
 
-`report` calls `scripts/releases/classify.ts` logic at the exact candidate commit and emits schema version 1 JSON. `unknown` database or Workflow evidence is a change. The report is safe to retain as an Actions artifact because it contains source paths, public pins and hashes, without database URLs, credentials or application data.
+`report` runs the classifier bundled with the trusted workflow checkout, reads candidate files by exact Git commit, and emits schema version 1 JSON. Manual runs pass `--candidate-root "$RUNNER_TEMP/candidate"`; automatic reports use the trusted checkout and need no candidate root. A bootstrap `workflow_dispatch` from `main` may classify that trusted checkout by passing the exact `GITHUB_SHA`. `unknown` database or Workflow evidence is a change. The report is safe to retain as an Actions artifact because it contains source paths, public pins and hashes, without database URLs, credentials or application data.
 
 The deployment job downloads the report, passes the same candidate SHA and recomputes it against the current production ledger. Any source, pin, evidence, candidate or baseline drift fails closed.
 
@@ -39,7 +42,7 @@ node scripts/deploy-safety/release.ts deploy \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-Automatic mode accepts only a `push` to `refs/heads/main` when both `databaseChanged` and `workflowChanged` are false. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
+Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports still require the separate protected manual release workflow. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
 
 If deployment or smoke starts and fails for a safe release, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
 
@@ -52,6 +55,7 @@ On a manual `workflow_dispatch`, run a backup-only job before the protected prod
 ```sh
 node scripts/deploy-safety/release.ts backup-only \
   --candidate "$CANDIDATE_SHA" \
+  --candidate-root "$RUNNER_TEMP/candidate" \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
@@ -78,6 +82,7 @@ The read-only inspection command uses Cloudflare's documented account Workflow l
 ```sh
 node scripts/deploy-safety/release.ts inspect-workflows \
   --candidate "$CANDIDATE_SHA" \
+  --candidate-root "$RUNNER_TEMP/candidate" \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
@@ -90,12 +95,22 @@ For a database-changing release, get the exact protected recovery target with:
 ```sh
 node scripts/deploy-safety/release.ts rollback-target \
   --candidate "$CANDIDATE_SHA" \
+  --candidate-root "$RUNNER_TEMP/candidate" \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
 Database restore stays operator owned in v1. PlanetScale restores a backup to a new branch. The current Alchemy `PostgresRole` resources resolve an omitted branch name to `main`, so selecting a newly restored branch as the provider default does not prove those existing role resources will follow it. Do not let the runner issue a restore or describe that rollback as complete.
 
 After the operator has restored the recorded backup, verified the intended production branch and prepared the old pins, run `manual-rollback` inside the protected `workflow_dispatch` job to create the rollback deployment record. For a non-database rollback, no database restore step is required. The parent workflow deploys the recorded base pins, runs smoke and completes that record.
+
+Pass the same immutable candidate worktree and SHA to the ledger command:
+
+```sh
+node scripts/deploy-safety/release.ts manual-rollback \
+  --candidate "$CANDIDATE_SHA" \
+  --candidate-root "$RUNNER_TEMP/candidate" \
+  --report "$RUNNER_TEMP/release-report.json"
+```
 
 The `manual-rollback` command reclassifies the exact report against the failed release and its last successful base. It records the rollback transition after the parent workflow's operator-owned restore step. It has no environment variable, shell hook or caller-supplied “restore succeeded” receipt.
 

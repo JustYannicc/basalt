@@ -135,6 +135,10 @@ jobs:
           bun install --cwd scripts/architecture --frozen-lockfile
           npm run architecture:model
           npm run typecheck
+      - name: Journal changes require all existing workflow runs drained before deployment
+        run: node scripts/deploy-safety/release.ts inspect-workflows --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
+        env:
+          RELEASE_HEAD: ${{ needs.backup.outputs.head }}
       - name: Recheck the backup and deploy the approved release
         run: node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json --mode manual
         env:

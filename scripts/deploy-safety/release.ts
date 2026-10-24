@@ -1,13 +1,14 @@
 import { appendFileSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyCurrentRelease, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport } from "./release-plan.ts";
+import { classifyCurrentRelease, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
 import { inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { beginManualRollback, executeRelease, productionReleaseDependencies, resolveCandidateSourceRoot, type ReleaseMode } from "./release-runner.ts";
 import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
 
-type Options = { [key: string]: string };
+export type ReleaseCliOptions = { [key: string]: string };
 
 async function main(args: string[]): Promise<void> {
   const [command, ...rest] = args;
@@ -26,7 +27,7 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (command === "report") {
-    const checkout = candidateCheckout(options);
+    const checkout = candidateCheckout(options, true);
     const plan = await classifyCurrentRelease(checkout.commit);
     const value = {
       ...plan.report,
@@ -105,8 +106,9 @@ async function main(args: string[]): Promise<void> {
 
   if (command === "deploy") {
     const mode = parseMode(required(options, "--mode"));
-    const candidateRoot = resolveCandidateSourceRoot(mode, currentCommit(options["--candidate-root"] ?? process.cwd()), options["--candidate-root"]);
-    const candidate = candidateCheckout({ ...options, "--candidate-root": candidateRoot }).commit;
+    const candidateSha = required(options, "--candidate").trim().toLowerCase();
+    const candidateRoot = resolveCandidateSourceRoot(mode, candidateSha, options["--candidate-root"]);
+    const candidate = candidateCheckout(options, mode === "automatic").commit;
     const plan = await verifyFreshReport(parseReportFile(required(options, "--report")), candidate);
     if (plan.ledger.state === "unresolved")
       throw new SafetyGateError("Latest production deployment is unresolved; reconcile it before another release");
@@ -126,27 +128,54 @@ async function main(args: string[]): Promise<void> {
   throw new SafetyGateError("Usage: release.ts <latest-base|report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]");
 }
 
-function candidateCheckout(options: Options): { root: string; commit: string } {
+export function candidateCheckout(options: ReleaseCliOptions, allowTrustedMainBootstrap = false): { root: string; commit: string } {
   let root: string;
   try {
     root = realpathSync(options["--candidate-root"] ?? process.cwd());
   } catch {
     throw new SafetyGateError("Candidate checkout is unavailable");
   }
+  const configured = options["--candidate"]?.trim().toLowerCase();
+  if (!configured) throw new SafetyGateError("Missing required option --candidate");
+  const commit = currentCommit(root);
+  if (configured !== commit)
+    throw new SafetyGateError("Candidate SHA does not match the checked-out HEAD");
+
   if (process.env.GITHUB_EVENT_NAME === "workflow_dispatch") {
+    if (process.env.GITHUB_REF !== "refs/heads/main")
+      throw new SafetyGateError("Manual candidate checkout requires workflow_dispatch from trusted main");
     const runnerTemp = process.env.RUNNER_TEMP;
-    if (!runnerTemp || !root.startsWith(`${realpathSync(runnerTemp)}/`))
+    let candidateIsUnderRunnerTemp = false;
+    if (runnerTemp) {
+      try {
+        candidateIsUnderRunnerTemp = isPathInside(root, realpathSync(runnerTemp));
+      } catch {
+        candidateIsUnderRunnerTemp = false;
+      }
+    }
+    let isTrustedBootstrap = false;
+    if (allowTrustedMainBootstrap && !options["--candidate-root"]) {
+      try {
+        isTrustedBootstrap = root === realpathSync(gitRepositoryRoot()) &&
+          configured === process.env.GITHUB_SHA?.trim().toLowerCase();
+      } catch {
+        isTrustedBootstrap = false;
+      }
+    }
+    if (!candidateIsUnderRunnerTemp && !isTrustedBootstrap)
       throw new SafetyGateError("Manual candidate checkout must be a separate worktree under RUNNER_TEMP");
   }
-  const commit = currentCommit(root);
-  const configured = options["--candidate"]?.trim().toLowerCase();
-  if (configured && configured !== commit)
-    throw new SafetyGateError("Candidate SHA does not match the checked-out HEAD");
   return { root, commit };
 }
 
-function parseOptions(args: string[]): Options {
-  const options: Options = {};
+function isPathInside(path: string, parent: string): boolean {
+  const pathFromParent = relative(parent, path);
+  return pathFromParent !== "" && pathFromParent !== ".." &&
+    !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent);
+}
+
+function parseOptions(args: string[]): ReleaseCliOptions {
+  const options: ReleaseCliOptions = {};
   for (let index = 0; index < args.length; index++) {
     const key = args[index]!;
     if (!key.startsWith("--")) throw new SafetyGateError("Unexpected positional argument");
@@ -160,7 +189,7 @@ function parseOptions(args: string[]): Options {
   return options;
 }
 
-function required(options: Options, name: string): string {
+function required(options: ReleaseCliOptions, name: string): string {
   const value = options[name];
   if (!value) throw new SafetyGateError(`Missing required option ${name}`);
   return value;

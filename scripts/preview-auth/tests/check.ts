@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { productZone } from "../../.upstream/apps/hosted/cloud/src/infrastructure/stage.ts";
-import { previewProof } from "./common.ts";
+import { productZone, previewProof, requirePoolSetupIntent } from "../common.ts";
+import { seedPreviewAuth } from "../seed.ts";
 
 const stage = "test-pr-1419";
 const domain = "example.invalid";
@@ -39,5 +39,23 @@ assert.throws(() =>
     true,
   ),
 );
+assert.equal(
+  requirePoolSetupIntent({
+    ok: true,
+    value: { href: "https://pool.example.invalid/setup#intent=sbci1.preview" },
+  }),
+  "sbci1.preview",
+);
+assert.throws(() =>
+  requirePoolSetupIntent({
+    intent: "sbci1.preview",
+    href: "https://pool.example.invalid/setup#intent=sbci1.preview",
+  }),
+);
+await assert.rejects(
+  seedPreviewAuth({ ...environment, ALCHEMY_STAGE: "v2", PREVIEW_AUTH_SEED_OUTPUT: undefined }),
+  /Unsafe preview stage/,
+);
+await import("../seed.ts");
 
 console.log("Preview seed rejects production stage, origin, and database inputs.");

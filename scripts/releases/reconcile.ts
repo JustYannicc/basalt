@@ -1,15 +1,11 @@
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 import { GitHubApi } from "./github.ts";
 import { classifyRefs } from "./classify.ts";
 import { git, pushReleaseBranch } from "./git.ts";
-import { manualReleaseLabel, reconcileMetadata, managedRiskLabelsInBody, releaseUpdateLabel, updateSafetySection } from "./metadata.ts";
+import { type ManualHoldOwnership, manualReleaseLabel, reconcileMetadata, managedRiskLabelsInBody, releaseUpdateLabel, sanitizePublicPreparationFailure, updateSafetySection } from "./metadata.ts";
 import { RELEASE_MERGE_POLICY, validateChangedFiles } from "../release-merge/policy.ts";
 import { sameJson, validateReleaseReceipt } from "../release-merge/metadata.ts";
 import type { UpdatePlan, UpdateSource } from "./update.ts";
-import type { ClassificationReport } from "./types.ts";
-
-const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+import type { ClassificationReport, ReleasePins } from "./types.ts";
 const ownerBot = "github-actions[bot]";
 const botEmail = "41898282+github-actions[bot]@users.noreply.github.com";
 const labelDefinitions = [
@@ -42,6 +38,10 @@ export type ReconcileResult = {
   riskLabels: string[];
 };
 
+export type ReconcileDependencies = {
+  pushBranch?: typeof pushReleaseBranch;
+};
+
 export async function reconcileReleasePullRequest(
   repositoryRoot: string,
   repository: string,
@@ -50,6 +50,7 @@ export async function reconcileReleasePullRequest(
   token: string,
   preparationFailure?: string,
   api: Pick<GitHubApi, "get" | "request" | "compare" | "compareTrees"> = new GitHubApi(token),
+  dependencies: ReconcileDependencies = {},
 ): Promise<ReconcileResult> {
   if (!token) throw new Error("RELEASE_UPDATE_TOKEN is required to reconcile release pull requests");
   const mainSha = git(repositoryRoot, ["rev-parse", "HEAD"]).trim();
@@ -63,8 +64,9 @@ export async function reconcileReleasePullRequest(
 
   const pull = open[0];
   let previousHead: string | undefined;
+  let previousBranch: { baseCommit: string; treeSha: string } | undefined;
   if (pull) {
-    await validateExistingPullRequest(api, repository, pull, source, plan, branch, mainSha);
+    previousBranch = await validateExistingPullRequest(api, repository, pull, source, plan, branch, mainSha);
     previousHead = pull.head.sha;
   } else {
     previousHead = await getBranchSha(api, repository, branch);
@@ -86,10 +88,17 @@ export async function reconcileReleasePullRequest(
     if (status !== "D") throw new Error("Release updater may only remove carried patch files");
   }
 
+  if (pull && previousBranch?.baseCommit === mainSha && previousBranch.treeSha === git(repositoryRoot, ["write-tree"]).trim()) {
+    const report = await classifyRefs(repositoryRoot, mainSha, pull.head.sha, api);
+    await updateExistingPullRequest(api, repository, pull, report, plan, `${titleFor(source)} ${plan.releaseKey}`, preparationFailure);
+    await reportPreparationStatus(api, repository, pull.head.sha, preparationFailure);
+    return result("unchanged", source, plan.releaseKey, branch, plan, preparationFailure, pull.number, pull.head.sha, requiredLabels(report, preparationFailure));
+  }
+
   const headSha = commitCandidate(repositoryRoot, plan.releaseKey);
   const report = await classifyRefs(repositoryRoot, mainSha, headSha, api);
   if (pull) await putTemporaryManualHold(api, repository, pull, report, plan, preparationFailure);
-  pushReleaseBranch(repositoryRoot, branch, previousHead, token);
+  (dependencies.pushBranch ?? pushReleaseBranch)(repositoryRoot, branch, previousHead, token);
 
   const afterPush = pull
     ? await api.get<ReleasePullRequest>(`repos/${repoPath(repository)}/pulls/${pull.number}`)
@@ -115,7 +124,8 @@ export async function reconcileReleasePullRequest(
   const latest = pull ? await api.get<ReleasePullRequest>(`repos/${repoPath(repository)}/pulls/${pull.number}`)
     : await findReleasePullRequest(api, repository, branch).then((items) => items.find((item) => item.state === "open"));
   if (!latest || latest.head.sha !== headSha) throw new Error("GitHub did not confirm the exact release branch head");
-  return result(pull ? "updated" : "created", source, plan.releaseKey, branch, plan, preparationFailure, latest.number, headSha, requiredLabels(report));
+  await reportPreparationStatus(api, repository, headSha, preparationFailure);
+  return result(pull ? "updated" : "created", source, plan.releaseKey, branch, plan, preparationFailure, latest.number, headSha, requiredLabels(report, preparationFailure));
 }
 
 async function validateExistingPullRequest(
@@ -126,13 +136,19 @@ async function validateExistingPullRequest(
   plan: UpdatePlan,
   branch: string,
   mainSha: string,
-): Promise<void> {
+): Promise<{ baseCommit: string; treeSha: string }> {
   if (pull.head.repo?.full_name !== repository || pull.base.repo?.full_name !== repository || pull.base.ref !== "main" || pull.head.ref !== branch)
     throw new Error("Existing release pull request does not match its updater branch");
   if (!pull.labels.some((label) => label.name === releaseUpdateLabel))
     throw new Error("Existing release pull request is missing updater provenance label");
   if (!hasProvenanceMarker(pull.body ?? "", plan.releaseKey))
     throw new Error("Existing release pull request is missing its updater provenance marker");
+  const commit = await api.get<{ parents?: Array<{ sha: string }>; commit?: { tree?: { sha?: string } } }>(
+    `repos/${repoPath(repository)}/commits/${encodeURIComponent(pull.head.sha)}`,
+  );
+  const baseCommit = commit.parents?.length === 1 ? commit.parents[0]!.sha : undefined;
+  const treeSha = commit.commit?.tree?.sha;
+  if (!baseCommit || !treeSha) throw new Error("Existing release branch commit metadata is incomplete");
   const candidate = await validateBranchSnapshot(api, repository, pull.head.sha, source, plan);
   if (candidate.releaseKey !== plan.releaseKey || !candidate.allowed)
     throw new Error(`Existing release pull request failed provenance validation: ${candidate.reasons.join("; ")}`);
@@ -140,6 +156,7 @@ async function validateExistingPullRequest(
     `repos/${repoPath(repository)}/compare/${encodeURIComponent(mainSha)}...${encodeURIComponent(pull.head.sha)}`,
   );
   if (!ancestry.merge_base_commit?.sha) throw new Error("Existing release pull request has no verifiable base ancestry");
+  return { baseCommit, treeSha };
 }
 
 async function validateOrphanBranch(
@@ -187,6 +204,14 @@ async function validateBranchSnapshot(
     ]);
     contents[file.filename] = { ...(before === undefined ? {} : { base: before }), ...(after === undefined ? {} : { candidate: after }) };
   }
+  for (const path of ["upstream.json", "containers/pool/releases.json"]) {
+    if (contents[path]) continue;
+    const [before, after] = await Promise.all([
+      readGitHubFile(api, repository, path, base),
+      readGitHubFile(api, repository, path, head),
+    ]);
+    contents[path] = { ...(before === undefined ? {} : { base: before }), ...(after === undefined ? {} : { candidate: after }) };
+  }
   const policy = validateChangedFiles(files, contents);
   if (policy.releaseKey !== plan.releaseKey) policy.reasons.push("existing branch release key does not match this candidate");
   const receiptText = contents[`scripts/releases/receipts/${source}.json`]?.candidate;
@@ -194,7 +219,7 @@ async function validateBranchSnapshot(
   else {
     const parsed = (await import("../release-merge/metadata.ts")).validateReleaseReceipt(receiptText, source);
     if (!parsed.ok) policy.reasons.push(`existing branch receipt is invalid: ${parsed.reason}`);
-    else if (!sameJson(parsed.receipt.candidatePins[source], plan.candidatePins[source]))
+    else if (!sameJson((parsed.receipt.candidatePins as ReleasePins)[source], plan.candidatePins[source]))
       policy.reasons.push("existing branch receipt does not target this released source pin");
   }
   policy.allowed = policy.reasons.length === 0;
@@ -214,22 +239,23 @@ async function readGitHubFile(api: Pick<GitHubApi, "get">, repository: string, p
 }
 
 async function putTemporaryManualHold(
-  api: Pick<GitHubApi, "request">,
+  api: Pick<GitHubApi, "get" | "request">,
   repository: string,
   pull: ReleasePullRequest,
   report: ClassificationReport,
   plan: UpdatePlan,
   preparationFailure?: string,
 ): Promise<void> {
-  await ensureLabels(api, repository, [manualReleaseLabel]);
   const labels = pull.labels.map(({ name }) => name);
-  if (!labels.includes(manualReleaseLabel))
-    await api.request("POST", `repos/${repoPath(repository)}/issues/${pull.number}/labels`, { labels: [manualReleaseLabel] });
   const managed = new Set(managedRiskLabelsInBody(pull.body ?? ""));
-  managed.add(manualReleaseLabel);
+  const humanHold = labels.includes(manualReleaseLabel) && !managed.has(manualReleaseLabel);
+  if (!humanHold) await ensureLabels(api, repository, [manualReleaseLabel]);
+  if (!humanHold && !labels.includes(manualReleaseLabel))
+    await api.request("POST", `repos/${repoPath(repository)}/issues/${pull.number}/labels`, { labels: [manualReleaseLabel] });
+  if (!humanHold) managed.add(manualReleaseLabel);
   const body = setProvenanceMarker(pull.body ?? "", plan.releaseKey);
   await api.request("PATCH", `repos/${repoPath(repository)}/pulls/${pull.number}`, {
-    body: withPreparationSection(updateSafetySection(body, report, [...managed], "machine"), preparationFailure),
+    body: withPreparationSection(updateSafetySection(body, report, [...managed], humanHold ? "human" : "machine"), preparationFailure),
   });
 }
 
@@ -244,9 +270,9 @@ async function updateExistingPullRequest(
 ): Promise<void> {
   const current = await api.get<ReleasePullRequest>(`repos/${repoPath(repository)}/pulls/${pull.number}`);
   const currentLabels = current.labels.map(({ name }) => name);
-  const managed = new Set(managedRiskLabelsInBody(current.body ?? ""));
+  const previouslyManaged = new Set(managedRiskLabelsInBody(current.body ?? ""));
   const holdOwnership = currentLabels.includes(manualReleaseLabel)
-    ? managed.has(manualReleaseLabel) ? "machine" : "human"
+    ? previouslyManaged.has(manualReleaseLabel) ? "machine" : "human"
     : "none";
   const metadata = reconcileMetadata({
     currentLabels,
@@ -254,11 +280,26 @@ async function updateExistingPullRequest(
     report,
     manualHoldOwnership: holdOwnership,
   });
-  const body = withPreparationSection(metadata.body, preparationFailure);
-  await ensureLabels(api, repository, [releaseUpdateLabel, ...metadata.labels]);
-  for (const label of metadata.added) await api.request("POST", `repos/${repoPath(repository)}/issues/${pull.number}/labels`, { labels: [label] });
-  await api.request("PATCH", `repos/${repoPath(repository)}/pulls/${pull.number}`, { title, body });
-  for (const label of metadata.removed) await api.request("DELETE", `repos/${repoPath(repository)}/issues/${pull.number}/labels/${encodeURIComponent(label)}`);
+  const labels = new Set(metadata.labels);
+  const added = new Set(metadata.added);
+  const removed = new Set(metadata.removed);
+  const managed = new Set(metadata.managedRiskLabels);
+  let ownership: ManualHoldOwnership = holdOwnership;
+  if (preparationFailure) {
+    if (!labels.has(manualReleaseLabel)) {
+      labels.add(manualReleaseLabel);
+      if (!currentLabels.includes(manualReleaseLabel)) added.add(manualReleaseLabel);
+    }
+    removed.delete(manualReleaseLabel);
+    if (ownership === "none") ownership = "machine";
+    if (ownership !== "human") managed.add(manualReleaseLabel);
+  }
+  const body = withPreparationSection(updateSafetySection(metadata.body, report, [...managed], ownership), preparationFailure);
+  await ensureLabels(api, repository, [releaseUpdateLabel, ...labels]);
+  for (const label of added) await api.request("POST", `repos/${repoPath(repository)}/issues/${pull.number}/labels`, { labels: [label] });
+  if (current.title !== title || current.body !== body)
+    await api.request("PATCH", `repos/${repoPath(repository)}/pulls/${pull.number}`, { title, body });
+  for (const label of removed) await api.request("DELETE", `repos/${repoPath(repository)}/issues/${pull.number}/labels/${encodeURIComponent(label)}`);
 }
 
 async function closeRedundantPullRequest(
@@ -363,8 +404,9 @@ function withPreparationSection(body: string, failure?: string): string {
   const startCount = body.split(start).length - 1;
   const endCount = body.split(end).length - 1;
   if (startCount !== endCount || startCount > 1) throw new Error("Release preparation section markers are invalid");
-  const section = failure
-    ? `${start}\n### Candidate preparation\n${failure}\nCheck must pass before merge.\n${end}`
+  const safeFailure = sanitizePublicPreparationFailure(failure);
+  const section = safeFailure
+    ? `${start}\n### Candidate preparation\n${safeFailure}\nCheck must pass before merge.\n${end}`
     : "";
   if (!startCount) return `${body.trimEnd()}${section ? `\n\n${section}\n` : "\n"}`;
   const offset = body.indexOf(start);
@@ -376,8 +418,22 @@ function makeBody(releaseKey: string, report: ClassificationReport, failure?: st
   const metadata = reconcileMetadata({ currentLabels: [], existingBody: provenance, report, manualHoldOwnership: "none" });
   return withPreparationSection(metadata.body, failure);
 }
-function requiredLabels(report: ClassificationReport): string[] {
-  return [releaseUpdateLabel, ...(report.databaseChanged ? ["database-change"] : []), ...(report.workflowChanged ? ["workflow-identity-change"] : []), ...(report.databaseChanged || report.workflowChanged ? [manualReleaseLabel] : [])];
+function requiredLabels(report: ClassificationReport, preparationFailure?: string): string[] {
+  return [releaseUpdateLabel, ...(report.databaseChanged ? ["database-change"] : []), ...(report.workflowChanged ? ["workflow-identity-change"] : []), ...(report.databaseChanged || report.workflowChanged || preparationFailure ? [manualReleaseLabel] : [])];
+}
+
+async function reportPreparationStatus(
+  api: Pick<GitHubApi, "request">,
+  repository: string,
+  head: string,
+  preparationFailure?: string,
+): Promise<void> {
+  const failure = sanitizePublicPreparationFailure(preparationFailure);
+  await api.request("POST", `repos/${repoPath(repository)}/statuses/${encodeURIComponent(head)}`, {
+    state: failure ? "failure" : "success",
+    context: "Release updater preparation",
+    description: failure ?? "Candidate preparation completed.",
+  });
 }
 function titleFor(source: UpdateSource): string { return `Update ${source} release`; }
 function result(outcome: ReconcileResult["outcome"], source: UpdateSource, releaseKey: string, branch: string, plan: UpdatePlan, failure?: string, pullRequest?: number, head?: string, riskLabels: string[] = []): ReconcileResult {

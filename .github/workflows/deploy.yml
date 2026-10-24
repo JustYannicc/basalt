@@ -63,8 +63,8 @@ jobs:
       - name: Compare the candidate with the last successful production deployment
         run: |
           mkdir -p .local
-          node scripts/deploy-safety/release.ts report > .local/production-report.json
+          node scripts/deploy-safety/release.ts report --candidate "$GITHUB_SHA" > .local/production-report.json
       - name: Deploy normal releases and restore the previous pin after a failed attempt
-        run: node scripts/deploy-safety/release.ts deploy --report .local/production-report.json --mode automatic
+        run: node scripts/deploy-safety/release.ts deploy --candidate "$GITHUB_SHA" --report .local/production-report.json --mode automatic
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}

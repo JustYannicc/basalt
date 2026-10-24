@@ -1,10 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import {
-  productionStage,
-  productZone,
-  testStagePrefix,
-} from "../../.upstream/apps/hosted/cloud/src/infrastructure/stage.ts";
+import { previewStageOrigin } from "../environment.ts";
+
+// Keep these stage contract values aligned with the cloud stage module without importing its
+// host composition graph into this standalone Node runner.
+export const productionStage = "v2";
+export const productZone = "executor.sh";
+export const testStagePrefix = "test-";
 
 export const smokeUserName = "Preview smoke";
 
@@ -33,7 +35,7 @@ export interface PreviewDatabaseProof extends PreviewProof {
 
 const stageSlugPattern = /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/;
 
-const required = (env: NodeJS.ProcessEnv, name: string) => {
+export const required = (env: NodeJS.ProcessEnv, name: string) => {
   const value = env[name];
   if (value === undefined || value.length === 0) throw new Error("Missing preview auth input");
   return value;
@@ -64,16 +66,7 @@ export function previewProof(
     domain.endsWith(`.${productZone}`)
   )
     throw new Error("Unsafe preview domain");
-  let domainUrl: URL;
-  try {
-    domainUrl = new URL(`https://${domain}`);
-  } catch {
-    throw new Error("Unsafe preview domain");
-  }
-  if (domainUrl.hostname !== domain || domainUrl.pathname !== "/")
-    throw new Error("Unsafe preview domain");
-
-  const origin = `https://app.${slug}.${domain}`;
+  const origin = previewStageOrigin(slug, domain);
   const configuredOrigin = required(env, "BETTER_AUTH_URL");
   let configured: URL;
   try {
@@ -155,4 +148,24 @@ export function responseCookies(response: Response): string {
 
 export async function requireOk(response: Response): Promise<void> {
   if (!response.ok) throw new Error("Preview auth request failed");
+}
+
+export function requirePoolSetupIntent(value: unknown): string {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("ok" in value) ||
+    value.ok !== true ||
+    !("value" in value) ||
+    typeof value.value !== "object" ||
+    value.value === null ||
+    !("href" in value.value) ||
+    typeof value.value.href !== "string"
+  )
+    throw new Error("Pool computer context did not return a setup intent");
+
+  const intent = new URLSearchParams(new URL(value.value.href).hash.slice(1)).get("intent");
+  if (intent === null || !intent.startsWith("sbci1."))
+    throw new Error("Pool computer context did not return a setup intent");
+  return intent;
 }

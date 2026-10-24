@@ -1,5 +1,7 @@
 import type { SourceComparison } from "./types.ts";
 
+const githubApiOrigin = new URL("https://api.github.com/");
+
 export type GitHubFile = {
   filename: string;
   status?: string;
@@ -8,7 +10,12 @@ export type GitHubFile = {
   changes?: number;
   patch?: string;
 };
-export type GitHubComparison = SourceComparison & { aheadBy: number; behindBy: number; mergeBaseSha?: string };
+export type GitHubComparison = Omit<SourceComparison, "files"> & {
+  files: GitHubFile[];
+  aheadBy: number;
+  behindBy: number;
+  mergeBaseSha?: string;
+};
 export type GitHubResponseError = Error & { status: number };
 
 export class GitHubApi {
@@ -22,10 +29,13 @@ export class GitHubApi {
   }
 
   async get<T>(path: string): Promise<T> {
-    const url = path.startsWith("https://") ? path : `https://api.github.com/${path.replace(/^\//, "")}`;
-    const cached = this.cache.get(url);
+    const url = githubApiUrl(path);
+    const cacheKey = url.toString();
+    const cached = this.cache.get(cacheKey);
     if (cached) return (await cached) as T;
     const request = this.fetchImpl(url, {
+      credentials: "omit",
+      redirect: "error",
       headers: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -36,14 +46,16 @@ export class GitHubApi {
       if (!response.ok) throw responseError(response.status, path);
       return response.json() as Promise<T>;
     });
-    this.cache.set(url, request);
+    this.cache.set(cacheKey, request);
     return (await request) as T;
   }
 
   async request<T>(method: "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
-    const url = path.startsWith("https://") ? path : `https://api.github.com/${path.replace(/^\//, "")}`;
+    const url = githubApiUrl(path);
     const response = await this.fetchImpl(url, {
       method,
+      credentials: "omit",
+      redirect: "error",
       headers: {
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -125,6 +137,15 @@ export class GitHubApi {
       .map((filename) => ({ filename }));
     return { complete, status: "diverged", aheadBy: 0, behindBy: 0, files };
   }
+}
+
+function githubApiUrl(path: string): URL {
+  if (path.startsWith("/") || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(path))
+    throw new Error("GitHub API paths must be relative");
+  const url = new URL(path, githubApiOrigin);
+  if (url.origin !== githubApiOrigin.origin || url.username || url.password)
+    throw new Error("GitHub API request escaped its fixed origin");
+  return url;
 }
 
 function responseError(status: number, path: string): GitHubResponseError {

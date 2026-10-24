@@ -4,7 +4,7 @@ import * as Planetscale from "alchemy/Planetscale";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Layer } from "effect";
 import { adopt } from "alchemy/AdoptPolicy";
-import { stackState } from "../../.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
+import { stackState } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
 
 /** A clean PlanetScale database belongs to one PR and is destroyed after its app branches. */
 export default Alchemy.Stack(

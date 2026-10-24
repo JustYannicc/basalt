@@ -1,22 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, open } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
-import { betterAuth } from "better-auth";
-import { organization as organizationPlugin } from "better-auth/plugins/organization";
-import { Pool } from "pg";
-import { Option } from "effect";
-import { authOptions, singleResourceOrigin } from "../../.upstream/apps/hosted/server/src/index.ts";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   previewProof,
+  required,
   responseCookies,
   requireOk,
   smokeUserName,
   type PreviewProof,
 } from "./common.ts";
-
-const output = process.env.PREVIEW_AUTH_SEED_OUTPUT;
-if (output === undefined || !isAbsolute(output))
-  throw new Error("Preview auth output path must be absolute");
 
 const signIn = async (proof: Pick<PreviewProof, "origin" | "email" | "password">) => {
   const response = await fetch(`${proof.origin}/api/auth/sign-in/email`, {
@@ -41,8 +34,13 @@ const request = async (origin: string, cookie: string, route: string, init: Requ
   return response.json() as Promise<unknown>;
 };
 
-const provision = async () => {
-  const proof = previewProof(process.env, true);
+export const seedPreviewAuth = async (env: NodeJS.ProcessEnv = process.env) => {
+  // Stage proof must pass before loading database/auth providers or opening any connection.
+  const proof = previewProof(env, true);
+  const output = required(env, "PREVIEW_AUTH_SEED_OUTPUT");
+  if (!isAbsolute(output)) throw new Error("Preview auth output path must be absolute");
+
+  const [{ betterAuth }, { Pool }] = await Promise.all([import("better-auth"), import("pg")]);
 
   const pool = new Pool({ connectionString: proof.databaseUrl, max: 2 });
   try {
@@ -50,23 +48,12 @@ const provision = async () => {
     if (current.rows[0]?.name !== proof.databaseName)
       throw new Error("Preview database name does not match its stage proof");
 
-    const base = authOptions(
-      {
-        url: proof.origin,
-        resourceOrigins: singleResourceOrigin(proof.origin),
-        issuer: `${proof.origin}/api/auth`,
-        oauthRedirectUri: Option.none(),
-      },
-      [],
-    );
     const auth = betterAuth({
-      ...base,
       database: pool,
       // This instance only hashes a password and writes through Better Auth's adapter.
       // Sign-in and sessions use the deployed preview Worker, never this transient secret.
       secret: randomBytes(32).toString("hex"),
       emailAndPassword: { enabled: true, disableSignUp: true },
-      plugins: [...base.plugins, organizationPlugin({ disableOrganizationDeletion: true })],
     });
     const context = await auth.$context;
     const existing = await context.internalAdapter.findUserByEmail(proof.email);
@@ -167,10 +154,11 @@ const provision = async () => {
   }
 };
 
-provision().then(
-  () => console.log("Seeded a verified preview identity, organization, and installed pool app."),
-  () => {
-    console.error("Preview auth seed failed.");
-    process.exitCode = 1;
-  },
-);
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  seedPreviewAuth().then(
+    () => console.log("Seeded a verified preview identity, organization, and installed pool app."),
+    () => {
+      console.error("Preview auth seed failed.");
+      process.exitCode = 1;
+    },
+  );

@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 import { Config, Effect } from "effect";
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
-import { brand } from "./brand.ts";
+import { brand, deployment } from "./brand.ts";
 import { poolWorker } from "./src/pool/deployment.ts";
+import { previewStageOrigin } from "./scripts/environment.ts";
 import {
   cloudDeployment,
   cloudProviders,
@@ -70,7 +71,7 @@ export default Alchemy.Stack(
         name: stage,
         slug: `pr-${preview.number}`,
         domain: preview.domain,
-        origin: `https://pr-${preview.number}.${preview.domain}`,
+        origin: previewStageOrigin(`pr-${preview.number}`, preview.domain, false),
       });
       const seedScript = fileURLToPath(
         new URL("./scripts/preview-auth/seed.ts", import.meta.url),
@@ -80,7 +81,7 @@ export default Alchemy.Stack(
         env: {
           ALCHEMY_STAGE: stage,
           TEST_STAGE_DOMAIN: preview.domain,
-          BETTER_AUTH_URL: `https://app.pr-${preview.number}.${preview.domain}`,
+          BETTER_AUTH_URL: previewStageOrigin(`pr-${preview.number}`, preview.domain),
           DATABASE_URL: migration.migrationUrl,
           TEST_STAGE_DATABASE_BRANCH: migration.branchName,
           TEST_STAGE_DATABASE_NAME: migration.databaseName,

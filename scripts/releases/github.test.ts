@@ -81,3 +81,27 @@ test("compares executable mode changes even when blob content is shared", async 
   assert.equal(comparison.complete, true);
   assert.deepEqual(comparison.files.map((file) => file.filename), ["apps/hosted/cloud/src/run.ts"]);
 });
+
+test("rejects absolute and network-path targets before sending the bearer token", async () => {
+  let calls = 0;
+  const api = new GitHubApi("release-token", async () => {
+    calls++;
+    return new Response("{}", { status: 200 });
+  });
+
+  await assert.rejects(api.get("https://attacker.example/collect"), /must be relative/);
+  await assert.rejects(api.request("POST", "//attacker.example/collect", { value: true }), /must be relative/);
+  assert.equal(calls, 0);
+});
+
+test("keeps relative requests on the fixed API origin and blocks redirects", async () => {
+  const api = new GitHubApi("release-token", async (input, init) => {
+    assert.equal(new URL(String(input)).origin, "https://api.github.com");
+    assert.equal(init?.credentials, "omit");
+    assert.equal(init?.redirect, "error");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer release-token");
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  });
+
+  assert.deepEqual(await api.get<{ ok: boolean }>("repos/owner/repository"), { ok: true });
+});

@@ -30,11 +30,11 @@ export function pins(): ReleasePins {
 }
 
 export const patchManifest: PatchManifest = {
-  format_version: 1,
+  format_version: 2,
   repository: "UsefulSoftwareCo/executor",
   patches: [
-    { file: "0001-review.patch", upstream_pull_request: 10, database_sensitive: false, workflow_sensitive: false },
-    { file: "0004-workflow.patch", upstream_pull_request: 14, database_sensitive: true, workflow_sensitive: true },
+    { file: "0001-review.patch", kind: "upstream", upstream_pull_request: 10, database_sensitive: false, workflow_sensitive: false },
+    { file: "0004-workflow.patch", kind: "upstream", upstream_pull_request: 14, database_sensitive: true, workflow_sensitive: true },
   ],
 };
 

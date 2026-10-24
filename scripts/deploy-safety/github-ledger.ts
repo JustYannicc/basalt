@@ -130,6 +130,8 @@ export function assertManualRollbackCandidate(report: ClassificationReport, ledg
   if (ledger.state === "ready") {
     if (payload.gitCommit !== ledger.gitCommit || stableStringify(payload.pins) !== stableStringify(summarizePins(report.candidate.pins)))
       throw new SafetyGateError("Manual rollback report pins do not match the deployed release");
+    if (payload.baseGitCommit === payload.candidateGitCommit)
+      throw new SafetyGateError("Manual rollback has no prior successful production baseline");
     return;
   }
   if (!ledger.lastSuccessful) throw new SafetyGateError("Manual rollback has no prior successful production baseline");

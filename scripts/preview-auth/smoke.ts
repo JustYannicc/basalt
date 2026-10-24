@@ -2,6 +2,7 @@ import {
   assertSeedMatchesProof,
   previewProof,
   readSeed,
+  requirePoolSetupIntent,
   requireOk,
   responseCookies,
 } from "./common.ts";
@@ -75,15 +76,7 @@ const run = async () => {
     },
   );
   await requireOk(query);
-  const context = (await query.json()) as { intent?: string; href?: string };
-  const href = context.href === undefined ? undefined : new URL(context.href);
-  const intent = href === undefined ? null : new URLSearchParams(href.hash.slice(1)).get("intent");
-  if (
-    typeof context.intent !== "string" ||
-    !context.intent.startsWith("sbci1.") ||
-    intent !== context.intent
-  )
-    throw new Error("Pool computer context did not return a setup intent");
+  requirePoolSetupIntent(await query.json());
 };
 
 run().then(

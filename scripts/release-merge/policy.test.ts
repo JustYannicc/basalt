@@ -81,11 +81,11 @@ test("accepts one tools pin update whose receipt matches the exact pin snapshots
 
 test("accepts removal-only carried patch and matching logical manifest removal", () => {
   const manifest = {
-    format_version: 1,
+    format_version: 2,
     repository: "UsefulSoftwareCo/executor",
     patches: [
-      { file: "0001.patch", upstream_pull_request: 2348, database_sensitive: false, workflow_sensitive: false },
-      { file: "0002.patch", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false },
+      { file: "0001.patch", kind: "upstream", upstream_pull_request: 2348, database_sensitive: false, workflow_sensitive: false },
+      { file: "0002.patch", kind: "overlay", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false },
     ],
   };
   const remaining = { ...manifest, patches: manifest.patches.slice(1) };
@@ -144,9 +144,9 @@ test("rejects modified patches, forged workflows, and provider table edits witho
 
 test("rejects changed manifest records and receipts that claim unrelated pins", () => {
   const manifest = {
-    format_version: 1,
+    format_version: 2,
     repository: "UsefulSoftwareCo/executor",
-    patches: [{ file: "0001.patch", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false }],
+    patches: [{ file: "0001.patch", kind: "upstream", upstream_pull_request: null, database_sensitive: false, workflow_sensitive: false }],
   };
   const edited = { ...manifest, patches: [{ ...manifest.patches[0], database_sensitive: true }] };
   const files = [file("scripts/releases/patches.json"), ...toolsPinCandidate().files];

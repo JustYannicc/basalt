@@ -21,7 +21,7 @@ export type ReleasePlan = {
   manualRequired: boolean;
 };
 
-const repositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+const trustedRepositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 export async function latestProductionBase(): Promise<{
   state: "uninitialized" | "ready" | "unresolved";
@@ -61,7 +61,7 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   }
 
   const api = new GitHubApi(ledgerEnvironment.token);
-  const report = await classifyRefs(repositoryRoot, baseCommit, candidateRef, api);
+  const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, api);
   if (report.base.gitCommit !== baseCommit || report.candidate.gitCommit !== candidateRef)
     throw new SafetyGateError("Release classifier did not return the requested exact commits");
   return { report, ledger, manualRequired: report.databaseChanged || report.workflowChanged };
@@ -80,9 +80,36 @@ export async function verifyFreshManualRollbackReport(
   report: ClassificationReport,
   expectedCandidate = report.candidate.gitCommit,
 ): Promise<ReleasePlan> {
-  const fresh = await reclassifyReport(report, expectedCandidate);
-  assertManualRollbackCandidate(report, fresh.ledger);
-  return fresh;
+  if (report.candidate.gitCommit !== expectedCandidate)
+    throw new SafetyGateError("Manual rollback report candidate does not match the expected commit");
+  const environment = readLedgerEnvironment();
+  const ledger = await readDeploymentLedger(environment);
+  assertManualRollbackCandidate(report, ledger);
+  const baseCommit = manualRollbackBaselineCommit(ledger);
+  if (report.base.gitCommit !== baseCommit)
+    throw new SafetyGateError("Manual rollback report base does not match the recorded production baseline");
+  const freshReport = await classifyRefs(trustedRepositoryRoot, baseCommit, expectedCandidate, new GitHubApi(environment.token));
+  if (stableStringify(freshReport) !== stableStringify(report))
+    throw new SafetyGateError("Manual rollback classification changed since it was produced");
+  assertManualRollbackCandidate(freshReport, ledger);
+  return {
+    report: freshReport,
+    ledger,
+    manualRequired: freshReport.databaseChanged || freshReport.workflowChanged,
+  };
+}
+
+export function manualRollbackBaselineCommit(ledger: DeploymentLedger): string {
+  if (ledger.state === "ready" && ledger.payload.kind === "release") {
+    if (ledger.payload.baseGitCommit === ledger.payload.candidateGitCommit)
+      throw new SafetyGateError("Manual rollback has no prior successful production baseline");
+    return ledger.payload.baseGitCommit;
+  }
+  if (ledger.state === "unresolved" &&
+      (ledger.deploymentStatus === "failure" || ledger.deploymentStatus === "error") &&
+      ledger.lastSuccessful)
+    return ledger.lastSuccessful.gitCommit;
+  throw new SafetyGateError("Manual rollback requires the baseline of a completed production release");
 }
 
 async function reclassifyReport(
@@ -108,5 +135,5 @@ export function currentCommit(repositoryRoot = process.cwd()): string {
 }
 
 export function gitRepositoryRoot(): string {
-  return repositoryRoot;
+  return trustedRepositoryRoot;
 }

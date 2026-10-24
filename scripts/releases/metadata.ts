@@ -8,6 +8,16 @@ export const databaseChangeLabel = "database-change";
 export const workflowIdentityLabel = "workflow-identity-change";
 export const machineRiskLabels = [manualReleaseLabel, databaseChangeLabel, workflowIdentityLabel] as const;
 
+const safePreparationFailure = "Candidate preparation failed. See the Release updates workflow run for details.";
+const publicEvidenceReasons = new Map([
+  ["Home may change GORM AutoMigrate through model types or call sites; no source proof excludes it", "Home migration impact is unknown without source proof"],
+  ["node release metadata or binaries changed without a source commit change", "Node release metadata or binaries changed without a source commit change"],
+  ["runtime source changed without a database compatibility proof", "Runtime source changed without a database compatibility proof"],
+  ["source comparison incomplete", "Source comparison is incomplete"],
+  ["runtime source changed outside a proven database/workflow exclusion", "Runtime source changed outside a proven database or workflow exclusion"],
+  ["changed patch has no tracking record", "A changed patch has no tracking record"],
+]);
+
 const sectionStart = "<!-- basalt-release-safety:start -->";
 const sectionEnd = "<!-- basalt-release-safety:end -->";
 
@@ -37,6 +47,8 @@ export function reconcileLabels(
   manualHoldOwnership: ManualHoldOwnership,
 ): LabelPlan {
   const current = new Set(currentLabels);
+  const added: string[] = [];
+  if (!current.has(releaseUpdateLabel)) added.push(releaseUpdateLabel);
   current.add(releaseUpdateLabel);
   const required = new Set(requiredRiskLabels(report));
   const managed = new Set(previouslyManagedRiskLabels.filter((label) => machineRiskLabels.includes(label as typeof machineRiskLabels[number])));
@@ -47,7 +59,6 @@ export function reconcileLabels(
     if (label === manualReleaseLabel && manualHoldOwnership !== "machine") continue;
     if (current.delete(label)) removed.push(label);
   }
-  const added: string[] = [];
   for (const label of required) {
     if (!current.has(label)) added.push(label);
     current.add(label);
@@ -119,11 +130,29 @@ export function managedRiskLabelsInBody(body: string): string[] {
 
 function formatEvidence(evidence: Evidence): string {
   const state = evidence.state === "unchanged" ? "clear" : evidence.state;
-  const paths = [...new Set(evidence.sources.flatMap((source) => source.changedPaths))].sort();
-  const reasons = [...new Set(evidence.sources.map((source) => source.reason).filter((value): value is string => value !== undefined))];
-  const detail = [state, paths.length ? `paths: ${paths.map(code).join(", ")}` : "", reasons.length ? reasons.join("; ") : ""]
+  const allPaths = [...new Set(evidence.sources.flatMap((source) => source.changedPaths))].sort();
+  const paths = allPaths.filter(isPublicRepoPath);
+  const reasons = [...new Set(evidence.sources.map((source) => source.reason).filter((value): value is string => value !== undefined))]
+    .map((reason) => publicEvidenceReasons.get(reason))
+    .filter((reason): reason is string => reason !== undefined);
+  const withheld = paths.length !== allPaths.length || evidence.sources.some((source) => source.reason !== undefined && !publicEvidenceReasons.has(source.reason));
+  const detail = [
+    state,
+    paths.length ? `paths: ${paths.map(code).join(", ")}` : "",
+    reasons.length ? reasons.join("; ") : "",
+    withheld ? "additional evidence details omitted" : "",
+  ]
     .filter(Boolean).join("; ");
   return detail || "clear";
+}
+
+export function sanitizePublicPreparationFailure(failure: unknown): string | undefined {
+  return failure === undefined || failure === null || failure === false ? undefined : safePreparationFailure;
+}
+
+function isPublicRepoPath(value: string): boolean {
+  if (value.length > 240 || !/^[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+)*$/.test(value)) return false;
+  return value.split("/").every((part) => part !== "." && part !== "..");
 }
 
 function code(value: string): string {
