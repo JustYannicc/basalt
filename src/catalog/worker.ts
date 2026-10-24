@@ -1,8 +1,11 @@
-import { mergeFeed, type Feed } from "./feed.ts";
+import { mergeFeed, type Addition, type Feed } from "./feed.ts";
 import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
+import { aws } from "./aws/index.ts";
 
+// AWS source stays in the catalog until maintainers identify a maintained destination.
+const sourceAdditions: readonly Addition[] = [aws];
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
@@ -21,7 +24,7 @@ export async function handleCatalog(request: Request, fetcher: typeof fetch = fe
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
-  const additions = [atlassianAddition(ready.atlassian === true)];
+  const additions = [atlassianAddition(ready.atlassian === true), ...sourceAdditions];
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) return new Response(request.method === "HEAD" ? null : JSON.stringify(added.source), { headers });
   try {

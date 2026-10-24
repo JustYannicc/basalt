@@ -62,6 +62,13 @@ model {
   }
   basalt.toolsGateway -[sync]-> audioService "call with the person's API key"
 
+  cloudAccountApi = adapter "Cloud account API" {
+    #external
+    technology "AWS regional STS and S3 APIs"
+    metadata { hosts "*.amazonaws.com" }
+  }
+  basalt.toolsGateway -[sync]-> cloudAccountApi "sign and call with the person's own temporary or IAM credentials"
+
   emailService = adapter "Email service" {
     #external
     technology "Cloudflare Email"
