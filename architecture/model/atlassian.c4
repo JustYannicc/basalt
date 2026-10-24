@@ -10,5 +10,5 @@ model {
     metadata { hosts "api.atlassian.com" }
   }
   basalt.toolsGateway -[sync]-> atlassianIdentity "authorize each person's connection; exchange and refresh tokens"
-  basalt.toolsGateway -[sync]-> atlassianApi "discover authorized sites; search Confluence and read Jira with the person's grant"
+  basalt.toolsGateway -[sync]-> atlassianApi "discover authorized sites; search pages and read issues with the person's grant"
 }

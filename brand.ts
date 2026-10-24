@@ -17,7 +17,7 @@ export const brand = {
     marker: "Signalbox managed computer setup",
     keyPrefix: "sb_",
   },
-  /** The Google and GitHub OAuth apps created at account setup carry this name. */
+  /** Hosted OAuth apps created at account setup carry this name. */
   oauthAppName: "Signalbox",
   /** Sign-in codes and invitations come from no-reply at this domain, under `name`. */
   emailDomain: "auth.signalbox.run",
