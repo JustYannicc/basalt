@@ -201,6 +201,11 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
     },
     async approveWithoutBrowser(authorizationUrl, actor) {
       const authorization = new URL(authorizationUrl);
+      assert.equal(authorization.origin, origin, "Synthetic Slack consent must stay on the local mock");
+      assert.equal(authorization.pathname, authorizationPath, "Synthetic Slack consent used the wrong authorization path");
+      const consent = await fetch(authorization, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
+      assert.equal(consent.status, 200, "Synthetic Slack authorization should show consent before approval");
+      await consent.arrayBuffer();
       const approve = new URL("/oauth/approve", origin);
       approve.searchParams.set("state", authorization.searchParams.get("state") ?? "");
       approve.searchParams.set("actor", actor);
