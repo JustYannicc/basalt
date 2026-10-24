@@ -17,6 +17,8 @@ const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> =
   "@executor.sh/google-sheets": [{ providerName: "Google Sheets", message: google }],
   "@executor.sh/google-slides": [{ providerName: "Google Slides", message: google }],
   "@executor.sh/github": [{ providerName: "GitHub", message: `Connect your own GitHub account through ${brand.name}. No app review is required. Organization approval and SAML single sign-on may limit which repositories you can reach.` }],
+  "@executor.sh/gitlab": [{ providerName: "GitLab", message: `Connect your own GitLab.com account through ${brand.name}. The API scope includes writes and is not limited to individual projects. Self-managed GitLab needs its own app and is not covered by this hosted client.` }],
+  "@executor.sh/miro": [{ providerName: "Miro", message: `This connector requires a Miro Enterprise account. Connect your own account and choose a team. The official app requests board read/write and Enterprise organization scopes. Admins may also restrict installation. To revoke access, remove the app in Miro's settings.` }],
   "@executor.sh/zoho": [{ providerName: "Zoho CRM", message: `Connect your own Zoho CRM account through ${brand.name} and choose its data center. The app requests broad CRM access, including writes. CRM edition, API credits and administrator permissions still limit which tools your account can use. This connector does not include Zoho Mail, People or other Zoho products.` }],
   "@executor.sh/elevenlabs": [{ providerName: "ElevenLabs", message: `Connect your own ElevenLabs account with an API key through ${brand.name}'s secure connection form. No hosted OAuth client is available. The key must allow the current-user read check and each tool you use. This catalog app uses api.elevenlabs.io; regional residency API hosts are not supported.` }],
   "@executor.sh/slack": [{ providerName: "Slack", message: slack }],
@@ -25,6 +27,8 @@ const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> =
 export interface ConnectorAvailability {
   readonly google: boolean;
   readonly github: boolean;
+  readonly gitlab?: boolean;
+  readonly miro?: boolean;
   readonly zoho?: boolean;
   readonly atlassian?: boolean;
   readonly slack?: boolean;
@@ -33,7 +37,9 @@ export interface ConnectorAvailability {
 /** Readiness is public feed data. Client credentials never reach this Worker. */
 export function connectionNotices(ready: ConnectorAvailability): typeof configuredNotices {
   return Object.fromEntries(Object.entries(configuredNotices).map(([name, notices]) => {
-    const unavailable = name === "@executor.sh/zoho" ? !ready.zoho
+    const unavailable = name === "@executor.sh/gitlab" ? !ready.gitlab
+      : name === "@executor.sh/miro" ? !ready.miro
+      : name === "@executor.sh/zoho" ? !ready.zoho
       : name === "@executor.sh/github" ? !ready.github
       : name === "@executor.sh/slack" ? !ready.slack
       : name !== "@executor.sh/elevenlabs" && !ready.google;

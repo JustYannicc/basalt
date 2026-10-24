@@ -22,6 +22,7 @@
     },
     {
       "identity": "executor-eu-durable-objects",
+      "upstream_issue": 2364,
       "file": "0003-eu-durable-objects.patch",
       "content_sha256": "3535935861fe64f93ebc155def76e3ff3ad8e71f41a7160c44c867b1eaf92e0b",
       "kind": "upstream",
@@ -178,9 +179,18 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-gitlab-miro-oauth",
+      "file": "0020-gitlab-miro-oauth.patch",
+      "content_sha256": "a5c6c604260b70283dd98a4b862f4218c2360c3a913a575233f606e9ac8481a7",
+      "kind": "upstream",
+      "upstream_pull_request": 2366,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-zoho-oauth",
       "file": "0021-zoho-oauth.patch",
-      "content_sha256": "2995b1c6826d9922d62da0c17cf8cce75eeaa3136f0fcd0c2f8648a7c98650af",
+      "content_sha256": "2f54ac20814fca30c9f09e8b389423eaff4d8bef625d66146519807f41c7ea79",
       "kind": "upstream",
       "upstream_pull_request": 2373,
       "database_sensitive": false,
@@ -189,11 +199,12 @@
     {
       "identity": "executor-slack-user-oauth",
       "file": "0022-slack-user-oauth.patch",
-      "content_sha256": "69c4bd873d89f7b75559911ed2cf103a6814a95e59958e81ac0656fe8a78fc2c",
+      "content_sha256": "3e6a6dba1ea5c6d9b92e8d4ab353ddc7ffce9df3e64012829f3d582f32c2d9bf",
       "kind": "upstream",
       "upstream_pull_request": 2371,
       "database_sensitive": false,
-      "workflow_sensitive": false
+      "workflow_sensitive": false,
+      "upstream_issue": 2368
     }
   ]
 }

@@ -32,9 +32,8 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       recursive: true, filter: path => !/(?:^|\/)(?:node_modules|dist)(?:\/|$)/.test(path),
     });
     mkdirSync(join(generatedRoot, "src/pool"), { recursive: true });
-    for (const file of ["token.ts", "access-contract.ts"]) {
-      cpSync(join(root, "src/pool", file), join(generatedRoot, "src/pool", file));
-    }
+    for (const path of ["src/pool/token.ts", "src/pool/access-contract.ts"])
+      cpSync(join(root, path), join(generatedRoot, path));
     const framework = join(generatedUpstream, "packages/apps/package.json");
     mkdirSync(dirname(framework), { recursive: true });
     writeFileSync(framework, git(["show", ":packages/apps/package.json"], expected));

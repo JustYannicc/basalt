@@ -84,7 +84,7 @@ index d2702ef..45e4543 100644
  export const firstPartyGitHubItem = "Executor.sh GitHub App";
  
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
-index c46156e..25823fa 100644
+index 79db403..ba6dada 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
 @@ -114,6 +114,49 @@ const atlassianScopes = [
@@ -148,7 +148,7 @@ index c46156e..25823fa 100644
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    ...zohoOAuthClients,
-@@ -227,6 +274,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+@@ -256,6 +303,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
      placement: { hosts: ["mcp.slack.com"] },
      unlisted: true,
    },
@@ -170,15 +170,15 @@ index c46156e..25823fa 100644
  ];
  
  /** The two settings that hold the credentials of the client `id`. */
-@@ -336,7 +398,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
-           ? "Google"
-           : definition.id === "github" || definition.id === "github-oauth"
-             ? "GitHub"
--            : definition.id === "slack"
-+            : definition.id === "slack" || definition.id === "slack-rest"
-               ? "Slack"
-               : definition.id === "atlassian"
-                 ? "Atlassian"
+@@ -369,7 +431,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+               ? "GitLab"
+               : definition.id === "miro"
+                 ? "Miro"
+-                : definition.id === "slack"
++                : definition.id === "slack" || definition.id === "slack-rest"
+                   ? "Slack"
+                   : definition.id === "atlassian"
+                     ? "Atlassian"
 diff --git a/e2e/tests/oauth-provider-token-responses.spec.ts b/e2e/tests/oauth-provider-token-responses.spec.ts
 index 1807e16..87a1e88 100644
 --- a/e2e/tests/oauth-provider-token-responses.spec.ts
@@ -2625,7 +2625,7 @@ index 42f849a..c71908a 100644
        return {
          type: "object",
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 36ca3ad..a961357 100644
+index 5297915..56b4494 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
 @@ -352,6 +352,7 @@ export const FirstPartyOAuthServer = Schema.Struct({
@@ -2645,7 +2645,7 @@ index 36ca3ad..a961357 100644
    tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
    tokenResponse: Schema.optional(OAuthTokenResponse),
  });
-@@ -1380,7 +1381,7 @@ export const OAuthGrant = Schema.Union([
+@@ -1382,7 +1383,7 @@ export const OAuthGrant = Schema.Union([
       * granted (RFC 6749 §6).
       */
      scopes: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -2655,7 +2655,7 @@ index 36ca3ad..a961357 100644
      generation: grantGeneration,
    }),
 diff --git a/packages/sdk/src/implementation/oauth-protocol.ts b/packages/sdk/src/implementation/oauth-protocol.ts
-index db9da9e..5e99257 100644
+index e57f4a2..7f537d9 100644
 --- a/packages/sdk/src/implementation/oauth-protocol.ts
 +++ b/packages/sdk/src/implementation/oauth-protocol.ts
 @@ -671,15 +671,20 @@ const isObject = (value: unknown): value is object =>

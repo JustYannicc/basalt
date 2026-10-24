@@ -105,6 +105,8 @@ function previewSmokeCredentials(source: NodeJS.ProcessEnv): void {
 }
 
 export const optionalConnectorClients = [
+  { name: "GitLab", id: "EXECUTOR_OAUTH_GITLAB_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET", ready: "GITLAB_CONNECTOR_READY" },
+  { name: "Miro", id: "EXECUTOR_OAUTH_MIRO_CLIENT_ID", secret: "EXECUTOR_OAUTH_MIRO_CLIENT_SECRET", ready: "MIRO_CONNECTOR_READY" },
   { name: "Zoho CRM", id: "EXECUTOR_OAUTH_ZOHO_CLIENT_ID", secret: "EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET", ready: "ZOHO_CONNECTOR_READY" },
   { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
   { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },

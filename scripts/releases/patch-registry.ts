@@ -61,7 +61,7 @@ export function patchOriginKey(repository: string, patch: PatchRecord): string {
     repository,
     kind: patch.kind,
     upstream_pull_request: patch.upstream_pull_request,
-    upstream_issue: patch.kind === "overlay" ? patch.upstream_issue ?? null : null,
+    upstream_issue: patch.upstream_issue ?? null,
   });
 }
 
@@ -142,11 +142,11 @@ function isPatchRecord(value: unknown): value is PatchRecord {
     typeof value.content_sha256 !== "string" || !SHA256.test(value.content_sha256) ||
     typeof value.database_sensitive !== "boolean" || typeof value.workflow_sensitive !== "boolean") return false;
   const common = ["identity", "file", "content_sha256", "kind", "upstream_pull_request", "database_sensitive", "workflow_sensitive"];
+  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue)) return false;
   if (value.kind === "upstream")
-    return hasExactKeys(value, common) && validPullRequest(value.upstream_pull_request);
+    return hasOnlyKeys(value, common, ["upstream_issue"]) && validPullRequest(value.upstream_pull_request);
   if (value.kind !== "overlay" || value.upstream_pull_request !== null ||
     !hasOnlyKeys(value, common, ["upstream_issue", "remove_with", "requires"])) return false;
-  if (value.upstream_issue !== undefined && !validPositiveInteger(value.upstream_issue)) return false;
   const hasRemovalCondition = value.remove_with !== undefined || value.requires !== undefined;
   return !hasRemovalCondition ||
     typeof value.remove_with === "string" && value.remove_with !== value.identity && IDENTITY.test(value.remove_with) &&
