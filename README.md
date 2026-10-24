@@ -2,6 +2,8 @@
 
 Basalt is Signalbox's identity, inference and connectors component. It deploys independently so the Signalbox OS can consume its gateways later.
 
+For existing installations, use the [cutover runbook](docs/cutover.md) and its owner-only login-file importer. Live acceptance and the coordinator's explicit shutdown gate precede removal of any old resource.
+
 This repository deploys the cloud build of [Executor v2](https://github.com/UsefulSoftwareCo/executor) using its Alchemy stack. Upstream owns sign-in, workspaces, connections and MCP. Basalt supplies deployment configuration and a small public router. The model gateway runs the released pool backend. Every person gets their own pool, an app in the tools service that connects subscriptions to that backend.
 
 ## Public endpoints
