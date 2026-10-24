@@ -14,10 +14,6 @@ export const requiredSecrets = [
   "PLANETSCALE_API_TOKEN",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
-  "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID",
-  "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
-  "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID",
-  "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET",
   "AUTH_GITHUB_CLIENT_ID",
   "AUTH_GITHUB_CLIENT_SECRET",
   "BETTER_AUTH_SECRET",
@@ -107,6 +103,17 @@ function previewSmokeCredentials(source: NodeJS.ProcessEnv): void {
     throw new Error("PREVIEW_SMOKE_EMAIL must use the reserved example.invalid domain");
 }
 
+export const optionalConnectorClients = [
+  { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
+  { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },
+] as const;
+
+/** One warning per unavailable client, never per missing secret or containing credential values. */
+export function connectorWarnings(environment: NodeJS.ProcessEnv): string[] {
+  return optionalConnectorClients.filter(client => environment[client.ready] !== "true")
+    .map(client => `${client.name} connector is not set up yet; its optional OAuth client credentials are incomplete.`);
+}
+
 export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
   for (const name of [
     "EXECUTOR_EMULATORS",
@@ -135,8 +142,17 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     throw new Error("Missing GitHub Actions secret: APP_DOMAIN_CONTROLLER_TOKEN");
   }
   const { commit } = JSON.parse(readFileSync(new URL("../upstream.json", import.meta.url), "utf8"));
+  const connectors: NodeJS.ProcessEnv = {};
+  for (const client of optionalConnectorClients) {
+    const ready = Boolean(source[client.id]?.trim() && source[client.secret]?.trim());
+    connectors[client.ready] = String(ready);
+    // The upstream host rejects half-configured clients. Omit both halves until ready.
+    connectors[client.id] = ready ? source[client.id] : undefined;
+    connectors[client.secret] = ready ? source[client.secret] : undefined;
+  }
   return {
     ...source,
+    ...connectors,
     CI: "true",
     DO_NOT_TRACK: "1",
     ALCHEMY_STAGE: deployment.stage,

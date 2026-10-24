@@ -98,6 +98,10 @@ export default Alchemy.Stack(
     const pool = yield* poolWorker;
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
+      env: {
+        GOOGLE_CONNECTOR_READY: yield* Config.String("GOOGLE_CONNECTOR_READY").pipe(Config.withDefault("false")),
+        GITHUB_CONNECTOR_READY: yield* Config.String("GITHUB_CONNECTOR_READY").pipe(Config.withDefault("false")),
+      },
       workersDev: false,
       compatibility: { date: "2026-09-08" },
     });
