@@ -16,11 +16,13 @@ import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
+import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 
 export interface HomeDependencies {
   signingKey: string;
   previousSigningKey?: string;
   home: (path: string, init?: RequestInit) => Promise<Response>;
+  onProductEvent?: ProductEventCallback;
   now?: () => Date;
   /** Keep best-effort work alive after a response without holding the attribution queue. */
   defer?: (work: Promise<void>) => void;
@@ -34,7 +36,7 @@ export interface ControlAttribution {
   acceptedCallback(session: Session): Promise<void>;
   status(home: PoolHome, session: Session): Promise<SignInStatus>;
   cancel(home: PoolHome, session: Session): Promise<void>;
-  started(session: Session): Promise<void>;
+  started(session: Session, accountId: string): Promise<void>;
   uploadStarted(): Promise<string>;
   uploadFinished(upload: string): Promise<void>;
   retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
@@ -274,11 +276,15 @@ export class PoolHome {
   private client: HomeClient;
   private name: string;
   private added: (ids: string[]) => void;
-  constructor(client: HomeClient, pool: string, added: (ids: string[]) => void = () => {}) {
+  private onProductEvent?: ProductEventCallback;
+  private accountId?: string;
+  constructor(client: HomeClient, pool: string, added: (ids: string[]) => void = () => {}, onProductEvent?: ProductEventCallback, accountId?: string) {
     this.client = client;
     this.pool = pool;
     this.name = `${poolGroupPrefix}${pool}`;
     this.added = added;
+    this.onProductEvent = onProductEvent;
+    this.accountId = accountId;
   }
   ownMembership(all: Membership): Membership {
     const groups = all.groups.filter((group) => group.channel_name === this.name);
@@ -308,9 +314,12 @@ export class PoolHome {
     if (!membership.groups.length) {
       const response = await this.client.response("/channel-groups", post({ channel_name: this.name }));
       if (response.status === 401 || response.status === 403) return unavailable();
+      const created = response.ok;
+      await response.body?.cancel();
       const groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === this.name);
       if (!groups.length) return unavailable();
       membership = { groups, members: await this.client.members(groups) };
+      if (created && this.accountId) emitProductEvent(this.onProductEvent, "pool_created", this.accountId);
     }
     const existing = new Set(membership.members.map((member) => member.auth_id));
     for (const id of new Set(ids)) {
@@ -318,6 +327,7 @@ export class PoolHome {
       try { await this.client.data("/channel-group-details", post({ channel_group_id: membership.groups[0]!.id, auth_id: id })); }
       catch (error) { this.client.invalidateGroups(); throw error; }
       this.added([id]);
+      if (this.accountId) emitProductEvent(this.onProductEvent, "account_connected", this.accountId);
     }
   }
   async view(isOwner: boolean): Promise<PoolView> {
@@ -410,6 +420,7 @@ interface RouteContext {
   client: HomeClient;
   home: PoolHome;
   pool: string;
+  accountId: string;
   isOwner: boolean;
   now: Date;
 }
@@ -441,7 +452,7 @@ const routes: Record<string, Route> = {
     const started: unknown = await response.json();
     if (!object(started) || !text(started.url) || !text(started.state)) return unavailable();
     const session: Session = { pool, provider, state: started.state as string, flow: detectFlow(started), expiresAt: new Date(now.getTime() + signInTtlMs).toISOString() };
-    await state.started(session);
+    await state.started(session, ctx.accountId);
     return json({
       session: await signSession(deps.signingKey, session), provider, flow: session.flow,
       url: started.url as string, userCode: text(started.user_code) ?? (object(started.meta) ? text(started.meta.user_code) : null), expiresAt: session.expiresAt,
@@ -529,8 +540,8 @@ export async function handleControl(request: Request, deps: ControlDependencies)
   try {
     const { claims, url, route, isOwner, isRead } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
-    const home = new PoolHome(client, claims.pool, deps.added);
+    const home = new PoolHome(client, claims.pool, deps.added, deps.onProductEvent, claims.owner);
     if (!isRead) await (deps.attribution ?? unavailable()).expireLocked(client);
-    return await route({ request, url, deps, client, home, pool: claims.pool, isOwner, now: deps.now?.() ?? new Date() });
+    return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, isOwner, now: deps.now?.() ?? new Date() });
   } catch (error) { return failureResponse(error); }
 }

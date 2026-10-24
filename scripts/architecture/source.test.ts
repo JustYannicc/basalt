@@ -52,8 +52,123 @@ test("host and SDK evidence resolves to the calling module", () => {
 });
 
 test("computed egress and undeclared service bindings cannot disappear from the check", () => {
-  const root = fixture({ "src/router.ts": "fetch(destination); env.UNKNOWN.fetch(request);" });
-  expect(sourceDependencies(root, [module("router", "src/router.ts")], []).errors).toHaveLength(2);
+  const root = fixture({ "src/router.ts": "fetch(destination); fetch(env.URL); env.UNKNOWN.fetch(request);" });
+  const errors = sourceDependencies(root, [module("router", "src/router.ts", { endpointHosts: ["api.example.invalid"] })], []).errors;
+  expect(errors).toHaveLength(3);
+  expect(errors.filter(error => error.includes("Computed outbound fetch needs a statically known host"))).toHaveLength(2);
+});
+
+test("bounded URL returns resolve only through a matching outside-service host", () => {
+  const source = [
+    "function parseDsn(value: string) {",
+    String.raw`  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/.exec(value);`,
+    "  if (!match) return undefined;",
+    "  const [, key, host, project] = match;",
+    "  const url = new URL(value);",
+    "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== key || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined;",
+    "  return { host: host.toLowerCase(), project };",
+    "}",
+    "function destination(env: { DSN: string }) {",
+    "  const dsn = parseDsn(env.DSN);",
+    "  if (!dsn) return undefined;",
+    "  return { url: `https://${dsn.host}/api/${dsn.project}/envelope/` };",
+    "}",
+    "const target = destination(env);",
+    "fetch(target.url);",
+  ].join("\n");
+  const root = fixture({ "src/telemetry.ts": source });
+  const services = [{ id: "sentry", hosts: ["*.ingest.de.sentry.io"], sdks: [] }];
+  const result = sourceDependencies(root, [module("telemetry", "src/telemetry.ts")], services);
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map(edge => `${edge.source}->${edge.target}`)).toEqual(["telemetry->sentry"]);
+
+  const otlpTarget = [
+    "function otlpTarget(env: { DSN: string; ENDPOINT: string; HOST: string }) {",
+    "  const dsn = parseDsn(env.DSN);",
+    "  if (!dsn || !env.ENDPOINT) return undefined;",
+    "  const url = new URL(env.ENDPOINT);",
+    "  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '' || url.hostname.toLowerCase() !== dsn.host) return undefined;",
+    "  return { url: url.href };",
+    "}",
+    "const otlp = otlpTarget(env);",
+    "fetch(otlp.url);",
+  ].join("\n");
+  const withOtlp = (target: string) => `${source}\n${target}`;
+  const otlpBaseline = sourceDependencies(
+    fixture({ "src/telemetry.ts": withOtlp(otlpTarget) }), [module("telemetry", "src/telemetry.ts")], services,
+  );
+  expect(otlpBaseline.errors).toEqual([]);
+
+  const expectBlocked = (candidate: string) => {
+    const candidateRoot = fixture({ "src/telemetry.ts": candidate });
+    const errors = sourceDependencies(candidateRoot, [module("telemetry", "src/telemetry.ts")], services).errors;
+    expect(errors.map(error => error.replace(/:\d+:/, ":LINE:"))).toEqual([
+      "src/telemetry.ts:LINE: Outside URL has a dynamic host",
+      "src/telemetry.ts:LINE: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
+    ]);
+  };
+
+  const changedHost = fixture({ "src/telemetry.ts": source.replace("ingest\\.de\\.sentry\\.io", "other\\.invalid") });
+  expect(sourceDependencies(changedHost, [module("telemetry", "src/telemetry.ts")], services).errors).toEqual([
+    "src/telemetry.ts:12: Unmodelled outside host: *.other.invalid",
+    "src/telemetry.ts:15: Unmodelled outside host: *.other.invalid",
+  ]);
+
+  expectBlocked(source.replace("url.password !== ''", "url.password !== 'accepted'"));
+  expectBlocked(source.replace("url.hostname.toLowerCase() !== host.toLowerCase()", "url.hostname.toLowerCase() === host.toLowerCase()"));
+  expectBlocked(source.replace("url.hostname.toLowerCase() !== host.toLowerCase()", "false && url.hostname.toLowerCase() !== host.toLowerCase()"));
+
+  const aliasHost = source
+    .replace("  const [, key, host, project] = match;", "  const otherMatch = match;\n  const [, otherKey, otherHost, otherProject] = otherMatch;\n  const [, key, host, project] = match;")
+    .replace("url.hostname.toLowerCase() !== host.toLowerCase()", "url.hostname.toLowerCase() !== otherHost.toLowerCase()");
+  expectBlocked(aliasHost);
+
+  expectBlocked(source.replace("  const url = new URL(value);", "  const url = new URL(value);\n  url.hostname = 'evil.invalid';"));
+  expectBlocked(source.replace("  const url = new URL(value);", "  const URL = CustomURL;\n  const url = new URL(value);"));
+
+  const urlGuard = "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== key || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined;";
+  const parsedDsn = "  return { host: host.toLowerCase(), project };";
+  expectBlocked(source.replace(`${urlGuard}\n${parsedDsn}`, `${parsedDsn}\n${urlGuard}`));
+  expectBlocked(source.replace(urlGuard, `  if (enabled) {\n${urlGuard}\n  }`));
+
+  const withHostOverride = (returned: string) => source
+    .replace("function parseDsn(value: string) {", "function parseDsn(value: string, override?: string) {")
+    .replace(parsedDsn, returned)
+    .replace("function sentryTarget(env: { DSN: string }) {", "function sentryTarget(env: { DSN: string; HOST: string }) {")
+    .replace("  const dsn = parseDsn(env.DSN);", "  const dsn = parseDsn(env.DSN, env.HOST);");
+  const unsafeProofs: [string, string][] = [
+    ["shadowed undefined", source.replace(
+      "  if (!match) return undefined;\n  const [, key, host, project] = match;\n  const url = new URL(value);",
+      "  const url = new URL(value);\n  const undefined = { host: url.hostname, project: '1' };\n  if (!match) return undefined;\n  const [, key, host, project] = match;")],
+    ["spread overrides host", withHostOverride("  return { host: host.toLowerCase(), ...{ host: override }, project };")],
+    ["duplicate host overrides host", withHostOverride("  return { host: host.toLowerCase(), host: override, project };")],
+    ["unknown call mutates URL", withOtlp(otlpTarget.replace("  return { url: url.href };", "  rewrite(url);\n  return { url: url.href };"))],
+    ["Object.assign mutates URL through alias", withOtlp(otlpTarget.replace("  return { url: url.href };", "  const alias = url;\n  Object.assign(alias, { hostname: env.HOST });\n  return { url: url.href };"))],
+    ["direct setter after guard", withOtlp(otlpTarget.replace("  return { url: url.href };", "  url.hostname = env.HOST;\n  return { url: url.href };"))],
+    ["alias setter after guard", withOtlp(otlpTarget.replace("  return { url: url.href };", "  const alias = url;\n  alias.hostname = env.HOST;\n  return { url: url.href };"))],
+    ["helper result mutates through alias", withOtlp(otlpTarget.replace(
+      "  const url = new URL(env.ENDPOINT);",
+      "  const url = new URL(env.ENDPOINT);\n  const alias = dsn;\n  alias.host = url.hostname;"))],
+    ...[
+      "(url as any)[env.URL_FIELD] = env.HOST;",
+      "const alias = url; (alias as any)[env.URL_FIELD] = env.HOST;",
+      "const alias = (url as any); alias[env.URL_FIELD] = env.HOST;",
+      "const alias = url; delete (alias as any)[env.URL_FIELD];",
+      "const alias = url; (alias as any)[env.URL_FIELD]++;",
+    ].map((mutation): [string, string] => [mutation, withOtlp(otlpTarget.replace(
+      "  return { url: url.href };", `  ${mutation}\n  return { url: url.href };`))]),
+    ...[
+      "(dsn as any)[env.URL_FIELD] = url.hostname;",
+      "const alias = dsn; (alias as any)[env.URL_FIELD] = url.hostname;",
+      "const alias = dsn; delete (alias as any)[env.URL_FIELD];",
+    ].map((mutation): [string, string] => [mutation, withOtlp(otlpTarget.replace(
+      "  const url = new URL(env.ENDPOINT);", `  const url = new URL(env.ENDPOINT);\n  ${mutation}`))]),
+  ];
+  const rejected = (candidate: string) => sourceDependencies(
+    fixture({ "src/telemetry.ts": candidate }), [module("telemetry", "src/telemetry.ts")], services,
+  ).errors;
+  const missed = unsafeProofs.filter(([, candidate]) => rejected(candidate).length === 0).map(([name]) => name);
+  expect(missed).toEqual([]);
 });
 
 

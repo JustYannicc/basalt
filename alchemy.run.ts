@@ -4,6 +4,7 @@ import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import { fileURLToPath } from "node:url";
 import { Config, Effect } from "effect";
+import { telemetryBindings } from "./src/telemetry/deployment.ts";
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
 import { brand } from "./brand.ts";
@@ -65,6 +66,8 @@ export default Alchemy.Stack(
         CATALOG_SERVICE: catalog,
         POOL_SERVICE: pool,
         POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
+        TELEMETRY_RELAY_KEY: yield* Config.Redacted("TELEMETRY_RELAY_KEY"),
+        ...(yield* telemetryBindings),
         SOURCE_NAMESPACE_READY: namespace.hash.pipe(Output.map(() => "eu")),
       },
     });

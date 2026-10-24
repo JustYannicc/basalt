@@ -1,0 +1,119 @@
+diff --git a/apps/hosted/server/src/implementation/product-analytics.ts b/apps/hosted/server/src/implementation/product-analytics.ts
+--- a/apps/hosted/server/src/implementation/product-analytics.ts
++++ b/apps/hosted/server/src/implementation/product-analytics.ts
+@@ -1,13 +1,29 @@
+ /** Product analytics at the shared hosted Executor boundary, used by Cloud and self-host. */
+ import type { Executor, ToolCallResult, ToolResumeResult } from "@executor-js/sdk/core";
+ import { toolCompletion } from "@executor-js/telemetry/product-analytics";
+-import { Clock, Effect, Exit, Option } from "effect";
++import { Cause, Clock, Effect, Exit, Option } from "effect";
++import { HostedCatalog } from "../contracts/catalog.ts";
+ import {
+   observeUsage,
+   recordUsage,
+   usageFailure,
+   type UsageProperties,
+ } from "../contracts/product-analytics.ts";
++import { catalogServiceIdForQuery, catalogServiceSearchLimits } from "./catalog-service-search.ts";
++
++/** Catalog enrichment is optional, local to the host, and must not hold up searches. */
++const requestedServiceId = (query: string) =>
++  Effect.gen(function* () {
++    if (query.length > catalogServiceSearchLimits.queryLength) return undefined;
++    const catalog = yield* Effect.serviceOption(HostedCatalog);
++    if (Option.isNone(catalog)) return undefined;
++    return catalogServiceIdForQuery(query, yield* catalog.value.list);
++  }).pipe(
++    Effect.timeout("100 millis"),
++    Effect.catchCause((cause) =>
++      Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.succeed(undefined),
++    ),
++  );
+ 
+ /** A first-page query with no matches, excluding browsing, pagination and lost listings. */
+ export const observeToolSearch = <E, R>(
+@@ -21,7 +37,14 @@
+       page.items.length === 0 &&
+       page.remaining === 0 &&
+       page.missing.length === 0
+-        ? recordUsage("tool_search_empty", { result_count: 0 })
++        ? requestedServiceId(input.query).pipe(
++            Effect.flatMap((service_id) =>
++              recordUsage("tool_search_empty", {
++                result_count: 0,
++                ...(service_id === undefined ? {} : { service_id }),
++              }),
++            ),
++          )
+         : Effect.void,
+     ),
+   );
+diff --git a/apps/hosted/server/src/implementation/catalog-service-search.ts b/apps/hosted/server/src/implementation/catalog-service-search.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-service-search.ts
+@@ -0,0 +1,64 @@
++import type { CatalogEntry } from "@executor-js/catalog/contracts";
++
++const serviceIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
++const emailLike = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]+/giu;
++const wordCharacter = /[\p{L}\p{N}_.-]/u;
++
++/** Keep request text and catalog scans small; over-limit inputs abstain. */
++export const catalogServiceSearchLimits = {
++  queryLength: 256,
++  entries: 10_000,
++} as const;
++
++const normalize = (value: string) =>
++  value.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
++
++const isWordCharacter = (value: string | undefined) =>
++  value !== undefined && wordCharacter.test(value);
++
++const containsPhrase = (query: string, phrase: string) => {
++  let index = query.indexOf(phrase);
++  while (index !== -1) {
++    const before = query.slice(0, index).match(/.$/u)?.[0];
++    const after = query.slice(index + phrase.length).match(/^./u)?.[0];
++    if (!isWordCharacter(before) && !isWordCharacter(after)) return true;
++    index = query.indexOf(phrase, index + 1);
++  }
++  return false;
++};
++
++/** Match a query against catalog-owned identifiers and labels, returning only one safe ID. */
++export const catalogServiceIdForQuery = (
++  query: string,
++  entries: readonly CatalogEntry[],
++): string | undefined => {
++  if (
++    query.length > catalogServiceSearchLimits.queryLength ||
++    entries.length > catalogServiceSearchLimits.entries
++  )
++    return undefined;
++
++  // Do not infer a service from a name that appears only inside an email address.
++  const normalizedQuery = normalize(query.replace(emailLike, " "));
++  if (normalizedQuery === "") return undefined;
++
++  const matches = new Set<string>();
++  for (const entry of entries) {
++    if (!serviceIdPattern.test(entry.id)) continue;
++
++    const aliases = [entry.id, entry.name, entry.package]
++      .filter(
++        (value) =>
++          typeof value === "string" && value.length <= catalogServiceSearchLimits.queryLength,
++      )
++      .map(normalize)
++      .filter((value) => value !== "");
++
++    if (aliases.some((alias) => containsPhrase(normalizedQuery, alias))) {
++      matches.add(entry.id);
++      if (matches.size > 1) return undefined;
++    }
++  }
++
++  return matches.size === 1 ? matches.values().next().value : undefined;
++};

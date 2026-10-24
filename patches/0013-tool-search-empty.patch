@@ -1,0 +1,226 @@
+diff --git a/apps/docs/content/run/usage-analytics.md b/apps/docs/content/run/usage-analytics.md
+index 38d7f58479..cf3f21e432 100644
+--- a/apps/docs/content/run/usage-analytics.md
++++ b/apps/docs/content/run/usage-analytics.md
+@@ -35,6 +35,8 @@ version.
+   the HTTP status, the API operation name, the kind of sign-in an account uses,
+   the client application's name and whether the request came from MCP, the API
+   or the dashboard.
++- **Empty tool searches:** when the first page of a query has no matches,
++  without the query text. Browsing and exhausted pages are not counted.
+ - **Feedback:** only the text you or your agent submit through
+   `feedback.submit`.
+ 
+diff --git a/apps/hosted/server/src/contracts/product-analytics.ts b/apps/hosted/server/src/contracts/product-analytics.ts
+index 47dfe438af..9ada56d3ed 100644
+--- a/apps/hosted/server/src/contracts/product-analytics.ts
++++ b/apps/hosted/server/src/contracts/product-analytics.ts
+@@ -46,6 +46,7 @@ export type UsageEvent =
+   | "tool_execution_started"
+   | "tool_execution_completed"
+   | "tool_approval_requested"
++  | "tool_search_empty"
+   | "account_connected"
+   | "agent_connected"
+   | "app_deployed"
+diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
+index 825a95c75e..3cbc01263b 100644
+--- a/apps/hosted/server/src/implementation/mcp.ts
++++ b/apps/hosted/server/src/implementation/mcp.ts
+@@ -40,6 +40,7 @@ import { ConcurrentStatements, HostedExecutor } from "../contracts/executor.ts";
+ import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+ import { CurrentMcpGrant } from "../contracts/mcp.ts";
+ import { listTools, searchableTools, searchTools } from "./tools.ts";
++import { observeToolSearch } from "./product-analytics.ts";
+ import { listAppSkills, readAppSkill } from "./skills.ts";
+ 
+ /**
+@@ -243,7 +244,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
+       observe("listTools", grantRefusal(listTools(input, options)), "read"),
+     searchableTools: (input, options) =>
+       observe("searchableTools", grantRefusal(searchableTools(input, options)), "read"),
+-    searchTools: (input) => observe("searchTools", searchTools(input), "read"),
++    searchTools: (input) =>
++      observe("searchTools", observeToolSearch(input, searchTools(input)), "read"),
+     callTool: (input, options?: ToolInvocationOptions) =>
+       Effect.gen(function* () {
+         const owner = yield* currentOwner;
+diff --git a/apps/hosted/server/src/implementation/product-analytics.ts b/apps/hosted/server/src/implementation/product-analytics.ts
+index 8f48b28311..ef40bc03bf 100644
+--- a/apps/hosted/server/src/implementation/product-analytics.ts
++++ b/apps/hosted/server/src/implementation/product-analytics.ts
+@@ -9,6 +9,23 @@ import {
+   type UsageProperties,
+ } from "../contracts/product-analytics.ts";
+ 
++/** A first-page query with no matches, excluding browsing, pagination and lost listings. */
++export const observeToolSearch = <E, R>(
++  input: Parameters<Executor["tools"]["search"]>[0],
++  work: Effect.Effect<Effect.Success<ReturnType<Executor["tools"]["search"]>>, E, R>,
++) =>
++  work.pipe(
++    Effect.tap((page) =>
++      input.query.trim() !== "" &&
++      input.offset === 0 &&
++      page.items.length === 0 &&
++      page.remaining === 0 &&
++      page.missing.length === 0
++        ? recordUsage("tool_search_empty", { result_count: 0 })
++        : Effect.void,
++    ),
++  );
++
+ /** Instrument completed tool work while keeping approval pauses out of completion counts. */
+ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
+   properties: UsageProperties,
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index caed05bc63..f267c16f2d 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -777,6 +777,16 @@ export const scenarios = plan({
+       local: na("Hosted version API scenario"),
+     },
+   },
++  mcpSearchAnalytics: {
++    fixtures: "actors",
++    file: "mcp-search-analytics.spec.ts",
++    title: "MCP empty searches record anonymous events without browsing or pagination noise",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Shared hosted search boundary; self-host checks the stricter anonymous sink"),
++      local: na("Local has a separate analytics boundary"),
++    },
++  },
+   mcpDirectCalls: {
+     fixtures: "actors",
+     file: "mcp-direct-calls.spec.ts",
+diff --git a/e2e/tests/mcp-search-analytics.spec.ts b/e2e/tests/mcp-search-analytics.spec.ts
+new file mode 100644
+index 0000000000..0a02f83e12
+--- /dev/null
++++ b/e2e/tests/mcp-search-analytics.spec.ts
+@@ -0,0 +1,112 @@
++/** Empty MCP searches use the hosted analytics sink without exporting the query. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { awaitAnalytics } from "../support/instance-analytics.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { appsManifest } from "../support/apps-release.ts";
++
++const Page = Schema.Struct({ items: Schema.Array(Schema.Unknown) });
++const Completed = Schema.Struct({
++  status: Schema.Literal("completed"),
++  execution: Schema.Struct({ ok: Schema.Literal(true), value: Page }),
++});
++
++layer(HostedLive, { excludeTestServices: true })("MCP search analytics", (it) => {
++  it.effect(scenarios.mcpSearchAnalytics.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          mcp = yield* McpClient;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const key = yield* body(
++          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
++          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
++            name: "Search analytics",
++          }),
++        );
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
++            .pipe(Effect.orDie),
++        );
++        const app = yield* body(
++          App,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: "Search analytics",
++            files: [
++              appsManifest,
++              {
++                path: "index.ts",
++                content: `import { defineApp, query, object, router } from "apps";
++export default defineApp({}, async () => ({ tools: router({
++  echo: query({ input: object({}) }, async () => "echo"),
++}) }));`,
++              },
++            ],
++          }),
++        );
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const client = yield* mcp.connect(key.key, "search-analytics", {
++          organization: actors.organization.id,
++        });
++        const call = (name: string, args: Record<string, unknown>) =>
++          client.use(`MCP ${name}`, (client, signal) =>
++            client.callTool({ name, arguments: args }, undefined, { signal }),
++          );
++        const search = (args: Record<string, unknown>) =>
++          call("search", { namespace: app.slug, ...args }).pipe(
++            Effect.flatMap((result) => Schema.decodeUnknownEffect(Page)(result.structuredContent)),
++          );
++        // Browsing, matches and pagination are not new unmet searches.
++        expect((yield* search({})).items).toHaveLength(1);
++        expect((yield* search({ query: "   " })).items).toHaveLength(1);
++        expect((yield* search({ query: "echo" })).items).toHaveLength(1);
++        expect((yield* search({ query: "echo", offset: 50 })).items).toEqual([]);
++        const query = "PRIVATE_QUOKKAZEBRANOMATCH_CANARY";
++        expect((yield* search({ query })).items).toEqual([]);
++        const nested = yield* call("execute", {
++          code: `return await tools.search(${JSON.stringify({ namespace: app.slug, query })});`,
++        });
++        expect(
++          (yield* Schema.decodeUnknownEffect(Completed)(nested.structuredContent)).execution.value
++            .items,
++        ).toEqual([]);
++        // A later operation fences delivery of the searches, including the absence checks.
++        expect(
++          (yield* api.request(actors.owner, "POST", `${prefix}/feedback`, {
++            message: "Search analytics delivery fence",
++          })).status,
++        ).toBe(200);
++        const { text, events } = yield* awaitAnalytics((events) =>
++          events.some(
++            (event) =>
++              event.event === "product_operation_completed" && event.properties.area === "feedback",
++          ),
++        );
++        const empty = events.filter((event) => event.event === "tool_search_empty");
++        expect(empty).toHaveLength(2);
++        for (const event of empty)
++          expect(event.properties).toMatchObject({
++            source: "mcp",
++            client_name: "executor-e2e",
++            result_count: 0,
++          });
++        expect(text).not.toContain(query);
++        expect(text).not.toContain("QUOKKAZEBRANOMATCH");
++        expect(text).not.toContain(app.id);
++        expect(text).not.toContain(actors.organization.id);
++        yield* (yield* Evidence).json("empty-search-events.json", empty);
++      }).pipe(Effect.provide(McpClient.layer)),
++    ),
++  );
++});
+diff --git a/packages/telemetry/src/product-analytics.ts b/packages/telemetry/src/product-analytics.ts
+index c1afc16906..e1cd71ad30 100644
+--- a/packages/telemetry/src/product-analytics.ts
++++ b/packages/telemetry/src/product-analytics.ts
+@@ -106,6 +106,7 @@ export const analyticsEvents = {
+     resumed: Schema.optional(Schema.Boolean),
+     duration_ms: Schema.optional(Duration),
+   }),
++  tool_search_empty: Schema.Struct({ ...usage, result_count: Schema.Literal(0) }),
+   account_connected: Schema.Struct({
+     ...usage,
+     auth_kind: Schema.Literals(["credentials", "oauth"]),

@@ -36,6 +36,7 @@ class FakeComputerHome extends ComputerHome {
   rebound: { keyId: number; pool: string }[] = [];
   observations: { pool: string; keyId: number; since: string }[] = [];
   orphanKeyIds: number[] = [];
+  observedResult: string | null = modelObservedAt;
   mintFailure: Error | undefined;
   revokeGate: Promise<void> | undefined;
   onRevoke: (() => void) | undefined;
@@ -62,15 +63,17 @@ class FakeComputerHome extends ComputerHome {
   }
   override async observed(pool: string, keyId: number, since: string): Promise<string | null> {
     this.observations.push({ pool, keyId, since });
-    return modelObservedAt;
+    return this.observedResult;
   }
 }
 
 async function fixture() {
   const storage = new DurableMemory();
   const home = new FakeComputerHome();
+  const productEvents: [string, string][] = [];
   let time = Date.parse("2026-01-01T00:00:00.000Z");
-  const computers = new Computers({ storage, home, signingKey, origin: "https://setup.example", now: () => time });
+  const computers = new Computers({ storage, home, signingKey, origin: "https://setup.example", now: () => time,
+    onProductEvent: (event: string, accountId: string) => productEvents.push([event, accountId]) });
 
   async function context(poolClaims = claims, caller = poolClaims.owner) {
     const token = await signPoolToken(signingKey, poolClaims);
@@ -96,7 +99,7 @@ async function fixture() {
     return { intent, value: await response.json() as { computer: { id: string; state: string; createdAt: string }; token: string; expiresAt: string } };
   }
   return {
-    storage, home, computers, context, action, create,
+    storage, home, computers, context, action, create, productEvents,
     advance(ms: number) { time += ms; },
     now() { return time; },
   };
@@ -236,13 +239,60 @@ test("model and tools evidence are recorded independently", async () => {
   assert.ok(afterTools.firstToolCallAt);
   assert.equal(afterTools.firstModelRequestAt, null);
   assert.equal(f.home.observations.length, 0);
+  assert.deepEqual(f.productEvents, []);
 
   const listed = await f.action("computers", owner, intent);
   assert.equal(listed.status, 200);
   const computers = (await listed.json() as { computers: { firstModelRequestAt: string | null; firstToolCallAt: string | null }[] }).computers;
   assert.equal(computers[0]!.firstModelRequestAt, modelObservedAt);
   assert.equal(computers[0]!.firstToolCallAt, afterTools.firstToolCallAt);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
   assert.deepEqual(f.home.observations, [{ pool: claims.pool, keyId: 73, since: "2026-01-01T00:00:00.000Z" }]);
+
+  await f.action("observed", owner, undefined, { tokenHash: toolHash });
+  await f.action("computers", owner, intent);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.equal(f.home.observations.length, 1);
+});
+
+test("pending model use is reconciled without opening the computer list and retries delayed Home usage", async () => {
+  const f = await fixture();
+  const { value: issued } = await f.create();
+  assert.equal((await claim(f, issued.token)).status, 200);
+  await f.action("observed", owner, undefined, { tokenHash: await digest(toolsToken) });
+  f.home.observedResult = null;
+
+  await f.computers.observeUsage();
+  assert.deepEqual(f.productEvents, []);
+  f.home.observedResult = modelObservedAt;
+  await f.computers.observeUsage();
+
+  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.equal(f.home.observations.length, 2);
+  await f.computers.observeUsage();
+  assert.equal(f.home.observations.length, 2);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+});
+
+test("usage reconciliation bounds each Home scan to pending active computers", async () => {
+  const f = await fixture();
+  f.home.observedResult = null;
+  const registry = Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
+    const id = `computer-${index}`;
+    return [id, {
+      id, name: "Fixture", user: owner, pool: claims.pool, createdAt: new Date(index).toISOString(),
+      boundAt: "2026-01-01T00:00:00.000Z", state: "active", keyId: index + 1,
+      toolsKeyId: `tools-key-${index}`, toolsHash: `tools-hash-${index}`,
+      firstModelRequestAt: null, firstToolCallAt: null, revokedAt: null,
+    }];
+  }));
+  await f.storage.put("computer-registry-v1", registry);
+
+  await f.computers.observeUsage();
+
+  assert.equal(f.home.observations.length, 10);
+  assert.equal(new Set(f.home.observations.map((row) => row.keyId)).size, 10);
+  assert.deepEqual(f.productEvents, []);
 });
 
 test("revoke durably marks revoking and waits for model-key deletion before returning toolsKeyId", async () => {
@@ -290,6 +340,12 @@ test("rebind changes the pool on the existing key and clears evidence from the p
   const before = (await f.computers.list(owner, claims.pool))[0]!;
   assert.equal(before.firstModelRequestAt, modelObservedAt);
   assert.ok(before.firstToolCallAt);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+
+  // Simulate a pre-analytics durable row: it has current binding evidence but no historical marker.
+  const legacy = (await f.storage.snapshot<Record<string, { firstModelRequestEverAt?: string | null }>>("computer-registry-v1"))!;
+  delete legacy[issued.computer.id]!.firstModelRequestEverAt;
+  await f.storage.put("computer-registry-v1", legacy);
 
   const destination = { ...claims, pool: "pool-b" };
   const target = await f.context(destination, owner);
@@ -302,9 +358,14 @@ test("rebind changes the pool on the existing key and clears evidence from the p
   assert.equal(rebound.createdAt, issued.computer.createdAt);
   assert.equal(rebound.firstModelRequestAt, null);
   assert.equal(rebound.firstToolCallAt, before.firstToolCallAt);
+  const historical = (await f.storage.snapshot<Record<string, { firstModelRequestEverAt?: string | null }>>("computer-registry-v1"))![issued.computer.id]!;
+  assert.equal(historical.firstModelRequestEverAt, modelObservedAt);
   assert.deepEqual(f.home.rebound, [{ keyId: 73, pool: "pool-b" }]);
   assert.equal(f.home.mints.length, 1);
   assert.ok(!(await f.storage.serialized()).includes(modelKey));
+
+  await f.computers.list(owner, destination.pool);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
 });
 
 test("failed mint remains recoverable by the Home display tag before tools access is returned", async () => {
