@@ -1,8 +1,8 @@
-import { mergeFeed, type Addition, type Feed } from "./feed.ts";
+import { mergeFeed, type FeedAddition, type Feed } from "./feed.ts";
 import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
-import { zendeskAddition } from "./zendesk/source.ts";
+import { zendeskAddition, unavailableZendeskAddition } from "./zendesk/source.ts";
 import { isZendeskSubdomain } from "./zendesk/tenant.ts";
 
 const headers = {
@@ -18,11 +18,12 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
 function configuredAdditions(
   ready: ConnectorAvailability,
   zendeskSubdomain?: string,
-): readonly Addition[] {
+): readonly FeedAddition[] {
   const additions = [atlassianAddition(ready.atlassian === true)];
-  if (ready.zendesk && zendeskSubdomain !== undefined && isZendeskSubdomain(zendeskSubdomain))
-    additions.push(zendeskAddition(zendeskSubdomain));
-  return additions;
+  const zendesk = ready.zendesk && zendeskSubdomain !== undefined && isZendeskSubdomain(zendeskSubdomain)
+    ? zendeskAddition(zendeskSubdomain)
+    : unavailableZendeskAddition();
+  return [...additions, zendesk];
 }
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
@@ -40,7 +41,13 @@ export async function handleCatalog(
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
-  if (added) return new Response(request.method === "HEAD" ? null : JSON.stringify(added.source), { headers });
+  if (added) {
+    if (!added.source)
+      return new Response(request.method === "HEAD" ? null : JSON.stringify({ error: `${added.entry.name} is not set up yet.` }), {
+        status: 503, headers: { ...headers, "Cache-Control": "no-store" },
+      });
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(added.source), { headers });
+  }
   try {
     const response = await fetcher(new URL(relative, catalog.official), {
       redirect: "manual", signal: AbortSignal.timeout(15_000),
