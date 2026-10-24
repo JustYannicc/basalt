@@ -3,6 +3,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import * as Cloudflare from "alchemy/Cloudflare";
+import type { WorkflowRunId, WorkflowRuntime } from "@executor-js/sdk/core";
 import { Cause, ConfigProvider, Effect, Exit, Redacted, Schema } from "effect";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -20,6 +21,16 @@ const [workflow, workflowContracts, workflowErrors] = await Promise.all([
 const { encryptedWorkflowResult, encryptedWorkflowTask, workflowEncryptionKey, workflowResults } =
   workflow;
 const { WorkflowFailure } = workflowContracts;
+const runId = (value: string): WorkflowRunId => workflowContracts.WorkflowRunId.make(value);
+const loadRuntime = async (): Promise<
+  Effect.Effect<WorkflowRuntime, never, Cloudflare.WorkerEnvironment>
+> => {
+  const module = await import(
+    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
+      .href
+  );
+  return module.cloudWorkflows;
+};
 const { decodeWorkflowFailure, workflowFailureMessage } = workflowErrors;
 
 const firstKey = "31".repeat(32);
@@ -479,10 +490,7 @@ test("same-name parallel checkpoints cannot replay another branch's result", asy
 });
 
 test("a newly created encrypted run rejects a plaintext replacement output", async () => {
-  const { cloudWorkflows } = await import(
-    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
-      .href
-  );
+  const cloudWorkflows = await loadRuntime();
   const run = "wfr_plaintext_replacement";
   const instances = new Map<string, unknown>();
   let created: { id?: string; params?: unknown } | undefined;
@@ -496,8 +504,8 @@ test("a newly created encrypted run rejects a plaintext replacement output", asy
   };
   const program = Effect.gen(function* () {
     const runtime = yield* cloudWorkflows;
-    yield* runtime.start(run as never);
-    return yield* runtime.status(run as never);
+    yield* runtime.start(runId(run));
+    return yield* runtime.status(runId(run));
   }).pipe(
     Effect.provideService(
       Cloudflare.WorkerEnvironment,
@@ -524,10 +532,7 @@ test("a newly created encrypted run rejects a plaintext replacement output", asy
 });
 
 test("status decodes new ciphertext, preserves old JSON, and terminates the actual native instance", async () => {
-  const { cloudWorkflows } = await import(
-    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
-      .href
-  );
+  const cloudWorkflows = await loadRuntime();
   const run = "wfr_new_ciphertext";
   const oldRun = "wfr_old_plaintext";
   const instances = new Map<string, unknown>([
@@ -551,9 +556,9 @@ test("status decodes new ciphertext, preserves old JSON, and terminates the actu
   };
   const program = Effect.gen(function* () {
     const runtime = yield* cloudWorkflows;
-    yield* runtime.start(run as never);
+    yield* runtime.start(runId(run));
     assert.ok(created);
-    yield* runtime.terminate(run as never);
+    yield* runtime.terminate(runId(run));
     assert.equal(terminated, created);
     const results = yield* makeResults(run);
     instances.set(created, {
@@ -561,11 +566,11 @@ test("status decodes new ciphertext, preserves old JSON, and terminates the actu
       output: yield* results.sealWorkflowOutput({ secure: true }),
     });
     const freshRuntime = yield* cloudWorkflows;
-    assert.deepEqual(yield* freshRuntime.status(run as never), {
+    assert.deepEqual(yield* freshRuntime.status(runId(run)), {
       status: "complete",
       output: { secure: true },
     });
-    assert.deepEqual(yield* freshRuntime.status(oldRun as never), {
+    assert.deepEqual(yield* freshRuntime.status(runId(oldRun)), {
       status: "complete",
       output: { legacy: true },
     });
@@ -579,10 +584,7 @@ test("status decodes new ciphertext, preserves old JSON, and terminates the actu
 });
 
 test("the disabled cutover gate shares the legacy native identity with old dispatchers", async () => {
-  const { cloudWorkflows } = await import(
-    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
-      .href
-  );
+  const cloudWorkflows = await loadRuntime();
   const run = "wfr_cutover_race";
   const instances = new Map<string, { status: string }>();
   const created: { id: string; params: unknown }[] = [];
@@ -597,7 +599,7 @@ test("the disabled cutover gate shares the legacy native identity with old dispa
   };
   const program = Effect.gen(function* () {
     const current = yield* cloudWorkflows;
-    yield* current.start(run as never);
+    yield* current.start(runId(run));
     // The base runtime checks and creates the public run ID directly.
     if (
       (yield* Effect.promise(async () => await (await native.get(run)).status())).status ===
