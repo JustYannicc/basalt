@@ -104,11 +104,13 @@ async function usage(request: Request, env: SetupEnv, target: Owned, intent: str
   const rows = Array.isArray(result.members) ? result.members.map(record) : [];
   const byUser = new Map(rows.filter((row) => text(row.member, 512)).map((row) => [row.member as string, row]));
   return {
+    from: result.from, to: result.to,
     members: Object.fromEntries(current.members.flatMap((member) => {
       const row = byUser.get(member.user);
       if (!row) return [];
-      const { member: _member, models: _models, days: _days, cap, ...slice } = row;
-      return [[member.id, { usage: slice, cap: member.owner ? null : cap ?? null }]];
+      const { member: _member, models, days, cap, ...slice } = row;
+      return [[member.id, { usage: slice, models: Array.isArray(models) ? models : [], days: Array.isArray(days) ? days : [],
+        cap: member.owner ? null : cap ?? null }]];
     })),
   };
 }

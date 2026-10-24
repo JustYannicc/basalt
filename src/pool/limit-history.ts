@@ -58,17 +58,24 @@ export class LimitHistory {
         const old = compact(history.providers[name] ?? { hours: [], previous: {}, lastAt: -Infinity });
         if (at <= old.lastAt) continue;
         const previous: Record<string, boolean> = {};
-        let limited = 0, hits = 0, remaining = 0, known = true;
+        let limited = 0, hits = 0, known = true;
+        const capacity = new Map<number, { remaining: number; accounts: number }>();
         for (const account of rows) {
           const id = await digest(account.id);
-          const hit = account.state === "unavailable" || account.windows.some((window) => window.remainingRatio !== null && window.remainingRatio <= 0.01);
+          // Home v1.1.6 cliproxy/auth/manager.go:1849-1895 also marks refresh failures unavailable.
+          const hit = account.windows.some((window) => window.remainingRatio !== null && window.remainingRatio <= 0.01);
           previous[id] = hit;
           if (hit) { limited++; if (!old.previous[id]) hits++; }
-          const longest = [...account.windows].sort((a, b) => (b.windowSeconds ?? -1) - (a.windowSeconds ?? -1)
-            || (a.remainingRatio ?? -1) - (b.remainingRatio ?? -1))[0];
-          const ratio = longest?.remainingRatio;
-          if (account.state !== "active" || ratio === null || ratio === undefined || account.windows.some((window) => window.windowSeconds === null)) known = false;
-          else remaining += ratio;
+          if (account.state !== "active" || !account.windows.length) known = false;
+          const windows = new Set<number>();
+          for (const window of account.windows) {
+            const { windowSeconds: seconds, remainingRatio: ratio } = window;
+            if (seconds === null || ratio === null || windows.has(seconds)) { known = false; continue; }
+            windows.add(seconds);
+            const value = capacity.get(seconds) ?? { remaining: 0, accounts: 0 };
+            value.remaining += ratio; value.accounts++;
+            capacity.set(seconds, value);
+          }
         }
         const hours = old.hours.filter((hour) => hour[0] + hourMs > at - week);
         const first = hours[0];
@@ -78,7 +85,8 @@ export class LimitHistory {
           first[1] &= mask; first[2] &= mask; first[3] &= mask;
           first[4] = first[4].filter(([slot]) => (mask & (1 << slot)) !== 0);
         }
-        append(hours, { at, accounts: rows.length, limited, hits, spare: known && rows.length >= 2 && remaining > 1 });
+        append(hours, { at, accounts: rows.length, limited, hits, spare: known && rows.length >= 2 && capacity.size > 0
+          && [...capacity.values()].every((window) => window.accounts === rows.length && window.remaining >= 1) });
         history.providers[name] = { hours, previous, lastAt: at };
         changed = true;
       }

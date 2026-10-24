@@ -152,8 +152,11 @@ test("owner sees every audience member including zero usage, each cap and pool-o
   assert.deepEqual(result.members!.map((row) => row.member), [owner, a, b, idle]);
   for (const [person, n, requests, weekly] of [[owner, 1, 1, null], [a, 42, 3, 5], [b, 84, 3, 9], [idle, 0, 0, null]] as const) {
     const row = result.members!.find((row) => row.member === person)!;
-    const { member: _member, cap, ...amount } = row;
+    const { member: _member, cap, models, days, ...amount } = row;
     assert.deepEqual(amount, slice(n, requests)); assert.equal(cap?.weekly ?? null, weekly);
+    const own = person === owner ? null : await f.summary(person);
+    assert.deepEqual(models, person === owner ? [{ provider: "fixture", model: "model-x", ...slice(1, 1) }] : own!.models);
+    assert.deepEqual(days, person === owner ? [{ day: "2026-10-23", ...slice(1, 1), models }] : own!.days);
   }
   assert.deepEqual(result.accountsNeeded, [{ provider: "fixture", advice: "unknown", accounts: 1, limitHits: 0, exhausted: 0, hoursRead: 0 }]);
   assert.deepEqual(f.audienceCalls, ["pool-a"]);

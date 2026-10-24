@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ComputerResult } from "../../apps/pool/ui/computer-types.ts";
 import { Button, Problem } from "../../apps/pool/ui/controls.tsx";
 import { CopyLink, InvitationRow, InviteForm } from "./invitations.tsx";
-import { CapControl, MemberUsage, type ShareUsage } from "./member-usage.tsx";
+import { CapControl, MemberUsage, PersonDetails, type PersonUsage, type ShareUsage } from "./member-usage.tsx";
 
 // Who can use a pool, inviting more people and removing them. Structural like the computers API:
 // the page never sees an organization's internals, only people and invitations.
@@ -177,6 +177,7 @@ export function Members({ api }: { api: MembersApi }) {
                   key={member.id}
                   member={member}
                   usage={usage?.members[member.id]}
+                  range={usage}
                   onRemove={() => act(() => api.remove(member.id))}
                   onCap={api.setCap && !member.owner ? async (weekly) => {
                     const result = await api.setCap!(member.id, weekly);
@@ -234,17 +235,21 @@ function Person({ title, detail }: { title: string; detail: string }) {
 function MemberRow({
   member,
   usage,
+  range,
   onRemove,
   onCap,
 }: {
   member: PoolMember;
-  usage?: ShareUsage["members"][string];
+  usage?: PersonUsage;
+  range?: Pick<ShareUsage, "from" | "to">;
   onRemove: () => Promise<boolean>;
   onCap?: (weekly: number | null) => Promise<string | undefined>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [open, setOpen] = useState(false);
   const title = member.name.trim() || member.email || "Unnamed member";
+  const detailsId = `usage-${member.id}`;
   const remove = async () => {
     setRemoving(true);
     const removed = await onRemove();
@@ -255,7 +260,15 @@ function MemberRow({
     <li className="group grid gap-2 border-b border-border px-1 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-6">
       <div className="grid min-w-0 gap-1">
         <Person title={title} detail={member.name.trim() ? member.email : ""} />
-        <MemberUsage usage={usage?.usage} />
+        <span className="flex flex-wrap items-baseline gap-x-3">
+          <MemberUsage usage={usage?.usage} />
+          {usage && range && usage.usage.requests > 0 && (
+            <Button size="inline" variant="link" className="text-xs text-muted-foreground" aria-expanded={open}
+              aria-controls={detailsId} onClick={() => setOpen(!open)}>
+              {open ? "Hide models and days" : "Models and days"}
+            </Button>
+          )}
+        </span>
         {onCap && usage && <CapControl title={title} cap={usage.cap} onChange={onCap} />}
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:justify-end">
@@ -288,6 +301,11 @@ function MemberRow({
           </>
         )}
       </div>
+      {open && usage && range && (
+        <div id={detailsId} className="sm:col-span-2">
+          <PersonDetails person={usage} range={range} title={title} />
+        </div>
+      )}
     </li>
   );
 }

@@ -6,7 +6,7 @@ import type { LimitHistory } from "./limit-history.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "./usage-storage.ts";
 
 const dayMs = 86_400_000;
-const overlap = 10 * 60_000;
+const lookback = 2 * 60 * 60 * 1000;
 const prefix = "usage-v1:";
 const cursorKey = `${prefix}cursor`;
 const daysKey = `${prefix}days`;
@@ -16,8 +16,8 @@ const poolKey = (pool: string, day: string) => `${prefix}pool:${encodeURICompone
 const seenKey = (day: string) => `${prefix}seen:${day}`;
 interface Bucket extends ModelUsage { person: string }
 interface Receipts { ids: Record<string, number>; pools: string[] }
-interface Scan { from: number; to: number; offset: number; processed?: number }
-interface Cursor { highWater: number; readAt: string | null; scan?: Scan }
+interface Scan { from: number; to: number; offset: number }
+interface Cursor { version: 2 | 3; pools: string[]; readAt: string | null; recent?: Scan; scan?: Scan }
 interface Options { now?: () => Date; maxPages?: number; history?: Pick<LimitHistory, "advice"> }
 export interface SummaryOptions {
   owner: string; caller: string; members: readonly string[]; days: number; now: Date;
@@ -87,20 +87,28 @@ export class UsageLedger {
       const at = now.getTime();
       const cutoff = dayOf(at - 30 * dayMs);
       const state = await this.storage.getMany<unknown>([daysKey, cursorKey]);
-      const days = state.get(daysKey) as string[] | undefined ?? [];
-      const expired = days.filter((day) => day < cutoff);
-      const deletes: string[] = [];
-      for (const day of expired) {
-        const seen = await this.storage.get<Receipts>(seenKey(day));
-        deletes.push(seenKey(day), ...(seen?.pools ?? []).map((pool) => poolKey(pool, day)));
-      }
-      const retained = days.filter((day) => day >= cutoff);
-      if (expired.length) await this.storage.commit(new Map([[daysKey, retained]]), deletes, pendingKey);
-      const cursor = state.get(cursorKey) as Cursor | undefined ?? { highWater: Date.parse(cutoff), readAt: null };
+      let days = state.get(daysKey) as string[] | undefined ?? [];
+      let cursor = state.get(cursorKey) as Cursor | undefined;
+      // Old cursors pruned dedupe ids after ten minutes. Rebuild that cache once,
+      // atomically, rather than double count its buckets during reconciliation.
+      const legacy = cursor && cursor.version !== 2 && cursor.version !== 3;
+      const expired = days.filter((day) => legacy || day < cutoff);
+      const receipts = await this.storage.getMany<Receipts>(expired.map(seenKey));
+      const deletes = expired.flatMap((day) => [seenKey(day), ...(receipts.get(seenKey(day))?.pools ?? []).map((pool) => poolKey(pool, day))]);
+      days = days.filter((day) => !expired.includes(day));
+      cursor = legacy || !cursor ? { version: 3, pools: [...new Set([...receipts.values()].flatMap((value) => value.pools))], readAt: null } : cursor;
+      if (expired.length || legacy) await this.storage.commit(new Map<string, unknown>([[daysKey, days], [cursorKey, cursor]]), deletes, pendingKey);
+      const retained = days;
       let savedCursor = JSON.stringify(cursor);
       let savedDays = JSON.stringify(retained);
+      // v2 receipts are durable, but its readAt also advanced on partial sweeps.
+      if (cursor.version === 2) { cursor.version = 3; cursor.readAt = null; }
       if (cursor.scan && cursor.scan.to <= Date.parse(cutoff)) delete cursor.scan;
-      cursor.scan ??= { from: Math.max(Date.parse(cutoff), cursor.highWater - overlap), to: at, offset: 0 };
+      if (cursor.recent && cursor.recent.to <= Date.parse(cutoff)) delete cursor.recent;
+      // Node v8.0.40 runtime/executor/helps/usage_helpers.go:133,688 stamps request start.
+      // Two hours bounds the fast read for long requests landing late; it cannot
+      // guarantee catching every duration. Leftover pages sweep all retained days.
+      cursor.recent ??= { from: Math.max(Date.parse(cutoff), (cursor.readAt ? Date.parse(cursor.readAt) : at) - lookback), to: at, offset: 0 };
       const membership = await this.home.allMembership();
       const groups = new Map(membership.groups.filter((group) => group.channel_name.startsWith(poolGroupPrefix))
         .map((group) => [group.id, group.channel_name.slice(poolGroupPrefix.length)]));
@@ -111,12 +119,20 @@ export class UsageLedger {
         if (pools.has(member.auth_id) && pools.get(member.auth_id) !== pool) return unavailable();
         pools.set(member.auth_id, pool);
       }
+      const tags = new Map<string, string>();
+      for (const pool of new Set([...groups.values(), ...cursor.pools])) {
+        const tag = (await digest(pool)).slice(0, 16);
+        if (tags.has(tag) && tags.get(tag) !== pool) return unavailable();
+        tags.set(tag, pool);
+      }
       // Home v1.1.6 management/usage_observability.go:28-48; api.md:3060.
       const capabilities = await this.home.data("/capabilities");
       const canonical = object(capabilities.capabilities) && capabilities.capabilities.usage_token_breakdown_v2 === true;
       let pages = 0;
-      while (cursor.scan && pages < (this.options.maxPages ?? 5)) {
-        const scan = cursor.scan;
+      let sweepComplete = false;
+      while ((cursor.recent || !sweepComplete) && pages < (this.options.maxPages ?? 5)) {
+        const kind = cursor.recent ? "recent" : "scan";
+        const scan = cursor[kind] ??= { from: Date.parse(cutoff), to: at, offset: 0 };
         // Home v1.1.6 management/usage_observability.go:129-135,575-597;
         // cluster/usage_observability.go:2927-2928 orders ties by id.
         const params = new URLSearchParams({ sort: "timestamp_asc", from: new Date(scan.from).toISOString(), to: new Date(scan.to).toISOString(), limit: "200", offset: String(scan.offset) });
@@ -127,55 +143,61 @@ export class UsageLedger {
         pages++;
         const writes = new Map<string, unknown>();
         const before = new Map<string, string>();
-        const frontier = scan.processed ?? cursor.highWater;
-        const pruneFrom = dayOf(frontier - overlap), pruneTo = dayOf(frontier);
-        const legacyScan = scan.processed === undefined && scan.offset > 0;
-        const load = async <T>(key: string, fallback: T): Promise<T> => {
-          if (!writes.has(key)) {
-            const value = await this.storage.get<T>(key);
-            before.set(key, JSON.stringify(value ?? fallback));
-            writes.set(key, value ?? fallback);
-          }
-          return writes.get(key) as T;
-        };
-        for (const row of items) {
-          // Home v1.1.6 management/usage_observability.go:1590-1592,1604-1605,
-          // 1630-1638,1644-1647. Keep only digests, names and numeric usage.
+        const prepared = await Promise.all(items.map(async (row) => {
           const id = text(row.id), timestamp = text(row.timestamp);
           const time = timestamp ? Date.parse(timestamp) : NaN;
           if (!id || !Number.isFinite(time) || time < scan.from || time >= scan.to) return unavailable();
-          scan.processed = Math.max(scan.processed ?? scan.from, time);
-          const day = dayOf(time);
-          if (day < cutoff) continue;
-          const receipts = await load<Receipts>(seenKey(day), { ids: {}, pools: [] });
-          const hash = await digest(id);
+          return { row, time, day: dayOf(time), hash: await digest(id) };
+        }));
+        const stored = await this.storage.getMany<unknown>([...new Set(prepared.map(({ day }) => seenKey(day)))]);
+        const bucketKeys = new Set<string>();
+        // Home v1.1.6 cluster/usage_observability.go:2408-2409,2430-2435:
+        // charge user wins; without a charge the username follows the current key.
+        const attributed = prepared.map((item) => {
+          const { row, day, hash } = item;
+          const credential = object(row.credential) ? text(row.credential.credential_id) : null;
+          const user = parseBackendUserName(object(row.client) ? row.client.username : undefined);
+          const pool = (credential ? pools.get(credential) : undefined) ?? (user ? tags.get(user.pool) : undefined);
+          const seen = stored.get(seenKey(day)) as Receipts | undefined;
+          if (pool !== undefined && day >= cutoff && !Object.hasOwn(seen?.ids ?? {}, hash)) bucketKeys.add(poolKey(pool, day));
+          return { ...item, pool, user };
+        });
+        for (const [key, value] of await this.storage.getMany<unknown>([...bucketKeys])) stored.set(key, value);
+        const load = <T>(key: string, fallback: T): T => {
+          if (!writes.has(key)) {
+            const value = stored.get(key) ?? fallback;
+            before.set(key, JSON.stringify(value)); writes.set(key, value);
+          }
+          return writes.get(key) as T;
+        };
+        for (const { row, time, day, hash, pool, user } of attributed) {
+          if (day < cutoff || pool === undefined) continue;
+          const receipts = load<Receipts>(seenKey(day), { ids: {}, pools: [] });
           if (Object.hasOwn(receipts.ids, hash)) continue;
           receipts.ids[hash] = time;
           if (!retained.includes(day)) retained.push(day);
-          const credential = object(row.credential) ? text(row.credential.credential_id) : null;
-          const pool = credential ? pools.get(credential) : undefined;
-          if (pool === undefined) continue;
+          if (!cursor.pools.includes(pool)) cursor.pools.push(pool);
           if (!receipts.pools.includes(pool)) receipts.pools.push(pool);
-          const buckets = await load<Bucket[]>(poolKey(pool, day), []);
-          const person = parseBackendUserName(object(row.client) ? row.client.username : undefined)?.person ?? "other";
+          const buckets: Bucket[] = load<Bucket[]>(poolKey(pool, day), []);
+          const person = user?.person ?? "other";
           const model = text(row.model) ?? "", provider = text(row.provider) ?? "";
           const index = buckets.findIndex((bucket) => bucket.person === person && bucket.model === model && bucket.provider === provider);
           const amount = object(row.billing) ? row.billing.amount : null;
           // api.md:3103 calls this credits. The public contract currently calls it USD.
-          const priced = typeof amount === "number" && Number.isFinite(amount);
+          // Home v1.1.6 cluster/billing.go:1452-1456; management/usage_observability.go:1644-1650.
+          const priced = typeof amount === "number" && Number.isFinite(amount)
+            && (!object(row.billing) || row.billing.matched_price_rule !== "default:zero");
           const value = { person, model, provider, ...add(buckets[index] ?? zero(), { requests: 1, tokens: recordTokens(row, canonical), cost: priced ? amount : 0, unpriced: priced ? 0 : 1 }) };
           if (index < 0) buckets.push(value); else buckets[index] = value;
         }
         scan.offset += items.length;
         const complete = scan.offset >= page.total;
-        const receiptCutoff = (complete ? scan.to : scan.processed ?? scan.from) - overlap;
-        // Ascending pages never revisit older timestamps; keep only the overlap's ids.
-        for (const day of retained.filter((day) => legacyScan || writes.has(seenKey(day)) || (day >= pruneFrom && day <= pruneTo))) {
-          const receipts = await load<Receipts>(seenKey(day), { ids: {}, pools: [] });
-          receipts.ids = Object.fromEntries(Object.entries(receipts.ids).filter(([, time]) => time >= receiptCutoff));
+        // An insertion before the saved offset is caught on the next full sweep.
+        if (complete) {
+          if (kind === "recent") cursor.readAt = new Date(scan.to).toISOString();
+          else sweepComplete = true;
+          delete cursor[kind];
         }
-        if (complete) { cursor.highWater = scan.to; delete cursor.scan; }
-        if (complete || pages === (this.options.maxPages ?? 5)) cursor.readAt = now.toISOString();
         for (const [key, value] of writes) if (JSON.stringify(value) === before.get(key)) writes.delete(key);
         const nextCursor = JSON.stringify(cursor), nextDays = JSON.stringify(retained.sort());
         if (nextCursor !== savedCursor) writes.set(cursorKey, cursor);
@@ -183,7 +205,7 @@ export class UsageLedger {
         await this.storage.commit(writes, [], pendingKey);
         savedCursor = nextCursor; savedDays = nextDays;
       }
-      return { complete: !cursor.scan, pages };
+      return { complete: !cursor.recent && sweepComplete, pages };
     });
   }
   summary(pool: string, options: SummaryOptions): Promise<UsageSummary> {
@@ -207,8 +229,8 @@ export class UsageLedger {
       if (caller !== owner) return result;
       const members = await Promise.all([...new Set(options.members)].map(async (member) => {
         const person = await digest(member);
-        const own = buckets.filter((bucket) => bucket.person === person).reduce(add, zero());
-        return { member, ...rounded(own), cap: cap(member) };
+        const own = slices(buckets.filter((bucket) => bucket.person === person));
+        return { member, ...own.total, models: own.models, days: own.days, cap: cap(member) };
       }));
       return { ...result, members, accountsNeeded: await this.options.history?.advice(pool, now) ?? [] };
     });

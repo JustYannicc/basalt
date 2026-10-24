@@ -1,5 +1,8 @@
 import { useId, useState } from "react";
-import { isWeeklyCap, type Cap, type UsageSlice } from "../../apps/pool/contract.ts";
+import { isWeeklyCap, type Cap, type DayUsage, type ModelUsage, type UsageSlice } from "../../apps/pool/contract.ts";
+import { Chart, MetricSwitch, Models } from "../../apps/pool/ui/usage-view.tsx";
+import type { Metric } from "../../apps/pool/ui/usage-format.ts";
+import providers from "../pool/providers.json" with { type: "json" };
 import { Button } from "../../apps/pool/ui/controls.tsx";
 import { cost, tokens } from "../../apps/pool/ui/usage-format.ts";
 
@@ -7,7 +10,29 @@ import { cost, tokens } from "../../apps/pool/ui/usage-format.ts";
 
 /** GET /share/v1/usage: each person's last 30 days on this pool, by the share page's member id. */
 export interface ShareUsage {
-  readonly members: Readonly<Record<string, { readonly usage: UsageSlice; readonly cap: Cap | null }>>;
+  /** The 30 days covered, ISO start inclusive and end exclusive. */
+  readonly from: string;
+  readonly to: string;
+  readonly members: Readonly<Record<string, PersonUsage>>;
+}
+export interface PersonUsage {
+  readonly usage: UsageSlice;
+  readonly models: readonly ModelUsage[];
+  readonly days: readonly DayUsage[];
+  readonly cap: Cap | null;
+}
+
+/** One person's chart and models, under their row. */
+export function PersonDetails({ person, range, title }: { person: PersonUsage; range: Pick<ShareUsage, "from" | "to">; title: string }) {
+  const [metric, setMetric] = useState<Metric>("tokens");
+  const breakdown = { ...range, total: person.usage, models: person.models, days: person.days };
+  return (
+    <div className="grid gap-4 pt-3" aria-label={`Usage of ${title}`} role="group">
+      <MetricSwitch metric={metric} onChange={setMetric} />
+      <Chart summary={breakdown} metric={metric} />
+      <Models summary={breakdown} metric={metric} providers={providers} />
+    </div>
+  );
 }
 
 export function MemberUsage({ usage }: { usage: UsageSlice | undefined }) {

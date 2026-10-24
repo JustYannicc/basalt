@@ -55,6 +55,10 @@ export class SharingFixture {
     this.calls.push(key);
     const pool = key === "Bearer fixture-p1" ? "P1" : key === "Bearer fixture-p2" ? "P2" : undefined;
     if (!pool) { response.writeHead(401); response.end("unknown fixture key"); return; }
+    if (raw.includes("fail-request")) {
+      response.writeHead(400, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "synthetic failure", type: "invalid_request_error" } })); return;
+    }
     const slow = raw.includes("slow-stream");
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const chunk = (content: string, finish: string | null = null) => response.write(`data: ${JSON.stringify({
@@ -145,11 +149,11 @@ export class SharingFixture {
   }
   async keys() { return (await this.data<{ items: HomeKey[] }>("/access/api-keys")).items; }
   async users() { return (await this.data<{ users: HomeUser[] }>("/users")).users; }
-  async model(key: string, session: string, slow = false, model = "fixture-model"): Promise<Response> {
+  async model(key: string, session: string, slow: boolean | "fail" = false, model = "fixture-model"): Promise<Response> {
     return fetch(`${this.node}/v1/chat/completions`, {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Session-ID": session },
       body: JSON.stringify({ model, stream: true, max_tokens: 32, prompt_cache_key: session,
-        messages: [{ role: "user", content: slow ? "slow-stream" : "Reply with the pool name" }] }),
+        messages: [{ role: "user", content: slow === "fail" ? "fail-request" : slow ? "slow-stream" : "Reply with the pool name" }] }),
       signal: AbortSignal.timeout(20_000),
     });
   }

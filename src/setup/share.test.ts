@@ -185,10 +185,11 @@ test("cancelling an invitation; writes need this origin and JSON; bearer request
 
 const cap = { weekly: 5, used: 1, remaining: 4, resetAt: "2026-10-26T00:00:00Z" };
 const amount = { requests: 1, tokens: { input: 10, cacheRead: 2, cacheWrite: 0, output: 3, total: 15 }, cost: 0.02, unpriced: 0 };
+const model = { provider: "claude", model: "fixture-model", ...amount };
 function usagePool({ path }: Call) {
-  if (path.endsWith("/usage")) return json({ scope: "pool", members: [
+  if (path.endsWith("/usage")) return json({ scope: "pool", from: "2026-09-25T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", members: [
     { member: "owner-1", ...amount, cap, models: [], days: [] },
-    { member: "user-2", ...amount, cap, models: [], days: [] },
+    { member: "user-2", ...amount, cap, models: [model], days: [] },
     { member: "foreign-user", ...amount, cap, models: [], days: [] },
   ] });
   if (path.endsWith("/cap")) return json(null);
@@ -200,8 +201,8 @@ test("usage maps tools-service users to member ids, drops foreign rows and suppr
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
   const value = await response.json();
-  assert.deepEqual(value, { members: {
-    "member-owner": { usage: amount, cap: null }, "member-2": { usage: amount, cap },
+  assert.deepEqual(value, { from: "2026-09-25T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", members: {
+    "member-owner": { usage: amount, models: [], days: [], cap: null }, "member-2": { usage: amount, models: [model], days: [], cap },
   } });
   for (const id of ["owner-1", "user-2", "foreign-user"]) assert.equal(JSON.stringify(value).includes(id), false);
   const call = f.calls.find((call) => call.path.endsWith("/usage"))!;

@@ -108,13 +108,13 @@ export function Usage({
   );
 }
 
-function MetricSwitch({ metric, onChange }: { metric: Metric; onChange: (metric: Metric) => void }) {
+export function MetricSwitch({ metric, onChange }: { metric: Metric; onChange: (metric: Metric) => void }) {
   const options: { id: Metric; label: string }[] = [
     { id: "tokens", label: "Tokens" },
     { id: "cost", label: "Cost" },
   ];
   return (
-    <div role="radiogroup" aria-label="Show" className="inline-flex h-8 rounded-md border border-border p-0.5 max-[740px]:h-11">
+    <div role="radiogroup" aria-label="Show" className="inline-flex h-8 w-fit rounded-md border border-border p-0.5 max-[740px]:h-11">
       {options.map((option) => (
         <button
           key={option.id}
@@ -156,7 +156,10 @@ function Headline({ summary, metric }: { summary: UsageSummary; metric: Metric }
   );
 }
 
-function Chart({ summary, metric }: { summary: UsageSummary; metric: Metric }) {
+/** What a chart and model list need: one person's usage or the whole pool's. */
+export type Breakdown = Pick<UsageSummary, "from" | "to" | "total" | "models" | "days">;
+
+export function Chart({ summary, metric }: { summary: Breakdown; metric: Metric }) {
   const range = dayRange(summary.from, summary.to);
   const { keys, other } = series(summary.models, metric);
   const data = columns(summary.days, range, keys, metric);
@@ -164,7 +167,7 @@ function Chart({ summary, metric }: { summary: UsageSummary; metric: Metric }) {
   if (peak === 0) return <p className="text-sm text-muted-foreground">Nothing priced yet in these 30 days.</p>;
   return (
     <figure className="m-0 grid gap-3">
-      <div className="grid h-36 grid-flow-col items-end gap-[3px] border-b border-border" style={{ gridAutoColumns: "minmax(0, 1fr)" }}>
+      <div aria-hidden="true" className="grid h-36 grid-flow-col items-end gap-[3px] border-b border-border" style={{ gridAutoColumns: "minmax(0, 1fr)" }}>
         {data.map((column) => (
           <div
             key={column.day}
@@ -186,7 +189,7 @@ function Chart({ summary, metric }: { summary: UsageSummary; metric: Metric }) {
         <span>Today</span>
       </div>
       <figcaption className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="sr-only">{metric === "tokens" ? "Tokens" : "Cost"} per day, peak {format(peak, metric)}. Models:</span>
+        <span className="sr-only">Models:</span>
         {keys.map((key, index) => (
           <span key={key} className="inline-flex min-w-0 items-center gap-1.5">
             <span className={`size-2 shrink-0 rounded-[2px] ${shades[index]}`} aria-hidden="true" />
@@ -200,11 +203,29 @@ function Chart({ summary, metric }: { summary: UsageSummary; metric: Metric }) {
           </span>
         )}
       </figcaption>
+      {/* The bars only show on hover; this reads every day out. */}
+      <table className="sr-only">
+        <caption>{metric === "tokens" ? "Tokens" : "Cost"} per day</caption>
+        <thead>
+          <tr>
+            <th scope="col">Day</th>
+            <th scope="col">{metric === "tokens" ? "Tokens" : "Cost"}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.filter((column) => column.total > 0).map((column) => (
+            <tr key={column.day}>
+              <th scope="row">{dayLabel(column.day)}</th>
+              <td>{format(column.total, metric)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </figure>
   );
 }
 
-function Models({ summary, metric, providers }: { summary: UsageSummary; metric: Metric; providers: readonly Provider[] }) {
+export function Models({ summary, metric, providers }: { summary: Breakdown; metric: Metric; providers: readonly Provider[] }) {
   const total = value(summary.total, metric);
   return (
     <div className="grid gap-1">

@@ -8,15 +8,16 @@ import { readCap } from "../../src/pool/caps.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
 import { HomeClient, PoolHome } from "../../src/pool/control.ts";
 import { PoolUsage, summaryPath } from "../../src/pool/pool-usage.ts";
+import { UsageLedger } from "../../src/pool/usage-summary.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { MemoryStorage, SharingFixture, type HomeProvider } from "./sharing-fixture.ts";
 
 interface Record {
   id: string; timestamp: string; provider: string; model: string;
-  client: { api_key_id: number; username: string };
+  client: { api_key_id: number; user_id: number; username: string };
   tokens: { input_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; output_tokens: number; total_tokens: number };
   token_breakdown?: { quality: string; total_tokens: number; input: { uncached_tokens: number; cache_read_tokens: number; cache_write_tokens: number }; output: { total_tokens: number } };
-  billing: { amount: number | null };
+  billing: { amount: number | null; matched_price_rule: string | null };
 }
 async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): Promise<T> {
   const deadline = Date.now() + 30_000;
@@ -37,7 +38,7 @@ function total(records: Record[]): UsageSlice {
     for (const [index, key] of ["input", "cacheRead", "cacheWrite", "output", "total"].entries()) result.tokens[key as keyof UsageSlice["tokens"]] += values[index]!;
     // Home's billing record is the oracle, including its zero or null for the discovery requests.
     result.cost += row.billing.amount ?? 0;
-    if (row.billing.amount === null) result.unpriced++;
+    if (row.billing.amount === null || row.billing.matched_price_rule === "default:zero") result.unpriced++;
   }
   // The summary rounds cost to millionths of a dollar.
   return { ...result, cost: Math.round(result.cost * 1e6) / 1e6 };
@@ -126,7 +127,8 @@ test("real pinned Home/node: owner/member usage isolation, prices, second pool a
     for (const [index, person] of [owner, a, b].entries()) {
       const own = rows.filter((row) => row.client.api_key_id === keys[index]!.keyId);
       const member = poolSummary.members!.find((row) => row.member === person)!;
-      const { member: _member, cap: _cap, ...amount } = member;
+      const { member: _member, cap: _cap, models: _models, days: _days, ...amount } = member;
+      slices({ total: amount, models: member.models, days: member.days }, own);
       assert.deepEqual(amount, total(own));
       assert.equal(member.cap, null);
       if (person === owner) continue;
@@ -154,5 +156,90 @@ test("real pinned Home/node: owner/member usage isolation, prices, second pool a
     await turn(2, "other-member-still-works"); await turn(3, "own-pool-still-works");
     assert.equal(await readCap(client, b, "pool-a"), null); assert.equal(await readCap(client, a, "pool-b"), null);
     console.log("PASS 3: capped member gets rewritten 429 without upstream call; other member and own pool still succeed");
+  } finally { await fixture.close(); }
+});
+
+
+test("real Home: late landing, removed credentials, switched key attribution and default:zero", { timeout: 420_000 }, async () => {
+  const fixture = new SharingFixture();
+  try {
+    await fixture.start();
+    const client = new HomeClient((path, init) => fixture.fetchHome(path, init)), home = new ComputerHome(client);
+    const provider = (await fixture.data<HomeProvider[]>("/config/api-keys/openai-compatibility")).find((row) => row.name === "fixture-p1")!;
+    const credential = provider.keys[0]!.id;
+    await new PoolHome(client, "pool-a").add([credential]);
+    const key = await home.mint(a, "pool-a", "regression-computer", owner);
+    const storage = new MemoryStorage(), ledger = new UsageLedger(storage, client, { maxPages: 1 });
+    const start = Date.now(), firstSync = new Date(start + 60 * 60000), landedSync = new Date(start + 65 * 60000);
+    const options = { owner, caller: owner, members: [a], days: 30, now: landedSync, cap: () => null };
+    const records = () => fixture.data<{ items: Record[] }>("/usage/records?limit=200&sort=timestamp_asc").then((page) => page.items);
+    const slow = await fixture.model(key.key, "late-landing", true);
+    const body = slow.text();
+    await until(async () => fixture.slowStarted, Boolean);
+    // Advance only the ledger clock. Home/node perform a real held streaming request.
+    await ledger.sync(firstSync);
+    assert.equal((await ledger.summary("pool-a", options)).total.requests, 0);
+    await delay(1200); const releasedAt = Date.now();
+    fixture.finishStream(); assert.equal(slow.status, 200); await body;
+    const missing = await until(records, (rows) => rows.length === 1);
+    assert.ok(Date.parse(missing[0]!.timestamp) <= firstSync.getTime() - 59 * 60000);
+    assert.ok(Date.parse(missing[0]!.timestamp) < releasedAt - 1000, "node stamps request start, before release");
+    assert.equal(missing[0]!.billing.amount, 0);
+    assert.equal(missing[0]!.billing.matched_price_rule, "default:zero");
+    assert.deepEqual(await ledger.sync(landedSync), { complete: false, pages: 1 });
+    assert.equal(await ledger.readAt(), landedSync.toISOString());
+    assert.equal((await ledger.summary("pool-a", options)).total.requests, 1);
+    assert.equal((await ledger.summary("pool-a", options)).total.unpriced, 1);
+    console.log("PASS 4: real held request lands an hour late; one recent page counts it as unpriced without sweeping");
+    await fixture.data("/billing/model-prices", "POST", { provider: missing[0]!.provider, model: "fixture-alt", request_price: 0, source: "manual" });
+    const free = await fixture.model(key.key, "real-zero-price", false, "fixture-alt");
+    assert.equal(free.status, 200, await free.text());
+    const withFree = await until(records, (rows) => rows.length === 2);
+    const zero = withFree.find((row) => row.model === "fixture-alt")!;
+    assert.equal(zero.billing.amount, 0); assert.notEqual(zero.billing.matched_price_rule, "default:zero");
+    assert.ok(zero.billing.matched_price_rule);
+    // Both charged records, including default:zero, keep their ingestion-time user after rebind.
+    const switched = await home.rebind(key.keyId, "pool-b", a, a);
+    const afterSwitch = await records();
+    assert.ok(afterSwitch.every((row) => row.client.user_id === key.userId && row.client.user_id !== switched));
+    assert.ok(afterSwitch.every((row) => row.client.username === missing[0]!.client.username));
+    // The free record is still pending in the ledger when the serving credential is deleted.
+    await new PoolHome(client, "pool-a").remove(credential, async () => {});
+    const removed = await records(); assert.equal(removed.length, 2);
+    await new UsageLedger(storage, client).sync(landedSync);
+    const result = await ledger.summary("pool-a", options);
+    assert.equal(result.total.requests, 2); assert.equal(result.total.unpriced, 1); assert.equal(result.total.cost, 0);
+    assert.equal((await ledger.summary("pool-b", options)).total.requests, 0);
+    const cold = new UsageLedger(new MemoryStorage(), client); await cold.sync(landedSync);
+    assert.equal((await cold.summary("pool-a", options)).total.requests, 2);
+    console.log("PASS 5: removed credential's pending records survive; rebound key keeps charge user; real zero rule stays priced");
+  } finally { await fixture.close(); }
+});
+
+
+test("real Home: records without billing charges follow the current key user after a pool switch", { timeout: 420_000 }, async () => {
+  const fixture = new SharingFixture();
+  try {
+    await fixture.start();
+    const client = new HomeClient((path, init) => fixture.fetchHome(path, init)), home = new ComputerHome(client);
+    const provider = (await fixture.data<HomeProvider[]>("/config/api-keys/openai-compatibility")).find((row) => row.name === "fixture-p1")!;
+    await new PoolHome(client, "pool-a").add([provider.keys[0]!.id]);
+    const key = await home.mint(a, "pool-a", "no-charge-computer", owner);
+    const response = await fixture.model(key.key, "failed-request", "fail");
+    assert.equal(response.status, 400, await response.text());
+    const records = () => fixture.data<{ items: Record[] }>("/usage/records?limit=200").then((page) => page.items);
+    const before = await until(records, (rows) => rows.length > 0);
+    assert.ok(before.every((row) => row.billing.amount === null && row.client.user_id === key.userId));
+    const user = await home.rebind(key.keyId, "pool-b", a, a);
+    const after = await records();
+    const name = await backendUserName(a, "pool-b");
+    assert.ok(after.every((row) => row.client.user_id === user && row.client.username === name));
+    const ledger = new UsageLedger(new MemoryStorage(), client), now = new Date(Date.now() + 60000);
+    await ledger.sync(now);
+    const options = { owner, caller: owner, members: [a], days: 30, now, cap: () => null };
+    const result = await ledger.summary("pool-a", options);
+    assert.equal(result.total.requests, after.length); assert.equal(result.total.unpriced, after.length);
+    assert.equal((await ledger.summary("pool-b", options)).total.requests, 0);
+    console.log("PASS 6: no-charge record username follows reassigned key; serving credential keeps its usage in original pool");
   } finally { await fixture.close(); }
 });

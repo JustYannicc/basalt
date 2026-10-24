@@ -54,11 +54,11 @@ test("all exhausted together advises adding; limit episodes count transitions", 
   assert.equal(result.hoursRead, 24);
 });
 
-test("remove requires spare capacity in every longest window sample", async () => {
+test("remove requires spare capacity in every applicable window sample", async () => {
   const remove = await day(new LimitHistory(new Memory()), [account("a", 0.8), account("b", 0.8)]);
   assert.equal(remove.advice, "remove");
   const accounts = [account("a", 0.5), account("b", 0.5)];
-  assert.equal((await day(new LimitHistory(new Memory()), accounts)).advice, "enough");
+  assert.equal((await day(new LimitHistory(new Memory()), accounts)).advice, "remove");
   const history = new LimitHistory(new Memory());
   for (let i = 0; i < 289; i++) await history.sample("pool-a", [account("a", i === 20 ? 0.2 : 0.9), account("b", 0.6)], new Date(start + i * step));
   assert.equal((await history.advice("pool-a", new Date(start + 288 * step)))[0]!.advice, "enough");
@@ -214,4 +214,20 @@ test("legacy chunk metadata remains readable and converts without losing the val
   assert.deepEqual(await chunks.get("legacy"), { legacy: true });
   await chunks.commit(new Map([["legacy", { small: true }]]), [], "pending");
   assert.equal(storage.values.size, 1); assert.deepEqual(await chunks.get("legacy"), { small: true });
+});
+
+
+test("refresh-failure unavailability never counts as quota exhaustion or spare capacity", async () => {
+  for (const ratio of [0.8, null]) {
+    const accounts = [account("a", 0.8, "unavailable"), { ...account("b", 0.8, "unavailable"), windows: [window(ratio)] }];
+    const result = await day(new LimitHistory(new Memory()), accounts);
+    assert.equal(result.advice, "enough"); assert.equal(result.limitHits, 0); assert.equal(result.exhausted, 0);
+  }
+});
+
+test("weekly headroom cannot justify removal with a tight or unknown five-hour window", async () => {
+  for (const ratio of [0.2, null]) {
+    const accounts = ["a", "b"].map((id) => ({ ...account(id, 0.9), windows: [window(ratio, 18000), window(0.9)] }));
+    assert.equal((await day(new LimitHistory(new Memory()), accounts)).advice, "enough");
+  }
 });

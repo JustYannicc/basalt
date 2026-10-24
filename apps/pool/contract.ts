@@ -126,6 +126,9 @@ export interface Cap {
 /** Per member, for the pool's owner only. `member` is the tools-service user id. */
 export interface MemberUsage extends UsageSlice {
   readonly member: string;
+  /** Only this member's requests, per model and per UTC day. */
+  readonly models: readonly ModelUsage[];
+  readonly days: readonly DayUsage[];
   /** Null when no cap is set, which is the default. */
   readonly cap: Cap | null;
 }

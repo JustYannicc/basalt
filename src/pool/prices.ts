@@ -38,6 +38,11 @@ export class PriceUpkeep {
         targets.set(JSON.stringify([identity.provider, identity.model]), { provider: identity.provider, model: String(identity.model) });
       }
     }
+    // A model someone priced by hand stays theirs: an imported context band would win for long
+    // requests (Home picks the highest min_input_tokens band, docs/management/api.md GET model-prices).
+    const manual = new Set(rows((await this.home.data("/billing/model-prices")).items)
+      .filter((rule) => rule.source !== "sync").map((rule) => JSON.stringify([rule.provider, rule.model])));
+    for (const key of manual) targets.delete(key);
     if (!targets.size) return;
     // Charges are priced when a request happens, so a newly connected model can't wait a day.
     const known = JSON.stringify([...targets.keys()].sort());
