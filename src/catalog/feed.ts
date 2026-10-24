@@ -1,4 +1,4 @@
-import { connectionNotices, type ConnectionNotice } from "./notices.ts";
+import { connectionNotices, type ConnectorAvailability, type ConnectionNotice } from "./notices.ts";
 import { catalog } from "./settings.ts";
 
 export interface FeedEntry {
@@ -16,14 +16,15 @@ export interface Feed { version: 1; apps: FeedEntry[] }
 export interface Addition { entry: FeedEntry; source: { package: string; files: unknown[] } }
 
 /** Resolve relative icons before the feed moves to our origin. */
-export function mergeFeed(official: Feed, additions: readonly Addition[] = []): Feed {
+export function mergeFeed(official: Feed, additions: readonly Addition[] = [], ready: ConnectorAvailability = { google: false, github: false }): Feed {
   if (official.version !== 1 || !Array.isArray(official.apps)) throw new Error("Invalid catalog");
+  const notices = connectionNotices(ready);
   const apps = new Map<string, FeedEntry>();
   for (const entry of official.apps) {
     if (!entry.id || !entry.package || !Array.isArray(entry.icons)) throw new Error("Invalid app");
     apps.set(entry.id, {
       ...entry,
-      ...(connectionNotices[entry.package] ? { connectionNotices: [...(entry.connectionNotices ?? []), ...connectionNotices[entry.package]!] } : {}),
+      ...(notices[entry.package] ? { connectionNotices: [...(entry.connectionNotices ?? []), ...notices[entry.package]!] } : {}),
       source: `apps/${encodeURIComponent(entry.id)}.json`,
       icons: entry.icons.map(icon => ({ ...icon, src: new URL(icon.src, catalog.official).href })),
     });

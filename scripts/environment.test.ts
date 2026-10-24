@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { brand } from "../brand.ts";
-import { deployEnvironment, requiredSecrets } from "./environment.ts";
+import { connectorWarnings, deployEnvironment, optionalConnectorClients, requiredSecrets } from "./environment.ts";
 
 test("missing credentials fail with a name and never a value", () => {
   assert.throws(
@@ -99,17 +99,39 @@ test("a previous pool signing key is optional, hex, and never the current key", 
 test("connector credentials are separate from sign-in and the feed belongs to this deployment", () => {
   const source = {
     ...Object.fromEntries(requiredSecrets.map(name => [name, `fixture-${name}`])),
+    ...Object.fromEntries(optionalConnectorClients.flatMap(client => [[client.id, `fixture-${client.id}`], [client.secret, `fixture-${client.secret}`]])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
   };
   const env = deployEnvironment(source);
   assert.equal(env.EXECUTOR_CATALOG_URL, "https://app.signalbox.run/catalog/index.json");
   assert.notEqual(env.GOOGLE_CLIENT_ID, env.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID);
   assert.notEqual(env.GITHUB_CLIENT_ID, env.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID);
+  assert.equal(env.GOOGLE_CONNECTOR_READY, "true");
+  assert.equal(env.GITHUB_CONNECTOR_READY, "true");
+  assert.deepEqual(connectorWarnings(env), []);
   for (const provider of ["GOOGLE", "GITHUB_OAUTH"]) {
     for (const part of ["ID", "SECRET"]) {
       const name = `EXECUTOR_OAUTH_${provider}_CLIENT_${part}`;
       assert.equal(env[name], source[name as keyof typeof source]);
-      assert.throws(() => deployEnvironment({ ...source, [name]: "" }), new RegExp(`Missing GitHub Actions secret: ${name}`));
+      const missing = deployEnvironment({ ...source, [name]: "" });
+      const client = optionalConnectorClients.find(client => client.id === name || client.secret === name)!;
+      assert.equal(missing[client.id], undefined);
+      assert.equal(missing[client.secret], undefined);
+      assert.equal(missing[client.ready], "false");
+      assert.equal(connectorWarnings(missing).length, 1);
+      assert.match(connectorWarnings(missing)[0]!, new RegExp(client.name));
     }
   }
+});
+
+test("absent optional connector clients do not block sign-in, pools or setup", () => {
+  const source: NodeJS.ProcessEnv = { ...Object.fromEntries(requiredSecrets.map(name => [name, "fixture"])), POOL_APP_SIGNING_KEY: "ab".repeat(32) };
+  const env = deployEnvironment(source);
+  assert.equal(env.GOOGLE_CLIENT_ID, source.GOOGLE_CLIENT_ID);
+  assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
+  assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
+  assert.equal(env.GOOGLE_CONNECTOR_READY, "false");
+  assert.equal(env.GITHUB_CONNECTOR_READY, "false");
+  assert.equal(connectorWarnings(env).length, 2);
+  assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
 });

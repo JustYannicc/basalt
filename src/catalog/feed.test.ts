@@ -84,3 +84,18 @@ test("provider restrictions follow the actual official app names and never chang
   assert.match(feed.apps[7]!.connectionNotices![0]!.message, /bot token/);
   assert.equal(apps[0]!.connectionNotices, undefined);
 });
+
+test("the public feed marks only unconfigured hosted connectors as not set up yet", async () => {
+  const feed: Feed = { version: 1, apps: ["gmail", "google-drive", "github"].map(id => ({ ...official.apps[0]!, id,
+    name: id, package: `@executor.sh/${id}` })) };
+  for (const ready of [{ google: false, github: false }, { google: true, github: false }, { google: false, github: true }, { google: true, github: true }]) {
+    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(feed), ready);
+    assert.equal(response.status, 200);
+    const result = await response.json() as Feed;
+    for (const entry of result.apps) {
+      const configured = entry.id === "github" ? ready.github : ready.google;
+      assert.equal(entry.connectionNotices?.some(notice => notice.message.includes("not set up yet")), !configured);
+      assert.deepEqual(entry.auth, feed.apps.find(source => source.id === entry.id)!.auth);
+    }
+  }
+});
