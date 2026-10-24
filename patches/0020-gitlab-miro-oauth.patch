@@ -1,7 +1,7 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -142,6 +142,35 @@
+@@ -150,6 +150,35 @@
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    {
@@ -37,20 +37,24 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
      id: "github",
      label: "Executor for GitHub",
      server: {
-@@ -310,9 +339,13 @@
+@@ -332,11 +361,15 @@
            ? "Google"
            : definition.id === "github" || definition.id === "github-oauth"
              ? "GitHub"
 -            : definition.id === "slack"
 -              ? "Slack"
--              : undefined;
+-              : definition.id === "atlassian"
+-                ? "Atlassian"
+-                : undefined;
 +            : definition.id === "gitlab"
 +              ? "GitLab"
 +              : definition.id === "miro"
 +                ? "Miro"
 +                : definition.id === "slack"
 +                  ? "Slack"
-+                  : undefined;
++                  : definition.id === "atlassian"
++                    ? "Atlassian"
++                    : undefined;
        clients.push(
          service === undefined
            ? client.value
