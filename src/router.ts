@@ -2,6 +2,7 @@ import { isControlPath } from "../apps/pool/contract.ts";
 import { isPublicModelPath } from "./pool/lifecycle.ts";
 import { brand } from "../brand.ts";
 import { handleSetup } from "./setup/host.ts";
+import { handleShare } from "./setup/share.ts";
 import { observeToolCall } from "./setup/tool-observation.ts";
 import { handleFeedback } from "./feedback/host.ts";
 import { injectFeedback } from "./feedback/ui.ts";
@@ -160,6 +161,7 @@ function routeRequest(request: Request, env: RouterEnv, context?: { waitUntil(wo
       context?.waitUntil(work);
     },
   });
+  if (pathname.startsWith("/share/v1/")) return handleShare(request, env);
   // Internal setup assertions are sent only through the private binding by the setup host.
   if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());
   if (isPoolManagementPath(pathname)) {

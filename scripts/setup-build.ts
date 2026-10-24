@@ -7,13 +7,16 @@ const require = createRequire(new URL("../.upstream/package.json", import.meta.u
 const { build } = require("esbuild") as typeof import("esbuild");
 const root = fileURLToPath(new URL("../", import.meta.url));
 mkdirSync(`${root}public/setup`, { recursive: true });
+mkdirSync(`${root}public/share`, { recursive: true });
 await build({
   entryPoints: [`${root}src/setup/client.mjs`], outfile: `${root}public/setup/client.mjs`,
   bundle: true, platform: "node", format: "esm", target: "node18", minify: true,
 });
 const react = `${root}.upstream/playground/demo-apps/live-inbox/node_modules`;
-await build({
-  entryPoints: [`${root}src/setup/ui.tsx`], outfile: `${root}public/setup/main.js`,
+// The root pages: computer setup and sharing. Both reuse the pool app's components and one stylesheet.
+const pages = { setup: "ui.tsx", share: "share-ui.tsx" } as const;
+for (const [page, entry] of Object.entries(pages)) await build({
+  entryPoints: [`${root}src/setup/${entry}`], outfile: `${root}public/${page}/main.js`,
   bundle: true, platform: "browser", format: "esm", target: "es2022", minify: true, jsx: "automatic",
   alias: { react: `${react}/react`, "react-dom": `${react}/react-dom` },
   define: { "process.env.NODE_ENV": '"production"' },
@@ -29,8 +32,9 @@ const sdk = createRequire(new URL("../.upstream/packages/sdk/package.json", impo
 const { compile } = sdk("tailwindcss");
 const vite = createRequire(realpathSync(new URL("../.upstream/apps/hosted/web/node_modules/@tailwindcss/vite/package.json", import.meta.url)));
 const { Scanner } = vite("@tailwindcss/oxide");
-const candidates = new Scanner({ sources: [] }).scanFiles([{ content: readFileSync(`${root}public/setup/main.js`, "utf8"), extension: "js" }]);
+const candidates = new Scanner({ sources: [] }).scanFiles(Object.keys(pages).map((page) => ({ content: readFileSync(`${root}public/${page}/main.js`, "utf8"), extension: "js" })));
 const compiler = await compile(styles.outputFiles![0]!.text);
 writeFileSync(`${root}public/setup/main.css`, compiler.build(candidates));
-const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Computer setup</title><link rel="icon" href="${brand.logo}"><link rel="stylesheet" href="/setup/main.css"><body><div id="root"></div><script type="module" src="/setup/main.js"></script>${feedbackScriptTag}</body></html>`;
-writeFileSync(`${root}public/setup/index.html`, html);
+const titles = { setup: "Computer setup", share: "Share your pool" } as const;
+for (const page of Object.keys(pages) as (keyof typeof pages)[])
+  writeFileSync(`${root}public/${page}/index.html`, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${titles[page]}</title><link rel="icon" href="${brand.logo}"><link rel="stylesheet" href="/setup/main.css"><body><div id="root"></div><script type="module" src="/${page}/main.js"></script>${feedbackScriptTag}</body></html>`);

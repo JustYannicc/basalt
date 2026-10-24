@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Computers } from "../../apps/pool/ui/computers.tsx";
-import type { ComputerResult, ComputersApi, ComputersView, SetupApi, SetupLink } from "../../apps/pool/ui/computer-types.ts";
+import type { Computer, ComputerResult, ComputersApi, ComputersView, SetupApi, SetupLink } from "../../apps/pool/ui/computer-types.ts";
 import { SetupPanel } from "../../apps/pool/ui/setup.tsx";
 import { brand } from "../../brand.ts";
 
@@ -26,6 +26,10 @@ function App() {
         return result;
       },
       createSetup: (name) => read<SetupLink>("links", { name }, "POST"),
+      switchPool: async (id, pool) => {
+        const result = await read<{ computer: Computer }>(`computers/${encodeURIComponent(id)}/pool`, { pool }, "POST");
+        return result.ok ? { ok: true, value: result.value.computer } : result;
+      },
       refreshSetup: (computerId) => read<SetupLink>("links", { computerId }, "POST"),
       revoke: async (id) => {
         const result = await read(`computers/${encodeURIComponent(id)}?intent=${encodeURIComponent(intent ?? "")}`, undefined, "DELETE");

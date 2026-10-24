@@ -20,19 +20,27 @@ export class ComputerHome {
     this.client = client;
     this.onProductEvent = onProductEvent;
   }
-  async user(person: string): Promise<number> {
-    // Stable across renames; neither usernames nor logs contain the person's identity.
+  private async findUser(person: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const username = `${brand.setup.id}-${await digest(person)}`;
-    const find = async () => rows((await this.client.data("/users")).users).find((row) => row.username === username);
-    let user = await find();
+    return rows((await this.client.data("/users", { signal })).users).find((row) => row.username === username);
+  }
+  async user(person: string, created?: () => void, signal?: AbortSignal): Promise<number> {
+    const username = `${brand.setup.id}-${await digest(person)}`;
+    let user = await this.findUser(person, signal);
+    signal?.throwIfAborted();
+    let provisioned = false;
     if (!user) {
       // Subscriptions are uncapped by default. Optional per-member caps are a separate control.
-      const response = await this.client.response("/users", post({ username, credits_unlimited: true }));
+      const response = await this.client.response("/users", { ...post({ username, credits_unlimited: true }), signal });
       if (!response.ok && response.status !== 409) throw new BackendFailure(response.status);
+      provisioned = response.ok;
       await response.body?.cancel();
-      user = await find();
+      user = await this.findUser(person, signal);
     }
+    signal?.throwIfAborted();
     if (!id(user?.id)) return unavailable();
+    if (provisioned) created?.();
     return user.id;
   }
   async group(pool: string, accountId?: string): Promise<number> {
@@ -59,13 +67,14 @@ export class ComputerHome {
     const channels: [number] = [group];
     return this.client.data("/access/api-keys", { ...post({ ...input, channels }), method });
   }
-  async mint(person: string, pool: string, computer: string): Promise<{ key: string; keyId: number; userId: number }> {
+  /** `owner` is credited if this mint creates the pool's group; a member's first mint can. */
+  async mint(person: string, pool: string, computer: string, owner = person): Promise<{ key: string; keyId: number; userId: number }> {
     const userId = await this.user(person);
     const key = randomSecret(brand.setup.keyPrefix);
     const data = await this.writeScopedKey(pool, {
       api_key: key, display_name: `${brand.setup.id}:${computer}`, user_id: userId,
       model_groups: [],
-    }, "POST", person);
+    }, "POST", owner);
     const created = data.api_key;
     if (!object(created) || !id(created.api_key_id ?? created.id) || created.user_id !== userId) return unavailable();
     return { key, keyId: (created.api_key_id ?? created.id) as number, userId };
@@ -86,6 +95,24 @@ export class ComputerHome {
       if (response.status !== 404 || !object(error) || error.error !== "api_key_not_found") throw new BackendFailure(response.status);
     }
     if (!response.bodyUsed) await response.body?.cancel();
+  }
+  async deletePerson(person: string): Promise<number> {
+    const user = await this.findUser(person);
+    if (!user) return 0;
+    if (!id(user.id)) return unavailable();
+    const keys = rows((await this.client.data("/access/api-keys")).items).filter((key) => key.user_id === user.id);
+    for (const key of keys) {
+      const keyId = key.api_key_id ?? key.id;
+      if (!id(keyId)) return unavailable();
+      await this.revoke(keyId);
+    }
+    const response = await this.client.response(`/users/${user.id}`, { method: "DELETE" });
+    if (!response.ok) {
+      const error: unknown = await response.json().catch(() => ({}));
+      if (response.status !== 404 || !object(error) || error.error !== "not_found") throw new BackendFailure(response.status);
+    }
+    if (!response.bodyUsed) await response.body?.cancel();
+    return keys.length;
   }
   async observed(pool: string, keyId: number, since: string): Promise<string | null> {
     // PoolHome owns the exact-key and credential-membership filters used by the usage API.

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { canRefresh, type Computer, type ComputersApi, type ComputersView, computerStatus, type SetupMode } from "./computer-types.ts";
+import { canRefresh, type Computer, type ComputersApi, type ComputersView, computerStatus, type PoolChoice, type SetupMode } from "./computer-types.ts";
 import { ComputerRow } from "./computer-row.tsx";
 import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 import { SetupDialog, type SetupStart } from "./setup.tsx";
@@ -9,11 +9,12 @@ import { CopyBlock } from "./setup-controls.tsx";
 const fast = 4_000;
 const slow = 60_000;
 
-const isRevoked = (computer: Computer) => computerStatus(computer) === "revoked";
+// Working computers first, then ones removed from their pool, then revoked ones.
+const rank = (computer: Computer) => ({ revoked: 2, removed: 1 } as Record<string, number>)[computerStatus(computer)] ?? 0;
 
 const pending = (computer: Computer) => {
   const status = computerStatus(computer);
-  return status !== "connected" && status !== "revoked";
+  return status !== "connected" && status !== "revoked" && status !== "removed";
 };
 
 function useComputers(api: ComputersApi, watching: boolean, refreshKey?: number) {
@@ -80,6 +81,18 @@ export function Computers({ api, setup: mode, refreshKey }: { api: ComputersApi;
     openSetup({ kind: "link", name: computer.name, link: result.value });
   };
 
+  const switchPool = async (computer: Computer, pool: PoolChoice) => {
+    if (!api.switchPool) return false;
+    setActionError(undefined);
+    const result = await api.switchPool(computer.id, pool.id);
+    if (!result.ok) {
+      setActionError(result.message);
+      return false;
+    }
+    await load();
+    return true;
+  };
+
   const revoke = async (computer: Computer) => {
     setActionError(undefined);
     const result = await api.revoke(computer.id);
@@ -91,10 +104,7 @@ export function Computers({ api, setup: mode, refreshKey }: { api: ComputersApi;
     return true;
   };
 
-  // Working computers first; revoked ones stay visible at the end.
-  const computers = view
-    ? [...view.computers].sort((a, b) => Number(isRevoked(a)) - Number(isRevoked(b)))
-    : [];
+  const computers = view ? [...view.computers].sort((a, b) => rank(a) - rank(b)) : [];
 
   return (
     <section aria-labelledby="computers-heading" className="pt-12">
@@ -104,7 +114,9 @@ export function Computers({ api, setup: mode, refreshKey }: { api: ComputersApi;
             Computers
           </h2>
           <p className="text-sm text-muted-foreground text-pretty">
-            Your computers using this pool. Each turns green once its first model request and tool call arrive.
+            {(view?.pools?.length ?? 0) > 1
+              ? "Your computers, and the pool each one uses. Switching takes effect on its next request; nothing changes on the computer."
+              : "Your computers using this pool. Each turns green once its first model request and tool call arrive."}
           </p>
         </div>
         {computers.length > 0 && (
@@ -152,6 +164,8 @@ export function Computers({ api, setup: mode, refreshKey }: { api: ComputersApi;
                 manageHref={mode.kind === "link" ? mode.manageHref?.(computer) : undefined}
                 onNewLink={() => newLink(computer)}
                 onRevoke={() => revoke(computer)}
+                pools={view.pools}
+                onSwitch={api.switchPool ? (pool) => switchPool(computer, pool) : undefined}
               />
             ))}
           </ul>
