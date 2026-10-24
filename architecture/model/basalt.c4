@@ -12,7 +12,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/pool-acceptance.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
     }
 
     deployment = module "Deployment" {
@@ -135,6 +135,7 @@ model {
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
   basalt.build -[sync]-> basalt.setupHost "bundle root setup React page from shared pool UI"
   basalt.build -[sync]-> basalt.setupInstaller "install frozen setup dependencies; bundle installer asset"
+  basalt.build -[sync]-> basalt.router "acceptance: stream test requests and read signed pool usage"
   basalt.router -[sync]-> basalt.pool "import pool control path contract"
   basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
   basalt.modelGateway -[sync]-> basalt.brandConfig "read setup brand and public endpoint"

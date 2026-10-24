@@ -62,6 +62,16 @@ The pool's screen follows the prototype's Accounts view: each account's usage wi
 
 Container startup, management endpoints and release validation are documented in [containers/pool](containers/pool/README.md). Local routing and lifecycle tests do not establish live model service: release acceptance also needs test subscriptions, a streamed request, account-affinity and spread checks, and an hour of idle time with the same boot identity.
 
+### Live pool acceptance
+
+The manual **Pool acceptance** Actions workflow runs `scripts/pool-acceptance.ts`. Before full mode, provision a dedicated `acceptance-<run>` pool with two usable test subscriptions and a computer key scoped to that pool. Store that key as `POOL_ACCEPTANCE_KEY`, enter the pool id and an exact model id from the key's `/v1/models` catalog, and confirm the key is for test use. Finish each subscription sign-in before starting the next. Key issuance belongs to computer setup; this workflow does not provision accounts or keys.
+
+Full mode mints a pool token with the existing Actions `POOL_APP_SIGNING_KEY`, using owner and organization `acceptance`. It reads the owner-only `/pool/v1/usage` route with original wire session ids and checks record counts, stable accounts on repeated conversations and spread across two subscriptions. Test model requests carry only `X-Session-ID` for session correlation; the Worker owns canonicalization. The runner never reads raw management endpoints or needs `POOL_MANAGEMENT_KEY`.
+
+The one-hour idle interval sends no requests from this runner and requires the deployment to be otherwise quiet. It then checks the same boot identity and a valid streamed reply. The subsequent restart observation needs an external controlled deploy or crash while the runner is armed. It reports observed recovery bounds and verifies a changed boot plus a valid stream, rather than treating the observation start as the restart time. `restart-observation` mode skips the idle and affinity checks and needs only the dedicated model key. No restart endpoint is added.
+
+Run credential-free runner checks with `node --test scripts/pool-acceptance/*.test.ts`. Those fixtures exercise the public contracts and error paths; they do not prove live service, global idleness, real CLI setup or cross-node revocation.
+
 ## Computer setup
 
 The pool's Computers section opens setup on the public host. A short-lived signed intent identifies the pool and caller. Setup currently permits only the caller's own pool. Shared pools and switching to them belong to [signalbox#1412](https://github.com/JustYannicc/signalbox/issues/1412), including revoking computer keys before removing access. The setup host checks the person's verified browser session, creates a tools token pinned to that person's organization through the tools service's native API-key flow, and asks the pool controller for one user-bound model key. The controller creates the pool's channel group before issuing a key. An empty Home channel list would allow every credential, so setup never sends one.
