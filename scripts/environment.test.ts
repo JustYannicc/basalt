@@ -33,6 +33,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.ALCHEMY_STAGE, "production");
   assert.equal(env.PLANETSCALE_REGION, "eu-central");
   assert.equal(env.PLANETSCALE_ADOPT_DATABASE, "true");
+  assert.equal(env.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
   assert.match(env.EXECUTOR_BUILD_VERSION!, /^[a-f0-9]{40}$/);

@@ -62,3 +62,5 @@ Code naming model elements imports `$ElementId` from the generated module under 
 Dynamic-view steps are checked against model relationships. Real trace comparison and live provider-state comparison are outside this check.
 
 Release automation accepts published tools versions, verifies CI on the exact merge commit against current main, and serializes only its own merge workflow. It refreshes stale release branches and waits for new proofs. Dedicated subscription exports use the existing owner-scoped pool control API and write directly into Actions secrets from a protected trusted-main workflow. Database rollback restores remain manual; the rollback dispatch validates the recorded failed deployment before rebuilding and deploying its previous commit.
+
+Deployment enables `EXECUTOR_ENCRYPTED_WORKFLOW_STARTS` for the fresh tools-service installation. Its dependency patch versions native app Workflow identities and authenticates persisted results. Existing upstream installations need a separate dispatcher cutover before enabling that setting.
