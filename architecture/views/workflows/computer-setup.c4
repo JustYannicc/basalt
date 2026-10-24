@@ -8,8 +8,8 @@ views {
       The app-hosted pool entry remains blocked while its origin is disabled. The pool app requests a signed, expiring user-and-pool intent and opens the
       root /setup page with it. The router serves the React screen as static assets; the screen reuses
       apps/pool UI components. The HTTP host checks the native cookie session and creates a personal
-      tools PAT pinned to the caller's own organization. Setup and rebind refuse pools the caller does not own.
-      Shared pools and revocation on sharing removal are deferred to #1412, which must revoke affected model keys before removal finishes.
+      tools PAT pinned to the organization holding the caller's own pool, also on a shared pool.
+      Setup works on the caller's own pool or one shared with them; see the sharing workflows.
       Private pool actions carry an action-bound signature and a 30-second expiry.
       The model gateway owns the registry in the existing pool controller, generates a model key and
       registers it to the user's backend record with a nonempty pool channel-group list. Both credentials

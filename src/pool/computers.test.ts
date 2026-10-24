@@ -204,7 +204,7 @@ test("unknown computer actions share the same generic response and never call Ho
   const f = await fixture();
   const setup = await f.context();
   const intent = String(setup.value.intent);
-  for (const action of ["refresh", "revoke", "rebind", "revoked"]) {
+  for (const action of ["refresh", "revoke", "switch", "revoked"]) {
     const response = await f.action(action, owner, intent, { id: "unknown-computer" });
     await expectError(response, 404, "not_found", "This computer does not exist.");
   }
@@ -213,18 +213,14 @@ test("unknown computer actions share the same generic response and never call Ho
   assert.equal(f.home.rebound.length, 0);
 });
 
-test("shared pool setup is refused before any computer key can exist", async () => {
+test("a non-owner gets a shared pool intent and can mint a computer", async () => {
   const f = await fixture();
   const member = await f.context(claims, "tools-user-2");
-  assert.equal(member.response.status, 403);
-  assert.match(String(member.value.message), /Shared pools come with pool sharing/);
-  const intent = await signIntent(signingKey, { ...claims, user: "tools-user-2", expiresAt: f.now() + setupTtl });
-  const response = await f.action("links", "tools-user-2", intent, { name: "Laptop", toolsKeyId, toolsToken });
-  await expectError(response, 403, "not_owner");
-  assert.equal(f.home.mints.length, 0);
-  assert.deepEqual(f.home.found, []);
-  assert.deepEqual(f.home.revoked, []);
-  assert.equal(await f.storage.serialized(), "[]");
+  assert.equal(member.response.status, 200);
+  assert.equal(member.value.shareHref, undefined);
+  const response = await f.action("links", "tools-user-2", String(member.value.intent), { name: "Laptop", toolsKeyId, toolsToken });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(f.home.mints[0]!.person, "tools-user-2");
 });
 
 test("model and tools evidence are recorded independently", async () => {
@@ -331,7 +327,7 @@ test("revoke durably marks revoking and waits for model-key deletion before retu
   assert.equal(row.revokedAt, new Date(f.now()).toISOString());
 });
 
-test("rebind changes the pool on the existing key and clears evidence from the previous binding", async () => {
+test("switch changes the pool on the existing key and clears evidence from the previous binding", async () => {
   const f = await fixture();
   const { value: issued } = await f.create();
   assert.equal((await claim(f, issued.token)).status, 200);
@@ -351,7 +347,7 @@ test("rebind changes the pool on the existing key and clears evidence from the p
   const target = await f.context(destination, owner);
   const targetIntent = String(target.value.intent);
   f.advance(1_000);
-  const response = await f.action("rebind", owner, targetIntent, { id: issued.computer.id });
+  const response = await f.action("switch", owner, targetIntent, { id: issued.computer.id, pool: destination.pool });
   assert.equal(response.status, 200, await response.clone().text());
   const rebound = await response.json() as { id: string; poolId: string; createdAt: string; firstModelRequestAt: string | null; firstToolCallAt: string | null };
   assert.equal(rebound.poolId, "pool-b");

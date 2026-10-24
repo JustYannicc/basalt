@@ -4,7 +4,7 @@ export interface UsageObservationComputer {
   pool: string;
   createdAt: string;
   boundAt: string;
-  state: "issuing" | "active" | "revoking" | "revoked";
+  state: "issuing" | "active" | "revoking" | "revoked" | "removed";
   keyId?: number;
   firstModelRequestAt: string | null;
   firstModelRequestEverAt?: string | null;
