@@ -198,7 +198,7 @@
     },
     {
       "identity": "executor-slack-user-oauth",
-      "file": "0022-slack-user-oauth.patch",
+      "file": "0023-slack-user-oauth.patch",
       "content_sha256": "3e6a6dba1ea5c6d9b92e8d4ab353ddc7ffce9df3e64012829f3d582f32c2d9bf",
       "kind": "upstream",
       "upstream_pull_request": 2371,
