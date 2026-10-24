@@ -132,7 +132,7 @@ async function peer(jwt: string) {
         method: req.method, headers: req.headers as Record<string, string>,
         ...(["GET", "HEAD"].includes(req.method!) ? {} : { body: Buffer.concat(chunks) }),
       });
-      const response = await handleRequest(request, { POOL_SERVICE: pool, TOOLS_SERVICE: tools,
+      const response = await handleRequest(request, { CATALOG_SERVICE: { fetch: async () => new Response(null, { status: 404 }) }, POOL_SERVICE: pool, TOOLS_SERVICE: tools,
         POOL_APP_SIGNING_KEY: "a".repeat(64) }, { waitUntil(work) { pending.push(work); } });
       res.writeHead(response.status, Object.fromEntries(response.headers));
       res.end(Buffer.from(await response.arrayBuffer()));

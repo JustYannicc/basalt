@@ -7,8 +7,9 @@ import type { $ElementId } from "../scripts/architecture/gen/model.ts";
 // Service bindings name the same gateways as the architecture.
 export const serviceArchitecture = {
   TOOLS_SERVICE: "basalt.toolsGateway",
+  CATALOG_SERVICE: "basalt.catalog",
   POOL_SERVICE: "basalt.modelGateway",
-} satisfies Record<"TOOLS_SERVICE" | "POOL_SERVICE", $ElementId>;
+} satisfies Record<"TOOLS_SERVICE" | "POOL_SERVICE" | "CATALOG_SERVICE", $ElementId>;
 
 interface Service {
   fetch(request: Request): Promise<Response>;
@@ -16,6 +17,7 @@ interface Service {
 
 export interface RouterEnv {
   TOOLS_SERVICE: Service;
+  CATALOG_SERVICE: Service;
   POOL_SERVICE: Service;
   POOL_APP_SIGNING_KEY: string;
 }
@@ -141,6 +143,7 @@ export function handleRequest(request: Request, env: RouterEnv, context?: { wait
   const url = new URL(request.url);
   const { search } = url;
   const pathname = servicePath(url.pathname);
+  if (pathname.startsWith("/catalog/")) return env.CATALOG_SERVICE.fetch(request);
   if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/")) return handleSetup(request, env);
   // Internal setup assertions are sent only through the private binding by the setup host.
   if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());

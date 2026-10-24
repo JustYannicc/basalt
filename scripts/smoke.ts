@@ -19,6 +19,17 @@ for (const path of [brand.logo, "/favicon.png"]) {
 }
 const resource = await fetch(`${origin}/.well-known/oauth-protected-resource/mcp`);
 assert.equal((await resource.json()).resource_name, brand.name, "MCP metadata must name the brand");
+const catalog = await fetch(`${origin}/catalog/index.json`, { redirect: "manual" });
+assert.equal(catalog.status, 200, "Hosted connector catalog must load");
+const feed: { version: number; apps: { package: string; connectionNotices?: { providerName: string; message: string }[] }[] } = await catalog.json();
+assert.equal(feed.version, 1, "Hosted connector catalog must use the supported feed version");
+for (const [name, provider] of [["gmail", "Gmail"], ["google-calendar", "Google Calendar"],
+  ["google-drive", "Google Drive"], ["google-docs", "Google Docs"], ["google-sheets", "Google Sheets"],
+  ["google-slides", "Google Slides"], ["github", "GitHub"], ["slack", "Slack"]]) {
+  const entry = feed.apps.find(app => app.package === `@executor.sh/${name}`);
+  assert.ok(entry?.connectionNotices?.some(notice => notice.providerName === provider && notice.message.length > 0),
+    `${provider} must show its connection restriction`);
+}
 const pool = await fetch(`${origin}/v1/models`);
 assert.equal(pool.status, 401, "Pool backend must reject an unauthenticated model request");
 for (const path of ["/v0/management", "/v0/management/config", "/v8/management", "/v8/management/config"]) {
@@ -30,5 +41,5 @@ assert.equal(control.status, 401, "The pool control API must reject a request wi
 const mcp = await fetch(`${origin}/mcp`, { redirect: "manual" });
 assert.equal(mcp.status, 401, "MCP must require authentication");
 console.log(
-  "Public routing, brand and sign-in page passed. Interactive Google sign-in still needs verification.",
+  "Public routing, brand, sign-in page and connector feed passed. Interactive connections still need verification.",
 );
