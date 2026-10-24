@@ -1,0 +1,64 @@
+views {
+  dynamic view v1_share_pool {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Share a pool and remove a member"
+    description """
+      Source implementation; live acceptance is pending deployment and a second person.
+      The owner opens the root /share page with a signed intent from their pool. The share host checks the
+      native session and that the caller owns the pool, then uses the tools service's own sharing: it shares
+      a private pool with everyone in its organization and invites by email as member only (the link also
+      works without an account and expires after 7 days). Removing a member goes through native removal.
+      Before any access change commits, the tools service's hook signs the pool's new audience and posts it
+      to /pool/v1/access. The pool controller deletes the keys of everyone who lost the pool and creates the
+      backend user of everyone who gained it. A failure there fails the change, so it can be retried.
+    """
+
+    include poolOwner, localClient, basalt.router, basalt.setupHost, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    poolOwner -> localClient "open root /share with intent"
+    localClient -> basalt.router "POST /share/v1/invitations or DELETE /share/v1/members/:id"
+    basalt.router -> basalt.setupHost "handle same-origin share request"
+    basalt.setupHost -> basalt.toolsGateway "native session; validate intent owner; share app; invite as member or remove member"
+    basalt.toolsGateway -> basalt.router "before commit: POST /pool/v1/access with the pool's new audience"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/access"
+    basalt.modelGateway -> basalt.poolController "verify sba1 envelope; refuse removed people's older intents"
+    basalt.poolController -> basalt.poolRuntime "delete removed people's computer keys; create new members' backend users"
+    basalt.poolController <- basalt.poolRuntime "management response"
+    basalt.modelGateway <- basalt.poolController "keys revoked, users created"
+    basalt.router <- basalt.modelGateway "access change applied"
+    basalt.toolsGateway <- basalt.router "commit the share or removal"
+    basalt.setupHost <- basalt.toolsGateway "invitation or removal result"
+    basalt.router <- basalt.setupHost "people and invitations"
+    localClient <- basalt.router "share page response"
+    poolOwner <- localClient "member list; a removed member's next request fails"
+  }
+
+  dynamic view v1_switch_computer_pool {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Pick a computer's pool"
+    description """
+      Source implementation; live acceptance is pending deployment and a second person.
+      The setup page lists the person's computers in every pool they can use. Picking a pool is one click:
+      the controller checks that the person can use it and re-points the computer's existing key to that
+      pool's channel group with the guarded write that never sends an empty list. Nothing changes on the
+      computer, and its next request uses the new pool.
+    """
+
+    include poolMember, localClient, basalt.router, basalt.setupHost, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    poolMember -> localClient "pick a pool for a computer"
+    localClient -> basalt.router "POST /setup/v1/computers/:id/pool"
+    basalt.router -> basalt.setupHost "handle same-origin switch"
+    basalt.setupHost -> basalt.toolsGateway "native cookie get-session"
+    basalt.setupHost <- basalt.toolsGateway "verified user"
+    basalt.setupHost -> basalt.modelGateway "signed switch action with 30-second expiry via private binding"
+    basalt.modelGateway -> basalt.poolController "check the person's pools; serialize with access changes"
+    basalt.poolController -> basalt.poolRuntime "PATCH the same key's channels to [new pool group]"
+    basalt.poolController <- basalt.poolRuntime "management response"
+    basalt.modelGateway <- basalt.poolController "computer on its new pool"
+    basalt.setupHost <- basalt.modelGateway "public computer metadata"
+    basalt.router <- basalt.setupHost "switched computer"
+    localClient <- basalt.router "computer shows its new pool"
+    poolMember <- localClient "next request uses the new pool"
+  }
+}

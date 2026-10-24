@@ -8,6 +8,28 @@ import { BackendFailure } from "./json.ts";
 type Json = Record<string, unknown>;
 type Call = { path: string; method: string; body?: Json };
 
+test("an expired provisioning budget prevents late user creation when Home ignores abort", async () => {
+  const controller = new AbortController();
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const calls: string[] = [];
+  const home = new ComputerHome(new HomeClient(async (path, init) => {
+    assert.equal(init?.signal, controller.signal);
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    entered();
+    await gate;
+    return Response.json({ users: [] });
+  }));
+  const provisioning = home.user("fake-member", undefined, controller.signal);
+  await started;
+  controller.abort();
+  release();
+  await assert.rejects(provisioning, { name: "AbortError" });
+  assert.deepEqual(calls, ["GET /v8/management/users"]);
+});
+
 class FakeHomeServer {
   calls: Call[] = [];
   users: Json[] = [];
