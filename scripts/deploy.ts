@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { deployEnvironment } from "./environment.ts";
+import { connectorWarnings, deployEnvironment } from "./environment.ts";
 import { appHosting } from "../brand.ts";
 import { run } from "./process.ts";
 
@@ -10,6 +10,7 @@ const environment = deployEnvironment();
 if (!environment.SENTRY_DSN) console.warn("SENTRY_DSN is unset; feedback, error reporting and trace export are disabled.");
 if (!environment.POSTHOG_PROJECT_KEY) console.warn("POSTHOG_PROJECT_KEY is unset; product analytics are disabled.");
 if (environment.SENTRY_DSN && !environment.SENTRY_OTLP_ENDPOINT) console.warn("SENTRY_OTLP_ENDPOINT is unset; trace export is disabled.");
+for (const warning of connectorWarnings(environment)) console.warn(warning);
 const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.meta.url));
 if (appHosting.enabled) {
   run(
