@@ -19,13 +19,13 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
   assert.equal(sourceHash, expectedHash, "Atlassian catalog source does not match the expected frozen snapshot hash");
   const sourceSnapshot = JSON.parse(rawSource.toString("utf8"));
   const provenance = JSON.parse(await readFile(join(root, "src/catalog/atlassian/provenance.json"), "utf8"));
-  assert.equal(provenance.repository, "https://github.com/UsefulSoftwareCo/executor");
+  assert.equal(provenance.repository, "https://github.com/JustYannicc/executor-upstream");
   assert.equal(provenance.revision, "8e7ce4b6fedd6a4dfc8940a9c13dbd7e658081aa");
   assert.equal(provenance.directory, "playground/demo-apps/atlassian");
   assert.equal(provenance.snapshotSha256, sourceHash);
   for (const file of sourceSnapshot.files)
     assert.equal(createHash("sha256").update(file.content).digest("hex"), provenance.files[file.path],
-      `Atlassian source file ${file.path} differs from its immutable upstream capture`);
+      `Atlassian source file ${file.path} differs from its immutable source capture`);
   const { handleCatalog } = await import(pathToFileURL(join(root, "src/catalog/worker.ts")).href);
   const origin = "http://catalog-proof.invalid";
   const fetcher = async () => new Response(JSON.stringify({ version: 1, apps: [] }), {
