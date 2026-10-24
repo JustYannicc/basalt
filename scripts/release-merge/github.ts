@@ -1,5 +1,5 @@
 import { classifyCandidateFromTrustedMain } from "./trusted-classifier.ts";
-import { getPreviewReceiptArtifact } from "./preview-artifact.ts";
+import { getCheckReceiptArtifact, getPreviewReceiptArtifact } from "./preview-artifact.ts";
 import type { Ancestry } from "./candidate.ts";
 import type { ChangedFile, PullRequestSnapshot } from "./policy.ts";
 
@@ -28,6 +28,8 @@ export type WorkflowRun = {
   }>;
 };
 
+export type BranchUpdateResult = "accepted" | "rejected";
+
 export interface MergeGateApi {
   getPullRequest(repository: string, number: number): Promise<PullRequestSnapshot>;
   getBranchSha(repository: string, branch: string): Promise<string>;
@@ -39,8 +41,10 @@ export interface MergeGateApi {
   listWorkflowRuns(repository: string, workflowId: number, headSha: string): Promise<WorkflowRun[]>;
   getUnresolvedReviewThreadCount(repository: string, number: number): Promise<number>;
   listReviews(repository: string, number: number): Promise<Review[]>;
+  getCheckReceipt(repository: string, runId: number, artifactName: string): Promise<unknown | undefined>;
   getPreviewReceipt(repository: string, runId: number, artifactName: string): Promise<unknown | undefined>;
   addPullRequestLabels(repository: string, number: number, labels: string[]): Promise<void>;
+  updatePullRequestBranch(repository: string, number: number, expectedHeadSha: string): Promise<BranchUpdateResult>;
   mergeSquash(repository: string, number: number, expectedHeadSha: string): Promise<void>;
 }
 
@@ -167,6 +171,10 @@ export class GitHubApi implements MergeGateApi {
     return getPreviewReceiptArtifact(this.fetchImpl, (extra) => this.headers(extra), repository, runId, artifactName);
   }
 
+  async getCheckReceipt(repository: string, runId: number, artifactName: string): Promise<unknown | undefined> {
+    return getCheckReceiptArtifact(this.fetchImpl, (extra) => this.headers(extra), repository, runId, artifactName);
+  }
+
   async addPullRequestLabels(repository: string, number: number, labels: string[]): Promise<void> {
     const unique = [...new Set(labels)];
     if (unique.length === 0) return;
@@ -177,6 +185,17 @@ export class GitHubApi implements MergeGateApi {
     }) as Array<{ name?: unknown }>;
     if (!Array.isArray(response) || unique.some((label) => !response.some((item) => item.name === label)))
       throw new Error("GitHub did not confirm all release classification labels");
+  }
+
+  async updatePullRequestBranch(repository: string, number: number, expectedHeadSha: string): Promise<BranchUpdateResult> {
+    const response = await this.fetchImpl(`${API_ROOT}/repos/${repositoryPath(repository)}/pulls/${number}/update-branch`, {
+      method: "POST",
+      headers: this.headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ expected_head_sha: expectedHeadSha }),
+    });
+    if (response.status === 202) return "accepted";
+    if (response.status === 409 || response.status === 422) return "rejected";
+    throw new Error(`GitHub refused the expected-head release branch update (HTTP ${response.status})`);
   }
 
   async mergeSquash(repository: string, number: number, expectedHeadSha: string): Promise<void> {

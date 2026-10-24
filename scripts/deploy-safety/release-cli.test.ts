@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { candidateCheckout } from "./release.ts";
+import { candidateCheckout, resolveManualRollbackSourceRoot } from "./release.ts";
 import { gitRepositoryRoot } from "./release-plan.ts";
 
 test("bootstrap report accepts trusted main on workflow_dispatch without candidate-root", () => {
@@ -76,6 +76,39 @@ test("automatic report uses the checked-out candidate without candidate-root", (
   }
 });
 
+test("manual rollback source must be a separate exact-baseline worktree under RUNNER_TEMP", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "basalt-rollback-roots-"));
+  const failedRoot = join(temporary, "failed-candidate");
+  const rollbackRoot = join(temporary, "rollback-source");
+  mkdirSync(failedRoot);
+  mkdirSync(rollbackRoot);
+  const failedSha = createCommit(failedRoot);
+  const rollbackSha = createCommit(rollbackRoot);
+  try {
+    assert.equal(resolveManualRollbackSourceRoot(rollbackSha, rollbackRoot, failedRoot, temporary), realpathSync(rollbackRoot));
+    assert.throws(
+      () => resolveManualRollbackSourceRoot(failedSha, rollbackRoot, failedRoot, temporary),
+      /does not match the recorded production baseline/,
+    );
+    assert.throws(
+      () => resolveManualRollbackSourceRoot(rollbackSha, failedRoot, failedRoot, temporary),
+      /separate from the failed candidate/,
+    );
+    const outsideRoot = mkdtempSync(join(tmpdir(), "basalt-outside-rollback-"));
+    try {
+      const outsideSha = createCommit(outsideRoot);
+      assert.throws(
+        () => resolveManualRollbackSourceRoot(outsideSha, outsideRoot, failedRoot, temporary),
+        /must be under RUNNER_TEMP/,
+      );
+    } finally {
+      rmSync(outsideRoot, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 function commitAt(root: string): string {
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 }
@@ -84,7 +117,7 @@ function createCommit(root: string): string {
   execFileSync("git", ["init", "--quiet", root]);
   execFileSync("git", ["config", "user.name", "Fixture"], { cwd: root });
   execFileSync("git", ["config", "user.email", "fixture@example.invalid"], { cwd: root });
-  writeFileSync(join(root, "candidate.txt"), "candidate\n");
+  writeFileSync(join(root, "candidate.txt"), `${root}\n`);
   execFileSync("git", ["add", "candidate.txt"], { cwd: root });
   execFileSync("git", ["commit", "--quiet", "-m", "candidate"], { cwd: root });
   return commitAt(root);

@@ -144,6 +144,7 @@ test("creates a public-safe failing candidate and keeps identical scheduled retr
   );
 
   assert.equal(first.outcome, "created");
+  assert.equal(pull?.title, "chore: update node to node-v8.0.41");
   assert.equal(first.preparationFailed, true);
   assert.ok(pull?.labels.some(({ name }) => name === "release-update"));
   assert.ok(pull?.labels.some(({ name }) => name === "manual-release"));

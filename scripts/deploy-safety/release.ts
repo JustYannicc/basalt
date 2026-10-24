@@ -1,11 +1,11 @@
 import { appendFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyCurrentRelease, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
+import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
 import { inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
-import { beginManualRollback, executeRelease, productionReleaseDependencies, resolveCandidateSourceRoot, type ReleaseMode } from "./release-runner.ts";
+import { executeManualRollback, executeRelease, productionManualRollbackDependencies, productionReleaseDependencies, resolveCandidateSourceRoot, type ReleaseMode } from "./release-runner.ts";
 import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleaseCliOptions = { [key: string]: string };
@@ -47,6 +47,25 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
+  if (command === "rollback-report") {
+    const candidate = candidateCheckout(options).commit;
+    const plan = await classifyManualRollbackCandidate(candidate);
+    if (plan.ledger.state === "uninitialized")
+      throw new SafetyGateError("Rollback report requires the current production deployment record");
+    const deploymentState = plan.ledger.state === "ready" ? "success" : plan.ledger.deploymentStatus;
+    writeActionOutputs({
+      base_git_commit: plan.report.base.gitCommit,
+      candidate_git_commit: plan.report.candidate.gitCommit,
+      current_deployment_id: String(plan.ledger.deploymentId),
+      current_deployment_status: deploymentState,
+      database_changed: String(plan.report.databaseChanged),
+      workflow_changed: String(plan.report.workflowChanged),
+      report_digest: reportDigest(plan.report),
+    });
+    print(plan.report);
+    return;
+  }
+
   if (command === "backup-only") {
     const candidate = candidateCheckout(options).commit;
     const plan = await verifyFreshReport(parseReportFile(required(options, "--report")), candidate);
@@ -84,7 +103,11 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (command === "rollback-target") {
-    const plan = await verifyFreshManualRollbackReport(parseReportFile(required(options, "--report")), candidateCheckout(options).commit);
+    const plan = await verifyFreshManualRollbackReport(
+      parseReportFile(required(options, "--report")),
+      candidateCheckout(options).commit,
+      parseDeploymentId(required(options, "--deployment-id")),
+    );
     if (!plan.report.databaseChanged) {
       print({ manualRestoreRequired: false, reason: "database-unchanged" });
       return;
@@ -96,11 +119,23 @@ async function main(args: string[]): Promise<void> {
   }
 
   if (command === "manual-rollback") {
-    const plan = await verifyFreshManualRollbackReport(parseReportFile(required(options, "--report")), candidateCheckout(options).commit);
-    requireManualDispatchIfRisky(true);
-    const deploymentId = await beginManualRollback(plan.report);
-    writeActionOutputs({ deployment_id: String(deploymentId), rollback_state: "in_progress" });
-    print({ deploymentId, state: "in_progress", databaseRestore: plan.report.databaseChanged ? "manual-before-deploy" : "not-required" });
+    const candidate = candidateCheckout(options).commit;
+    const expectedDeploymentId = parseDeploymentId(required(options, "--deployment-id"));
+    const plan = await verifyFreshManualRollbackReport(
+      parseReportFile(required(options, "--report")), candidate, expectedDeploymentId,
+    );
+    const rollbackRoot = resolveManualRollbackSourceRoot(
+      plan.report.base.gitCommit,
+      options["--rollback-root"],
+      options["--candidate-root"],
+    );
+    const result = await executeManualRollback(
+      plan.report,
+      expectedDeploymentId,
+      productionManualRollbackDependencies(rollbackRoot, plan.report.base.gitCommit),
+    );
+    writeActionOutputs({ rollback_state: "success", deployment_state: "success" });
+    print(result);
     return;
   }
 
@@ -125,7 +160,7 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
-  throw new SafetyGateError("Usage: release.ts <latest-base|report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]");
+  throw new SafetyGateError("Usage: release.ts <latest-base|report|rollback-report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]");
 }
 
 export function candidateCheckout(options: ReleaseCliOptions, allowTrustedMainBootstrap = false): { root: string; commit: string } {
@@ -174,6 +209,32 @@ function isPathInside(path: string, parent: string): boolean {
     !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent);
 }
 
+export function resolveManualRollbackSourceRoot(
+  expectedCommit: string,
+  requestedRoot: string | undefined,
+  failedCandidateRoot: string | undefined,
+  runnerTemp = process.env.RUNNER_TEMP,
+): string {
+  if (!runnerTemp) throw new SafetyGateError("Manual rollback source requires RUNNER_TEMP");
+  let rollbackRoot: string;
+  let failedRoot: string;
+  let allowedRoot: string;
+  try {
+    rollbackRoot = realpathSync(requestedRoot ?? "");
+    failedRoot = realpathSync(failedCandidateRoot ?? "");
+    allowedRoot = realpathSync(runnerTemp);
+  } catch {
+    throw new SafetyGateError("Manual rollback worktree is unavailable");
+  }
+  if (!isPathInside(rollbackRoot, allowedRoot) || !isPathInside(failedRoot, allowedRoot))
+    throw new SafetyGateError("Manual rollback and failed-candidate worktrees must be under RUNNER_TEMP");
+  if (rollbackRoot === failedRoot || isPathInside(rollbackRoot, failedRoot) || isPathInside(failedRoot, rollbackRoot))
+    throw new SafetyGateError("Manual rollback source must be separate from the failed candidate worktree");
+  if (currentCommit(rollbackRoot) !== expectedCommit.toLowerCase())
+    throw new SafetyGateError("Manual rollback source HEAD does not match the recorded production baseline");
+  return rollbackRoot;
+}
+
 function parseOptions(args: string[]): ReleaseCliOptions {
   const options: ReleaseCliOptions = {};
   for (let index = 0; index < args.length; index++) {
@@ -182,7 +243,7 @@ function parseOptions(args: string[]): ReleaseCliOptions {
     const value = args[++index];
     if (!value || value.startsWith("--")) throw new SafetyGateError(`Missing value for ${key}`);
     if (options[key] !== undefined) throw new SafetyGateError(`Duplicate option ${key}`);
-    if (!new Set(["--report", "--candidate", "--mode", "--candidate-root"]).has(key))
+    if (!new Set(["--report", "--candidate", "--mode", "--candidate-root", "--rollback-root", "--deployment-id"]).has(key))
       throw new SafetyGateError(`Unknown option ${key}`);
     options[key] = value;
   }
@@ -198,6 +259,13 @@ function required(options: ReleaseCliOptions, name: string): string {
 function parseMode(value: string): ReleaseMode {
   if (value !== "automatic" && value !== "manual") throw new SafetyGateError("Release mode must be automatic or manual");
   return value;
+}
+
+function parseDeploymentId(value: string): number {
+  if (!/^[1-9][0-9]*$/.test(value)) throw new SafetyGateError("Production deployment id is invalid");
+  const id = Number(value);
+  if (!Number.isSafeInteger(id)) throw new SafetyGateError("Production deployment id is invalid");
+  return id;
 }
 
 function requireManualDispatchIfRisky(manualRequired: boolean): void {

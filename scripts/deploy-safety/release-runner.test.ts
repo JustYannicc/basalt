@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
-import { assertReleaseMode, executeRelease, type ReleaseDependencies } from "./release-runner.ts";
+import { assertReleaseMode, executeManualRollback, executeRelease, type ManualRollbackDependencies, type ReleaseDependencies } from "./release-runner.ts";
 
 const sha = (character: string) => character.repeat(40);
 
@@ -130,6 +130,88 @@ test("manual mode requires a trusted main workflow dispatch", () => {
   assert.doesNotThrow(() => assertReleaseMode(report(), "automatic", "workflow_dispatch", "refs/heads/main"));
   assert.throws(() => assertReleaseMode(report({ databaseChanged: true }), "automatic", "workflow_dispatch", "refs/heads/main"), /require manual release mode/);
   assert.throws(() => assertReleaseMode(report(), "automatic", "push", "refs/heads/release"), /main branch/);
+});
+
+test("manual database rollback builds the exact old source, deploys it, smokes production and completes the ledger", async () => {
+  const calls: string[] = [];
+  const deps: ManualRollbackDependencies = {
+    assertBackup: async () => { calls.push("backup"); },
+    prepare: async () => { calls.push("prepare-and-build-old-source"); },
+    validateCredentials: () => { calls.push("validate-old-source-and-credentials"); },
+    begin: async (_value, expectedDeploymentId) => { calls.push(`begin:${expectedDeploymentId}`); return 99; },
+    mark: async (id, state) => { calls.push(`mark:${id}:${state}`); },
+    deploy: async () => { calls.push("deploy-old-source"); return { started: true, exitCode: 0 }; },
+    smoke: async () => { calls.push("public-smoke"); return { started: true, exitCode: 0 }; },
+  };
+  const result = await executeManualRollback(
+    report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
+    "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+  );
+  assert.deepEqual(calls, [
+    "backup", "prepare-and-build-old-source", "validate-old-source-and-credentials", "begin:42",
+    "deploy-old-source", "public-smoke", "mark:99:success",
+  ]);
+  assert.deepEqual(result, { state: "rolled-back", deploymentId: 99 });
+});
+
+test("manual rollback does not create a ledger record when prior-source preparation fails", async () => {
+  const calls: string[] = [];
+  const deps: ManualRollbackDependencies = {
+    assertBackup: async () => { calls.push("backup"); },
+    prepare: async () => { calls.push("prepare"); throw new Error("build failed"); },
+    validateCredentials: () => { calls.push("validate"); },
+    begin: async () => { calls.push("begin"); return 99; },
+    mark: async () => { calls.push("mark"); },
+    deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; },
+    smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
+  };
+  await assert.rejects(
+    executeManualRollback(
+      report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
+      "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+    ),
+    /build failed/,
+  );
+  assert.deepEqual(calls, ["backup", "prepare"]);
+});
+
+test("manual rollback records deployment or smoke failure and requires trusted main dispatch", async () => {
+  const calls: string[] = [];
+  const deps: ManualRollbackDependencies = {
+    assertBackup: async () => { calls.push("backup"); },
+    prepare: async () => { calls.push("prepare"); },
+    validateCredentials: () => { calls.push("validate"); },
+    begin: async () => { calls.push("begin"); return 99; },
+    mark: async (_id, state) => { calls.push(`mark:${state}`); },
+    deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 1 }; },
+    smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
+  };
+  await assert.rejects(executeManualRollback(
+    report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
+    "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+  ), /deployment failed/);
+  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "mark:failure"]);
+
+  calls.length = 0;
+  deps.deploy = async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; };
+  deps.smoke = async () => { calls.push("smoke"); return { started: true, exitCode: 1 }; };
+  await assert.rejects(executeManualRollback(
+    report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
+    "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+  ), /public smoke failed/);
+  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "smoke", "mark:failure"]);
+
+  calls.length = 0;
+  await assert.rejects(executeManualRollback(
+    report({ databaseChanged: true }), 42, deps, "push", "refs/heads/main",
+    "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+  ), /trusted main/);
+  assert.deepEqual(calls, []);
+  await assert.rejects(executeManualRollback(
+    report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
+    "owner/repo/.github/workflows/release-manual.yml@refs/heads/main", "owner/repo",
+  ), /trusted main/);
+  assert.deepEqual(calls, []);
 });
 
 function restore(name: string, value: string | undefined): void {

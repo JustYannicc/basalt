@@ -74,3 +74,39 @@ test("does not pass credentials into upstream build commands", () => {
     GITHUB_REPOSITORY: "owner/repository",
   });
 });
+
+test("does not reconcile or change pins while waiting for a published tools release", async (context) => {
+  const root = makeReleaseRoot();
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const upstreamBefore = readFileSync(join(root, "upstream.json"), "utf8");
+  const releasesBefore = readFileSync(join(root, "containers/pool/releases.json"), "utf8");
+  const paths: string[] = [];
+  let reconciled = false;
+  const api = {
+    async get(path: string) {
+      paths.push(path);
+      if (path === "repos/UsefulSoftwareCo/executor/releases?per_page=100&page=1")
+        return [{ tag_name: "executor@1.9.99", draft: false }];
+      throw new Error(`Unexpected API request: ${path}`);
+    },
+    async request() { return undefined; },
+    async compare() { return { complete: true, status: "identical" as const, aheadBy: 0, behindBy: 0, files: [] }; },
+    async compareTrees() { return { complete: true, status: "diverged" as const, aheadBy: 0, behindBy: 0, files: [] }; },
+  } as unknown as ReleaseUpdateApi;
+
+  await assert.rejects(runReleaseUpdate(root, "tools", "release-token", {
+    api,
+    repository: "owner/repository",
+    resetMain: () => sha("1"),
+    runCommand: () => assert.fail("preparation must not run without a released candidate"),
+    reconcile: async () => {
+      reconciled = true;
+      throw new Error("unreleased pins must not reach PR reconciliation");
+    },
+  }), /No published versioned Executor v2 release is available yet/);
+
+  assert.deepEqual(paths, ["repos/UsefulSoftwareCo/executor/releases?per_page=100&page=1"]);
+  assert.equal(reconciled, false);
+  assert.equal(readFileSync(join(root, "upstream.json"), "utf8"), upstreamBefore);
+  assert.equal(readFileSync(join(root, "containers/pool/releases.json"), "utf8"), releasesBefore);
+});

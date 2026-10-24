@@ -31,14 +31,37 @@ export async function validateReleaseCandidate(
   pullRequestNumber: number,
   expectedHeadSha?: string,
 ): Promise<CandidateValidation> {
+  return validateCandidate(api, repository, pullRequestNumber, expectedHeadSha, false, true);
+}
+
+/** Validate release allowlisting for a guarded branch refresh, where ancestry is expected to be stale. */
+export async function validateReleaseBranchUpdateCandidate(
+  api: CandidateApi,
+  repository: string,
+  pullRequestNumber: number,
+  expectedHeadSha?: string,
+): Promise<CandidateValidation> {
+  return validateCandidate(api, repository, pullRequestNumber, expectedHeadSha, true, false);
+}
+
+async function validateCandidate(
+  api: CandidateApi,
+  repository: string,
+  pullRequestNumber: number,
+  expectedHeadSha: string | undefined,
+  allowStaleBase: boolean,
+  requireCurrentMainAncestor: boolean,
+): Promise<CandidateValidation> {
   const pr = await api.getPullRequest(repository, pullRequestNumber);
   const currentMainSha = await api.getBranchSha(repository, RELEASE_MERGE_POLICY.baseBranch);
-  const reasons = validatePullRequestIdentity(pr, repository, currentMainSha, expectedHeadSha);
+  const reasons = validatePullRequestIdentity(pr, repository, currentMainSha, expectedHeadSha, { allowStaleBase });
   if (reasons.length) return { allowed: false, reasons, pullRequest: pr, currentMainSha, headSha: pr.head.sha };
 
-  const ancestry = await api.compareAncestry(repository, currentMainSha, pr.head.sha);
-  if (ancestry.status !== "ahead" || ancestry.mergeBaseSha !== currentMainSha)
-    return { allowed: false, reasons: ["current main is not an ancestor of the exact pull request head"], pullRequest: pr, currentMainSha, headSha: pr.head.sha };
+  if (requireCurrentMainAncestor) {
+    const ancestry = await api.compareAncestry(repository, currentMainSha, pr.head.sha);
+    if (ancestry.status !== "ahead" || ancestry.mergeBaseSha !== currentMainSha)
+      return { allowed: false, reasons: ["current main is not an ancestor of the exact pull request head"], pullRequest: pr, currentMainSha, headSha: pr.head.sha };
+  }
 
   const files = await api.listPullRequestFiles(repository, pullRequestNumber);
   const contentPaths = new Set<string>([

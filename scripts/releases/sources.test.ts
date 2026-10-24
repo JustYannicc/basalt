@@ -20,20 +20,21 @@ test("selects the newest released v2 tag and verifies the hosted cloud package a
   assert.equal(candidate.commit, sha("9"));
 });
 
-test("uses the v2 branch only when no v2 release tags exist", async () => {
-  const api = fakeApi({
-    "repos/UsefulSoftwareCo/executor/releases?per_page=100&page=1": [
-      { tag_name: "executor@1.9.99", draft: false },
-    ],
-    "repos/UsefulSoftwareCo/executor/commits/v2": { sha: sha("9") },
-    [`repos/UsefulSoftwareCo/executor/contents/apps/hosted/cloud/package.json?ref=${sha("9")}`]: {
-      encoding: "base64",
-      content: Buffer.from(JSON.stringify({ name: "@executor-js/hosted-cloud" })).toString("base64"),
+test("waits for a published v2 release without requesting the moving branch", async () => {
+  const paths: string[] = [];
+  const api = {
+    async get(path: string) {
+      paths.push(path);
+      if (path === "repos/UsefulSoftwareCo/executor/releases?per_page=100&page=1")
+        return [
+          { tag_name: "executor@2.0.0-beta.99", draft: true },
+          { tag_name: "executor@1.9.99", draft: false },
+        ];
+      throw new Error(`Unexpected API request: ${path}`);
     },
-  });
-  const candidate = await latestToolsCandidate(api, "UsefulSoftwareCo/executor");
-  assert.equal(candidate.tag, null);
-  assert.equal(candidate.commit, sha("9"));
+  } as unknown as GitHubApi;
+  await assert.rejects(latestToolsCandidate(api, "UsefulSoftwareCo/executor"), /No published versioned Executor v2 release is available yet/);
+  assert.deepEqual(paths, ["repos/UsefulSoftwareCo/executor/releases?per_page=100&page=1"]);
 });
 
 test("rejects an Executor release tag without the hosted cloud package", async () => {

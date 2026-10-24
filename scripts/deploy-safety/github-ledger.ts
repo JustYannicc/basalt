@@ -158,24 +158,22 @@ export async function beginRollbackDeployment(
   report: ClassificationReport,
   environment: LedgerEnvironment,
   fetcher: Fetcher = fetch,
+  expectedDeploymentId?: number,
 ): Promise<number> {
-  if (report.databaseChanged)
-    throw new SafetyGateError("Database rollback cannot be recorded as complete until the manual branch-binding recovery is supported");
   const ledger = await readDeploymentLedger(environment, fetcher);
   if (ledger.state === "uninitialized") throw new SafetyGateError("Cannot roll back before a production deployment exists");
-
-  const deployments = await listDeployments(environment, fetcher);
-  deployments.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
-  const latest = deployments[0]!;
-  const payload = parseDeploymentPayload(latest.payload);
-  if (latest.sha.toLowerCase() !== report.candidate.gitCommit ||
-      payload.gitCommit !== report.candidate.gitCommit ||
-      payload.baseGitCommit !== report.base.gitCommit ||
-      payload.reportDigest !== reportDigest(report))
-    throw new SafetyGateError("Rollback report does not identify the latest production release candidate");
+  if (expectedDeploymentId !== undefined && ledger.deploymentId !== expectedDeploymentId)
+    throw new SafetyGateError("Production deployment changed after the rollback plan was prepared");
+  assertManualRollbackCandidate(report, ledger);
 
   const rollbackPayload = makePayload(report, report.base.gitCommit, report.base.pins, "rollback");
   rollbackPayload.rollbackOf = report.candidate.gitCommit;
+  if (report.databaseChanged) {
+    const releasePayload = ledger.payload;
+    if (!releasePayload?.backupName)
+      throw new SafetyGateError("Database rollback is missing its protected backup reference");
+    rollbackPayload.backupName = releasePayload.backupName;
+  }
   return createDeployment(environment, rollbackPayload, fetcher);
 }
 

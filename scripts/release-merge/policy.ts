@@ -22,10 +22,26 @@ export const RELEASE_MERGE_POLICY = Object.freeze({
   releaseReceiptPrefix: "scripts/releases/receipts/",
   generatedArchitecturePath: "architecture/gen/stack.gen.c4",
   previewReceiptFile: "preview-receipt.json",
+  checkReceiptFile: "check-receipt.json",
+  checkArtifactName(prNumber: number, head: string, runAttempt: number) {
+    return `release-check-${prNumber}-${head}-${runAttempt}`;
+  },
   previewArtifactName(prNumber: number, head: string) {
     return `release-preview-${prNumber}-${head}`;
   },
 });
+
+export type CheckRunReceipt = Readonly<{
+  version: 1;
+  repository: string;
+  pullRequest: number;
+  runId: number;
+  runAttempt: number;
+  head: string;
+  base: string;
+  mergeCommit: string;
+  parents: readonly [base: string, head: string];
+}>;
 
 export type PullRequestSnapshot = {
   number: number;
@@ -62,6 +78,7 @@ export function validatePullRequestIdentity(
   repository: string,
   currentMainSha: string,
   expectedHeadSha?: string,
+  options: { allowStaleBase?: boolean } = {},
 ): string[] {
   const reasons: string[] = [];
   if (!Number.isSafeInteger(pr.number) || pr.number < 1) reasons.push("invalid pull request number");
@@ -69,7 +86,8 @@ export function validatePullRequestIdentity(
   if (pr.head.repo?.full_name !== repository || pr.base.repo?.full_name !== repository)
     reasons.push("pull request is not from the current repository");
   if (pr.base.ref !== RELEASE_MERGE_POLICY.baseBranch) reasons.push("base branch is not main");
-  if (pr.base.sha !== currentMainSha) reasons.push("pull request base is stale");
+  if (!SHA.test(pr.base.sha)) reasons.push("pull request base SHA is invalid");
+  else if (pr.base.sha !== currentMainSha && options.allowStaleBase !== true) reasons.push("pull request base is stale");
   if (!pr.head.ref.startsWith(RELEASE_MERGE_POLICY.updaterBranchPrefix)) reasons.push("head branch is not an updater branch");
   if (!pr.labels.some(({ name }) => name === RELEASE_MERGE_POLICY.releaseLabel)) reasons.push("release-update label is missing");
   if (!SHA.test(pr.head.sha)) reasons.push("head SHA is invalid");
@@ -207,6 +225,33 @@ export function validatePreviewReceipt(
   if (value.base !== expected.base) reasons.push("preview receipt base does not match current main");
   if (value.smoke !== true) reasons.push("preview native smoke is missing");
   if (value.teardown !== true) reasons.push("preview teardown proof is missing");
+  return reasons;
+}
+
+export function validateCheckRunReceipt(
+  value: unknown,
+  expected: { repository: string; pullRequest: number; runId: number; runAttempt: number; head: string; base: string },
+): string[] {
+  if (!isRecord(value)) return ["Check receipt is not an object"];
+  if (!hasExactKeys(value, ["version", "repository", "pullRequest", "runId", "runAttempt", "head", "base", "mergeCommit", "parents"]))
+    return ["Check receipt has unexpected fields"];
+
+  const reasons: string[] = [];
+  if (value.version !== 1) reasons.push("Check receipt version is unsupported");
+  if (value.repository !== expected.repository) reasons.push("Check receipt repository does not match");
+  if (value.pullRequest !== expected.pullRequest) reasons.push("Check receipt pull request does not match");
+  if (value.runId !== expected.runId) reasons.push("Check receipt workflow run does not match");
+  if (value.runAttempt !== expected.runAttempt) reasons.push("Check receipt workflow attempt does not match");
+  if (value.head !== expected.head) reasons.push("Check receipt head does not match");
+  if (value.base !== expected.base) reasons.push("Check receipt base does not match current main");
+  if (typeof value.mergeCommit !== "string" || !SHA.test(value.mergeCommit)) reasons.push("Check receipt merge commit is invalid");
+  else if (value.mergeCommit === expected.base || value.mergeCommit === expected.head) reasons.push("Check receipt merge commit is not a distinct merge result");
+  if (!Array.isArray(value.parents) || value.parents.length !== 2 || value.parents.some((parent) => typeof parent !== "string" || !SHA.test(parent)))
+    reasons.push("Check receipt merge parents are invalid");
+  else {
+    if (value.parents[0] !== expected.base) reasons.push("Check receipt merge result used a different base parent");
+    if (value.parents[1] !== expected.head) reasons.push("Check receipt merge result used a different head parent");
+  }
   return reasons;
 }
 

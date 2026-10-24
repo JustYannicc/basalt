@@ -1,7 +1,7 @@
 import type { Architecture, ArtifactPin } from "./types.ts";
 import { GitHubApi } from "./github.ts";
 
-export type ToolCandidate = { repository: string; commit: string; tag: string | null };
+export type ToolCandidate = { repository: string; commit: string; tag: string };
 export type ReleaseAsset = { name: string; digest?: string | null };
 export type GitHubRelease = {
   tag_name: string;
@@ -20,17 +20,11 @@ export async function latestToolsCandidate(api: Pick<GitHubApi, "get">, reposito
     .filter((item): item is { release: GitHubReleaseList; version: Version } => item.version !== undefined)
     .sort((a, b) => compareVersions(b.version, a.version));
 
-  if (releasedV2.length) {
-    const release = releasedV2[0]!.release;
-    const commit = await commitForTag(api, apiRepository, release.tag_name);
-    await assertHostedCloudSource(api, apiRepository, release.tag_name);
-    return { repository, commit, tag: release.tag_name };
-  }
-
-  const branch = await api.get<{ sha: string }>(`repos/${apiRepository}/commits/v2`);
-  if (!isSha(branch.sha)) throw new Error("The Executor v2 branch did not return an immutable commit");
-  await assertHostedCloudSource(api, apiRepository, branch.sha);
-  return { repository, commit: branch.sha, tag: null };
+  const release = releasedV2[0]?.release;
+  if (!release) throw new Error("No published versioned Executor v2 release is available yet");
+  const commit = await commitForTag(api, apiRepository, release.tag_name);
+  await assertHostedCloudSource(api, apiRepository, release.tag_name);
+  return { repository, commit, tag: release.tag_name };
 }
 
 async function assertHostedCloudSource(api: Pick<GitHubApi, "get">, repository: string, ref: string): Promise<void> {

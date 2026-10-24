@@ -67,6 +67,17 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   return { report, ledger, manualRequired: report.databaseChanged || report.workflowChanged };
 }
 
+export async function classifyManualRollbackCandidate(candidateRef: string): Promise<ReleasePlan> {
+  const environment = readLedgerEnvironment();
+  const ledger = await readDeploymentLedger(environment);
+  if (ledger.state === "uninitialized" || ledger.gitCommit !== candidateRef)
+    throw new SafetyGateError("Rollback candidate does not match the latest production deployment");
+  const baseCommit = manualRollbackBaselineCommit(ledger);
+  const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, new GitHubApi(environment.token));
+  assertManualRollbackCandidate(report, ledger);
+  return { report, ledger, manualRequired: report.databaseChanged || report.workflowChanged };
+}
+
 export async function verifyFreshReport(
   report: ClassificationReport,
   expectedCandidate = currentCommit(),
@@ -79,11 +90,15 @@ export async function verifyFreshReport(
 export async function verifyFreshManualRollbackReport(
   report: ClassificationReport,
   expectedCandidate = report.candidate.gitCommit,
+  expectedDeploymentId?: number,
 ): Promise<ReleasePlan> {
   if (report.candidate.gitCommit !== expectedCandidate)
     throw new SafetyGateError("Manual rollback report candidate does not match the expected commit");
   const environment = readLedgerEnvironment();
   const ledger = await readDeploymentLedger(environment);
+  if (expectedDeploymentId !== undefined && (!Number.isSafeInteger(expectedDeploymentId) || expectedDeploymentId < 1 ||
+      ledger.state === "uninitialized" || ledger.deploymentId !== expectedDeploymentId))
+    throw new SafetyGateError("Production deployment changed after the rollback plan was prepared");
   assertManualRollbackCandidate(report, ledger);
   const baseCommit = manualRollbackBaselineCommit(ledger);
   if (report.base.gitCommit !== baseCommit)

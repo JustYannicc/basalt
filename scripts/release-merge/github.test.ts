@@ -26,3 +26,30 @@ test("artifact redirects do not forward the GitHub token", async () => {
   assert.equal(requests[2]!.authorization, null);
   assert.equal(requests[2]!.redirect, "manual");
 });
+
+test("branch refresh sends GitHub the expected head guard", async () => {
+  const requests: Array<{ url: string; method: string | undefined; authorization: string | null; body: string | undefined }> = [];
+  const fetchImpl: typeof fetch = async (input, init = {}) => {
+    requests.push({
+      url: String(input),
+      method: init.method,
+      authorization: new Headers(init.headers).get("authorization"),
+      body: typeof init.body === "string" ? init.body : undefined,
+    });
+    return new Response(null, { status: 202 });
+  };
+  const api = new GitHubApi("fixture-token", fetchImpl);
+
+  assert.equal(await api.updatePullRequestBranch("owner/repo", 19, "b".repeat(40)), "accepted");
+  assert.deepEqual(requests, [{
+    url: "https://api.github.com/repos/owner/repo/pulls/19/update-branch",
+    method: "POST",
+    authorization: "Bearer fixture-token",
+    body: JSON.stringify({ expected_head_sha: "b".repeat(40) }),
+  }]);
+});
+
+test("branch refresh reports an expected-head conflict without treating it as accepted", async () => {
+  const api = new GitHubApi("fixture-token", async () => new Response(null, { status: 422 }));
+  assert.equal(await api.updatePullRequestBranch("owner/repo", 19, "b".repeat(40)), "rejected");
+});

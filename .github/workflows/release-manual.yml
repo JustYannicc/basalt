@@ -77,6 +77,9 @@ jobs:
     timeout-minutes: 60
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+      POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}

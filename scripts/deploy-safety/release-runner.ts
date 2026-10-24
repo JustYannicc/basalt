@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClassificationReport } from "../releases/types.ts";
 import { SafetyGateError } from "./contracts.ts";
-import { assertManualRollbackCandidate, beginReleaseDeployment, beginRollbackDeployment, finishDeployment, readDeploymentLedger, readLedgerEnvironment } from "./github-ledger.ts";
+import { beginReleaseDeployment, beginRollbackDeployment, finishDeployment, readLedgerEnvironment } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { requirePlanetScaleEnvironment } from "./runtime.ts";
 
@@ -21,6 +21,16 @@ export type ReleaseDependencies = {
   deploy(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
   rollback(report: ClassificationReport): Promise<void>;
+};
+
+export type ManualRollbackDependencies = {
+  assertBackup(report: ClassificationReport): Promise<void>;
+  prepare(): Promise<void>;
+  validateCredentials(): void;
+  begin(report: ClassificationReport, expectedDeploymentId: number): Promise<number>;
+  mark(deploymentId: number, state: "success" | "failure"): Promise<void>;
+  deploy(): Promise<CommandResult>;
+  smoke(): Promise<CommandResult>;
 };
 
 export type ReleaseResult = {
@@ -55,6 +65,44 @@ export async function executeRelease(
 
   await dependencies.mark(deploymentId, "success");
   return { state: "deployed", deploymentId };
+}
+
+export async function executeManualRollback(
+  report: ClassificationReport,
+  expectedDeploymentId: number,
+  dependencies: ManualRollbackDependencies,
+  eventName = process.env.GITHUB_EVENT_NAME,
+  ref = process.env.GITHUB_REF,
+  workflowRef = process.env.GITHUB_WORKFLOW_REF,
+  repository = process.env.GITHUB_REPOSITORY,
+): Promise<{ state: "rolled-back"; deploymentId: number }> {
+  if (eventName !== "workflow_dispatch" || ref !== "refs/heads/main" || !repository ||
+      workflowRef !== `${repository}/.github/workflows/release-rollback.yml@refs/heads/main`)
+    throw new SafetyGateError("Manual rollback requires workflow_dispatch from trusted main");
+  if (!Number.isSafeInteger(expectedDeploymentId) || expectedDeploymentId < 1)
+    throw new SafetyGateError("Manual rollback requires the exact planned production deployment id");
+  if (!report.databaseChanged && !report.workflowChanged)
+    throw new SafetyGateError("Manual rollback is reserved for database or Workflow-identity releases");
+
+  if (report.databaseChanged) await dependencies.assertBackup(report);
+  await dependencies.prepare();
+  dependencies.validateCredentials();
+
+  const deploymentId = await dependencies.begin(report, expectedDeploymentId);
+  const deploy = await dependencies.deploy();
+  if (!deploy.started || deploy.exitCode !== 0) {
+    await dependencies.mark(deploymentId, "failure");
+    throw new SafetyGateError("Previous production release deployment failed; rollback remains unresolved");
+  }
+
+  const smoke = await dependencies.smoke();
+  if (!smoke.started || smoke.exitCode !== 0) {
+    await dependencies.mark(deploymentId, "failure");
+    throw new SafetyGateError("Previous production release public smoke failed; rollback remains unresolved");
+  }
+
+  await dependencies.mark(deploymentId, "success");
+  return { state: "rolled-back", deploymentId };
 }
 
 export function assertReleaseMode(
@@ -143,18 +191,44 @@ function validateCandidateSource(sourceRoot: string, candidateCommit?: string): 
     throw new SafetyGateError("Candidate deployment credentials or configuration failed validation");
 }
 
-export async function beginManualRollback(report: ClassificationReport): Promise<number> {
-  if (process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" || process.env.GITHUB_REF !== "refs/heads/main")
-    throw new SafetyGateError("Manual rollback requires workflow_dispatch from trusted main");
+export function productionManualRollbackDependencies(
+  sourceRoot: string,
+  rollbackCommit: string,
+): ManualRollbackDependencies {
   const environment = readLedgerEnvironment();
-  const ledger = await readDeploymentLedger(environment);
-  assertManualRollbackCandidate(report, ledger);
-  if (report.databaseChanged) {
-    const target = await new PlanetScaleSafety(requirePlanetScaleEnvironment()).manualRollbackTarget(report);
-    if (!target.manualRestoreRequired)
-      throw new SafetyGateError("Database rollback requires operator restoration before the old release deploy");
+  const planetscale = new PlanetScaleSafety(requirePlanetScaleEnvironment());
+  const release = productionReleaseDependencies(sourceRoot, rollbackCommit);
+  return {
+    assertBackup: async (report) => {
+      const target = await planetscale.manualRollbackTarget(report);
+      if (!target.manualRestoreRequired)
+        throw new SafetyGateError("Database rollback backup is not available for the classified release");
+    },
+    prepare: () => prepareRollbackSource(sourceRoot),
+    validateCredentials: release.validateCredentials,
+    begin: (report, expectedDeploymentId) => beginRollbackDeployment(report, environment, fetch, expectedDeploymentId),
+    mark: (deploymentId, state) => finishDeployment(deploymentId, state, environment),
+    deploy: () => runCommand("npm", ["run", "deploy"], sourceRoot, {
+      ...process.env,
+      GITHUB_SHA: rollbackCommit,
+    }),
+    smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
+  };
+}
+
+async function prepareRollbackSource(sourceRoot: string): Promise<void> {
+  const commands: Array<[string, string[], string]> = [
+    ["node", ["scripts/prepare-upstream.ts"], "upstream preparation"],
+    ["npm", ["run", "check:upstream"], "upstream checks"],
+    ["npm", ["run", "build"], "build"],
+    ["npm", ["run", "check:build"], "build checks"],
+    ["npm", ["run", "typecheck"], "typecheck"],
+  ];
+  for (const [command, args, label] of commands) {
+    const result = await runCommand(command, args, sourceRoot);
+    if (!result.started || result.exitCode !== 0)
+      throw new SafetyGateError(`Previous production release ${label} failed; rollback deployment was not started`);
   }
-  return beginRollbackDeployment(report, environment);
 }
 
 async function recoverAfterAttempt(

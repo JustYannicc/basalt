@@ -39,9 +39,7 @@ export async function planUpdate(rootPath: string, source: UpdateSource, api: Pi
   if (source === "tools") {
     const candidate = await latestToolsCandidate(api, upstream.repository);
     candidatePins.tools = { repository: candidate.repository, commit: candidate.commit };
-    releaseKey = candidate.tag
-      ? `tools-${slug(candidate.tag)}-${candidate.commit.slice(0, 12)}`
-      : `tools-v2-${candidate.commit.slice(0, 12)}`;
+    releaseKey = `tools-${slug(candidate.tag)}-${candidate.commit.slice(0, 12)}`;
     if (candidate.commit !== upstream.commit) {
       files.push({
         path: "upstream.json",

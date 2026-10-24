@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateChangedFiles, validatePreviewReceipt, validatePullRequestIdentity, type ChangedFile, type FileContents, type ReleasePins } from "./policy.ts";
+import { validateChangedFiles, validateCheckRunReceipt, validatePreviewReceipt, validatePullRequestIdentity, type ChangedFile, type FileContents, type ReleasePins } from "./policy.ts";
 
 const basePins: ReleasePins = {
   tools: { repository: "UsefulSoftwareCo/executor", commit: "1".repeat(40) },
@@ -163,7 +163,9 @@ test("validates current repository, branch, label, base and exact head", () => {
   assert.deepEqual(validatePullRequestIdentity(valid, "owner/repo", "e".repeat(40), "f".repeat(40)), []);
   assert.match(validatePullRequestIdentity(pr({ head: { ...valid.head, ref: "release-updates-evil" } }), "owner/repo", "e".repeat(40))[0]!, /updater branch/);
   assert.match(validatePullRequestIdentity(pr({ labels: [] }), "owner/repo", "e".repeat(40))[0]!, /label/);
-  assert.match(validatePullRequestIdentity(pr({ base: { ...valid.base, sha: "d".repeat(40) } }), "owner/repo", "e".repeat(40))[0]!, /stale/);
+  const staleBase = pr({ base: { ...valid.base, sha: "d".repeat(40) } });
+  assert.match(validatePullRequestIdentity(staleBase, "owner/repo", "e".repeat(40))[0]!, /stale/);
+  assert.deepEqual(validatePullRequestIdentity(staleBase, "owner/repo", "e".repeat(40), undefined, { allowStaleBase: true }), []);
   assert.match(validatePullRequestIdentity(pr({ head: { ...valid.head, repo: { full_name: "fork/repo" } } }), "owner/repo", "e".repeat(40))[0]!, /current repository/);
 });
 
@@ -174,4 +176,27 @@ test("preview receipt binds the PR, head, current main, smoke and teardown", () 
   assert.match(validatePreviewReceipt({ ...receipt, base: "d".repeat(40) }, { pullRequest: 19, head: "f".repeat(40), base: "e".repeat(40) }).join(" "), /base/);
   assert.match(validatePreviewReceipt({ ...receipt, teardown: false }, { pullRequest: 19, head: "f".repeat(40), base: "e".repeat(40) }).join(" "), /teardown/);
   assert.match(validatePreviewReceipt({ ...receipt, secret: "no" }, { pullRequest: 19, head: "f".repeat(40), base: "e".repeat(40) }).join(" "), /unexpected/);
+});
+
+test("Check receipt binds the exact PR, run attempt and merge-result parents", () => {
+  const head = "f".repeat(40);
+  const base = "e".repeat(40);
+  const receipt = {
+    version: 1,
+    repository: "owner/repo",
+    pullRequest: 19,
+    runId: 700,
+    runAttempt: 2,
+    head,
+    base,
+    mergeCommit: "d".repeat(40),
+    parents: [base, head],
+  };
+  const expected = { repository: "owner/repo", pullRequest: 19, runId: 700, runAttempt: 2, head, base };
+  assert.deepEqual(validateCheckRunReceipt(receipt, expected), []);
+  assert.match(validateCheckRunReceipt({ ...receipt, runAttempt: 1 }, expected).join(" "), /attempt/);
+  assert.match(validateCheckRunReceipt({ ...receipt, mergeCommit: head }, expected).join(" "), /distinct merge result/);
+  assert.match(validateCheckRunReceipt({ ...receipt, parents: ["c".repeat(40), head] }, expected).join(" "), /base parent/);
+  assert.match(validateCheckRunReceipt({ ...receipt, parents: [base, "c".repeat(40)] }, expected).join(" "), /head parent/);
+  assert.match(validateCheckRunReceipt({ ...receipt, unexpected: true }, expected).join(" "), /unexpected/);
 });

@@ -1,8 +1,8 @@
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validateReleaseCandidate, type CandidateValidation } from "./candidate.ts";
-import { validateReleaseProofs } from "./gate.ts";
 import { GitHubApi, type MergeGateApi } from "./github.ts";
+import { validateReleaseProofs } from "./proofs.ts";
 
 export type ManualCandidate = {
   pullRequest: number;

@@ -1,0 +1,194 @@
+name: Manual production rollback
+
+run-name: Roll back failed production release ${{ inputs.failed_release_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      failed_release_sha:
+        description: Exact 40-character lowercase commit SHA of the latest failed database release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      candidate: ${{ steps.report.outputs.candidate_git_commit }}
+      baseline: ${{ steps.report.outputs.base_git_commit }}
+      deployment_id: ${{ steps.report.outputs.current_deployment_id }}
+      deployment_status: ${{ steps.report.outputs.current_deployment_status }}
+      database_changed: ${{ steps.report.outputs.database_changed }}
+      backup_id: ${{ steps.target.outputs.database_backup_id }}
+      backup_name: ${{ steps.target.outputs.database_backup_name }}
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Fetch the requested failed candidate into RUNNER_TEMP
+        run: |
+          if [[ ! "$FAILED_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "failed_release_sha must be a lowercase 40-character Git SHA" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "$FAILED_RELEASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/failed-candidate" "$FAILED_RELEASE_SHA"
+        env:
+          FAILED_RELEASE_SHA: ${{ inputs.failed_release_sha }}
+      - name: Classify the current production deployment for rollback
+        id: report
+        run: |
+          mkdir -p .local
+          node scripts/deploy-safety/release.ts rollback-report \
+            --candidate "$FAILED_RELEASE_SHA" \
+            --candidate-root "$RUNNER_TEMP/failed-candidate" \
+            > .local/rollback-report.json
+        env:
+          FAILED_RELEASE_SHA: ${{ inputs.failed_release_sha }}
+      - name: Resolve and verify the exact protected backup
+        id: target
+        run: |
+          if [[ "$DATABASE_CHANGED" != "true" ]]; then
+            echo "The latest production release is not classified as database-changing" >&2
+            exit 1
+          fi
+          if [[ "$DEPLOYMENT_STATUS" != "failure" && "$DEPLOYMENT_STATUS" != "error" ]]; then
+            echo "The latest production deployment is not failed; this workflow only rolls back a failed candidate" >&2
+            exit 1
+          fi
+          node scripts/deploy-safety/release.ts rollback-target \
+            --candidate "$FAILED_RELEASE_SHA" \
+            --candidate-root "$RUNNER_TEMP/failed-candidate" \
+            --deployment-id "$DEPLOYMENT_ID" \
+            --report .local/rollback-report.json \
+            > .local/rollback-target.json
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync(".local/rollback-report.json", "utf8"));
+          const target = JSON.parse(readFileSync(".local/rollback-target.json", "utf8"));
+          if (report.candidate.gitCommit !== process.env.FAILED_RELEASE_SHA || report.databaseChanged !== true ||
+              target.manualRestoreRequired !== true || !target.backupName || !target.backupId)
+            throw new Error("Rollback plan did not match the failed database candidate");
+          const lines = [
+            "## Manual database rollback",
+            "",
+            `Failed deployment: ${process.env.DEPLOYMENT_ID} (${process.env.DEPLOYMENT_STATUS})`,
+            `Failed candidate: ${report.candidate.gitCommit}`,
+            `Previous production commit: ${report.base.gitCommit}`,
+            `Protected PlanetScale backup: ${target.backupName} (ID ${target.backupId})`,
+            `Recorded production branch: ${target.productionBranch}`,
+            "",
+            "Before approving the protected rollback job, manually restore this exact backup in PlanetScale and verify that the production database path used by the previous release serves the restored data. The workflow does not restore the database or collect a restore receipt.",
+            "",
+            "After the restore is complete, approve the `production-release` environment job. It rechecks this report, deployment ID, candidate SHA and backup before building and deploying the previous commit.",
+            "",
+          ].join("\n");
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines);
+          NODE
+        env:
+          FAILED_RELEASE_SHA: ${{ inputs.failed_release_sha }}
+          DATABASE_CHANGED: ${{ steps.report.outputs.database_changed }}
+          DEPLOYMENT_ID: ${{ steps.report.outputs.current_deployment_id }}
+          DEPLOYMENT_STATUS: ${{ steps.report.outputs.current_deployment_status }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manual-production-rollback-report
+          path: .local/rollback-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  rollback:
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.candidate == inputs.failed_release_sha
+    name: Deploy previous production release
+    environment: production-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+      POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID }}
+      EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
+      EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+      AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+      AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+      BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+      EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+      MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
+      MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
+      APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+      POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+      POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+      POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+      APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Recreate the exact failed and previous-source worktrees
+        run: |
+          if [[ "$FAILED_RELEASE_SHA" != "$EXPECTED_FAILED_SHA" || ! "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Rollback inputs changed or are invalid" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "$FAILED_RELEASE_SHA"
+          git fetch --no-tags origin "$BASELINE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/failed-candidate" "$FAILED_RELEASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/rollback-source" "$BASELINE_SHA"
+        env:
+          FAILED_RELEASE_SHA: ${{ inputs.failed_release_sha }}
+          EXPECTED_FAILED_SHA: ${{ needs.plan.outputs.candidate }}
+          BASELINE_SHA: ${{ needs.plan.outputs.baseline }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: manual-production-rollback-report
+          path: .local
+      - name: Deploy and verify the previous production release
+        run: |
+          node scripts/deploy-safety/release.ts manual-rollback \
+            --candidate "$FAILED_RELEASE_SHA" \
+            --candidate-root "$RUNNER_TEMP/failed-candidate" \
+            --rollback-root "$RUNNER_TEMP/rollback-source" \
+            --deployment-id "$EXPECTED_DEPLOYMENT_ID" \
+            --report .local/rollback-report.json
+        env:
+          FAILED_RELEASE_SHA: ${{ inputs.failed_release_sha }}
+          EXPECTED_DEPLOYMENT_ID: ${{ needs.plan.outputs.deployment_id }}

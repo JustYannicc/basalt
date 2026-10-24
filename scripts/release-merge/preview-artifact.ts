@@ -17,6 +17,28 @@ export async function getPreviewReceiptArtifact(
   runId: number,
   artifactName: string,
 ): Promise<unknown | undefined> {
+  return getRunReceiptArtifact(fetchImpl, headers, repository, runId, artifactName, RELEASE_MERGE_POLICY.previewReceiptFile, "Preview");
+}
+
+export async function getCheckReceiptArtifact(
+  fetchImpl: typeof fetch,
+  headers: HeaderFactory,
+  repository: string,
+  runId: number,
+  artifactName: string,
+): Promise<unknown | undefined> {
+  return getRunReceiptArtifact(fetchImpl, headers, repository, runId, artifactName, RELEASE_MERGE_POLICY.checkReceiptFile, "Check");
+}
+
+async function getRunReceiptArtifact(
+  fetchImpl: typeof fetch,
+  headers: HeaderFactory,
+  repository: string,
+  runId: number,
+  artifactName: string,
+  receiptFile: string,
+  receiptLabel: string,
+): Promise<unknown | undefined> {
   const result = await requestJson(fetchImpl, headers, `/repos/${repositoryPath(repository)}/actions/runs/${runId}/artifacts?per_page=${PAGE_SIZE}`) as {
     artifacts?: Array<{ id: number; name: string; expired: boolean }>;
     total_count?: number;
@@ -30,8 +52,8 @@ export async function getPreviewReceiptArtifact(
   const url = `${API_ROOT}/repos/${repositoryPath(repository)}/actions/artifacts/${matches[0]!.id}/zip`;
   const response = await downloadArtifact(fetchImpl, headers, url);
   const bytes = await readLimitedBody(response, MAX_ARTIFACT_BYTES);
-  if (bytes.length === 0) throw new Error("Preview receipt artifact size is invalid");
-  return readReceiptFromZip(bytes);
+  if (bytes.length === 0) throw new Error(`${receiptLabel} receipt artifact size is invalid`);
+  return readReceiptFromZip(bytes, receiptFile, receiptLabel);
 }
 
 async function requestJson(fetchImpl: typeof fetch, headers: HeaderFactory, path: string): Promise<unknown> {
@@ -59,19 +81,18 @@ async function downloadArtifact(fetchImpl: typeof fetch, headers: HeaderFactory,
   return response;
 }
 
-function readReceiptFromZip(bytes: Buffer): unknown {
-  const folder = mkdtempSync(join(tmpdir(), "release-preview-receipt-"));
+function readReceiptFromZip(bytes: Buffer, receiptFile: string, receiptLabel: string): unknown {
+  const folder = mkdtempSync(join(tmpdir(), "release-receipt-"));
   const zipPath = join(folder, "receipt.zip");
   try {
     writeFileSync(zipPath, bytes, { mode: 0o600 });
     const listing = execFileSync("unzip", ["-Z1", zipPath], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_ARTIFACT_BYTES });
-    const entry = RELEASE_MERGE_POLICY.previewReceiptFile;
     const entries = listing.split(/\r?\n/).filter(Boolean);
-    if (entries.length !== 1 || entries[0] !== entry) throw new Error("Preview artifact must contain only the root receipt file");
-    const contents = execFileSync("unzip", ["-p", zipPath, entry], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_ARTIFACT_BYTES });
+    if (entries.length !== 1 || entries[0] !== receiptFile) throw new Error(`${receiptLabel} artifact must contain only the root receipt file`);
+    const contents = execFileSync("unzip", ["-p", zipPath, receiptFile], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_ARTIFACT_BYTES });
     return JSON.parse(contents) as unknown;
   } catch {
-    throw new Error("Preview receipt artifact is invalid");
+    throw new Error(`${receiptLabel} receipt artifact is invalid`);
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }

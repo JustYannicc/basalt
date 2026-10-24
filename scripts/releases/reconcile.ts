@@ -90,7 +90,7 @@ export async function reconcileReleasePullRequest(
 
   if (pull && previousBranch?.baseCommit === mainSha && previousBranch.treeSha === git(repositoryRoot, ["write-tree"]).trim()) {
     const report = await classifyRefs(repositoryRoot, mainSha, pull.head.sha, api);
-    await updateExistingPullRequest(api, repository, pull, report, plan, `${titleFor(source)} ${plan.releaseKey}`, preparationFailure);
+    await updateExistingPullRequest(api, repository, pull, report, plan, titleFor(source, plan.releaseKey), preparationFailure);
     await reportPreparationStatus(api, repository, pull.head.sha, preparationFailure);
     return result("unchanged", source, plan.releaseKey, branch, plan, preparationFailure, pull.number, pull.head.sha, requiredLabels(report, preparationFailure));
   }
@@ -106,7 +106,7 @@ export async function reconcileReleasePullRequest(
   if (afterPush && afterPush.head.sha !== headSha)
     throw new Error("Release pull request head changed during branch reconciliation");
 
-  const title = `${titleFor(source)} ${plan.releaseKey}`;
+  const title = titleFor(source, plan.releaseKey);
   if (afterPush) {
     await updateExistingPullRequest(api, repository, afterPush, report, plan, title, preparationFailure);
   } else {
@@ -435,7 +435,7 @@ async function reportPreparationStatus(
     description: failure ?? "Candidate preparation completed.",
   });
 }
-function titleFor(source: UpdateSource): string { return `Update ${source} release`; }
+function titleFor(source: UpdateSource, releaseKey: string): string { return `chore: update ${source} to ${releaseKey}`; }
 function result(outcome: ReconcileResult["outcome"], source: UpdateSource, releaseKey: string, branch: string, plan: UpdatePlan, failure?: string, pullRequest?: number, head?: string, riskLabels: string[] = []): ReconcileResult {
   return { outcome, source, releaseKey, branch, preparationFailed: failure !== undefined, riskLabels, ...(pullRequest === undefined ? {} : { pullRequest }), ...(head ? { head } : {}) };
 }

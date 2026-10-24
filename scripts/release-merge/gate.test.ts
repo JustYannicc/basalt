@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { latestChangeRequests, latestRunForPullRequest, runReleaseMergeGate, type WorkflowRunTrigger } from "./gate.ts";
+import { runReleaseMergeGate, type WorkflowRunTrigger } from "./gate.ts";
 import type { MergeGateApi, Review, WorkflowRun } from "./github.ts";
 import { RELEASE_MERGE_POLICY, type ChangedFile, type PullRequestSnapshot, type ReleasePins } from "./policy.ts";
 import { validateManualCandidate } from "./manual-candidate.ts";
+import { latestChangeRequests, latestRunForPullRequest } from "./proofs.ts";
 
 const repository = "owner/repo";
 const mainSha = "a".repeat(40);
@@ -91,6 +92,20 @@ function previewReceipt(base = mainSha, head = headSha) {
   return { version: 1, pullRequest: 19, head, base, smoke: true, teardown: true };
 }
 
+function checkReceipt(base = mainSha, head = headSha) {
+  return {
+    version: 1,
+    repository,
+    pullRequest: 19,
+    runId: 10,
+    runAttempt: 1,
+    head,
+    base,
+    mergeCommit: "e".repeat(40),
+    parents: [base, head],
+  };
+}
+
 function classificationReport(input: { database?: "unchanged" | "changed" | "unknown"; workflow?: "unchanged" | "changed" | "unknown"; base?: string; candidate?: string } = {}) {
   const database = input.database ?? "unchanged";
   const workflow = input.workflow ?? "unchanged";
@@ -124,8 +139,10 @@ class FakeApi implements MergeGateApi {
   classification = classificationReport();
   unresolvedThreads = 0;
   reviews: Review[] = [];
+  checkReceipt: unknown | undefined = checkReceipt();
   receipt: unknown | undefined = previewReceipt();
   addedLabels: string[] = [];
+  branchUpdateCalls: Array<{ number: number; expectedHeadSha: string }> = [];
   mergeCalls: Array<{ number: number; sha: string }> = [];
   afterSecondReceipt?: () => void;
   private receiptCalls = 0;
@@ -155,6 +172,7 @@ class FakeApi implements MergeGateApi {
   }
   async getUnresolvedReviewThreadCount(): Promise<number> { return this.unresolvedThreads; }
   async listReviews(): Promise<Review[]> { return structuredClone(this.reviews); }
+  async getCheckReceipt(): Promise<unknown | undefined> { return structuredClone(this.checkReceipt); }
   async getPreviewReceipt(): Promise<unknown | undefined> {
     this.receiptCalls += 1;
     const value = structuredClone(this.receipt);
@@ -162,6 +180,10 @@ class FakeApi implements MergeGateApi {
     return value;
   }
   async addPullRequestLabels(_repository: string, _number: number, labels: string[]): Promise<void> { this.addedLabels.push(...labels); }
+  async updatePullRequestBranch(_repository: string, number: number, expectedHeadSha: string): Promise<"accepted"> {
+    this.branchUpdateCalls.push({ number, expectedHeadSha });
+    return "accepted";
+  }
   async mergeSquash(_repository: string, number: number, expectedHeadSha: string): Promise<void> {
     this.mergeCalls.push({ number, sha: expectedHeadSha });
   }
@@ -226,6 +248,12 @@ test("manual candidate proof ignores risk classification and manual labels", asy
   assert.equal(api.mergeCalls.length, 0);
 });
 
+test("manual candidate validation requires the current exact Check receipt", async () => {
+  const api = makeApi();
+  api.checkReceipt = undefined;
+  await assert.rejects(validateManualCandidate(api, repository, 19), /no merge-result receipt/);
+});
+
 test("manual candidate rejects a head or base changed after backup approval", async () => {
   const changedHead = makeApi();
   await assert.rejects(validateManualCandidate(changedHead, repository, 19, nextHeadSha, mainSha), /head changed/);
@@ -275,6 +303,33 @@ test("rejects a missing or forged preview receipt", async () => {
   forged.receipt = previewReceipt(mainSha, nextHeadSha);
   assert.equal((await runReleaseMergeGate(forged, repository, trigger())).status, "skipped");
   assert.equal(forged.mergeCalls.length, 0);
+});
+
+test("requires a Check receipt from the exact run and exact merge-result parents", async () => {
+  const absent = makeApi();
+  absent.checkReceipt = undefined;
+  assert.equal((await runReleaseMergeGate(absent, repository, trigger())).status, "skipped");
+  assert.equal(absent.mergeCalls.length, 0);
+
+  const wrongParents = makeApi();
+  wrongParents.checkReceipt = { ...checkReceipt(), parents: [nextMainSha, headSha] };
+  assert.equal((await runReleaseMergeGate(wrongParents, repository, trigger())).status, "skipped");
+  assert.equal(wrongParents.mergeCalls.length, 0);
+
+  const wrongMergeCommit = makeApi();
+  wrongMergeCommit.checkReceipt = { ...checkReceipt(), mergeCommit: headSha };
+  assert.equal((await runReleaseMergeGate(wrongMergeCommit, repository, trigger())).status, "skipped");
+  assert.equal(wrongMergeCommit.mergeCalls.length, 0);
+
+  const wrongRun = makeApi();
+  wrongRun.checkReceipt = { ...checkReceipt(), runId: 99 };
+  assert.equal((await runReleaseMergeGate(wrongRun, repository, trigger())).status, "skipped");
+  assert.equal(wrongRun.mergeCalls.length, 0);
+
+  const wrongAttempt = makeApi();
+  wrongAttempt.ciRuns[0]!.run_attempt = 2;
+  assert.equal((await runReleaseMergeGate(wrongAttempt, repository, trigger())).status, "skipped");
+  assert.equal(wrongAttempt.mergeCalls.length, 0);
 });
 
 test("blocks unresolved review threads and outstanding change requests", async () => {
@@ -330,7 +385,38 @@ test("rechecks the head and main before the expected-head merge write", async ()
     changedMain.pr.base.sha = nextMainSha;
   };
   assert.equal((await runReleaseMergeGate(changedMain, repository, trigger())).status, "skipped");
+  assert.deepEqual(changedMain.branchUpdateCalls, [{ number: 19, expectedHeadSha: headSha }]);
   assert.equal(changedMain.mergeCalls.length, 0);
+});
+
+test("updates a stale same-repository release branch and waits for new proofs", async () => {
+  const api = makeApi();
+  api.main = nextMainSha;
+  api.pr.base.sha = nextMainSha;
+
+  const result = await runReleaseMergeGate(api, repository, trigger());
+  assert.equal(result.status, "skipped");
+  assert.match(result.reason, /waiting for new Check and Release preview runs/);
+  assert.deepEqual(api.branchUpdateCalls, [{ number: 19, expectedHeadSha: headSha }]);
+  assert.equal(api.mergeCalls.length, 0);
+});
+
+test("does not refresh a stale fork or a branch outside the release allowlist", async () => {
+  const fork = makeApi();
+  fork.main = nextMainSha;
+  fork.pr.base.sha = nextMainSha;
+  fork.pr.head.repo = { full_name: "fork/repo" };
+  assert.equal((await runReleaseMergeGate(fork, repository, trigger())).status, "skipped");
+  assert.equal(fork.branchUpdateCalls.length, 0);
+  assert.equal(fork.mergeCalls.length, 0);
+
+  const unallowlisted = makeApi();
+  unallowlisted.main = nextMainSha;
+  unallowlisted.pr.base.sha = nextMainSha;
+  unallowlisted.files.push({ filename: ".github/workflows/ci.yml", status: "modified", additions: 1, deletions: 1, changes: 2 });
+  assert.equal((await runReleaseMergeGate(unallowlisted, repository, trigger())).status, "skipped");
+  assert.equal(unallowlisted.branchUpdateCalls.length, 0);
+  assert.equal(unallowlisted.mergeCalls.length, 0);
 });
 
 test("selects the latest run by run number and rejects proof from a stale base", () => {

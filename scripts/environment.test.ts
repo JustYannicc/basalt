@@ -150,6 +150,13 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     "PREVIEW_CODEX_CLI_AUTH_JSON", "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", "RELEASE_UPDATE_TOKEN", "UNKNOWN_FUTURE_SECRET"])
     assert.equal(first.deploy[key], undefined, key);
   assert.equal(first.deploy.EXECUTOR_CATALOG_URL, `${first.origin}/catalog/index.json`);
+  assert.match(first.deploy.TELEMETRY_RELAY_KEY!, /^[a-f0-9]{64}$/);
+  assert.notEqual(first.deploy.TELEMETRY_RELAY_KEY, first.deploy.POOL_APP_SIGNING_KEY);
+  assert.equal(first.deploy.EXECUTOR_TELEMETRY_RELAY_URL, `${first.origin}/__telemetry/v1`);
+  assert.equal(first.deploy.EXECUTOR_TELEMETRY_RELAY_TOKEN, first.deploy.TELEMETRY_RELAY_KEY);
+  assert.equal(first.deploy.SENTRY_DSN, undefined);
+  assert.equal(first.deploy.POSTHOG_PROJECT_KEY, undefined);
+
   assert.equal(first.deploy.POOL_APP_SIGNING_KEY_PREVIOUS, undefined);
   for (const name of [
     "GOOGLE_CLIENT_SECRET",
