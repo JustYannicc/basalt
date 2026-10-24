@@ -20,6 +20,7 @@ export function deploymentKind(kind: string): string {
 }
 
 export async function generateDeployment(root: string): Promise<string> {
+  const fingerprint = stackFingerprint(root);
   const architecture = join(root, "architecture");
   const snapshot = discoverStackDetails(root);
   const resources = snapshot.inventory;
@@ -46,7 +47,7 @@ export async function generateDeployment(root: string): Promise<string> {
       "// Generated from the deployment stack. Do not edit.",
       "deployment {",
       '  stage deployed "Declared deployment" {',
-      `    metadata { fingerprint "${stackFingerprint(root)}"; bindings "${snapshot.digest}" }`,
+      `    metadata { bindings "${snapshot.digest}" }`,
     ];
     const groups = new Map<string, typeof resources>();
     const children = new Map<string, typeof resources>();
@@ -91,6 +92,8 @@ export async function generateDeployment(root: string): Promise<string> {
     }
     lines.push("  }", "}", "views {", "  deployment view declared_deployment {",
       '    title "Basalt/Deployment"', "    include deployed.*", "    autoLayout TopBottom", "  }", ...details, "}", "");
+    if (stackFingerprint(root) !== fingerprint)
+      throw new Error("Source changed during deployment generation; rerun with stable inputs");
     return lines.join("\n");
   } finally { await workspace.dispose(); }
 }
@@ -100,6 +103,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   if (process.argv.includes("--inventory")) console.log(JSON.stringify(discoverStackInventory(root), null, 2));
   else {
     const output = join(root, "architecture/gen/stack.gen.c4");
+    console.log(`Deployment source fingerprint: ${stackFingerprint(root)}`);
     const source = await generateDeployment(root);
     mkdirSync(join(root, "architecture/gen"), { recursive: true });
     writeFileSync(output, source);
