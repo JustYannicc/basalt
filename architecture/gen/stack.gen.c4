@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { fingerprint "ea05e0766926e8ab50b602b0fb1f4709b210eadb19dd382cd9807d6375a3cc44"; bindings "aae3d58b5156a134ccb08c956cb3e1ab36a63d06ab9b4b33be003a59bf977cbb" }
+    metadata { fingerprint "385a7b7a43444fd4e83bf230a8efadaac2860f305bff11902e437d4c0fdd8a26"; bindings "2df3201c3474492ce9c63cf2a3331e89c08075cf0373af312ec3fbd0af0fc992" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -11,6 +11,13 @@ deployment {
       storage resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b "Site Assets" {
         app = instanceOf assetsService {
           metadata { resource "resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b" }
+        }
+      }
+    }
+    zone group-4297cfc69e0fc707 "Connector catalog" {
+      worker resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2 "Catalog" {
+        app = instanceOf basalt.catalog {
+          metadata { resource "resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2" }
         }
       }
     }
@@ -252,6 +259,16 @@ views {
   deployment view deployment_group_2703341ef73f1544 {
     title "Basalt/Deployment/Asset service"
     include deployed.group-2703341ef73f1544.*
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2 {
+    title "Basalt/Deployment/Connector catalog/Catalog"
+    include deployed.group-4297cfc69e0fc707.resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2.**
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_4297cfc69e0fc707 {
+    title "Basalt/Deployment/Connector catalog"
+    include deployed.group-4297cfc69e0fc707.*
     autoLayout TopBottom
   }
   deployment view deployment_group_9aae816a4d380e2d {

@@ -45,6 +45,11 @@ export default Alchemy.Stack(
     yield* cloudDeployment;
     const api = yield* Api;
     const pool = yield* poolWorker;
+    const catalog = yield* Cloudflare.Worker("Catalog", {
+      main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
+      workersDev: false,
+      compatibility: { date: "2026-09-08" },
+    });
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
       // The brand's logo and favicon; every other path reaches the router code.
@@ -54,6 +59,7 @@ export default Alchemy.Stack(
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       env: {
         TOOLS_SERVICE: api,
+        CATALOG_SERVICE: catalog,
         POOL_SERVICE: pool,
         POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
         TELEMETRY_RELAY_KEY: yield* Config.Redacted("TELEMETRY_RELAY_KEY"),

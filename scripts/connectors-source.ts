@@ -1,0 +1,63 @@
+/** Refuse a proof against source other than the reviewed pin, carried patches and generated pool app. */
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { bundlePoolApp } from "./pool-app-bundle.ts";
+
+export function verifyConnectorsSource(root: string): { commit: string; patches: string[] } {
+  const upstream = join(root, ".upstream");
+  const pin = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8")) as { commit: string };
+  if (!/^[a-f0-9]{40}$/.test(pin.commit)) throw new Error("Expected an immutable tools runtime pin");
+  const git = (args: string[], env: NodeJS.ProcessEnv = process.env) => execFileSync("git", ["-C", upstream, ...args], {
+    encoding: "utf8", env, stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+  if (git(["rev-parse", "HEAD"]) !== pin.commit) throw new Error("Prepared tools runtime does not match upstream.json");
+  const patches = readdirSync(join(root, "patches")).filter(file => file.endsWith(".patch")).sort();
+  if (!patches.length) throw new Error("No carried patches found");
+  const scratch = mkdtempSync(join(tmpdir(), "basalt-connectors-source-"));
+  try {
+    const expected = { ...process.env, GIT_INDEX_FILE: join(scratch, "expected-index") };
+    const actual = { ...process.env, GIT_INDEX_FILE: join(scratch, "actual-index") };
+    git(["read-tree", pin.commit], expected);
+    for (const patch of patches) {
+      try { git(["apply", "--cached", join(root, "patches", patch)], expected); }
+      catch { throw new Error(`Carried patch does not apply: ${patch}`); }
+    }
+    const additions = git(["diff", "--cached", "--name-only", "--diff-filter=A", pin.commit], expected).split("\n").filter(Boolean);
+    // Verify generated runtime source against the ordinary bundler, without touching the candidate.
+    const generatedRoot = join(scratch, "root");
+    const generatedUpstream = join(generatedRoot, ".upstream");
+    cpSync(join(root, "apps/pool"), join(generatedRoot, "apps/pool"), {
+      recursive: true, filter: path => !/(?:^|\/)(?:node_modules|dist)(?:\/|$)/.test(path),
+    });
+    mkdirSync(join(generatedRoot, "src/pool"), { recursive: true });
+    cpSync(join(root, "src/pool/token.ts"), join(generatedRoot, "src/pool/token.ts"));
+    const framework = join(generatedUpstream, "packages/apps/package.json");
+    mkdirSync(dirname(framework), { recursive: true });
+    writeFileSync(framework, git(["show", ":packages/apps/package.json"], expected));
+    const fonts = "packages/ui/src/implementation/styles/fonts";
+    cpSync(join(upstream, fonts), join(generatedUpstream, fonts), { recursive: true });
+    bundlePoolApp(generatedRoot, generatedUpstream);
+    const generated = [
+      "apps/hosted/server/src/implementation/pool-app-source.ts",
+      "apps/hosted/server/src/implementation/pool-token.ts",
+    ];
+    for (const path of generated) {
+      if (!readFileSync(join(upstream, path)).equals(readFileSync(join(generatedUpstream, path))))
+        throw new Error("Generated pool runtime source differs from the current Basalt source");
+    }
+    git(["read-tree", pin.commit], actual);
+    git(["add", "-u"], actual);
+    if (additions.length) git(["add", "--", ...additions], actual);
+    if (git(["write-tree"], actual) !== git(["write-tree"], expected))
+      throw new Error("Prepared tools runtime differs from the carried patch set");
+    const permitted = new Set([...additions, ...generated]);
+    const extraRuntimeSource = git(["ls-files", "--others", "--exclude-standard"]).split("\n")
+      .filter(path => /^(?:apps|packages|e2e)\//.test(path) && !path.includes("/scripts/") && !permitted.has(path));
+    if (extraRuntimeSource.length) throw new Error("Unexpected source in the prepared tools runtime");
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  return { commit: pin.commit, patches };
+}

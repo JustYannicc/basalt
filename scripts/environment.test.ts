@@ -113,3 +113,21 @@ test("optional telemetry destinations never block the first deployment", () => {
   assert.equal(configured.POSTHOG_PROJECT_KEY, "synthetic");
   assert.equal(configured.DO_NOT_TRACK, "0");
 });
+
+test("connector credentials are separate from sign-in and the feed belongs to this deployment", () => {
+  const source = {
+    ...Object.fromEntries(requiredSecrets.map(name => [name, `fixture-${name}`])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  };
+  const env = deployEnvironment(source);
+  assert.equal(env.EXECUTOR_CATALOG_URL, "https://app.signalbox.run/catalog/index.json");
+  assert.notEqual(env.GOOGLE_CLIENT_ID, env.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID);
+  assert.notEqual(env.GITHUB_CLIENT_ID, env.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID);
+  for (const provider of ["GOOGLE", "GITHUB_OAUTH"]) {
+    for (const part of ["ID", "SECRET"]) {
+      const name = `EXECUTOR_OAUTH_${provider}_CLIENT_${part}`;
+      assert.equal(env[name], source[name as keyof typeof source]);
+      assert.throws(() => deployEnvironment({ ...source, [name]: "" }), new RegExp(`Missing GitHub Actions secret: ${name}`));
+    }
+  }
+});
