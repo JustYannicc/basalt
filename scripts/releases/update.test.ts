@@ -229,4 +229,3 @@ test("pool update plan preserves unrelated provider data and artifact pins", asy
   assert.ok(releasesFile);
   assert.deepEqual(JSON.parse(releasesFile).artifacts.node, originalNode);
 });
-

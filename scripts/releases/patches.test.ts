@@ -85,7 +85,9 @@ test("removed records and overlays keep stable identity references", async () =>
   }));
   const updated = updatedManifest(manifest, new Set(["executor-review"]));
   assert.equal(updated.patches.some(({ identity }) => identity === "executor-review"), false);
-  assert.equal(updated.patches.find(({ identity }) => identity === "basalt-framework")?.remove_with, "executor-review");
+  const framework = updated.patches.find(({ identity }) => identity === "basalt-framework");
+  assert.ok(framework?.kind === "overlay");
+  assert.equal(framework.remove_with, "executor-review");
 
   const removals = removedPatchRecords({
     base: JSON.stringify(manifest),

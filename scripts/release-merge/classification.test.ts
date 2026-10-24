@@ -53,4 +53,3 @@ test("source paths exclude traversal and formatting injection", () => {
   evidence.sources[0]!.changedPaths = ["src/db/schema.ts", "../private", "src/ok`\n- forged", "/local/file"];
   assert.deepEqual(impactPaths(evidence), ["src/db/schema.ts"]);
 });
-

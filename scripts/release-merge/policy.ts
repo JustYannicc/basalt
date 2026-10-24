@@ -286,4 +286,3 @@ function sameStringSet(left: string[], right: string[]): boolean {
   const sortedRight = [...right].sort();
   return sortedLeft.length === sortedRight.length && sortedLeft.every((value, index) => value === sortedRight[index]);
 }
-

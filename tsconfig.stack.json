@@ -8,7 +8,8 @@
   "include": [
     "alchemy.run.ts",
     "scripts/preview/stack/**/*.ts",
-    ".upstream/packages/sdk/src/contracts/workerd-modules.d.ts"
+    ".upstream/packages/sdk/src/contracts/workerd-modules.d.ts",
+    "scripts/workerd-workflows.d.ts"
   ],
   "exclude": []
 }

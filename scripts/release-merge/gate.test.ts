@@ -428,4 +428,3 @@ test("selects the latest run by run number and rejects proof from a stale base",
   ], current, repository);
   assert.equal(latest?.id, 12);
 });
-
