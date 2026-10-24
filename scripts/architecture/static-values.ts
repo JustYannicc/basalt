@@ -268,34 +268,32 @@ export class StaticValues {
       }
     };
     const markReceiver = (expression: ts.Expression): void => {
-      while (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression))
+      while (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression) ||
+        ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+        ts.isTypeAssertionExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isNonNullExpression(expression))
         expression = expression.expression;
       if (ts.isIdentifier(expression)) mark(expression);
     };
+    const markWrite = (expression: ts.Expression): void => {
+      while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+        ts.isTypeAssertionExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isNonNullExpression(expression))
+        expression = expression.expression;
+      if (ts.isIdentifier(expression)) mark(expression);
+      else if (ts.isElementAccessExpression(expression)) markReceiver(expression.expression);
+      else if (ts.isPropertyAccessExpression(expression) && authorityMutation(expression.name.text)) {
+        mark(expression.name);
+        markReceiver(expression.expression);
+      }
+    };
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && assignmentOperator(node.operatorToken.kind)) {
-        if (ts.isIdentifier(node.left)) {
-          mark(node.left);
-          markEscaped(node.right);
-        }
-        if (ts.isPropertyAccessExpression(node.left) && authorityMutation(node.left.name.text)) {
-          mark(node.left.name);
-          mark(node.left.expression);
-        }
-        if (ts.isElementAccessExpression(node.left) && node.left.argumentExpression &&
-          ts.isStringLiteralLike(node.left.argumentExpression) && authorityMutation(node.left.argumentExpression.text))
-          mark(node.left.expression);
+        markWrite(node.left);
+        if (ts.isIdentifier(node.left)) markEscaped(node.right);
       }
-      if (ts.isDeleteExpression(node) && ts.isPropertyAccessExpression(node.expression) && authorityMutation(node.expression.name.text)) {
-        mark(node.expression.name);
-        mark(node.expression.expression);
-      }
+      if (ts.isDeleteExpression(node)) markWrite(node.expression);
       if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
-        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
-        ts.isPropertyAccessExpression(node.operand) && authorityMutation(node.operand.name.text)) {
-        mark(node.operand.name);
-        mark(node.operand.expression);
-      }
+        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken))
+        markWrite(node.operand);
       if (ts.isCallExpression(node)) {
         const method = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined;
         const receiver = ts.isPropertyAccessExpression(node.expression) ? node.expression.expression : undefined;
@@ -321,9 +319,13 @@ export class StaticValues {
 
   private collectAliases(): void {
     const visit = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name) && ts.isIdentifier(node.initializer)) {
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name)) {
+        let initializer = node.initializer;
+        while (ts.isParenthesizedExpression(initializer) || ts.isAsExpression(initializer) ||
+          ts.isTypeAssertionExpression(initializer) || ts.isSatisfiesExpression(initializer) || ts.isNonNullExpression(initializer))
+          initializer = initializer.expression;
         const alias = this.symbolAt(node.name);
-        const target = this.symbolAt(node.initializer);
+        const target = ts.isIdentifier(initializer) ? this.symbolAt(initializer) : undefined;
         if (alias && target && alias !== target) this.aliases.set(alias, target);
       }
       ts.forEachChild(node, visit);

@@ -149,6 +149,20 @@ test("bounded URL returns resolve only through a matching outside-service host",
     ["helper result mutates through alias", withOtlp(otlpTarget.replace(
       "  const url = new URL(env.ENDPOINT);",
       "  const url = new URL(env.ENDPOINT);\n  const alias = dsn;\n  alias.host = url.hostname;"))],
+    ...[
+      "(url as any)[env.URL_FIELD] = env.HOST;",
+      "const alias = url; (alias as any)[env.URL_FIELD] = env.HOST;",
+      "const alias = (url as any); alias[env.URL_FIELD] = env.HOST;",
+      "const alias = url; delete (alias as any)[env.URL_FIELD];",
+      "const alias = url; (alias as any)[env.URL_FIELD]++;",
+    ].map((mutation): [string, string] => [mutation, withOtlp(otlpTarget.replace(
+      "  return { url: url.href };", `  ${mutation}\n  return { url: url.href };`))]),
+    ...[
+      "(dsn as any)[env.URL_FIELD] = url.hostname;",
+      "const alias = dsn; (alias as any)[env.URL_FIELD] = url.hostname;",
+      "const alias = dsn; delete (alias as any)[env.URL_FIELD];",
+    ].map((mutation): [string, string] => [mutation, withOtlp(otlpTarget.replace(
+      "  const url = new URL(env.ENDPOINT);", `  const url = new URL(env.ENDPOINT);\n  ${mutation}`))]),
   ];
   const rejected = (candidate: string) => sourceDependencies(
     fixture({ "src/telemetry.ts": candidate }), [module("telemetry", "src/telemetry.ts")], services,
