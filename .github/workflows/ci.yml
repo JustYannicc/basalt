@@ -45,6 +45,8 @@ jobs:
           npm run architecture:typecheck
       - run: bun install --cwd src/setup --frozen-lockfile
       - run: npm run check
+      - name: Check the pool acceptance runner
+        run: node --test scripts/pool-acceptance/*.test.ts
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
