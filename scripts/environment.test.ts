@@ -171,7 +171,8 @@ test("Zendesk accepts only a plain tenant label and keeps the whole optional tri
   for (const tenant of ["tenant.zendesk.com", "Uppercase", "-invalid", "two.labels"]) {
     assert.throws(
       () => deployEnvironment({ ...base, EXECUTOR_ZENDESK_SUBDOMAIN: tenant }),
-      error => {
+      (error: unknown) => {
+        if (!(error instanceof Error)) return false;
         assert.match(error.message, /EXECUTOR_ZENDESK_SUBDOMAIN/);
         assert.ok(!error.message.includes(tenant));
         return true;

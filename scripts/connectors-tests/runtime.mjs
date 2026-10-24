@@ -19,8 +19,10 @@ import { SessionClients } from "../../.upstream/e2e/support/api.ts";
 import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { proveInstalledClaude } from "./native-claude.mjs";
+import { proveZendeskOAuthStart } from "./zendesk.mjs";
 
-const [root, upstream, directory, emulateBin, browserExecutable] = process.argv.slice(2);
+const [root, upstream, directory, emulateBin, browserExecutable, upstreamPin, candidateSha, patchesJson] = process.argv.slice(2);
+const carriedPatches = JSON.parse(patchesJson);
 const require = createRequire(join(upstream, "package.json"));
 const { Client } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/index.js")).href);
 const { StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js")).href);
@@ -124,6 +126,9 @@ const program = Effect.gen(function* () {
     EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([definition]),
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_ID: "connector-fixture-client",
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_SECRET: "connector-fixture-secret",
+    EXECUTOR_ZENDESK_SUBDOMAIN: "example",
+    EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "zendesk-fixture-client",
+    EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "zendesk-fixture-secret",
   });
   const services = yield* Layer.build(Actors.layer.pipe(Layer.provideMerge(SessionClients.layer), Layer.provideMerge(Layer.succeed(Target, target))));
   const actors = Context.get(services, Actors);
@@ -134,6 +139,9 @@ const program = Effect.gen(function* () {
     assert.equal(response.status, status, operation); return response.body;
   };
   const prefix = `/api/organizations/${actors.organization.id}`;
+  const zendeskProof = yield* proveZendeskOAuthStart({
+    Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches, step,
+  });
   const app = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
     name: "Synthetic Gmail connector proof", files: [{ path: "index.ts", content: source(provider.origin) }, appsManifest],
   }), 200, "Deploy synthetic Gmail app");
@@ -205,8 +213,9 @@ const program = Effect.gen(function* () {
   // Keep model and CLI processes outside the runtime's storage and credentials.
   yield* Effect.promise(() => proveInstalledClaude({ root, directory, origin: target.metadata.origin, token: tokens[0], slug: app.slug, toolPath, marker: markers[0] }));
   step("installed-claude-real-mcp-passed");
-  return { checks: 23, sameOrganizationUsers: true, sharedHostedApp: true, privateAccountLinks: true,
-    runtimeMcpCall: true, publishedGoogleEmulatorOAuth: true, installedClaude: true,
+  return { checks: 23 + zendeskProof.checks, sameOrganizationUsers: true, sharedHostedApp: true, privateAccountLinks: true,
+    runtimeMcpCall: true, publishedGoogleEmulatorOAuth: true, zendeskNativeAuthorizationStart: true,
+    zendeskPeerConnectionDenials: 2, zendeskProviderConsentCompleted: false, installedClaude: true,
     BasaltPoolAppAccess: false, productionOfficialGmailEndToEnd: false };
 });
 

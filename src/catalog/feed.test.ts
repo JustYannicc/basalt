@@ -129,10 +129,11 @@ test("Zendesk source snapshot matches its provenance digests", () => {
   );
   assert.equal(sourceSnapshot.package, "@signalbox/zendesk");
   assert.equal(sourceProvenance.package, sourceSnapshot.package);
+  const catalogHashes = sourceProvenance.catalogFileSha256 as Record<string, string>;
   for (const file of sourceSnapshot.files) {
     assert.equal(
       createHash("sha256").update(file.content).digest("hex"),
-      sourceProvenance.catalogFileSha256[file.path],
+      catalogHashes[file.path],
       file.path,
     );
   }
