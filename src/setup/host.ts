@@ -25,11 +25,12 @@ function poolChoices(value: unknown): Record<string, unknown>[] {
   });
 }
 
-interface OwnPool { pool: string; organization: string }
+interface OwnPool { pool?: string; organization: string }
 /**
- * The person's own pool and the organization holding it, read from the tools service with their own
- * session. Tools are always theirs, never a pool's: a computer on a shared pool still gets a tools
- * token pinned to this organization. Undefined until their pool is installed.
+ * The organization holding the person's own pool, and that pool when the tools service confirms they
+ * created it, read with their own session. Tools are always theirs, never a pool's: a computer on a
+ * shared pool still gets a tools token pinned to this organization. A deleted pool keeps its record,
+ * so the organization stays usable without it. Undefined until their pool is installed.
  */
 async function ownPool(request: Request, env: SetupEnv, person: string): Promise<OwnPool | undefined> {
   const response = await native(request, env, "organization/list");
@@ -45,8 +46,13 @@ async function ownPool(request: Request, env: SetupEnv, person: string): Promise
     // Metadata is only a pointer. The tools service's own access record must say the person created it.
     const access = await native(request, env,
       `/api/organizations/${encodeURIComponent(organization.id)}/apps/${encodeURIComponent(pool)}/access`);
-    if (access.ok && (await body(access)).creator === person) return { pool, organization: organization.id };
-    if (!access.bodyUsed) await access.body?.cancel();
+    if (access.ok) {
+      if ((await body(access)).creator === person) return { pool, organization: organization.id };
+      continue;
+    }
+    await access.body?.cancel();
+    if (access.status === 403 || access.status === 404) return { organization: organization.id };
+    throw new SetupError(502, "Could not check your own pool. Try again.");
   }
   return undefined;
 }
@@ -90,7 +96,7 @@ async function createLink(request: Request, env: SetupEnv, payload: Record<strin
   if (!text(key.id, 512)) throw new SetupError(502, "Could not create the tools token. Try again.");
   try {
     if (!text(key.key)) throw new SetupError(502, "Could not create the tools token. Try again.");
-    const result = await body(await pool(request, env, "links", { ...payload, ...own && { own }, toolsToken: key.key, toolsKeyId: key.id }));
+    const result = await body(await pool(request, env, "links", { ...payload, ...own?.pool && { own }, toolsToken: key.key, toolsKeyId: key.id }));
     return linkResponse(request, result);
   } catch (error) {
     // Revoke the new personal token if the handoff fails.
@@ -147,7 +153,7 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
         const person = await user(request, env);
         const own = await ownPoolIfAvailable(request, env, person);
         const result = await body(await pool(request, env, "switch", {
-          user: person, intent: input.intent, id: switching[1], pool: input.pool, ...own && { own },
+          user: person, intent: input.intent, id: switching[1], pool: input.pool, ...own?.pool && { own },
         }));
         return json({ computer: computerSummary(result) });
       }
@@ -167,7 +173,7 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
       : selection.owner === person && text(selection.pool, 512) && text(selection.organization, 512)
         ? { pool: selection.pool, organization: selection.organization }
         : minting ? await ownPool(request, env, person) : await ownPoolIfAvailable(request, env, person);
-    const payload = { ...input, user: person, ...own && { own } };
+    const payload = { ...input, user: person, ...own?.pool && { own } };
     if (method === "POST") {
       if (input.computerId !== undefined) return linkResponse(request, await body(await pool(request, env, "refresh", {
         user: payload.user, intent: input.intent, id: input.computerId,

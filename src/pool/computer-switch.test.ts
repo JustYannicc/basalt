@@ -186,3 +186,16 @@ test("a successful switch clears all uncertain destinations", async () => {
   assert.equal((await f.access({ action: "audience", pools: [{ ...target, users: [owner] }] })).status, 200);
   assert.equal(f.server.keys.length, 1);
 });
+
+test("pool creation is credited to the pool's owner, whoever's mint or switch creates its group", async () => {
+  const f = fixture();
+  const own = { pool: "own-pool", owner: member, organization: "own-organization" };
+  await f.access({ action: "audience", pools: [pool, { ...own, name: "Personal pool", users: [] }] });
+  // A member's first mint on a shared pool creates its group: the owner is credited.
+  const shared = await f.create();
+  assert.deepEqual(f.events.filter(([event]) => event === "pool_created"), [["pool_created", owner]]);
+  // Switching onto the member's own pool creates that group: the member owns it.
+  const switched = await f.action("switch", member, shared.intent, { id: shared.computer.id, pool: own.pool });
+  assert.equal(switched.status, 200, await switched.clone().text());
+  assert.deepEqual(f.events.filter(([event]) => event === "pool_created"), [["pool_created", owner], ["pool_created", member]]);
+});

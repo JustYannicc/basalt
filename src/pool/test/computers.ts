@@ -29,6 +29,8 @@ export function fixture() {
     revokeGate: undefined as Promise<void> | undefined, onRevoke: undefined as (() => void) | undefined,
     nextKey: 70,
   };
+  const events: [string, string][] = [];
+  const onProductEvent = (event: string, accountId: string) => { events.push([event, accountId]); };
   const home = new ComputerHome(new HomeClient(async (path, init) => {
     const url = new URL(`https://home.example${path}`);
     const endpoint = url.pathname.slice("/v8/management".length);
@@ -82,9 +84,9 @@ export function fixture() {
     }
     if (endpoint === "/observability/request-events") return Response.json({ records: [] });
     throw new Error(`Unexpected Home request: ${method} ${endpoint}`);
-  }));
+  }), onProductEvent);
   home.observed = async () => null;
-  const make = () => new Computers({ storage, home, signingKey, previousSigningKey: previousKey, now: () => time, origin: "https://setup.example" });
+  const make = () => new Computers({ storage, home, signingKey, previousSigningKey: previousKey, now: () => time, origin: "https://setup.example", onProductEvent });
   let computers = make();
   async function context(user = member, claims: PoolClaims = pool) {
     const token = await signPoolToken(signingKey, claims);
@@ -113,7 +115,7 @@ export function fixture() {
     if (active) assert.equal((await action("claim", user, undefined, { token: value.token, format: "json" })).status, 200);
     return { ...value, intent: setup };
   }
-  return { storage, server, home, context, action, access, intent, create,
+  return { storage, server, home, events, context, action, access, intent, create,
     expire: () => computers.expire(), now: () => time, advance: (ms: number) => { time += ms; }, restart: () => { computers = make(); },
     registry: async () => (await storage.get<Registry>("computer-registry-v1")) ?? {},
     userName: async (user: string) => `${brand.setup.id}-${await digest(user)}`,

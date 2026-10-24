@@ -164,6 +164,20 @@ test("a computer on a shared pool gets a tools token pinned to the person's own 
   assert.equal(orphan.calls.some((call) => call.path.endsWith("/api-key/create")), false);
 });
 
+test("a deleted own pool still lets the person mint on a shared pool, pinned to their organization", async () => {
+  const shared = ({ path }: Call) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined;
+  const deleted = fixture({ pool: shared, tools: ({ path }) => path === "/api/auth/organization/list"
+    ? json([{ id: "own-organization", metadata: { basaltPools: { "user-1": { app: "deleted-pool" } } } }])
+    : path.endsWith("/apps/deleted-pool/access") ? json({ _tag: "OrganizationForbidden" }, 403) : undefined });
+  assert.equal((await deleted.create()).status, 200);
+  assert.deepEqual(deleted.calls.find((call) => call.path === "/api/auth/api-key/create")!.input.metadata, { organization: "own-organization" });
+  assert.equal(deleted.calls.find((call) => call.path.endsWith("/links"))!.input.own, undefined);
+  const flaky = fixture({ pool: shared, tools: ({ path }) => path.endsWith("/access") ? new Response("busy", { status: 503 }) : undefined });
+  const failed = await flaky.create();
+  assert.equal(failed.status, 502);
+  assert.match(await failed.text(), /Could not check your own pool/);
+});
+
 test("a pool named in organization metadata counts as the person's own only if they created it", async () => {
   const shared = ({ path }: Call) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined;
   const forged = fixture({ pool: shared, tools: ({ path }) => path === "/api/auth/organization/list"
