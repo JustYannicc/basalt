@@ -80,6 +80,21 @@ model {
     metadata { resources "resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638|resource-acc8f333259b83bc8afa896c48fd16b52413db77b0c1224cbe953a0dea38972b" }
   }
   basalt.toolsGateway -[sync]-> assetsService "call"
+
+  sentryService = adapter "EU diagnostics" {
+    #external
+    technology "Sentry EU"
+    metadata { hosts "*.ingest.de.sentry.io" }
+  }
+  posthogService = adapter "EU product analytics" {
+    #external
+    technology "PostHog EU"
+    metadata { hosts "eu.i.posthog.com" }
+  }
+  basalt.telemetry -[sync]-> sentryService "send feedback, errors and scrubbed Effect and router traces over HTTP; direct mode disables runtime platform trace export"
+  basalt.telemetry -[sync]-> posthogService "send account-scoped product events over HTTP"
+  basalt.build -[sync]-> sentryService "use a synthetic DSN and OTLP endpoint for the worker size check; no network request"
+
   basalt.toolsGateway -[sync]-> basalt.toolsState "state and jobs"
   basalt.toolsGateway -[sync]-> basalt.toolsCredentials "secret custody"
   basalt.toolsGateway -[sync]-> basalt.clientAssets "client assets"

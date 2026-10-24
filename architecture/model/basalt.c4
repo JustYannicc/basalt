@@ -53,7 +53,7 @@ model {
 
     modelGateway = module "Model gateway" {
       #basalt #v1 #deep #port #funnel
-      description "Owns the computer registry and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list. Model traffic remains on the existing /v1 passthrough."
+      description "Owns the computer registry and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list. Model traffic remains on the existing /v1 passthrough. After a successful model POST, the pool Worker schedules usage observation with waitUntil; its periodic alarm calls the same observer through the same Home usage interface as a fallback."
       metadata {
         code "src/pool"
         bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime"
@@ -79,6 +79,21 @@ model {
         libraries "react|react-dom"
         bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway"
       }
+    }
+
+    feedback = module "Feedback" {
+      #basalt #v1 #deep
+      description "Browser feedback widget and same-origin host. The host verifies the caller through the tools service's native cookie session and submits accepted feedback through Telemetry."
+      metadata {
+        code "src/feedback|public/feedback.js"
+        bindings "TOOLS_SERVICE=basalt.toolsGateway"
+      }
+    }
+
+    telemetry = module "Telemetry" {
+      #basalt #v1 #deep #funnel
+      description "Shared privacy-filtered HTTP boundary for product events, feedback, traces and errors. Product events carry account IDs and allowlisted properties, never content, credentials or email. AccountConnected remains distinct from app_installed. Direct diagnostic export disables runtime platform trace export; only scrubbed Effect spans and router traces reach the observability adapter. Diagnostic DSN, OTLP endpoint and product capture key settings are optional."
+      metadata { code "src/telemetry" }
     }
 
     setupInstaller = module "Config installer" {
@@ -142,6 +157,7 @@ model {
   basalt.build -[sync]-> basalt.catalog "read catalog configuration"
   basalt.router -[sync]-> basalt.brandConfig "read brand configuration"
   basalt.deployment -[sync]-> basalt.brandConfig "read deployment configuration"
+  basalt.deployment -[sync]-> basalt.telemetry "resolve optional telemetry deployment settings"
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"
   basalt.build -[sync]-> basalt.deployment "read deployment settings"
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
@@ -157,10 +173,10 @@ model {
   basalt.releaseUpdates -[sync]-> basalt.setupInstaller "download and run the public installer; undo isolated client configuration"
   basalt.releaseUpdates -[sync]-> localClient "run both native clients with dedicated preview credentials"
   localClient -[sync]-> basalt.releaseUpdates "return native model and tool-call evidence"
-  basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY"
+  basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY and optional telemetry settings"
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
-  basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY and patched apps framework"
-  basalt.deployment -[sync]-> basalt.router "check public routes; supply POOL_APP_SIGNING_KEY"
+  basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY, patched apps framework and optional telemetry relay config"
+  basalt.deployment -[sync]-> basalt.router "check public routes; supply POOL_APP_SIGNING_KEY and optional telemetry settings"
   basalt.deployment -[sync]-> basalt.router "acceptance: stream test requests and read signed pool usage"
   basalt.deployment -[sync]-> basalt.router "preview: native sign-in and pool data; claim setup; download built installer; observe and revoke computers"
   basalt.deployment -[sync]-> basalt.setupInstaller "preview: execute downloaded built installer and undo"
@@ -168,6 +184,7 @@ model {
   basalt.deployment -[sync]-> basalt.pool "import pool usage contract for acceptance"
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
+  basalt.build -[sync]-> basalt.feedback "bundle feedback UI"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
   basalt.build -[sync]-> basalt.toolsGateway "copy app bundle and token signer; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
@@ -177,6 +194,13 @@ model {
   basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
   basalt.modelGateway -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
   basalt.router -[sync]-> basalt.setupHost "route /setup/v1/* and /setup/claim/*; observe real MCP tool calls"
+  basalt.router -[sync]-> basalt.feedback "serve feedback widget and host submission route"
+  basalt.router -[sync]-> basalt.telemetry "record router telemetry and relay events"
+  basalt.toolsGateway -[sync]-> basalt.router "optional authenticated analytics and feedback relay"
+  basalt.feedback -[sync]-> basalt.toolsGateway "verify caller through native cookie session"
+  basalt.feedback -[sync]-> basalt.telemetry "submit accepted feedback"
+  basalt.modelGateway -[sync]-> basalt.telemetry "record model request telemetry"
+  basalt.setupHost -[sync]-> basalt.telemetry "record setup and computer observation telemetry"
   basalt.setupHost -[sync]-> basalt.router "setup response and public computer metadata"
   basalt.setupHost -[sync]-> basalt.pool "reuse pool UI components"
   basalt.setupHost -[sync]-> basalt.brandConfig "read setup brand and public endpoint"

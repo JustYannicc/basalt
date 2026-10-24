@@ -35,7 +35,7 @@ interface ProviderLock {
   callbackRetry?: boolean;
   callbackResent?: boolean;
 }
-interface TrackedSession { session: Session; result?: SignInStatus; pendingIds?: string[] }
+interface TrackedSession { session: Session; accountId?: string; result?: SignInStatus; pendingIds?: string[] }
 interface PendingUpload { pool: string; id: string; upload: string; assigned?: boolean }
 interface AttributionState {
   version?: 2;
@@ -203,7 +203,7 @@ export class PoolControl implements ControlAttribution {
       if (lock.state && !lock.cancelBlocked) {
         const tracked = this.state.sessions[lock.state];
         if (tracked) {
-          const home = new PoolHome(client, tracked.session.pool, this.added);
+          const home = new PoolHome(client, tracked.session.pool, this.added, this.deps.onProductEvent, tracked.accountId);
           try {
             const result = await this.resolveStatus(home, tracked.session);
             if (result.status !== "waiting") continue;
@@ -308,10 +308,10 @@ export class PoolControl implements ControlAttribution {
     await this.save(); // A device exchange may start in Home's next call.
   }
   async discard(provider: string): Promise<void> { this.unlock(provider); }
-  async started(session: Session): Promise<void> {
+  async started(session: Session, accountId: string): Promise<void> {
     const lock = this.state.locks[session.provider];
     if (!lock || lock.pool !== session.pool) return unavailable();
-    this.state.sessions[session.state] = { session };
+    this.state.sessions[session.state] = { session, accountId };
     if (session.flow === "device") {
       lock.state = session.state;
       lock.flow = "device";

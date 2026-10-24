@@ -128,7 +128,7 @@ test("preserves a POST body and headers and returns the streamed tools response"
 });
 
 test("forwards model and pool control paths unchanged to the pool", async () => {
-  const paths = ["/pool/v1", "/pool/v1/", "/pool/v1/pool", "/pool/v1/sign-ins?session=example", "/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses"];
+  const paths = ["/pool/v1", "/pool/v1/", "/pool/v1/pool", "/pool/v1/sign-ins?session=example", "/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses", "/messages", "/chat/completions", "/completions"];
   const env = envWithToolsService(async () => { throw new Error("unexpected tools request"); });
   for (const path of paths) {
     const request = new Request(`https://app.signalbox.run${path}`);

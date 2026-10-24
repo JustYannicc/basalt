@@ -149,8 +149,10 @@ interface Options { pool?: string; owner?: boolean; token?: string; body?: unkno
 async function fixture() {
   const home = new FakeHome();
   const storage = new MemoryStorage();
+  const productEvents: [string, string][] = [];
   let time = Date.parse("2026-01-01T00:00:00.000Z");
-  const deps = { signingKey, previousSigningKey: undefined as string | undefined, home: home.fetch, now: () => new Date(time) };
+  const deps = { signingKey, previousSigningKey: undefined as string | undefined, home: home.fetch, now: () => new Date(time),
+    onProductEvent: (event: string, accountId: string) => productEvents.push([event, accountId]) };
   let control = new PoolControl(storage, deps);
   const tokens = new Map<string, string>();
   async function request(path: string, options: Options = {}): Promise<Request> {
@@ -179,7 +181,7 @@ async function fixture() {
   async function poll(started: SignInStarted, pool = "pool-a") {
     return call(`/sign-ins/status?session=${encodeURIComponent(started.session)}`, { pool });
   }
-  return { home, storage, deps, request, call, start, callback, poll, advance: (ms: number) => { time += ms; }, expire: () => control.expire(), restart: () => { control = new PoolControl(storage, deps); } };
+  return { home, storage, deps, productEvents, request, call, start, callback, poll, advance: (ms: number) => { time += ms; }, expire: () => control.expire(), restart: () => { control = new PoolControl(storage, deps); } };
 }
 async function error(response: Response, code: string, status = 400) {
   assert.equal(response.status, status, await response.clone().text());
@@ -280,6 +282,33 @@ test("future Home auth_ids and auth_id are added idempotently", async () => {
   // Each new account's usage is read once, when it joins the pool.
   const reads = f.home.calls.filter((call) => call.path === "/v8/management/credentials/quota/fetch");
   assert.deepEqual(reads.map((call) => JSON.parse(String(call.body)).auth_index).sort(), ["exact-a", "exact-b"]);
+});
+
+test("a provider account connection emits durable pool and account events once for the signed caller", async () => {
+  const f = await fixture();
+  const started = await f.start();
+  Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "connected-provider-account" });
+  f.home.addFile("connected-provider-account");
+
+  await status(await f.poll(started), { status: "connected", accountId: "connected-provider-account" });
+  await status(await f.poll(started), { status: "connected", accountId: "connected-provider-account" });
+
+  assert.deepEqual(f.productEvents, [["pool_created", "fake-owner"], ["account_connected", "fake-owner"]]);
+  assert.deepEqual(f.home.members.map((member) => member.auth_id), ["connected-provider-account"]);
+});
+
+test("the alarm preserves the signed caller when it completes an unattended provider connection", async () => {
+  const f = await fixture();
+  f.home.flow = "device";
+  const started = await f.start();
+  Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "connected-provider-account" });
+
+  f.advance(30_000);
+  await f.expire();
+  await f.expire();
+
+  assert.deepEqual(f.productEvents, [["pool_created", "fake-owner"], ["account_connected", "fake-owner"]]);
+  assert.deepEqual(f.home.members.map((member) => member.auth_id), ["connected-provider-account"]);
 });
 
 test("a failed usage read never fails the connect", async () => {

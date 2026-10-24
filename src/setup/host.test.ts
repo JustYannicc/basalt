@@ -15,7 +15,7 @@ const computer = { id: "computer-1", name: "Laptop", poolId: "pool-1", state: "i
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 type Call = { path: string; request: Request; input: Record<string, unknown> };
 type Override = (call: Call) => Response | undefined | Promise<Response | undefined>;
-function fixture(options: { tools?: Override; pool?: Override } = {}) {
+function fixture(options: { tools?: Override; pool?: Override; onProductEvent?: SetupEnv["onProductEvent"] } = {}) {
   const calls: Call[] = [];
   let claimed = false;
   const env: SetupEnv = {
@@ -60,6 +60,7 @@ function fixture(options: { tools?: Override; pool?: Override } = {}) {
       }
       throw Error(`Unexpected pool path: ${path}`);
     } },
+    onProductEvent: options.onProductEvent,
   };
   const request = (path: string, init: RequestInit = {}) => {
     const headers = new Headers({ cookie: "executor-hosted.session_token=fake-cookie", origin });
@@ -114,6 +115,24 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.equal(f.calls[3]!.input.user, "user-1");
   assert.equal(f.calls[3]!.input.intent, "signed-selection");
   assert.equal(f.calls[3]!.input.toolsToken, "exp_fake-tools-secret");
+});
+
+test("setup started is emitted only after a new durable setup link succeeds", async () => {
+  const events: [string, string][] = [];
+  const f = fixture({ onProductEvent: (event, accountId) => events.push([event, accountId]) });
+  assert.equal((await f.create()).status, 200);
+  assert.deepEqual(events, [["setup_started", "user-1"]]);
+
+  assert.equal((await f.create({ intent: "signed-selection", computerId: "computer-1" })).status, 200);
+  assert.deepEqual(events, [["setup_started", "user-1"]]);
+
+  const failedEvents: [string, string][] = [];
+  const failed = fixture({
+    onProductEvent: (event, accountId) => failedEvents.push([event, accountId]),
+    pool: ({ path }) => path.endsWith("/links") ? json({ error: "unavailable" }, 503) : undefined,
+  });
+  assert.equal((await failed.create()).status, 502);
+  assert.deepEqual(failedEvents, []);
 });
 
 test("setup refuses a shared model pool before minting any tools token", async () => {

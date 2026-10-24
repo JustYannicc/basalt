@@ -3,6 +3,7 @@ import * as Output from "alchemy/Output";
 import { Config, Effect, Option } from "effect";
 import { fileURLToPath } from "node:url";
 import { poolDatabaseInfrastructure } from "./database.ts";
+import { telemetryBindings } from "../telemetry/deployment.ts";
 
 // Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
 // https://developers.cloudflare.com/containers/concepts/placement/
@@ -35,6 +36,7 @@ export const poolWorker = Effect.gen(function* () {
       POOL_DATABASE_URL: databaseUrl,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
+      ...(yield* telemetryBindings),
       ...(Option.isSome(previousSigningKey) ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value } : {}),
       POOL_IMAGE_HASH: application.hash.pipe(Output.map((hash) => {
         if (!hash?.image) throw new Error("The pool image has no build revision");
