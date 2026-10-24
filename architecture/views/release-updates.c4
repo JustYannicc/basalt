@@ -1,0 +1,18 @@
+views {
+  dynamic view release_update {
+    title "Basalt/Workflows/Release update"
+    basalt.releaseUpdates -> updateSource "poll tools, Home and node releases"
+    basalt.releaseUpdates -> basalt.build "prepare pin and carried patches"
+    basalt.releaseUpdates -> basalt.deployment "create temporary per-PR preview"
+    basalt.releaseUpdates -> basalt.toolsGateway "real preview sign-in and pool access"
+    basalt.releaseUpdates -> basalt.setupHost "create one computer per native client"
+    basalt.releaseUpdates -> basalt.setupInstaller "install from public claim response"
+    basalt.releaseUpdates -> localClient "run real model request and built-in tool search"
+    localClient -> basalt.releaseUpdates "native proof and public computer observations"
+    basalt.releaseUpdates -> basalt.deployment "destroy preview and verify resources absent"
+    basalt.releaseUpdates -> updateSource "merge exact-head green pull request"
+    basalt.deployment -> basalt.releaseUpdates "classify database and encrypted workflow changes"
+    basalt.deployment -> databaseProvider "complete backup before database migration"
+    basalt.deployment -> deploymentProvider "operator drains workflows before journal identity changes"
+  }
+}

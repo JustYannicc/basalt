@@ -17,7 +17,15 @@ model {
 
     deployment = module "Deployment" {
       metadata {
-        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml"
+        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|scripts/preview|scripts/preview-auth|scripts/deploy-safety|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml"
+      }
+    }
+
+    releaseUpdates = module "Release updates" {
+      #basalt #v1 #deep
+      description "Detects pinned upstream updates and opens one update pull request per release. An exact-head preview must pass real sign-in and native client acceptance, then destroy and verify all temporary resources before automatic merge. Database or workflow identity changes stay manual behind a completed backup and a protected deployment environment. Drain, quiesce and database restore remain manual in v1. Live acceptance is pending account setup."
+      metadata {
+        code "scripts/releases|scripts/release-preview|scripts/release-merge|.github/workflows/releases.yml|.github/workflows/release-preview.yml|.github/workflows/release-cleanup.yml|.github/workflows/release-merge.yml"
       }
     }
 
@@ -124,6 +132,14 @@ model {
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"
   basalt.build -[sync]-> basalt.deployment "read deployment settings"
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
+  basalt.releaseUpdates -[sync]-> basalt.build "prepare pinned source and verify carried patches"
+  basalt.releaseUpdates -[sync]-> basalt.deployment "deploy isolated preview; seed native sign-in; destroy and verify absence"
+  basalt.deployment -[sync]-> basalt.releaseUpdates "classify source changes before backup and workflow drain gates"
+  basalt.releaseUpdates -[sync]-> basalt.toolsGateway "sign in with native preview auth and use credential-free tool search"
+  basalt.releaseUpdates -[sync]-> basalt.setupHost "mint and revoke separate preview computers through public setup routes"
+  basalt.releaseUpdates -[sync]-> basalt.setupInstaller "download and run the public installer; undo isolated client configuration"
+  basalt.releaseUpdates -[sync]-> localClient "run both native clients with dedicated preview credentials"
+  localClient -[sync]-> basalt.releaseUpdates "return native model and tool-call evidence"
   basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY"
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
   basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY and patched apps framework"

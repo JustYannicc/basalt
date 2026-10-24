@@ -150,6 +150,40 @@ A patch change that alters workflow step names requires existing runs to be drai
 
 The public cloud runtime remains upstream code. Each carried patch is applied against the one pinned source. Remove patches when their upstream equivalents are included by a later pin.
 
+## Release updates
+
+The release workflow checks the tools service's v2 releases and the Home and node releases separately. Each candidate has one stable update branch and pull request. Repeated checks reuse that PR and refresh it against current `main`. The pins stay immutable; the pool image downloads and verifies released binaries without modifying them.
+
+The patch registry records the upstream PR for each carried change. The updater removes a patch only when that PR has merged and its merge commit is included in the candidate source. A patch that fails to apply leaves the update PR red. It does not bypass preparation or deploy anything.
+
+An update must pass Check and Release preview on its exact head. The preview uses a temporary per-PR stage with its own database branch, EU storage, container and signing keys. It enables native email/password sign-in for the dedicated smoke identity only on preview stages. Production keeps password sign-in disabled. The acceptance runner signs in, opens the native pool app, imports dedicated test subscriptions, and runs Claude Code and Codex with separate computer credentials through the public installer. Each client must complete a real model request and authenticated built-in tool search. Public computer observations must confirm both operations. Undo and paired credential revocation must pass too.
+
+The preview job destroys the stage after success or failure and checks that its resources are absent. The close workflow retries cleanup if a run is interrupted. A merge receipt exists only after both live smoke and remote teardown pass. Cleanup manifests are encrypted before upload; raw credentials, client transcripts and preview URLs are never uploaded. Keep `PREVIEW_STATE_KEY` until all previews created with it are removed.
+
+The merge gate rechecks the current head, current `main`, allowed update files and outstanding review findings before squash-merging. It recomputes the database and workflow classification. A moving base, missing smoke credentials, skipped client, broken patch or failed cleanup blocks the merge. Database and workflow-identity changes receive `manual-release` and the applicable risk labels and never auto-merge. `release-update` continues to identify them for preview cleanup. `RELEASE_UPDATE_TOKEN` must be able to create update PRs and merge them, so their changes trigger Actions. Use a fine-grained token with Contents, Pull requests and Issues read/write, Actions read, and permission to merge under this repository's branch rules.
+
+### Dedicated preview credentials
+
+`PREVIEW_SMOKE_EMAIL`, `PREVIEW_SMOKE_PASSWORD` and `PREVIEW_STATE_KEY` are generated directly into Actions secrets. The identity uses the reserved `example.invalid` domain. Deploy credentials remain the Actions secrets listed above.
+
+Supply these three additional Actions secrets with dedicated test accounts:
+
+- `PREVIEW_CLAUDE_AUTH_JSON`: the Claude login-file JSON exported from Home's Credentials download.
+- `PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON`: the Codex login-file JSON exported from Home's Credentials download. That download calls `GET /v8/management/credentials/download?id=<auth-record-id>`.
+- `PREVIEW_CODEX_CLI_AUTH_JSON`: the genuine native Codex `auth.json` produced by `codex login` in a fresh, dedicated `CODEX_HOME`. This is separate from the pool subscription export.
+
+Set Actions variables `PREVIEW_CLAUDE_MODEL` and `PREVIEW_CODEX_MODEL` to exact model IDs available through those subscriptions. The runner does not substitute models or credentials. It uses private files for login imports and never reads a developer's existing client configuration.
+
+### Database changes and rollback
+
+The deployment compares the candidate with the last successful production deployment. Normal releases auto-merge and deploy. A database change, workflow step identity change, or uncertain classification requires a manual release. Its PR explains the evidence and carries `manual-release` with `database-change` or `workflow-identity-change`.
+
+Dispatch the manual release workflow for that PR. Its backup job must finish before the deployment can enter the protected `production-release` Actions environment. The backup covers both logical databases on the production cluster and records the previous and candidate pins. Before approving that environment, the operator must stop new work, drain existing workflow runs when checkpoint identities change, and quiesce writes for a database-changing release. Drain and quiesce remain manual in v1. Environment approval records the operator's decision; it is not an automated drain proof.
+
+For a normal release, rollback automatically redeploys the previous pins and their patch set. For a database-changing release, an operator must restore the recorded backup before deploying the previous pins. Database restore remains manual in v1; a code revert alone does not reverse migrations. Never destroy production as a rollback operation. Losing state metadata remains recoverable through adoption; losing its encryption key remains the documented recovery limitation.
+
+The simulated release and broken-patch checks verify update mechanics without cloud credentials. Live preview, automatic release merge, database restore and provider teardown acceptance remain pending until the required accounts and dedicated subscription secrets are configured. The tracking issue stays open until a real release completes the entire flow.
+
 ## Verification and remaining work
 
 `npm run check` exercises routing, configuration, the pool control API and the pool screen's helpers without credentials. `npm run check:providers` compares the provider table with the pinned Home source. `npm run check:build` renders the built sign-in pages and the patched emails under the brand and under a swapped name, and fails if either shows the tools service's name. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run build` builds the upstream framework and pool Worker. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.

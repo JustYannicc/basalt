@@ -60,6 +60,17 @@ model {
     technology "GitHub raw source"
     metadata { hosts "raw.githubusercontent.com" }
   }
+  updateSource = adapter "Update source" {
+    #external
+    technology "GitHub REST API"
+    metadata { hosts "api.github.com" }
+  }
+  basalt.releaseUpdates -[sync]-> updateSource "read upstream releases and patch merges; open and merge verified updates"
+  basalt.deployment -[sync]-> updateSource "read deployment history and store recovery receipts"
+  basalt.releaseUpdates -[sync]-> releaseSource "fetch pinned sources, native clients and workflow actions"
+  basalt.releaseUpdates -[sync]-> packageSource "install preview build and native client dependencies"
+  basalt.releaseUpdates -[sync]-> databaseProvider "read database migration evidence"
+  basalt.releaseUpdates -[sync]-> deploymentProvider "verify temporary resources are absent"
   basalt.build -[sync]-> providerSource "check provider catalog against pinned Home source"
   deploymentProvider = adapter "Deployment provider" {
     #external

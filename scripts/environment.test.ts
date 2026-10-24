@@ -3,7 +3,14 @@ import { test } from "node:test";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { brand } from "../brand.ts";
-import { deployEnvironment, requiredSecrets } from "./environment.ts";
+import {
+  deployEnvironment,
+  previewCleanupEnvironment,
+  previewEnvironment,
+  requiredPreviewDeploySecrets,
+  requiredPreviewSecrets,
+  requiredSecrets,
+} from "./environment.ts";
 
 test("missing credentials fail with a name and never a value", () => {
   assert.throws(
@@ -35,6 +42,10 @@ test("production rejects emulator and foreign hosting overrides", () => {
   for (const name of [
     "EXECUTOR_EMULATORS",
     "TEST_STAGE_DATABASE_PROVIDER",
+    "TEST_STAGE_PASSWORD_SIGN_IN",
+    "PREVIEW_STATE_KEY",
+    "PREVIEW_SMOKE_EMAIL",
+    "PREVIEW_SMOKE_PASSWORD",
     "EXECUTOR_ROLE_HOSTS_DOMAIN",
   ]) {
     assert.throws(
@@ -93,4 +104,94 @@ test("a previous pool signing key is optional, hex, and never the current key", 
   assert.throws(() => deployEnvironment({ ...credentials, POOL_APP_SIGNING_KEY_PREVIOUS: "ab".repeat(32) }), {
     message: "POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY",
   });
+});
+
+test("preview environment is per-PR, isolated, and keeps smoke credentials deploy-only", () => {
+  const source = Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"]));
+  Object.assign(source, {
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    TEST_STAGE_DATABASE: "basalt-previews-must-not-be-used",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview-pr-1419@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+    GOOGLE_CLIENT_SECRET: "production-google-secret-must-not-pass-through",
+    AUTH_GITHUB_CLIENT_SECRET: "production-github-secret-must-not-pass-through",
+    BETTER_AUTH_SECRET: "production-auth-secret-must-not-pass-through",
+    POOL_MANAGEMENT_KEY: "production-pool-key-must-not-pass-through",
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32),
+    OAUTH_PROXY_SECRET: "production-proxy-secret-must-not-pass-through",
+  });
+
+  const first = previewEnvironment(1419, source);
+  const retry = previewEnvironment(1419, source);
+  const sibling = previewEnvironment(1420, source);
+
+  assert.equal(first.stage, "test-pr-1419");
+  assert.equal(first.sourceNamespace, "basalt-preview-pr-1419-apps");
+  assert.equal(first.databaseName, "basalt-preview-pr-1419");
+  assert.equal(first.origin, "https://app.pr-1419.preview.example.invalid");
+  assert.equal(first.deploy.TEST_STAGE_DATABASE_PROVIDER, "planetscale");
+  assert.equal(first.deploy.TEST_STAGE_DATABASE, "basalt-preview-pr-1419");
+  assert.equal(first.deploy.TEST_STAGE_PASSWORD_SIGN_IN, "true");
+  assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");
+  assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
+  assert.equal(first.deploy.PREVIEW_SMOKE_PASSWORD, undefined);
+  assert.equal(first.deploy.PREVIEW_STATE_KEY, undefined);
+  assert.equal(first.deploy.POOL_APP_SIGNING_KEY_PREVIOUS, undefined);
+  for (const name of [
+    "GOOGLE_CLIENT_SECRET",
+    "GITHUB_CLIENT_SECRET",
+    "AUTH_GITHUB_CLIENT_SECRET",
+    "BETTER_AUTH_SECRET",
+    "OAUTH_PROXY_SECRET",
+  ]) assert.doesNotMatch(first.deploy[name] ?? "", /production-.*secret-must-not-pass-through/);
+  assert.equal(first.deploy.POOL_MANAGEMENT_KEY, retry.deploy.POOL_MANAGEMENT_KEY);
+  assert.notEqual(first.deploy.POOL_MANAGEMENT_KEY, sibling.deploy.POOL_MANAGEMENT_KEY);
+  assert.notEqual(first.deploy.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
+  assert.equal(first.seed.PREVIEW_SMOKE_EMAIL, source.PREVIEW_SMOKE_EMAIL);
+  assert.equal(first.seed.PREVIEW_SMOKE_PASSWORD, source.PREVIEW_SMOKE_PASSWORD);
+  assert.equal(first.seed.BETTER_AUTH_SECRET, undefined);
+});
+
+test("preview config rejects unsafe PRs, hostnames, keys and real-person smoke accounts", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    TEST_STAGE_DATABASE: "basalt-previews-must-not-be-used",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixed-preview-password",
+  };
+  for (const number of [0, -1, 1.1, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => previewEnvironment(number, source), /positive integer/);
+  for (const TEST_STAGE_DOMAIN of ["https://preview.example.invalid", "preview.example.invalid/path", "bad zone"])
+    assert.throws(() => previewEnvironment(1, { ...source, TEST_STAGE_DOMAIN }), /DNS zone name/);
+  assert.throws(
+    () => previewEnvironment(1, { ...source, PREVIEW_STATE_KEY: "secret" }),
+    /32 bytes of lowercase hex/,
+  );
+  assert.throws(
+    () => previewEnvironment(1, { ...source, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
+    /reserved example.invalid/,
+  );
+});
+
+test("cleanup environment needs provider credentials and state key, never smoke credentials", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewSecrets.map((name) => [name, "fixture"])),
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "34".repeat(32),
+  };
+  const cleanup = previewCleanupEnvironment(1419, source);
+  assert.equal(cleanup.stage, "test-pr-1419");
+  assert.equal(cleanup.providers.ALCHEMY_STAGE, "test-pr-1419");
+  assert.equal(cleanup.providers.POOL_APP_SIGNING_KEY, undefined);
+  assert.equal(cleanup.providers.PREVIEW_SMOKE_EMAIL, undefined);
+  assert.equal(cleanup.providers.PREVIEW_SMOKE_PASSWORD, undefined);
+  assert.equal(cleanup.providers.PREVIEW_STATE_KEY, undefined);
+  assert.throws(
+    () => previewCleanupEnvironment(1419, { ...source, PREVIEW_STATE_KEY: undefined }),
+    /Missing GitHub Actions secret: PREVIEW_STATE_KEY/,
+  );
 });

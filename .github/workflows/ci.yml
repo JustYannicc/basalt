@@ -50,6 +50,11 @@ jobs:
       - name: Check the pool bootstrap
         run: python3 -m unittest containers.pool.test_bootstrap
       - run: npm run prepare:upstream
+      - name: Prove release updates, broken patches, rollback and preview cleanup gates
+        run: |
+          npm run check:releases
+          npm run prove:releases
+          npm run check:preview-auth
       - name: Architecture deployment generation
         run: |
           bun run --cwd .upstream/apps/hosted/cloud framework:build

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  deployments: write
 
 concurrency:
   group: deploy-production
@@ -16,6 +17,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      GITHUB_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
@@ -35,6 +37,9 @@ jobs:
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
@@ -45,16 +50,21 @@ jobs:
         run: node --input-type=module -e 'import { deployEnvironment } from "./scripts/environment.ts"; deployEnvironment();'
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
-      - run: npm run check
       - run: npm run prepare:upstream
+      - run: npm run check
+      - run: npm run check:releases
+      - run: npm run check:preview-auth
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run check:build
       - run: bun install --cwd scripts/architecture --frozen-lockfile
       - run: npm run architecture:model
       - run: npm run typecheck
-      - run: npm run deploy
+      - name: Compare the candidate with the last successful production deployment
+        run: |
+          mkdir -p .local
+          node scripts/deploy-safety/release.ts report > .local/production-report.json
+      - name: Deploy normal releases and restore the previous pin after a failed attempt
+        run: node scripts/deploy-safety/release.ts deploy --report .local/production-report.json --mode automatic
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
-      - name: Check public routes
-        run: node scripts/smoke.ts

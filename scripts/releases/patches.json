@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "repository": "UsefulSoftwareCo/executor",
+  "patches": [
+    { "file": "0001-optional-cloud-vendors.patch", "upstream_pull_request": 2348, "database_sensitive": false, "workflow_sensitive": false },
+    { "file": "0002-cloud-deployment.patch", "upstream_pull_request": null, "database_sensitive": false, "workflow_sensitive": false },
+    { "file": "0003-eu-durable-objects.patch", "upstream_pull_request": null, "database_sensitive": false, "workflow_sensitive": true },
+    { "file": "0004-encrypted-workflow-results.patch", "upstream_pull_request": null, "database_sensitive": true, "workflow_sensitive": true },
+    { "file": "0005-app-hosting.patch", "upstream_pull_request": null, "database_sensitive": false, "workflow_sensitive": false },
+    { "file": "0006-product-brand.patch", "upstream_pull_request": 2350, "database_sensitive": false, "workflow_sensitive": false },
+    { "file": "0007-product-brand-surfaces.patch", "upstream_pull_request": 2352, "database_sensitive": false, "workflow_sensitive": false },
+    { "file": "0008-caller-identity.patch", "upstream_pull_request": 2346, "database_sensitive": false, "workflow_sensitive": true },
+    { "file": "0009-basalt-framework.patch", "upstream_pull_request": 2346, "database_sensitive": false, "workflow_sensitive": false },
+    { "file": "0010-member-pools.patch", "upstream_pull_request": null, "database_sensitive": true, "workflow_sensitive": false },
+    { "file": "0011-preview-auth.patch", "upstream_pull_request": 2360, "database_sensitive": false, "workflow_sensitive": false }
+  ]
+}
