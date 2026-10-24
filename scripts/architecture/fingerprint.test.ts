@@ -21,6 +21,25 @@ function fixture() {
 test("the stack fingerprint is independent of the checkout path", () => {
   expect(stackFingerprint(fixture().root)).toBe(stackFingerprint(fixture().root));
 });
+
+test("build path bases do not turn the repository and Git metadata into asset inputs", () => {
+  const first = fixture(), second = fixture();
+  for (const value of [first, second]) {
+    value.write("scripts/setup-build.ts", 'const root = new URL("../", import.meta.url);');
+    value.write("src/setup/client.mjs", "export const installer = 'source';");
+  }
+  first.write(".git", "gitdir: /separate/worktree/metadata\n");
+  second.write(".git/config", "a clean checkout has a Git directory\n");
+  first.write("public/brand/fonts/generated.woff2", "locally generated font");
+  first.write("node_modules/dependency/file.js", "installed dependency");
+  const before = stackFingerprint(first.root);
+  expect(before).toBe(stackFingerprint(second.root));
+  first.write("src/setup/client.mjs", "export const installer = 'changed';");
+  expect(stackFingerprint(first.root)).not.toBe(before);
+  const changed = stackFingerprint(first.root);
+  first.write("scripts/setup-build.ts", 'const root = new URL("../", import.meta.url); build();');
+  expect(stackFingerprint(first.root)).not.toBe(changed);
+});
 test("resource settings and referenced configuration change the fingerprint", () => {
   const { root, write } = fixture();
   const before = stackFingerprint(root);

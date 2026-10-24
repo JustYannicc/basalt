@@ -69,8 +69,10 @@ export function stackFingerprint(root: string): string {
     const visitNode = (node: ts.Node): void => {
       if (ts.isStringLiteralLike(node) && node.text.startsWith(".")) {
         const reference = resolve(dirname(path), node.text.replace(/\.js$/, ".ts"));
+        // A repository-root URL establishes a path base, not an asset directory.
         if (ts.isNewExpression(node.parent) && node.parent.expression.getText(source) === "URL" &&
-            node.parent.arguments?.[0] === node && existsSync(reference) && statSync(reference).isDirectory()) visit(reference);
+            node.parent.arguments?.[0] === node && reference !== resolve(root)
+            && existsSync(reference) && statSync(reference).isDirectory()) visit(reference);
         for (const candidate of [reference, `${reference}.ts`, join(reference, "index.ts")]) {
           if (/\.(?:[cm]?tsx?|json)$/.test(candidate) && existsSync(candidate)) {
             visit(candidate);
