@@ -1,8 +1,9 @@
 import { mergeFeed, type Addition, type Feed } from "./feed.ts";
 import { catalog } from "./settings.ts";
+import { atlassianAddition } from "./atlassian/index.ts";
 
 // Missing connectors add their published package here. Existing official apps stay upstream's.
-const additions: readonly Addition[] = [];
+const additions: readonly Addition[] = [atlassianAddition()];
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
