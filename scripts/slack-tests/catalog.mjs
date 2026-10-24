@@ -76,7 +76,7 @@ export function localSlackPackage(source, localOrigin, specUrl) {
     } else if (file.path === "openapi.ts") {
       const allowedOrigin = rewrite(content,
         /(allowedOrigin\s*:\s*["'])(https?:\/\/[^"']+)(["'])/g,
-        (_whole, prefix, url, suffix) => prefix + localSlackUrl(url, localOrigin) + suffix);
+        (_whole, prefix, url, suffix) => prefix + new URL(localSlackUrl(url, localOrigin)).origin + suffix);
       content = allowedOrigin.content;
       const sourceUrl = rewrite(content,
         /(source\s*:\s*\{\s*url\s*:\s*["'])([^"']+)(["'])/s,
