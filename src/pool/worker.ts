@@ -122,7 +122,6 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   async alarm() {
     await this.computers.expire();
     await (await this.lifecycle).warm();
-    await this.computers.migrateLegacy().catch((error: unknown) => console.error("Legacy pool user migration failed", error));
     await this.computers.observeUsage();
     await this.control.expire();
     await this.prices.run();
