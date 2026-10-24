@@ -5,7 +5,7 @@ diff --git a/apps/hosted/server/src/implementation/product-analytics.ts b/apps/h
  /** Product analytics at the shared hosted Executor boundary, used by Cloud and self-host. */
  import type { Executor, ToolCallResult, ToolResumeResult } from "@executor-js/sdk/core";
  import { toolCompletion } from "@executor-js/telemetry/product-analytics";
--import { Clock, Effect, Exit } from "effect";
+-import { Clock, Effect, Exit, Option } from "effect";
 +import { Cause, Clock, Effect, Exit, Option } from "effect";
 +import { HostedCatalog } from "../contracts/catalog.ts";
  import {

@@ -51,6 +51,11 @@ function authorityMutation(name: string): boolean {
   return ["href", "host", "hostname", "protocol", "port", "username", "password", "url"].includes(name);
 }
 
+const hostPreservingSearchParamMethods = new Set([
+  "append", "delete", "entries", "get", "getAll", "has", "keys", "set", "sort", "toString", "values",
+]);
+const urlStringProperties = new Set(["hash", "host", "hostname", "password", "pathname", "port", "protocol", "search", "username"]);
+
 /** Reads a closed set of parsed source files. It never evaluates or imports the inspected program. */
 export class StaticValues {
   private readonly program: ts.Program;
@@ -100,7 +105,8 @@ export class StaticValues {
   }
 
   isUnshadowedGlobal(identifier: ts.Identifier): boolean {
-    return this.checker.getSymbolAtLocation(identifier) === undefined;
+    const symbol = this.checker.getSymbolAtLocation(identifier);
+    return symbol === undefined || symbol.declarations?.length === 0;
   }
 
   urlHost(expression: ts.Expression): string | undefined {
@@ -126,8 +132,14 @@ export class StaticValues {
   }
 
   isMutated(identifier: ts.Identifier): boolean {
-    const symbol = this.symbolAt(identifier);
-    return symbol !== undefined && this.mutated.has(symbol);
+    let symbol = this.symbolAt(identifier);
+    const seen = new Set<ts.Symbol>();
+    while (symbol && !seen.has(symbol)) {
+      if (this.mutated.has(symbol)) return true;
+      seen.add(symbol);
+      symbol = this.aliases.get(symbol);
+    }
+    return false;
   }
 
   moduleSpecifier(expression: ts.Expression): string | undefined {
@@ -236,9 +248,36 @@ export class StaticValues {
         symbol = this.aliases.get(symbol);
       }
     };
+    const markEscaped = (expression: ts.Expression): void => {
+      while (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) ||
+        ts.isTypeAssertionExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isNonNullExpression(expression))
+        expression = expression.expression;
+      if (ts.isIdentifier(expression)) mark(expression);
+      else if (ts.isArrayLiteralExpression(expression)) {
+        for (const element of expression.elements)
+          if (!ts.isOmittedExpression(element)) markEscaped(ts.isSpreadElement(element) ? element.expression : element);
+      } else if (ts.isObjectLiteralExpression(expression)) {
+        for (const property of expression.properties) {
+          if (ts.isSpreadAssignment(property)) markEscaped(property.expression);
+          else if (ts.isShorthandPropertyAssignment(property)) mark(property.name);
+          else if (ts.isPropertyAssignment(property)) markEscaped(property.initializer);
+        }
+      } else if (ts.isConditionalExpression(expression)) {
+        markEscaped(expression.whenTrue);
+        markEscaped(expression.whenFalse);
+      }
+    };
+    const markReceiver = (expression: ts.Expression): void => {
+      while (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression))
+        expression = expression.expression;
+      if (ts.isIdentifier(expression)) mark(expression);
+    };
     const visit = (node: ts.Node): void => {
       if (ts.isBinaryExpression(node) && assignmentOperator(node.operatorToken.kind)) {
-        if (ts.isIdentifier(node.left)) mark(node.left);
+        if (ts.isIdentifier(node.left)) {
+          mark(node.left);
+          markEscaped(node.right);
+        }
         if (ts.isPropertyAccessExpression(node.left) && authorityMutation(node.left.name.text)) {
           mark(node.left.name);
           mark(node.left.expression);
@@ -257,6 +296,24 @@ export class StaticValues {
         mark(node.operand.name);
         mark(node.operand.expression);
       }
+      if (ts.isCallExpression(node)) {
+        const method = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined;
+        const receiver = ts.isPropertyAccessExpression(node.expression) ? node.expression.expression : undefined;
+        const searchParamsCall = ts.isPropertyAccessExpression(node.expression) &&
+          hostPreservingSearchParamMethods.has(method ?? "") &&
+          ts.isPropertyAccessExpression(node.expression.expression) && node.expression.expression.name.text === "searchParams";
+        const knownStringReceiver = receiver !== undefined && this.value(receiver, new Set()).kind !== "unknown";
+        const urlStringReceiver = receiver !== undefined && ts.isPropertyAccessExpression(receiver) &&
+          urlStringProperties.has(receiver.name.text);
+        const hostPreservingCall = searchParamsCall ||
+          (method === "toLowerCase" && (knownStringReceiver || urlStringReceiver)) ||
+          (method === "endsWith" && knownStringReceiver) ||
+          (ts.isIdentifier(node.expression) && node.expression.text === "fetch" && this.isUnshadowedGlobal(node.expression));
+        if (!hostPreservingCall) for (const argument of node.arguments)
+          markEscaped(ts.isSpreadElement(argument) ? argument.expression : argument);
+        if (!hostPreservingCall && ts.isPropertyAccessExpression(node.expression))
+          markReceiver(node.expression.expression);
+      }
       ts.forEachChild(node, visit);
     };
     for (const source of this.program.getSourceFiles()) if (this.files.has(resolve(source.fileName))) visit(source);
@@ -264,8 +321,7 @@ export class StaticValues {
 
   private collectAliases(): void {
     const visit = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name) && ts.isIdentifier(node.initializer) &&
-        node.parent.flags & ts.NodeFlags.Const) {
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name) && ts.isIdentifier(node.initializer)) {
         const alias = this.symbolAt(node.name);
         const target = this.symbolAt(node.initializer);
         if (alias && target && alias !== target) this.aliases.set(alias, target);

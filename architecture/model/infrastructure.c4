@@ -43,17 +43,17 @@ model {
   }
   basalt.toolsGateway -[sync]-> assetsService "call"
 
-  sentryService = adapter "Sentry EU" {
+  sentryService = adapter "EU diagnostics" {
     #external
     technology "Sentry EU"
     metadata { hosts "*.ingest.de.sentry.io" }
   }
-  posthogService = adapter "PostHog EU" {
+  posthogService = adapter "EU product analytics" {
     #external
     technology "PostHog EU"
     metadata { hosts "eu.i.posthog.com" }
   }
-  basalt.telemetry -[sync]-> sentryService "send feedback, errors and scrubbed Effect and router traces over HTTP; direct mode disables Cloudflare platform trace export"
+  basalt.telemetry -[sync]-> sentryService "send feedback, errors and scrubbed Effect and router traces over HTTP; direct mode disables runtime platform trace export"
   basalt.telemetry -[sync]-> posthogService "send account-scoped product events over HTTP"
   basalt.build -[sync]-> sentryService "use a synthetic DSN and OTLP endpoint for the worker size check; no network request"
 

@@ -13,10 +13,11 @@ export const unwrap = (node: ts.Expression): ts.Expression => {
   return node;
 };
 
-export function isUndefined(expression: ts.Expression | undefined): boolean {
+export function isUndefined(expression: ts.Expression | undefined, values: StaticValues): boolean {
   if (!expression) return true;
   expression = unwrap(expression);
-  return (ts.isIdentifier(expression) && expression.text === "undefined") || ts.isVoidExpression(expression);
+  return ts.isVoidExpression(expression) ||
+    (ts.isIdentifier(expression) && expression.text === "undefined" && values.isUnshadowedGlobal(expression));
 }
 
 export function functionOf(call: ts.CallExpression, values: StaticValues): ts.FunctionLikeDeclaration | undefined {
@@ -54,15 +55,18 @@ function returnedExpressions(fn: ts.FunctionLikeDeclaration): ReturnedExpression
   return expressions;
 }
 
-export function returnedProperty(fn: ts.FunctionLikeDeclaration, name: string): ts.Expression[] | undefined {
+export function returnedProperty(fn: ts.FunctionLikeDeclaration, name: string, values: StaticValues): ts.Expression[] | undefined {
   const result: ts.Expression[] = [];
   for (const returned of returnedExpressions(fn)) {
-    if (isUndefined(returned.expression)) continue;
+    if (isUndefined(returned.expression, values)) continue;
     if (!returned.direct || !returned.expression || !ts.isObjectLiteralExpression(unwrap(returned.expression))) return undefined;
     const object = unwrap(returned.expression) as ts.ObjectLiteralExpression;
-    const property = object.properties.find(candidate => ts.isPropertyAssignment(candidate) &&
-      ((ts.isIdentifier(candidate.name) || ts.isStringLiteralLike(candidate.name)) && candidate.name.text === name));
-    if (!property || !ts.isPropertyAssignment(property)) return undefined;
+    if (object.properties.some(candidate => ts.isSpreadAssignment(candidate) ||
+      (!ts.isSpreadAssignment(candidate) && ts.isComputedPropertyName(candidate.name)))) return undefined;
+    const matches = object.properties.filter(candidate => !ts.isSpreadAssignment(candidate) &&
+      (ts.isIdentifier(candidate.name) || ts.isStringLiteralLike(candidate.name)) && candidate.name.text === name);
+    if (matches.length !== 1 || !ts.isPropertyAssignment(matches[0]!)) return undefined;
+    const property = matches[0] as ts.PropertyAssignment;
     result.push(property.initializer);
   }
   return result.length > 0 ? result : undefined;
@@ -128,8 +132,8 @@ export function propertyOfUrl(expression: ts.Expression, url: ts.Identifier, val
   return expression.name.text;
 }
 
-function rejectingUndefined(statement: ts.Statement): boolean {
-  return ts.isReturnStatement(statement) && isUndefined(statement.expression);
+function rejectingUndefined(statement: ts.Statement, values: StaticValues): boolean {
+  return ts.isReturnStatement(statement) && isUndefined(statement.expression, values);
 }
 
 function strictOrTerms(expression: ts.Expression): ts.BinaryExpression[] | undefined {
@@ -143,14 +147,14 @@ function strictOrTerms(expression: ts.Expression): ts.BinaryExpression[] | undef
   return expression.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ? [expression] : undefined;
 }
 
-export function dominatingGuard(fn: ts.FunctionLikeDeclaration): { index: number; terms: ts.BinaryExpression[] } | undefined {
+export function dominatingGuard(fn: ts.FunctionLikeDeclaration, values: StaticValues): { index: number; terms: ts.BinaryExpression[] } | undefined {
   if (!fn.body || !ts.isBlock(fn.body)) return undefined;
   const scopes = [fn.body, ...fn.body.statements.flatMap(statement =>
     ts.isTryStatement(statement) ? [statement.tryBlock] : [])];
   const successfulReturns: ts.ReturnStatement[] = [];
   const findReturns = (node: ts.Node): void => {
     if (node !== fn.body && ts.isFunctionLike(node)) return;
-    if (ts.isReturnStatement(node) && !isUndefined(node.expression)) successfulReturns.push(node);
+    if (ts.isReturnStatement(node) && !isUndefined(node.expression, values)) successfulReturns.push(node);
     ts.forEachChild(node, findReturns);
   };
   findReturns(fn.body);
@@ -159,7 +163,7 @@ export function dominatingGuard(fn: ts.FunctionLikeDeclaration): { index: number
     if (scopedReturns.length === 0 || scopedReturns.length !== successfulReturns.length) continue;
     for (let index = 0; index < scope.statements.length; index++) {
       const statement = scope.statements[index]!;
-      if (!ts.isIfStatement(statement) || statement.elseStatement || !rejectingUndefined(statement.thenStatement)) continue;
+      if (!ts.isIfStatement(statement) || statement.elseStatement || !rejectingUndefined(statement.thenStatement, values)) continue;
       const terms = strictOrTerms(statement.expression);
       if (terms && scopedReturns.every(success => scope.statements.indexOf(success) > index)) return { index, terms };
     }

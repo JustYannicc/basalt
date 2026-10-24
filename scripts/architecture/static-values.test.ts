@@ -53,13 +53,15 @@ test("mutable, shadowed, and URL-host-mutated aliases stay unknown", () => {
       `let destination = process.env.API_URL; fetch(destination);`,
       `const url = new URL("https://api.example.test/v1");`,
       `const alias = url; alias.hostname = process.env.API_HOST; fetch(url);`,
+      `const escaped = new URL("https://api.example.test/v1"); rewrite(escaped); fetch(escaped);`,
+      `const assigned = new URL("https://api.example.test/v1"); const assignedAlias = assigned; Object.assign(assignedAlias, { hostname: process.env.API_HOST }); fetch(assigned);`,
       `const origin = "https://api.example.test/v1";`,
       `function send(origin: string) { fetch(origin); }`,
     ].join("\n"),
   });
   const source = values.source(paths[0]!);
   const args = expressions(source!, call => call.expression.getText(source!) === "fetch");
-  expect(args.map(argument => values.urlHost(argument))).toEqual([undefined, undefined, undefined]);
+  expect(args.map(argument => values.urlHost(argument))).toEqual([undefined, undefined, undefined, undefined, undefined]);
 });
 
 test("bounded URL proofs follow a regex-validated HTTPS host to a returned URL", () => {

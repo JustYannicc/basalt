@@ -77,7 +77,7 @@ model {
 
     telemetry = module "Telemetry" {
       #basalt #v1 #deep #funnel
-      description "Shared privacy-filtered HTTP boundary for product events, feedback, traces and errors. PostHog events carry account IDs and allowlisted properties, never content, credentials or email. AccountConnected remains distinct from app_installed. In direct Sentry mode, Cloudflare platform trace export is disabled; only scrubbed Effect spans and router traces go to Sentry. Sentry DSN, Sentry OTLP endpoint and PostHog key settings are optional."
+      description "Shared privacy-filtered HTTP boundary for product events, feedback, traces and errors. Product events carry account IDs and allowlisted properties, never content, credentials or email. AccountConnected remains distinct from app_installed. Direct diagnostic export disables runtime platform trace export; only scrubbed Effect spans and router traces reach the observability adapter. Diagnostic DSN, OTLP endpoint and product capture key settings are optional."
       metadata { code "src/telemetry" }
     }
 

@@ -21,7 +21,7 @@ views {
 
   view current_feedback_analytics {
     title "Basalt/Feedback and analytics"
-    description "Feedback verifies the caller through the tools service's native cookie session and sends accepted submissions through Telemetry. Router, Model gateway and Setup host use the same boundary. The opaque tools-service boundary can post analytics and agent feedback through the authenticated router relay. Telemetry sends feedback, errors and traces to Sentry EU and account-scoped product events to PostHog EU over HTTP; product events exclude content, credentials and email and keep AccountConnected separate from app_installed."
+    description "Feedback verifies the caller through the tools service's native cookie session and sends accepted submissions through Telemetry. Router, Model gateway and Setup host use the same boundary. The opaque tools-service boundary can post analytics and agent feedback through the authenticated router relay. Telemetry sends feedback, errors and traces to the EU diagnostics adapter and account-scoped product events to the EU product analytics adapter over HTTP; product events exclude content, credentials and email and keep AccountConnected separate from app_installed."
 
     include
       basalt.router,

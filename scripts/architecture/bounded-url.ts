@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { StaticValues } from "./static-values.ts";
 import {
-  bindingMatch, constInitializer, dominatingGuard, functionOf, isUndefined, propertyOfUrl,
+  bindingMatch, constInitializer, dominatingGuard, functionOf, propertyOfUrl,
   regexCaptureIdentity, returnedProperty, unwrap, urlDeclaration,
 } from "./bounded-url-ast.ts";
 import type { RegexCaptureIdentity } from "./bounded-url-ast.ts";
@@ -132,12 +132,12 @@ function trustedHost(
   if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== "host" || !ts.isIdentifier(expression.expression))
     return undefined;
   const symbol = values.symbolAt(expression.expression);
-  if (!symbol || seenSymbols.has(symbol)) return undefined;
+  if (!symbol || seenSymbols.has(symbol) || values.isMutated(expression.expression)) return undefined;
   const initializer = constInitializer(expression.expression, values);
   if (!initializer || !ts.isCallExpression(unwrap(initializer))) return undefined;
   const fn = functionOf(unwrap(initializer) as ts.CallExpression, values);
   if (!fn || seenFunctions.has(fn)) return undefined;
-  const returned = returnedProperty(fn, "host");
+  const returned = returnedProperty(fn, "host", values);
   if (!returned) return undefined;
   const nextFunctions = new Set(seenFunctions).add(fn);
   const hosts = returned.map(value => trustedHost(value, values, new Set(seenSymbols).add(symbol), nextFunctions));
@@ -191,7 +191,7 @@ function hasUrlGuards(
   allowDsnUsername = false,
   expectedCapture?: RegexCaptureIdentity,
 ): boolean {
-  const guard = dominatingGuard(fn);
+  const guard = dominatingGuard(fn, values);
   if (!guard) return false;
   const fields = new Set<string>();
   for (const comparison of guard.terms) {
@@ -238,7 +238,7 @@ function boundedHostFromDsn(expression: ts.Expression, values: StaticValues, see
   const newUrl = unwrap(initializer) as ts.NewExpression;
   if (!ts.isIdentifier(newUrl.expression) || newUrl.expression.text !== "URL" ||
     !values.isUnshadowedGlobal(newUrl.expression) || !newUrl.arguments?.length) return undefined;
-  const hostComparison = dominatingGuard(fn)?.terms.find(comparison => propertyOfUrl(comparison.left, url, values) === "hostname");
+  const hostComparison = dominatingGuard(fn, values)?.terms.find(comparison => propertyOfUrl(comparison.left, url, values) === "hostname");
   const host = hostComparison && trustedHost(hostComparison.right, values, new Set(), seen);
   return host && hasUrlGuards(fn, url, host, values, fn) ? host : undefined;
 }
@@ -253,7 +253,7 @@ function boundedHostFromTarget(expression: ts.Expression, values: StaticValues, 
   if (!initializer || !ts.isCallExpression(unwrap(initializer))) return undefined;
   const fn = functionOf(unwrap(initializer) as ts.CallExpression, values);
   if (!fn || seen.has(fn)) return undefined;
-  const returned = returnedProperty(fn, "url");
+  const returned = returnedProperty(fn, "url", values);
   if (!returned) return undefined;
   const next = new Set(seen).add(fn);
   const hosts = returned.map(value => boundedHostFromDsn(value, values, next));
