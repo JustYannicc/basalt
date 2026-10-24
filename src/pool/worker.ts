@@ -6,6 +6,7 @@ import { PoolControl } from "./attribution.ts";
 import { HomeClient } from "./control.ts";
 import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
+import { accessPath } from "./access-contract.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 
 const modelObservationPaths = new Set([
@@ -37,7 +38,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     };
     const home = async (path: string, init?: RequestInit) => {
         if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
+        init?.signal?.throwIfAborted();
         await this.managementReady();
+        init?.signal?.throwIfAborted();
         const container = this.ctx.container;
         if (!container) throw new Error("Pool container unavailable");
         const headers = new Headers(init?.headers);
@@ -118,6 +121,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname === accessPath) return this.computers.access(request);
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
     if (isControlPath(pathname)) return this.control.handle(request);
@@ -150,7 +154,7 @@ export default {
   fetch(request: Request, env: PoolEnvironment) {
     const pathname = new URL(request.url).pathname;
     // The control API checks its own pool token; everything else public is the model gateway.
-    if (!isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
+    if (pathname !== accessPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
       return new Response(null, { status: 404 });
     }
     return singleton(env).fetch(request);

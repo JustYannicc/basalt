@@ -26,6 +26,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       "apps/pool/ui/page.test.tsx": "excluded",
       "apps/pool/__tests__/fixture.ts": "excluded",
       "src/pool/token.ts": "export const signer = true;",
+      "src/pool/access-contract.ts": "export const accessPrefix = 'sba1';",
       "apps/pool/ui/public/fonts.css": "stale local copy",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-sans.woff2": "sans",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-mono.woff2": "mono",
@@ -56,6 +57,10 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     assert.equal(
       readFileSync(join(output, "pool-token.ts"), "utf8"),
       "export const signer = true;",
+    );
+    assert.equal(
+      readFileSync(join(output, "pool-access-contract.ts"), "utf8"),
+      "export const accessPrefix = 'sba1';",
     );
     bundlePoolApp(root, upstream);
     assert.equal(readFileSync(join(output, "pool-app-source.ts"), "utf8"), generated);

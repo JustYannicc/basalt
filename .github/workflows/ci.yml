@@ -74,6 +74,7 @@ jobs:
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+          POOL_TEST_IMAGE: basalt-1409-pool:test
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run check:build
