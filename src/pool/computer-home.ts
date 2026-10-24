@@ -67,13 +67,14 @@ export class ComputerHome {
     const channels: [number] = [group];
     return this.client.data("/access/api-keys", { ...post({ ...input, channels }), method });
   }
-  async mint(person: string, pool: string, computer: string): Promise<{ key: string; keyId: number; userId: number }> {
+  /** `owner` is credited if this mint creates the pool's group; a member's first mint can. */
+  async mint(person: string, pool: string, computer: string, owner = person): Promise<{ key: string; keyId: number; userId: number }> {
     const userId = await this.user(person);
     const key = randomSecret(brand.setup.keyPrefix);
     const data = await this.writeScopedKey(pool, {
       api_key: key, display_name: `${brand.setup.id}:${computer}`, user_id: userId,
       model_groups: [],
-    }, "POST", person);
+    }, "POST", owner);
     const created = data.api_key;
     if (!object(created) || !id(created.api_key_id ?? created.id) || created.user_id !== userId) return unavailable();
     return { key, keyId: (created.api_key_id ?? created.id) as number, userId };

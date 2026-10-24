@@ -30,6 +30,7 @@ function fixture(options: { tools?: Override; pool?: Override; onProductEvent?: 
       if (path === "/api/auth/get-session") return json({ user: { id: "user-1", emailVerified: true } });
       if (path === "/api/auth/api-key/create") return json({ id: "tools-key-1", key: "exp_fake-tools-secret" });
       if (path === "/api/auth/organization/list") return json([{ id: "organization-1", metadata: JSON.stringify({ basaltPools: { "user-1": { app: "pool-1" } } }) }]);
+      if (/^\/api\/organizations\/[^/]+\/apps\/[^/]+\/access$/.test(path)) return json({ creator: "user-1", audience: { kind: "private" } });
       if (path === "/api/auth/api-key/delete") return json({ success: true });
       throw Error(`Unexpected native path: ${path}`);
     } },
@@ -163,6 +164,19 @@ test("a computer on a shared pool gets a tools token pinned to the person's own 
   assert.equal(orphan.calls.some((call) => call.path.endsWith("/api-key/create")), false);
 });
 
+test("a pool named in organization metadata counts as the person's own only if they created it", async () => {
+  const shared = ({ path }: Call) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined;
+  const forged = fixture({ pool: shared, tools: ({ path }) => path === "/api/auth/organization/list"
+    ? json([{ id: "attacker-organization", metadata: { basaltPools: { "user-1": { app: "victim-pool" } } } }])
+    : path.endsWith("/apps/victim-pool/access") ? json({ creator: "victim", audience: { kind: "private" } }) : undefined });
+  const refused = await forged.create();
+  assert.equal(refused.status, 409);
+  assert.equal(forged.calls.some((call) => call.path.endsWith("/api-key/create") || call.path.endsWith("/links")), false);
+  const listing = await forged.request("/setup/v1/computers?intent=signed-selection");
+  assert.equal(listing.status, 200);
+  assert.equal(forged.calls.find((call) => call.path.endsWith("/computers"))!.input.own, undefined);
+});
+
 test("switching a computer's pool is one signed request that re-points its key; nothing is minted", async () => {
   const moved = { ...computer, state: "active", poolId: "shared-pool" };
   const f = fixture({ pool: ({ path }) => path.endsWith("/switch") ? json({ ...moved, keyId: 7, toolsHash: "x" }) : undefined });
@@ -172,8 +186,8 @@ test("switching a computer's pool is one signed request that re-points its key; 
   assert.equal(response.status, 200);
   secured(response);
   assert.deepEqual((await response.json()).computer, moved);
-  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/__setup/v1/switch"]);
-  assert.deepEqual({ ...f.calls[2]!.input, expiresAt: 0 }, {
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/api/organizations/organization-1/apps/pool-1/access", "/__setup/v1/switch"]);
+  assert.deepEqual({ ...f.calls[3]!.input, expiresAt: 0 }, {
     user: "user-1", intent: "signed-selection", id: "computer-1", pool: "shared-pool",
     own: { pool: "pool-1", organization: "organization-1" }, action: "switch", expiresAt: 0,
   });

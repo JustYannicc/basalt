@@ -173,7 +173,7 @@ export class Computers {
               return fail(403, "unauthorized", "This pool is not available to you.");
             for (const pool of new Set([...boundPools(computer), payload.pool]))
               this.check(directory, registry, { ...intent, pool });
-            return this.switchPool(registry, computer, payload.pool);
+            return this.switchPool(registry, computer, payload.pool, directory.entry(payload.pool)?.owner);
           }
           default: return fail(404, "not_found", "This setup endpoint does not exist.");
         }
@@ -192,7 +192,7 @@ export class Computers {
     };
     registry[computer.id] = computer;
     await this.save(registry);
-    const issued = await this.deps.home.mint(computer.user, computer.pool, computer.id);
+    const issued = await this.deps.home.mint(computer.user, computer.pool, computer.id, intent.owner);
     computer.keyId = issued.keyId; computer.userId = issued.userId;
     // Store the acknowledged id before any fallible encryption or response work.
     await this.save(registry);
@@ -222,12 +222,13 @@ export class Computers {
     for (const key of keys) await this.deps.home.revoke(key);
     return json({ toolsKeyId: computer.toolsKeyId });
   }
-  private async switchPool(registry: Registry, computer: StoredComputer, pool: string): Promise<Response> {
+  private async switchPool(registry: Registry, computer: StoredComputer, pool: string, owner?: string): Promise<Response> {
     if (computer.state !== "active" || computer.removalPending || !computer.keyId) return fail(409, "busy", "This computer cannot switch pools.");
     if (computer.pool === pool && !computer.switching?.length) return json(publicView(computer));
     computer.switching = [...new Set([...(computer.switching ?? []), pool])];
     await this.save(registry);
-    await this.deps.home.rebind(computer.keyId, pool, computer.user);
+    // Only the pool's owner is credited if this re-point happens to create its group.
+    await this.deps.home.rebind(computer.keyId, pool, owner);
     computer.firstModelRequestEverAt ??= computer.firstModelRequestAt;
     computer.pool = pool; computer.boundAt = new Date(this.now()).toISOString();
     delete computer.switching;

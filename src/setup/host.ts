@@ -41,7 +41,12 @@ async function ownPool(request: Request, env: SetupEnv, person: string): Promise
     if (typeof metadata === "string") { try { metadata = JSON.parse(metadata); } catch { metadata = undefined; } }
     const pools = record(record(metadata).basaltPools);
     const pool = Object.hasOwn(pools, person) ? record(pools[person]).app : undefined;
-    if (text(pool, 512) && text(organization.id, 512)) return { pool, organization: organization.id };
+    if (!text(pool, 512) || !text(organization.id, 512)) continue;
+    // Metadata is only a pointer. The tools service's own access record must say the person created it.
+    const access = await native(request, env,
+      `/api/organizations/${encodeURIComponent(organization.id)}/apps/${encodeURIComponent(pool)}/access`);
+    if (access.ok && (await body(access)).creator === person) return { pool, organization: organization.id };
+    if (!access.bodyUsed) await access.body?.cancel();
   }
   return undefined;
 }
