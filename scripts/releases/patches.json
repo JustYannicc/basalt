@@ -176,6 +176,15 @@
       "upstream_pull_request": 2360,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-zoho-oauth",
+      "file": "0021-zoho-oauth.patch",
+      "content_sha256": "2995b1c6826d9922d62da0c17cf8cce75eeaa3136f0fcd0c2f8648a7c98650af",
+      "kind": "upstream",
+      "upstream_pull_request": 2373,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }
