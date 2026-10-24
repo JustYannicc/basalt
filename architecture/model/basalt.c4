@@ -12,7 +12,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml"; libraries "@effect/platform-node|alchemy" }
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
     }
 
     deployment = module "Deployment" {
@@ -37,6 +37,7 @@ model {
 
     modelGateway = module "Model gateway" {
       #basalt #v1 #deep #port #funnel
+      description "Owns the computer registry and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list. Model traffic remains on the existing /v1 passthrough."
       metadata {
         code "src/pool"
         bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime"
@@ -50,8 +51,24 @@ model {
 
     pool = module "Pool app" {
       #basalt #v1 #deep
-      description "One private app instance per person per organization, run by the tools service. The Accounts screen and owner-only account changes are implemented in source; screen hosting is disabled."
+      description "One private app instance per person per organization, run by the tools service. Accounts and Computers screens request a signed setup intent from the pool Worker and open the root /setup page. App screen hosting is disabled; live acceptance is pending."
       metadata { code "apps/pool"; libraries "apps|react|react-dom"; bindings "ctx=basalt.router" }
+    }
+
+    setupHost = module "Setup host" {
+      #basalt #v1 #deep
+      description "Root /setup React page reuses pool UI components and is bundled as router static assets. HTTP setup handlers use the native cookie session and personal PAT API, then call the private pool binding with an action-bound signature expiring after 30 seconds. Source implementation; live acceptance is pending."
+      metadata {
+        code "src/setup"
+        libraries "react|react-dom"
+        bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway"
+      }
+    }
+
+    setupInstaller = module "Config installer" {
+      #basalt #v1 #deep
+      description "Node.js installer consumes one-time credentials and parses and writes marked model-client config. It backs up files before writing and supports undo while preserving later unrelated edits. Bundled as a downloadable router asset."
+      metadata { code "src/setup/client.mjs|src/setup/config.mjs|src/setup/files.mjs"; libraries "smol-toml" }
     }
 
     poolRuntime = module "Pool runtime" {
@@ -110,14 +127,30 @@ model {
   basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY"
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
   basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY and patched apps framework"
-  basalt.deployment -[sync]-> basalt.router "check public routes"
+  basalt.deployment -[sync]-> basalt.router "check public routes; supply POOL_APP_SIGNING_KEY"
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
   basalt.build -[sync]-> basalt.toolsGateway "copy app bundle and token signer; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
+  basalt.build -[sync]-> basalt.setupHost "bundle root setup React page from shared pool UI"
+  basalt.build -[sync]-> basalt.setupInstaller "install frozen setup dependencies; bundle installer asset"
   basalt.router -[sync]-> basalt.pool "import pool control path contract"
   basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
+  basalt.modelGateway -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
+  basalt.router -[sync]-> basalt.setupHost "route /setup/v1/* and /setup/claim/*; observe real MCP tool calls"
+  basalt.setupHost -[sync]-> basalt.router "setup response and public computer metadata"
+  basalt.setupHost -[sync]-> basalt.pool "reuse pool UI components"
+  basalt.setupHost -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
+  basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: native cookie get-session; create and delete personal PAT"
+  basalt.toolsGateway -[sync]-> basalt.setupHost "verified session or personal PAT result"
+  basalt.setupHost -[sync]-> basalt.modelGateway "POOL_SERVICE: private /__setup/v1/*; signed action and 30-second expiry"
+  basalt.modelGateway -[sync]-> basalt.setupHost "intent validation, computer metadata or consumed one-time credentials"
+  basalt.setupInstaller -[sync]-> basalt.brandConfig "read config markers and public endpoint"
+  basalt.setupInstaller -[sync]-> basalt.router "claim one-time credentials from /setup/claim/*"
+  basalt.router -[sync]-> basalt.setupInstaller "installer asset or one-time credential response"
+  localClient -[sync]-> basalt.setupInstaller "run installer or undo"
+  basalt.setupInstaller -[sync]-> localClient "write backed-up marked client config; restart instructions"
 
   poolOwner -[sync]-> appHosting "open pool screen" { #planned }
   poolMember -[sync]-> appHosting "open shared pool screen" { #planned }

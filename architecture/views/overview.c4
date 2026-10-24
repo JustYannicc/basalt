@@ -80,6 +80,26 @@ views {
     autoLayout TopBottom
   }
 
+  view current_computer_setup {
+    title "Basalt/Current computer setup"
+    description "Source implementation; live acceptance pending. Root setup assets and HTTP handlers share the router origin. The pool gateway owns computer keys and one-time credentials; native cookie-auth personal PAT operations stay behind the tools binding."
+
+    include basalt.pool, basalt.router, basalt.setupHost, basalt.setupInstaller, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    exclude * -> *
+
+    include basalt.pool -> basalt.router
+    include basalt.router -> basalt.setupHost
+    include basalt.setupHost -> basalt.toolsGateway
+    include basalt.setupHost -> basalt.modelGateway
+    include basalt.modelGateway -> basalt.poolController
+    include basalt.poolController -> basalt.poolRuntime where kind is sync
+    include basalt.setupInstaller -> basalt.router
+
+    style basalt.toolsGateway { color indigo }
+    style basalt.poolController, basalt.poolRuntime { color amber }
+    autoLayout TopBottom
+  }
+
   view planned_pool_integration {
     #planned
     title "Basalt/Planned model requests through pool app"

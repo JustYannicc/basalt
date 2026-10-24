@@ -54,6 +54,7 @@ export default Alchemy.Stack(
       env: {
         TOOLS_SERVICE: api,
         POOL_SERVICE: pool,
+        POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
         SOURCE_NAMESPACE_READY: namespace.hash.pipe(Output.map(() => "eu")),
       },
     });

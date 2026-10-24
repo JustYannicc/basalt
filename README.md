@@ -13,6 +13,9 @@ This repository deploys the cloud build of [Executor v2](https://github.com/Usef
 | `/mcp`             | Tools gateway, with upstream authentication                         |
 | `/v1` and `/v1/*`  | Model gateway, with the pool backend's client-key authentication    |
 | `/pool/v1/*`       | Pool control API for pool apps, with a signed per-pool token        |
+| `/setup`           | Computer setup page, using the tools service's browser session     |
+| `/setup/v1/*`      | Computer list, setup links and paired credential revocation        |
+| `/setup/claim/*`   | Single-use credential handoff, expiring after five minutes         |
 | `/v8/management/*` and `/v0/management/*` | Not public; 404. Home management uses the internal controller path |
 
 The router preserves incoming URLs, headers and bodies, and streams responses through a private service binding. OAuth callbacks and discovery documents reach the same tools service. Only the router owns the public custom domain. Cloudflare provisions it from the existing zone through the deploy token.
@@ -58,6 +61,18 @@ Released Home v1.1.6 doesn't say which credential a sign-in saved ([CLIProxyAPIH
 The pool's screen follows the prototype's Accounts view: each account's usage windows, with a bar for what's left, a mark for how much of the window's time is left, and when it resets, plus capacity per provider. Its fonts are the dashboard's own Geist faces. The pool app bundler copies them from the pinned source into the router's static assets, under `/brand/fonts/`, and the page links them across origins. The app compiler drops font files from npm packages, and binary files in the bundled source would ride in the API Worker. The screen needs app UI hosting, which is off; see below.
 
 Container startup, management endpoints and release validation are documented in [containers/pool](containers/pool/README.md). Local routing and lifecycle tests do not establish live model service: release acceptance also needs test subscriptions, a streamed request, account-affinity and spread checks, and an hour of idle time with the same boot identity.
+
+## Computer setup
+
+The pool's Computers section opens setup on the public host. A short-lived signed intent identifies the pool and caller. The setup host checks the person's verified browser session, creates a personal tools token through the tools service's native API-key flow, and asks the pool controller for one user-bound model key. The controller creates the pool's channel group before issuing a key. An empty Home channel list would allow every credential, so setup never sends one.
+
+The copied prompt contains a one-time link, never either credential. The link expires after five minutes. The controller stores encrypted credentials and consumes the link durably before returning its instructions. Reads and scheduled cleanup erase expired ciphertext. Browser list and update responses expose only computer metadata. Revocation deletes the model key first, then the tools token, and stays visibly unfinished until both succeed. Rebinding changes the existing key's channel restriction on the server; no client secret changes.
+
+The installer requires Node.js 18 or newer. It respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, backs up each file before writing, and marks its entries using [brand.ts](brand.ts). Claude Code gets the model gateway URL and token, discovery and timeouts. Codex gets a provider with `requires_openai_auth = true` and `X-Api-Key`. Both get the branded MCP server with the tools token. Other providers and servers remain. Undo is a separate paste or installer `--undo`; untouched files return byte for byte, and later unrelated edits survive. Backups and installer state stay in a private directory on that computer.
+
+Codex needs any ChatGPT sign-in. Account-side features follow that account's plan. The Claude desktop app is not covered. The computer turns green after a successful model request scoped to its key and pool, plus an observed successful tools call. Catalog reads and MCP initialization do not count.
+
+Source and local checks are separate from release acceptance. Live acceptance still needs a deployed stack, connected test subscriptions, actual CLI requests with matching usage records, unchanged-secret pool switching, and denial of the next model and tools requests after revocation. App screen hosting is still disabled until its certificate prerequisite is resolved.
 
 ## GitHub Actions secrets
 

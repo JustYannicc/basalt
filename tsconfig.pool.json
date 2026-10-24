@@ -40,7 +40,8 @@
   },
   "include": [
     "apps/pool/**/*.ts",
-    "apps/pool/**/*.tsx"
+    "apps/pool/**/*.tsx",
+    "src/setup/ui.tsx"
   ],
   "exclude": [
     "apps/pool/**/*.test.ts"

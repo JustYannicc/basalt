@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Account, PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
@@ -6,6 +6,8 @@ import { ConnectDialog } from "./connect.tsx";
 import { productName } from "../deployment.ts";
 import { Button, Problem } from "./controls.tsx";
 import { duration, lastReading } from "./usage.ts";
+import { Computers } from "./computers.tsx";
+import type { ComputersApi } from "./computer-types.ts";
 
 const refresh = 60_000;
 
@@ -57,6 +59,15 @@ export function App({ api }: { api: PoolApi }) {
   const now = useNow();
   const [connecting, setConnecting] = useState(false);
   const [removeError, setRemoveError] = useState<string>();
+  const [setupHref, setSetupHref] = useState<string>();
+  const computers = useMemo<ComputersApi>(() => ({
+    computers: async () => {
+      const result = await api.computerContext();
+      if (result.ok) setSetupHref(result.value.href);
+      return result;
+    },
+    revoke: async () => ({ ok: false, error: "unauthorized", message: "Open the computer's setup page to revoke it." }),
+  }), [api]);
 
   const remove = async (account: Account) => {
     setRemoveError(undefined);
@@ -136,6 +147,7 @@ export function App({ api }: { api: PoolApi }) {
             />
           </>
         )}
+        <Computers api={computers} setup={{ kind: "link", href: () => setupHref ?? "#", manageHref: () => setupHref ?? "#" }} />
       </main>
 
       {view?.isOwner && (

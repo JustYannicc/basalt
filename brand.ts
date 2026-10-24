@@ -11,6 +11,12 @@ export const brand = {
   zone: "signalbox.run",
   /** The MCP entry clients and setup add. The tools service derives it from `name`. */
   mcpServerName: "signalbox",
+  /** Stable ownership survives a product rename; display text and new keys follow the brand. */
+  setup: {
+    id: "basalt-computer-v1",
+    marker: "Signalbox managed computer setup",
+    keyPrefix: "sb_",
+  },
   /** The Google and GitHub OAuth apps created at account setup carry this name. */
   oauthAppName: "Signalbox",
   /** Sign-in codes and invitations come from no-reply at this domain, under `name`. */

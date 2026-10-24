@@ -34,6 +34,7 @@ for (const patch of readdirSync(join(root, "patches"))
 }
 bundlePoolApp(root, upstream);
 run("bun", ["install", "--frozen-lockfile"], upstream);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/setup")]);
 const modules = join(root, "node_modules");
 if (!existsSync(modules)) symlinkSync(".upstream/apps/hosted/cloud/node_modules", modules, "dir");
 else if (!lstatSync(modules).isSymbolicLink())

@@ -309,56 +309,6 @@ views {
     poolMember <- localClient "uses own account"
   }
 
-  dynamic view v1_setup_computer {
-    #v1 #planned
-    variant sequence
-    title "Workflows/Basalt/Set up a computer"
-    description """
-      Status: Planned. A one-time setup link mints a computer key bound to the pool selected for that
-      computer.
-    """
-
-    include poolOwner, localClient, basalt.router, basalt.toolsGateway, basalt.pool
-    poolOwner -> localClient "chooses a pool for this computer"
-    localClient -> basalt.router "setup request"
-    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
-    basalt.toolsGateway -> basalt.pool "mint pool-bound key"
-    basalt.toolsGateway <- basalt.pool "computer key"
-    basalt.router <- basalt.toolsGateway "one-time setup link"
-    localClient <- basalt.router "setup instructions"
-    poolOwner <- localClient "sets up computer"
-  }
-
-  dynamic view v1_revoke_key {
-    #v1 #planned
-    variant sequence
-    title "Workflows/Basalt/Revoke a computer key"
-    description """
-      Status: Planned. A revoked key must fail on the next request.
-    """
-
-    include
-      poolOwner,
-      poolMember,
-      localClient,
-      basalt.router,
-      basalt.toolsGateway,
-      basalt.modelGateway,
-      basalt.pool
-    poolOwner -> localClient "revokes computer key"
-    localClient -> basalt.router "revoke key"
-    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
-    basalt.toolsGateway -> basalt.pool "revoke key"
-    poolMember -> localClient "sends next request"
-    localClient -> basalt.router "POST /v1"
-    basalt.router -> basalt.modelGateway "route"
-    basalt.modelGateway -> basalt.pool "serve request"
-    basalt.modelGateway <- basalt.pool "deny revoked key"
-    basalt.router <- basalt.modelGateway "denied"
-    localClient <- basalt.router "clear denial"
-    poolMember <- localClient "request fails"
-  }
-
   dynamic view v1_disconnect_personal_account {
     #v1 #planned
     variant sequence

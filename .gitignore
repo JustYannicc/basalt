@@ -11,3 +11,7 @@ node_modules
 /scripts/architecture/gen/
 # Copied from the pinned tools service when the pool app is bundled.
 public/brand/fonts/
+public/setup/client.mjs
+public/setup/main.js
+public/setup/main.css
+public/setup/index.html
