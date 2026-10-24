@@ -29,6 +29,7 @@ function fixture(options: { tools?: Override; pool?: Override; onProductEvent?: 
       if (response) return response;
       if (path === "/api/auth/get-session") return json({ user: { id: "user-1", emailVerified: true } });
       if (path === "/api/auth/api-key/create") return json({ id: "tools-key-1", key: "exp_fake-tools-secret" });
+      if (path === "/api/auth/organization/list") return json([{ id: "organization-1", metadata: JSON.stringify({ basaltPools: { "user-1": { app: "pool-1" } } }) }]);
       if (path === "/api/auth/api-key/delete") return json({ success: true });
       throw Error(`Unexpected native path: ${path}`);
     } },
@@ -103,18 +104,20 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.match(result.powershellCommand, /Invoke-WebRequest -UseBasicParsing -Uri/);
   assert.match(result.powershellCommand, /finally \{ Remove-Item/);
   assert.match(result.undoPrompt, /--undo/);
-  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/api/auth/api-key/create", "/__setup/v1/links"]);
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/__setup/v1/validate", "/api/auth/api-key/create", "/__setup/v1/links"]);
   const sessionUrl = new URL(f.calls[0]!.request.url);
   assert.equal(sessionUrl.searchParams.get("disableCookieCache"), "true");
   assert.equal(sessionUrl.searchParams.get("disableRefresh"), "true");
-  const create = f.calls[2]!;
+  const create = f.calls[3]!;
   assert.equal(new URL(create.request.url).origin, origin);
   assert.equal(create.request.headers.get("origin"), origin);
   assert.equal(create.request.headers.get("cookie"), "executor-hosted.session_token=fake-cookie");
   assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "organization-1" } });
-  assert.equal(f.calls[3]!.input.user, "user-1");
-  assert.equal(f.calls[3]!.input.intent, "signed-selection");
-  assert.equal(f.calls[3]!.input.toolsToken, "exp_fake-tools-secret");
+  assert.equal(f.calls[4]!.input.user, "user-1");
+  assert.equal(f.calls[4]!.input.intent, "signed-selection");
+  assert.equal(f.calls[4]!.input.toolsToken, "exp_fake-tools-secret");
+  // The person's own pool, read with their session, travels only inside the signed assertion.
+  for (const call of [f.calls[2]!, f.calls[4]!]) assert.deepEqual(call.input.own, { pool: "pool-1", organization: "organization-1" });
 });
 
 test("setup started is emitted only after a new durable setup link succeeds", async () => {
@@ -135,12 +138,82 @@ test("setup started is emitted only after a new durable setup link succeeds", as
   assert.deepEqual(failedEvents, []);
 });
 
-test("setup refuses a shared model pool before minting any tools token", async () => {
-  const f = fixture({ pool: ({ path }) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined });
+test("a computer on a shared pool gets a tools token pinned to the person's own organization", async () => {
+  const shared = { pool: ({ path }: Call) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined };
+  const f = fixture({
+    ...shared,
+    tools: ({ path }) => path === "/api/auth/organization/list" ? json([
+      { id: "shared-organization", metadata: JSON.stringify({ basaltPools: { "another-person": { app: "shared-pool" } } }) },
+      { id: "own-organization", metadata: JSON.stringify({ basaltPools: { "user-1": { app: "own-pool" } } }) },
+    ]) : undefined,
+  });
   const response = await f.create();
-  assert.equal(response.status, 403);
-  assert.match(await response.text(), /Shared pools come with pool sharing/);
-  assert.equal(f.calls.some((call) => call.path.endsWith("/api-key/create")), false);
+  assert.equal(response.status, 200);
+  const create = f.calls.find((call) => call.path === "/api/auth/api-key/create")!;
+  assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "own-organization" } });
+  assert.equal(f.calls.find((call) => call.path === "/__setup/v1/links")!.input.intent, "signed-selection");
+
+  // Without an own pool there is no own organization to pin tools to, so nothing is minted.
+  const orphan = fixture({ ...shared, tools: ({ path }) => path === "/api/auth/organization/list"
+    ? json([{ id: "shared-organization", metadata: { basaltPools: { "another-person": {} } } }]) : undefined });
+  const refused = await orphan.create();
+  assert.equal(refused.status, 409);
+  assert.match(await refused.text(), /own pool is still being set up/);
+  assert.equal(orphan.calls.some((call) => call.path.endsWith("/api-key/create")), false);
+});
+
+test("switching a computer's pool is one signed request that re-points its key; nothing is minted", async () => {
+  const moved = { ...computer, state: "active", poolId: "shared-pool" };
+  const f = fixture({ pool: ({ path }) => path.endsWith("/switch") ? json({ ...moved, keyId: 7, toolsHash: "x" }) : undefined });
+  const response = await f.request("/setup/v1/computers/computer-1/pool", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ intent: "signed-selection", pool: "shared-pool" }),
+  });
+  assert.equal(response.status, 200);
+  secured(response);
+  assert.deepEqual((await response.json()).computer, moved);
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/__setup/v1/switch"]);
+  assert.deepEqual({ ...f.calls[2]!.input, expiresAt: 0 }, {
+    user: "user-1", intent: "signed-selection", id: "computer-1", pool: "shared-pool",
+    own: { pool: "pool-1", organization: "organization-1" }, action: "switch", expiresAt: 0,
+  });
+  for (const body of [{ intent: "signed-selection" }, { intent: "signed-selection", pool: "p", name: "x" }, { pool: "p" }]) {
+    const bad = fixture();
+    const result = await bad.request("/setup/v1/computers/computer-1/pool", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal(result.status, 400);
+    assert.equal(bad.calls.length, 0);
+  }
+  const refused = fixture({ pool: ({ path }) => path.endsWith("/switch") ? json({ error: "not_found", message: "You can't use that pool anymore." }, 403) : undefined });
+  const denied = await refused.request("/setup/v1/computers/computer-1/pool", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ intent: "signed-selection", pool: "gone" }),
+  });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).error, "You can't use that pool anymore.");
+  const crossSite = fixture();
+  assert.equal((await crossSite.request("/setup/v1/computers/computer-1/pool", {
+    method: "POST", headers: { "Content-Type": "application/json", Origin: "https://elsewhere.example" }, body: JSON.stringify({ intent: "i", pool: "p" }),
+  })).status, 403);
+  assert.equal(crossSite.calls.length, 0);
+});
+
+test("listing works while the organization list is down; minting on a shared pool waits for it", async () => {
+  const down = ({ path }: Call) => path === "/api/auth/organization/list" ? new Response("unavailable", { status: 503 }) : undefined;
+  const listing = fixture({ tools: down });
+  assert.equal((await listing.request("/setup/v1/computers?intent=signed-selection")).status, 200);
+  assert.equal(listing.calls.find((call) => call.path.endsWith("/computers"))!.input.own, undefined);
+  const minting = fixture({ tools: down, pool: ({ path }) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined });
+  assert.equal((await minting.create()).status, 502);
+  assert.equal(minting.calls.some((call) => call.path.endsWith("/api-key/create")), false);
+});
+
+test("the computer list carries only pool ids, names and ownership", async () => {
+  const f = fixture({ pool: ({ path }) => path.endsWith("/computers") ? json({
+    computers: [computer], pools: [{ id: "own-pool", name: "My pool", mine: true, owner: "user-1" }, { id: "shared-pool", name: "Ada's pool", mine: false, organization: "o" }],
+  }) : undefined });
+  const response = await f.request("/setup/v1/computers?intent=signed-selection");
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).pools, [{ id: "own-pool", name: "My pool", mine: true }, { id: "shared-pool", name: "Ada's pool", mine: false }]);
+  const broken = fixture({ pool: ({ path }) => path.endsWith("/computers") ? json({ computers: [], pools: [{ id: "p" }] }) : undefined });
+  assert.equal((await broken.request("/setup/v1/computers?intent=signed-selection")).status, 502);
 });
 
 test("write origins must match exactly; every Authorization header is refused", async () => {
@@ -269,8 +342,8 @@ test("failed tools revoke never finalizes; retry accepts native KEY_NOT_FOUND on
 test("refresh rotates only the unclaimed link and never mints another personal token", async () => {
   const f = fixture();
   assert.equal((await f.create({ intent: "x", computerId: "computer-1" })).status, 200);
-  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/__setup/v1/refresh"]);
-  assert.equal(f.calls[2]!.input.id, "computer-1");
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/__setup/v1/validate", "/__setup/v1/refresh"]);
+  assert.equal(f.calls[3]!.input.id, "computer-1");
   const conflict = fixture({ pool: ({ path }) => path.endsWith("/refresh") ? json({ error: "private" }, 409) : undefined });
   const response = await conflict.create({ intent: "x", computerId: "computer-1" });
   assert.equal(response.status, 409);
