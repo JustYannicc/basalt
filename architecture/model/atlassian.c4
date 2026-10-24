@@ -1,0 +1,14 @@
+model {
+  atlassianIdentity = adapter "Work tracking identity" {
+    #external
+    technology "Atlassian OAuth 2.0 (3LO)"
+    metadata { hosts "auth.atlassian.com" }
+  }
+  atlassianApi = adapter "Knowledge and issue API" {
+    #external
+    technology "Confluence and Jira Cloud APIs"
+    metadata { hosts "api.atlassian.com" }
+  }
+  basalt.toolsGateway -[sync]-> atlassianIdentity "authorize each person's connection; exchange and refresh tokens"
+  basalt.toolsGateway -[sync]-> atlassianApi "discover authorized sites; search pages and read issues with the person's grant"
+}

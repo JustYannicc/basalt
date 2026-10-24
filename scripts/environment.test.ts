@@ -151,6 +151,6 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
   assert.equal(env.GOOGLE_CONNECTOR_READY, "false");
   assert.equal(env.GITHUB_CONNECTOR_READY, "false");
-  assert.equal(connectorWarnings(env).length, 2);
+  assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
   assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
 });
