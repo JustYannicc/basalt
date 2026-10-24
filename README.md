@@ -170,6 +170,10 @@ The proof uses the published Google emulator and a synthetic app with Gmail's sc
 
 This does not prove the unchanged official Gmail app against Google's production endpoints, or two people sharing a Basalt pool. Those remain live acceptance checks after deployment and provider clients exist. Shipping source does not close that acceptance.
 
+Zoho CRM reuses the official `@executor.sh/zoho` app unchanged. Create a Server-based application named after `brand.oauthAppName` with callback `https://app.signalbox.run/api/oauth/callback`. Enable the app's required data centers in its Multi-DC settings and select **Use the same OAuth credentials for all data centers**. Supply the common client ID and secret through `EXECUTOR_OAUTH_ZOHO_CLIENT_ID` and `EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET`. Missing or partial pairs use the same optional-client behavior as Google and GitHub. A person chooses their CRM data center when connecting.
+
+The hosted clients cover US, EU, India, Australia, Japan, Canada, Saudi Arabia and China. The official CRM scope union is `ZohoCRM.modules.ALL`, `ZohoCRM.settings.ALL`, `ZohoCRM.users.ALL`, `ZohoCRM.org.ALL`, `ZohoCRM.bulk.ALL`, `ZohoCRM.coql.READ`, `ZohoCRM.notifications.READ`, `ZohoCRM.notifications.CREATE`, `ZohoCRM.notifications.UPDATE`, `ZohoCRM.notifications.DELETE`, `ZohoCRM.features.READ`, `ZohoCRM.send_mail.all.CREATE`, `ZohoCRM.Files.CREATE` and `ZohoCRM.Files.READ`. Scope names are case-sensitive. This is broad CRM access; edition limits, API credits and administrator permissions still apply. Zoho Mail, People and other products are outside this connector. Live consent and a local-agent API call remain acceptance checks after deployment.
+
 ### App UI hosting
 
 App UI hosting is off in [brand.ts](brand.ts) until its domain and certificate setup is approved. Sign-in, connections and MCP remain available. Apps with screens report that no app domain is configured. Pools are installed and work through their tools meanwhile; their screens show once hosting is on, with no other change.
