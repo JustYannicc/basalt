@@ -66,6 +66,8 @@ export default {
       ATLASSIAN_CONNECTOR_READY?: string;
       ZOHO_CONNECTOR_READY?: string;
       ZENDESK_CONNECTOR_READY?: string;
+      GITLAB_CONNECTOR_READY?: string;
+      MIRO_CONNECTOR_READY?: string;
       EXECUTOR_ZENDESK_SUBDOMAIN?: string;
     },
   ) =>
@@ -78,6 +80,8 @@ export default {
         atlassian: env.ATLASSIAN_CONNECTOR_READY === "true",
         zoho: env.ZOHO_CONNECTOR_READY === "true",
         zendesk: env.ZENDESK_CONNECTOR_READY === "true",
+        gitlab: env.GITLAB_CONNECTOR_READY === "true",
+        miro: env.MIRO_CONNECTOR_READY === "true",
       },
       env.EXECUTOR_ZENDESK_SUBDOMAIN,
     ),
