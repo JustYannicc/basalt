@@ -18,7 +18,8 @@ for the same fix. -->
 
 <!-- Write "Tracked in #<n>" for the ticket this belongs to. Never use close, fix or
 resolve, so merging doesn't close the ticket before its acceptance is proven. Name
-the decisions it implements, with their issue links. -->
+the decisions it implements, with their issue links. With no ticket, say why the
+change stands on its own. -->
 
 ## Verification
 
@@ -30,6 +31,4 @@ For UI changes, include clear before/after screenshots, and a short recording wh
 motion, timing or interaction matters. Upload them to GitHub and embed or link them
 here. Never commit PR-only assets. -->
 
-<!-- End with the model and harness that did the work. -->
-
-Model and harness: <!-- e.g. Claude Opus 5.5 in Claude Code -->
+Model and harness: <model> in <harness>
