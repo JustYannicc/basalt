@@ -58,8 +58,9 @@ class FakeComputerHome extends ComputerHome {
     this.onRevoke?.();
     await this.revokeGate;
   }
-  override async rebind(keyId: number, pool: string): Promise<void> {
+  override async rebind(keyId: number, pool: string): Promise<number> {
     this.rebound.push({ keyId, pool });
+    return 19;
   }
   override async observed(pool: string, keyId: number, since: string): Promise<string | null> {
     this.observations.push({ pool, keyId, since });

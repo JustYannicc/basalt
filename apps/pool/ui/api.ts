@@ -10,10 +10,11 @@ import type {
   Result,
   signInStatus,
   startSignIn,
+  usage,
   view,
 } from "../index.ts";
 import { productName } from "../deployment.ts";
-import type { LoginFileAdded, PoolView, SignInStarted, SignInStatus } from "../contract.ts";
+import type { LoginFileAdded, PoolView, SignInStarted, SignInStatus, UsageSummary } from "../contract.ts";
 
 const client = createAppClient();
 // The server shapes each result as the contract describes; the page reads it as that.
@@ -30,6 +31,7 @@ function read<T>(promise: Promise<Result<T>>): Promise<Result<T>> {
 export const pool = {
   computerContext: () => read(client.query(queryReference<typeof computerContext>("computerContext"), {}, result<ComputerContext>())),
   view: () => read(client.query(queryReference<typeof view>("view"), {}, result<PoolView>())),
+  usage: () => read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
   start: (provider: string) =>
     read(client.mutate(mutationReference<typeof startSignIn>("startSignIn"), { provider }, result<SignInStarted>())),
   finish: (session: string, redirectUrl: string) =>

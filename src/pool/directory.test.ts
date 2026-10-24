@@ -184,9 +184,9 @@ test("provisioning continues after one failure and counts only successful creati
   const f = fixture();
   t.mock.method(console, "error", () => {});
   const provision = f.home.user.bind(f.home);
-  t.mock.method(f.home, "user", async (person: string, created?: () => void) => {
+  t.mock.method(f.home, "user", async (person: string, pool: string, created?: () => void) => {
     if (person === "failed-member") throw new Error("Home user creation failed");
-    return provision(person, created);
+    return provision(person, pool, created);
   });
   const response = await f.access(audience([owner, "failed-member", "working-member"]));
   assert.equal(response.status, 200);

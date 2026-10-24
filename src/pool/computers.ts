@@ -1,6 +1,7 @@
 import { brand } from "../../brand.ts";
 import type { Computer } from "../../apps/pool/ui/computer-types.ts";
-import { callerHeader } from "../../apps/pool/contract.ts";
+import { callerHeader, isWeeklyCap, usageDays } from "../../apps/pool/contract.ts";
+import { isMemberId, maxMembers, type PoolUsage } from "./pool-usage.ts";
 import { ComputerHome, digest } from "./computer-home.ts";
 import { boundPools, publicView, type ComputerStorage, type Registry, type StoredComputer } from "./computer-registry.ts";
 export type { ComputerStorage } from "./computer-registry.ts";
@@ -14,7 +15,7 @@ import { markSetupCompleted, observePendingUsage, type UsageObservationEvent } f
 
 interface Dependencies {
   storage: ComputerStorage; home: ComputerHome; signingKey: string; previousSigningKey?: string;
-  origin?: string; now?: () => number; onProductEvent?: ProductEventCallback;
+  origin?: string; now?: () => number; onProductEvent?: ProductEventCallback; usage?: Pick<PoolUsage, "summary" | "setCap">;
 }
 const storageKey = "computer-registry-v1";
 /** Separate from subscription attribution. Computer setup and access changes share this queue. */
@@ -87,6 +88,13 @@ export class Computers {
       && computer.user === intent.user && computer.removalPending))
       return fail(503, "backend_unavailable", "Removing access from this computer didn't finish. Ask the owner to retry, or try again later.");
   }
+  /** Everyone who can use the pool, owner included, as the directory last heard it. */
+  async audience(pool: string): Promise<string[]> {
+    return this.run(async () => {
+      const entry = (await PoolDirectory.load(this.deps.storage, this.now())).entry(pool);
+      return entry ? [...new Set([entry.owner, ...entry.users])] : [];
+    });
+  }
   async access(request: Request): Promise<Response> {
     try {
       const change = await readAccess(request, this.deps.signingKey, this.deps.previousSigningKey, this.now());
@@ -141,6 +149,7 @@ export class Computers {
       const user = text(payload.user);
       if (!user) return fail(401, "unauthorized", "Sign in before setting up a computer.");
       const intent = await readIntent(this.deps.signingKey, payload.intent, user, this.now(), this.deps.previousSigningKey);
+      if (action === "usage" || action === "cap") return await this.ownerUsage(action, intent, user, payload);
       return await this.run(async (registry) => {
         const directory = await PoolDirectory.load(this.deps.storage, this.now());
         if (action !== "revoked") {
@@ -179,6 +188,20 @@ export class Computers {
         }
       });
     } catch (error) { return failureResponse(error); }
+  }
+  /** The share host checked the owner's browser session; the signed intent must agree. Home I/O runs outside the queue. */
+  private async ownerUsage(action: "usage" | "cap", intent: SetupIntent, user: string, payload: Record<string, unknown>): Promise<Response> {
+    const usage = this.deps.usage;
+    if (!usage) return fail(404, "not_found", "This setup endpoint does not exist.");
+    if (intent.owner !== user) return fail(403, "unauthorized", "Only the pool's owner can see each person's usage or set caps.");
+    await this.run(async (registry) => this.check(await PoolDirectory.load(this.deps.storage, this.now()), registry, intent));
+    if (action === "cap") {
+      if (payload.weekly !== null && !isWeeklyCap(payload.weekly)) return fail(400, "invalid_query", "Enter a weekly cap between $0.01 and $100,000, in whole cents.");
+      await usage.setCap(intent.pool, intent.owner, String(payload.member ?? ""), payload.weekly);
+      return json(null);
+    }
+    const members = Array.isArray(payload.members) ? payload.members.filter(isMemberId).slice(0, maxMembers) : [];
+    return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members));
   }
   private async create(registry: Registry, intent: SetupIntent, input: Record<string, unknown>): Promise<Response> {
     const name = text(input.name)?.trim();
@@ -228,7 +251,7 @@ export class Computers {
     computer.switching = [...new Set([...(computer.switching ?? []), pool])];
     await this.save(registry);
     // Only the pool's owner is credited if this re-point happens to create its group.
-    await this.deps.home.rebind(computer.keyId, pool, owner);
+    computer.userId = await this.deps.home.rebind(computer.keyId, pool, computer.user, owner);
     computer.firstModelRequestEverAt ??= computer.firstModelRequestAt;
     computer.pool = pool; computer.boundAt = new Date(this.now()).toISOString();
     delete computer.switching;

@@ -9,6 +9,7 @@ export class MemoryStorage implements ComputerStorage {
   async get<T>(key: string): Promise<T | undefined> {
     return structuredClone(this.values.get(key)) as T | undefined;
   }
+  async delete(key: string): Promise<void> { this.values.delete(key); }
   async put(key: string, value: unknown): Promise<void> {
     this.values.set(key, structuredClone(value));
   }
@@ -39,7 +40,7 @@ export interface HomeEvent { method: string; path: string; status: number }
 
 /** Owns only its uniquely named resources. Run the caller through heavy-slot. */
 export class SharingFixture {
-  private name = `basalt-1412-${process.pid}`;
+  private name = `basalt-usage-${process.pid}-${Date.now().toString(36)}`;
   // CI builds the pinned image once; a local run builds and later removes its own.
   private image = process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
   private resources: string[] = [];
@@ -57,8 +58,9 @@ export class SharingFixture {
     const slow = raw.includes("slow-stream");
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     const chunk = (content: string, finish: string | null = null) => response.write(`data: ${JSON.stringify({
-      id: "fixture", object: "chat.completion.chunk", model: "fixture-model",
+      id: "fixture", object: "chat.completion.chunk", model: JSON.parse(raw).model,
       choices: [{ index: 0, delta: { content }, finish_reason: finish }],
+      ...(finish ? { usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } } : {}),
     })}\n\n`);
     chunk(pool);
     if (slow) {
@@ -122,7 +124,7 @@ export class SharingFixture {
     assert.ok(address && typeof address !== "string");
     await this.data("/config", "PATCH", { "api-keys": { "openai-compatibility": ["p1", "p2"].map((pool) => ({
       name: `fixture-${pool}`, "base-url": `http://host.docker.internal:${address.port}/v1`,
-      keys: [{ "api-key": `fixture-${pool}` }], models: [{ name: "fixture-model", alias: "fixture-model" }],
+      keys: [{ "api-key": `fixture-${pool}` }], models: ["fixture-model", "fixture-alt"].map((name) => ({ name, alias: name })),
     })) } });
   }
   async fetchHome(input: string, init?: RequestInit): Promise<Response> {
@@ -143,10 +145,10 @@ export class SharingFixture {
   }
   async keys() { return (await this.data<{ items: HomeKey[] }>("/access/api-keys")).items; }
   async users() { return (await this.data<{ users: HomeUser[] }>("/users")).users; }
-  async model(key: string, session: string, slow = false): Promise<Response> {
+  async model(key: string, session: string, slow = false, model = "fixture-model"): Promise<Response> {
     return fetch(`${this.node}/v1/chat/completions`, {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Session-ID": session },
-      body: JSON.stringify({ model: "fixture-model", stream: true, max_tokens: 32, prompt_cache_key: session,
+      body: JSON.stringify({ model, stream: true, max_tokens: 32, prompt_cache_key: session,
         messages: [{ role: "user", content: slow ? "slow-stream" : "Reply with the pool name" }] }),
       signal: AbortSignal.timeout(20_000),
     });

@@ -4,6 +4,7 @@ import {
   defineProvider,
   json,
   mutation,
+  number,
   object,
   query,
   type QueryContext,
@@ -20,6 +21,7 @@ import {
   type PoolView,
   type SignInStarted,
   type SignInStatus,
+  type UsageSummary,
 } from "./contract.ts";
 import { poolOrigin, productName } from "./deployment.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
@@ -76,6 +78,14 @@ const session = object(sessionFields);
 export const view = query(
   { description: "This pool's accounts with their usage windows, and the providers it can connect", input: object({}) },
   async (ctx: Context) => control<PoolView>(ctx, "/pool"),
+);
+
+export const usage = query(
+  {
+    description: "Tokens and API-equivalent cost through this pool for the last `days` days (1 to 30, default 30), per model and per UTC day. The pool's owner gets the whole pool, each member's totals and cap by tools-service user id, and whether each provider needs an account added or removed. Anyone else gets only their own usage on this pool and their own weekly cap with when it resets.",
+    input: object({ days: number().optional() }),
+  },
+  async (ctx: Context, { days }) => control<UsageSummary>(ctx, `/usage/summary?days=${Math.min(30, Math.max(1, Math.round(days ?? 30)))}`),
 );
 
 export const startSignIn = mutation(
@@ -140,6 +150,7 @@ export const computerContext = query(
 export default defineApp(requirements, {
   tools: router({
     view,
+    usage,
     startSignIn,
     finishSignIn,
     signInStatus,

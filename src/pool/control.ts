@@ -338,21 +338,7 @@ export class PoolHome {
       this.credentials(),
       this.client.quota([...ids].sort()),
     ]);
-    const credentials = files.filter((row) => typeof row.id === "string" && ids.has(row.id));
-    const byId = new Map(usage.map((row) => [row.credential_id, row]));
-    const accounts = credentials.map((row): Account => {
-      const quota = byId.get(row.id);
-      return {
-        id: row.id as string, provider: text(row.provider) ?? text(row.type) ?? "",
-        label: text(row.email) ?? text(row.label) ?? text(row.name) ?? row.id as string,
-        plan: object(quota?.plan) ? text(quota.plan.name) : null,
-        state: row.disabled ? "disabled" : row.unavailable ? "unavailable" : row.status === "error" ? "error" : "active",
-        message: text(row.status_message),
-        windows: Array.isArray(quota?.primary_windows) ? rows(quota.primary_windows).map(windowView) : [],
-        observedAt: text(quota?.observed_at),
-      };
-    }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    return { isOwner, providers, accounts };
+    return { isOwner, providers, accounts: accountsView(files, usage, ids) };
   }
   async usage(query: UsageQuery): Promise<UsageResponse> {
     const accounts = new Set((await this.membership()).members.map((member) => member.auth_id));
@@ -400,6 +386,22 @@ export class PoolHome {
       if (!response.ok && response.status !== 404) throw new BackendFailure(response.status);
     }
   }
+}
+/** The public view of the credentials in `ids`, with their quota readings. */
+export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<string>): Account[] {
+  const byId = new Map(quota.map((row) => [row.credential_id, row]));
+  return files.filter((row) => typeof row.id === "string" && ids.has(row.id)).map((row): Account => {
+    const reading = byId.get(row.id);
+    return {
+      id: row.id as string, provider: text(row.provider) ?? text(row.type) ?? "",
+      label: text(row.email) ?? text(row.label) ?? text(row.name) ?? row.id as string,
+      plan: object(reading?.plan) ? text(reading.plan.name) : null,
+      state: row.disabled ? "disabled" : row.unavailable ? "unavailable" : row.status === "error" ? "error" : "active",
+      message: text(row.status_message),
+      windows: Array.isArray(reading?.primary_windows) ? rows(reading.primary_windows).map(windowView) : [],
+      observedAt: text(reading?.observed_at),
+    };
+  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../../brand.ts";
-import { ComputerHome, digest } from "./computer-home.ts";
+import { ComputerHome } from "./computer-home.ts";
 import { HomeClient, poolGroupPrefix } from "./control.ts";
 import { BackendFailure } from "./json.ts";
+
+import { backendUserName } from "./backend-users.ts";
 
 type Json = Record<string, unknown>;
 type Call = { path: string; method: string; body?: Json };
@@ -22,7 +24,7 @@ test("an expired provisioning budget prevents late user creation when Home ignor
     await gate;
     return Response.json({ users: [] });
   }));
-  const provisioning = home.user("fake-member", undefined, controller.signal);
+  const provisioning = home.user("fake-member", "pool-a", undefined, controller.signal);
   await started;
   controller.abort();
   release();
@@ -84,9 +86,9 @@ class FakeHomeServer {
 test("Home user identity is stable for a tools user and defaults to uncapped credits", async () => {
   const server = new FakeHomeServer();
   const toolsUserId = "tools-user-42";
-  const first = await server.client().user(toolsUserId);
-  const second = await server.client().user(toolsUserId);
-  const expectedUsername = `${brand.setup.id}-${await digest(toolsUserId)}`;
+  const first = await server.client().user(toolsUserId, "pool-a");
+  const second = await server.client().user(toolsUserId, "pool-a");
+  const expectedUsername = await backendUserName(toolsUserId, "pool-a");
 
   assert.equal(first, second);
   assert.equal(server.users.length, 1);
@@ -133,27 +135,27 @@ test("setup-created pools emit once after Home confirms the durable group", asyn
 test("rebind reports a pool created for the signed setup person", async () => {
   const server = new FakeHomeServer();
   const events: [string, string][] = [];
-  await server.client((event, accountId) => events.push([event, accountId])).rebind(73, "pool-b", "tools-user-42");
+  await server.client((event, accountId) => events.push([event, accountId])).rebind(73, "pool-b", "tools-user-42", "tools-user-42");
   assert.deepEqual(events, [["pool_created", "tools-user-42"]]);
 });
 
 test("rebind patches the same Home key after resolving the destination group", async () => {
   const server = new FakeHomeServer();
-  server.users.push({ id: 19, username: `${brand.setup.id}-${await digest("tools-user-42")}` });
+  server.users.push({ id: 19, username: await backendUserName("tools-user-42", "pool-b") });
   const home = server.client();
-  await home.rebind(73, "pool-b");
+  await home.rebind(73, "pool-b", "tools-user-42");
   const groupCreate = server.calls.findIndex((call) => call.path === "/v8/management/channel-groups" && call.method === "POST");
   const keyPatch = server.calls.findIndex((call) => call.path === "/v8/management/access/api-keys" && call.method === "PATCH");
   assert.ok(groupCreate >= 0);
   assert.ok(keyPatch > groupCreate);
-  assert.deepEqual(server.calls[keyPatch]!.body, { api_key_id: 73, channels: [31] });
+  assert.deepEqual(server.calls[keyPatch]!.body, { api_key_id: 73, user_id: 19, channels: [31] });
   assert.equal(Object.hasOwn(server.calls[keyPatch]!.body!, "api_key"), false);
   assert.equal(server.calls.some((call) => call.method === "POST" && call.path === "/v8/management/access/api-keys"), false);
 });
 
 for (const operation of ["mint", "rebind"] as const) {
   const write = (home: ComputerHome, pool: string) => operation === "mint"
-    ? home.mint("tools-user-42", pool, "computer-uuid") : home.rebind(73, pool);
+    ? home.mint("tools-user-42", pool, "computer-uuid") : home.rebind(73, pool, "tools-user-42");
   const noKeyWrite = (server: FakeHomeServer) => assert.equal(server.calls.some((call) =>
     call.path === "/v8/management/access/api-keys" && ["POST", "PATCH"].includes(call.method)), false);
 

@@ -3,7 +3,8 @@ import { test } from "node:test";
 import { brand } from "../../brand.ts";
 import { callerHeader } from "../../apps/pool/contract.ts";
 import { accessPath, accessPrefix, accessTtl, type AccessChange } from "../../src/pool/access-contract.ts";
-import { ComputerHome, digest } from "../../src/pool/computer-home.ts";
+import { ComputerHome } from "../../src/pool/computer-home.ts";
+import { backendUserName, personPrefix } from "../../src/pool/backend-users.ts";
 import { Computers } from "../../src/pool/computers.ts";
 import { HomeClient, PoolHome } from "../../src/pool/control.ts";
 import { signEnvelope, signPoolToken, type PoolClaims } from "../../src/pool/token.ts";
@@ -101,7 +102,7 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
     }
     console.log("PASS fixture: two distinct Home accounts, each attached only to its own pool channel group");
 
-    const usernameB = `${brand.setup.id}-${await digest(B)}`;
+    const usernameB = await backendUserName(B, P1.pool);
     assert.ok(!(await fixture.users()).some((row) => row.username === usernameB));
     assert.deepEqual(await ok(await access({ action: "audience", pools: [audience(P1, [A, B]), audience(P2, [B])] })), { revoked: 0, provisioned: 1 });
     const userB = (await fixture.users()).find((row) => row.username === usernameB);
@@ -132,6 +133,8 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
       const key = after.find((key) => key.api_key_id === computer.keyId)!;
       assert.equal(key.api_key, computer.modelKey);
       assert.deepEqual(key.channels, [await home.group(claims.pool)]);
+      const targetName = await backendUserName(B, claims.pool);
+      assert.equal(key.user_id, (await fixture.users()).find((user) => user.username === targetName)?.id);
       // Same session and unchanged client key: test the very next request without retries.
       await turn(computer.modelKey, expected, "same-computer-session");
     }
@@ -174,10 +177,13 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
     const ownSetup = await context(tokenP2);
     const remaining = await create(ownSetup.intent, "Own pool computer");
     await turn(remaining.modelKey, "P2", "before-person-deleted");
-    assert.equal((await fixture.keys()).filter((key) => key.user_id === userB.id).length, 1);
+    const ownUserName = await backendUserName(B, P2.pool);
+    const ownUser = (await fixture.users()).find((user) => user.username === ownUserName)!;
+    assert.equal((await fixture.keys()).filter((key) => key.user_id === ownUser.id).length, 1);
     assert.deepEqual(await ok(await access({ action: "person-deleted", user: B })), { revoked: 1, provisioned: 0 });
     assert.ok(!(await fixture.keys()).some((key) => key.user_id === userB.id));
-    assert.ok(!(await fixture.users()).some((row) => row.id === userB.id || row.username === usernameB));
+    const prefixB = await personPrefix(B);
+    assert.ok(!(await fixture.users()).some((row) => row.username.startsWith(prefixB)));
     assert.ok((await computers.list(B)).every((row) => row.state === "removed"));
     await refused(remaining.modelKey, "next-after-account-deletion");
     console.log("PASS 5: person-deleted removed B's remaining P2 key and Home user; node refused that key");

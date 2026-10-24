@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useId, useState } from "react";
-import type { ComputerResult } from "./computer-types.ts";
-import { Button, Problem } from "./controls.tsx";
-import { duration } from "./usage.ts";
+import { useCallback, useEffect, useState } from "react";
+import type { ComputerResult } from "../../apps/pool/ui/computer-types.ts";
+import { Button, Problem } from "../../apps/pool/ui/controls.tsx";
+import { CopyLink, InvitationRow, InviteForm } from "./invitations.tsx";
+import { CapControl, MemberUsage, type ShareUsage } from "./member-usage.tsx";
 
 // Who can use a pool, inviting more people and removing them. Structural like the computers API:
 // the page never sees an organization's internals, only people and invitations.
@@ -34,13 +35,16 @@ export interface MembersApi {
   cancel: (invitationId: string) => Promise<ComputerResult<null>>;
   /** Their computer keys on this pool are revoked before this returns; their next request fails. */
   remove: (memberId: string) => Promise<ComputerResult<null>>;
+  /** Each person's usage and cap. Optional so a page without the pool's usage still shares. */
+  usage?: () => Promise<ComputerResult<ShareUsage>>;
+  /** `null` removes the cap. Never for the owner. */
+  setCap?: (memberId: string, weekly: number | null) => Promise<ComputerResult<null>>;
 }
-
-const inputClass =
-  "h-9 min-w-0 flex-1 rounded-md border border-input bg-transparent px-3 text-sm outline-none transition-[box-shadow] placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive disabled:opacity-50 max-[740px]:h-11";
 
 function useShare(api: MembersApi) {
   const [view, setView] = useState<ShareView>();
+  const [usage, setUsage] = useState<ShareUsage>();
+  const [usageFailed, setUsageFailed] = useState(false);
   const [error, setError] = useState<string>();
   const load = useCallback(async () => {
     const result = await api.view();
@@ -49,18 +53,28 @@ function useShare(api: MembersApi) {
       setError(undefined);
     } else setError(result.message);
   }, [api]);
+  // Usage is extra: the people list stays useful without it, and it only changes every few minutes.
+  const loadUsage = useCallback(async () => {
+    const read = await api.usage?.();
+    if (!read) return;
+    if (read.ok) setUsage(read.value);
+    setUsageFailed(!read.ok);
+  }, [api]);
   useEffect(() => {
     void load();
+    void loadUsage();
     // Accepted invitations turn into members while this page is open.
-    const timer = setInterval(() => document.visibilityState === "visible" && void load(), 15_000);
+    const people = setInterval(() => document.visibilityState === "visible" && void load(), 15_000);
+    const numbers = setInterval(() => document.visibilityState === "visible" && void loadUsage(), 5 * 60_000);
     const onVisible = () => document.visibilityState === "visible" && void load();
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      clearInterval(timer);
+      clearInterval(people);
+      clearInterval(numbers);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [load]);
-  return { view, error, load };
+  }, [load, loadUsage]);
+  return { view, usage, usageFailed, error, load, loadUsage };
 }
 
 function useNow(every = 30_000) {
@@ -73,7 +87,7 @@ function useNow(every = 30_000) {
 }
 
 export function Members({ api }: { api: MembersApi }) {
-  const { view, error, load } = useShare(api);
+  const { view, usage, usageFailed, error, load, loadUsage } = useShare(api);
   const now = useNow();
   const [actionError, setActionError] = useState<string>();
   const [invited, setInvited] = useState<PoolInvitation>();
@@ -159,7 +173,18 @@ export function Members({ api }: { api: MembersApi }) {
           <>
             <ul aria-label="People" className="m-0 list-none border-t border-border p-0">
               {view.members.map((member) => (
-                <MemberRow key={member.id} member={member} onRemove={() => act(() => api.remove(member.id))} />
+                <MemberRow
+                  key={member.id}
+                  member={member}
+                  usage={usage?.members[member.id]}
+                  onRemove={() => act(() => api.remove(member.id))}
+                  onCap={api.setCap && !member.owner ? async (weekly) => {
+                    const result = await api.setCap!(member.id, weekly);
+                    if (!result.ok) return result.message;
+                    await loadUsage();
+                    return undefined;
+                  } : undefined}
+                />
               ))}
               {view.invitations.map((invitation) => (
                 <InvitationRow
@@ -170,6 +195,15 @@ export function Members({ api }: { api: MembersApi }) {
                 />
               ))}
             </ul>
+            {usageFailed && !usage && (
+              <p className="text-xs text-muted-foreground">Usage couldn't be read just now; it shows again on the next refresh.</p>
+            )}
+            {usage && others > 0 && (
+              <p className="max-w-[40rem] text-xs text-muted-foreground text-pretty">
+                Usage is each person's last 30 days on this pool, at API prices. A weekly cap stops their requests through this
+                pool once they reach it, until Monday 00:00 UTC. Caps are off unless you set one.
+              </p>
+            )}
             {others === 0 && (
               <p className="text-sm text-muted-foreground text-pretty">
                 Nobody else uses this pool yet. An invite link works for people without an account too.
@@ -179,58 +213,6 @@ export function Members({ api }: { api: MembersApi }) {
         )}
       </div>
     </section>
-  );
-}
-
-function InviteForm({ disabled, onInvite }: { disabled: boolean; onInvite: (email: string) => Promise<string | undefined> }) {
-  const id = useId();
-  const [email, setEmail] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const trimmed = email.trim();
-  return (
-    <form
-      className="grid max-w-[34rem] gap-1.5"
-      onSubmit={async (event) => {
-        event.preventDefault();
-        if (!trimmed || busy) return;
-        setBusy(true);
-        setError(undefined);
-        const problem = await onInvite(trimmed);
-        setBusy(false);
-        if (problem) setError(problem);
-        else setEmail("");
-      }}
-    >
-      <label htmlFor={id} className="text-sm font-medium">
-        Invite by email
-      </label>
-      <div className="flex gap-2 max-[480px]:flex-col">
-        <input
-          id={id}
-          type="email"
-          value={email}
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="name@example.com"
-          disabled={disabled || busy}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={`${id}-hint`}
-          onChange={(event) => setEmail(event.target.value)}
-          className={inputClass}
-        />
-        <Button type="submit" busy={busy} disabled={disabled || !trimmed}>
-          Invite
-        </Button>
-      </div>
-      {error ? (
-        <Problem>{error}</Problem>
-      ) : (
-        <p id={`${id}-hint`} className="text-xs text-muted-foreground text-pretty">
-          They join as a member. The link in their email works for 7 days.
-        </p>
-      )}
-    </form>
   );
 }
 
@@ -249,7 +231,17 @@ function Person({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function MemberRow({ member, onRemove }: { member: PoolMember; onRemove: () => Promise<boolean> }) {
+function MemberRow({
+  member,
+  usage,
+  onRemove,
+  onCap,
+}: {
+  member: PoolMember;
+  usage?: ShareUsage["members"][string];
+  onRemove: () => Promise<boolean>;
+  onCap?: (weekly: number | null) => Promise<string | undefined>;
+}) {
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const title = member.name.trim() || member.email || "Unnamed member";
@@ -261,7 +253,11 @@ function MemberRow({ member, onRemove }: { member: PoolMember; onRemove: () => P
   };
   return (
     <li className="group grid gap-2 border-b border-border px-1 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-6">
-      <Person title={title} detail={member.name.trim() ? member.email : ""} />
+      <div className="grid min-w-0 gap-1">
+        <Person title={title} detail={member.name.trim() ? member.email : ""} />
+        <MemberUsage usage={usage?.usage} />
+        {onCap && usage && <CapControl title={title} cap={usage.cap} onChange={onCap} />}
+      </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:justify-end">
         {member.owner || member.you ? (
           <span className="text-muted-foreground">{member.you ? (member.owner ? "You, owner" : "You") : "Owner"}</span>
@@ -293,83 +289,6 @@ function MemberRow({ member, onRemove }: { member: PoolMember; onRemove: () => P
         )}
       </div>
     </li>
-  );
-}
-
-function InvitationRow({ invitation, now, onCancel }: { invitation: PoolInvitation; now: number; onCancel: () => Promise<boolean> }) {
-  const [cancelling, setCancelling] = useState(false);
-  const expires = invitation.expiresAt ? Date.parse(invitation.expiresAt) : NaN;
-  const expired = Number.isFinite(expires) && expires <= now;
-  const status = expired
-    ? "Invite expired"
-    : Number.isFinite(expires)
-      ? `Invited, link works for ${duration(expires - now)}`
-      : "Invited";
-  return (
-    <li className="grid gap-2 border-b border-border px-1 py-3.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-6">
-      <div className="min-w-0">
-        <span className="block truncate text-muted-foreground" title={invitation.email}>
-          {invitation.email}
-        </span>
-        <span className={`block text-xs ${expired ? "text-warning" : "text-muted-foreground"}`}>
-          {Number.isFinite(expires) ? <time dateTime={invitation.expiresAt ?? undefined}>{status}</time> : status}
-        </span>
-      </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:justify-end">
-        {!expired && <CopyLink link={invitation.link} label="Copy link" />}
-        <Button
-          size="inline"
-          variant="link"
-          className="text-xs text-muted-foreground"
-          busy={cancelling}
-          aria-label={`Cancel the invitation for ${invitation.email}`}
-          onClick={async () => {
-            setCancelling(true);
-            await onCancel();
-            setCancelling(false);
-          }}
-        >
-          {expired ? "Remove" : "Cancel"}
-        </Button>
-      </div>
-    </li>
-  );
-}
-
-/** Copies the link; if the browser refuses, shows it selectable instead. */
-function CopyLink({ link, label, primary = false }: { link: string; label: string; primary?: boolean }) {
-  const [state, setState] = useState<"copied" | "failed">();
-  useEffect(() => {
-    if (state !== "copied") return;
-    const timer = setTimeout(() => setState(undefined), 2_000);
-    return () => clearTimeout(timer);
-  }, [state]);
-  if (state === "failed")
-    return (
-      <input
-        readOnly
-        aria-label="Invite link"
-        value={link}
-        onFocus={(event) => event.currentTarget.select()}
-        className="h-7 w-[min(18rem,100%)] rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-      />
-    );
-  return (
-    <Button
-      size={primary ? "xs" : "inline"}
-      variant={primary ? "outline" : "link"}
-      className={primary ? "" : "text-xs text-muted-foreground"}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(link);
-          setState("copied");
-        } catch {
-          setState("failed");
-        }
-      }}
-    >
-      <span aria-live="polite">{state === "copied" ? "Copied" : label}</span>
-    </Button>
   );
 }
 
