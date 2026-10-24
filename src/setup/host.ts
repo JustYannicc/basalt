@@ -77,7 +77,7 @@ function undo(origin: string): string {
 }
 
 async function createLink(request: Request, env: SetupEnv, payload: Record<string, unknown>, selection: Record<string, unknown>, own: OwnPool | undefined): Promise<Response> {
-  const organization = selection.owner === payload.user && text(selection.organization, 512) ? selection.organization : own?.organization;
+  const organization = own?.organization;
   if (!organization) throw new SetupError(409, "Your own pool is still being set up. Try again in a minute.");
   const created = await native(request, env, "api-key/create", { name: payload.name, metadata: { organization } });
   if (!created.ok) throw new SetupError(502, "Could not create the tools token. Try again.");
@@ -155,10 +155,14 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
     // Revoking needs no pool lookup; listing, minting and refreshing record the person's own pool.
+    const selection = await body(await pool(request, env, "validate", { user: person, intent: input.intent }));
+    // An intent for the person's own pool already names it; only a shared pool needs the lookup.
     const minting = method === "POST" && input.computerId === undefined;
-    const own = computer ? undefined : minting ? await ownPool(request, env, person) : await ownPoolIfAvailable(request, env, person);
+    const own: OwnPool | undefined = computer ? undefined
+      : selection.owner === person && text(selection.pool, 512) && text(selection.organization, 512)
+        ? { pool: selection.pool, organization: selection.organization }
+        : minting ? await ownPool(request, env, person) : await ownPoolIfAvailable(request, env, person);
     const payload = { ...input, user: person, ...own && { own } };
-    const selection = await body(await pool(request, env, "validate", { user: person, intent: input.intent, ...own && { own } }));
     if (method === "POST") {
       if (input.computerId !== undefined) return linkResponse(request, await body(await pool(request, env, "refresh", {
         user: payload.user, intent: input.intent, id: input.computerId,

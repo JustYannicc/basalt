@@ -104,20 +104,21 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.match(result.powershellCommand, /Invoke-WebRequest -UseBasicParsing -Uri/);
   assert.match(result.powershellCommand, /finally \{ Remove-Item/);
   assert.match(result.undoPrompt, /--undo/);
-  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/__setup/v1/validate", "/api/auth/api-key/create", "/__setup/v1/links"]);
+  // The intent names the person's own pool, so no organization lookup is needed.
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/api/auth/api-key/create", "/__setup/v1/links"]);
   const sessionUrl = new URL(f.calls[0]!.request.url);
   assert.equal(sessionUrl.searchParams.get("disableCookieCache"), "true");
   assert.equal(sessionUrl.searchParams.get("disableRefresh"), "true");
-  const create = f.calls[3]!;
+  const create = f.calls[2]!;
   assert.equal(new URL(create.request.url).origin, origin);
   assert.equal(create.request.headers.get("origin"), origin);
   assert.equal(create.request.headers.get("cookie"), "executor-hosted.session_token=fake-cookie");
   assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "organization-1" } });
-  assert.equal(f.calls[4]!.input.user, "user-1");
-  assert.equal(f.calls[4]!.input.intent, "signed-selection");
-  assert.equal(f.calls[4]!.input.toolsToken, "exp_fake-tools-secret");
-  // The person's own pool, read with their session, travels only inside the signed assertion.
-  for (const call of [f.calls[2]!, f.calls[4]!]) assert.deepEqual(call.input.own, { pool: "pool-1", organization: "organization-1" });
+  assert.equal(f.calls[3]!.input.user, "user-1");
+  assert.equal(f.calls[3]!.input.intent, "signed-selection");
+  assert.equal(f.calls[3]!.input.toolsToken, "exp_fake-tools-secret");
+  // The person's own pool travels only inside the signed assertion.
+  assert.deepEqual(f.calls[3]!.input.own, { pool: "pool-1", organization: "organization-1" });
 });
 
 test("setup started is emitted only after a new durable setup link succeeds", async () => {
@@ -197,7 +198,8 @@ test("switching a computer's pool is one signed request that re-points its key; 
 
 test("listing works while the organization list is down; minting on a shared pool waits for it", async () => {
   const down = ({ path }: Call) => path === "/api/auth/organization/list" ? new Response("unavailable", { status: 503 }) : undefined;
-  const listing = fixture({ tools: down });
+  const shared = ({ path }: Call) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined;
+  const listing = fixture({ tools: down, pool: shared });
   assert.equal((await listing.request("/setup/v1/computers?intent=signed-selection")).status, 200);
   assert.equal(listing.calls.find((call) => call.path.endsWith("/computers"))!.input.own, undefined);
   const minting = fixture({ tools: down, pool: ({ path }) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined });
@@ -342,8 +344,8 @@ test("failed tools revoke never finalizes; retry accepts native KEY_NOT_FOUND on
 test("refresh rotates only the unclaimed link and never mints another personal token", async () => {
   const f = fixture();
   assert.equal((await f.create({ intent: "x", computerId: "computer-1" })).status, 200);
-  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/api/auth/organization/list", "/__setup/v1/validate", "/__setup/v1/refresh"]);
-  assert.equal(f.calls[3]!.input.id, "computer-1");
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/__setup/v1/refresh"]);
+  assert.equal(f.calls[2]!.input.id, "computer-1");
   const conflict = fixture({ pool: ({ path }) => path.endsWith("/refresh") ? json({ error: "private" }, 409) : undefined });
   const response = await conflict.create({ intent: "x", computerId: "computer-1" });
   assert.equal(response.status, 409);
