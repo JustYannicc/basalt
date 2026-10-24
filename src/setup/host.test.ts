@@ -98,7 +98,8 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.match(result.command, /\/setup\/client.mjs/);
   assert.match(result.command, /'--link' 'https:\/\/setup.example\/setup\/claim\/opaque-link-token'/);
   assert.match(result.powershellCommand, /SetAccessRuleProtection\(\$true,\$false\)/);
-  assert.match(result.powershellCommand, /Invoke-WebRequest/);
+  // Patched Windows PowerShell 5.1 otherwise pauses for a script-execution confirmation.
+  assert.match(result.powershellCommand, /Invoke-WebRequest -UseBasicParsing -Uri/);
   assert.match(result.powershellCommand, /finally \{ Remove-Item/);
   assert.match(result.undoPrompt, /--undo/);
   assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/api/auth/api-key/create", "/__setup/v1/links"]);
