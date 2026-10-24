@@ -43,6 +43,7 @@ export class SharingFixture {
   // CI builds the pinned image once; a local run builds and later removes its own.
   private image = process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
   private resources: string[] = [];
+  private network: string | undefined;
   private imageAttempted = false;
   private release = () => {};
   private gate = new Promise<void>((resolve) => { this.release = resolve; });
@@ -88,10 +89,13 @@ export class SharingFixture {
       this.imageAttempted = true;
       docker(["build", "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64", "--tag", this.image, "containers/pool"], 240_000);
     }
+    // A private network: on Linux, host.docker.internal can't reach ports published on loopback.
+    this.network = `${this.name}-net`;
+    docker(["network", "create", this.network]);
     const postgres = `${this.name}-postgres`;
     this.resources.push(postgres);
-    docker(["run", "--detach", "--name", postgres, "--memory", "256m",
-      "--tmpfs", "/var/lib/postgresql/data:rw,size=256m", "--publish", "127.0.0.1::5432",
+    docker(["run", "--detach", "--name", postgres, "--network", this.network, "--memory", "256m",
+      "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
       "--env", "POSTGRES_USER=fixture_admin", "--env", "POSTGRES_PASSWORD=fixture-only",
       "--env", "POSTGRES_DB=basalt_pool", "postgres:16"]);
     await until(async () => {
@@ -101,11 +105,10 @@ export class SharingFixture {
     await new Promise<void>((resolve) => this.upstream.listen(0, "0.0.0.0", resolve));
     const container = `${this.name}-pool`;
     this.resources.push(container);
-    const databasePort = new URL(this.origin(postgres, 5432)).port;
-    docker(["run", "--detach", "--name", container, "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64",
+    docker(["run", "--detach", "--name", container, "--network", this.network, "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64",
       "--memory", "256m", ...(process.platform === "linux" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
       "--publish", "127.0.0.1::8317", "--publish", "127.0.0.1::8318", "--publish", "127.0.0.1::8327",
-      "--env", `POOL_DATABASE_URL=postgresql://fixture_admin:fixture-only@host.docker.internal:${databasePort}/basalt_pool`,
+      "--env", `POOL_DATABASE_URL=postgresql://fixture_admin:fixture-only@${postgres}:5432/basalt_pool`,
       "--env", `POOL_MANAGEMENT_KEY=${this.managementKey}`, "--env", "POOL_MANAGEMENT_ALLOW_REMOTE=true", this.image]);
     this.home = this.origin(container, 8327);
     this.node = this.origin(container, 8317);
@@ -156,6 +159,10 @@ export class SharingFixture {
     const failures: unknown[] = [];
     for (const name of this.resources.reverse()) {
       try { docker(["rm", "--force", "--volumes", name]); console.log(`Removed container ${name}`); }
+      catch (error) { failures.push(error); }
+    }
+    if (this.network) {
+      try { docker(["network", "rm", this.network]); console.log(`Removed network ${this.network}`); }
       catch (error) { failures.push(error); }
     }
     if (this.imageAttempted) {
