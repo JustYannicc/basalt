@@ -9,6 +9,32 @@ function usageRecord(id: string, account: string) {
   return { id, account, status: "success", at: "2026-10-23T12:00:00Z" };
 }
 
+test("test pool requires its owner's two distinct account IDs", async (t) => {
+  const client = new PoolAcceptanceClient({
+    fetch: async (input, init) => {
+      assert.equal(new URL(input.toString()).pathname, "/pool/v1/pool");
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("authorization"), "Bearer pool-token-fixture");
+      assert.equal(headers.get("x-signalbox-caller"), "acceptance");
+      return Response.json({ isOwner: true, accounts: [{ id: "a" }, { id: "b" }] });
+    },
+  });
+  assert.deepEqual(await client.testAccountIds(poolAccess), new Set(["a", "b"]));
+  for (const [label, payload] of [
+    ["member view", { isOwner: false, accounts: [{ id: "a" }, { id: "b" }] }],
+    ["missing list", { isOwner: true }],
+    ["no accounts", { isOwner: true, accounts: [] }],
+    ["extra account", { isOwner: true, accounts: [{ id: "a" }, { id: "b" }, { id: "c" }] }],
+    ["duplicate IDs", { isOwner: true, accounts: [{ id: "a" }, { id: "a" }] }],
+    ["missing ID", { isOwner: true, accounts: [{ id: "a" }, {}] }],
+  ] as const) {
+    await t.test(label, async () => {
+      const invalid = new PoolAcceptanceClient({ fetch: async () => Response.json(payload) });
+      await assert.rejects(invalid.testAccountIds(poolAccess));
+    });
+  }
+});
+
 test("usage polling sends the wire session to the signed pool route and waits for missing records", async () => {
   let now = 0;
   let reads = 0;

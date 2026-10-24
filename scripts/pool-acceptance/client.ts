@@ -119,6 +119,30 @@ export class PoolAcceptanceClient {
     return { boot, ids, completedAt: this.now() };
   }
 
+  async testAccountIds(access: PoolAccess): Promise<Set<string>> {
+    const response = await this.request("/pool/v1/pool", {
+      headers: { Authorization: `Bearer ${access.token}`, "x-signalbox-caller": access.owner },
+    }, "/pool/v1/pool");
+    if (response.status !== 200) {
+      await discardBody(response);
+      throw new AcceptanceFailure(`/pool/v1/pool returned HTTP ${response.status}`);
+    }
+    const payload = await readJson(response, "/pool/v1/pool");
+    if (!isObject(payload) || payload.isOwner !== true || !Array.isArray(payload.accounts)) {
+      throw new AcceptanceFailure("The test pool did not return its owner's accounts list");
+    }
+    const ids = payload.accounts.map((account: unknown) => {
+      if (!isObject(account) || typeof account.id !== "string" || !account.id.trim()) {
+        throw new AcceptanceFailure("The test pool accounts list omitted an account ID");
+      }
+      return account.id;
+    });
+    if (ids.length !== 2 || new Set(ids).size !== 2) {
+      throw new AcceptanceFailure("The dedicated test pool must contain exactly two distinct accounts");
+    }
+    return new Set(ids);
+  }
+
   async sendTurn(
     apiKey: string,
     model: string,

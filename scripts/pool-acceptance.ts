@@ -67,6 +67,7 @@ async function runFullAcceptance(
   hooks: AcceptanceHooks,
 ): Promise<ModelCatalog> {
   const log = hooks.log ?? console.log;
+  const testAccounts = await client.testAccountIds(poolAccess);
   log("idle_wait status=started seconds=3600 scope=runner_requests deployment_assumption=otherwise_quiet");
   const idleSeconds = await (hooks.waitForIdle ?? waitWithoutRequests)();
 
@@ -90,6 +91,9 @@ async function runFullAcceptance(
   const records = await Promise.all(conversations.map((conversation) =>
     client.waitForUsageRecords(poolAccess, conversation)
   ));
+  if (records.flat().some((record) => !testAccounts.has(record.account))) {
+    throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool's accounts list");
+  }
   const [, aRecords, bRecords, cRecords, dRecords] = records;
   const accountA = assertSameSessionCredential(aRecords!, "A");
   const accountB = assertSameSessionCredential(bRecords!, "B");

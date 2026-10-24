@@ -6,7 +6,7 @@ import { observeRestart } from "./restart-observation.ts";
 
 const model = "fixture-model";
 
-test("public runner uses wire session IDs, scoped records, and a changed boot with local fetch fixtures", async () => {
+async function runFixture(options: { accounts?: string[]; unexpectedUsage?: boolean } = {}) {
   let now = 1_000;
   let modelReads = 0;
   let streamReads = 0;
@@ -23,6 +23,11 @@ test("public runner uses wire session IDs, scoped records, and a changed boot wi
     usagePollIntervalMs: 500,
     fetch: async (input, init) => {
       const url = new URL(input.toString());
+      if (url.pathname === "/pool/v1/pool") {
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer pool-token-fixture");
+        assert.equal(new Headers(init?.headers).get("x-signalbox-caller"), "acceptance");
+        return Response.json({ isOwner: true, accounts: (options.accounts ?? ["subscription-a", "subscription-b"]).map(id => ({ id })) });
+      }
       if (url.pathname === "/v1/models") {
         modelReads += 1;
         if (modelReads === 4) return new Response("rolling restart", { status: 503 });
@@ -80,7 +85,7 @@ test("public runner uses wire session IDs, scoped records, and a changed boot wi
         assert.ok(account);
         const records = Array.from({ length: expected }, (_, index) => ({
           id: `${wireSessionId}-${index}`,
-          account,
+          account: options.unexpectedUsage ? `unexpected-${account}` : account,
           status: "success",
           at: "2026-10-23T12:00:00Z",
         }));
@@ -98,7 +103,11 @@ test("public runner uses wire session IDs, scoped records, and a changed boot wi
   }, {
     client,
     hooks: {
-      waitForIdle: async () => 3_600,
+      waitForIdle: async () => {
+        assert.equal(options.accounts?.length ?? 2, 2);
+        assert.equal(streamReads, 0);
+        return 3_600;
+      },
       log: (message) => logs.push(message),
       restart: (input) => observeRestart({
         ...input,
@@ -114,6 +123,11 @@ test("public runner uses wire session IDs, scoped records, and a changed boot wi
     },
   });
 
+  return { modelReads, streamReads, usageReads, sessionTurns, logs };
+}
+
+test("public runner uses wire session IDs, scoped records, and a changed boot with local fetch fixtures", async () => {
+  const { modelReads, streamReads, usageReads, sessionTurns, logs } = await runFixture();
   assert.equal(modelReads, 5);
   assert.equal(streamReads, 8);
   assert.equal(usageReads.size, 5);
@@ -122,4 +136,13 @@ test("public runner uses wire session IDs, scoped records, and a changed boot wi
   assert.ok(logs.includes("affinity status=passed repeated_conversations=2 new_conversations=2 subscriptions=2"));
   assert.ok(logs.some((line) => line.includes("deployment_assumption=otherwise_quiet")));
   assert.ok(logs.includes("acceptance status=passed mode=full"));
+});
+
+
+test("full acceptance rejects extra test-pool accounts before waiting or model turns", async () => {
+  await assert.rejects(runFixture({ accounts: ["subscription-a", "subscription-b", "subscription-c"] }), /exactly two distinct accounts/);
+});
+
+test("full acceptance rejects two usage accounts that differ from the pool accounts", async () => {
+  await assert.rejects(runFixture({ unexpectedUsage: true }), /outside the dedicated test pool/);
 });
