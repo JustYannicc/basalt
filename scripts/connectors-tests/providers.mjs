@@ -39,7 +39,7 @@ const baseCommit = process.argv[6];
 const sourcePin = pinProofSource(root, candidateCommit, baseCommit);
 const runId = `providers-${new Date().toISOString().replaceAll(":", "-")}-${randomBytes(3).toString("hex")}`;
 const evidenceDirectory = join(evidenceRoot, runId);
-const state = { stage: "initialization", checks: [], oauth: [], deployments: [], runtime: [], sourceChanges: [], diagnostics: [], searchResults: [], mockRequests: {}, mockSpecRequests: {} };
+const state = { stage: "initialization", checks: [], oauth: [], snapshots: {}, deployments: [], runtime: [], sourceChanges: [], diagnostics: [], searchResults: [], mockRequests: {}, mockSpecRequests: {} };
 const privateValues = [];
 const mockFixtures = {};
 const captureMockRequests = () => {
@@ -96,7 +96,7 @@ const program = Effect.gen(function* () {
   stamp("read-official-snapshots-and-host-definitions");
   const officialFiles = {};
   const definitionMap = {};
-  const exactSourceEvidence = {};
+  const exactSourceEvidence = state.snapshots;
   for (const providerId of ["gitlab", "miro"]) {
     const input = yield* Effect.promise(() => readProviderSnapshot(providerId, snapshotsDirectory));
     definitionMap[providerId] = matchFirstPartyOAuth(
@@ -156,12 +156,14 @@ const program = Effect.gen(function* () {
   stamp("deploy-unmodified-official-source-and-check-first-party-oauth-setup");
   const productionSetup = {};
   for (const providerId of ["gitlab", "miro"]) {
+    const deployment = { provider: providerId, kind: "official-source", status: "attempted", payload: deploymentPayload(officialFiles[providerId]) };
+    state.deployments.push(deployment);
     const app = checked(yield* request(actors.owner, "POST", `${orgPath}/apps/deploy`, {
       name: `${providerId} official source OAuth definition proof`,
       files: officialFiles[providerId],
     }), 200, `${providerId} official source deploy`);
     assert.ok(app.id && app.slug, `${providerId} official source app did not build`);
-    state.deployments.push({ provider: providerId, kind: "official-source", appId: app.id, slug: app.slug, status: "deployed", payload: deploymentPayload(officialFiles[providerId]) });
+    Object.assign(deployment, { appId: app.id, slug: app.slug, status: "deployed" });
     const providerRef = app.requirements?.accounts?.[providerId]?.provider;
     assert.equal(typeof providerRef, "string", `${providerId} deployed app did not expose its normalized provider reference`);
     const setup = checked(yield* request(actors.owner, "GET", `${orgPath}/providers/${encodeURIComponent(providerRef)}/oauth/oauth/setup`), 200,
@@ -198,11 +200,14 @@ const program = Effect.gen(function* () {
     );
     state.sourceChanges.push(...localSource.substitutions);
     const files = localSource.files;
+    const deployment = { provider: providerId, kind: "local-origin-substitution", status: "attempted", payload: deploymentPayload(files) };
+    state.deployments.push(deployment);
     const app = checked(yield* request(actors.owner, "POST", `${orgPath}/apps/deploy`, {
       name: `${providerId} local mock runtime proof`,
       files,
     }), 200, `${providerId} local mock source deploy`);
     assert.ok(app.id && app.slug, `${providerId} local mock app did not build`);
+    Object.assign(deployment, { appId: app.id, slug: app.slug, status: "deployed" });
     const appPath = `${orgPath}/apps/${app.id}`;
     const access = checked(yield* request(actors.owner, "GET", `${appPath}/access`), 200, `${providerId} read app audience`);
     checked(yield* request(actors.owner, "PATCH", `${appPath}/access`, {
@@ -210,7 +215,7 @@ const program = Effect.gen(function* () {
       audience: { kind: "everyone" },
     }), 200, `${providerId} share app in isolated organization`);
     mockApps[providerId] = { ...app, path: appPath, files };
-    state.deployments.push({ provider: providerId, kind: "local-origin-substitution", appId: app.id, slug: app.slug, status: "deployed", audience: "everyone", payload: deploymentPayload(files) });
+    deployment.audience = "everyone";
     record(`${providerId} origin-substituted official source compiled and was shared in the isolated organization`);
   }
 
@@ -401,7 +406,8 @@ try {
     stage: state.stage,
     message,
     checksCompleted: state.checks,
-    deploymentsCompleted: state.deployments,
+    snapshots: state.snapshots,
+    deployments: state.deployments,
     oauthSetupCompleted: state.oauth,
     runtimeCallsCompleted: state.runtime,
     nativeSearchResults: state.searchResults,
