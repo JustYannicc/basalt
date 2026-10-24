@@ -33,7 +33,7 @@ export function deploymentPayload(files) {
   };
 }
 
-const safeText = (value, privateValues) => {
+export const redactDiagnostic = (value, privateValues) => {
   let safe = String(value ?? "");
   for (const secret of privateValues) if (secret) safe = safe.replaceAll(secret, "[redacted]");
   return safe.slice(0, 512);
@@ -50,12 +50,12 @@ export function unavailableAppsEvidence(result, privateValues) {
   }
   return Array.isArray(body?.unavailableApps) ? body.unavailableApps.slice(0, 20).map(app =>
     Object.fromEntries(["app", "name", "reason", "router"].flatMap(key =>
-      typeof app?.[key] === "string" ? [[key, safeText(app[key], privateValues)]] : []))) : [];
+      typeof app?.[key] === "string" ? [[key, redactDiagnostic(app[key], privateValues)]] : []))) : [];
 }
 
 /** Keep protocol failures without credentials or arbitrary successful tool output. */
 export function mcpExecutionEvidence(result, privateValues) {
-  const text = value => safeText(value, privateValues);
+  const text = value => redactDiagnostic(value, privateValues);
   const error = value => value && typeof value === "object" ? {
     ...(typeof value.kind === "string" ? { kind: text(value.kind) } : {}),
     ...(typeof value.message === "string" ? { message: text(value.message) } : {}),

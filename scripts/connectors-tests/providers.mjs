@@ -3,7 +3,9 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { URL, fileURLToPath, pathToFileURL } from "node:url";
+import process from "node:process";
+import console from "node:console";
 import { Context, Effect, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FetchHttpClient } from "effect/http";
@@ -16,7 +18,7 @@ import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { firstPartyOAuthClientDefinitions } from "../../.upstream/apps/hosted/server/src/implementation/first-party-oauth.ts";
 import { startProviderFixture } from "./provider-fixture.mjs";
 import { brand } from "../../brand.ts";
-import { deploymentPayload, digest, mcpExecutionEvidence, pinProofSource, unavailableAppsEvidence } from "./provider-evidence.mjs";
+import { deploymentPayload, digest, mcpExecutionEvidence, pinProofSource, redactDiagnostic, unavailableAppsEvidence } from "./provider-evidence.mjs";
 import {
   adaptProviderAppFiles,
   matchFirstPartyOAuth,
@@ -26,7 +28,7 @@ import {
 
 const scriptRoot = fileURLToPath(new URL("../..", import.meta.url));
 const root = resolve(process.argv[2] ?? scriptRoot);
-assert.equal(root, resolve(scriptRoot), "The root must be this runner\'s checkout");
+assert.equal(root, resolve(scriptRoot), "The root must be this runner's checkout");
 const upstream = join(root, ".upstream");
 const snapshotsDirectory = resolve(
   process.argv[3] ?? join(root, ".generated/connector-snapshots"),
@@ -53,6 +55,9 @@ const record = (name) => { state.checks.push(name); };
 await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
 await chmod(evidenceDirectory, 0o700);
 const evidenceFile = join(evidenceDirectory, "providers-proof.json");
+await writeFile(join(evidenceDirectory, "invocation.json"), `${JSON.stringify({
+  runId, sourcePin, startedAt: new Date().toISOString(),
+}, null, 2)}\n`, { mode: 0o600, flag: "wx" });
 
 const sourceDigest = files => digest(JSON.stringify(files.map(({ path, content }) => ({ path, content }))));
 const byPath = (files, path) => {
@@ -388,7 +393,7 @@ try {
   console.log(JSON.stringify({ outcome: result.outcome, evidenceFile, checks: result.passedChecks.length }));
 } catch (error) {
   captureMockRequests();
-  const message = diagnosticText(error?.message ?? error);
+  const message = redactDiagnostic(error?.message ?? error, privateValues);
   const failure = {
     outcome: "failed",
     runId,

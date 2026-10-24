@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { URL } from "node:url";
 
 const definitions = {
   gitlab: {
