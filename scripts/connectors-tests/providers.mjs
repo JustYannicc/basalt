@@ -275,6 +275,12 @@ const program = Effect.gen(function* () {
       assert.ok(peerLink.status === 403 || peerLink.status === 404, `${providerId} ${principal} must not link peer account`);
       record(`${providerId} ${principal} peer account detail and link requests were denied`);
 
+      const health = checked(yield* request(actor, "POST", `${orgPath}/accounts/${accounts[index]}/health`),
+        200, `${providerId} ${principal} check own account health`);
+      assert.equal(health.apps.find(item => item.app === app.id)?.check?.status, "healthy",
+        `${providerId} ${principal} official health check must pass`);
+      record(`${providerId} ${principal} official health check passed through the local mock`);
+
       const client = yield* Effect.acquireRelease(
         Effect.promise(() => mcpClient(Client, StreamableHTTPClientTransport, runtimeTarget.metadata.origin, patTokens[index])),
         (opened) => Effect.promise(() => opened.close()),
@@ -293,7 +299,9 @@ const program = Effect.gen(function* () {
       assert.ok(tool, `${providerId} ${principal} native search did not return ${fixture.definition.operationName}`);
       const described = yield* Effect.promise(() => client.callTool({ name: "describe", arguments: { paths: [tool.path] } }));
       assert.ok(!described.isError, `${providerId} ${principal} native MCP describe failed`);
-      const called = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: { path: tool.path, input: {} } } }));
+      const called = yield* Effect.promise(() => client.callTool({ name: "call", arguments: {
+        calls: { path: tool.path, input: { accountId: accounts[index], input: {} } },
+      } }));
       const output = resultText(called);
       const ownMarker = `${providerId === "gitlab" ? "synthetic_gitlab" : "synthetic_miro"}_${principal}_${providerId === "gitlab" ? "project" : "board"}`;
       const peer = principalNames[1 - index];
@@ -317,9 +325,27 @@ const program = Effect.gen(function* () {
       state.mockSpecRequests[providerId] = fixture.requests
         .filter((request) => request.kind === "spec")
         .map(({ method, path }) => ({ method, path }));
+      assert.ok(callEvidence.mcpExecution.execution?.ok &&
+        callEvidence.mcpExecution.execution.callOutcomes.length === 1 &&
+        callEvidence.mcpExecution.execution.callOutcomes[0].ok,
+      `${providerId} ${principal} native call must complete successfully`);
       assert.ok(!called.isError && callEvidence.ownMarkerPresent && !callEvidence.peerMarkerPresent,
         `${providerId} ${principal} native call did not return only the caller's mock result ${JSON.stringify(callEvidence)}`);
       record(`${providerId} ${principal} native MCP tool returned only its personal mock account data`);
+
+      const beforePeerCall = fixture.requests.filter(request => request.kind === "api").length;
+      const peerCall = yield* Effect.promise(() => client.callTool({ name: "call", arguments: {
+        calls: { path: tool.path, input: { accountId: peerId, input: {} } },
+      } }));
+      const peerExecution = mcpExecutionEvidence(peerCall);
+      const denied = peerExecution.execution?.callOutcomes;
+      assert.ok(denied?.length === 1 && denied[0].ok === false &&
+        denied[0].error?.message?.startsWith("InputInvalid (HTTP 422)"),
+      `${providerId} ${principal} peer account must be excluded from the native tool's input`);
+      assert.equal(fixture.requests.filter(request => request.kind === "api").length, beforePeerCall,
+        `${providerId} ${principal} peer call must not contact the provider`);
+      callEvidence.peerMcpExecution = peerExecution;
+      record(`${providerId} ${principal} native MCP denied the peer account before a provider request`);
     }
   }
 
