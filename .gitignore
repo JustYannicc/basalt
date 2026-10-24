@@ -2,6 +2,8 @@ node_modules
 .upstream/
 .alchemy/
 .generated/
+.local/
+.ci-tools/
 .env
 .env.*
 !.env.example

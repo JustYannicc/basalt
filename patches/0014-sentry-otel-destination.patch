@@ -1,5 +1,4 @@
 diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
-index 4f5e3f3..bf4d237 100644
 --- a/apps/hosted/cloud/src/implementation/error-reporting.ts
 +++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
 @@ -1,6 +1,6 @@
@@ -10,7 +9,7 @@ index 4f5e3f3..bf4d237 100644
  import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
  import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
  import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
-@@ -41,7 +41,52 @@ const Settings = Schema.Struct({
+@@ -41,7 +41,52 @@
    dsn: Schema.String,
    environment: Schema.String,
    release: Schema.String,
@@ -63,11 +62,18 @@ index 4f5e3f3..bf4d237 100644
  /** The reporting boundary never replaces the failure of a product operation. */
  export class SentryTransportFailed extends Schema.TaggedError<SentryTransportFailed>()(
    "SentryTransportFailed",
-@@ -75,6 +120,7 @@ export const withCloudSentry = <A, E, R>(
+@@ -69,12 +114,14 @@
+     const config = yield* Schema.decodeUnknownEffect(Settings)(value).pipe(Effect.orDie);
+     const client = yield* Effect.acquireRelease(
+       Effect.sync(() => {
++        const beforeSend = sentryBeforeSend(config);
+         const client = new CloudflareClient({
+           ...config,
+           integrations: [],
            tracesSampleRate: 0,
            sendDefaultPii: false,
            stackParser: workerStackParser,
-+          beforeSend: sentryBeforeSend(config),
++          ...(beforeSend === undefined ? {} : { beforeSend }),
            transport: (options) =>
              createTransport(options, async (request) => {
                const response = await fetch(options.url, {
