@@ -44,7 +44,7 @@ model {
 
     modelGateway = module "Model gateway" {
       #basalt #v1 #deep #port #funnel
-      description "Owns the computer registry and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list. Model traffic remains on the existing /v1 passthrough. After a successful model POST, the pool Worker schedules usage observation with waitUntil; its periodic alarm calls the same observer through the same Home usage interface as a fallback."
+      description "Owns the computer registry, the pool directory and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list, re-points a computer's key to another of the person's pools, and applies signed access changes: revokes the keys of people who lost a pool before the tools service commits. Model traffic remains on the existing /v1 passthrough. After a successful model POST, the pool Worker schedules usage observation with waitUntil; its periodic alarm calls the same observer through the same Home usage interface as a fallback."
       metadata {
         code "src/pool"
         bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime"
@@ -64,7 +64,7 @@ model {
 
     setupHost = module "Setup host" {
       #basalt #v1 #deep
-      description "Root /setup React page reuses pool UI components and is bundled as router static assets. HTTP setup handlers use the native cookie session and personal PAT API, then call the private pool binding with an action-bound signature expiring after 30 seconds. Source implementation; live acceptance is pending."
+      description "Root /setup and /share React pages reuse pool UI components and are bundled as router static assets. HTTP handlers use the native cookie session, personal PAT, organization invitation and member APIs and app access, then call the private pool binding with an action-bound signature expiring after 30 seconds. Source implementation; live acceptance is pending."
       metadata {
         code "src/setup"
         libraries "react|react-dom"
@@ -165,14 +165,14 @@ model {
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
   basalt.build -[sync]-> basalt.feedback "bundle feedback UI"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
-  basalt.build -[sync]-> basalt.toolsGateway "copy app bundle and token signer; build patched apps framework for compiler"
+  basalt.build -[sync]-> basalt.toolsGateway "copy app bundle, token signer and access contract; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
-  basalt.build -[sync]-> basalt.setupHost "bundle root setup React page from shared pool UI"
+  basalt.build -[sync]-> basalt.setupHost "bundle root setup and share React pages from shared pool UI"
   basalt.build -[sync]-> basalt.setupInstaller "install frozen setup dependencies; bundle installer asset"
   basalt.router -[sync]-> basalt.pool "import pool control path contract"
   basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
   basalt.modelGateway -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
-  basalt.router -[sync]-> basalt.setupHost "route /setup/v1/* and /setup/claim/*; observe real MCP tool calls"
+  basalt.router -[sync]-> basalt.setupHost "route /setup/v1/*, /setup/claim/* and /share/v1/*; observe real MCP tool calls"
   basalt.router -[sync]-> basalt.feedback "serve feedback widget and host submission route"
   basalt.router -[sync]-> basalt.telemetry "record router telemetry and relay events"
   basalt.toolsGateway -[sync]-> basalt.router "optional authenticated analytics and feedback relay"
@@ -183,7 +183,10 @@ model {
   basalt.setupHost -[sync]-> basalt.router "setup response and public computer metadata"
   basalt.setupHost -[sync]-> basalt.pool "reuse pool UI components"
   basalt.setupHost -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
-  basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: native cookie get-session; create and delete personal PAT"
+  basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: native cookie get-session; create and delete personal PAT; list organizations"
+  basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: share a pool; invite as member, cancel and remove; app access" {
+    description "Removal commits only after the tools service's access hook revoked the member's computer keys on the pool."
+  }
   basalt.toolsGateway -[sync]-> basalt.setupHost "verified session or personal PAT result"
   basalt.setupHost -[sync]-> basalt.modelGateway "POOL_SERVICE: private /__setup/v1/*; signed action and 30-second expiry"
   basalt.modelGateway -[sync]-> basalt.setupHost "intent validation, computer metadata or consumed one-time credentials"
@@ -203,6 +206,10 @@ model {
     description "Scoped to the pool's channel group; owner-only changes and owner-only usage reads by exact client session or key (GET /pool/v1/usage). The tools service supplies ctx.user.id as the caller."
   }
   basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
+  basalt.toolsGateway -[sync]-> basalt.router "access change: POST /pool/v1/access, signed sba1, before the change commits" {
+    description "Sharing, groups, member removal, pool deletion, organization removal and account deletion send the pool's new audience. A non-2xx answer fails the change."
+  }
+  basalt.router -[sync]-> basalt.toolsGateway "access change applied: keys revoked, backend users created"
   basalt.modelGateway -[sync]-> basalt.router "pool control response"
   basalt.router -[sync]-> basalt.pool "pool control response"
   poolOwner -[sync]-> localClient "uses"

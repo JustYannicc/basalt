@@ -15,3 +15,5 @@ public/setup/client.mjs
 public/setup/main.js
 public/setup/main.css
 public/setup/index.html
+public/share/main.js
+public/share/index.html
