@@ -199,7 +199,7 @@
     {
       "identity": "executor-zendesk-oauth",
       "file": "0022-zendesk-hosted-oauth.patch",
-      "content_sha256": "f6b1984e44c5e73eb965a4c1f1e51f88063c4b8753469cc3df50f7030a37b43a",
+      "content_sha256": "966ad2ae6333efe2b310fb284680f012526693b8f48fc997749c24549674be36",
       "kind": "upstream",
       "upstream_pull_request": 2376,
       "database_sensitive": false,
