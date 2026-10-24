@@ -186,7 +186,7 @@ model {
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
   basalt.build -[sync]-> basalt.feedback "bundle feedback UI"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
-  basalt.build -[sync]-> basalt.toolsGateway "copy app bundle, token signer and access contract; build patched apps framework for compiler"
+  basalt.build -[sync]-> basalt.toolsGateway "write the pool app bundle as a hash-named site asset; copy token signer and access contract; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
   basalt.build -[sync]-> basalt.setupHost "bundle root setup and share React pages from shared pool UI"
   basalt.build -[sync]-> basalt.setupInstaller "install frozen setup dependencies; bundle installer asset"
@@ -259,7 +259,7 @@ model {
   basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
 
-  basalt.toolsGateway -[tool]-> basalt.pool "install and upgrade per member; link signed pool token" {
+  basalt.toolsGateway -[tool]-> basalt.pool "install and upgrade per member from the hash-checked site asset; link signed pool token" {
     description "One private instance per verified member per organization. Sign the token with POOL_APP_SIGNING_KEY; sharing uses the tools service's built-in sharing."
   }
   basalt.toolsGateway -[tool]-> basalt.pool "run pool app tools with the caller"
