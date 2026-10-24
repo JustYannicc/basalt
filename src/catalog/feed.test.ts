@@ -122,3 +122,17 @@ test("GitLab and Miro keep official source and auth while reporting each client'
     }
   }
 });
+
+test("ElevenLabs uses its official personal API-key app without hosted-client readiness", async () => {
+  const entry = { ...official.apps[0]!, id: "elevenlabs", package: "@executor.sh/elevenlabs", name: "ElevenLabs",
+    auth: [{ method: "apiKey", kind: "secrets", label: "API key" }] };
+  const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json({ version: 1, apps: [entry] }));
+  const result = (await response.json() as Feed).apps[0]!;
+  assert.deepEqual(result.auth, entry.auth);
+  assert.equal(result.source, "apps/elevenlabs.json");
+  assert.match(result.connectionNotices![0]!.message, /your own ElevenLabs account/);
+  assert.match(result.connectionNotices![0]!.message, /secure connection form/);
+  assert.doesNotMatch(result.connectionNotices![0]!.message, /not set up yet/);
+  const source = '{"package":"@executor.sh/elevenlabs","files":[]}';
+  assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"), async () => new Response(source))).text(), source);
+});

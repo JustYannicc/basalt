@@ -67,6 +67,12 @@ model {
   }
   basalt.toolsGateway -[sync]-> repositoryCollaboration "authorize, refresh and call with the person's grant"
   basalt.toolsGateway -[sync]-> visualCollaboration "authorize, refresh and call within the person's selected team"
+  audioService = adapter "Audio service" {
+    #external
+    technology "ElevenLabs API"
+    metadata { hosts "api.elevenlabs.io" }
+  }
+  basalt.toolsGateway -[sync]-> audioService "call with the person's API key"
 
   emailService = adapter "Email service" {
     #external
