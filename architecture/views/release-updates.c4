@@ -11,6 +11,7 @@ views {
     localClient -> basalt.releaseUpdates "native proof and public computer observations"
     basalt.releaseUpdates -> basalt.deployment "destroy preview and verify resources absent"
     basalt.releaseUpdates -> updateSource "require exact merge-result CI, current main and preview proof; merge"
+    basalt.build -> basalt.deployment "main Check passed for the exact merged commit"
     basalt.deployment -> basalt.releaseUpdates "classify database and encrypted workflow changes"
     basalt.releaseUpdates -> basalt.router "protected export of exact dedicated pool accounts"
     basalt.deployment -> databaseProvider "complete backup before database migration"

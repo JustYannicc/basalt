@@ -91,7 +91,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Provider source | The outside service supplying pinned Home source for provider catalog checks. |
 | Release source | The outside service that supplies verified release archives during the image build. |
 | Update source | The outside source of release metadata, patch merge ancestry, pull requests and exact-head workflow evidence. |
-| Release updates | The automation that proposes pinned versions, verifies disposable previews, and merges only current green candidates after teardown. |
+| Release updates | Proposes pinned versions, verifies disposable previews, and checks current green proofs before an expected-head squash merge. V1 accepts a main advance after the final check; deployment waits for successful CI on the exact merged main commit. |
 | Deployment provider | The outside control-plane API used to provision hosting resources. |
 | Identity interface | Basalt's planned interface; the dependency already provides public identity behavior. |
 | Model gateway | The current entry point for model requests, signed pool control calls and private signed setup actions. It owns computer registration and encrypted one-time credentials through the pool controller. |
