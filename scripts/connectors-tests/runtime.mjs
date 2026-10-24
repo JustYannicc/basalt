@@ -20,7 +20,7 @@ import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { proveInstalledClaude } from "./native-claude.mjs";
 
-const [root, upstream, directory, emulateBin] = process.argv.slice(2);
+const [root, upstream, directory, emulateBin, browserExecutable] = process.argv.slice(2);
 const require = createRequire(join(upstream, "package.json"));
 const { Client } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/index.js")).href);
 const { StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js")).href);
@@ -108,7 +108,7 @@ const program = Effect.gen(function* () {
   }));
   callback = `http://127.0.0.1:${receiver.address().port}/api/oauth/callback`;
   const provider = yield* Effect.acquireRelease(Effect.promise(emulator), (server) => Effect.promise(server.stop));
-  const browser = yield* Effect.acquireRelease(Effect.promise(() => chromium.launch({ headless: true })), (browser) => Effect.promise(() => browser.close()));
+  const browser = yield* Effect.acquireRelease(Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })), (browser) => Effect.promise(() => browser.close()));
   step("published-emulator-ready");
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;

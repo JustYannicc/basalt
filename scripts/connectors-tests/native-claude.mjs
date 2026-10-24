@@ -16,13 +16,15 @@ async function binary(name) {
 
 async function launch(command, args, env, cwd, report) {
   const heavy = await binary("heavy-slot"), sandbox = await binary("sandbox-exec");
-  const realHome = process.env.HOME;
+  const realHome = process.env.CONNECTORS_PROTECTED_HOME;
+  assert.ok(realHome, "The native sandbox needs the protected host home path");
   const protectedPaths = [".claude", ".codex", ".signalbox/userdata", ".t3/userdata", "Library/Keychains"]
     .map((path) => `(subpath ${JSON.stringify(join(realHome, path))})`).join(" ");
   const profile = '(version 1)(allow default)(deny network*)(allow network-outbound (remote ip "localhost:*"))'
     + `(deny file-read* file-write* ${protectedPaths})`;
   const child = spawn(heavy, [await binary("env"), "-i", ...Object.entries(env).map(([key, value]) => `${key}=${value}`),
-    sandbox, "-p", profile, command, ...args], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    sandbox, "-p", profile, command, ...args], { cwd, detached: true,
+    env: { PATH: process.env.PATH ?? "", HOME: realHome, LANG: "en_US.UTF-8" }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "", stderr = "", timedOut = false;
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
