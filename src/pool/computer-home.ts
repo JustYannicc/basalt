@@ -1,6 +1,7 @@
 import { brand } from "../../brand.ts";
 import { HomeClient, PoolHome, poolGroupPrefix } from "./control.ts";
 import { BackendFailure, object, post, rows, unavailable, type Json } from "./json.ts";
+import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 
 const id = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 export async function digest(value: string): Promise<string> {
@@ -14,7 +15,11 @@ export function randomSecret(prefix = ""): string {
 /** Home owns key enforcement. Nothing in this module handles model traffic. */
 export class ComputerHome {
   readonly client: HomeClient;
-  constructor(client: HomeClient) { this.client = client; }
+  private onProductEvent?: ProductEventCallback;
+  constructor(client: HomeClient, onProductEvent?: ProductEventCallback) {
+    this.client = client;
+    this.onProductEvent = onProductEvent;
+  }
   async user(person: string): Promise<number> {
     // Stable across renames; neither usernames nor logs contain the person's identity.
     const username = `${brand.setup.id}-${await digest(person)}`;
@@ -30,21 +35,24 @@ export class ComputerHome {
     if (!id(user?.id)) return unavailable();
     return user.id;
   }
-  async group(pool: string): Promise<number> {
+  async group(pool: string, accountId?: string): Promise<number> {
     if (typeof pool !== "string" || !pool.trim()) return unavailable();
     const name = `${poolGroupPrefix}${pool}`;
     let groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === name);
+    let created = false;
     if (!groups.length) {
       const response = await this.client.response("/channel-groups", post({ channel_name: name }));
       if (!response.ok && response.status !== 409) throw new BackendFailure(response.status);
+      created = response.ok;
       await response.body?.cancel();
       groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === name);
     }
     if (!groups.length || !id(groups[0]?.id)) return unavailable();
+    if (created && accountId) emitProductEvent(this.onProductEvent, "pool_created", accountId);
     return groups[0].id;
   }
-  private async writeScopedKey(pool: string, input: Json, method: "POST" | "PATCH"): Promise<Json> {
-    const group = await this.group(pool);
+  private async writeScopedKey(pool: string, input: Json, method: "POST" | "PATCH", accountId?: string): Promise<Json> {
+    const group = await this.group(pool, accountId);
     // Home treats empty channels as unrestricted. Verify the exact pool group at the write boundary.
     if (!id(group) || !(await this.client.allPoolGroups()).some((row) =>
       row.id === group && row.channel_name === `${poolGroupPrefix}${pool}`)) return unavailable();
@@ -57,7 +65,7 @@ export class ComputerHome {
     const data = await this.writeScopedKey(pool, {
       api_key: key, display_name: `${brand.setup.id}:${computer}`, user_id: userId,
       model_groups: [],
-    }, "POST");
+    }, "POST", person);
     const created = data.api_key;
     if (!object(created) || !id(created.api_key_id ?? created.id) || created.user_id !== userId) return unavailable();
     return { key, keyId: (created.api_key_id ?? created.id) as number, userId };
@@ -68,8 +76,8 @@ export class ComputerHome {
     return keys.filter((key) => key.display_name === `${brand.setup.id}:${computer}`)
       .map((key) => key.api_key_id ?? key.id).filter(id);
   }
-  async rebind(keyId: number, pool: string): Promise<void> {
-    await this.writeScopedKey(pool, { api_key_id: keyId }, "PATCH");
+  async rebind(keyId: number, pool: string, accountId?: string): Promise<void> {
+    await this.writeScopedKey(pool, { api_key_id: keyId }, "PATCH", accountId);
   }
   async revoke(keyId: number): Promise<void> {
     const response = await this.client.response(`/access/api-keys?id=${keyId}`, { method: "DELETE" });

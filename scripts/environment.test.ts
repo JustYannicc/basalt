@@ -94,3 +94,22 @@ test("a previous pool signing key is optional, hex, and never the current key", 
     message: "POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY",
   });
 });
+
+test("optional telemetry destinations never block the first deployment", () => {
+  assert.ok(!requiredSecrets.some((name: string) => ["SENTRY_DSN", "POSTHOG_PROJECT_KEY", "SENTRY_OTLP_ENDPOINT"].includes(name)));
+  const credentials = {
+    ...Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+  };
+  const disabled = deployEnvironment(credentials);
+  assert.equal(disabled.SENTRY_DSN, undefined);
+  assert.equal(disabled.POSTHOG_PROJECT_KEY, undefined);
+  assert.equal(disabled.DO_NOT_TRACK, "1");
+  assert.match(disabled.TELEMETRY_RELAY_KEY!, /^[a-f0-9]{64}$/);
+  assert.notEqual(disabled.TELEMETRY_RELAY_KEY, credentials.POOL_APP_SIGNING_KEY);
+  assert.equal(disabled.EXECUTOR_TELEMETRY_RELAY_TOKEN, disabled.TELEMETRY_RELAY_KEY);
+  const configured = deployEnvironment({ ...credentials, SENTRY_DSN: "synthetic", POSTHOG_PROJECT_KEY: "synthetic" });
+  assert.equal(configured.SENTRY_DSN, "synthetic");
+  assert.equal(configured.POSTHOG_PROJECT_KEY, "synthetic");
+  assert.equal(configured.DO_NOT_TRACK, "0");
+});

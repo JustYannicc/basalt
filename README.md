@@ -161,3 +161,15 @@ The deployment model can be derived from [alchemy.run.ts](alchemy.run.ts). Archi
 Artifacts app-source repositories use a separate namespace that the stack creates with immutable EU jurisdiction before exposing the public router. Deploys reject an existing namespace outside the EU. App source and compiled builds are separate stores; both require their own EU configuration.
 
 Cloudflare Workflows have no configured EU jurisdiction. The carried patch encrypts step values, callback failure payloads and terminal results before journal persistence, and hashes checkpoint names. Workflow metadata still has no enforced EU placement. Inputs and final outputs are encrypted in Postgres separately. The legacy import workflow is disabled for this deployment.
+
+## Feedback and telemetry
+
+`SENTRY_DSN`, `SENTRY_OTLP_ENDPOINT` and `POSTHOG_PROJECT_KEY` are optional GitHub Actions settings. The DSN enables the feedback button and error reporting. Copy the exact direct OTLP trace endpoint from that project's Client Keys settings into `SENTRY_OTLP_ENDPOINT`; the DSN alone does not select a trace endpoint. Both Sentry settings must use the same EU ingestion host. `POSTHOG_PROJECT_KEY` selects an EU project for product events. Missing settings disable the corresponding feature and produce a deployment warning.
+
+The feedback button sends only what the person writes, an image they choose, their authenticated account ID, a fixed page label and recent error codes to Sentry. Agent feedback uses the same destination. Feedback text and screenshots never enter product analytics. The UI remains hidden when no valid feedback destination is configured.
+
+Product events use opaque account IDs and a closed property allowlist. Catalog misses carry a known service identifier only when the local catalog yields one unambiguous match; the raw query never leaves the tools service. Product analytics never receives names, email addresses, credentials, tool arguments, results or model content. Browser autocapture and person profiles are disabled. All vendor requests originate in Workers and omit client headers.
+
+The activation funnel uses `sign_up`, `pool_created`, `account_connected`, `setup_started` and `first_model_request`, in that order. `setup_completed` follows successful model and MCP tool observations and can be measured after first use. Local tests prove event shapes, authenticated web and agent feedback delivery to a capture server, redaction and Worker compatibility. Actual vendor ingestion, EU project configuration and a real activation funnel require live acceptance after deployment.
+
+API Worker size checks enable the optional destinations with synthetic settings. The upstream cold-start budget remains 5,450,000 bytes of uncompressed JavaScript. Vendor SDKs are not added by the destination patches; the router uses small HTTP transports. Direct Sentry error and trace exporters strip arbitrary exception text and attributes before sending. Cloudflare platform trace export is disabled in this mode because it can include raw URLs or IP addresses.

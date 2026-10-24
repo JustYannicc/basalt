@@ -83,6 +83,9 @@ test("an unready container has a bounded wait and leaves a recovery alarm", asyn
 
 test("management and model traffic use separate listeners with exact path boundaries", () => {
   assert.equal(poolPort("/v1/responses"), 8317);
+  assert.equal(poolPort("/messages"), 8317);
+  assert.equal(poolPort("/chat/completions"), 8317);
+  assert.equal(poolPort("/completions"), 8317);
   assert.equal(poolPort("/v8/management/credentials"), 8327);
   assert.equal(poolPort("/v0/management"), 8327);
   assert.equal(poolPort("/v8/management-other"), undefined);
@@ -91,7 +94,7 @@ test("management and model traffic use separate listeners with exact path bounda
 });
 
 test("public model gate excludes internal management while preserving its DO listener", () => {
-  for (const path of ["/v1", "/v1/", "/v1/models", "/v1/responses"]) {
+  for (const path of ["/v1", "/v1/", "/v1/models", "/v1/responses", "/messages", "/chat/completions", "/completions"]) {
     assert.equal(isPublicModelPath(path), true, path);
   }
   for (const path of ["/v0/management", "/v8/management/config", "/__warm", "/v10", "/v1foo"]) {

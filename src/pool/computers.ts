@@ -5,12 +5,17 @@ import { ComputerHome, digest } from "./computer-home.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
 import { readIntent, seal, setupInstructions, setupTtl, signIntent, unseal, type SealedLink, type SetupIntent } from "./setup-links.ts";
+import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
+import { markSetupCompleted, observePendingUsage, type UsageObservationEvent } from "./usage-observation.ts";
 
 interface StoredComputer {
   id: string; name: string; user: string; pool: string; createdAt: string; boundAt: string;
   state: "issuing" | "active" | "revoking" | "revoked";
   keyId?: number; userId?: number; toolsKeyId: string; toolsHash: string;
   firstModelRequestAt: string | null; firstToolCallAt: string | null; revokedAt: string | null;
+  firstModelRequestEverAt?: string | null;
+  modelObservationCheckedAt?: number;
+  setupCompletedAt?: string | null;
   link?: SealedLink;
 }
 export interface ComputerStorage {
@@ -19,7 +24,7 @@ export interface ComputerStorage {
 }
 interface Dependencies {
   storage: ComputerStorage; home: ComputerHome; signingKey: string; previousSigningKey?: string;
-  origin?: string; now?: () => number;
+  origin?: string; now?: () => number; onProductEvent?: ProductEventCallback;
 }
 const storageKey = "computer-registry-v1";
 type Registry = Record<string, StoredComputer>;
@@ -78,12 +83,27 @@ export class Computers {
       const computers = Object.values(registry).filter((row) => row.user === user && row.pool === pool);
       for (const computer of computers) {
         if (computer.link && computer.link.expiresAt <= this.now()) delete computer.link;
-        if (computer.state === "active" && !computer.firstModelRequestAt && computer.keyId)
-          computer.firstModelRequestAt = await this.deps.home.observed(pool, computer.keyId, computer.boundAt);
       }
+      const events = await observePendingUsage(registry,
+        (targetPool, keyId, since) => this.deps.home.observed(targetPool, keyId, since),
+        () => this.now(), { user, pool });
       await this.save(registry);
+      this.emitUsageEvents(events);
       return computers.map(publicView).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     });
+  }
+  /** Reconcile only pending computers against Home's successful, exact-key usage records. */
+  async observeUsage(): Promise<void> {
+    await this.run(async (registry) => {
+      const events = await observePendingUsage(registry,
+        (pool, keyId, since) => this.deps.home.observed(pool, keyId, since),
+        () => this.now());
+      await this.save(registry);
+      this.emitUsageEvents(events);
+    });
+  }
+  private emitUsageEvents(events: UsageObservationEvent[]): void {
+    for (const event of events) emitProductEvent(this.deps.onProductEvent, event.event, event.accountId);
   }
   async handle(request: Request): Promise<Response> {
     try {
@@ -167,9 +187,11 @@ export class Computers {
   private async rebind(registry: Registry, user: string, id: unknown, intent: SetupIntent): Promise<Response> {
     const computer = this.own(registry, user, id);
     if (computer.state !== "active" || !computer.keyId) return fail(409, "busy", "This computer cannot switch pools.");
-    await this.deps.home.rebind(computer.keyId, intent.pool);
+    await this.deps.home.rebind(computer.keyId, intent.pool, user);
+    computer.firstModelRequestEverAt ??= computer.firstModelRequestAt;
     computer.pool = intent.pool; computer.boundAt = new Date(this.now()).toISOString();
     computer.firstModelRequestAt = null;
+    delete computer.modelObservationCheckedAt;
     await this.save(registry);
     return json(publicView(computer));
   }
@@ -193,10 +215,13 @@ export class Computers {
     return this.run(async (registry) => {
       if (typeof tokenHash !== "string") return fail(400, "invalid_session", "A token digest is required.");
       const computer = Object.values(registry).find((computer) => computer.state === "active" && computer.toolsHash === tokenHash);
+      let completed = false;
       if (computer && !computer.firstToolCallAt) {
         computer.firstToolCallAt = new Date(this.now()).toISOString();
+        completed = markSetupCompleted(computer, () => this.now());
         await this.save(registry);
       }
+      if (completed && computer) emitProductEvent(this.deps.onProductEvent, "setup_completed", computer.user);
       return json(null);
     });
   }

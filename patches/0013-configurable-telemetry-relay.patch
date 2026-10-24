@@ -1,0 +1,622 @@
+diff --git a/apps/hosted/cloud/src/implementation/product-analytics.ts b/apps/hosted/cloud/src/implementation/product-analytics.ts
+index e35cbc13c..bf715f69e 100644
+--- a/apps/hosted/cloud/src/implementation/product-analytics.ts
++++ b/apps/hosted/cloud/src/implementation/product-analytics.ts
+@@ -1,7 +1,7 @@
+-/** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
++/** Request-owned analytics and explicit feedback with optional destinations. */
+ import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
+ import { recordRoute } from "@executor-js/telemetry";
+-import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
++import { FeedbackUnavailable, feedbackDisabled } from "@executor-js/telemetry/product-analytics";
+ import {
+   ProductAnalytics,
+   type UsageEvent,
+@@ -19,6 +19,15 @@ import {
+   HttpServerResponse,
+ } from "effect/http";
+ import { evaluateFlag, FeatureFlags } from "./feature-flags.ts";
++import {
++  readRelayAnalyticsOptOut,
++  readTelemetryRelaySettings,
++  relayEvent,
++  sendRelayAnalytics,
++  sendRelayFeedback,
++  type RelayEvent,
++  type TelemetryRelaySettings,
++} from "./telemetry-relay.ts";
+ 
+ const Settings = Schema.Struct({
+   token: Schema.String,
+@@ -35,6 +44,12 @@ type EventName =
+   | "cloud_signup_completed"
+   | "cloud_login_completed"
+   | "analytics_events_dropped"
++  | "app_installed"
++  | "account_connection_failed"
++  | "invitation_sent"
++  | "invitation_accepted"
++  // The search observer is carried separately from this destination change.
++  | "tool_search_empty"
+   | "$feature_flag_called"
+   | "$identify";
+ type Properties = Readonly<Record<string, string | number | boolean>>;
+@@ -144,19 +159,56 @@ const readSettings = (read: Effect.Effect<unknown>) =>
+ export const withProductAnalytics = <A, E, R>(
+   handler: Effect.Effect<A, E, R>,
+   settings: Effect.Effect<Settings | undefined>,
++  relaySettings: Effect.Effect<TelemetryRelaySettings | undefined>,
++  relayAnalyticsOptOut: Effect.Effect<boolean>,
+ ) =>
+   Effect.gen(function* () {
+-    const config = yield* settings;
+-    if (!config) return yield* handler;
++    const [config, relay] = yield* Effect.all([settings, relaySettings]);
++    if (!config && !relay) return yield* handler;
++    // A configured relay can receive explicit feedback even when its analytics stream is opted out.
++    const analyticsOptedOut = relay === undefined ? false : yield* relayAnalyticsOptOut;
+     const events: Event[] = [];
+     let dropped = 0;
+     const add = (event: Event) => {
++      if (relay !== undefined) {
++        if (analyticsOptedOut) return;
++        const safe = relayEvent({
++          event: event.event,
++          accountId: event.distinct_id,
++          timestamp: event.timestamp,
++          properties: event.properties,
++        });
++        if (safe === undefined) return;
++        event = {
++          event: safe.event as EventName,
++          distinct_id: safe.account_id,
++          timestamp: safe.timestamp,
++          properties: safe.properties,
++        };
++      }
+       if (events.length < 1000) events.push(event);
+       else dropped++;
+     };
+     const client = yield* HttpClient.HttpClient;
+-    const send = (batch: readonly Event[]) =>
+-      client
++    const send = (batch: readonly Event[]) => {
++      if (relay !== undefined) {
++        const allowed: RelayEvent[] = batch.flatMap((event) => {
++          const safe = relayEvent({
++            event: event.event,
++            accountId: event.distinct_id,
++            timestamp: event.timestamp,
++            properties: event.properties,
++          });
++          return safe === undefined ? [] : [safe];
++        });
++        return sendRelayAnalytics(relay, allowed).pipe(
++          Effect.timeout("3 seconds"),
++          Effect.mapError(() => new FeedbackUnavailable()),
++          Effect.asVoid,
++        );
++      }
++      if (config === undefined) return Effect.void;
++      return client
+         .execute(
+           HttpClientRequest.post(`${config.host}/batch/`).pipe(
+             HttpClientRequest.bodyJsonUnsafe({
+@@ -191,13 +243,15 @@ export const withProductAnalytics = <A, E, R>(
+               : Effect.fail(response.status),
+           ),
+           Effect.timeout("3 seconds"),
++          Effect.mapError(() => new FeedbackUnavailable()),
+           Effect.asVoid,
+         );
++    };
+     yield* Effect.addFinalizer(() =>
+       events.length === 0
+         ? Effect.void
+         : send(
+-            dropped === 0
++            relay !== undefined || dropped === 0
+               ? events
+               : [
+                   ...events,
+@@ -208,26 +262,42 @@ export const withProductAnalytics = <A, E, R>(
+                     properties: { dropped_events: dropped },
+                   },
+                 ],
+-          ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
++          ).pipe(
++            Effect.catch(() =>
++              Effect.logWarning(
++                relay === undefined
++                  ? "PostHog batch export failed"
++                  : "Telemetry relay batch failed",
++              ),
++            ),
++          ),
+     );
+     return yield* handler.pipe(
+       Effect.provideService(Analytics, {
+         add,
+       }),
+       Effect.provideService(FeatureFlags, {
+-        evaluate: (key, distinctId) => evaluateFlag(config, key, distinctId),
++        evaluate: (key, distinctId) =>
++          config === undefined ? Effect.succeed(undefined) : evaluateFlag(config, key, distinctId),
+       }),
+       Effect.provideService(ProductAnalytics, {
+         enabled: true,
+-        submitFeedback: (feedback) =>
+-          send([
++        submitFeedback: (feedback) => {
++          if (relay !== undefined)
++            return sendRelayFeedback(relay, {
++              message: feedback.message,
++              accountId: feedback.userId,
++            });
++          if (config === undefined) return Effect.fail(feedbackDisabled());
++          return send([
+             {
+               event: "feedback_submitted",
+               distinct_id: feedback.userId,
+               timestamp: new Date().toISOString(),
+               properties: { message: feedback.message, organization_id: feedback.organizationId },
+             },
+-          ]).pipe(Effect.mapError(() => new FeedbackUnavailable())),
++          ]);
++        },
+         capture: (event) =>
+           add({
+             event: event.event,
+@@ -354,11 +424,14 @@ const postHogProxy = (settings: Effect.Effect<Settings | undefined>) =>
+ /** Capture the Alchemy runtime accessor during initialization, then read bindings per request. */
+ export const cloudAnalytics = Effect.gen(function* () {
+   const context = yield* CurrentRuntimeContext;
+-  const settings = readSettings(
+-    context ? context.get<unknown>("EXECUTOR_POSTHOG") : Effect.succeed(undefined),
+-  );
++  const readBinding = (name: string) =>
++    context ? context.get<unknown>(name) : Effect.succeed(undefined);
++  const settings = readSettings(readBinding("EXECUTOR_POSTHOG"));
++  const relaySettings = readTelemetryRelaySettings(readBinding);
++  const relayAnalyticsOptOut = readRelayAnalyticsOptOut(readBinding);
+   return {
+     proxy: postHogProxy(settings),
+-    wrap: <A, E, R>(handler: Effect.Effect<A, E, R>) => withProductAnalytics(handler, settings),
++    wrap: <A, E, R>(handler: Effect.Effect<A, E, R>) =>
++      withProductAnalytics(handler, settings, relaySettings, relayAnalyticsOptOut),
+   };
+ });
+diff --git a/apps/hosted/cloud/src/implementation/telemetry-relay.ts b/apps/hosted/cloud/src/implementation/telemetry-relay.ts
+new file mode 100644
+index 000000000..394432197
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/telemetry-relay.ts
+@@ -0,0 +1,157 @@
++/** Strict, authenticated HTTP export for hosted product events and explicit feedback. */
++import { Effect, Option, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
++
++const Identifier = Schema.String.check(
++  Schema.isMinLength(1),
++  Schema.isMaxLength(128),
++  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u),
++);
++
++/** Base URL and bearer credential for the optional hosted telemetry relay. */
++export interface TelemetryRelaySettings {
++  readonly url: string;
++  readonly token: Redacted.Redacted<string>;
++}
++
++type BindingReader = (name: string) => Effect.Effect<unknown>;
++
++const bindingText = (value: unknown) => {
++  const plain = Redacted.isRedacted(value) ? Redacted.value(value) : value;
++  return typeof plain === "string" ? plain.trim() : "";
++};
++
++const RelayUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    const url = URL.parse(value);
++    return (
++      url !== null &&
++      (url.protocol === "https:" ||
++        (url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname))) &&
++      url.username === "" &&
++      url.password === "" &&
++      url.search === "" &&
++      url.hash === ""
++    );
++  }),
++);
++
++/** An absent pair is optional; a partial or malformed pair fails closed. */
++export const readTelemetryRelaySettings = (read: BindingReader) =>
++  Effect.gen(function* () {
++    const url = bindingText(yield* read("EXECUTOR_TELEMETRY_RELAY_URL"));
++    const token = bindingText(yield* read("EXECUTOR_TELEMETRY_RELAY_TOKEN"));
++    if (url === "" && token === "") return undefined;
++    if (url === "" || token === "") return yield* Effect.die("Telemetry relay needs URL and token");
++    const valid = yield* Schema.decodeUnknownEffect(RelayUrl)(url).pipe(Effect.orDie);
++    return {
++      url: new URL(valid).href.replace(/\/+$/u, ""),
++      token: Redacted.make(token),
++    } satisfies TelemetryRelaySettings;
++  });
++
++/** Environment opt-out suppresses relay analytics, while feedback remains explicit and enabled. */
++export const readRelayAnalyticsOptOut = (read: BindingReader) =>
++  Effect.gen(function* () {
++    for (const name of ["DO_NOT_TRACK", "EXECUTOR_DISABLE_ANALYTICS"]) {
++      const value = bindingText(yield* read(name)).toLowerCase();
++      if (!["", "0", "false", "no", "off"].includes(value)) return true;
++    }
++    return false;
++  });
++
++/** An analytics event after the relay allowlist has removed all unrelated properties. */
++export interface RelayEvent {
++  readonly event: string;
++  readonly account_id: string;
++  readonly timestamp: string;
++  readonly properties: Readonly<Record<string, string>>;
++}
++
++const identifier = (value: unknown) =>
++  typeof value === "string"
++    ? Option.getOrUndefined(Schema.decodeUnknownOption(Identifier)(value))
++    : undefined;
++
++const propertiesFor = (
++  event: string,
++  properties: Readonly<Record<string, string | number | boolean>>,
++): Readonly<Record<string, string>> | undefined => {
++  const appId = identifier(properties.app_id);
++  const serviceId = identifier(properties.service_id);
++  switch (event) {
++    case "cloud_signup_completed":
++    case "invitation_sent":
++    case "invitation_accepted":
++    case "account_connected":
++      return {};
++    case "app_installed":
++      return appId === undefined ? undefined : { app_id: appId };
++    case "account_connection_failed":
++    case "tool_execution_completed":
++      return appId === undefined ? {} : { app_id: appId };
++    // The search observer is carried independently; its query never crosses this boundary.
++    case "tool_search_empty":
++      return serviceId === undefined ? {} : { service_id: serviceId };
++    default:
++      return undefined;
++  }
++};
++
++/** Convert only contract-approved events to the relay wire format. */
++export const relayEvent = (input: {
++  readonly event: string;
++  readonly accountId: string;
++  readonly timestamp: string;
++  readonly properties: Readonly<Record<string, string | number | boolean>>;
++}): RelayEvent | undefined => {
++  const accountId = identifier(input.accountId);
++  const properties = propertiesFor(input.event, input.properties);
++  if (accountId === undefined || properties === undefined) return undefined;
++  return {
++    event: input.event,
++    account_id: accountId,
++    timestamp: input.timestamp,
++    properties,
++  };
++};
++
++const post = (settings: TelemetryRelaySettings, path: "analytics" | "feedback", body: unknown) =>
++  Effect.gen(function* () {
++    const response = yield* HttpClient.execute(
++      HttpClientRequest.post(`${settings.url}/${path}`).pipe(
++        HttpClientRequest.bearerToken(settings.token),
++        HttpClientRequest.bodyJsonUnsafe(body),
++      ),
++    );
++    if (response.status < 200 || response.status >= 300)
++      return yield* Effect.fail("Telemetry relay rejected the request");
++  }).pipe(
++    Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
++    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
++    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
++    Effect.provide(FetchHttpClient.layer),
++  );
++
++/** Send a bounded analytics batch. Invalid and unsupported events are dropped before HTTP. */
++export const sendRelayAnalytics = (
++  settings: TelemetryRelaySettings,
++  events: ReadonlyArray<RelayEvent>,
++) => (events.length === 0 ? Effect.void : post(settings, "analytics", { events }));
++
++/** Explicit feedback is independent of analytics opt-out and must be confirmed by the relay. */
++export const sendRelayFeedback = (
++  settings: TelemetryRelaySettings,
++  feedback: { readonly message: string; readonly accountId: string },
++) => {
++  const accountId = identifier(feedback.accountId);
++  if (accountId === undefined) return Effect.fail(new FeedbackUnavailable());
++  return post(settings, "feedback", {
++    message: feedback.message,
++    account_id: accountId,
++  }).pipe(
++    Effect.timeout("5 seconds"),
++    Effect.mapError(() => new FeedbackUnavailable()),
++  );
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index e252e751a..8f97d9eaa 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -112,12 +112,19 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+       },
+       (usage) =>
+         runCallback(
+-          recordUsage("product_operation_completed", {
+-            area: "auth",
+-            operation: usage.operation,
+-            status_code: usage.status,
+-            ok: usage.status < 400,
+-            outcome: usage.status < 400 ? "success" : "failure",
++          Effect.gen(function* () {
++            yield* recordUsage("product_operation_completed", {
++              area: "auth",
++              operation: usage.operation,
++              status_code: usage.status,
++              ok: usage.status < 400,
++              outcome: usage.status < 400 ? "success" : "failure",
++            });
++            if (usage.status >= 400) return;
++            if (usage.operation === "organization.invite-member")
++              yield* recordUsage("invitation_sent");
++            else if (usage.operation === "organization.accept-invitation")
++              yield* recordUsage("invitation_accepted");
+           }).pipe(
+             Effect.provideService(CurrentUserId, usage.userId),
+             Effect.provideService(CurrentUsage, { source: "dashboard" }),
+diff --git a/apps/hosted/cloud/src/infrastructure/posthog.ts b/apps/hosted/cloud/src/infrastructure/posthog.ts
+index 1ee2627b4..102a9868d 100644
+--- a/apps/hosted/cloud/src/infrastructure/posthog.ts
++++ b/apps/hosted/cloud/src/infrastructure/posthog.ts
+@@ -7,9 +7,43 @@ import type { PostHogOutput } from "./posthog-output.ts";
+ import { productionSiteTelemetry } from "../contracts/edge-paths.ts";
+ import { pinnedInProduction } from "./site-telemetry.ts";
+ 
++/** Bind the optional relay outside PostHog's enablement gate. */
++const telemetryRelayBindings = (dev: boolean) =>
++  Effect.gen(function* () {
++    const configuredUrl = yield* Config.String("EXECUTOR_TELEMETRY_RELAY_URL").pipe(Config.option);
++    const configuredToken = yield* Config.Redacted("EXECUTOR_TELEMETRY_RELAY_TOKEN").pipe(
++      Config.option,
++    );
++    const urlText = Option.getOrElse(configuredUrl, () => "").trim();
++    const tokenText = Option.match(configuredToken, {
++      onNone: () => "",
++      onSome: Redacted.value,
++    }).trim();
++    if (urlText === "" && tokenText === "") return {};
++    if (urlText === "" || tokenText === "")
++      return yield* Effect.die("Telemetry relay requires both URL and token");
++    const url = URL.parse(urlText);
++    const local =
++      url !== null && url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname);
++    if (
++      url === null ||
++      (url.protocol !== "https:" && !(dev && local)) ||
++      url.username !== "" ||
++      url.password !== "" ||
++      url.search !== "" ||
++      url.hash !== ""
++    )
++      return yield* Effect.die("Telemetry relay URL must be HTTPS without credentials or query");
++    return {
++      EXECUTOR_TELEMETRY_RELAY_URL: Output.asOutput(url.href.replace(/\/+$/u, "")),
++      EXECUTOR_TELEMETRY_RELAY_TOKEN: Output.asOutput(Redacted.make(tokenText)),
++    };
++  });
++
+ /** The browser and server use the same project and deployment identity. */
+ export const postHogBindings = Effect.gen(function* () {
+   const dev = (yield* AlchemyContext).dev;
++  const relay = yield* telemetryRelayBindings(dev);
+   const localPort = dev
+     ? yield* Config.Number("POSTHOG_LOCAL_TEST_PORT").pipe(Config.option)
+     : Option.none();
+@@ -20,6 +54,7 @@ export const postHogBindings = Effect.gen(function* () {
+     const host = `http://127.0.0.1:${port}`;
+     return {
+       env: {
++        ...relay,
+         EXECUTOR_POSTHOG: Output.asOutput(
+           Redacted.make(
+             JSON.stringify({
+@@ -40,7 +75,7 @@ export const postHogBindings = Effect.gen(function* () {
+     !dev && (yield* Config.Boolean("POSTHOG_ENABLED").pipe(Config.withDefault(false)));
+   if (!enabled)
+     return {
+-      env: { EXECUTOR_POSTHOG: Output.asOutput(null) },
++      env: { ...relay, EXECUTOR_POSTHOG: Output.asOutput(null) },
+       build: {},
+       analyticsProxy: Output.asOutput<string | null>(null),
+     };
+@@ -65,6 +100,7 @@ export const postHogBindings = Effect.gen(function* () {
+   );
+   return {
+     env: {
++      ...relay,
+       EXECUTOR_POSTHOG: Output.all(
+         output.pipe(Output.map((value) => value.apiToken)),
+         output.pipe(Output.map((value) => value.apiHost)),
+diff --git a/apps/hosted/server/src/contracts/feedback.ts b/apps/hosted/server/src/contracts/feedback.ts
+index d9688cda5..5510d27f4 100644
+--- a/apps/hosted/server/src/contracts/feedback.ts
++++ b/apps/hosted/server/src/contracts/feedback.ts
+@@ -19,7 +19,7 @@ export const HostedFeedback = HttpApiGroup.make("feedback")
+       .annotate(OpenApi.Summary, "Submit feedback")
+       .annotate(
+         OpenApi.Description,
+-        "Send feedback about Executor to the Executor team. Returns accepted only after ingestion succeeds. Returns FeedbackDisabled when this instance has analytics turned off. Do not include credentials or other sensitive information.",
++        "Send feedback about Executor to the Executor team. Returns accepted only after ingestion succeeds. Returns FeedbackDisabled when this instance has no feedback destination. Do not include credentials or other sensitive information.",
+       ),
+   )
+   .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/contracts/product-analytics.ts b/apps/hosted/server/src/contracts/product-analytics.ts
+index 47dfe438a..3a976d566 100644
+--- a/apps/hosted/server/src/contracts/product-analytics.ts
++++ b/apps/hosted/server/src/contracts/product-analytics.ts
+@@ -18,6 +18,8 @@ export interface UsageProperties {
+   readonly area?: string;
+   readonly operation?: string;
+   readonly app_id?: string;
++  /** Stable service catalog identifier supplied by a host's local classifier. */
++  readonly service_id?: string;
+   readonly version_id?: string;
+   readonly account_id?: string;
+   readonly provider_id?: string;
+@@ -47,13 +49,17 @@ export type UsageEvent =
+   | "tool_execution_completed"
+   | "tool_approval_requested"
+   | "tool_search_empty"
+   | "account_connected"
++  | "account_connection_failed"
+   | "agent_connected"
++  | "app_installed"
+   | "app_deployed"
+   | "app_viewed"
+   | "app_query_completed"
+   | "app_mutation_completed"
+   | "app_subscription_started"
++  | "invitation_sent"
++  | "invitation_accepted"
+   | "workflow_attempt_completed"
+   | "schedule_run_completed";
+ 
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index b05a2108b..9ef6b66b7 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -45,6 +45,7 @@ import {
+   organizationOwner,
+ } from "../contracts/organization.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
++import { recordUsage } from "../contracts/product-analytics.ts";
+ import { currentOwner, ownedConnection } from "./access.ts";
+ import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+ import { AccountLinkedToApp } from "../contracts/accounts.ts";
+@@ -110,7 +111,10 @@ export const checkCredentials = (
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+     yield* requireAppAccess(input.app, "use");
+-    return yield* executor.apps.checkCredentials({ ...input, owner });
++    return yield* executor.apps.checkCredentials({ ...input, owner }).pipe(
++      // Check failures may happen before the SDK resolves this caller-supplied app ID.
++      Effect.tapError(() => recordUsage("account_connection_failed")),
++    );
+   });
+ /** Run the checks of the apps the caller linked the account to, with their own account access. */
+ export const checkAccount = Effect.gen(function* () {
+@@ -274,6 +278,9 @@ export const submitConnection = (
+     );
+     return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
+       accountDestination(intent.destination),
++      Effect.tapError(() =>
++        recordUsage("account_connection_failed", { app_id: intent.target.app }),
++      ),
+       Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+     );
+   });
+@@ -310,6 +317,9 @@ export const completeOAuth = (
+     );
+     return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
+       accountDestination(intent.destination),
++      Effect.tapError(() =>
++        recordUsage("account_connection_failed", { app_id: intent.target.app }),
++      ),
+       Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+     );
+   });
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+index 5baccd3fc..2f6477c73 100644
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -14,8 +14,9 @@ import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
+ import { HttpApiBuilder } from "effect/http-api";
+ import { HostedApi } from "../contracts/api.ts";
+ import type { DeployApp, InstallApp } from "../contracts/apps.ts";
+-import { HostedCatalog } from "../contracts/catalog.ts";
++import { executorCatalogPackage, HostedCatalog } from "../contracts/catalog.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
++import { recordUsage } from "../contracts/product-analytics.ts";
+ import { appManagerOwner, currentOwner } from "./access.ts";
+ 
+ /** Install a catalog entry as a new app without replacing an existing name. */
+@@ -25,8 +26,8 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
+     const catalog = yield* HostedCatalog;
+     const generated = yield* catalog.prepare(input);
+     // An official app keeps its own package name, as an installed published app does.
+-    if (generated.origin !== undefined)
+-      return yield* executor.apps
++    if (generated.origin !== undefined) {
++      const app = yield* executor.apps
+         .copy({
+           from: { files: generated.files, origin: generated.origin, activation: "deploy" },
+           owner,
+@@ -41,6 +42,10 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
+           }),
+           Effect.flatMap(deployedCopy),
+         );
++      if (input.entry !== executorCatalogPackage)
++        yield* recordUsage("app_installed", { app_id: input.entry });
++      return app;
++    }
+     const namespace = yield* Effect.flatten(CurrentOrganizationNamespace);
+     const files = yield* scopeGeneratedPackage(generated.files, namespace, input.name).pipe(
+       Effect.mapError(
+diff --git a/apps/hosted/server/src/implementation/product-analytics.ts b/apps/hosted/server/src/implementation/product-analytics.ts
+index 8f48b2831..7cb6acd36 100644
+--- a/apps/hosted/server/src/implementation/product-analytics.ts
++++ b/apps/hosted/server/src/implementation/product-analytics.ts
+@@ -16,12 +16,14 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
+ ) =>
+   Effect.gen(function* () {
+     const started = yield* Clock.currentTimeMillis;
+-    yield* recordUsage("tool_execution_started", properties);
++    const { app_id: _requestedAppId, ...requestedProperties } = properties;
++    // Before the SDK call resolves, `app` is still caller input.
++    yield* recordUsage("tool_execution_started", requestedProperties);
+     return yield* work.pipe(
+       Effect.onExit((exit) =>
+         Effect.gen(function* () {
+           const timed = {
+-            ...properties,
++            ...requestedProperties,
+             duration_ms: Math.max(0, (yield* Clock.currentTimeMillis) - started),
+           };
+           if (Exit.isFailure(exit)) {
+@@ -32,14 +34,19 @@ const observeTool = <A extends ToolCallResult | ToolResumeResult, E, R>(
+             return;
+           }
+           const status = exit.value.status;
++          // A pending invocation carries the SDK-resolved ID; a completed call proves the SDK
++          // resolved the requested ID from stored app state before dispatching the tool.
++          const appId =
++            status === "approval-required" ? exit.value.invocation.app : properties.app_id;
++          const attributed = appId === undefined ? timed : { ...timed, app_id: appId };
+           if (status !== "approval-required") {
+             yield* recordUsage("tool_execution_completed", {
+-              ...timed,
++              ...attributed,
+               status,
+               ...toolCompletion(exit.value),
+             });
+           } else {
+-            yield* recordUsage("tool_approval_requested", { ...timed, status });
++            yield* recordUsage("tool_approval_requested", { ...attributed, status });
+           }
+         }),
+       ),

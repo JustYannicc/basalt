@@ -2,16 +2,54 @@ views {
   view current_runtime {
     title "Basalt/Current runtime"
 
-    include basalt.router, basalt.toolsGateway, basalt.modelGateway
+    include basalt.router, basalt.feedback, basalt.telemetry, basalt.toolsGateway, basalt.modelGateway
     exclude * -> *
 
     include basalt.router -> basalt.toolsGateway
     include basalt.router -> basalt.modelGateway
+    include basalt.router -> basalt.feedback
+    include basalt.router -> basalt.telemetry
+    include basalt.toolsGateway -> basalt.router
 
     style basalt.router { color primary }
+    style basalt.feedback { color secondary }
+    style basalt.telemetry { color green }
     style basalt.toolsGateway { color indigo }
     style basalt.modelGateway { color primary }
     autoLayout LeftRight
+  }
+
+  view current_feedback_analytics {
+    title "Basalt/Feedback and analytics"
+    description "Feedback verifies the caller through the tools service's native cookie session and sends accepted submissions through Telemetry. Router, Model gateway and Setup host use the same boundary. The opaque tools-service boundary can post analytics and agent feedback through the authenticated router relay. Telemetry sends feedback, errors and traces to Sentry EU and account-scoped product events to PostHog EU over HTTP; product events exclude content, credentials and email and keep AccountConnected separate from app_installed."
+
+    include
+      basalt.router,
+      basalt.feedback,
+      basalt.telemetry,
+      basalt.toolsGateway,
+      basalt.modelGateway,
+      basalt.setupHost
+    include sentryService with { technology "" }
+    include posthogService with { technology "" }
+    exclude * -> *
+
+    include basalt.router -> basalt.feedback
+    include basalt.router -> basalt.telemetry
+    include basalt.toolsGateway -> basalt.router
+    include basalt.feedback -> basalt.toolsGateway
+    include basalt.feedback -> basalt.telemetry
+    include basalt.modelGateway -> basalt.telemetry
+    include basalt.setupHost -> basalt.telemetry
+    include basalt.telemetry -> sentryService
+    include basalt.telemetry -> posthogService
+
+    style basalt.router { color primary }
+    style basalt.feedback { color secondary }
+    style basalt.telemetry { color green }
+    style basalt.toolsGateway { color indigo }
+    style sentryService, posthogService { color gray }
+    autoLayout TopBottom
   }
 
   view current_tools_dependency {
@@ -142,18 +180,22 @@ views {
 views {
   view infrastructure_services {
     title "Basalt/Infrastructure services"
-    include basalt.toolsGateway
+    include basalt.toolsGateway, basalt.telemetry
     include identityProvider with { technology "" }
     include sourceService with { technology "" }
     include databaseService with { technology "" }
     include emailService with { technology "" }
     include assetsService with { technology "" }
+    include sentryService with { technology "" }
+    include posthogService with { technology "" }
     exclude * -> *
     include basalt.toolsGateway -> identityProvider
     include basalt.toolsGateway -> sourceService
     include basalt.toolsGateway -> databaseService
     include basalt.toolsGateway -> emailService
     include basalt.toolsGateway -> assetsService
+    include basalt.telemetry -> sentryService
+    include basalt.telemetry -> posthogService
     autoLayout TopBottom
   }
 }

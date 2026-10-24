@@ -189,7 +189,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
         const prefix = ts.isTemplateExpression(node) ? node.head.text : node.text;
         if (/^(?:https?|wss?):\/\//.test(prefix)) {
           if (usesBoundTransport(node, module, source)) return;
-          const host = staticValues.urlHost(node);
+          const host = staticValues.urlHost(node) ?? staticValues.boundedUrlHost(node);
           if (host) addHost(node, host);
           else report(node, "Outside URL has a dynamic host");
         }
@@ -211,7 +211,7 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
           const literalUrl = argument && (ts.isStringLiteralLike(argument) || ts.isTemplateExpression(argument));
           if (!argument) report(node, "Computed outbound fetch needs an explicit gateway adapter");
           else if (!literalUrl) {
-            const host = staticValues.urlHost(argument);
+            const host = staticValues.urlHost(argument) ?? staticValues.boundedUrlHost(argument);
             if (!host) report(node, "Computed outbound fetch needs a statically known host or an explicit gateway adapter");
             else if (!observedHosts.has(host)) addHost(node, host);
           }

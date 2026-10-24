@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { appHosting, brand, deployment } from "../brand.ts";
 import { poolFrameworkVersion } from "./pool-app-bundle.ts";
@@ -49,7 +50,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
   return {
     ...source,
     CI: "true",
-    DO_NOT_TRACK: "1",
+    DO_NOT_TRACK: source.POSTHOG_PROJECT_KEY?.trim() ? "0" : "1",
     ALCHEMY_STAGE: deployment.stage,
     CLOUD_SOURCE_NAMESPACE: deployment.sourceNamespace,
     BETTER_AUTH_URL: `https://${brand.host}`,
@@ -77,5 +78,9 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     CLOUD_DATA_STEPS: "apply",
     SENTRY_ENABLED: "false",
     POSTHOG_ENABLED: "false",
+    // Separate purpose from pool signatures without another operator-managed secret.
+    TELEMETRY_RELAY_KEY: createHash("sha256").update(`basalt-telemetry-v1:${source.POOL_APP_SIGNING_KEY}`).digest("hex"),
+    EXECUTOR_TELEMETRY_RELAY_URL: `https://${brand.host}/__telemetry/v1`,
+    EXECUTOR_TELEMETRY_RELAY_TOKEN: createHash("sha256").update(`basalt-telemetry-v1:${source.POOL_APP_SIGNING_KEY}`).digest("hex"),
   };
 }

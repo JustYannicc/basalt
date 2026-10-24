@@ -53,7 +53,64 @@ test("host and SDK evidence resolves to the calling module", () => {
 
 test("computed egress and undeclared service bindings cannot disappear from the check", () => {
   const root = fixture({ "src/router.ts": "fetch(destination); env.UNKNOWN.fetch(request);" });
-  expect(sourceDependencies(root, [module("router", "src/router.ts")], []).errors).toHaveLength(2);
+  expect(sourceDependencies(root, [module("router", "src/router.ts", { endpointHosts: ["api.example.invalid"] })], []).errors).toHaveLength(2);
+});
+
+test("bounded URL returns resolve only through a matching outside-service host", () => {
+  const source = [
+    "function parseDsn(value: string) {",
+    String.raw`  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/.exec(value);`,
+    "  if (!match) return undefined;",
+    "  const [, key, host, project] = match;",
+    "  const url = new URL(value);",
+    "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== key || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined;",
+    "  return { host: host.toLowerCase(), project };",
+    "}",
+    "function destination(env: { DSN: string }) {",
+    "  const dsn = parseDsn(env.DSN);",
+    "  if (!dsn) return undefined;",
+    "  return { url: `https://${dsn.host}/api/${dsn.project}/envelope/` };",
+    "}",
+    "const target = destination(env);",
+    "fetch(target.url);",
+  ].join("\n");
+  const root = fixture({ "src/telemetry.ts": source });
+  const services = [{ id: "sentry", hosts: ["*.ingest.de.sentry.io"], sdks: [] }];
+  const result = sourceDependencies(root, [module("telemetry", "src/telemetry.ts")], services);
+  expect(result.errors).toEqual([]);
+  expect(result.dependencies.map(edge => `${edge.source}->${edge.target}`)).toEqual(["telemetry->sentry"]);
+
+  const expectBlocked = (candidate: string) => {
+    const candidateRoot = fixture({ "src/telemetry.ts": candidate });
+    const errors = sourceDependencies(candidateRoot, [module("telemetry", "src/telemetry.ts")], services).errors;
+    expect(errors.map(error => error.replace(/:\d+:/, ":LINE:"))).toEqual([
+      "src/telemetry.ts:LINE: Outside URL has a dynamic host",
+      "src/telemetry.ts:LINE: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
+    ]);
+  };
+
+  const changedHost = fixture({ "src/telemetry.ts": source.replace("ingest\\.de\\.sentry\\.io", "other\\.invalid") });
+  expect(sourceDependencies(changedHost, [module("telemetry", "src/telemetry.ts")], services).errors).toEqual([
+    "src/telemetry.ts:12: Unmodelled outside host: *.other.invalid",
+    "src/telemetry.ts:15: Unmodelled outside host: *.other.invalid",
+  ]);
+
+  expectBlocked(source.replace("url.password !== ''", "url.password !== 'accepted'"));
+  expectBlocked(source.replace("url.hostname.toLowerCase() !== host.toLowerCase()", "url.hostname.toLowerCase() === host.toLowerCase()"));
+  expectBlocked(source.replace("url.hostname.toLowerCase() !== host.toLowerCase()", "false && url.hostname.toLowerCase() !== host.toLowerCase()"));
+
+  const aliasHost = source
+    .replace("  const [, key, host, project] = match;", "  const otherMatch = match;\n  const [, otherKey, otherHost, otherProject] = otherMatch;\n  const [, key, host, project] = match;")
+    .replace("url.hostname.toLowerCase() !== host.toLowerCase()", "url.hostname.toLowerCase() !== otherHost.toLowerCase()");
+  expectBlocked(aliasHost);
+
+  expectBlocked(source.replace("  const url = new URL(value);", "  const url = new URL(value);\n  url.hostname = 'evil.invalid';"));
+  expectBlocked(source.replace("  const url = new URL(value);", "  const URL = CustomURL;\n  const url = new URL(value);"));
+
+  const urlGuard = "  if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== host.toLowerCase() || url.username !== key || url.password !== '' || url.port !== '' || url.search !== '' || url.hash !== '') return undefined;";
+  const parsedDsn = "  return { host: host.toLowerCase(), project };";
+  expectBlocked(source.replace(`${urlGuard}\n${parsedDsn}`, `${parsedDsn}\n${urlGuard}`));
+  expectBlocked(source.replace(urlGuard, `  if (enabled) {\n${urlGuard}\n  }`));
 });
 
 

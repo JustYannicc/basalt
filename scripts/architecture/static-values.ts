@@ -1,5 +1,6 @@
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
+import { boundedUrlHost } from "./bounded-url.ts";
 
 type StaticValue =
   | { kind: "text"; prefix: string; complete: boolean }
@@ -47,7 +48,7 @@ function assignmentOperator(kind: ts.SyntaxKind): boolean {
 }
 
 function authorityMutation(name: string): boolean {
-  return ["href", "host", "hostname", "protocol", "port", "username", "password"].includes(name);
+  return ["href", "host", "hostname", "protocol", "port", "username", "password", "url"].includes(name);
 }
 
 /** Reads a closed set of parsed source files. It never evaluates or imports the inspected program. */
@@ -120,6 +121,15 @@ export class StaticValues {
     }
   }
 
+  boundedUrlHost(expression: ts.Expression): string | undefined {
+    return boundedUrlHost(expression, this);
+  }
+
+  isMutated(identifier: ts.Identifier): boolean {
+    const symbol = this.symbolAt(identifier);
+    return symbol !== undefined && this.mutated.has(symbol);
+  }
+
   moduleSpecifier(expression: ts.Expression): string | undefined {
     const value = this.value(expression, new Set());
     if (value.kind === "package") return value.specifier;
@@ -130,7 +140,7 @@ export class StaticValues {
     return this.value(expression, new Set()).kind === "package";
   }
 
-  private symbolAt(node: ts.Node): ts.Symbol | undefined {
+  symbolAt(node: ts.Node): ts.Symbol | undefined {
     let symbol = this.checker.getSymbolAtLocation(node);
     if (symbol && symbol.flags & ts.SymbolFlags.Alias) {
       try { symbol = this.checker.getAliasedSymbol(symbol); }
