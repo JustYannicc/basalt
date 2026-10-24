@@ -28,6 +28,7 @@ export const requiredSecrets = [
 export const optionalConnectorClients = [
   { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
   { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },
+  { name: "Atlassian", id: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID", secret: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET", ready: "ATLASSIAN_CONNECTOR_READY" },
 ] as const;
 
 /** One warning per unavailable client, never per missing secret or containing credential values. */
@@ -72,6 +73,8 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     ...connectors,
     CI: "true",
     DO_NOT_TRACK: source.POSTHOG_PROJECT_KEY?.trim() ? "0" : "1",
+    // Fresh deployment: no earlier dispatcher can create the legacy native instance.
+    EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
     ALCHEMY_STAGE: deployment.stage,
     CLOUD_SOURCE_NAMESPACE: deployment.sourceNamespace,
     BETTER_AUTH_URL: `https://${brand.host}`,

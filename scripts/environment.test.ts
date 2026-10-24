@@ -24,6 +24,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.ALCHEMY_STAGE, "production");
   assert.equal(env.PLANETSCALE_REGION, "eu-central");
   assert.equal(env.PLANETSCALE_ADOPT_DATABASE, "true");
+  assert.equal(env.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
   assert.match(env.EXECUTOR_BUILD_VERSION!, /^[a-f0-9]{40}$/);
@@ -150,6 +151,6 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
   assert.equal(env.GOOGLE_CONNECTOR_READY, "false");
   assert.equal(env.GITHUB_CONNECTOR_READY, "false");
-  assert.equal(connectorWarnings(env).length, 2);
+  assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
   assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
 });

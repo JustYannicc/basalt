@@ -50,6 +50,7 @@ export default Alchemy.Stack(
       env: {
         GOOGLE_CONNECTOR_READY: yield* Config.String("GOOGLE_CONNECTOR_READY").pipe(Config.withDefault("false")),
         GITHUB_CONNECTOR_READY: yield* Config.String("GITHUB_CONNECTOR_READY").pipe(Config.withDefault("false")),
+        ATLASSIAN_CONNECTOR_READY: yield* Config.String("ATLASSIAN_CONNECTOR_READY").pipe(Config.withDefault("false")),
       },
       workersDev: false,
       compatibility: { date: "2026-09-08" },

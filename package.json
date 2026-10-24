@@ -11,6 +11,7 @@
     "deploy": "node scripts/deploy.ts",
     "check:providers": "node scripts/pool-providers.ts --check",
     "check:upstream": "node --test scripts/upstream-tests/*.test.ts",
+    "check:atlassian": "node scripts/check-atlassian.ts",
     "architecture:format": "bun run --cwd scripts/architecture format",
     "architecture:validate": "bun run --cwd scripts/architecture validate",
     "architecture:model": "bun run --cwd scripts/architecture model",
