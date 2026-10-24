@@ -99,3 +99,26 @@ test("the public feed marks only unconfigured hosted connectors as not set up ye
     }
   }
 });
+
+
+test("GitLab and Miro keep official source and auth while reporting each client's availability", async () => {
+  const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
+    package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
+  for (const [gitlab, miro] of [[false, false], [true, false], [false, true], [true, true]]) {
+    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps),
+      { google: false, github: false, gitlab, miro });
+    const feed = await response.json() as Feed;
+    for (const [index, entry] of feed.apps.entries()) {
+      const ready = entry.id === "gitlab" ? gitlab : miro;
+      assert.equal(entry.connectionNotices?.some(notice => notice.message.includes("not set up yet")), !ready);
+      assert.deepEqual(entry.auth, apps.apps[index]!.auth);
+      assert.equal(entry.source, `apps/${entry.id}.json`);
+      const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
+      const source = await handleCatalog(new Request(`https://app.signalbox.run/catalog/${entry.source}`), async input => {
+        assert.equal(String(input), `https://catalog.executor.sh/${entry.source}`);
+        return new Response(document);
+      });
+      assert.equal(await source.text(), document);
+    }
+  }
+});

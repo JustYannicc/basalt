@@ -127,9 +127,8 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   assert.equal(env.GOOGLE_CONNECTOR_READY, "true");
   assert.equal(env.GITHUB_CONNECTOR_READY, "true");
   assert.deepEqual(connectorWarnings(env), []);
-  for (const provider of ["GOOGLE", "GITHUB_OAUTH"]) {
-    for (const part of ["ID", "SECRET"]) {
-      const name = `EXECUTOR_OAUTH_${provider}_CLIENT_${part}`;
+  for (const connector of optionalConnectorClients) {
+    for (const name of [connector.id, connector.secret]) {
       assert.equal(env[name], source[name as keyof typeof source]);
       const missing = deployEnvironment({ ...source, [name]: "" });
       const client = optionalConnectorClients.find(client => client.id === name || client.secret === name)!;
@@ -150,6 +149,6 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
   assert.equal(env.GOOGLE_CONNECTOR_READY, "false");
   assert.equal(env.GITHUB_CONNECTOR_READY, "false");
-  assert.equal(connectorWarnings(env).length, 2);
+  assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
   assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
 });

@@ -1,0 +1,56 @@
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -142,6 +142,35 @@
+  */
+ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
+   {
++    id: "gitlab",
++    label: "Executor for GitLab",
++    server: {
++      authorizationUrl: "https://gitlab.com/oauth/authorize",
++      tokenUrl: "https://gitlab.com/oauth/token",
++      revocationUrl: "https://gitlab.com/oauth/revoke",
++    },
++    tokenEndpointAuthMethod: "client_secret_post",
++    defaultScopes: ["api", "read_user"],
++    placement: { hosts: ["gitlab.com"] },
++  },
++  {
++    id: "miro",
++    label: "Executor for Miro",
++    server: {
++      authorizationUrl: "https://miro.com/oauth/authorize",
++      tokenUrl: "https://api.miro.com/v1/oauth/token",
++    },
++    tokenEndpointAuthMethod: "client_secret_post",
++    defaultScopes: [
++      "boards:read",
++      "boards:write",
++      "organizations:read",
++      "organizations:teams:read",
++      "organizations:teams:write",
++    ],
++    placement: { hosts: ["api.miro.com"] },
++  },
++  {
+     id: "github",
+     label: "Executor for GitHub",
+     server: {
+@@ -310,9 +339,13 @@
+           ? "Google"
+           : definition.id === "github" || definition.id === "github-oauth"
+             ? "GitHub"
+-            : definition.id === "slack"
+-              ? "Slack"
+-              : undefined;
++            : definition.id === "gitlab"
++              ? "GitLab"
++              : definition.id === "miro"
++                ? "Miro"
++                : definition.id === "slack"
++                  ? "Slack"
++                  : undefined;
+       clients.push(
+         service === undefined
+           ? client.value

@@ -17,18 +17,24 @@ const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> =
   "@executor.sh/google-sheets": [{ providerName: "Google Sheets", message: google }],
   "@executor.sh/google-slides": [{ providerName: "Google Slides", message: google }],
   "@executor.sh/github": [{ providerName: "GitHub", message: `Connect your own GitHub account through ${brand.name}. No app review is required. Organization approval and SAML single sign-on may limit which repositories you can reach.` }],
+  "@executor.sh/gitlab": [{ providerName: "GitLab", message: `Connect your own GitLab.com account through ${brand.name}. The API scope includes writes and is not limited to individual projects. Self-managed GitLab needs its own app and is not covered by this hosted client.` }],
+  "@executor.sh/miro": [{ providerName: "Miro", message: `Connect your own Miro account and choose a team. The app needs board read/write and organization scopes for the catalog tools. Team or organization admins may restrict installation and organization tools require the corresponding permissions.` }],
   "@executor.sh/slack": [{ providerName: "Slack", message: slack }],
 };
 
 export interface ConnectorAvailability {
   readonly google: boolean;
   readonly github: boolean;
+  readonly gitlab?: boolean;
+  readonly miro?: boolean;
 }
 
 /** Readiness is public feed data. Client credentials never reach this Worker. */
 export function connectionNotices(ready: ConnectorAvailability): typeof configuredNotices {
   return Object.fromEntries(Object.entries(configuredNotices).map(([name, notices]) => {
-    const unavailable = name === "@executor.sh/github" ? !ready.github
+    const unavailable = name === "@executor.sh/gitlab" ? !ready.gitlab
+      : name === "@executor.sh/miro" ? !ready.miro
+      : name === "@executor.sh/github" ? !ready.github
       : name !== "@executor.sh/slack" && !ready.google;
     return [name, unavailable ? notices.map(notice => ({ ...notice,
       message: `${notice.providerName} is not set up yet. ${notice.message}`,

@@ -55,6 +55,19 @@ model {
   basalt.toolsGateway -[sync]-> repositoryApi "authorize and call with the person's grant"
   basalt.toolsGateway -[sync]-> messagingApi "authorize and call subject to provider access gates"
 
+  repositoryCollaboration = adapter "Repository collaboration" {
+    #external
+    technology "GitLab.com REST API and OAuth"
+    metadata { hosts "gitlab.com" }
+  }
+  visualCollaboration = adapter "Visual collaboration" {
+    #external
+    technology "Miro REST API and OAuth"
+    metadata { hosts "miro.com|api.miro.com" }
+  }
+  basalt.toolsGateway -[sync]-> repositoryCollaboration "authorize, refresh and call with the person's grant"
+  basalt.toolsGateway -[sync]-> visualCollaboration "authorize, refresh and call within the person's selected team"
+
   emailService = adapter "Email service" {
     #external
     technology "Cloudflare Email"

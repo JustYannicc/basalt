@@ -48,6 +48,8 @@ export default Alchemy.Stack(
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
       env: {
+        GITLAB_CONNECTOR_READY: yield* Config.String("GITLAB_CONNECTOR_READY").pipe(Config.withDefault("false")),
+        MIRO_CONNECTOR_READY: yield* Config.String("MIRO_CONNECTOR_READY").pipe(Config.withDefault("false")),
         GOOGLE_CONNECTOR_READY: yield* Config.String("GOOGLE_CONNECTOR_READY").pipe(Config.withDefault("false")),
         GITHUB_CONNECTOR_READY: yield* Config.String("GITHUB_CONNECTOR_READY").pipe(Config.withDefault("false")),
       },
