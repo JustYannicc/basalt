@@ -20,7 +20,7 @@ export async function readIntent(key: string, opaque: unknown, user: string, now
   return value as unknown as SetupIntent;
 }
 
-async function cipherKey(secret: string, usage: KeyUsage) {
+async function cipherKey(secret: string, usage: "encrypt" | "decrypt") {
   // Domain separation keeps setup ciphertext independent of pool token signatures.
   const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`computer-setup:${secret}`));
   return crypto.subtle.importKey("raw", hash, "AES-GCM", false, [usage]);

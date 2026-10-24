@@ -69,8 +69,8 @@ export class ComputerHome {
   async revoke(keyId: number): Promise<void> {
     const response = await this.client.response(`/access/api-keys?id=${keyId}`, { method: "DELETE" });
     if (!response.ok) {
-      const error: Json = await response.json().catch(() => ({}));
-      if (response.status !== 404 || error.error !== "api_key_not_found") throw new BackendFailure(response.status);
+      const error: unknown = await response.json().catch(() => ({}));
+      if (response.status !== 404 || !object(error) || error.error !== "api_key_not_found") throw new BackendFailure(response.status);
     }
     if (!response.bodyUsed) await response.body?.cancel();
   }
