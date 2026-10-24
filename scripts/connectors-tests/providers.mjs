@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Context, Effect, Layer } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FetchHttpClient } from "effect/http";
@@ -16,6 +16,7 @@ import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { firstPartyOAuthClientDefinitions } from "../../.upstream/apps/hosted/server/src/implementation/first-party-oauth.ts";
 import { startProviderFixture } from "./provider-fixture.mjs";
 import { brand } from "../../brand.ts";
+import { deploymentPayload, digest, mcpExecutionEvidence, pinProofSource } from "./provider-evidence.mjs";
 import {
   adaptProviderAppFiles,
   matchFirstPartyOAuth,
@@ -23,14 +24,17 @@ import {
   readProviderSnapshot,
 } from "./provider-source.mjs";
 
-const root = resolve(process.argv[2] ?? new URL("../..", import.meta.url).pathname);
+const scriptRoot = fileURLToPath(new URL("../..", import.meta.url));
+const root = resolve(process.argv[2] ?? scriptRoot);
+assert.equal(root, resolve(scriptRoot), "The root must be this runner\'s checkout");
 const upstream = join(root, ".upstream");
 const snapshotsDirectory = resolve(
   process.argv[3] ?? join(root, ".generated/connector-snapshots"),
 );
 const evidenceRoot = resolve(process.argv[4] ?? join(root, ".generated/connectors-proof"));
-const candidateCommit = process.argv[5] ?? null;
-const baseCommit = process.argv[6] ?? null;
+const candidateCommit = process.argv[5];
+const baseCommit = process.argv[6];
+const sourcePin = pinProofSource(root, candidateCommit, baseCommit);
 const runId = `providers-${new Date().toISOString().replaceAll(":", "-")}-${randomBytes(3).toString("hex")}`;
 const evidenceDirectory = join(evidenceRoot, runId);
 const state = { stage: "initialization", checks: [], oauth: [], deployments: [], runtime: [], sourceChanges: [], diagnostics: [], searchResults: [], mockRequests: {}, mockSpecRequests: {} };
@@ -42,49 +46,7 @@ await mkdir(evidenceDirectory, { recursive: true, mode: 0o700 });
 await chmod(evidenceDirectory, 0o700);
 const evidenceFile = join(evidenceDirectory, "providers-proof.json");
 
-const digest = (value) => createHash("sha256").update(value).digest("hex");
-const sourceDigest = (files) => digest(JSON.stringify(files.map(({ path, content }) => ({ path, content }))));
-const diagnosticText = (value) => {
-  let safe = String(value ?? "");
-  for (const secret of privateValues) if (secret) safe = safe.replaceAll(secret, "[redacted]");
-  return safe.slice(0, 512);
-};
-const diagnosticError = (value) => value && typeof value === "object"
-  ? {
-      ...(typeof value.kind === "string" ? { kind: diagnosticText(value.kind) } : {}),
-      ...(typeof value.message === "string" ? { message: diagnosticText(value.message) } : {}),
-    }
-  : undefined;
-const mcpExecutionEvidence = (result) => {
-  let envelope = result.structuredContent;
-  if (envelope === undefined) {
-    const text = result.content?.find((item) => item?.type === "text")?.text;
-    if (typeof text === "string") {
-      try { envelope = JSON.parse(text); } catch { envelope = undefined; }
-    }
-  }
-  if (!envelope || typeof envelope !== "object") return { parsed: false };
-  const execution = envelope.execution;
-  if (!execution || typeof execution !== "object" || typeof execution.ok !== "boolean")
-    return { parsed: false };
-  const returned = execution.value === undefined ? [] : Array.isArray(execution.value)
-    ? execution.value
-    : [execution.value];
-  const callOutcomes = returned.flatMap((value) =>
-    value && typeof value === "object" && typeof value.path === "string" && typeof value.ok === "boolean"
-      ? [{ path: diagnosticText(value.path), ok: value.ok, ...(diagnosticError(value.error) ? { error: diagnosticError(value.error) } : {}) }]
-      : [],
-  );
-  return {
-    parsed: true,
-    ...(typeof envelope.status === "string" ? { status: diagnosticText(envelope.status) } : {}),
-    execution: {
-      ok: execution.ok,
-      ...(diagnosticError(execution.error) ? { error: diagnosticError(execution.error) } : {}),
-      callOutcomes,
-    },
-  };
-};
+const sourceDigest = files => digest(JSON.stringify(files.map(({ path, content }) => ({ path, content }))));
 const byPath = (files, path) => {
   const file = files.find((item) => item.path === path);
   assert.ok(file, `Snapshot is missing ${path}`);
@@ -185,7 +147,7 @@ const program = Effect.gen(function* () {
       files: officialFiles[providerId],
     }), 200, `${providerId} official source deploy`);
     assert.ok(app.id && app.slug, `${providerId} official source app did not build`);
-    state.deployments.push({ provider: providerId, kind: "official-source", appId: app.id, slug: app.slug, status: "deployed" });
+    state.deployments.push({ provider: providerId, kind: "official-source", appId: app.id, slug: app.slug, status: "deployed", payload: deploymentPayload(officialFiles[providerId]) });
     const providerRef = app.requirements?.accounts?.[providerId]?.provider;
     assert.equal(typeof providerRef, "string", `${providerId} deployed app did not expose its normalized provider reference`);
     const setup = checked(yield* request(actors.owner, "GET", `${orgPath}/providers/${encodeURIComponent(providerRef)}/oauth/oauth/setup`), 200,
@@ -234,7 +196,7 @@ const program = Effect.gen(function* () {
       audience: { kind: "everyone" },
     }), 200, `${providerId} share app in isolated organization`);
     mockApps[providerId] = { ...app, path: appPath, files };
-    state.deployments.push({ provider: providerId, kind: "local-origin-substitution", appId: app.id, slug: app.slug, status: "deployed", audience: "everyone" });
+    state.deployments.push({ provider: providerId, kind: "local-origin-substitution", appId: app.id, slug: app.slug, status: "deployed", audience: "everyone", payload: deploymentPayload(files) });
     record(`${providerId} origin-substituted official source compiled and was shared in the isolated organization`);
   }
 
@@ -312,7 +274,7 @@ const program = Effect.gen(function* () {
         tool: tool.path,
         outputMarker: ownMarker,
         isError: Boolean(called.isError),
-        mcpExecution: mcpExecutionEvidence(called),
+        mcpExecution: mcpExecutionEvidence(called, privateValues),
         ownMarkerPresent: output.includes(ownMarker),
         peerMarkerPresent: output.includes(peerMarker),
         outputLength: output.length,
@@ -337,7 +299,7 @@ const program = Effect.gen(function* () {
       const peerCall = yield* Effect.promise(() => client.callTool({ name: "call", arguments: {
         calls: { path: tool.path, input: { accountId: peerId, input: {} } },
       } }));
-      const peerExecution = mcpExecutionEvidence(peerCall);
+      const peerExecution = mcpExecutionEvidence(peerCall, privateValues);
       const denied = peerExecution.execution?.callOutcomes;
       assert.ok(denied?.length === 1 && denied[0].ok === false &&
         denied[0].error?.message?.startsWith("InputInvalid (HTTP 422)"),
@@ -390,7 +352,7 @@ const program = Effect.gen(function* () {
     appsVersion,
     snapshots: exactSourceEvidence,
     configuredFirstPartyOAuth: productionSetup,
-    sourcePin: { candidateCommit, baseCommit },
+    sourcePin,
     deployments: state.deployments,
     runtimeCalls: state.runtime,
     nativeSearchResults: state.searchResults,
@@ -420,6 +382,7 @@ try {
   const failure = {
     outcome: "failed",
     runId,
+    sourcePin,
     stage: state.stage,
     message,
     checksCompleted: state.checks,
