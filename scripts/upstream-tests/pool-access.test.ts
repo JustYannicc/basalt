@@ -138,11 +138,10 @@ test("SDK app-removal hook revokes a pool before unlinking it and rolls back on 
   );
 });
 
-test("organization deletion revokes recorded pools after owner-store erasure; person deletion fails closed", async () => {
+test("organization deletion revokes owned pools before owner-store erasure; person deletion fails closed", async () => {
   const { beforeUserDeletion } = await load("apps/hosted/cloud/src/implementation/access-hooks.ts");
   await fixture(({ sql, hook, changes, fail }) =>
     Effect.gen(function* () {
-      yield* sql`delete from executor_apps`;
       yield* hook.organizationRemoving(organization);
       assert.equal(changes[0].action, "pool-deleted");
       assert.equal(changes[0].pool, pool);
@@ -333,7 +332,10 @@ test("user deletion revokes every owned pool from metadata before deleting the p
   await fixture(({ sql, hook, changes, fail, recover }) =>
     Effect.gen(function* () {
       yield* sql`insert into organization values ('org-second', ${JSON.stringify({ basaltPools: { owner: { app: "app_second" }, guest: { app: "app_guest" } } })})`;
-      yield* sql`delete from executor_apps`;
+      yield* sql`insert into executor_apps values ('app_second', 'organization:org-second', 'Second pool')`;
+      // A historical forged entry points outside the organization recording it.
+      yield* sql`insert into organization values ('org-forged', ${JSON.stringify({ basaltPools: { owner: { app: "app_victim" } } })})`;
+      yield* sql`insert into executor_apps values ('app_victim', 'organization:org-victim', 'Victim pool')`;
       fail();
       assert.equal((yield* Effect.exit(hook.userDeleting("owner")))._tag, "Failure");
       assert.equal(
@@ -373,6 +375,85 @@ test("pool deletion retries a lost acknowledgement with a fresh signed envelope"
         ],
       );
       assert.ok(changes[1].at > changes[0].at);
+    }),
+  );
+});
+
+test("every metadata consumer ignores cross-organization app references and erased apps", async () => {
+  await fixture(({ sql, hook, changes }) =>
+    Effect.gen(function* () {
+      yield* sql`insert into organization values ('org-forged', ${JSON.stringify({ basaltPools: { owner: { app: pool }, guest: { app: "app_missing" } } })})`;
+      yield* hook.organizationRemoving("org-forged");
+      assert.equal(changes.length, 0);
+      // With the real metadata removed, a forged foreign entry cannot identify an app as a pool.
+      yield* sql`update organization set metadata = '{}' where id = ${organization}`;
+      yield* hook.appRemoving(pool);
+      yield* hook.userDeleting("owner");
+      assert.deepEqual(
+        changes.map((value: any) => value.action),
+        ["person-deleted"],
+      );
+      changes.length = 0;
+      yield* sql`delete from executor_apps`;
+      yield* hook.organizationRemoving("org-forged");
+      assert.equal(changes.length, 0);
+    }),
+  );
+});
+
+test("durable organization removal notifies before purging apps and refuses erasure on a failed acknowledgement", async () => {
+  const { removeOrganizationDurably } = await load(`${implementation}organization-removal.ts`);
+  const { HostedExecutor } = await load(`${contracts}executor.ts`);
+  const { Authentication } = await load(`${contracts}auth.ts`);
+  const { OrganizationIcons } = await load(`${contracts}organization.ts`);
+  const { OrganizationRemovals, OrganizationBilling } = await load(
+    `${contracts}organization-removal.ts`,
+  );
+  await fixture(({ sql, hook, changes, fail, recover }) =>
+    Effect.gen(function* () {
+      const erased: string[] = [];
+      const removal = removeOrganizationDurably(
+        organization,
+        (_name: string, _retries: unknown, effect: any) => effect,
+        hook.organizationRemoving(organization).pipe(Effect.provideService(SqlClient, sql)),
+      ).pipe(
+        Effect.provideService(
+          HostedExecutor,
+          Effect.succeed({
+            apps: { list: () => Effect.succeed([]) },
+            owners: {
+              remove: () =>
+                Effect.gen(function* () {
+                  assert.equal(changes.at(-1).action, "pool-deleted");
+                  erased.push("apps");
+                  yield* sql`delete from executor_apps`;
+                }),
+            },
+          }),
+        ),
+        Effect.provideService(Authentication, {
+          removeOrganization: () =>
+            Effect.sync(() => {
+              erased.push("auth");
+              return { logo: null };
+            }),
+        }),
+        Effect.provideService(OrganizationIcons, {}),
+        Effect.provideService(OrganizationRemovals, {
+          recordLogo: () => Effect.void,
+          read: () => Effect.succeed(null),
+          finish: () => Effect.void,
+        }),
+        Effect.provideService(OrganizationBilling, { cancel: () => Effect.void }),
+      );
+      fail();
+      assert.equal((yield* Effect.exit(removal))._tag, "Failure");
+      assert.deepEqual(erased, []);
+      assert.equal((yield* sql`select * from executor_apps where id = ${pool}`).length, 1);
+      recover();
+      yield* removal;
+      assert.deepEqual(erased, ["apps", "auth", "apps"]);
+      assert.equal((yield* sql`select * from executor_apps`).length, 0);
     }),
   );
 });

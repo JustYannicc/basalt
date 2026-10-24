@@ -205,3 +205,74 @@ test("an invitee who signed up by email code, with no display name, still gets t
     }),
   );
 });
+
+test("native organization creates strip reserved pool metadata; updates refuse metadata and preserve SQL records", async () => {
+  await personalOrgFixture(({ sql, auth, owner }) =>
+    Effect.gen(function* () {
+      const request = (path: string, body: unknown) =>
+        auth.handler(
+          new Request(`http://localhost:3000/api/auth/organization/${path}`, {
+            method: "POST",
+            headers: {
+              cookie: owner.headers.get("cookie"),
+              "content-type": "application/json",
+              origin: "http://localhost:3000",
+            },
+            body: JSON.stringify(body),
+          }),
+        );
+      const response = yield* Effect.promise(() =>
+        request("create", {
+          name: "Metadata",
+          slug: "metadata",
+          keepCurrentActiveOrganization: true,
+          metadata: { purpose: "retained", basaltPools: { [owner.id]: { app: "app_victim" } } },
+        }),
+      );
+      assert.equal(response.status, 200, yield* Effect.promise(() => response.clone().text()));
+      const created = yield* Effect.promise(() => response.json());
+      const metadata = () =>
+        sql`select metadata::jsonb as metadata from organization where id = ${created.id}`;
+      assert.deepEqual((yield* metadata())[0].metadata, { purpose: "retained" });
+      // Provisioning's direct SQL remains authoritative and ordinary display edits preserve it.
+      const pools = { [owner.id]: { app: "app_real", account: "acc_real" } };
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb, '{basaltPools}', ${JSON.stringify(pools)}::jsonb)::text where id = ${created.id}`;
+      const before = yield* metadata();
+      for (const supplied of [
+        { purpose: "changed", basaltPools: { [owner.id]: { app: "app_victim" } } },
+        { purpose: "changed" },
+        {},
+      ]) {
+        // Server API calls bypass the HTTP field guard, exercising the plugin hook itself.
+        const updated = yield* Effect.promise(() =>
+          auth.api.updateOrganization({
+            headers: owner.headers,
+            asResponse: true,
+            body: { organizationId: created.id, data: { metadata: supplied } },
+          }),
+        );
+        assert.equal(updated.status, 400, yield* Effect.promise(() => updated.clone().text()));
+        assert.deepEqual(yield* metadata(), before);
+      }
+      const blocked = yield* Effect.promise(() =>
+        request("update", {
+          organizationId: created.id,
+          data: { name: "Unsafe", metadata: { basaltPools: {} } },
+        }),
+      );
+      assert.equal(blocked.status, 400);
+      for (const data of [
+        { name: "Renamed" },
+        { slug: "renamed" },
+        { logo: "https://example.invalid/icon.png" },
+        { logo: null },
+      ]) {
+        const updated = yield* Effect.promise(() =>
+          request("update", { organizationId: created.id, data }),
+        );
+        assert.equal(updated.status, 200, yield* Effect.promise(() => updated.clone().text()));
+        assert.deepEqual(yield* metadata(), before);
+      }
+    }),
+  );
+});
