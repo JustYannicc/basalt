@@ -106,7 +106,7 @@ const program = Effect.gen(function* () {
     });
     server.listen(0, "127.0.0.1"); await once(server, "listening"); return server;
   }), (server) => Effect.promise(async () => {
-    server.closeAllConnections(); await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
   }));
   callback = `http://127.0.0.1:${receiver.address().port}/api/oauth/callback`;
   const provider = yield* Effect.acquireRelease(Effect.promise(emulator), (server) => Effect.promise(server.stop));
