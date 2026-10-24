@@ -16,7 +16,7 @@ import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { firstPartyOAuthClientDefinitions } from "../../.upstream/apps/hosted/server/src/implementation/first-party-oauth.ts";
 import { startProviderFixture } from "./provider-fixture.mjs";
 import { brand } from "../../brand.ts";
-import { deploymentPayload, digest, mcpExecutionEvidence, pinProofSource } from "./provider-evidence.mjs";
+import { deploymentPayload, digest, mcpExecutionEvidence, pinProofSource, unavailableAppsEvidence } from "./provider-evidence.mjs";
 import {
   adaptProviderAppFiles,
   matchFirstPartyOAuth,
@@ -39,6 +39,14 @@ const runId = `providers-${new Date().toISOString().replaceAll(":", "-")}-${rand
 const evidenceDirectory = join(evidenceRoot, runId);
 const state = { stage: "initialization", checks: [], oauth: [], deployments: [], runtime: [], sourceChanges: [], diagnostics: [], searchResults: [], mockRequests: {}, mockSpecRequests: {} };
 const privateValues = [];
+const mockFixtures = {};
+const captureMockRequests = () => {
+  for (const [provider, fixture] of Object.entries(mockFixtures)) {
+    state.mockRequests[provider] = fixture.requests.filter(request => request.kind === "api");
+    state.mockSpecRequests[provider] = fixture.requests.filter(request => request.kind === "spec")
+      .map(({ method, path }) => ({ method, path }));
+  }
+};
 const stamp = (stage) => { state.stage = stage; };
 const record = (name) => { state.checks.push(name); };
 
@@ -113,6 +121,7 @@ const program = Effect.gen(function* () {
     (servers) => Effect.promise(async () => Promise.all(servers.map((server) => server.stop()))),
   );
   const fixtureMap = Object.fromEntries(fixtures.map((fixture) => [fixture.kind, fixture]));
+  Object.assign(mockFixtures, fixtureMap);
   stamp("start-isolated-self-host-with-first-party-settings-and-local-fixtures");
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
@@ -247,15 +256,18 @@ const program = Effect.gen(function* () {
         Effect.promise(() => mcpClient(Client, StreamableHTTPClientTransport, runtimeTarget.metadata.origin, patTokens[index])),
         (opened) => Effect.promise(() => opened.close()),
       );
-      const search = yield* Effect.promise(() => client.callTool({ name: "search", arguments: { query: app.slug } }));
+      const search = yield* Effect.promise(() => client.callTool({ name: "search", arguments: { query: app.slug, namespace: app.slug } }));
       const searchItems = search.structuredContent?.items;
       state.searchResults.push({
         provider: providerId,
         principal,
+        namespace: app.slug,
+        unavailableApps: unavailableAppsEvidence(search, privateValues),
         paths: Array.isArray(searchItems)
           ? searchItems.flatMap((item) => typeof item?.path === "string" ? [item.path] : [])
           : [],
       });
+      captureMockRequests();
       assert.ok(!search.isError, `${providerId} ${principal} native MCP search failed`);
       const tool = searchItems?.find((item) => item.path.endsWith(`.${fixture.definition.operationName}`));
       assert.ok(tool, `${providerId} ${principal} native search did not return ${fixture.definition.operationName}`);
@@ -283,10 +295,7 @@ const program = Effect.gen(function* () {
         peerAccountLinkStatus: peerLink.status,
       };
       state.runtime.push(callEvidence);
-      state.mockRequests[providerId] = fixture.requests.filter((request) => request.kind === "api");
-      state.mockSpecRequests[providerId] = fixture.requests
-        .filter((request) => request.kind === "spec")
-        .map(({ method, path }) => ({ method, path }));
+      captureMockRequests();
       assert.ok(callEvidence.mcpExecution.execution?.ok &&
         callEvidence.mcpExecution.execution.callOutcomes.length === 1 &&
         callEvidence.mcpExecution.execution.callOutcomes[0].ok,
@@ -378,6 +387,7 @@ try {
   await writeFile(evidenceFile, `${JSON.stringify({ ...result, evidenceDirectory }, null, 2)}\n`, { mode: 0o600 });
   console.log(JSON.stringify({ outcome: result.outcome, evidenceFile, checks: result.passedChecks.length }));
 } catch (error) {
+  captureMockRequests();
   const message = diagnosticText(error?.message ?? error);
   const failure = {
     outcome: "failed",

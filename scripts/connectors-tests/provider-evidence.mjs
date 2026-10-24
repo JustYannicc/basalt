@@ -33,13 +33,29 @@ export function deploymentPayload(files) {
   };
 }
 
+const safeText = (value, privateValues) => {
+  let safe = String(value ?? "");
+  for (const secret of privateValues) if (secret) safe = safe.replaceAll(secret, "[redacted]");
+  return safe.slice(0, 512);
+};
+
+/** Discovery exposes app failures separately from its result paths. */
+export function unavailableAppsEvidence(result, privateValues) {
+  let body = result.structuredContent;
+  if (body === undefined) {
+    const text = result.content?.find(item => item?.type === "text")?.text;
+    if (typeof text === "string") {
+      try { body = JSON.parse(text); } catch { body = undefined; }
+    }
+  }
+  return Array.isArray(body?.unavailableApps) ? body.unavailableApps.slice(0, 20).map(app =>
+    Object.fromEntries(["app", "name", "reason", "router"].flatMap(key =>
+      typeof app?.[key] === "string" ? [[key, safeText(app[key], privateValues)]] : []))) : [];
+}
+
 /** Keep protocol failures without credentials or arbitrary successful tool output. */
 export function mcpExecutionEvidence(result, privateValues) {
-  const text = value => {
-    let safe = String(value ?? "");
-    for (const secret of privateValues) if (secret) safe = safe.replaceAll(secret, "[redacted]");
-    return safe.slice(0, 512);
-  };
+  const text = value => safeText(value, privateValues);
   const error = value => value && typeof value === "object" ? {
     ...(typeof value.kind === "string" ? { kind: text(value.kind) } : {}),
     ...(typeof value.message === "string" ? { message: text(value.message) } : {}),
