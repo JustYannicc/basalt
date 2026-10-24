@@ -4,7 +4,7 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 @@ -105,6 +105,14 @@
    "files:write",
  ];
- 
+
 +/** Read-only Jira and Confluence access, renewed through Atlassian's rotating refresh tokens. */
 +const atlassianScopes = [
 +  "offline_access",
