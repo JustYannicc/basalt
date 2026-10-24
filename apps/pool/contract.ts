@@ -59,6 +59,25 @@ export interface PoolView {
   readonly accounts: readonly Account[];
 }
 
+/** One request recorded by Home. No client-key secrets or request contents are exposed. */
+export interface UsageRecord {
+  readonly id: string;
+  /** Matches an account id in PoolView. */
+  readonly account: string;
+  readonly status: string;
+  /** ISO timestamp. */
+  readonly at: string;
+}
+
+/** Owner-only GET /usage?session=<wire X-Session-ID>&key=<Home API-key id>&limit=20&status=success.
+ * At least session or key is required. Both filters are exact; neither includes child sessions.
+ * The node files a request under `X-Session-ID` only when the request carries no session source it
+ * ranks higher (such as a Claude Code session header), so send just `X-Session-ID` to find it here.
+ */
+export interface UsageResponse {
+  readonly records: readonly UsageRecord[];
+}
+
 /** POST /sign-ins `{ provider }` */
 export interface SignInStarted {
   /** Opaque, signed. Pass it back to the other sign-in calls. */
@@ -95,6 +114,7 @@ export type ControlErrorCode =
   | "unauthorized"
   | "not_owner"
   | "unknown_provider"
+  | "invalid_query"
   | "invalid_session"
   | "invalid_callback"
   | "invalid_login_file"

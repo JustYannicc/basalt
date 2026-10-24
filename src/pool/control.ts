@@ -9,6 +9,8 @@ import {
   type SignInStarted,
   type SignInStatus,
   type UsageWindow,
+  type UsageRecord,
+  type UsageResponse,
 } from "../../apps/pool/contract.ts";
 import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
@@ -66,6 +68,75 @@ const sessionPrefix = "sbs1";
 const memberConcurrency = 4;
 // Home v1.1.6 management/quota_snapshots.go:18-19 caps each list at 200.
 const quotaBatchSize = 200;
+// Home v1.1.6 cluster/usage_observability.go:23.
+const usageMaxLimit = 200;
+interface UsageQuery { session?: string; key?: number; limit: number; status?: string }
+// Match Go strings.TrimSpace, including its treatment of U+FEFF as non-whitespace.
+function sessionTrim(value: string): string { return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ""); }
+async function usageSession(raw: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const session = sessionTrim(raw);
+  // Node NormalizeExplicitID checks controls before trimming.
+  if (/\p{Cc}/u.test(raw) || !session || encoder.encode(session).length > 256) {
+    return fail(400, "invalid_query", "Provide a valid wire session id of at most 256 bytes.");
+  }
+  let clean = `header:${session}`;
+  const bytes = encoder.encode(clean);
+  // Node v8.0.40 session/info.go:929-943 bounds before the usage queue canonicalises.
+  if (bytes.length > 256) {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    let end = 190;
+    while ((bytes[end]! & 0xc0) === 0x80) end--;
+    clean = `${new TextDecoder().decode(bytes.slice(0, end))}#${hash}`;
+  }
+  // Pinned node session/identity.go:57-128; plugin.go:100 writes this canonical UUID.
+  const prefixes = ["lcp:v1:", "lcp:", "ctx:v1:", "ctx:", "codex:", "claude:", "header:", "session:",
+    "affinity:", "slot:", "task:", "conv:", "thread:", "clientreq:", "geminicache:", "pck:", "user:", "execution:", "agy:", "derived:"];
+  for (;;) {
+    const prefix = prefixes.find((value) => clean.startsWith(value));
+    if (!prefix) break;
+    clean = sessionTrim(clean.slice(prefix.length));
+  }
+  if (!clean) return fail(400, "invalid_query", "This wire session id has no canonical identity.");
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuid.test(clean)) return clean.toLowerCase();
+  const colon = clean.indexOf(":");
+  const candidate = sessionTrim(clean.slice(colon + 1));
+  if (colon > 0 && uuid.test(candidate)) return candidate.toLowerCase();
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(`cpa:canonical-uuid:v1\0${clean}`)));
+  const value = digest.slice(0, 16);
+  value[6] = (value[6]! & 0x0f) | 0x80;
+  value[8] = (value[8]! & 0x3f) | 0x80;
+  const hex = Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+async function usageQuery(url: URL): Promise<UsageQuery> {
+  const rawSession = url.searchParams.get("session");
+  const rawKey = url.searchParams.get("key");
+  const key = rawKey === null ? undefined : Number(rawKey);
+  const rawLimit = url.searchParams.get("limit") ?? "20";
+  if ((rawSession === null && key === undefined) || (rawKey !== null && (!/^[0-9]+$/.test(rawKey) || !positiveId(key)))
+    || !/^[1-9][0-9]*$/.test(rawLimit)) {
+    return fail(400, "invalid_query", "Provide a session or a positive key id, and a positive integer limit.");
+  }
+  const rawStatus = url.searchParams.get("status")?.trim().toLowerCase();
+  let status = rawStatus;
+  if (rawStatus !== undefined) {
+    if (["success", "succeeded", "ok"].includes(rawStatus)) status = "success";
+    else if (["failed", "failure", "error"].includes(rawStatus)) status = "failed";
+    else if (!/^[1-5][0-9]{2}$/.test(rawStatus)) return fail(400, "invalid_query", "Provide a supported request outcome or a plain HTTP status code.");
+  }
+  const session = rawSession === null ? undefined : await usageSession(rawSession);
+  return { session, key, limit: Math.min(usageMaxLimit, Number(rawLimit)), status };
+}
+function matchesUsageStatus(row: Json, status: string | undefined): boolean {
+  if (!status) return true;
+  const value = status.toLowerCase();
+  if (["success", "succeeded", "ok"].includes(value)) return row.status === "success";
+  if (["failed", "failure", "error"].includes(value)) return row.status === "failed";
+  return /^[0-9]+$/.test(value) ? row.status_code === Number(value) : row.status === status;
+}
 function positiveId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
@@ -272,6 +343,40 @@ export class PoolHome {
     }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     return { isOwner, providers, accounts };
   }
+  async usage(query: UsageQuery): Promise<UsageResponse> {
+    const accounts = new Set((await this.membership()).members.map((member) => member.auth_id));
+    const records = new Map<string, UsageRecord>();
+    if (!accounts.size) return { records: [] };
+    const params = new URLSearchParams({ limit: String(usageMaxLimit), sort: "timestamp_desc" });
+    if (query.session) params.set("session_id", query.session);
+    if (query.key !== undefined) params.set("client_key_id", String(query.key));
+    if (query.status) params.set("status", query.status);
+    let offset = 0;
+    let total = Infinity;
+    // At most five Home pages, or 1,000 scanned rows, per request.
+    for (let scannedPages = 0; scannedPages < 5 && offset < total && records.size < query.limit; scannedPages++) {
+      params.set("offset", String(offset));
+      const page = await this.client.data(`/usage/records?${params}`);
+      const items = rows(page.items);
+      if (items.length > usageMaxLimit) return unavailable();
+      if (typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0) return unavailable();
+      total = Math.min(total, page.total);
+      if (!items.length) break;
+      for (const row of items) {
+        const account = object(row.credential) ? text(row.credential.credential_id) : null;
+        // Compare the exact canonical key written by the node, never parent or root ids.
+        if (!account || !accounts.has(account) || (query.session && row.session_id !== query.session)
+          || (query.key !== undefined && (!object(row.client) || row.client.api_key_id !== query.key))
+          || !matchesUsageStatus(row, query.status)) continue;
+        const id = text(row.id); const status = text(row.status); const at = text(row.timestamp);
+        if (!id || !status || !at || !Number.isFinite(Date.parse(at))) return unavailable();
+        records.set(id, { id, account, status, at });
+        if (records.size === query.limit) break;
+      }
+      offset += items.length;
+    }
+    return { records: [...records.values()] };
+  }
   async remove(id: string, detached: () => Promise<void>): Promise<void> {
     const members = (await this.membership()).members.filter((member) => member.auth_id === id);
     if (!members.length) return fail(404, "not_found", "This account is not in this pool.");
@@ -315,6 +420,7 @@ async function sessionFor(ctx: RouteContext, opaque = ctx.url.searchParams.get("
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
   "GET /pool": async ({ home, isOwner }) => json(await home.view(isOwner)),
+  "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "POST /sign-ins": async (ctx) => {
     const { request, client, pool, now, deps } = ctx;
     const state = attribution(ctx);
@@ -414,16 +520,17 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
-  if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can change accounts or sign-ins.");
-  return { claims, url, route, routeKey, isOwner };
+  if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  const isRead = routeKey === "GET /pool" || routeKey === "GET /usage";
+  return { claims, url, route, routeKey, isOwner, isRead };
 }
 
 export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
   try {
-    const { claims, url, route, routeKey, isOwner } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
+    const { claims, url, route, isOwner, isRead } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added);
-    if (routeKey !== "GET /pool") await (deps.attribution ?? unavailable()).expireLocked(client);
+    if (!isRead) await (deps.attribution ?? unavailable()).expireLocked(client);
     return await route({ request, url, deps, client, home, pool: claims.pool, isOwner, now: deps.now?.() ?? new Date() });
   } catch (error) { return failureResponse(error); }
 }
