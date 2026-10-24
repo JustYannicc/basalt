@@ -8,13 +8,25 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "lib": ["ES2023", "DOM"],
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
     "typeRoots": [
       "./.upstream/node_modules/@types",
       "./.upstream/apps/hosted/cloud/node_modules/@types"
     ]
   },
-  "include": ["brand.ts", "scripts/**/*.ts", "src/**/*.ts"],
-  "exclude": ["src/pool/worker.ts"]
+  "include": [
+    "brand.ts",
+    "scripts/**/*.ts",
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/pool/worker.ts",
+    "scripts/preview/stack"
+  ]
 }

@@ -208,3 +208,21 @@ test("Zendesk appears only for trusted configuration and its source cannot take 
   assert.equal(unavailableSource.status, 404);
   assert.throws(() => zendeskAddition("two.labels"), /one lowercase DNS label/);
 });
+
+test("Zoho CRM readiness stays independent and keeps the official regional auth and source", async () => {
+  const entry = { ...official.apps[0]!, id: "zoho", package: "@executor.sh/zoho", name: "Zoho",
+    auth: ["Us", "Eu", "In", "Au", "Jp", "Ca", "Sa", "Cn"].map(region => ({ method: `oauth${region}`, kind: "oauth2" })) };
+  for (const zoho of [false, true]) {
+    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
+      async () => Response.json({ version: 1, apps: [entry] }), { google: !zoho, github: !zoho, zoho });
+    const result = (await response.json() as Feed).apps[0]!;
+    assert.deepEqual(result.auth, entry.auth);
+    assert.equal(result.connectionNotices!.some(notice => notice.message.includes("not set up yet")), !zoho);
+    assert.match(result.connectionNotices![0]!.message, /own Zoho CRM account/);
+    assert.match(result.connectionNotices![0]!.message, /including writes/);
+    assert.match(result.connectionNotices![0]!.message, /data center/);
+  }
+  const source = '{"package":"@executor.sh/zoho","files":[]}';
+  assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/zoho.json"),
+    async () => new Response(source))).text(), source);
+});

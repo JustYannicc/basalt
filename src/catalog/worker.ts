@@ -64,6 +64,7 @@ export default {
       GOOGLE_CONNECTOR_READY?: string;
       GITHUB_CONNECTOR_READY?: string;
       ATLASSIAN_CONNECTOR_READY?: string;
+      ZOHO_CONNECTOR_READY?: string;
       ZENDESK_CONNECTOR_READY?: string;
       EXECUTOR_ZENDESK_SUBDOMAIN?: string;
     },
@@ -75,6 +76,7 @@ export default {
         google: env.GOOGLE_CONNECTOR_READY === "true",
         github: env.GITHUB_CONNECTOR_READY === "true",
         atlassian: env.ATLASSIAN_CONNECTOR_READY === "true",
+        zoho: env.ZOHO_CONNECTOR_READY === "true",
         zendesk: env.ZENDESK_CONNECTOR_READY === "true",
       },
       env.EXECUTOR_ZENDESK_SUBDOMAIN,
