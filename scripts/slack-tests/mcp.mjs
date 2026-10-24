@@ -53,6 +53,16 @@ function isAccountInputInvalid(result) {
     && error.response?.status === 422;
 }
 
+function isAccountExecuteInputInvalid(result) {
+  const execution = result?.structuredContent?.execution;
+  const error = execution?.error;
+  return result?.isError === false
+    && execution?.ok === false
+    && error?.kind === "ToolFailure"
+    && error.response?.code === "InputInvalid"
+    && error.response?.status === 422;
+}
+
 function executeCall(path, input) {
   return `return await ${path}(JSON.parse(${JSON.stringify(JSON.stringify(input))}));`;
 }
@@ -172,7 +182,7 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       const peerReadExecute = yield* Effect.promise(() => callMcp(client, { name: "execute", arguments: {
         code: executeCall(currentHistory, peerHistoryInput),
       } }));
-      check(isAccountInputInvalid(peerReadExecute), "MCP execute did not reject the peer account with SDK InputInvalid (422)");
+      check(isAccountExecuteInputInvalid(peerReadExecute), "MCP execute did not reject the peer account with SDK InputInvalid (422)");
       equal(slackApiCount(mock), apiBeforePeerRead, "Rejected peer-account history execute reached Slack");
 
       const peerWriteInput = {
@@ -192,7 +202,7 @@ export function proveSlackMcp({ root, upstream, directory, target, actors, reque
       const peerExecute = yield* Effect.promise(() => callMcp(client, { name: "execute", arguments: {
         code: executeCall(currentPost, peerWriteInput),
       } }));
-      check(isAccountInputInvalid(peerExecute), "MCP execute did not reject peer chat.postMessage with SDK InputInvalid (422)");
+      check(isAccountExecuteInputInvalid(peerExecute), "MCP execute did not reject peer chat.postMessage with SDK InputInvalid (422)");
       equal(slackApiCount(mock), apiBeforePeerWrite, "Rejected peer-account chat.postMessage execute reached Slack");
 
       const sessionActor = index === 0 ? actors.owner : actors.member;
