@@ -4,7 +4,7 @@ import { callerHeader } from "../../apps/pool/contract.ts";
 import { ComputerHome } from "./computer-home.ts";
 import { Computers, type ComputerStorage } from "./computers.ts";
 import { digest } from "./computer-home.ts";
-import { setupTtl } from "./setup-links.ts";
+import { setupTtl, signIntent } from "./setup-links.ts";
 import { signEnvelope, signPoolToken } from "./token.ts";
 import { HomeClient } from "./control.ts";
 
@@ -210,15 +210,18 @@ test("unknown computer actions share the same generic response and never call Ho
   assert.equal(f.home.rebound.length, 0);
 });
 
-test("a pool member cannot operate another caller's computer", async () => {
+test("shared pool setup is refused before any computer key can exist", async () => {
   const f = await fixture();
-  const { value: issued } = await f.create();
   const member = await f.context(claims, "tools-user-2");
-  const response = await f.action("revoke", "tools-user-2", String(member.value.intent), { id: issued.computer.id });
-  await expectError(response, 404, "not_found", "This computer does not exist.");
-  assert.equal(f.home.mints.length, 1);
+  assert.equal(member.response.status, 403);
+  assert.match(String(member.value.message), /Shared pools come with pool sharing/);
+  const intent = await signIntent(signingKey, { ...claims, user: "tools-user-2", expiresAt: f.now() + setupTtl });
+  const response = await f.action("links", "tools-user-2", intent, { name: "Laptop", toolsKeyId, toolsToken });
+  await expectError(response, 403, "not_owner");
+  assert.equal(f.home.mints.length, 0);
   assert.deepEqual(f.home.found, []);
   assert.deepEqual(f.home.revoked, []);
+  assert.equal(await f.storage.serialized(), "[]");
 });
 
 test("model and tools evidence are recorded independently", async () => {

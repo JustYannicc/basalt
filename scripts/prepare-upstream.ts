@@ -42,3 +42,5 @@ else if (!lstatSync(modules).isSymbolicLink())
 const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: upstream, encoding: "utf8" });
 if (revision.stdout.trim() !== pin.commit)
   throw new Error("Upstream checkout differs from the pin");
+// Deployment inventory includes static asset bytes before the full Worker build runs in CI.
+run("node", ["scripts/setup-build.ts"], root);

@@ -16,6 +16,7 @@ export async function readIntent(key: string, opaque: unknown, user: string, now
     || typeof value.owner !== "string" || !value.owner || typeof value.organization !== "string" || !value.organization
     || typeof value.expiresAt !== "number" || value.expiresAt <= now || value.expiresAt > now + setupTtl)
     return fail(401, "unauthorized", "Open setup again from your pool. This setup session has expired.");
+  if (value.owner !== user) return fail(403, "not_owner", "Set up this computer with your own pool. Shared pools come with pool sharing.");
   return value as unknown as SetupIntent;
 }
 

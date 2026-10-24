@@ -1,7 +1,7 @@
 import { mkdir, readFile, lstat, writeFile, rename, unlink, rmdir, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { apply, clientEntries, remove } from "./config.mjs";
+import { apply, clientEntries, markToml, remove } from "./config.mjs";
 
 async function read(path) {
   try {
@@ -76,6 +76,7 @@ export async function configure({ home, env = {}, brand, credentials, undo = fal
         before = current ? snapshot(source, current.mode) : null;
       }
       const result = apply(source, target.format, entries[target.kind]);
+      if (target.format === "toml") result.source = markToml(result.source, brand);
       files.push({ ...target, before, input: current, after: snapshot(result.source), changes: result.changes });
     }
     await atomic(manifestPath, snapshot(`${JSON.stringify({ id: brand.setup.id, files }, null, 2)}\n`));

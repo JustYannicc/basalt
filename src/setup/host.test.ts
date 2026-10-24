@@ -47,7 +47,7 @@ function fixture(options: { tools?: Override; pool?: Override } = {}) {
       calls.push(call);
       const response = await options.pool?.(call);
       if (response) return response;
-      if (path.endsWith("/validate")) return json({ pool: "pool-1", organization: "organization-1" });
+      if (path.endsWith("/validate")) return json({ pool: "pool-1", organization: "organization-1", owner: "user-1" });
       if (path.endsWith("/links") || path.endsWith("/refresh")) return json({ computer, token: "opaque-link-token", expiresAt: new Date(Date.now() + 299_000).toISOString() });
       if (path.endsWith("/computers")) return json({ computers: [computer] });
       if (path.endsWith("/revoke")) return json({ toolsKeyId: "tools-key-1" });
@@ -109,10 +109,18 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.equal(new URL(create.request.url).origin, origin);
   assert.equal(create.request.headers.get("origin"), origin);
   assert.equal(create.request.headers.get("cookie"), "executor-hosted.session_token=fake-cookie");
-  assert.deepEqual(create.input, { name: "Laptop" });
+  assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "organization-1" } });
   assert.equal(f.calls[3]!.input.user, "user-1");
   assert.equal(f.calls[3]!.input.intent, "signed-selection");
   assert.equal(f.calls[3]!.input.toolsToken, "exp_fake-tools-secret");
+});
+
+test("setup refuses a shared model pool before minting any tools token", async () => {
+  const f = fixture({ pool: ({ path }) => path.endsWith("/validate") ? json({ pool: "shared-pool", organization: "shared-organization", owner: "another-person" }) : undefined });
+  const response = await f.create();
+  assert.equal(response.status, 403);
+  assert.match(await response.text(), /Shared pools come with pool sharing/);
+  assert.equal(f.calls.some((call) => call.path.endsWith("/api-key/create")), false);
 });
 
 test("write origins must match exactly; every Authorization header is refused", async () => {

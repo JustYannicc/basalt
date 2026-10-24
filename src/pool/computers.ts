@@ -65,6 +65,7 @@ export class Computers {
       const claims = token ? await verifyPoolToken(this.deps.signingKey, token, this.deps.previousSigningKey) : undefined;
       const user = text(request.headers.get(callerHeader));
       if (!claims || !user) return fail(401, "unauthorized", "A signed-in pool caller is required.");
+      if (claims.owner !== user) return fail(403, "not_owner", "Set up this computer with your own pool. Shared pools come with pool sharing.");
       const intent = await signIntent(this.deps.signingKey, { ...claims, user, expiresAt: this.now() + setupTtl });
       if (request.method !== "GET") return fail(404, "not_found", "This setup endpoint does not exist.");
       const computers = await this.list(user, claims.pool);
@@ -101,7 +102,7 @@ export class Computers {
       const user = text(payload.user);
       if (!user) return fail(401, "unauthorized", "Sign in before setting up a computer.");
       const intent = await readIntent(this.deps.signingKey, payload.intent, user, this.now(), this.deps.previousSigningKey);
-      if (action === "validate") return json({ pool: intent.pool, organization: intent.organization });
+      if (action === "validate") return json({ pool: intent.pool, organization: intent.organization, owner: intent.owner });
       if (action === "computers") return json({ computers: await this.list(user, intent.pool) });
       return await this.run(async (registry) => {
         switch (action) {

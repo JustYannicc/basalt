@@ -106,6 +106,7 @@ async function pool(request: Request, env: SetupEnv, action: string, payload: Re
     const status = [400, 401, 403, 404, 409, 410, 429].includes(response.status) ? response.status : 502;
     throw new SetupError(status, action === "claim" ? "Setup link is unavailable. Create a new link."
       : action === "refresh" && status === 409 ? "This link cannot be refreshed. Revoke this computer, then create a new setup."
+      : status === 403 ? "Set up this computer with your own pool. Shared pools come with pool sharing."
       : "Could not complete setup. Try again.");
   }
   return response;
@@ -138,8 +139,11 @@ function undo(origin: string): string {
   return `Undo this computer's setup with Node.js 18 or newer. Run this command, which removes the marked entries and restores the backups: ${commands(origin, ["--undo"]).command}`;
 }
 
-async function createLink(request: Request, env: SetupEnv, payload: Record<string, unknown>): Promise<Response> {
-  const created = await native(request, env, "api-key/create", { name: payload.name });
+async function createLink(request: Request, env: SetupEnv, payload: Record<string, unknown>, selection: Record<string, unknown>): Promise<Response> {
+  if (selection.owner !== payload.user || !text(selection.organization, 512))
+    throw new SetupError(403, "Set up this computer with your own pool. Shared pools come with pool sharing.");
+  const organization = selection.organization;
+  const created = await native(request, env, "api-key/create", { name: payload.name, metadata: { organization } });
   if (!created.ok) throw new SetupError(502, "Could not create the tools token. Try again.");
   const key = await body(created);
   if (!text(key.id, 512)) throw new SetupError(502, "Could not create the tools token. Try again.");
@@ -202,12 +206,12 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const payload = { ...input, user: await user(request, env) };
-    await pool(request, env, "validate", { user: payload.user, intent: input.intent });
+    const selection = await body(await pool(request, env, "validate", { user: payload.user, intent: input.intent }));
     if (method === "POST") {
       if (input.computerId !== undefined) return linkResponse(request, await body(await pool(request, env, "refresh", {
         user: payload.user, intent: input.intent, id: input.computerId,
       })));
-      return await createLink(request, env, payload);
+      return await createLink(request, env, payload, selection);
     }
     if (method === "GET") {
       const result = await body(await pool(request, env, "computers", payload));

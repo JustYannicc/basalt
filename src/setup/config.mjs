@@ -67,7 +67,13 @@ export function clientEntries(credentials, brand) {
       [["model_provider"], name],
       [["model_providers", name], { name: brand.name, base_url: `${credentials.modelUrl}/v1`, wire_api: "responses", requires_openai_auth: true, http_headers: { "X-Api-Key": credentials.modelKey } }],
       [["mcp_servers", name], { url: credentials.toolsUrl, http_headers: { Authorization: `Bearer ${credentials.toolsToken}` } }],
-      [[brand.setup.id], marker],
     ],
   };
+}
+
+/** TOML comments mark our entries without adding an unsupported Codex setting. */
+export function markToml(source, brand) {
+  const marker = `# ${brand.setup.id}: ${brand.setup.marker}\n`;
+  const names = [`[model_providers.${brand.mcpServerName}]`, `[mcp_servers.${brand.mcpServerName}]`];
+  return source.split("\n").map((line) => line.startsWith("model_provider =") || names.includes(line) ? marker + line : line).join("\n");
 }

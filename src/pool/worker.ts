@@ -99,9 +99,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async alarm() {
+    await this.computers.expire();
     await (await this.lifecycle).warm();
     await this.control.expire();
-    await this.computers.expire();
   }
 
   async fetch(request: Request): Promise<Response> {
