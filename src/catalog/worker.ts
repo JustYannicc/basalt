@@ -1,15 +1,10 @@
 import { mergeFeed, type Addition, type Feed } from "./feed.ts";
 import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
+import { atlassianAddition } from "./atlassian/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { isZendeskSubdomain } from "./zendesk/tenant.ts";
 
-// Missing connectors add their published package here. Existing official apps stay upstream's.
-const additions: readonly Addition[] = [];
-const configuredAdditions = (ready: ConnectorAvailability, subdomain?: string): readonly Addition[] =>
-  ready.zendesk && subdomain !== undefined && isZendeskSubdomain(subdomain)
-    ? [zendeskAddition(subdomain)]
-    : additions;
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
@@ -20,6 +15,16 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
   status: 502, headers: { ...headers, "Cache-Control": "no-store" },
 });
 
+function configuredAdditions(
+  ready: ConnectorAvailability,
+  zendeskSubdomain?: string,
+): readonly Addition[] {
+  const additions = [atlassianAddition(ready.atlassian === true)];
+  if (ready.zendesk && zendeskSubdomain !== undefined && isZendeskSubdomain(zendeskSubdomain))
+    additions.push(zendeskAddition(zendeskSubdomain));
+  return additions;
+}
+
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
 export async function handleCatalog(
   request: Request,
@@ -29,14 +34,12 @@ export async function handleCatalog(
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-  const currentAdditions = configuredAdditions(ready, zendeskSubdomain);
+  const additions = configuredAdditions(ready, zendeskSubdomain);
   const path = new URL(request.url).pathname;
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
     return new Response(null, { status: 404 });
-  const added = currentAdditions.find((item) =>
-    relative === "apps/" + encodeURIComponent(item.entry.id) + ".json",
-  );
+  const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) return new Response(request.method === "HEAD" ? null : JSON.stringify(added.source), { headers });
   try {
     const response = await fetcher(new URL(relative, catalog.official), {
@@ -46,7 +49,7 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(await response.json() as Feed, currentAdditions, ready))
+      ? JSON.stringify(mergeFeed(await response.json() as Feed, additions, ready))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
@@ -60,6 +63,7 @@ export default {
     env: {
       GOOGLE_CONNECTOR_READY?: string;
       GITHUB_CONNECTOR_READY?: string;
+      ATLASSIAN_CONNECTOR_READY?: string;
       ZENDESK_CONNECTOR_READY?: string;
       EXECUTOR_ZENDESK_SUBDOMAIN?: string;
     },
@@ -70,6 +74,7 @@ export default {
       {
         google: env.GOOGLE_CONNECTOR_READY === "true",
         github: env.GITHUB_CONNECTOR_READY === "true",
+        atlassian: env.ATLASSIAN_CONNECTOR_READY === "true",
         zendesk: env.ZENDESK_CONNECTOR_READY === "true",
       },
       env.EXECUTOR_ZENDESK_SUBDOMAIN,

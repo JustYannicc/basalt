@@ -50,6 +50,7 @@ export default Alchemy.Stack(
       env: {
         GOOGLE_CONNECTOR_READY: yield* Config.String("GOOGLE_CONNECTOR_READY").pipe(Config.withDefault("false")),
         GITHUB_CONNECTOR_READY: yield* Config.String("GITHUB_CONNECTOR_READY").pipe(Config.withDefault("false")),
+        ATLASSIAN_CONNECTOR_READY: yield* Config.String("ATLASSIAN_CONNECTOR_READY").pipe(Config.withDefault("false")),
         ZENDESK_CONNECTOR_READY: yield* Config.String("ZENDESK_CONNECTOR_READY").pipe(Config.withDefault("false")),
         EXECUTOR_ZENDESK_SUBDOMAIN: yield* Config.String("EXECUTOR_ZENDESK_SUBDOMAIN").pipe(Config.withDefault("")),
       },

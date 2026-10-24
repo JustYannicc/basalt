@@ -97,10 +97,11 @@ test("the public feed marks only unconfigured hosted connectors as not set up ye
     const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(feed), ready);
     assert.equal(response.status, 200);
     const result = await response.json() as Feed;
-    for (const entry of result.apps) {
+    for (const source of feed.apps) {
+      const entry = result.apps.find(item => item.id === source.id)!;
       const configured = entry.id === "github" ? ready.github : ready.google;
       assert.equal(entry.connectionNotices?.some(notice => notice.message.includes("not set up yet")), !configured);
-      assert.deepEqual(entry.auth, feed.apps.find(source => source.id === entry.id)!.auth);
+      assert.deepEqual(entry.auth, source.auth);
     }
   }
 });
