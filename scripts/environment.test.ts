@@ -143,6 +143,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.TEST_STAGE_DATABASE_PROVIDER, "planetscale");
   assert.equal(first.deploy.TEST_STAGE_DATABASE, "basalt-preview-pr-1419");
   assert.equal(first.deploy.TEST_STAGE_PASSWORD_SIGN_IN, "true");
+  assert.equal(first.deploy.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");
   assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
   assert.equal(first.deploy.PREVIEW_SMOKE_PASSWORD, undefined);

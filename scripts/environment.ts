@@ -233,6 +233,7 @@ export function previewEnvironment(
     TEST_STAGE_DATABASE_PROVIDER: "planetscale",
     TEST_STAGE_DATABASE: databaseName,
     TEST_STAGE_PASSWORD_SIGN_IN: "true",
+    EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
     BETTER_AUTH_URL: origin,
     EXECUTOR_CATALOG_URL: `${origin}${catalog.path}index.json`,
     TELEMETRY_RELAY_KEY: previewKey(source.PREVIEW_STATE_KEY!, number, "TELEMETRY_RELAY_KEY"),

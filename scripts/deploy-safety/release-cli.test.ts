@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { candidateCheckout, resolveManualRollbackSourceRoot } from "./release.ts";
 import { gitRepositoryRoot } from "./release-plan.ts";
+
+test("rollback workflow selects a release and defers deployment status eligibility to the guarded CLI", () => {
+  const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows/release-rollback.yml"), "utf8");
+  assert.match(workflow, /inputs:\n\s+release_sha:/);
+  assert.doesNotMatch(workflow, /failed_release_sha|FAILED_RELEASE_SHA/);
+  assert.match(workflow, /release\.ts rollback-report/);
+  assert.match(workflow, /release\.ts rollback-target/);
+  assert.match(workflow, /--deployment-id "\$DEPLOYMENT_ID"/);
+  assert.doesNotMatch(workflow, /DEPLOYMENT_STATUS"\s*!=\s*"(?:failure|error)"/);
+  assert.match(workflow, /environment: production-release/);
+});
 
 test("bootstrap report accepts trusted main on workflow_dispatch without candidate-root", () => {
   const root = realpathSync(gitRepositoryRoot());

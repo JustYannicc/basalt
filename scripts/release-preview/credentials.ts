@@ -1,11 +1,24 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { requiredPreviewCleanupSecrets, requiredPreviewDeploySecrets } from "../environment.ts";
 
 const loginFiles = {
   PREVIEW_CLAUDE_AUTH_JSON: "PREVIEW_CLAUDE_AUTH_FILE",
   PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: "PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE",
   PREVIEW_CODEX_CLI_AUTH_JSON: "PREVIEW_CODEX_CLI_AUTH_FILE",
 } as const;
+
+/** Lifecycle children provision resources; subscription files belong only to the native runner. */
+export function lifecycleEnvironment(source: NodeJS.ProcessEnv, mode: "deploy" | "cleanup"): NodeJS.ProcessEnv {
+  const names = [
+    "PATH", "HOME", "TMPDIR", "LANG", "BUN_INSTALL", "ALCHEMY_HOME", "RUNNER_TEMP", "GITHUB_ACTIONS",
+    "PREVIEW_STATE_KEY", "PREVIEW_MANIFEST_CHECKPOINTED",
+    ...(mode === "deploy"
+      ? [...requiredPreviewDeploySecrets, "PREVIEW_SMOKE_EMAIL", "PREVIEW_SMOKE_PASSWORD"]
+      : requiredPreviewCleanupSecrets),
+  ];
+  return Object.fromEntries(names.flatMap(name => source[name] === undefined ? [] : [[name, source[name]]]));
+}
 
 export function validateSmokeSecrets(source: NodeJS.ProcessEnv): void {
   for (const name of [

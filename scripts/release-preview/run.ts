@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { materializeSmokeSecrets, validateSmokeSecrets } from "./credentials.ts";
+import { lifecycleEnvironment, materializeSmokeSecrets, validateSmokeSecrets } from "./credentials.ts";
 import { manifestPath, previewNumber } from "./checkpoint.ts";
 import { privateOperation } from "./process.ts";
 import { runPreview } from "./lifecycle.ts";
@@ -23,7 +23,12 @@ function requireIdentity(value: unknown, pullRequest: number): Identity {
   return { pullRequest, head: identity.head, base: identity.base };
 }
 
-export async function executePreview(root: string, pullRequest: number, source: NodeJS.ProcessEnv): Promise<void> {
+export async function executePreview(
+  root: string,
+  pullRequest: number,
+  source: NodeJS.ProcessEnv,
+  runOperation: typeof privateOperation = privateOperation,
+): Promise<void> {
   if (source.GITHUB_ACTIONS !== "true") throw new Error("Release previews run only in GitHub Actions");
   if (source.PREVIEW_MANIFEST_CHECKPOINTED !== "1") throw new Error("The encrypted cleanup checkpoint must be uploaded before deployment");
   validateSmokeSecrets(source);
@@ -33,8 +38,10 @@ export async function executePreview(root: string, pullRequest: number, source: 
   const abort = () => controller.abort();
   process.once("SIGINT", abort); process.once("SIGTERM", abort);
   let sequence = 0;
-  const operation = (label: string, script: string, args: string[] = [], environment = source, cleanup = false) =>
-    privateOperation({ label, command: process.execPath, args: [script, ...args], directory: root,
+  const deployEnvironment = lifecycleEnvironment(source, "deploy");
+  const cleanupEnvironment = lifecycleEnvironment(source, "cleanup");
+  const operation = (label: string, script: string, args: string[] = [], environment = deployEnvironment, cleanup = false) =>
+    runOperation({ label, command: process.execPath, args: [script, ...args], directory: root,
       environment: { ...environment, GITHUB_OUTPUT: undefined, GITHUB_ENV: undefined },
       logPath: join(privateRoot, `${++sequence}-${label}.log`),
       timeoutMs: cleanup ? 15 * 60_000 : 40 * 60_000,
@@ -76,8 +83,8 @@ export async function executePreview(root: string, pullRequest: number, source: 
           POOL_ACCEPTANCE_MODE: "preview", POOL_ACCEPTANCE_RESULT_PATH: resultPath });
         return JSON.parse(await readFile(resultPath, "utf8")) as unknown;
       },
-      destroy: () => operation("destroy", "scripts/preview/lifecycle.ts", ["destroy", String(pullRequest)], source, true),
-      verifyAbsent: () => operation("verify-absence", "scripts/preview/lifecycle.ts", ["verify", String(pullRequest)], source, true),
+      destroy: () => operation("destroy", "scripts/preview/lifecycle.ts", ["destroy", String(pullRequest)], cleanupEnvironment, true),
+      verifyAbsent: () => operation("verify-absence", "scripts/preview/lifecycle.ts", ["verify", String(pullRequest)], cleanupEnvironment, true),
     });
     const receipt = previewReceipt(outcome.smoke, identity, outcome.teardown);
     await writeFile(join(root, "preview-receipt.json"), `${JSON.stringify(receipt)}\n`, { flag: "wx", mode: 0o600 });

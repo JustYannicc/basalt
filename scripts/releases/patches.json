@@ -26,7 +26,7 @@
     {
       "file": "0004-encrypted-workflow-results.patch",
       "kind": "upstream",
-      "upstream_pull_request": null,
+      "upstream_pull_request": 2369,
       "database_sensitive": true,
       "workflow_sensitive": true
     },
