@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callerHeader, type UsageSlice, type UsageSummary } from "../../apps/pool/contract.ts";
-import { backendUserName } from "./backend-users.ts";
+import { brand } from "../../brand.ts";
+import { backendUserName, digest } from "./backend-users.ts";
 import { HomeClient, poolGroupPrefix } from "./control.ts";
 import type { Json } from "./json.ts";
 import { LimitHistory, type UsageStorage } from "./limit-history.ts";
@@ -19,7 +20,7 @@ class Memory implements UsageStorage {
   async delete(key: string) { this.values.delete(key); }
 }
 
-async function fixture() {
+async function fixture(legacy = false) {
   const storage = new Memory();
   const calls: string[] = [], audienceCalls: string[] = [];
   const specs = [
@@ -38,7 +39,9 @@ async function fixture() {
     id: index + 1, username: await backendUserName(person, "pool-a"), limit_7d_credits: [5, 9, null][index],
   })));
   users.push({ id: 4, username: await backendUserName(a, "pool-b"), limit_7d_credits: null });
-  const client = new HomeClient(async (path) => {
+  if (legacy) users.push({ id: 9, username: `${brand.setup.id}-${await digest(a)}`, limit_7d_credits: null });
+  const client = new HomeClient(async (path, init) => {
+    assert.equal(init?.method ?? "GET", "GET", "summary must never write to Home");
     const url = new URL(path, "https://home.example.test");
     const route = url.pathname.slice("/v8/management".length);
     calls.push(route);
@@ -51,6 +54,7 @@ async function fixture() {
       return Response.json({ items, total: items.length });
     }
     if (route === "/users") return Response.json({ users });
+    if (route === "/access/api-keys") return Response.json({ items: [{ api_key_id: 1, user_id: 9, channels: [1, 2] }] });
     if (/^\/users\/[12]\/period-limits$/.test(route)) {
       const first = route.includes("/1/");
       return Response.json({ timezone: "UTC", windows: [{ id: "7d", enabled: true, limit: first ? 5 : 9,
@@ -195,4 +199,16 @@ test("alarm samples Home collection status and each primary window's observation
   assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 0);
   reading = raw(clock); await usage.observe();
   assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 1 / 12);
+});
+
+
+test("multi-group legacy keys leave member and owner summaries readable without Home writes", async (t) => {
+  t.mock.method(console, "warn", () => {});
+  const f = await fixture(true);
+  const member = await f.summary(a), all = await f.summary(owner);
+  own(member, 34, 8);
+  assert.equal(member.cap, null);
+  assert.equal(all.members!.find((row) => row.member === a)!.cap, null);
+  assert.equal(all.members!.find((row) => row.member === b)!.cap!.weekly, 9);
+  assert.equal(all.scope, "pool");
 });

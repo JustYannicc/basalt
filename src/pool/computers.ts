@@ -45,13 +45,11 @@ export class Computers {
   async migrateLegacy(): Promise<void> {
     await this.run(async (registry) => {
       const key = "legacy-user-migration-cursor";
-      const result = await this.deps.home.migrateLegacy(undefined, await this.deps.storage.get<number>(key) ?? 0,
-        async (keyId, userId) => {
-          const computer = Object.values(registry).find((computer) => computer.keyId === keyId);
-          if (!computer || computer.userId === userId) return;
-          computer.userId = userId;
-          await this.save(registry);
-        });
+      const recheck = "legacy-user-migration-recheck";
+      if ((await this.deps.storage.get<number>(recheck) ?? 0) > this.now()) return;
+      const result = await this.deps.home.migrateLegacy(registry, () => this.save(registry), undefined,
+        await this.deps.storage.get<number>(key) ?? 0);
+      if (result.complete) await this.deps.storage.put(recheck, this.now() + 86_400_000);
       await this.deps.storage.put(key, result.cursor);
     });
   }
@@ -202,17 +200,24 @@ export class Computers {
       });
     } catch (error) { return failureResponse(error); }
   }
-  /** The share host checked the owner's browser session; the signed intent must agree. Home I/O runs outside the queue. */
+  /** The share host checked the owner's browser session; the signed intent must agree. Cap writes share the computer queue. */
   private async ownerUsage(action: "usage" | "cap", intent: SetupIntent, user: string, payload: Record<string, unknown>): Promise<Response> {
     const usage = this.deps.usage;
     if (!usage) return fail(404, "not_found", "This setup endpoint does not exist.");
     if (intent.owner !== user) return fail(403, "unauthorized", "Only the pool's owner can see each person's usage or set caps.");
-    await this.run(async (registry) => this.check(await PoolDirectory.load(this.deps.storage, this.now()), registry, intent));
     if (action === "cap") {
       if (payload.weekly !== null && !isWeeklyCap(payload.weekly)) return fail(400, "invalid_query", "Enter a weekly cap between $0.01 and $100,000, in whole cents.");
-      await usage.setCap(intent.pool, intent.owner, String(payload.member ?? ""), payload.weekly);
-      return json(null);
+      const weekly = payload.weekly;
+      const member = String(payload.member ?? "");
+      if (!isMemberId(member) || member === intent.owner) return fail(400, "invalid_query", "Choose a member other than the pool's owner.");
+      return this.run(async (registry) => {
+        this.check(await PoolDirectory.load(this.deps.storage, this.now()), registry, intent);
+        await this.deps.home.migrateLegacy(registry, () => this.save(registry), member);
+        await usage.setCap(intent.pool, intent.owner, member, weekly);
+        return json(null);
+      });
     }
+    await this.run(async (registry) => this.check(await PoolDirectory.load(this.deps.storage, this.now()), registry, intent));
     const members = Array.isArray(payload.members) ? payload.members.filter(isMemberId).slice(0, maxMembers) : [];
     return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members));
   }

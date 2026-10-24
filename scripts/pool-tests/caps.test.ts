@@ -4,10 +4,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { brand } from "../../brand.ts";
 import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { capMessage, rewriteCapResponse } from "../../src/pool/cap-message.ts";
-import { readCap, setCap } from "../../src/pool/caps.ts";
+import { readCap } from "../../src/pool/caps.ts";
+import { Computers } from "../../src/pool/computers.ts";
+import { PoolUsage } from "../../src/pool/pool-usage.ts";
+import { setupTtl, signIntent } from "../../src/pool/setup-links.ts";
+import { signEnvelope } from "../../src/pool/token.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
 import { HomeClient, PoolHome } from "../../src/pool/control.ts";
-import { SharingFixture, type HomeProvider } from "./sharing-fixture.ts";
+import { MemoryStorage, SharingFixture, type HomeProvider } from "./sharing-fixture.ts";
 
 test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolation", { timeout: 420_000 }, async () => {
   const fixture = new SharingFixture();
@@ -21,7 +25,17 @@ test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolat
       await new PoolHome(client, pool!).add([credential.id]);
     }
     assert.deepEqual(await fixture.data("/billing/settings"), { service_tier_source: "request", report_timezone: "UTC" });
-    const member = "fixture-member";
+    const member = "fixture-member", owner = "fixture-owner", signingKey = "ab".repeat(32);
+    const storage = new MemoryStorage();
+    const usage = new PoolUsage({ storage, client, signingKey, audience: async () => [owner, member] });
+    const computers = new Computers({ storage, home, signingKey, usage });
+    async function changeCap(weekly: number | null) {
+      const now = Date.now();
+      const intent = await signIntent(signingKey, { pool: "pool-a", owner, organization: "fixture", user: owner, expiresAt: now + setupTtl });
+      const envelope = await signEnvelope(signingKey, "sbs1", { action: "cap", intent, user: owner, member, weekly, expiresAt: now + 10_000 });
+      const response = await computers.handle(new Request("https://pool.test/__setup/v1/cap", { method: "POST", body: JSON.stringify({ envelope }) }));
+      assert.equal(response.status, 200, await response.text());
+    }
     const legacyName = `${brand.setup.id}-${await digest(member)}`;
     await fixture.data("/users", "POST", { username: legacyName, credits_unlimited: true });
     const legacyId = (await fixture.users()).find((user) => user.username === legacyName)!.id;
@@ -58,7 +72,7 @@ test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolat
     // Home v1.1.6 internal/cluster/management/billing.go:16-28 accepts a request price.
     await fixture.data("/billing/model-prices", "POST", { provider: record.provider, model: record.model,
       request_price: 0.02, source: "manual" });
-    await setCap(client, member, "pool-a", 0.01);
+    await changeCap(0.01);
     assert.ok(!(await fixture.users()).some((user) => user.id === legacyId));
     const migratedKeys = await fixture.keys();
     const ownUserId = migratedKeys.find((key) => key.api_key_id === own.keyId)!.user_id;
@@ -100,7 +114,7 @@ test("real pinned Home/node: weekly cap, charges, refusal, clear and pool isolat
     assert.equal((await fixture.users()).find((user) => user.username === ownName)?.id, ownUserId);
     await turn(shared.key, "switch-while-capped", "P2");
     console.log("PASS 4: member's own pool remains uncapped; one PATCH moved the same key to its user and channel");
-    await setCap(client, member, "pool-a", null);
+    await changeCap(null);
     assert.equal(await readCap(client, member, "pool-a"), null);
     await home.rebind(shared.keyId, "pool-a", member);
     await turn(shared.key, "after-clear", "P1");

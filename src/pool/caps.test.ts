@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { backendUserName } from "./backend-users.ts";
-import { HomeClient } from "./control.ts";
+import { backendUserName, personPrefix } from "./backend-users.ts";
+import { HomeClient, poolGroupPrefix } from "./control.ts";
 import { readCap, readCaps, setCap } from "./caps.ts";
 
 async function fixture() {
   const users: Record<string, unknown>[] = [{ id: 1, username: await backendUserName("member", "pool"), limit_7d_credits: 10 }];
+  const keys: Record<string, unknown>[] = [];
   const calls: { path: string; method: string; body?: Record<string, unknown> }[] = [];
   const home = new HomeClient(async (raw, init) => {
     const path = raw.replace("/v8/management", "");
@@ -16,6 +17,10 @@ async function fixture() {
       if (method === "POST") users.push({ id: users.length + 1, ...body });
       return Response.json({ users });
     }
+    if (path === "/access/api-keys") return Response.json({ items: keys });
+    if (path === "/channel-groups") return Response.json({ channel_groups: [
+      { id: 11, channel_name: `${poolGroupPrefix}pool` }, { id: 12, channel_name: `${poolGroupPrefix}other` },
+    ] });
     const user = users.find((user) => path.startsWith(`/users/${user.id}`));
     assert.ok(user);
     if (method === "PATCH") { Object.assign(user, body); return Response.json({ user }); }
@@ -23,7 +28,7 @@ async function fixture() {
       limit: user.limit_7d_credits, used: 3, remaining: 7, mode: "calendar", week_reset_day: 1, week_reset_hour: 0,
       reset_at: "2026-10-26T00:00:00Z" }] });
   });
-  return { home, users, calls };
+  return { home, users, calls, keys };
 }
 
 test("cap uses a Monday UTC calendar week, clears with null, and creates missing pool users", async () => {
@@ -58,4 +63,20 @@ test("bulk reads list users once, skip missing and uncapped members and deduplic
   assert.equal(f.calls.filter((call) => call.path === "/users").length, 1);
   assert.equal(f.calls.filter((call) => call.path.endsWith("/period-limits")).length, 1);
   assert.deepEqual(await readCaps(f.home, "pool", []), new Map());
+});
+
+
+test("legacy keys suppress only the cap of the person and pool they still include", async (t) => {
+  const f = await fixture();
+  t.mock.method(console, "warn", () => {});
+  f.users.push({ id: 9, username: (await personPrefix("member")).slice(0, -1) });
+  f.keys.push({ api_key_id: 3, user_id: 9, channels: [11, 12] });
+  assert.equal(await readCap(f.home, "member", "pool"), null);
+  assert.ok(!f.calls.some((call) => call.path.endsWith("/period-limits")));
+  f.keys[0]!.channels = [12];
+  assert.equal((await readCap(f.home, "member", "pool"))!.weekly, 10);
+  f.keys[0]!.user_id = 99;
+  f.keys[0]!.channels = [11];
+  assert.equal((await readCap(f.home, "member", "pool"))!.used, 3);
+  assert.ok(f.calls.every((call) => call.method === "GET"));
 });

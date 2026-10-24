@@ -1,3 +1,4 @@
+import type { Registry } from "./computer-registry.ts";
 import { brand } from "../../brand.ts";
 import { HomeClient, PoolHome, poolGroupPrefix } from "./control.ts";
 import { BackendFailure, object, post, rows, unavailable, type Json } from "./json.ts";
@@ -100,8 +101,8 @@ export class ComputerHome {
     }
     if (!response.bodyUsed) await response.body?.cancel();
   }
-  /** One legacy user, at most 20 key moves. Home's remaining ownership is the resume state. */
-  async migrateLegacy(person?: string, after = 0, moved?: (keyId: number, userId: number) => Promise<void>): Promise<{ complete: boolean; cursor: number }> {
+  /** Called inside Computers.run. One legacy user, at most 20 moves; Home ownership is the resume state. */
+  async migrateLegacy(registry: Registry, save: () => Promise<unknown>, person?: string, after = 0): Promise<{ complete: boolean; cursor: number }> {
     const users = rows((await this.client.data("/users")).users);
     const personDigest = person === undefined ? undefined : await digest(person);
     const legacy = users.filter((user) => {
@@ -110,12 +111,21 @@ export class ComputerHome {
     }).sort((a, b) => Number(a.id) - Number(b.id));
     if (legacy.some((user) => !id(user.id))) return unavailable();
     const user = legacy.find((user) => Number(user.id) > after) ?? legacy[0];
-    // Reconcile registry writes lost after a PATCH, including moves made by setCap.
-    const keys = legacy.length || moved ? rows((await this.client.data("/access/api-keys")).items) : [];
-    if (moved) {
-      const scoped = new Set(users.filter((user) => parseBackendUserName(user.username)?.pool).map((user) => user.id));
-      for (const key of keys) if (scoped.has(key.user_id) && id(key.api_key_id ?? key.id) && id(key.user_id))
-        await moved((key.api_key_id ?? key.id) as number, key.user_id);
+    const keys = legacy.length ? rows((await this.client.data("/access/api-keys")).items) : [];
+    const registered = new Map(Object.values(registry).map((computer) => [computer.keyId, computer]));
+    const moved = async (keyId: number, userId: number) => {
+      const computer = registered.get(keyId);
+      if (!computer || computer.userId === userId) return;
+      computer.userId = userId;
+      await save();
+    };
+    // Recover a registry save interrupted after Home acknowledged a move.
+    const byId = new Map(users.map((user) => [user.id, user]));
+    for (const key of keys) {
+      const keyId = key.api_key_id ?? key.id, computer = registered.get(keyId as number);
+      if (computer && id(keyId) && id(key.user_id)
+        && byId.get(key.user_id)?.username === await backendUserName(computer.user, computer.pool))
+        await moved(keyId, key.user_id);
     }
     if (!user) return { complete: true, cursor: 0 };
     const name = parseBackendUserName(user.username)!;
@@ -125,20 +135,23 @@ export class ComputerHome {
     let remaining = owned.length, writes = 0, pending = false;
     for (const key of owned) {
       const channels = key.channels;
-      const pool = Array.isArray(channels) && channels.length === 1 ? groups.get(channels[0]) : undefined;
-      if (!pool) { console.warn("Legacy pool key migration skipped: ambiguous channels", key.api_key_id ?? key.id); continue; }
+      const channelPool = Array.isArray(channels) && channels.length === 1 ? groups.get(channels[0]) : undefined;
+      if (!channelPool) { console.warn("Legacy pool key migration skipped: ambiguous channels", key.api_key_id ?? key.id); continue; }
       if (writes >= 20) { pending = true; continue; }
       const keyId = key.api_key_id ?? key.id;
       if (!id(keyId)) return unavailable();
-      const userId = destinations.get(pool) ?? await this.ensureUser(await scopedUserName(name.person, pool));
-      destinations.set(pool, userId);
+      const computer = registered.get(keyId);
+      const pool = computer?.pool ?? channelPool;
+      const username = computer ? await backendUserName(computer.user, pool) : await scopedUserName(name.person, pool);
+      const userId = destinations.get(username) ?? await this.ensureUser(username);
+      destinations.set(username, userId);
       // Home v1.1.6 management/api_keys.go:79-98: keep channel scope in the same write.
       await this.client.data("/access/api-keys", { ...post({ api_key_id: keyId, user_id: userId, channels }), method: "PATCH" });
-      await moved?.(keyId, userId);
+      await moved(keyId, userId);
       writes++; remaining--;
     }
     if (!remaining) await this.deleteUser(user.id as number);
-    return { complete: !remaining, cursor: pending ? after : user.id as number };
+    return { complete: legacy.length === 1 && !remaining, cursor: pending ? after : user.id as number };
   }
   private async deleteUser(userId: number): Promise<void> {
     const response = await this.client.response(`/users/${userId}`, { method: "DELETE" });
