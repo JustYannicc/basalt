@@ -228,7 +228,7 @@ export class PoolDirectory {
           if (controller.signal.aborted) return provisioned;
           try {
             let created = false;
-            await Promise.race([home.user(user, () => { created = true; }, controller.signal), expired]);
+            await Promise.race([home.user(user, pool.pool, () => { created = true; }, controller.signal), expired]);
             if (created) provisioned++;
             pool.provisioned = [...(pool.provisioned ?? []), user];
             pool.pending = pool.pending.filter((person) => person !== user);

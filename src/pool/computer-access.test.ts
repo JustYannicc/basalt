@@ -208,10 +208,10 @@ test("the provisioning budget applies to the whole audience rather than each use
   const f = fixture();
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const provision = f.home.user.bind(f.home);
-  const slow = t.mock.method(f.home, "user", async (user: string, created?: () => void, signal?: AbortSignal) => {
+  const slow = t.mock.method(f.home, "user", async (user: string, pool: string, created?: () => void, signal?: AbortSignal) => {
     t.mock.timers.tick(750);
     signal?.throwIfAborted();
-    return provision(user, created, signal);
+    return provision(user, pool, created, signal);
   });
   const users = ["new-1", "new-2", "new-3", "new-4"];
   const response = await f.access(audience([owner, ...users]));

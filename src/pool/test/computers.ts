@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { brand } from "../../../brand.ts";
 import { callerHeader } from "../../../apps/pool/contract.ts";
 import { accessPrefix, accessTtl, type AccessChange } from "../access-contract.ts";
-import { ComputerHome, digest } from "../computer-home.ts";
+import { ComputerHome } from "../computer-home.ts";
+import { backendUserName } from "../backend-users.ts";
 import { Computers } from "../computers.ts";
 import { HomeClient } from "../control.ts";
 import type { ComputerStorage, Registry } from "../computer-registry.ts";
@@ -118,6 +118,6 @@ export function fixture() {
   return { storage, server, home, events, context, action, access, intent, create,
     expire: () => computers.expire(), now: () => time, advance: (ms: number) => { time += ms; }, restart: () => { computers = make(); },
     registry: async () => (await storage.get<Registry>("computer-registry-v1")) ?? {},
-    userName: async (user: string) => `${brand.setup.id}-${await digest(user)}`,
+    userName: (user: string, claims: { pool: string } = pool) => backendUserName(user, claims.pool),
   };
 }

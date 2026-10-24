@@ -16,7 +16,7 @@ export function duration(milliseconds: number): string {
 }
 
 /** "resets in 2d 20h", or null when the backend gave no reset time. */
-export function resetsIn(window: UsageWindow, now: number): string | null {
+export function resetsIn(window: Pick<UsageWindow, "resetAt">, now: number): string | null {
   if (!window.resetAt) return null;
   const at = Date.parse(window.resetAt);
   if (Number.isNaN(at)) return null;

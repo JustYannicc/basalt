@@ -2,12 +2,10 @@ import { brand } from "../../brand.ts";
 import { HomeClient, PoolHome, poolGroupPrefix } from "./control.ts";
 import { BackendFailure, object, post, rows, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
+import { backendUserName, personPrefix } from "./backend-users.ts";
 
 const id = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-export async function digest(value: string): Promise<string> {
-  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
+export { digest } from "./backend-users.ts";
 export function randomSecret(prefix = ""): string {
   return prefix + Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -20,23 +18,26 @@ export class ComputerHome {
     this.client = client;
     this.onProductEvent = onProductEvent;
   }
-  private async findUser(person: string, signal?: AbortSignal) {
+  private async findUser(person: string, pool: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const username = `${brand.setup.id}-${await digest(person)}`;
+    if (typeof pool !== "string" || !pool.trim()) return unavailable();
+    const username = await backendUserName(person, pool);
     return rows((await this.client.data("/users", { signal })).users).find((row) => row.username === username);
   }
-  async user(person: string, created?: () => void, signal?: AbortSignal): Promise<number> {
-    const username = `${brand.setup.id}-${await digest(person)}`;
-    let user = await this.findUser(person, signal);
+  async user(person: string, pool: string, created?: () => void, signal?: AbortSignal): Promise<number> {
+    if (typeof pool !== "string" || !pool.trim()) return unavailable();
+    const username = await backendUserName(person, pool);
+    let user = await this.findUser(person, pool, signal);
     signal?.throwIfAborted();
     let provisioned = false;
     if (!user) {
-      // Subscriptions are uncapped by default. Optional per-member caps are a separate control.
+      // Home v1.1.6 internal/cluster/user_period_limit.go:853-867 still checks period caps
+      // for unlimited users. A distinct user keeps every cap within its own pool.
       const response = await this.client.response("/users", { ...post({ username, credits_unlimited: true }), signal });
       if (!response.ok && response.status !== 409) throw new BackendFailure(response.status);
       provisioned = response.ok;
       await response.body?.cancel();
-      user = await this.findUser(person, signal);
+      user = await this.findUser(person, pool, signal);
     }
     signal?.throwIfAborted();
     if (!id(user?.id)) return unavailable();
@@ -69,7 +70,7 @@ export class ComputerHome {
   }
   /** `owner` is credited if this mint creates the pool's group; a member's first mint can. */
   async mint(person: string, pool: string, computer: string, owner = person): Promise<{ key: string; keyId: number; userId: number }> {
-    const userId = await this.user(person);
+    const userId = await this.user(person, pool);
     const key = randomSecret(brand.setup.keyPrefix);
     const data = await this.writeScopedKey(pool, {
       api_key: key, display_name: `${brand.setup.id}:${computer}`, user_id: userId,
@@ -85,8 +86,11 @@ export class ComputerHome {
     return keys.filter((key) => key.display_name === `${brand.setup.id}:${computer}`)
       .map((key) => key.api_key_id ?? key.id).filter(id);
   }
-  async rebind(keyId: number, pool: string, accountId?: string): Promise<void> {
-    await this.writeScopedKey(pool, { api_key_id: keyId }, "PATCH", accountId);
+  async rebind(keyId: number, pool: string, person: string, accountId?: string): Promise<number> {
+    const userId = await this.user(person, pool);
+    // Home v1.1.6 internal/cluster/management/api_keys.go:79-98 accepts both in one PATCH.
+    await this.writeScopedKey(pool, { api_key_id: keyId, user_id: userId }, "PATCH", accountId);
+    return userId;
   }
   async revoke(keyId: number): Promise<void> {
     const response = await this.client.response(`/access/api-keys?id=${keyId}`, { method: "DELETE" });
@@ -97,23 +101,29 @@ export class ComputerHome {
     if (!response.bodyUsed) await response.body?.cancel();
   }
   async deletePerson(person: string): Promise<number> {
-    const user = await this.findUser(person);
-    if (!user) return 0;
-    if (!id(user.id)) return unavailable();
-    const keys = rows((await this.client.data("/access/api-keys")).items).filter((key) => key.user_id === user.id);
+    const prefix = await personPrefix(person);
+    const users = rows((await this.client.data("/users")).users).filter((row) =>
+      typeof row.username === "string" && row.username.startsWith(prefix));
+    if (!users.length) return 0;
+    if (users.some((user) => !id(user.id))) return unavailable();
+    const ids = new Set(users.map((user) => user.id));
+    const keys = rows((await this.client.data("/access/api-keys")).items).filter((key) => ids.has(key.user_id));
     for (const key of keys) {
       const keyId = key.api_key_id ?? key.id;
       if (!id(keyId)) return unavailable();
       await this.revoke(keyId);
     }
-    const response = await this.client.response(`/users/${user.id}`, { method: "DELETE" });
-    if (!response.ok) {
-      const error: unknown = await response.json().catch(() => ({}));
-      if (response.status !== 404 || !object(error) || error.error !== "not_found") throw new BackendFailure(response.status);
+    for (const user of users) {
+      const response = await this.client.response(`/users/${user.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        const error: unknown = await response.json().catch(() => ({}));
+        if (response.status !== 404 || !object(error) || error.error !== "not_found") throw new BackendFailure(response.status);
+      }
+      if (!response.bodyUsed) await response.body?.cancel();
     }
-    if (!response.bodyUsed) await response.body?.cancel();
     return keys.length;
   }
+
   async observed(pool: string, keyId: number, since: string): Promise<string | null> {
     // PoolHome owns the exact-key and credential-membership filters used by the usage API.
     const response = await new PoolHome(this.client, pool).usage({ key: keyId, status: "success", limit: 20 });

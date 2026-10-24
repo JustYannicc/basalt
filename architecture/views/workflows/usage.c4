@@ -1,0 +1,57 @@
+views {
+  dynamic view v1_pool_usage {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/See a pool's usage"
+    description """
+      Source implementation; the pool screen waits on app hosting and live acceptance is pending deployment.
+      The pool app asks for the summary with its pool token and the caller. The controller reads Home's new
+      usage records, then answers from its own per-day totals: the whole pool for the owner, only the
+      caller's own requests and cap for anyone else.
+    """
+
+    include poolMember, appHosting, basalt.pool, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    poolMember -> appHosting "open shared pool screen"
+    appHosting -> basalt.pool "host pool screen"
+    basalt.pool -> basalt.router "GET /pool/v1/usage/summary with pool token and caller"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
+    basalt.modelGateway -> basalt.poolController "singleton EU control-plane"
+    basalt.poolController -> basalt.poolRuntime "read new usage records; read this person's weekly cap"
+    basalt.poolController <- basalt.poolRuntime "management response"
+    basalt.modelGateway <- basalt.poolController "only the caller's own usage and cap"
+    basalt.router <- basalt.modelGateway "pool control response"
+    basalt.pool <- basalt.router "pool control response"
+  }
+
+  dynamic view v1_member_cap {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Cap a member"
+    description """
+      Source implementation; live acceptance is pending deployment and a second person.
+      The owner sets a member's weekly cap on the share page. The share host checks the owner's session and
+      that the signed intent names them as owner, then the controller sets Home's weekly spend limit on that
+      member's backend user for this pool only. Once the member's charges reach it, Home refuses their next
+      request and the controller replaces the refusal with a clear message.
+    """
+
+    include poolOwner, poolMember, localClient, basalt.router, basalt.setupHost, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    poolOwner -> localClient "set a weekly cap on the share page"
+    localClient -> basalt.router "PUT /share/v1/members/:id/cap"
+    basalt.router -> basalt.setupHost "handle same-origin share request"
+    basalt.setupHost -> basalt.toolsGateway "native session; validate intent owner; list members"
+    basalt.setupHost <- basalt.toolsGateway "verified user"
+    basalt.setupHost -> basalt.modelGateway "signed cap action with 30-second expiry via private binding"
+    basalt.modelGateway -> basalt.poolController "intent owner must be the signed-in person"
+    basalt.poolController -> basalt.poolRuntime "PATCH the member's pool user: weekly calendar spend limit"
+    basalt.poolController <- basalt.poolRuntime "management response"
+    basalt.setupHost <- basalt.modelGateway "cap set"
+    poolMember -> localClient "keeps working"
+    localClient -> basalt.router "HTTP request"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE: /v1 and /v1/*"
+    basalt.modelGateway -> basalt.poolController "singleton EU control-plane"
+    basalt.poolController -> basalt.poolRuntime "inference on port 8317"
+    basalt.poolController <- basalt.poolRuntime "429 once the cap is reached"
+    localClient <- basalt.router "the cap's message, in the client's own error shape"
+  }
+}
