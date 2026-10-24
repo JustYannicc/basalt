@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "package": "@signalbox/zendesk",
+  "sourceSdk": "apps@0.0.1-beta.100",
+  "origin": "provided tested Zendesk source snapshot",
+  "snapshotSha256": "faf2ab0e176642842d150f41735ac8e8bd1c70e205742ffe9d52341db728d021",
+  "originalFileSha256": {
+    "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
+    "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
+    "index.ts": "a875c9c067430d05c8dd3787eff6aa295a72263ed673a23e0c58bfa65d54ced7",
+    "package.json": "5511f2c53b7800d3743be6b66a6e3d9a5d69a7b954ae99ab860ef093c2cb0734"
+  },
+  "catalogFileSha256": {
+    "README.md": "a4a48da6917e1157594877067ae981b36ca5768147ffce31f684233998dac939",
+    "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
+    "index.ts": "a875c9c067430d05c8dd3787eff6aa295a72263ed673a23e0c58bfa65d54ced7",
+    "package.json": "65f7237f20ca7d620800d91f4268b693067ba428e2fbb638cdb5cce94b025ddc"
+  },
+  "tenantTemplate": {
+    "file": "index.ts",
+    "marker": "example",
+    "setting": "EXECUTOR_ZENDESK_SUBDOMAIN"
+  }
+}

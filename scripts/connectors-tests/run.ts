@@ -8,6 +8,8 @@ type ConnectorsProofInput = {
   readonly root: string;
   readonly upstream: string;
   readonly commit: string;
+  readonly candidate: string;
+  readonly patches: readonly string[];
 };
 
 async function run(command: string, args: string[], cwd: string, log: string, home: string, heavy = false): Promise<string> {
@@ -30,8 +32,9 @@ async function run(command: string, args: string[], cwd: string, log: string, ho
 }
 
 /** Public self-host runtime, published provider emulator, native PATs, and installed Claude. */
-export async function runConnectorsProof({ root, upstream, commit }: ConnectorsProofInput): Promise<{ readonly checks: number }> {
-  if (!root || !upstream || !commit) throw new Error("Prepared runtime inputs are required.");
+export async function runConnectorsProof({ root, upstream, commit, candidate, patches }: ConnectorsProofInput): Promise<{ readonly checks: number }> {
+  if (!root || !upstream || !commit || !/^[a-f0-9]{40}$/.test(candidate) || patches.length === 0)
+    throw new Error("A frozen candidate and prepared runtime inputs are required.");
   for (const path of ["host.json", "apps.tgz", "npm"]) {
     await access(join(upstream, ".local/test-runtime", path)).catch(() => {
       throw new Error("Connector proof prerequisite missing: run heavy-slot bun run e2e:prepare in the prepared upstream checkout.");
@@ -40,6 +43,11 @@ export async function runConnectorsProof({ root, upstream, commit }: ConnectorsP
   const runs = join(root, ".generated/connectors-proof");
   await mkdir(runs, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(runs, "run-"));
+  await writeFile(join(directory, "proof-input.json"), `${JSON.stringify({
+    candidateSha: candidate,
+    upstreamPin: commit,
+    patches,
+  }, null, 2)}\n`, { mode: 0o600 });
   // Reuse the installed browser binary, while Playwright creates its profile under the private HOME/TMPDIR.
   const { chromium } = createRequire(join(upstream, "package.json"))("playwright") as { chromium: { executablePath(): string } };
   const browser = chromium.executablePath();
@@ -58,10 +66,12 @@ export async function runConnectorsProof({ root, upstream, commit }: ConnectorsP
   const entry = typeof metadata.bin === "string" ? metadata.bin : Object.values(metadata.bin)[0];
   if (!entry) throw new Error("Published emulator CLI missing.");
   const output = await run("bun", [join(root, "scripts/connectors-tests/runtime.mjs"), root, upstream, directory,
-    resolve(packageRoot, entry), browser], upstream, join(directory, "runtime.json"), home);
+    resolve(packageRoot, entry), browser, commit, candidate, JSON.stringify(patches)], upstream,
+  join(directory, "runtime.json"), home);
   const report = output.split(/\r?\n/).map((line) => {
     try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; }
-  }).find((value) => value?.installedClaude === true && value?.publishedGoogleEmulatorOAuth === true);
+  }).find((value) => value?.installedClaude === true && value?.publishedGoogleEmulatorOAuth === true
+    && value?.zendeskNativeAuthorizationStart === true && value?.zendeskPeerConnectionDenials === 2);
   if (!report || typeof report.checks !== "number") throw new Error("Connector runtime proof did not report full completion.");
   console.log(JSON.stringify(report));
   return { checks: report.checks };

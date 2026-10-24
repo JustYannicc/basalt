@@ -1,0 +1,220 @@
+{
+  "format_version": 3,
+  "repository": "UsefulSoftwareCo/executor",
+  "patches": [
+    {
+      "identity": "executor-optional-cloud-vendors",
+      "file": "0001-optional-cloud-vendors.patch",
+      "content_sha256": "384d49ad8e3c8be1e13aab68e38573049c0ce62131664a2dd8d506a594e43f0e",
+      "kind": "upstream",
+      "upstream_pull_request": 2348,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-cloud-deployment",
+      "file": "0002-cloud-deployment.patch",
+      "content_sha256": "b76641ef06a5d4cfb06b9c269f684749d39a38f3ebd3b9a85715dcf8549127e1",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-eu-durable-objects",
+      "upstream_issue": 2364,
+      "file": "0003-eu-durable-objects.patch",
+      "content_sha256": "3535935861fe64f93ebc155def76e3ff3ad8e71f41a7160c44c867b1eaf92e0b",
+      "kind": "upstream",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": true
+    },
+    {
+      "identity": "executor-encrypted-workflow-results",
+      "file": "0004-encrypted-workflow-results.patch",
+      "content_sha256": "945f3bb1b20fc210e666fc8ba513cbdaf8f1043dc9f67416d0b9745dfbab08d2",
+      "kind": "upstream",
+      "upstream_pull_request": 2369,
+      "database_sensitive": true,
+      "workflow_sensitive": true
+    },
+    {
+      "identity": "basalt-app-hosting",
+      "file": "0005-app-hosting.patch",
+      "content_sha256": "e2ee708e5d412c690dd25cf1854e8145faa0c2d8629229f487be6d0c855cc88d",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-product-brand",
+      "file": "0006-product-brand.patch",
+      "content_sha256": "aff71f50332dc425b286c49bcf70a3e611978e7097a7f9999ef1bce8d3c325ab",
+      "kind": "upstream",
+      "upstream_pull_request": 2350,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-product-brand-surfaces",
+      "file": "0007-product-brand-surfaces.patch",
+      "content_sha256": "fb671302dc610b18e2fc2546ebd104813bf55ef7b33f8cc7d8a7fd27bb69a629",
+      "kind": "upstream",
+      "upstream_pull_request": 2352,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-caller-identity",
+      "file": "0008-caller-identity.patch",
+      "content_sha256": "58d73a63da2ca4496e38c12b59719aa1510f3f89579ea85a496433f72ac4fb2c",
+      "kind": "upstream",
+      "upstream_pull_request": 2346,
+      "database_sensitive": false,
+      "workflow_sensitive": true
+    },
+    {
+      "identity": "basalt-framework",
+      "file": "0009-basalt-framework.patch",
+      "content_sha256": "1ec0b51b9c31f67addc2f3bb6083f19bd337e90fad68f8b68fc1b1cc50ec2524",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "remove_with": "executor-caller-identity",
+      "requires": "npm apps release with executor#2346"
+    },
+    {
+      "identity": "basalt-member-pools",
+      "file": "0010-member-pools.patch",
+      "content_sha256": "a77d067c32a86c1a17e9bc1ca0ae648af0b4ad6db4ee405dac90cb8dececac3e",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false,
+      "upstream_issue": 2362
+    },
+    {
+      "identity": "executor-hosted-connectors",
+      "file": "0011-hosted-connectors.patch",
+      "content_sha256": "66b367f6c446d6a79073fc14dbe06d4c017523eb7e2d8812cbab5ee142d6a133",
+      "kind": "upstream",
+      "upstream_pull_request": 2361,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-hosted-connector-brand",
+      "file": "0012-hosted-connector-brand.patch",
+      "content_sha256": "969f9f3257622ab9691752c81acdd6458edc0d92cc7d8b5495e1f3fb833fd739",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-tool-search-empty",
+      "file": "0013-tool-search-empty.patch",
+      "content_sha256": "00a0affa32115c6b145220aedd19a176d7d56fff8c4616b9982d2fc37590bcdf",
+      "kind": "upstream",
+      "upstream_pull_request": 2345,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-sentry-otel-destination",
+      "file": "0014-sentry-otel-destination.patch",
+      "content_sha256": "b04dab9403e6aad10a5ed654a90b667d64e9dfb20e8c0ce70b3adc86b1dddb63",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-configurable-telemetry-relay",
+      "file": "0015-configurable-telemetry-relay.patch",
+      "content_sha256": "eda94d6999c5b6dae16b880b26d2519f32e273e49545c837d418cbf75c0a503c",
+      "kind": "upstream",
+      "upstream_pull_request": 2363,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-catalog-search-service",
+      "file": "0016-catalog-search-service.patch",
+      "content_sha256": "7462245e3f4401ffdb87de139dbc6919eaebdfc68b7936a7e102b5c85c59cbdd",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-atlassian",
+      "file": "0017-atlassian.patch",
+      "content_sha256": "958413ecde916ceb28eafd25fdef3003ebfc65b78d53442bf580c8e96747e843",
+      "kind": "upstream",
+      "upstream_pull_request": 2367,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-pool-access-hook",
+      "file": "0018-pool-access-hook.patch",
+      "content_sha256": "dd7b3cd4e9dfcde90009f6fc3780af0b739d75a065ea3d835a7815c79855c4e7",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": true,
+      "upstream_issue": 2375
+    },
+    {
+      "identity": "executor-preview-auth",
+      "file": "0019-preview-auth.patch",
+      "content_sha256": "f804fdc679e90fff242fb6cec9fd91d4383099fdaaa261d60a3260fad48aacbd",
+      "kind": "upstream",
+      "upstream_pull_request": 2360,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-gitlab-miro-oauth",
+      "file": "0020-gitlab-miro-oauth.patch",
+      "content_sha256": "a5c6c604260b70283dd98a4b862f4218c2360c3a913a575233f606e9ac8481a7",
+      "kind": "upstream",
+      "upstream_pull_request": 2366,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-zoho-oauth",
+      "file": "0021-zoho-oauth.patch",
+      "content_sha256": "2f54ac20814fca30c9f09e8b389423eaff4d8bef625d66146519807f41c7ea79",
+      "kind": "upstream",
+      "upstream_pull_request": 2373,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-zendesk-oauth",
+      "file": "0022-zendesk-hosted-oauth.patch",
+      "content_sha256": "966ad2ae6333efe2b310fb284680f012526693b8f48fc997749c24549674be36",
+      "kind": "upstream",
+      "upstream_pull_request": 2376,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "upstream_issue": 2374
+    },
+    {
+      "identity": "executor-slack-user-oauth",
+      "file": "0023-slack-user-oauth.patch",
+      "content_sha256": "30604bcf4b36b4779358df947be195fd2b79133a5e7616b2680138bd768220de",
+      "kind": "upstream",
+      "upstream_pull_request": 2371,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "upstream_issue": 2368
+    }
+  ]
+}

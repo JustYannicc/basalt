@@ -78,6 +78,113 @@ export interface UsageResponse {
   readonly records: readonly UsageRecord[];
 }
 
+/** Tokens the way Home counts them. `total` is every token, including cached input. */
+export interface TokenCounts {
+  /** Input sent at the full rate. */
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  /** Output, reasoning included. */
+  readonly output: number;
+  readonly total: number;
+}
+
+/** One slice of usage. `cost` is the API-equivalent price in US dollars; unpriced requests add nothing to it. */
+export interface UsageSlice {
+  readonly requests: number;
+  readonly tokens: TokenCounts;
+  readonly cost: number;
+  /** Requests whose model had no price, so `cost` leaves them out. */
+  readonly unpriced: number;
+}
+
+export interface ModelUsage extends UsageSlice {
+  /** Home's provider id for the account that served it, such as `claude`. */
+  readonly provider: string;
+  readonly model: string;
+}
+
+/** One UTC day, `YYYY-MM-DD`, with its models. */
+export interface DayUsage extends UsageSlice {
+  readonly day: string;
+  readonly models: readonly ModelUsage[];
+}
+
+/**
+ * A member's optional spending cap on this pool, enforced by the pool backend's spend limits.
+ * Calendar weeks, Monday 00:00 UTC. The request that crosses it finishes; the next one is refused.
+ */
+export interface Cap {
+  /** US dollars of API-equivalent cost per week. */
+  readonly weekly: number;
+  readonly used: number;
+  readonly remaining: number;
+  /** ISO time it resets. */
+  readonly resetAt: string;
+}
+
+/** Per member, for the pool's owner only. `member` is the tools-service user id. */
+export interface MemberUsage extends UsageSlice {
+  readonly member: string;
+  /** Only this member's requests, per model and per UTC day. */
+  readonly models: readonly ModelUsage[];
+  readonly days: readonly DayUsage[];
+  /** Null when no cap is set, which is the default. */
+  readonly cap: Cap | null;
+}
+
+/**
+ * Whether a provider's accounts are enough, from how often they hit their limits in the last 7 days:
+ * - `add`: every account was at a limit at once, so requests had nowhere to go;
+ * - `remove`: no account hit a limit and the rest always had at least one account's worth left;
+ * - `enough`: anything in between;
+ * - `unknown`: under a day of readings.
+ */
+export type AccountsAdvice = "add" | "remove" | "enough" | "unknown";
+export interface AccountsNeeded {
+  readonly provider: string;
+  readonly advice: AccountsAdvice;
+  readonly accounts: number;
+  /** Separate times an account reached a limit, over the period read. */
+  readonly limitHits: number;
+  /** Share of readings with every account at a limit, 0 to 1. */
+  readonly exhausted: number;
+  /** Hours of readings behind the advice. */
+  readonly hoursRead: number;
+}
+
+/** The usage views cover this many days, the most a summary can ask for. */
+export const usageDays = 30;
+
+/**
+ * GET /usage/summary?days=30 (1 to 30). The owner sees the whole pool, per member and the accounts
+ * needed. Anyone else sees only their own usage on this pool and their own cap; `members` and
+ * `accountsNeeded` are absent, never empty placeholders. Days with no usage are left out.
+ */
+export interface UsageSummary {
+  readonly scope: "pool" | "you";
+  /** ISO start, inclusive, and end, exclusive. */
+  readonly from: string;
+  readonly to: string;
+  readonly total: UsageSlice;
+  readonly models: readonly ModelUsage[];
+  readonly days: readonly DayUsage[];
+  readonly members?: readonly MemberUsage[];
+  readonly accountsNeeded?: readonly AccountsNeeded[];
+  /** The caller's own cap on this pool; always null for the owner. */
+  readonly cap: Cap | null;
+  /** ISO time the pool last read Home's records, or null before the first read. */
+  readonly readAt: string | null;
+}
+
+export const maxWeeklyCap = 100_000;
+
+/** Whole cents, more than nothing and at most `maxWeeklyCap` US dollars a week. */
+export function isWeeklyCap(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= maxWeeklyCap
+    && Math.round(value * 100) / 100 === value;
+}
+
 /** POST /sign-ins `{ provider }` */
 export interface SignInStarted {
   /** Opaque, signed. Pass it back to the other sign-in calls. */
@@ -109,6 +216,17 @@ export interface LoginFileAdded {
 }
 
 /** DELETE /accounts/:id removes an account from this pool and the backend. */
+
+/** Owner-only GET /accounts/:id/export?provider=claude|codex.
+ * Uses the existing signed pool token and owner caller header, including for opaque native app ids.
+ * The exact account must belong to that pool and match the provider. Returns the unmodified Home
+ * login-file JSON object, with no Result wrapper and Cache-Control: no-store. Maximum 1 MiB.
+ * Bad selectors return 400 invalid_query; absent/wrong-pool/wrong-provider accounts return 404
+ * not_found. Invalid auth returns 401 unauthorized or 403 not_owner; backend failures return
+ * sanitized 503 backend_unavailable. The route neither imports nor refreshes subscriptions.
+ * The protected Actions exporter owns dedicated-account confirmation and repository secret writes.
+ * This is a direct control endpoint, not a tool exposed by the installed pool app.
+ */
 
 export type ControlErrorCode =
   | "unauthorized"

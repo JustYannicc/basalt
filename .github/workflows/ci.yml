@@ -52,6 +52,11 @@ jobs:
       - name: Check the pool bootstrap
         run: python3 -m unittest containers.pool.test_bootstrap
       - run: npm run prepare:upstream
+      - name: Prove release updates, broken patches, rollback and preview cleanup gates
+        run: |
+          npm run check:releases
+          npm run prove:releases
+          npm run check:preview-auth
       - name: Architecture deployment generation
         run: |
           bun run --cwd .upstream/apps/hosted/cloud framework:build
@@ -74,3 +79,22 @@ jobs:
       - run: npm run build
       - run: npm run check:build
       - run: npm run typecheck
+      - name: Capture the checked pull request merge result
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.event.pull_request.head.ref, 'release-updates/') &&
+          contains(github.event.pull_request.labels.*.name, 'release-update')
+        run: node scripts/release-merge/check-receipt.ts
+      - uses: actions/upload-artifact@v4
+        if: >-
+          success() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.event.pull_request.head.ref, 'release-updates/') &&
+          contains(github.event.pull_request.labels.*.name, 'release-update')
+        with:
+          name: ${{ format('release-check-{0}-{1}-{2}', github.event.pull_request.number, github.event.pull_request.head.sha, github.run_attempt) }}
+          path: ${{ runner.temp }}/check-receipt.json
+          if-no-files-found: error
+          retention-days: 1

@@ -13,10 +13,12 @@ export interface FeedEntry {
   [key: string]: unknown;
 }
 export interface Feed { version: 1; apps: FeedEntry[] }
-export interface Addition { entry: FeedEntry; source: { package: string; files: unknown[] } }
+export interface FeedSource { package: string; files: unknown[] }
+export interface FeedAddition { entry: FeedEntry; source?: FeedSource }
+export interface Addition extends FeedAddition { source: FeedSource }
 
 /** Resolve relative icons before the feed moves to our origin. */
-export function mergeFeed(official: Feed, additions: readonly Addition[] = [], ready: ConnectorAvailability = { google: false, github: false }): Feed {
+export function mergeFeed(official: Feed, additions: readonly FeedAddition[] = [], ready: ConnectorAvailability = { google: false, github: false }): Feed {
   if (official.version !== 1 || !Array.isArray(official.apps)) throw new Error("Invalid catalog");
   const notices = connectionNotices(ready);
   const apps = new Map<string, FeedEntry>();
@@ -31,7 +33,7 @@ export function mergeFeed(official: Feed, additions: readonly Addition[] = [], r
   }
   for (const addition of additions) {
     if (apps.has(addition.entry.id)) throw new Error("Addition duplicates an official app");
-    if (addition.source.package !== addition.entry.package) throw new Error("Addition package mismatch");
+    if (addition.source && addition.source.package !== addition.entry.package) throw new Error("Addition package mismatch");
     apps.set(addition.entry.id, addition.entry);
   }
   return { version: 1, apps: [...apps.values()] };

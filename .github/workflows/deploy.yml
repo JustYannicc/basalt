@@ -1,12 +1,14 @@
 name: Deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
+  deployments: write
 
 concurrency:
   group: deploy-production
@@ -14,8 +16,18 @@ concurrency:
 
 jobs:
   deploy:
+    if: >-
+      github.event.workflow_run.name == 'Check' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml'
     runs-on: ubuntu-latest
     env:
+      RELEASE_CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+      GITHUB_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
@@ -27,10 +39,19 @@ jobs:
       EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
       EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
       EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+      EXECUTOR_ZENDESK_SUBDOMAIN: ${{ secrets.EXECUTOR_ZENDESK_SUBDOMAIN }}
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID }}
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GITLAB_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_ID }}
+      EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_MIRO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_ID }}
+      EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_SECRET }}
       EXECUTOR_OAUTH_ZOHO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_ID }}
       EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET }}
       EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID }}
       EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID }}
+      EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET }}
       AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
       AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
       BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
@@ -46,6 +67,10 @@ jobs:
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
@@ -56,16 +81,21 @@ jobs:
         run: node --input-type=module -e 'import { deployEnvironment } from "./scripts/environment.ts"; deployEnvironment();'
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
-      - run: npm run check
       - run: npm run prepare:upstream
+      - run: npm run check
+      - run: npm run check:releases
+      - run: npm run check:preview-auth
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run check:build
       - run: bun install --cwd scripts/architecture --frozen-lockfile
       - run: npm run architecture:model
       - run: npm run typecheck
-      - run: npm run deploy
+      - name: Compare the candidate with the last successful production deployment
+        run: |
+          mkdir -p .local
+          node scripts/deploy-safety/release.ts report --candidate "$RELEASE_CANDIDATE_SHA" > .local/production-report.json
+      - name: Deploy normal releases and restore the previous pin after a failed attempt
+        run: env -u GITHUB_SHA node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_CANDIDATE_SHA" --report .local/production-report.json --mode automatic
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
-      - name: Check public routes
-        run: node scripts/smoke.ts

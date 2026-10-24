@@ -8,11 +8,10 @@ import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
+import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
+import { PriceUpkeep } from "./prices.ts";
+import { PoolUsage, summaryPath } from "./pool-usage.ts";
 
-const modelObservationPaths = new Set([
-  "/v1/responses", "/v1/messages", "/v1/chat/completions", "/v1/completions",
-  "/messages", "/chat/completions", "/completions",
-]);
 
 export interface PoolEnvironment extends TelemetryEnv {
   PoolContainer: DurableObjectNamespace;
@@ -27,6 +26,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private lifecycle: Promise<PoolLifecycle>;
   private control: PoolControl;
   private computers: Computers;
+  private prices: PriceUpkeep;
+  private usage: PoolUsage;
   private managementReadyUntil = 0;
   private managementWarming?: Promise<void>;
 
@@ -52,10 +53,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       defer: (work) => ctx.waitUntil(work), home, onProductEvent,
     });
+    this.prices = new PriceUpkeep(new HomeClient(home), ctx.storage);
+    this.usage = new PoolUsage({
+      storage: ctx.storage, client: new HomeClient(home),
+      signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      audience: (pool) => this.computers.audience(pool), defer: (work) => ctx.waitUntil(work),
+    });
     this.computers = new Computers({
       storage: ctx.storage, home: new ComputerHome(new HomeClient(home), onProductEvent),
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      onProductEvent,
+      onProductEvent, usage: this.usage,
     });
   }
 
@@ -117,6 +124,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await (await this.lifecycle).warm();
     await this.computers.observeUsage();
     await this.control.expire();
+    await this.prices.run();
+    // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
+    await this.usage.observe().catch((error: unknown) => console.error("Pool usage observation failed", error));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -124,6 +134,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (pathname === accessPath) return this.computers.access(request);
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
+    if (pathname === summaryPath) return this.usage.handle(request);
     if (isControlPath(pathname)) return this.control.handle(request);
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
@@ -132,8 +143,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       if (pathname === "/__warm") return new Response(null, { status: 204 });
       const container = this.ctx.container;
       if (!container || !port) throw new Error("Pool container unavailable");
-      const response = await container.getTcpPort(port).fetch(request);
-      if (request.method === "POST" && modelObservationPaths.has(pathname) && response.ok)
+      const upstream = await container.getTcpPort(port).fetch(request);
+      const response = await rewriteCapResponse(upstream, pathname);
+      if (request.method === "POST" && modelPaths.has(pathname) && response.ok)
         this.ctx.waitUntil(this.computers.observeUsage());
       if (response.status === 101) return response;
       const headers = new Headers(response.headers);

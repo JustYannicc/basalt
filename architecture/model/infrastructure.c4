@@ -30,6 +30,11 @@ model {
     technology "Google OAuth"
     metadata { hosts "accounts.google.com|oauth2.googleapis.com" }
   }
+  zendeskTenant = adapter "Zendesk tenant" {
+    #external
+    technology "Zendesk OAuth and ticketing API"
+    metadata { hosts "configured-label.zendesk.com" }
+  }
   workspaceApi = adapter "Workspace API" {
     #external
     technology "Google Workspace APIs"
@@ -49,18 +54,38 @@ model {
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
   basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries with provider notices and unmodified sources"
   basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"
+  basalt.toolsGateway -[sync]-> zendeskTenant "authorize, exchange JSON tokens and call each person's tenant-bound grant"
   basalt.toolsGateway -[sync]-> workspaceApi "call with the person's grant"
   basalt.build -[sync]-> repositoryApi "download releases and actions"
   basalt.deployment -[sync]-> repositoryApi "download deployment actions"
   basalt.toolsGateway -[sync]-> repositoryApi "authorize and call with the person's grant"
   basalt.toolsGateway -[sync]-> messagingApi "authorize and call subject to provider access gates"
 
+  repositoryCollaboration = adapter "Repository collaboration" {
+    #external
+    technology "GitLab.com REST API and OAuth"
+    metadata { hosts "gitlab.com" }
+  }
+  visualCollaboration = adapter "Visual collaboration" {
+    #external
+    technology "Miro REST API and OAuth"
+    metadata { hosts "miro.com|api.miro.com" }
+  }
+  basalt.toolsGateway -[sync]-> repositoryCollaboration "authorize, refresh and call with the person's grant"
+  basalt.toolsGateway -[sync]-> visualCollaboration "authorize, refresh and call within the person's selected team"
   audioService = adapter "Audio service" {
     #external
     technology "ElevenLabs API"
     metadata { hosts "api.elevenlabs.io" }
   }
   basalt.toolsGateway -[sync]-> audioService "call with the person's API key"
+
+  cloudAccountApi = adapter "Cloud account API" {
+    #external
+    technology "AWS regional STS and S3 APIs"
+    metadata { hosts "*.amazonaws.com" }
+  }
+  basalt.toolsGateway -[sync]-> cloudAccountApi "sign and call with the person's own temporary or IAM credentials"
 
   crmService = adapter "CRM service" {
     #external
@@ -127,6 +152,18 @@ model {
     technology "GitHub raw source"
     metadata { hosts "raw.githubusercontent.com" }
   }
+  updateSource = adapter "Update source" {
+    #external
+    technology "GitHub REST API"
+    metadata { hosts "api.github.com" }
+  }
+  basalt.releaseUpdates -[sync]-> repositoryApi "download actions and release sources; read CI and update repository state"
+  basalt.releaseUpdates -[sync]-> updateSource "read published releases and patch merges; verify exact merge CI; write preview secrets; merge verified updates"
+  basalt.deployment -[sync]-> updateSource "read deployment history and store recovery receipts"
+  basalt.releaseUpdates -[sync]-> releaseSource "fetch pinned sources, native clients and workflow actions"
+  basalt.releaseUpdates -[sync]-> packageSource "install preview build and native client dependencies"
+  basalt.releaseUpdates -[sync]-> databaseProvider "read database migration evidence"
+  basalt.releaseUpdates -[sync]-> deploymentProvider "verify temporary resources are absent"
   basalt.build -[sync]-> providerSource "check provider catalog against pinned Home source"
   deploymentProvider = adapter "Deployment provider" {
     #external

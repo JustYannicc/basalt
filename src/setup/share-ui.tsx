@@ -1,7 +1,8 @@
 import { useEffect, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import type { ComputerResult } from "../../apps/pool/ui/computer-types.ts";
-import { Members, type MembersApi, type PoolInvitation, type ShareView } from "../../apps/pool/ui/members.tsx";
+import { Members, type MembersApi, type PoolInvitation, type ShareView } from "./members.tsx";
+import type { ShareUsage } from "./member-usage.tsx";
 import { brand } from "../../brand.ts";
 
 function App() {
@@ -23,6 +24,8 @@ function App() {
       invite: (email) => read<{ invitation: PoolInvitation }>("invitations", { email }, "POST"),
       cancel: async (id) => done(await read(`invitations/${encodeURIComponent(id)}`, {}, "DELETE")),
       remove: async (id) => done(await read(`members/${encodeURIComponent(id)}`, {}, "DELETE")),
+      usage: () => read<ShareUsage>(`usage?intent=${encodeURIComponent(intent ?? "")}`),
+      setCap: async (id, weekly) => done(await read(`members/${encodeURIComponent(id)}/cap`, { weekly }, "PUT")),
     };
   }, [intent]);
   useEffect(() => { document.title = `Share your pool · ${brand.name}`; }, []);

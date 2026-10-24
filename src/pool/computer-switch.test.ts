@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { backendUserName } from "./backend-users.ts";
 import { fixture, member, owner, pool } from "./test/computers.ts";
 import type { Computer, PoolChoice } from "../../apps/pool/ui/computer-types.ts";
 
@@ -62,7 +63,12 @@ test("switch patches the same key, sets its pool and binding time, and a repeat 
   assert.equal(f.server.keys[0]!.api_key, before.api_key);
   const patch = f.server.calls.filter((call) => call.path === "/access/api-keys" && call.method === "PATCH");
   assert.equal(patch.length, 1);
-  assert.deepEqual(patch[0]!.body, { api_key_id: before.api_key_id, channels: [f.server.groups.find((group) => String(group.channel_name).endsWith(target.pool))!.id] });
+  const targetUserName = await backendUserName(member, target.pool);
+  const targetUser = f.server.users.find((user) => user.username === targetUserName)!;
+  assert.notEqual(targetUser.id, before.user_id);
+  assert.equal(f.server.keys[0]!.user_id, targetUser.id);
+  assert.equal((await f.registry())[computer.computer.id]!.userId, targetUser.id);
+  assert.deepEqual(patch[0]!.body, { api_key_id: before.api_key_id, user_id: targetUser.id, channels: [f.server.groups.find((group) => String(group.channel_name).endsWith(target.pool))!.id] });
   const boundAt = (await f.registry())[computer.computer.id]!.boundAt;
   f.advance(1_000);
   assert.equal((await f.action("switch", member, computer.intent, { id: computer.computer.id, pool: target.pool })).status, 200);

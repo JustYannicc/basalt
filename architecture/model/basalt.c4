@@ -17,8 +17,17 @@ model {
 
     deployment = module "Deployment" {
       metadata {
-        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
-        bindings "stageRouter=basalt.router|this.stageRouter=basalt.router"
+        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|scripts/preview|scripts/preview-auth|scripts/deploy-safety|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
+        bindings "stageRouter=basalt.router|this.stageRouter=basalt.router|controlPlane=deploymentProvider"
+        libraries "better-auth"
+      }
+    }
+
+    releaseUpdates = module "Release updates" {
+      #basalt #v1 #deep
+      description "Detects pinned upstream updates and opens one update pull request per release. Tools candidates require published versioned releases. CI proves the exact merge commit against current main. A stale release branch is updated and waits for fresh checks; release merge attempts are serialized in their own workflow. An exact-head preview must pass real sign-in and native client acceptance, then destroy and verify all temporary resources before automatic merge. Database or workflow identity changes stay manual behind a completed backup and a protected deployment environment. Drain, quiesce and database restore remain manual in v1. A protected workflow exports exact dedicated subscription accounts through the owner-scoped control API straight into Actions secrets. Manual rollback accepts the latest successful or failed database release and deploys recorded previous pins after the operator restores the database. V1 accepts a main advance between the final check and squash merge; production deploys only the exact commit whose own main CI passed. Live acceptance is pending account setup."
+      metadata {
+        code "scripts/releases|scripts/release-credentials|scripts/release-preview|scripts/release-merge|.github/workflows/releases.yml|.github/workflows/release-preview.yml|.github/workflows/release-cleanup.yml|.github/workflows/release-merge.yml|.github/workflows/release-manual.yml|.github/workflows/release-rollback.yml|.github/workflows/release-credentials.yml"
       }
     }
 
@@ -29,7 +38,7 @@ model {
 
     catalog = module "Connector catalog" {
       #basalt #v1
-      description "Read-only feed in a separate Worker. Merges the official catalog with published additions and provider notices. No person credentials; official app implementations stay unchanged."
+      description "Read-only feed in a separate Worker. Merges the official catalog with published additions and provider notices. No person credentials. Carries the official messaging app with its contributed personal user-token method until published upstream. It serves tenant-bound Zendesk source only when trusted tenant and hosted OAuth client settings are complete. Source and provider notices stay outside the tools API Worker."
       metadata { code "src/catalog" }
     }
 
@@ -44,7 +53,7 @@ model {
 
     modelGateway = module "Model gateway" {
       #basalt #v1 #deep #port #funnel
-      description "Owns the computer registry, the pool directory and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list, re-points a computer's key to another of the person's pools, and applies signed access changes: revokes the keys of people who lost a pool before the tools service commits. Model traffic remains on the existing /v1 passthrough. After a successful model POST, the pool Worker schedules usage observation with waitUntil; its periodic alarm calls the same observer through the same Home usage interface as a fallback."
+      description "Owns the computer registry, the pool directory and encrypted one-time setup credentials in the pool controller. Generates model keys registered to a user and a nonempty channel-group list, re-points a computer's key to another of the person's pools, and applies signed access changes: revokes the keys of people who lost a pool before the tools service commits. Model traffic remains on the existing /v1 passthrough. After a successful model POST, the pool Worker schedules usage observation with waitUntil; its periodic alarm calls the same observer through the same Home usage interface as a fallback. Keeps 31 days of per-pool, per-person, per-model daily usage read from Home's records, samples account limits for the accounts-needed advice, asks Home to import API prices, sets each member's optional weekly cap as a Home spend limit on that person's backend user for the pool, and rewrites Home's cap refusal into a clear message."
       metadata {
         code "src/pool"
         bindings "singleton(env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime"
@@ -58,13 +67,13 @@ model {
 
     pool = module "Pool app" {
       #basalt #v1 #deep
-      description "One private app instance per person per organization, run by the tools service. Accounts and Computers screens request a signed setup intent from the pool Worker and open the root /setup page. App screen hosting is disabled; live acceptance is pending."
+      description "One private app instance per person per organization, run by the tools service. Accounts, Usage and Computers screens; Usage shows tokens and API-equivalent cost per model over 30 days, the whole pool for the owner and only the caller's own for anyone else. Computers requests a signed setup intent from the pool Worker and opens the root /setup page. App screen hosting is disabled; live acceptance is pending."
       metadata { code "apps/pool"; libraries "apps|react|react-dom"; bindings "ctx=basalt.router" }
     }
 
     setupHost = module "Setup host" {
       #basalt #v1 #deep
-      description "Root /setup and /share React pages reuse pool UI components and are bundled as router static assets. HTTP handlers use the native cookie session, personal PAT, organization invitation and member APIs and app access, then call the private pool binding with an action-bound signature expiring after 30 seconds. Source implementation; live acceptance is pending."
+      description "Root /setup and /share React pages reuse pool UI components and are bundled as router static assets. The share page shows each person's 30-day usage and lets the owner set or remove their weekly cap. HTTP handlers use the native cookie session, personal PAT, organization invitation and member APIs and app access, then call the private pool binding with an action-bound signature expiring after 30 seconds. Source implementation; live acceptance is pending."
       metadata {
         code "src/setup"
         libraries "react|react-dom"
@@ -135,6 +144,12 @@ model {
     metadata { hosts "dynamic"; sdks "upstream" }
   }
 
+  priceCatalog = external "API price catalog" {
+    #external
+    description "models.dev, fetched by the pool backend's own price import. Basalt code never calls it."
+    metadata { hosts "dynamic"; sdks "upstream" }
+  }
+
   appHosting = external "App hosting" {
     #external #planned
     metadata { hosts "apps.signalbox.run"; status "disabled origin configuration" }
@@ -152,6 +167,18 @@ model {
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"
   basalt.build -[sync]-> basalt.deployment "read deployment settings"
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
+  basalt.releaseUpdates -[sync]-> basalt.pool "read pool control contract"
+  basalt.releaseUpdates -[sync]-> basalt.modelGateway "sign owner-scoped export claims"
+  basalt.releaseUpdates -[sync]-> basalt.brandConfig "derive public credential export origin"
+  basalt.releaseUpdates -[sync]-> basalt.router "export exact dedicated owner accounts through pool control API"
+  basalt.releaseUpdates -[sync]-> basalt.build "prepare pinned source and verify carried patches"
+  basalt.releaseUpdates -[sync]-> basalt.deployment "deploy isolated preview; seed native sign-in; destroy and verify absence"
+  basalt.deployment -[sync]-> basalt.releaseUpdates "classify source changes before backup and workflow drain gates"
+  basalt.releaseUpdates -[sync]-> basalt.toolsGateway "sign in with native preview auth and use credential-free tool search"
+  basalt.releaseUpdates -[sync]-> basalt.setupHost "mint and revoke separate preview computers through public setup routes"
+  basalt.releaseUpdates -[sync]-> basalt.setupInstaller "download and run the public installer; undo isolated client configuration"
+  basalt.releaseUpdates -[sync]-> localClient "run both native clients with dedicated preview credentials"
+  localClient -[sync]-> basalt.releaseUpdates "return native model and tool-call evidence"
   basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY and optional telemetry settings"
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
   basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY, patched apps framework and optional telemetry relay config"
@@ -165,7 +192,7 @@ model {
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
   basalt.build -[sync]-> basalt.feedback "bundle feedback UI"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
-  basalt.build -[sync]-> basalt.toolsGateway "copy app bundle, token signer and access contract; build patched apps framework for compiler"
+  basalt.build -[sync]-> basalt.toolsGateway "write the pool app bundle as a hash-named site asset; copy token signer and access contract; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
   basalt.build -[sync]-> basalt.setupHost "bundle root setup and share React pages from shared pool UI"
   basalt.build -[sync]-> basalt.setupInstaller "install frozen setup dependencies; bundle installer asset"
@@ -203,7 +230,7 @@ model {
   basalt.toolsGateway -[sync]-> poolOwner "show pool tool result in hosted screen" { #planned }
   poolOwner -[sync]-> modelProviders "sign in on the provider's page in own browser"
   basalt.pool -[sync]-> basalt.router "pool control API: /pool/v1 with a pool token" {
-    description "Scoped to the pool's channel group; owner-only changes and owner-only usage reads by exact client session or key (GET /pool/v1/usage). The tools service supplies ctx.user.id as the caller."
+    description "Scoped to the pool's channel group; owner-only changes and owner-only usage reads by exact client session or key (GET /pool/v1/usage). GET /pool/v1/usage/summary answers any caller: the whole pool for the owner, only their own usage and cap for anyone else. The tools service supplies ctx.user.id as the caller."
   }
   basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
   basalt.toolsGateway -[sync]-> basalt.router "access change: POST /pool/v1/access, signed sba1, before the change commits" {
@@ -237,8 +264,9 @@ model {
   }
   basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
+  basalt.poolRuntime -[sync]-> priceCatalog "import API prices when the pool Worker asks"
 
-  basalt.toolsGateway -[tool]-> basalt.pool "install and upgrade per member; link signed pool token" {
+  basalt.toolsGateway -[tool]-> basalt.pool "install and upgrade per member from the hash-checked site asset; link signed pool token" {
     description "One private instance per verified member per organization. Sign the token with POOL_APP_SIGNING_KEY; sharing uses the tools service's built-in sharing."
   }
   basalt.toolsGateway -[tool]-> basalt.pool "run pool app tools with the caller"
