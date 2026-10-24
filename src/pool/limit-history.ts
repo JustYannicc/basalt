@@ -3,13 +3,13 @@ import { digest } from "./backend-users.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "./usage-storage.ts";
 export { ChunkStorage, UsageQueue, type UsageStorage } from "./usage-storage.ts";
 
-type ReadingAccount = Pick<Account, "id" | "provider" | "state" | "windows">;
+type ReadingAccount = Pick<Account, "id" | "provider" | "state" | "windows" | "observedAt">;
 interface Sample { at: number; accounts: number; limited: number; hits: number; spare: boolean }
 // Twelve five-minute slots per hour. Masks retain exact rolling-window edges and gaps.
 type Hour = [at: number, readings: number, exhausted: number, removable: number, hits: [number, number][], accounts: [number, number][]];
-interface ProviderHistory { hours: Hour[]; previous: Record<string, boolean>; lastAt: number }
+interface ProviderHistory { hours: Hour[]; previous: Record<string, boolean>; lastAt: number; observed?: Record<string, number> }
 interface LegacyProvider { samples: Sample[]; previous: Record<string, boolean>; lastAt: number }
-interface PoolHistory { providers: Record<string, ProviderHistory | LegacyProvider> }
+interface PoolHistory { version?: 2; providers: Record<string, ProviderHistory | LegacyProvider> }
 const step = 5 * 60_000;
 const hourMs = 3_600_000;
 const week = 7 * 24 * hourMs;
@@ -45,7 +45,9 @@ export class LimitHistory {
     return this.queue.run(async () => {
       const at = Math.floor(now.getTime() / step) * step;
       await this.storage.recover(`${key(pool)}:pending`);
-      const history = await this.storage.get<PoolHistory>(key(pool)) ?? { providers: {} };
+      const saved = await this.storage.get<PoolHistory>(key(pool));
+      // Old samples included cached quotas, so none of their hours are evidence.
+      const history: PoolHistory = saved?.version === 2 ? saved : { version: 2, providers: {} };
       const groups = new Map<string, ReadingAccount[]>();
       for (const account of accounts) groups.set(account.provider, [...(groups.get(account.provider) ?? []), account]);
       for (const name of Object.keys(history.providers)) {
@@ -57,11 +59,17 @@ export class LimitHistory {
         const name = JSON.stringify(provider);
         const old = compact(history.providers[name] ?? { hours: [], previous: {}, lastAt: -Infinity });
         if (at <= old.lastAt) continue;
+        const readings = await Promise.all(rows.map(async (account) => ({ account, id: await digest(account.id), at: Date.parse(account.observedAt ?? "") })));
+        // Thirty minutes tolerates a few missed probes. Each observation counts
+        // once. Require the whole provider before calling its pool spare or exhausted.
+        if (!readings.length || readings.some((reading) => !Number.isFinite(reading.at) || reading.at > now.getTime()
+          || now.getTime() - reading.at > 30 * 60_000 || reading.at <= (old.observed?.[reading.id] ?? -Infinity))) continue;
         const previous: Record<string, boolean> = {};
+        const observed: Record<string, number> = {};
         let limited = 0, hits = 0, known = true;
         const capacity = new Map<number, { remaining: number; accounts: number }>();
-        for (const account of rows) {
-          const id = await digest(account.id);
+        for (const { account, id, at: observation } of readings) {
+          observed[id] = observation;
           // Home v1.1.6 cliproxy/auth/manager.go:1849-1895 also marks refresh failures unavailable.
           const hit = account.windows.some((window) => window.remainingRatio !== null && window.remainingRatio <= 0.01);
           previous[id] = hit;
@@ -87,7 +95,7 @@ export class LimitHistory {
         }
         append(hours, { at, accounts: rows.length, limited, hits, spare: known && rows.length >= 2 && capacity.size > 0
           && [...capacity.values()].every((window) => window.accounts === rows.length && window.remaining >= 1) });
-        history.providers[name] = { hours, previous, lastAt: at };
+        history.providers[name] = { hours, previous, observed, lastAt: at };
         changed = true;
       }
       if (changed) await this.storage.commit(new Map([[key(pool), history]]), [], `${key(pool)}:pending`);
@@ -97,7 +105,7 @@ export class LimitHistory {
     return this.queue.run(async () => {
       await this.storage.recover(`${key(pool)}:pending`);
       const history = await this.storage.get<PoolHistory>(key(pool));
-      return Object.entries(history?.providers ?? {}).sort(([a], [b]) => a.localeCompare(b)).flatMap(([name, value]) => {
+      return Object.entries(history?.version === 2 ? history.providers : {}).sort(([a], [b]) => a.localeCompare(b)).flatMap(([name, value]) => {
         const provider: string = JSON.parse(name);
         let readings = 0, limitHits = 0, exhaustedCount = 0, removable = true, accounts = 0;
         for (const hour of compact(value).hours) {

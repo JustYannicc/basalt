@@ -59,7 +59,7 @@ async function fixture() {
     }
     throw new Error(`Unexpected Home read: ${path}`);
   });
-  await new LimitHistory(storage, () => now).sample("pool-a", [{ id: "credential-a", provider: "fixture", state: "active",
+  await new LimitHistory(storage, () => now).sample("pool-a", [{ id: "credential-a", provider: "fixture", state: "active", observedAt: now.toISOString(),
     windows: [{ id: "weekly", label: "Weekly", remainingRatio: 0.5, resetAt: null, windowSeconds: 604800 }] }]);
   const usage = new PoolUsage({ storage, client, signingKey, now: () => now,
     audience: async (pool) => { audienceCalls.push(pool); return pool === "pool-a" ? [owner, a, b, idle] : [a]; } });
@@ -160,4 +160,39 @@ test("owner sees every audience member including zero usage, each cap and pool-o
   }
   assert.deepEqual(result.accountsNeeded, [{ provider: "fixture", advice: "unknown", accounts: 1, limitHits: 0, exhausted: 0, hoursRead: 0 }]);
   assert.deepEqual(f.audienceCalls, ["pool-a"]);
+});
+
+test("alarm samples Home collection status and each primary window's observation", async () => {
+  const storage = new Memory(); let clock = now;
+  let reading: Json = {};
+  const client = new HomeClient(async (path) => {
+    const route = new URL(path, "https://home.example.test").pathname.slice("/v8/management".length);
+    if (route === "/channel-groups") return Response.json({ channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }] });
+    if (route === "/channel-group-details") return Response.json({ channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }] });
+    if (route === "/capabilities") return Response.json({});
+    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+    if (route === "/credentials") return Response.json({ files: [{ id: "a", provider: "fixture" }] });
+    if (route === "/quota/credentials") return Response.json({ items: [reading] });
+    throw new Error(path);
+  });
+  const usage = new PoolUsage({ storage, client, signingKey, audience: async () => [], now: () => clock });
+  const raw = (at: Date): Json => ({ credential_id: "a", observed_at: at.toISOString(), freshness: "fresh", collection_status: "success",
+    primary_windows: [{ id: "weekly", status: "healthy", remaining_ratio: 0.9, window_seconds: 604800, observed_at: at.toISOString() }] });
+  const history = new LimitHistory(storage);
+  for (const fault of ["failed", "stale", "old-window", "unknown-window"]) {
+    reading = raw(clock);
+    if (fault === "failed") reading.collection_status = "failed";
+    if (fault === "stale") reading.freshness = "stale";
+    const windows = reading.primary_windows as Json[];
+    if (fault === "old-window") windows[0]!.observed_at = new Date(clock.getTime() - 31 * 60000).toISOString();
+    if (fault === "unknown-window") windows[0]!.status = "unknown";
+    await usage.observe(); assert.deepEqual(await history.advice("pool-a", clock), []);
+    clock = new Date(clock.getTime() + 300000);
+  }
+  reading = raw(clock); await usage.observe();
+  assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 0);
+  clock = new Date(clock.getTime() + 300000); await usage.observe();
+  assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 0);
+  reading = raw(clock); await usage.observe();
+  assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 1 / 12);
 });

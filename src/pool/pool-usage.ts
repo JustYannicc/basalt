@@ -57,8 +57,21 @@ export class PoolUsage {
       client.data("/credentials").then((value) => rows(value.files)),
       client.quota([...ids].sort()),
     ]);
+    const now = this.deps.now?.() ?? new Date();
+    const byId = new Map(quota.map((reading) => [reading.credential_id, reading]));
     for (const [pool, accounts] of pools) {
-      try { await this.history.sample(pool, accountsView(files, quota, accounts)); }
+      // Home v1.1.6 internal/cluster/quota_snapshots.go:129-150,195-214,
+      // 812-828,1034-1091 retains windows after failed/partial probes. An account
+      // timestamp alone cannot establish freshness of every primary window.
+      const readings = accountsView(files, quota, accounts).map((account) => {
+        const raw = byId.get(account.id), windows = rows(raw?.primary_windows);
+        const times = [Date.parse(account.observedAt ?? ""), ...windows.map((window) => Date.parse(text(window.observed_at) ?? ""))];
+        const valid = raw?.freshness === "fresh" && ["success", "partial"].includes(text(raw.collection_status) ?? "")
+          && windows.length > 0 && windows.every((window) => ["healthy", "low", "exhausted"].includes(text(window.status) ?? ""))
+          && times.every((at) => Number.isFinite(at) && at <= now.getTime());
+        return { ...account, observedAt: valid ? new Date(Math.min(...times)).toISOString() : null };
+      });
+      try { await this.history.sample(pool, readings, now); }
       catch (error) { console.error("Pool limit sampling failed", error); }
     }
   }

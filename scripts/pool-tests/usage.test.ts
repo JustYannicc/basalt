@@ -169,7 +169,7 @@ test("real Home: late landing, removed credentials, switched key attribution and
     const credential = provider.keys[0]!.id;
     await new PoolHome(client, "pool-a").add([credential]);
     const key = await home.mint(a, "pool-a", "regression-computer", owner);
-    const storage = new MemoryStorage(), ledger = new UsageLedger(storage, client, { maxPages: 1 });
+    const storage = new MemoryStorage(), ledger = new UsageLedger(storage, client);
     const start = Date.now(), firstSync = new Date(start + 60 * 60000), landedSync = new Date(start + 65 * 60000);
     const options = { owner, caller: owner, members: [a], days: 30, now: landedSync, cap: () => null };
     const records = () => fixture.data<{ items: Record[] }>("/usage/records?limit=200&sort=timestamp_asc").then((page) => page.items);
@@ -186,11 +186,11 @@ test("real Home: late landing, removed credentials, switched key attribution and
     assert.ok(Date.parse(missing[0]!.timestamp) < releasedAt - 1000, "node stamps request start, before release");
     assert.equal(missing[0]!.billing.amount, 0);
     assert.equal(missing[0]!.billing.matched_price_rule, "default:zero");
-    assert.deepEqual(await ledger.sync(landedSync), { complete: false, pages: 1 });
+    assert.deepEqual(await ledger.sync(landedSync), { complete: true, pages: 2 });
     assert.equal(await ledger.readAt(), landedSync.toISOString());
     assert.equal((await ledger.summary("pool-a", options)).total.requests, 1);
     assert.equal((await ledger.summary("pool-a", options)).total.unpriced, 1);
-    console.log("PASS 4: real held request lands an hour late; one recent page counts it as unpriced without sweeping");
+    console.log("PASS 4: real held request lands an hour late; reserved sweep counts it as unpriced while fresh readAt advances");
     await fixture.data("/billing/model-prices", "POST", { provider: missing[0]!.provider, model: "fixture-alt", request_price: 0, source: "manual" });
     const free = await fixture.model(key.key, "real-zero-price", false, "fixture-alt");
     assert.equal(free.status, 200, await free.text());

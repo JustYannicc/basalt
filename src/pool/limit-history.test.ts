@@ -19,10 +19,13 @@ function window(remainingRatio: number | null, windowSeconds = 604800): UsageWin
   return { id: String(windowSeconds), label: "synthetic", remainingRatio, windowSeconds, resetAt: null };
 }
 function account(id: string, remainingRatio = 0.8, state: Account["state"] = "active", provider = "provider-a"): Account {
-  return { id, provider, state, label: "synthetic", plan: null, message: null, windows: [window(remainingRatio)], observedAt: null };
+  return { id, provider, state, label: "synthetic", plan: null, message: null, windows: [window(remainingRatio)], observedAt: new Date(start).toISOString() };
+}
+async function freshSample(history: LimitHistory, pool: string, accounts: readonly Account[], now = new Date(start)) {
+  await history.sample(pool, accounts.map((account) => ({ ...account, observedAt: now.toISOString() })), now);
 }
 async function day(history: LimitHistory, accounts: Account[], first = start) {
-  for (let i = 0; i < 289; i++) await history.sample("pool-a", accounts, new Date(first + i * step));
+  for (let i = 0; i < 289; i++) await freshSample(history, "pool-a", accounts, new Date(first + i * step));
   return (await history.advice("pool-a", new Date(first + 288 * step)))[0]!;
 }
 
@@ -30,10 +33,10 @@ test("advice stays unknown until 24 hours of actual readings", async () => {
   let now = new Date(start);
   const history = new LimitHistory(new Memory(), () => now);
   assert.deepEqual(await history.advice("pool-a"), []);
-  await history.sample("pool-a", [account("a")]);
+  await freshSample(history, "pool-a", [account("a")], now);
   assert.equal((await history.advice("pool-a"))[0]!.advice, "unknown");
   now = new Date(start + 24 * 3_600_000);
-  await history.sample("pool-a", [account("a")]);
+  await freshSample(history, "pool-a", [account("a")], now);
   const result = (await history.advice("pool-a"))[0]!;
   assert.equal(result.advice, "unknown");
   assert.equal(result.hoursRead, 1 / 12);
@@ -44,7 +47,7 @@ test("all exhausted together advises adding; limit episodes count transitions", 
   const active = [account("a"), account("b")];
   for (let i = 0; i < 289; i++) {
     const accounts = i === 10 || i === 11 || i === 20 ? [account("a", 0.01), account("b", 0, "unavailable")] : active;
-    await history.sample("pool-a", accounts, new Date(start + i * step));
+    await freshSample(history, "pool-a", accounts, new Date(start + i * step));
   }
   const result = (await new LimitHistory(storage).advice("pool-a", new Date(start + 288 * step)))[0]!;
   assert.equal(result.advice, "add");
@@ -60,7 +63,7 @@ test("remove requires spare capacity in every applicable window sample", async (
   const accounts = [account("a", 0.5), account("b", 0.5)];
   assert.equal((await day(new LimitHistory(new Memory()), accounts)).advice, "remove");
   const history = new LimitHistory(new Memory());
-  for (let i = 0; i < 289; i++) await history.sample("pool-a", [account("a", i === 20 ? 0.2 : 0.9), account("b", 0.6)], new Date(start + i * step));
+  for (let i = 0; i < 289; i++) await freshSample(history, "pool-a", [account("a", i === 20 ? 0.2 : 0.9), account("b", 0.6)], new Date(start + i * step));
   assert.equal((await history.advice("pool-a", new Date(start + 288 * step)))[0]!.advice, "enough");
   const shortFull = { ...account("a", 0.1), windows: [window(1, 18000), window(0.1)] };
   assert.equal((await day(new LimitHistory(new Memory()), [shortFull, account("b", 0.6)])).advice, "enough");
@@ -68,7 +71,7 @@ test("remove requires spare capacity in every applicable window sample", async (
 
 test("one limit hit without pool exhaustion means enough", async () => {
   const history = new LimitHistory(new Memory());
-  for (let i = 0; i < 289; i++) await history.sample("pool-a", [account("a", i === 10 ? 0 : 0.9), account("b", 0.9)], new Date(start + i * step));
+  for (let i = 0; i < 289; i++) await freshSample(history, "pool-a", [account("a", i === 10 ? 0 : 0.9), account("b", 0.9)], new Date(start + i * step));
   const result = (await history.advice("pool-a", new Date(start + 288 * step)))[0]!;
   assert.equal(result.advice, "enough");
   assert.equal(result.exhausted, 0);
@@ -85,8 +88,8 @@ test("missing quotas, disabled accounts and single accounts never justify remova
 test("providers and pools stay separate, repeated five-minute readings do not inflate evidence", async () => {
   const storage = new Memory(), history = new LimitHistory(storage);
   const accounts = [account("raw-account-a", 0, "unavailable"), account("raw-account-b", 0.8, "active", "provider-b")];
-  await Promise.all([history.sample("pool-a", accounts, new Date(start)), history.sample("pool-a", accounts, new Date(start + 1000))]);
-  await history.sample("pool-b", [account("c")], new Date(start));
+  await Promise.all([freshSample(history, "pool-a", accounts, new Date(start)), freshSample(history, "pool-a", accounts, new Date(start + 1000))]);
+  await freshSample(history, "pool-b", [account("c")], new Date(start));
   const result = await history.advice("pool-a", new Date(start + 1000));
   assert.equal(result.length, 2); assert.equal(result[0]!.limitHits, 1);
   assert.equal(result[0]!.hoursRead, 0);
@@ -96,7 +99,7 @@ test("providers and pools stay separate, repeated five-minute readings do not in
 
 test("samples older than seven days and their limit hits are pruned", async () => {
   const storage = new Memory(), history = new LimitHistory(storage);
-  await history.sample("pool-a", [account("a", 0)], new Date(start));
+  await freshSample(history, "pool-a", [account("a", 0)], new Date(start));
   const weekLater = start + 7 * 24 * 3_600_000 + step;
   const result = await day(history, [account("a", 0.8), account("b", 0.8)], weekLater);
   assert.equal(result.advice, "remove"); assert.equal(result.limitHits, 0);
@@ -108,7 +111,7 @@ test("an ongoing limit episode still blocks removal after its first hit ages out
   const history = new LimitHistory(new Memory());
   const limited = { ...account("a", 0.9), windows: [window(0, 18000), window(0.9)] };
   const accounts = [limited, account("b", 0.9), account("c", 0.9)];
-  await history.sample("pool-a", accounts, new Date(start));
+  await freshSample(history, "pool-a", accounts, new Date(start));
   const result = await day(history, accounts, start + 8 * 24 * 3_600_000);
   assert.equal(result.limitHits, 0); assert.equal(result.advice, "enough");
 });
@@ -170,12 +173,12 @@ test("native batches stay bounded and transactions roll back a failure between p
 
 test("unchanged provider timestamps and empty histories write nothing", async () => {
   const storage = new AtomicMemory(), history = new LimitHistory(storage);
-  await history.sample("pool-a", [], new Date(start));
+  await freshSample(history, "pool-a", [], new Date(start));
   assert.ok(storage.ops.every((op) => op.kind === "get"));
-  await history.sample("pool-a", [account("a"), account("b", 0.8, "active", "provider-b")], new Date(start));
+  await freshSample(history, "pool-a", [account("a"), account("b", 0.8, "active", "provider-b")], new Date(start));
   storage.ops = [];
-  await history.sample("pool-a", [account("a", 0)], new Date(start + 1000));
-  await history.sample("pool-a", [], new Date(start - step));
+  await freshSample(history, "pool-a", [account("a", 0)], new Date(start + 1000));
+  await freshSample(history, "pool-a", [], new Date(start - step));
   assert.ok(storage.ops.every((op) => op.kind === "get"));
   const result = await history.advice("pool-a", new Date(start));
   assert.equal(result[0]!.limitHits, 0); assert.equal(result[1]!.accounts, 1);
@@ -187,7 +190,7 @@ test("hour masks preserve legacy advice at exact week edges, gaps and account ch
   const samples = Array.from({ length: 2200 }, (_, i) => ({ at: start + i * step, accounts: i % 19 === 0 ? 0 : i % 3 + 1,
     limited: i % 23 === 0 ? i % 3 + 1 : 0, hits: i % 23 === 0 ? 1 : 0, spare: i % 17 !== 0 })).filter((_, i) => i % 13 !== 0);
   const providers = Object.fromEntries(["provider-a", "provider-b"].map((provider) => [JSON.stringify(provider), { samples, lastAt: samples.at(-1)!.at, previous: {} }]));
-  await chunks.put("limit-v1:pool-a", { providers });
+  await chunks.put("limit-v1:pool-a", { version: 2, providers });
   const expected = (now: number) => {
     const selected = samples.filter((sample) => sample.at >= now - 7 * 24 * 3600000 && sample.at <= now);
     const limitHits = selected.reduce((sum, sample) => sum + sample.hits, 0);
@@ -198,9 +201,9 @@ test("hour masks preserve legacy advice at exact week edges, gaps and account ch
   };
   const last = samples.at(-1)!.at;
   for (const at of [start + step, start + 24 * 3600000, last - step, last, last + 1, last + 7 * 24 * 3600000]) assert.deepEqual(await history.advice("pool-a", new Date(at)), expected(at));
-  await history.sample("pool-a", [], new Date(last + step));
+  await freshSample(history, "pool-a", [account("a"), account("b", 0.8, "active", "provider-b")], new Date(last + step));
   samples.splice(0, samples.findIndex((sample) => sample.at >= last + step - 7 * 24 * 3600000));
-  samples.push({ at: last + step, accounts: 0, limited: 0, hits: 0, spare: false });
+  samples.push({ at: last + step, accounts: 1, limited: 0, hits: 0, spare: false });
   for (const at of [last - step, last, last + step]) assert.deepEqual(await history.advice("pool-a", new Date(at)), expected(at));
   const saved = await chunks.get<{ providers: Record<string, { hours: unknown[]; samples?: unknown }> }>("limit-v1:pool-a");
   assert.ok(Object.values(saved!.providers).every((provider) => provider.hours.length <= 169 && !provider.samples));
@@ -230,4 +233,35 @@ test("weekly headroom cannot justify removal with a tight or unknown five-hour w
     const accounts = ["a", "b"].map((id) => ({ ...account(id, 0.9), windows: [window(ratio, 18000), window(0.9)] }));
     assert.equal((await day(new LimitHistory(new Memory()), accounts)).advice, "enough");
   }
+});
+
+test("stale, missing and repeated observations never accumulate advice evidence", async () => {
+  for (const observedAt of [null, "invalid", new Date(start - 31 * 60000).toISOString()]) {
+    const history = new LimitHistory(new Memory());
+    const accounts = [account("a"), account("b")].map((row) => ({ ...row, observedAt }));
+    for (let tick = 0; tick <= 288; tick++) await history.sample("pool-a", accounts, new Date(start + tick * step));
+    assert.deepEqual(await history.advice("pool-a", new Date(start + 288 * step)), []);
+  }
+  const storage = new Memory(), accounts = [account("a"), account("b")].map((row) => ({ ...row, observedAt: new Date(start).toISOString() }));
+  for (let tick = 0; tick <= 288; tick++) await new LimitHistory(storage).sample("pool-a", accounts, new Date(start + tick * step));
+  const result = (await new LimitHistory(storage).advice("pool-a", new Date(start + 288 * step)))[0]!;
+  assert.equal(result.hoursRead, 0); assert.equal(result.advice, "unknown");
+});
+
+
+test("one stale account cannot turn a fresh subset into pool exhaustion or spare capacity", async () => {
+  const history = new LimitHistory(new Memory());
+  for (const ratio of [0, 0.9]) for (let tick = 0; tick <= 288; tick++) {
+    const now = new Date(start + tick * step);
+    await history.sample("pool-a", [{ ...account("a", ratio), observedAt: now.toISOString() }, account("stale", ratio)], now);
+  }
+  assert.ok((await history.advice("pool-a", new Date(start + 288 * step))).every((provider) => provider.hoursRead === 0 && provider.advice === "unknown"));
+});
+
+test("cached legacy hours are discarded before counting fresh observations", async () => {
+  const storage = new Memory(), chunks = new ChunkStorage(storage);
+  await chunks.put("limit-v1:pool-a", { providers: { '"provider-a"': { samples: Array.from({ length: 289 }, (_, i) => ({ at: start + i * step, accounts: 2, limited: 0, hits: 0, spare: true })), previous: {}, lastAt: start + 288 * step } } });
+  const history = new LimitHistory(storage); assert.deepEqual(await history.advice("pool-a", new Date(start + 288 * step)), []);
+  await freshSample(history, "pool-a", [account("a"), account("b")], new Date(start + 289 * step));
+  assert.equal((await history.advice("pool-a", new Date(start + 289 * step)))[0]!.hoursRead, 0);
 });
