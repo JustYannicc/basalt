@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -43,17 +44,40 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     );
     // The page links the faces from the router, which serves the copies the bundler placed.
     const fonts = files[4]!.content;
-    assert.match(fonts, new RegExp(`url\\("https://${brand.host.replaceAll(".", "\\.")}/brand/fonts/geist-sans\\.woff2"\\)`));
+    assert.match(
+      fonts,
+      new RegExp(
+        `url\\("https://${brand.host.replaceAll(".", "\\.")}/brand/fonts/geist-sans\\.woff2"\\)`,
+      ),
+    );
     assert.match(fonts, /font-family: "Geist Mono";/);
-    for (const [file, content] of [["geist-sans.woff2", "sans"], ["geist-mono.woff2", "mono"], ["LICENSE.txt", "Open Font License"]])
+    for (const [file, content] of [
+      ["geist-sans.woff2", "sans"],
+      ["geist-mono.woff2", "mono"],
+      ["LICENSE.txt", "Open Font License"],
+    ])
       assert.equal(readFileSync(join(root, "public/brand/fonts", file), "utf8"), content);
-    assert.equal(files[0]!.content, `export const poolOrigin = "https://${brand.host}";\nexport const productName = ${JSON.stringify(brand.name)};\n`);
+    assert.equal(
+      files[0]!.content,
+      `export const poolOrigin = "https://${brand.host}";\nexport const productName = ${JSON.stringify(brand.name)};\n`,
+    );
     assert.deepEqual(JSON.parse(files[2]!.content).dependencies, {
       apps: "0.0.1-beta.104-basalt.1",
       react: "19",
     });
     const output = join(upstream, "apps/hosted/server/src/implementation");
     const generated = readFileSync(join(output, "pool-app-source.ts"), "utf8");
+    const version = createHash("sha256").update(JSON.stringify(files)).digest("hex");
+    const assetName = `pool-app-${version}.json`;
+    const assets = join(upstream, "apps/hosted/cloud/.generated/pool-app");
+    assert.match(generated, new RegExp(`poolAppVersion = "${version}"`));
+    assert.match(generated, new RegExp(`poolAppAssetPath = "/_basalt/${assetName}"`));
+    assert.ok(!generated.includes("poolAppFiles"));
+    assert.ok(
+      !generated.includes(files[1]!.content),
+      "seed contents stay out of the generated module",
+    );
+    assert.deepEqual(JSON.parse(readFileSync(join(assets, assetName), "utf8")), files);
     assert.equal(
       readFileSync(join(output, "pool-token.ts"), "utf8"),
       "export const signer = true;",
@@ -66,6 +90,8 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     assert.equal(readFileSync(join(output, "pool-app-source.ts"), "utf8"), generated);
     writeFileSync(join(root, "apps/pool/ui/page.tsx"), "changed UI");
     bundlePoolApp(root, upstream);
+    assert.equal(readdirSync(assets).length, 1, "only the current seed is published");
+    assert.notEqual(readdirSync(assets)[0], assetName);
     assert.notEqual(
       readFileSync(join(output, "pool-app-source.ts"), "utf8").match(
         /export const poolAppVersion = .+/,
