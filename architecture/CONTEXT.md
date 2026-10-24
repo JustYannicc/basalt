@@ -138,3 +138,5 @@ Infrastructure adapters carry provider names only in `technology`. Their resourc
 
 
 The connector catalog is served under `/catalog/` through its own service binding. The tools gateway reads that feed and uses the hosted identity and repository OAuth clients. Sign-in clients are separate. Official provider app source stays unchanged. The identity connector is published but unverified with its project lifetime user cap shown before consent. The published messaging app returns a bot grant and is not yet offered as a one-click personal connection; its user-token flow is separate work. Source checks do not establish live connection or client acceptance.
+
+The catalog also carries a read-only knowledge and issue app offered upstream. Each caller links a personal account for both APIs. Its OAuth identity and API endpoints have separate outside adapters; managed access tokens go only to the API host. Missing hosted client credentials leave the app listed with a setup notice. App source remains in the catalog Worker. Live consent and client acceptance remain pending.
