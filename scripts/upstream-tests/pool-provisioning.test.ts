@@ -263,7 +263,7 @@ test("installs an owner's private app and personal linked account with a verifia
       const accounts = yield* sql<{ token: string }>`select * from executor_accounts`;
       assert.equal(apps.length, 1);
       assert.equal(apps[0]!.name, "Alex's pool");
-      const [record] =
+      const [record]: readonly any[] =
         yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization where id = ${organization}`;
       assert.equal(
         record!.pool.app,

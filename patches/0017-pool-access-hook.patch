@@ -522,37 +522,19 @@ index ac79aed..6cf0c58 100644
          service.pipe(
            Effect.flatMap((onboarding) => onboarding.create(userId, details)),
 diff --git a/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts b/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
-index 8e1ea0d..0dfe282 100644
+index f574b49..99b5b45 100644
 --- a/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
 +++ b/apps/hosted/cloud/src/infrastructure/organization-removal-workflow.ts
-@@ -8,6 +8,8 @@
-  */
+@@ -9,6 +9,8 @@
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Cause, Context, Effect, Option, Schema } from "effect";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
 +import { SqlClient } from "effect/sql";
 +import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
- import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import {
    Authentication,
-@@ -73,9 +75,15 @@ const runner =
-                 ),
-           ),
-         ),
--      encodeFailure: (error) => (error instanceof Error ? error.message : "Organization removal failed"),
-+      encodeFailure: (error) =>
-+        error instanceof Error ? error.message : "Organization removal failed",
-       isRetryable: (error) =>
--        !(typeof error === "object" && error !== null && "retryable" in error && error.retryable === false),
-+        !(
-+          typeof error === "object" &&
-+          error !== null &&
-+          "retryable" in error &&
-+          error.retryable === false
-+        ),
-       restoreFailure: () => new RemovalAttemptFailed(),
-     }).pipe(Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })));
-
-@@ -84,6 +92,8 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
+   HostedExecutor,
+@@ -113,6 +115,8 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
    Effect.gen(function* () {
      const reportErrors = yield* cloudSentry;
      const encryptionKey = yield* workflowEncryptionKey;
@@ -561,35 +543,21 @@ index 8e1ea0d..0dfe282 100644
      // The Worker that yields this class supplies the services; Alchemy captures them. Only
      // these: the Worker's context also holds its own scope, and providing that to a run would
      // replace the run's scope, so per-execution resources would outlive the run.
-@@ -111,14 +121,20 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
-         const organization = OrganizationId.make(input.organization);
-         return workflowResults(`organization-removal:${organization}`, encryptionKey).pipe(
-           Effect.flatMap((results) =>
--            removeOrganizationDurably(organization, runner(organization, results)).pipe(
--          Effect.provide(services),
--          Effect.provideService(OrganizationBilling, cancellation),
--          // Report through the same Sentry boundary the API uses, carrying the
--          // organization and the step in the failure itself, and then leave the
--          // instance failed: nothing else watches a workflow that stops part
--          // way through an irreversible erasure.
--          reportErrors,
-+            removeOrganizationDurably(
-+              organization,
-+              runner(organization, results),
-+              (access.organizationRemoving?.(organization) ?? Effect.void).pipe(
-+                Effect.provideServiceEffect(SqlClient.SqlClient, database),
-+              ),
-+            ).pipe(
-+              Effect.provide(services),
-+              Effect.provideService(OrganizationBilling, cancellation),
-+              // Report through the same Sentry boundary the API uses, carrying the
-+              // organization and the step in the failure itself, and then leave the
-+              // instance failed: nothing else watches a workflow that stops part
-+              // way through an irreversible erasure.
-+              reportErrors,
-               Effect.orDie,
-             ),
-           ),
+@@ -146,7 +150,13 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
+           request.mode === "encrypted"
+             ? yield* workflowResults(`organization-removal:${organization}`, encryptionKey)
+             : undefined;
+-        const work = removeOrganizationDurably(organization, runner(organization, results)).pipe(
++        const work = removeOrganizationDurably(
++          organization,
++          runner(organization, results),
++          (access.organizationRemoving?.(organization) ?? Effect.void).pipe(
++            Effect.provideServiceEffect(SqlClient.SqlClient, database),
++          ),
++        ).pipe(
+           Effect.provide(services),
+           Effect.provideService(OrganizationBilling, cancellation),
+           // The report carries the organization and step; the durable error below stays private.
 diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
 index 83b48c2..05269d7 100644
 --- a/apps/hosted/cloud/src/infrastructure/product-services.ts
@@ -633,19 +601,19 @@ index 83b48c2..05269d7 100644
        HostedExecutor,
        sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
 diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-index c7efbb1..93a0055 100644
+index ee4c9f3..f68511e 100644
 --- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
 +++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
-@@ -15,6 +15,8 @@ import {
+@@ -14,6 +14,8 @@ import {
+ } from "@executor-js/hosted-server/provisioning";
  import { SqlClient } from "effect/sql";
  import { cloudProduct } from "./product.ts";
- import { appDataSupervisors } from "./app-data.ts";
 +import { cloudOnboarding } from "./onboarding.ts";
 +import { Onboarding } from "../contracts/onboarding.ts";
+ import { appDataSupervisors } from "./app-data.ts";
  import { cloudEmail } from "./email.ts";
  import { cloudWelcomeEmails } from "./welcome-email.ts";
- import { AppDomainCoordinator } from "./app-domains.ts";
-@@ -46,8 +48,15 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
+@@ -50,8 +52,15 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
      // placed handler to, in a step of its own that is retried until the handler has woken it.
      const jobs = yield* cloudBackgroundJobs;
      const encryptionKey = yield* workflowEncryptionKey;
@@ -661,32 +629,6 @@ index c7efbb1..93a0055 100644
        user: (id) =>
          emails.deliverUser(id).pipe(
            Effect.provide(RuntimeContext.phantom),
-@@ -93,7 +102,12 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
-               encodeFailure: (error) =>
-                 error instanceof Error ? error.message : "Provisioning failed",
-               isRetryable: (error) =>
--                !(typeof error === "object" && error !== null && "retryable" in error && error.retryable === false),
-+                !(
-+                  typeof error === "object" &&
-+                  error !== null &&
-+                  "retryable" in error &&
-+                  error.retryable === false
-+                ),
-               restoreFailure: () => new ProvisioningFailed(),
-             }).pipe(
-               Effect.provideService(Cloudflare.Workflows.WorkflowStep, step),
-@@ -121,10 +135,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
-                 timeout: "1 minute",
-               },
-               work: () =>
--                jobs.request("schedule-wake").pipe(
--                  Effect.provideContext(context),
--                  Effect.orDie,
--                ),
-+                jobs.request("schedule-wake").pipe(Effect.provideContext(context), Effect.orDie),
-               encodeFailure: (error) =>
-                 error instanceof Error ? error.message : "Schedule wake failed",
-               isRetryable: () => false,
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 index 98b2382..3d1bd3d 100644
 --- a/apps/hosted/server/package.json

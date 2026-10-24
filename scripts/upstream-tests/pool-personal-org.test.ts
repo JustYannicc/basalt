@@ -221,7 +221,7 @@ test("native organization creates strip reserved pool metadata; updates refuse m
             body: JSON.stringify(body),
           }),
         );
-      const response = yield* Effect.promise(() =>
+      const response: any = yield* Effect.promise(() =>
         request("create", {
           name: "Metadata",
           slug: "metadata",
@@ -229,8 +229,8 @@ test("native organization creates strip reserved pool metadata; updates refuse m
           metadata: { purpose: "retained", basaltPools: { [owner.id]: { app: "app_victim" } } },
         }),
       );
-      assert.equal(response.status, 200, yield* Effect.promise(() => response.clone().text()));
-      const created = yield* Effect.promise(() => response.json());
+      assert.equal(response.status, 200, (yield* Effect.promise(() => response.clone().text())) as string);
+      const created: any = yield* Effect.promise(() => response.json());
       const metadata = () =>
         sql`select metadata::jsonb as metadata from organization where id = ${created.id}`;
       assert.deepEqual((yield* metadata())[0].metadata, { purpose: "retained" });
@@ -244,17 +244,17 @@ test("native organization creates strip reserved pool metadata; updates refuse m
         {},
       ]) {
         // Server API calls bypass the HTTP field guard, exercising the plugin hook itself.
-        const updated = yield* Effect.promise(() =>
+        const updated: any = yield* Effect.promise(() =>
           auth.api.updateOrganization({
             headers: owner.headers,
             asResponse: true,
             body: { organizationId: created.id, data: { metadata: supplied } },
           }),
         );
-        assert.equal(updated.status, 400, yield* Effect.promise(() => updated.clone().text()));
+        assert.equal(updated.status, 400, (yield* Effect.promise(() => updated.clone().text())) as string);
         assert.deepEqual(yield* metadata(), before);
       }
-      const blocked = yield* Effect.promise(() =>
+      const blocked: any = yield* Effect.promise(() =>
         request("update", {
           organizationId: created.id,
           data: { name: "Unsafe", metadata: { basaltPools: {} } },
@@ -267,10 +267,10 @@ test("native organization creates strip reserved pool metadata; updates refuse m
         { logo: "https://example.invalid/icon.png" },
         { logo: null },
       ]) {
-        const updated = yield* Effect.promise(() =>
+        const updated: any = yield* Effect.promise(() =>
           request("update", { organizationId: created.id, data }),
         );
-        assert.equal(updated.status, 200, yield* Effect.promise(() => updated.clone().text()));
+        assert.equal(updated.status, 200, (yield* Effect.promise(() => updated.clone().text())) as string);
         assert.deepEqual(yield* metadata(), before);
       }
     }),
