@@ -78,6 +78,13 @@ function containsText(value, expected, depth = 0) {
   return typeof value === "object" && Object.values(value).some((item) => containsText(item, expected, depth + 1));
 }
 
+function resultForTurn(results, turn) {
+  const result = results.find((entry) => entry.tool_use_id === `tool_slack_fixture_${turn}`);
+  assert.ok(result, `Claude did not return the tool result from turn ${turn}`);
+  assert.equal(typeof result.content, "string");
+  return JSON.parse(result.content);
+}
+
 /** The installed CLI reads the real setup entry and calls the local self-host MCP endpoint. */
 export async function proveInstalledClaude({
   root,
@@ -113,7 +120,17 @@ export async function proveInstalledClaude({
   let historyPathReturned = false;
   let historyReadReturned = false;
   let postPathReturned = false;
+  let postApprovalReturned = false;
   let postReturned = false;
+  const postsBefore = mock.observations().api.filter((item) => item.operation === "chat.postMessage");
+  const postInput = {
+    accountId: postAccountId,
+    input: {
+      contentType: "application/x-www-form-urlencoded",
+      body: { channel, text: postText },
+      headers: { token: userToken },
+    },
+  };
   const completionText = "slack-local-proof-ok";
   const failures = [], trace = [];
   const server = createServer(async (request, response) => {
@@ -132,7 +149,7 @@ export async function proveInstalledClaude({
       trace.push({ toolResults: (body.messages ?? []).flatMap((entry) => Array.isArray(entry.content) ? entry.content : []).filter((entry) => entry.type === "tool_result") });
       const offered = (body.tools ?? []).map((tool) => tool.name);
       const turn = ++turns;
-      assert.ok(turn <= 5, "Claude exceeded five local model turns");
+      assert.ok(turn <= 6, "Claude exceeded six local model turns");
       let tool, input;
       if (turn === 1) {
         tool = offered.find((name) => name === "mcp__signalbox__search");
@@ -166,17 +183,29 @@ export async function proveInstalledClaude({
         "Claude's post search did not select only its owner's Slack account");
         tool = offered.find((name) => name === "mcp__signalbox__call");
         assert.ok(tool, "Claude did not load the approved Signalbox call tool for chat.postMessage");
-        input = { calls: { path: postPath, input: {
-          accountId: postAccountId,
-          input: {
-            contentType: "application/x-www-form-urlencoded",
-            body: { channel, text: postText },
-            headers: { token: userToken },
-          },
-        } } };
+        input = { calls: { path: postPath, input: postInput } };
+      } else if (turn === 5) {
+        const pending = resultForTurn(results, 4);
+        assert.equal(pending.status, "approval-required", "Claude's post did not pause for approval");
+        assert.equal(typeof pending.requestId, "string");
+        assert.ok(pending.requestId.length > 0);
+        assert.equal(pending.invocation?.tool, "chat.postMessage");
+        assert.deepEqual(pending.invocation?.input, postInput);
+        assert.equal(mock.observations().api.filter((item) => item.operation === "chat.postMessage").length,
+          postsBefore.length, "Claude's post reached Slack before approval");
+        postApprovalReturned = true;
+        tool = offered.find((name) => name === "mcp__signalbox__resume");
+        assert.ok(tool, "Claude did not load the Signalbox resume tool for post approval");
+        input = { requestId: pending.requestId, response: { action: "accept" } };
       } else {
-        postReturned = results.some((entry) => containsText(entry.content, postText));
-        assert.ok(postReturned, "The expected Slack post result did not return to Claude");
+        const completed = resultForTurn(results, 5);
+        assert.equal(completed.status, "completed", "Claude's approved post did not complete");
+        assert.equal(completed.execution?.ok, true);
+        assert.equal(completed.execution?.value?.path, postPath);
+        assert.equal(completed.execution?.value?.ok, true);
+        assert.equal(completed.execution?.value?.value?.ok, true);
+        assert.equal(completed.execution?.value?.value?.message?.text, postText);
+        postReturned = true;
       }
       response.setHeader("content-type", "text/event-stream");
       response.end(modelMessage(body.model, turn, tool, input, completionText));
@@ -201,18 +230,17 @@ export async function proveInstalledClaude({
     const mcp = join(env.CLAUDE_CONFIG_DIR, ".claude.json");
     const config = JSON.parse(await readFile(mcp, "utf8"));
     assert.equal(config.mcpServers.signalbox.url, `${origin}/mcp`);
-    const postsBefore = mock.observations().api.filter((item) => item.operation === "chat.postMessage");
     const output = await launch(cli, [
       "--bare", "--print", "--no-session-persistence", "--setting-sources", "",
       "--settings", settings, "--strict-mcp-config", "--mcp-config", mcp,
-      "--tools", "", "--allowedTools", "mcp__signalbox__search", "mcp__signalbox__call",
+      "--tools", "", "--allowedTools", "mcp__signalbox__search", "mcp__signalbox__call", "mcp__signalbox__resume",
       "--model", "claude-sonnet-4-6", "--output-format", "json",
       `Find the ${slug} app through Signalbox. Read conversations.history and confirm it contains ${marker}. Then discover chat.postMessage, post the exact text ${postText} to ${channel} using the connected owner's Slack user account, and reply ${completionText}.`,
     ], env, cwd, join(home, "claude.json"));
     assert.equal(JSON.parse(output).result, completionText);
     assert.deepEqual(failures, []);
-    assert.ok(historyPathReturned && historyReadReturned && postPathReturned && postReturned);
-    assert.equal(turns, 5);
+    assert.ok(historyPathReturned && historyReadReturned && postPathReturned && postApprovalReturned && postReturned);
+    assert.equal(turns, 6);
     const postsAfter = mock.observations().api.filter((item) => item.operation === "chat.postMessage");
     assert.equal(postsAfter.length, postsBefore.length + 1,
       "Installed Claude did not produce exactly one Slack chat.postMessage call");
@@ -222,11 +250,12 @@ export async function proveInstalledClaude({
       installedClaude: true,
       installedClaudeRead: true,
       installedClaudePost: true,
+      installedClaudeApproval: true,
       installedClaudeModel: "local simulated Anthropic Messages API fixture",
     };
   } finally {
     await writeFile(join(home, "model-observations.json"), JSON.stringify({
-      failures, trace, turns, historyPathReturned, historyReadReturned, postPathReturned, postReturned,
+      failures, trace, turns, historyPathReturned, historyReadReturned, postPathReturned, postApprovalReturned, postReturned,
     }), { mode: 0o600 });
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
