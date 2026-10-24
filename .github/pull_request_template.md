@@ -31,4 +31,4 @@ For UI changes, include clear before/after screenshots, and a short recording wh
 motion, timing or interaction matters. Upload them to GitHub and embed or link them
 here. Never commit PR-only assets. -->
 
-Model and harness: <model> in <harness>
+Model and harness: [model] in [harness]
