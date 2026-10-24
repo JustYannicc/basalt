@@ -2,8 +2,6 @@
 
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
-Computer setup and rebind currently accept only the caller's own pool. Shared-pool selection and revoking model keys before sharing or membership removal completes belong to #1412. No shared-pool computer key can be issued by this setup revision.
-
 - `spec.c4` defines the model vocabulary and styles.
 - `model/` defines Basalt and the relationships between its modules.
 - `views/` contains sparse current and planned overviews plus v1 workflows. Computer setup, observation and revocation live together in `views/workflows/computer-setup.c4`.

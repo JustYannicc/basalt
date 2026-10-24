@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { canRefresh, type Computer, computerStatus, type ComputerStatus } from "./computer-types.ts";
+import { canRefresh, type Computer, computerStatus, type ComputerStatus, type PoolChoice, poolLabel } from "./computer-types.ts";
 import { Button, buttonClass, CheckIcon, ExternalIcon } from "./controls.tsx";
+import { PoolPicker } from "./pool-picker.tsx";
 import { duration, exactTime } from "./usage.ts";
 
 /** "just now", "3h 12m ago". */
@@ -17,6 +18,7 @@ const statusText: Record<ComputerStatus, string> = {
   waiting: "Waiting for first request",
   revoking: "Revoke not finished",
   revoked: "Revoked",
+  removed: "Removed from its pool",
 };
 
 function StatusDot({ status }: { status: ComputerStatus }) {
@@ -27,6 +29,7 @@ function StatusDot({ status }: { status: ComputerStatus }) {
     waiting: "border border-muted-foreground",
     revoking: "bg-warning",
     revoked: "bg-muted-foreground/40",
+    removed: "border border-destructive bg-destructive/20",
   }[status];
   return <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${tone}`} />;
 }
@@ -39,8 +42,13 @@ export function ComputerRow({
   manageHref,
   onNewLink,
   onRevoke,
+  pools,
+  onSwitch,
 }: {
   computer: Computer;
+  /** The person's pools, when the host can switch this computer between them. */
+  pools?: readonly PoolChoice[];
+  onSwitch?: (pool: PoolChoice) => Promise<boolean>;
   now: number;
   opening: boolean;
   /** Set when setup happens on another page. */
@@ -106,6 +114,21 @@ export function ComputerRow({
                   Retry revoke
                 </Button>
               </>
+            ) : status === "removed" && !confirming ? (
+              <>
+                <span className="text-muted-foreground text-pretty">
+                  You no longer have this pool, so its model requests fail. Revoke it, then set it up on another pool.
+                </span>
+                <Button
+                  size="inline"
+                  variant="link"
+                  className="text-xs text-muted-foreground"
+                  aria-label={`Revoke ${computer.name}`}
+                  onClick={() => setConfirming(true)}
+                >
+                  Revoke
+                </Button>
+              </>
             ) : confirming ? (
               <>
                 <span className="text-muted-foreground">Revoke? Its next request fails.</span>
@@ -152,8 +175,11 @@ export function ComputerRow({
         )}
       </div>
       <dl className="m-0 grid content-center gap-1.5 text-xs">
+        <PoolLine computer={computer} status={status} pools={pools} onSwitch={onSwitch} />
         {revoked ? (
           <Evidence label="Revoked" at={computer.revokedAt} now={now} none="" muted />
+        ) : status === "removed" ? (
+          <Evidence label="Removed" at={computer.removedAt ?? null} now={now} none="" muted />
         ) : (
           <>
             <Evidence label="Model request" at={computer.firstModelRequestAt} now={now} none="None yet" />
@@ -163,6 +189,39 @@ export function ComputerRow({
         <Evidence label="Added" at={computer.createdAt} now={now} none="" muted />
       </dl>
     </li>
+  );
+}
+
+/** The pool this computer uses, and the one-click switch when it has another to use. */
+function PoolLine({
+  computer,
+  status,
+  pools,
+  onSwitch,
+}: {
+  computer: Computer;
+  status: ComputerStatus;
+  pools: readonly PoolChoice[] | undefined;
+  onSwitch: ((pool: PoolChoice) => Promise<boolean>) | undefined;
+}) {
+  if (!pools?.length) return null;
+  const current = pools.find((pool) => pool.id === computer.poolId);
+  // Only a working computer has a key to point elsewhere; a removed one lost its key with its pool.
+  const switchable = onSwitch && pools.length > 1 && status !== "revoked" && status !== "revoking" && status !== "removed" && computer.state !== "issuing";
+  return (
+    <div className="grid grid-cols-[1rem_7rem_1fr] items-start gap-x-1.5 pb-1.5 max-[540px]:grid-cols-1 max-[540px]:gap-y-1.5">
+      <span aria-hidden="true" className="max-[540px]:hidden" />
+      <dt className="pt-1.5 text-muted-foreground max-[740px]:pt-2.5 max-[540px]:pt-0">Pool</dt>
+      <dd className="m-0 min-w-0">
+        {switchable ? (
+          <PoolPicker computerName={computer.name} current={computer.poolId} pools={pools} onPick={onSwitch} />
+        ) : (
+          <span className="block truncate pt-1.5 text-foreground max-[740px]:pt-2.5" title={current?.name || undefined}>
+            {current ? poolLabel(current) : "A pool you no longer have"}
+          </span>
+        )}
+      </dd>
+    </div>
   );
 }
 
