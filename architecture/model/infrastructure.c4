@@ -1,5 +1,8 @@
 // Resource mappings are authored here; the deployment overlay is generated.
 model {
+  extend basalt.catalog {
+    metadata { resources "resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2" }
+  }
   extend basalt.router {
     metadata { resources "resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838" }
   }
@@ -17,6 +20,41 @@ model {
       metadata { resources "resource-0dbbe22e8649fbac642189c12694e84ad5d2a9b4feb4f930bf4f7612873ca5bb" }
     }
   }
+  catalogSource = adapter "Catalog source" {
+    #external
+    technology "Official integrations feed"
+    metadata { hosts "catalog.executor.sh" }
+  }
+  connectorIdentity = adapter "Connector identity" {
+    #external
+    technology "Google OAuth"
+    metadata { hosts "accounts.google.com|oauth2.googleapis.com" }
+  }
+  workspaceApi = adapter "Workspace API" {
+    #external
+    technology "Google Workspace APIs"
+    metadata { hosts "*.googleapis.com" }
+  }
+  repositoryApi = adapter "Repository API" {
+    #external
+    technology "GitHub API and OAuth"
+    metadata { hosts "github.com|api.github.com|uploads.github.com|api.githubcopilot.com" }
+  }
+  messagingApi = adapter "Messaging API" {
+    #external
+    technology "Slack MCP and OAuth"
+    metadata { hosts "slack.com|mcp.slack.com" }
+  }
+  basalt.catalog -[sync]-> catalogSource "read official index and app sources"
+  catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
+  basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries with provider notices and unmodified sources"
+  basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"
+  basalt.toolsGateway -[sync]-> workspaceApi "call with the person's grant"
+  basalt.build -[sync]-> repositoryApi "download releases and actions"
+  basalt.deployment -[sync]-> repositoryApi "download deployment actions"
+  basalt.toolsGateway -[sync]-> repositoryApi "authorize and call with the person's grant"
+  basalt.toolsGateway -[sync]-> messagingApi "authorize and call subject to provider access gates"
+
   emailService = adapter "Email service" {
     #external
     technology "Cloudflare Email"

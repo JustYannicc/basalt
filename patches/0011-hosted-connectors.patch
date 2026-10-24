@@ -1,0 +1,876 @@
+diff --git a/.changeset/catalog-provider-notices.md b/.changeset/catalog-provider-notices.md
+new file mode 100644
+index 000000000..ea117b551
+--- /dev/null
++++ b/.changeset/catalog-provider-notices.md
+@@ -0,0 +1,11 @@
++---
++"@executor-js/hosted-server": patch
++"@executor-js/hosted-web": patch
++"@executor-js/ui": patch
++---
++
++Hosted catalog feeds can provide optional provider-specific connection notices, shown before a
++person connects. Cloud deployments now honor an explicit `EXECUTOR_CATALOG_URL` and keep the
++official feed as the default. The official GitHub REST app can use a separately configured
++`github-oauth` client with only the scopes it declares and a token placement limited to
++`api.github.com`.
+diff --git a/apps/hosted/cloud/src/infrastructure/app-catalog.ts b/apps/hosted/cloud/src/infrastructure/app-catalog.ts
+index 382caedbf..03b005aad 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-catalog.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-catalog.ts
+@@ -2,7 +2,8 @@
+  * The official app feed Add app lists (`notes/catalog-imports.md`). The executor-apps repository
+  * builds it and publishes it into this bucket on every push to its `main`
+  * (`.github/workflows/publish.yml` there); production owns the bucket and serves it read-only at
+- * `catalog.executor.sh`. Every deployed stage reads that one feed.
++ * `catalog.executor.sh`. Deployed stages use it by default; an operator may supply another feed
++ * through `EXECUTOR_CATALOG_URL`.
+  *
+  * The bucket's hostname is an R2 custom domain. R2 custom domains use Cloudflare for SaaS
+  * certificates, not the Advanced certificates Workers Custom Domains order, so it cannot replace
+@@ -36,17 +37,11 @@ export const AppCatalog = Effect.gen(function* () {
+ 
+ /**
+  * The API Worker binding that lists the feed on a deployed stage. Test stages share production's
+- * read-only feed rather than publishing their own.
++ * read-only feed by default rather than publishing their own.
+  */
+ export const appCatalogBinding = Effect.gen(function* () {
+-  // A second, hand-set value would leave two bindings for one name.
+   const configured = yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option);
+-  if (Option.isSome(configured))
+-    return yield* Effect.die(
+-      new Error(
+-        `Deployed stages read the feed at ${appCatalogOrigin}. ` +
+-          "Remove EXECUTOR_CATALOG_URL from the deploy environment.",
+-      ),
+-    );
+-  return { EXECUTOR_CATALOG_URL: `${appCatalogOrigin}/index.json` };
++  return {
++    EXECUTOR_CATALOG_URL: Option.getOrElse(configured, () => `${appCatalogOrigin}/index.json`),
++  };
+ });
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+index c7aaeddbf..d455b8b87 100644
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -2,7 +2,8 @@
+  * The operator's own OAuth clients (`notes/oauth.md`, "First-party clients"). What each client is,
+  * its authorization server, scope menu and placement, is reviewed here in code. Only its
+  * credentials are settings, `EXECUTOR_OAUTH_<ID>_CLIENT_ID` and `EXECUTOR_OAUTH_<ID>_CLIENT_SECRET`
+- * (the ID in upper case, `-` as `_`), and a client is offered only when both are set.
++ * (the ID in upper case, `-` as `_`), and a client is offered only when both are set. Reviewed
++ * client labels use `EXECUTOR_PRODUCT_NAME`, which defaults to `Executor`.
+  */
+ import { FirstPartyOAuthClient } from "@executor-js/sdk/core";
+ import { Config, Effect, Option, Redacted, Schema, Struct } from "effect";
+@@ -103,6 +104,17 @@ const slackMcpUserScopes = [
+   "files:write",
+ ];
+ 
++/** OAuth App scopes declared by the official GitHub REST app. */
++const githubRestScopes = [
++  "repo",
++  "read:org",
++  "workflow",
++  "gist",
++  "notifications",
++  "read:user",
++  "user:email",
++];
++
+ /**
+  * The clients an operator can turn on by setting their credentials.
+  *
+@@ -112,6 +124,9 @@ const slackMcpUserScopes = [
+  *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
+  *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
+  *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
++ * - `github-oauth` is an optional OAuth App for the official GitHub REST app. It requests that
++ *   app's declared scopes and sends its managed token only to `api.github.com`. It is separate
++ *   from the GitHub App client above, whose permission model remains unchanged.
+  * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
+  *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
+  *   revokes every grant a user gave the client at once, so removing one account would end the
+@@ -145,6 +160,19 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+       ],
+     },
+   },
++  {
++    id: "github-oauth",
++    label: "Executor for GitHub",
++    server: {
++      authorizationUrl: "https://github.com/login/oauth/authorize",
++      tokenUrl: "https://github.com/login/oauth/access_token",
++      grantedScopeSeparator: ",",
++    },
++    tokenEndpointAuthMethod: "client_secret_post",
++    defaultScopes: githubRestScopes,
++    allowedScopes: githubRestScopes,
++    placement: { hosts: ["api.github.com"] },
++  },
+   {
+     id: "google",
+     label: "Executor for Google",
+@@ -232,6 +260,9 @@ const testDefinitions = (allowed: boolean) =>
+  */
+ export const firstPartyOAuthClients = (options: { readonly testDefinitions: boolean }) =>
+   Effect.gen(function* () {
++    const productName = yield* Config.NonEmptyString("EXECUTOR_PRODUCT_NAME").pipe(
++      Config.withDefault("Executor"),
++    );
+     const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
+       firstPartyOAuthClientDefinitions,
+     ).pipe(Effect.orDie);
+@@ -275,7 +306,19 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+         problems.push(`The ${definition.id} client's definition or client ID is invalid.`);
+         continue;
+       }
+-      clients.push(client.value);
++      const service =
++        definition.id === "google"
++          ? "Google"
++          : definition.id === "github" || definition.id === "github-oauth"
++            ? "GitHub"
++            : definition.id === "slack"
++              ? "Slack"
++              : undefined;
++      clients.push(
++        service === undefined
++          ? client.value
++          : { ...client.value, label: `${productName} for ${service}` },
++      );
+     }
+     if (problems.length > 0) return yield* invalid(problems);
+     return clients;
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+index c520dad6f..4c2cba4ce 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+@@ -6,7 +6,7 @@ import { AsyncResult, type Atom } from "effect/reactivity";
+ import { Cancel01Icon, Search01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import type { Account, AccountRequirement, App } from "@executor-js/sdk";
+-import type { CatalogEntry } from "@executor-js/catalog/contracts";
++import type { CatalogConnectionNotice, CatalogEntry } from "@executor-js/catalog/contracts";
+ import { executorCatalogPackage } from "@executor-js/hosted-server/catalog";
+ import { Button } from "@executor-js/ui/components/button";
+ import { DialogDescription, DialogTitle } from "@executor-js/ui/components/dialog";
+@@ -439,6 +439,9 @@ function AppList({
+             slot={connection.slot}
+             requirement={connection.requirement}
+             method={connection.method}
++            connectionNotices={
++              apps.find((item) => item.entry.id === connection.entry)?.entry.connectionNotices ?? []
++            }
+             redirectUri={redirectUri}
+             onPendingChange={setPending}
+             onSaved={() => setConnection(undefined)}
+@@ -485,9 +488,7 @@ const Check = () => (
+ );
+ 
+ /**
+- * One app in one fixed-height row: its logo, its name over one line of detail, and one button of a
+- * fixed width. Connecting changes only the detail line and the button; more accounts open over the
+- * list instead of growing the row.
++ * One app row: its logo, name, details and notices beside one fixed-width action.
+  */
+ function AppRow({
+   item,
+@@ -507,10 +508,10 @@ function AppRow({
+     <div
+       role="group"
+       aria-label={entry.name}
+-      className="flex h-[70px] shrink-0 items-center gap-3.5 border-t px-4 first:border-t-0 max-sm:gap-3 max-sm:px-6"
++      className="flex min-h-[70px] shrink-0 items-center gap-3.5 border-t px-4 py-3 first:border-t-0 max-sm:gap-3 max-sm:px-6"
+     >
+       <ProviderIcon name={entry.name} icons={entry.icons} />
+-      <div className="min-w-0 flex-1">
++      <div className="min-w-0 flex-1 space-y-1">
+         <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+           <span className="truncate">{entry.name}</span>
+           {!oauth && first === undefined && (
+@@ -536,6 +537,7 @@ function AppRow({
+             )}
+           </div>
+         )}
++        <CatalogNotices notices={entry.connectionNotices} />
+       </div>
+       <Button
+         type="button"
+@@ -562,6 +564,24 @@ function AppRow({
+   );
+ }
+ 
++function CatalogNotices({
++  notices,
++}: {
++  readonly notices: readonly CatalogConnectionNotice[] | undefined;
++}) {
++  if (notices === undefined || notices.length === 0) return null;
++  return (
++    <ul className="space-y-1 text-xs text-muted-foreground">
++      {notices.map((notice, index) => (
++        <li key={`${notice.providerName}:${index}`}>
++          <span className="font-medium text-foreground/80">{notice.providerName}: </span>
++          {notice.message}
++        </li>
++      ))}
++    </ul>
++  );
++}
++
+ /** Every account of one app, with the existing account actions, over the list. */
+ function AccountsPopover({
+   name,
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+index 47488a28b..bb75f6845 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+@@ -1,10 +1,11 @@
+ import { use, useContext, useState } from "react";
+ import { RegistryContext, useAtomSet, useAtomMount } from "@effect/atom-react";
+-import { AtomRegistry } from "effect/reactivity";
++import { AsyncResult, AtomRegistry } from "effect/reactivity";
+ import { Effect, Option } from "effect";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { appAccessAtom } from "../../contracts/resource-access.ts";
+ import type { Provider, AccountRequirement, AccountScope, App } from "@executor-js/sdk";
++import type { CatalogConnectionNotice } from "@executor-js/catalog/contracts";
+ import {
+   AppAccounts as SharedAccounts,
+   LinkedAccountMenu,
+@@ -16,7 +17,11 @@ import type { RequirementLink } from "@executor-js/ui/contracts/app-accounts";
+ import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import { Button } from "@executor-js/ui/components/button";
+-import { ConnectionDialogHeader, ConnectionModal } from "./connection-dialog.tsx";
++import {
++  ConnectionDialogHeader,
++  ConnectionModal,
++  ConnectionNotices,
++} from "./connection-dialog.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { appConnectionAtoms, oauthSetupAtom } from "../../contracts/apps.ts";
+@@ -35,6 +40,7 @@ import {
+ } from "../../contracts/accounts.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import { HostedAccountDialog } from "./account-actions.tsx";
++import { catalogAtom } from "../../contracts/api.ts";
+ 
+ /** A requirement's sign-in methods, OAuth first: connecting a new account starts with the first. */
+ export const methodsOf = (requirement: AccountRequirement) =>
+@@ -69,8 +75,17 @@ export function AppAccounts({
+ }) {
+   const { organization } = useOrganizationRoute();
+   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
++  const catalog = useQuery(catalogAtom);
+   const canUse = Option.isSome(data) && data.value.canUse;
+   const deployed = app.activeVersion !== null;
++  const copiedPackage = app.copiedFrom?.name;
++  const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
++  const catalogEntry = catalogEntries?.find((entry) => entry.package === copiedPackage);
++  const catalogUnavailable =
++    copiedPackage !== undefined &&
++    (catalogEntries === undefined ||
++      catalog.result.waiting ||
++      AsyncResult.isFailure(catalog.result));
+   const registry = useContext(RegistryContext);
+   const revalidate = (account: AccountSummary["id"]) => {
+     const check = checkAppAccountAtom({ organization, app: app.id, account });
+@@ -94,10 +109,16 @@ export function AppAccounts({
+   }>();
+   const [renaming, setRenaming] = useState<AccountSummary["id"]>();
+   const [connecting, setConnecting] = useState(false);
++  const connectionDisabled = connecting || connection !== undefined || catalogUnavailable;
++  const noticesFor = (requirement: AccountRequirement): readonly CatalogConnectionNotice[] =>
++    catalogEntry?.connectionNotices?.filter(
++      (notice) => notice.providerName === requirement.definition.name,
++    ) ?? [];
+   // Reconnecting through the app shows the hosts this app's declaration grants. Replacing an
+   // account's credentials needs use of the account.
+   const usable = (account: AccountSummary) => accounts.some((item) => item.id === account.id);
+   const reconnect = (scope: AccountScope, slot: string, account: AccountSummary) => {
++    if (connectionDisabled) return;
+     const requirement = app.requirements.accounts[slot];
+     if (requirement !== undefined)
+       setConnection({ scope, slot, requirement, method: account.method, account });
+@@ -114,11 +135,12 @@ export function AppAccounts({
+     link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+     connect: (slot, requirement) => {
++      if (connectionDisabled) return;
+       const [preferred] = methodsOf(requirement);
+       if (preferred !== undefined)
+         setConnection({ scope, slot, requirement, method: preferred[0] });
+     },
+-    connecting,
++    connecting: connectionDisabled,
+     onUnlinked: (account) => void unused.check(account),
+   });
+   const scopeAccounts = (
+@@ -151,7 +173,7 @@ export function AppAccounts({
+                 )}
+                 {usable(account) && (
+                   <DropdownMenuItem
+-                    disabled={connecting}
++                    disabled={connectionDisabled}
+                     onSelect={() => reconnect(scope, slot, account)}
+                   >
+                     {requirement.definition.auth[account.method]?.type === "oauth2"
+@@ -166,7 +188,7 @@ export function AppAccounts({
+               <Button
+                 variant="outline"
+                 size="sm"
+-                disabled={connecting}
++                disabled={connectionDisabled}
+                 onClick={() => reconnect(scope, slot, account)}
+               >
+                 Reconnect
+@@ -177,6 +199,17 @@ export function AppAccounts({
+   const notDeployed = "Deploy this app to link accounts.";
+   return (
+     <>
++      {catalogUnavailable && (
++        <div className="mb-4">
++          {AsyncResult.isFailure(catalog.result) ? (
++            <HostedFailure cause={catalog.result.cause} retry={catalog.refresh} layout="compact" />
++          ) : (
++            <p role="status" className="text-sm text-muted-foreground">
++              Loading connection details…
++            </p>
++          )}
++        </div>
++      )}
+       {Object.values(app.requirements.accounts).flatMap((requirement) =>
+         deployed && (requirement.scope === "app" ? canManage : canUse)
+           ? methodsOf(requirement)
+@@ -215,6 +248,7 @@ export function AppAccounts({
+             slot={connection.slot}
+             requirement={connection.requirement}
+             method={connection.method}
++            connectionNotices={noticesFor(connection.requirement)}
+             redirectUri={redirectUri}
+             account={connection.account}
+             onPendingChange={setConnecting}
+@@ -254,6 +288,7 @@ export function AppConnectionDialogContent({
+   slot,
+   requirement,
+   method,
++  connectionNotices = [],
+   redirectUri,
+   account,
+   onPendingChange,
+@@ -266,6 +301,7 @@ export function AppConnectionDialogContent({
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+   readonly method: string;
++  readonly connectionNotices?: readonly CatalogConnectionNotice[] | undefined;
+   readonly redirectUri: string;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onSaved: () => void;
+@@ -282,6 +318,7 @@ export function AppConnectionDialogContent({
+         action={account ? "Reconnect" : "Connect"}
+         notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
+       />
++      <ConnectionNotices provider={form.provider} notices={connectionNotices} />
+       <AppConnectionFields
+         app={app}
+         account={account}
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+index 9ec81368d..c06404230 100644
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -1,6 +1,9 @@
+ import { useEffect, useState, type ReactNode } from "react";
+ import { useNavigate } from "@tanstack/react-router";
+ import { AccountConnectionId, type Provider } from "@executor-js/sdk";
++import type { HostedAccountConnection } from "@executor-js/hosted-server";
++import type { CatalogConnectionNotice } from "@executor-js/catalog/contracts";
++import { AsyncResult } from "effect/reactivity";
+ import { Option } from "effect";
+ import {
+   Dialog,
+@@ -12,7 +15,8 @@ import { ProviderIcon } from "@executor-js/ui/dashboard/common";
+ import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
+-import { connectionAtom } from "../../contracts/apps.ts";
++import { appAtom, connectionAtom } from "../../contracts/apps.ts";
++import { catalogAtom } from "../../contracts/api.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { ConnectionFields } from "./connect-account.tsx";
+@@ -68,6 +72,35 @@ export function ConnectionDialogHeader({
+   );
+ }
+ 
++/** Explain operator-supplied provider restrictions before the person starts sign-in. */
++export function ConnectionNotices({
++  provider,
++  notices,
++}: {
++  readonly provider: Provider;
++  readonly notices: readonly CatalogConnectionNotice[];
++}) {
++  const providerName = provider.definition.name;
++  const messages = notices
++    .filter((notice) => notice.providerName === providerName)
++    .map(({ message }) => message);
++  if (messages.length === 0) return null;
++  return (
++    <div
++      role="note"
++      aria-label={`${providerName} connection notices`}
++      className="space-y-1 text-sm"
++    >
++      <p className="font-medium">Before you connect</p>
++      <ul className="list-disc space-y-1 pl-4 text-muted-foreground">
++        {messages.map((message, index) => (
++          <li key={`${providerName}:${index}`}>{message}</li>
++        ))}
++      </ul>
++    </div>
++  );
++}
++
+ /** A connection query parameter opens the existing request over its app page. */
+ export function AccountConnectionDialog({
+   connectionId,
+@@ -97,24 +130,11 @@ function ResumedConnectionDialog({
+   readonly client?: "change" | undefined;
+   readonly onClose: () => void;
+ }) {
+-  const { organization, slug: organizationSlug } = useOrganizationRoute();
+-  const navigate = useNavigate();
++  const { organization } = useOrganizationRoute();
+   const query = useQuery(connectionAtom({ organization, connection: connectionId }));
+-  const connection = Option.getOrUndefined(query.data);
+   const [busy, setBusy] = useState(false);
+   return (
+     <ConnectionModal open busy={busy} onClose={onClose}>
+-      {connection ? (
+-        <ConnectionDialogHeader
+-          provider={connection.provider}
+-          action={connection.reconnectAccount ? "Reconnect" : "Connect"}
+-        />
+-      ) : (
+-        <>
+-          <DialogTitle className="text-base">Connect account</DialogTitle>
+-          <DialogDescription className="sr-only">Load this account connection.</DialogDescription>
+-        </>
+-      )}
+       <QueryResult
+         result={query.result}
+         retry={query.refresh}
+@@ -122,10 +142,73 @@ function ResumedConnectionDialog({
+         pending={<DetailSkeleton label="Loading account setup" />}
+       >
+         {(connection) => (
++          <ResumedConnectionDetails
++            connection={connection}
++            client={client}
++            onPendingChange={setBusy}
++          />
++        )}
++      </QueryResult>
++    </ConnectionModal>
++  );
++}
++
++function ResumedConnectionDetails({
++  connection,
++  client,
++  onPendingChange,
++}: {
++  readonly connection: HostedAccountConnection;
++  readonly client?: "change" | undefined;
++  readonly onPendingChange: (pending: boolean) => void;
++}) {
++  const { organization, slug: organizationSlug } = useOrganizationRoute();
++  const navigate = useNavigate();
++  const appQuery = useQuery(appAtom({ organization, app: connection.target.app }));
++  const app = Option.getOrUndefined(appQuery.data);
++  const appUnavailable =
++    app === undefined || appQuery.result.waiting || AsyncResult.isFailure(appQuery.result);
++  const catalog = useQuery(catalogAtom);
++  const catalogEntries = Option.getOrUndefined(AsyncResult.value(catalog.result));
++  const catalogEntry = catalogEntries?.find((entry) => entry.package === app?.copiedFrom?.name);
++  const catalogUnavailable =
++    app?.copiedFrom?.name !== undefined &&
++    (catalogEntries === undefined ||
++      catalog.result.waiting ||
++      AsyncResult.isFailure(catalog.result));
++
++  return (
++    <>
++      <ConnectionDialogHeader
++        provider={connection.provider}
++        action={connection.reconnectAccount ? "Reconnect" : "Connect"}
++      />
++      {appUnavailable ? (
++        AsyncResult.isFailure(appQuery.result) ? (
++          <HostedFailure cause={appQuery.result.cause} retry={appQuery.refresh} layout="compact" />
++        ) : appQuery.result.waiting ? (
++          <DetailSkeleton label="Loading app details" />
++        ) : (
++          <p role="alert" className="text-sm text-muted-foreground">
++            This app is unavailable, so its connection details cannot be checked.
++          </p>
++        )
++      ) : catalogUnavailable ? (
++        AsyncResult.isFailure(catalog.result) ? (
++          <HostedFailure cause={catalog.result.cause} retry={catalog.refresh} layout="compact" />
++        ) : (
++          <DetailSkeleton label="Loading connection details" />
++        )
++      ) : (
++        <>
++          <ConnectionNotices
++            provider={connection.provider}
++            notices={catalogEntry?.connectionNotices ?? []}
++          />
+           <ConnectionFields
+             connection={connection}
+             manualClient={client === "change"}
+-            onPendingChange={setBusy}
++            onPendingChange={onPendingChange}
+             onSaved={() => {
+               void navigate({
+                 to: "/org/$organizationSlug/apps/$appId",
+@@ -135,9 +218,9 @@ function ResumedConnectionDialog({
+               });
+             }}
+           />
+-        )}
+-      </QueryResult>
+-    </ConnectionModal>
++        </>
++      )}
++    </>
+   );
+ }
+ 
+diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+index e27348116..18a14c907 100644
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -50,6 +50,7 @@ const maxClockOffset = 40 * 86_400_000;
+ export const OperatorSettings = Schema.Struct({
+   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
+   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
++  EXECUTOR_PRODUCT_NAME: Schema.optionalKey(Schema.NonEmptyString),
+   NODE_EXTRA_CA_CERTS: Schema.optionalKey(Schema.NonEmptyString),
+   /** Self-host's OpenID Connect sign-in, which an operator configures after first start. */
+   SSO_DISCOVERY_URL: Schema.optionalKey(Schema.NonEmptyString),
+diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
+index 8bc4d111f..e8242a953 100644
+--- a/e2e/support/public-catalogs.ts
++++ b/e2e/support/public-catalogs.ts
+@@ -63,6 +63,12 @@ export const officialApps = {
+       { method: "token", kind: "secrets", label: "Personal token" },
+     ],
+     icons: [{ src: "icons/tracker.svg", mimeType: "image/svg+xml" }],
++    connectionNotices: [
++      {
++        providerName: "Synthetic Tracker",
++        message: "Use a workspace that has approved the app before signing in.",
++      },
++    ],
+     source: "apps/synthetic-tracker.json",
+   },
+   mismatched: {
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 7d50ef03f..a67b6a1db 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2950,7 +2950,7 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "credential-placement.spec.ts",
+     title:
+-      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set",
++      "The reviewed Google client follows provider scopes and uses the configured product name when its credentials are set",
+     targets: {
+       "self-host": scheduled,
+       cloud: na(
+diff --git a/e2e/tests/catalog-official-apps.spec.ts b/e2e/tests/catalog-official-apps.spec.ts
+index d93a6ac1b..c4917ed75 100644
+--- a/e2e/tests/catalog-official-apps.spec.ts
++++ b/e2e/tests/catalog-official-apps.spec.ts
+@@ -28,6 +28,9 @@ const Catalog = Schema.Array(
+     icons: Schema.Array(
+       Schema.Struct({ src: Schema.String, theme: Schema.optionalKey(Schema.String) }),
+     ),
++    connectionNotices: Schema.optional(
++      Schema.Array(Schema.Struct({ providerName: Schema.String, message: Schema.String })),
++    ),
+   }),
+ );
+ const Installed = Schema.Struct({
+@@ -50,6 +53,7 @@ const Rejected = Schema.Struct({
+   _tag: Schema.Literal("CatalogImportFailed"),
+   code: Schema.String,
+ });
++const ConnectionLink = Schema.Struct({ id: Schema.String, url: Schema.String });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) => {
+   it.effect(scenarios.catalogOfficialApps.title, (context) =>
+@@ -79,6 +83,9 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
+           ["dark", "/catalog/icons/mail-dark.svg"],
+         ]);
+         expect(mail.auth).toEqual([{ method: "apiKey", kind: "secrets", label: "API key" }]);
++        expect(mail.connectionNotices).toBeUndefined();
++        const trackerEntry = entries.find((entry) => entry.id === officialApps.tracker.id);
++        expect(trackerEntry?.connectionNotices).toEqual(officialApps.tracker.connectionNotices);
+ 
+         // A listing whose source names another package is refused before anything is created.
+         const refusedName = `Mismatched ${randomUUID().slice(0, 8)}`;
+@@ -191,6 +198,81 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+         );
+         yield* browser.checkpoint("The tracker shows its catalog icon");
+         expect(logos).toEqual([]);
++        yield* browser.use("Start a tracker connection from the app accounts", (page) =>
++          provider(page).getByRole("button", { name: "Connect new account" }).click(),
++        );
++        expect(
++          yield* browser.use("The app account dialog shows its catalog notice", (page) =>
++            page
++              .getByRole("dialog", { name: `Connect ${officialApps.tracker.name}` })
++              .getByRole("note", { name: `${officialApps.tracker.name} connection notices` })
++              .innerText(),
++          ),
++        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
++        yield* browser.use("Close the tracker connection dialog", (page) =>
++          page.keyboard.press("Escape"),
++        );
++
++        const handoff = yield* body(
++          ConnectionLink,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/apps/${tracker.id}/accounts/user/tracker/connections`,
++            {},
++          ),
++        );
++        const handoffUrl = new URL(handoff.url);
++        yield* browser.use("Open the agent-created connection handoff", (page) =>
++          page.goto(`${handoffUrl.pathname}${handoffUrl.search}`),
++        );
++        yield* browser.use("The handoff opens tracker account setup", (page) =>
++          page.waitForURL(new RegExp(`/apps/${tracker.id}\\?`, "u")),
++        );
++        expect(
++          yield* browser.use("The resumed dialog shows its catalog notice", (page) =>
++            page
++              .getByRole("dialog", { name: `Connect ${officialApps.tracker.name}` })
++              .getByRole("note", { name: `${officialApps.tracker.name} connection notices` })
++              .innerText(),
++          ),
++        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
++        yield* browser.checkpoint("Agent-created connections show restrictions before Connect");
++
++        yield* browser.use("Return to tracker accounts", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${tracker.id}?view=accounts`),
++        );
++        yield* browser.use("Make the catalog unavailable after reload", (page) =>
++          page.route("**/api/catalog", (route) =>
++            route.fulfill({
++              status: 502,
++              contentType: "application/json",
++              body: JSON.stringify({
++                _tag: "CatalogUnavailable",
++                message: "Executor could not read the app catalog. Try again.",
++              }),
++            }),
++          ),
++        );
++        yield* browser.use("Reload tracker accounts without catalog metadata", (page) =>
++          page.reload(),
++        );
++        yield* browser.use("Show the catalog error and block a new connection", (page) =>
++          page
++            .getByText("The app catalog could not be reached. Try again.", { exact: true })
++            .waitFor(),
++        );
++        expect(
++          yield* browser.use(
++            "The account dialog stays closed while metadata is unavailable",
++            (page) =>
++              Promise.all([
++                provider(page).getByRole("button", { name: "Connect new account" }).isDisabled(),
++                page.getByRole("dialog").count(),
++              ]),
++          ),
++        ).toEqual([true, 0]);
++        yield* browser.use("Restore the catalog request", (page) => page.unroute("**/api/catalog"));
+         yield* browser.use("Open Add app", (page) =>
+           page.goto(`/org/${actors.organization.slug}/apps/add`),
+         );
+@@ -206,6 +288,11 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
+         yield* browser.use("An installed app offers Open", (page) =>
+           row(page, officialApps.tracker.name).getByRole("link", { name: "Open" }).waitFor(),
+         );
++        expect(
++          yield* browser.use("The catalog shows the tracker restriction before Add", (page) =>
++            row(page, officialApps.tracker.name).innerText(),
++          ),
++        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
+         yield* browser.use("An app not yet added offers Add", (page) =>
+           row(page, officialApps.mail.name)
+             .getByRole("button", { name: `Add ${officialApps.mail.name}`, exact: true })
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+index 009facb47..375f54334 100644
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -1082,6 +1082,16 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         });
+         expect(wider.setup.firstParty).toBeUndefined();
+         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
++
++        // Hosted product naming changes only reviewed client labels. The optional OAuth App
++        // keeps the same permissions and endpoints when the operator names their product.
++        yield* restartWith({
++          EXECUTOR_PRODUCT_NAME: "Synthetic Host",
++          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
++          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
++        });
++        const branded = yield* signIn("branded", [calendar]);
++        expect(branded.setup.firstParty).toEqual({ label: "Synthetic Host for Google" });
+       }),
+     ),
+   );
+diff --git a/e2e/tests/self-host-onboarding.spec.ts b/e2e/tests/self-host-onboarding.spec.ts
+index 4485b564e..e0a8cbf7a 100644
+--- a/e2e/tests/self-host-onboarding.spec.ts
++++ b/e2e/tests/self-host-onboarding.spec.ts
+@@ -142,6 +142,11 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
+             ]),
+           ),
+         ).toEqual(["Connect", "Connect"]);
++        expect(
++          yield* browser.use("The tracker restriction is visible before Connect", (page) =>
++            appRow(page, officialApps.tracker.name).innerText(),
++          ),
++        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
+         // On a desktop the search has focus, so typing finds an app; the list ends with what to do
+         // about an app it does not show.
+         expect(yield* browser.use("The search has focus on a desktop", focused)).toBe(
+@@ -367,6 +372,14 @@ layer(TestLive, { excludeTestServices: true })("Self-host onboarding", (it) => {
+         yield* browser.use("Connect the tracker with OAuth", (page) =>
+           appRow(page, officialApps.tracker.name).getByRole("button", { name: "Connect" }).click(),
+         );
++        expect(
++          yield* browser.use("The tracker restriction remains before OAuth setup", (page) =>
++            page
++              .getByRole("dialog", { name: `Connect ${officialApps.tracker.name}` })
++              .getByRole("note", { name: `${officialApps.tracker.name} connection notices` })
++              .innerText(),
++          ),
++        ).toContain(officialApps.tracker.connectionNotices[0]?.message);
+         yield* browser.use("Enter OAuth client details", enterClientDetails);
+         yield* browser.use("Provide a synthetic public client", (page) =>
+           page.getByRole("textbox", { name: "Client ID", exact: true }).fill("synthetic-client"),
+diff --git a/packages/catalog/README.md b/packages/catalog/README.md
+index 987a21a41..bb8ffcadc 100644
+--- a/packages/catalog/README.md
++++ b/packages/catalog/README.md
+@@ -26,6 +26,12 @@ app's id, package, title, description, auth methods, category and icons; `apps/<
+ files beside them. Paths in the index are relative to it. Hosts read the feed at
+ `EXECUTOR_CATALOG_URL`. Without one, the catalog lists no feed apps.
+ 
++An entry may include `connectionNotices`, an array of `{ providerName, message }`
++records. `providerName` matches the provider definition's display name. Hosts
++show each message before a person chooses to connect. These notices are operator
++metadata: they do not change app source or provider identity. Entries without
++the field keep the usual connection flow.
++
+ Every entry installs directly: nothing has to be guessed, because the package
+ already declares its providers and auth methods. The user connects an account
+ through the app's own providers after install. Preparation reads the index
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+index 410a74099..994bd78f1 100644
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -22,6 +22,14 @@ export const CatalogAuth = Schema.Struct({
+ });
+ export type CatalogAuth = typeof CatalogAuth.Type;
+ 
++/** Operator-provided context shown before connecting a catalog app's provider. */
++export const CatalogConnectionNotice = Schema.Struct({
++  /** Matches the provider definition's display name, not its content-derived provider ID. */
++  providerName: Schema.NonEmptyString,
++  message: Schema.NonEmptyString,
++});
++export type CatalogConnectionNotice = typeof CatalogConnectionNotice.Type;
++
+ /**
+  * An official, vetted Executor app, or a host's own built-in app. Every entry installs its source
+  * directly; the user then connects an account through the app's own providers.
+@@ -35,6 +43,8 @@ export const CatalogEntry = Schema.Struct({
+   auth: Schema.Array(CatalogAuth),
+   category: Schema.optionalKey(Schema.String),
+   icons: Schema.Array(CatalogIcon),
++  /** Optional operator notes; they do not change the installed app or its provider. */
++  connectionNotices: Schema.optionalKey(Schema.Array(CatalogConnectionNotice)),
+ });
+ export type CatalogEntry = typeof CatalogEntry.Type;
+ /** Optional filters for a catalog listing, as URL query parameters. Without them, all entries. */
+diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/contracts/index.ts
+index 7c46375da..ca61c33e7 100644
+--- a/packages/catalog/src/contracts/index.ts
++++ b/packages/catalog/src/contracts/index.ts
+@@ -2,6 +2,7 @@
+ export {
+   CatalogAuth,
+   CatalogEntry,
++  CatalogConnectionNotice,
+   CatalogFeed,
+   CatalogFeedSource,
+   CatalogIcon,
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+index 4f806b8cd..d5cb5933c 100644
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -3,7 +3,7 @@ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-reac
+ import { useContext, useState, type ReactNode } from "react";
+ import { Cause, Effect, Exit, Option, Predicate } from "effect";
+ import type { App, DeployedApp } from "@executor-js/sdk";
+-import type { CatalogEntry } from "@executor-js/catalog/contracts";
++import type { CatalogEntry, CatalogConnectionNotice } from "@executor-js/catalog/contracts";
+ import type {
+   QueryProps,
+   MutationProps,
+@@ -189,6 +189,7 @@ export function CatalogPage<E, IE>({
+                 <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
+                   <strong>{entryName(entry)}</strong>
+                   <span className="line-clamp-1">{entry.description}</span>
++                  <CatalogNotices notices={entry.connectionNotices} />
+                 </div>
+                 {(() => {
+                   const installed = installedByPackage.get(entry.package);
+@@ -272,3 +273,22 @@ export function CatalogPage<E, IE>({
+     </div>
+   );
+ }
++
++/** Show provider restrictions before an app is added from the catalog. */
++function CatalogNotices({
++  notices,
++}: {
++  readonly notices: readonly CatalogConnectionNotice[] | undefined;
++}) {
++  if (notices === undefined || notices.length === 0) return null;
++  return (
++    <ul className="space-y-1 text-[12px] text-muted-foreground">
++      {notices.map((notice, index) => (
++        <li key={`${notice.providerName}:${index}`}>
++          <span className="font-medium text-foreground/80">{notice.providerName}: </span>
++          {notice.message}
++        </li>
++      ))}
++    </ul>
++  );
++}

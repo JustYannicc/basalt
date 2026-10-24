@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { appHosting, brand, deployment } from "../brand.ts";
+import { catalog } from "../src/catalog/settings.ts";
 import { poolFrameworkVersion } from "./pool-app-bundle.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 
@@ -12,6 +13,10 @@ export const requiredSecrets = [
   "PLANETSCALE_API_TOKEN",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
+  "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID",
+  "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
+  "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID",
+  "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET",
   "AUTH_GITHUB_CLIENT_ID",
   "AUTH_GITHUB_CLIENT_SECRET",
   "BETTER_AUTH_SECRET",
@@ -57,6 +62,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     EXECUTOR_APP_DOMAIN_ZONE: appHosting.enabled ? appHosting.zone : undefined,
     AUTH_EMAIL_DOMAIN: brand.emailDomain,
     EXECUTOR_PRODUCT_NAME: brand.name,
+    EXECUTOR_CATALOG_URL: `https://${brand.host}${catalog.path}index.json`,
     EXECUTOR_PRODUCT_LOGO_URL: brand.logo,
     EXECUTOR_PRODUCT_DOCS_URL: brand.links.docs ?? undefined,
     EXECUTOR_PRODUCT_PRIVACY_URL: brand.links.privacy ?? undefined,
