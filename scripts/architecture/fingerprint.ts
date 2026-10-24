@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import ts from "typescript";
@@ -15,9 +16,30 @@ function assetFiles(path: string, root: string, seen = new Set<string>()): strin
     ? readdirSync(path).sort().flatMap(name => assetFiles(join(path, name), root, seen)) : [path];
 }
 
+function ignoredAssetFiles(root: string, files: string[]): Set<string> {
+  if (!files.length) return new Set();
+  const paths = files.map(file => relative(root, file).replaceAll("\\", "/"));
+  const result = spawnSync("git", ["check-ignore", "--verbose", "--stdin", "-z"], {
+    cwd: root,
+    input: `${paths.join("\0")}\0`,
+    encoding: "utf8",
+  });
+  // Git returns 1 when no paths are ignored. Outside a checkout or when Git
+  // cannot answer, conservatively include every asset rather than hide source.
+  if (result.error || (result.status !== 0 && result.status !== 1)) return new Set();
+  const fields = result.stdout.split("\0");
+  const ignored = new Set<string>();
+  for (let index = 0; index + 3 < fields.length; index += 4) {
+    const [source, , , path] = fields.slice(index, index + 4);
+    // Ignore global excludes and .git/info/exclude; they vary by machine.
+    if (source === ".gitignore" && path) ignored.add(path);
+  }
+  return ignored;
+}
+
 // Hash source rather than resolved values: no credentials or providers are needed.
 // Include local imports and referenced source URLs, the dependency pin and patches.
-// Build outputs and the architecture tooling cannot feed back into this digest.
+// Repository-ignored build outputs and architecture tooling cannot feed back into this digest.
 export function stackFingerprint(root: string): string {
   const sources = new Map<string, Buffer>();
   const directories = new Set<string>();
@@ -31,8 +53,13 @@ export function stackFingerprint(root: string): string {
     if (statSync(path).isDirectory()) {
       if (directories.has(file)) return;
       directories.add(file);
-      const inputs = existsSync(join(path, "Dockerfile")) ? containerInputs(path) : assetFiles(path, root);
-      for (const input of inputs) visit(input);
+      const isContainer = existsSync(join(path, "Dockerfile"));
+      const inputs = isContainer ? containerInputs(path) : assetFiles(path, root);
+      const ignored = isContainer ? new Set<string>() : ignoredAssetFiles(root, inputs);
+      for (const input of inputs) {
+        const key = relative(root, input).replaceAll("\\", "/");
+        if (!ignored.has(key)) visit(input);
+      }
       return;
     }
     const text = readFileSync(path);
@@ -42,8 +69,10 @@ export function stackFingerprint(root: string): string {
     const visitNode = (node: ts.Node): void => {
       if (ts.isStringLiteralLike(node) && node.text.startsWith(".")) {
         const reference = resolve(dirname(path), node.text.replace(/\.js$/, ".ts"));
+        // A repository-root URL establishes a path base, not an asset directory.
         if (ts.isNewExpression(node.parent) && node.parent.expression.getText(source) === "URL" &&
-            node.parent.arguments?.[0] === node && existsSync(reference) && statSync(reference).isDirectory()) visit(reference);
+            node.parent.arguments?.[0] === node && reference !== resolve(root)
+            && existsSync(reference) && statSync(reference).isDirectory()) visit(reference);
         for (const candidate of [reference, `${reference}.ts`, join(reference, "index.ts")]) {
           if (/\.(?:[cm]?tsx?|json)$/.test(candidate) && existsSync(candidate)) {
             visit(candidate);
@@ -59,8 +88,14 @@ export function stackFingerprint(root: string): string {
   visit(join(root, "scripts/environment.ts"));
   visit(join(root, "upstream.json"));
   visit(join(root, "package.json"));
+  visit(join(root, ".gitignore"));
   for (const workflow of filesBelow(join(root, ".github/workflows")).filter(file => /\.ya?ml$/.test(file))) visit(workflow);
   for (const patch of filesBelow(join(root, "patches")).filter(file => file.endsWith(".patch"))) visit(patch);
+  // Setup build entry points are not runtime imports, but their source drives
+  // ignored static outputs served by the Worker.
+  visit(join(root, "scripts/setup-build.ts"));
+  visit(join(root, "apps/pool/ui/style.css"));
+  for (const source of filesBelow(join(root, "src/setup")).filter(file => !/\.test\.[^/]+$/.test(file))) visit(source);
   const hash = createHash("sha256");
   for (const [file, text] of [...sources].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
     hash.update(file).update("\0").update(text).update("\0");

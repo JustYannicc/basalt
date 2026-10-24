@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test } from "vitest";
@@ -19,6 +20,25 @@ function fixture() {
 }
 test("the stack fingerprint is independent of the checkout path", () => {
   expect(stackFingerprint(fixture().root)).toBe(stackFingerprint(fixture().root));
+});
+
+test("build path bases do not turn the repository and Git metadata into asset inputs", () => {
+  const first = fixture(), second = fixture();
+  for (const value of [first, second]) {
+    value.write("scripts/setup-build.ts", 'const root = new URL("../", import.meta.url);');
+    value.write("src/setup/client.mjs", "export const installer = 'source';");
+  }
+  first.write(".git", "gitdir: /separate/worktree/metadata\n");
+  second.write(".git/config", "a clean checkout has a Git directory\n");
+  first.write("public/brand/fonts/generated.woff2", "locally generated font");
+  first.write("node_modules/dependency/file.js", "installed dependency");
+  const before = stackFingerprint(first.root);
+  expect(before).toBe(stackFingerprint(second.root));
+  first.write("src/setup/client.mjs", "export const installer = 'changed';");
+  expect(stackFingerprint(first.root)).not.toBe(before);
+  const changed = stackFingerprint(first.root);
+  first.write("scripts/setup-build.ts", 'const root = new URL("../", import.meta.url); build();');
+  expect(stackFingerprint(first.root)).not.toBe(changed);
 });
 test("resource settings and referenced configuration change the fingerprint", () => {
   const { root, write } = fixture();
@@ -79,6 +99,81 @@ test("referenced public assets hash their bytes and include newly added files", 
   expect(withRedirect).not.toBe(changed);
   write("public/.well-known/config.json", "{}");
   expect(stackFingerprint(root)).not.toBe(withRedirect);
+});
+
+test("ignored generated public assets stay out while source and new public assets stay in", () => {
+  const { root, write } = fixture();
+  const repositoryIgnore = readFileSync(new URL("../../.gitignore", import.meta.url), "utf8");
+  write(".gitignore", `${repositoryIgnore}\npublic/tracked-source.txt\n`);
+  write("alchemy.run.ts", 'new URL("./public/", import.meta.url);');
+  write("src/setup/client.mjs", "export const installer = 'source';");
+  write("src/setup/ui.tsx", "export const page = 'source';");
+  write("scripts/setup-build.ts", "build({ entryPoints: ['src/setup/ui.tsx'] });");
+  write("apps/pool/ui/style.css", "source styles");
+  write("public/tracked-source.txt", "tracked source");
+  const initialized = spawnSync("git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+  if (initialized.status !== 0) throw new Error(initialized.stderr || "Could not initialize Git fixture");
+  const tracked = spawnSync("git", ["add", "-f", "public/tracked-source.txt"], { cwd: root, encoding: "utf8" });
+  if (tracked.status !== 0) throw new Error(tracked.stderr || "Could not track fixture asset");
+
+  const beforeGeneratedOutput = stackFingerprint(root);
+  write("public/setup/main.js", "built setup bundle");
+  write("public/brand/fonts/geist-sans.woff2", "copied font");
+  write("src/setup/client.test.ts", "test-only fixture");
+  expect(stackFingerprint(root)).toBe(beforeGeneratedOutput);
+
+  write("public/.well-known/config.json", "{}");
+  const withWellKnownSource = stackFingerprint(root);
+  expect(withWellKnownSource).not.toBe(beforeGeneratedOutput);
+
+  write("public/new-source.txt", "new source asset");
+  const withNewSource = stackFingerprint(root);
+  expect(withNewSource).not.toBe(withWellKnownSource);
+
+  write("public/global-excluded.txt", "source ignored only by global rules");
+  write("public/local-excluded.txt", "source ignored only by repository local excludes");
+  const withExternalIgnoreSource = stackFingerprint(root);
+  expect(withExternalIgnoreSource).not.toBe(withNewSource);
+  write(".git/global-excludes", "public/global-excluded.txt\n");
+  const globalExcludes = spawnSync("git", ["config", "core.excludesFile", join(root, ".git/global-excludes")], {
+    cwd: root, encoding: "utf8",
+  });
+  if (globalExcludes.status !== 0) throw new Error(globalExcludes.stderr || "Could not set fixture global excludes");
+  const localExcludePath = join(root, ".git/info/exclude");
+  writeFileSync(localExcludePath, `${readFileSync(localExcludePath, "utf8")}public/local-excluded.txt\n`);
+  expect(stackFingerprint(root)).toBe(withExternalIgnoreSource);
+
+  write("public/tracked-source.txt", "changed tracked source");
+  const withTrackedSource = stackFingerprint(root);
+  expect(withTrackedSource).not.toBe(withExternalIgnoreSource);
+
+  write("src/setup/client.mjs", "export const installer = 'changed source';");
+  const withClientSource = stackFingerprint(root);
+  expect(withClientSource).not.toBe(withTrackedSource);
+
+  write("src/setup/ui.tsx", "export const page = 'changed source';");
+  const withUiSource = stackFingerprint(root);
+  expect(withUiSource).not.toBe(withClientSource);
+
+  write("apps/pool/ui/style.css", "changed source styles");
+  const withStyleSource = stackFingerprint(root);
+  expect(withStyleSource).not.toBe(withUiSource);
+
+  write("scripts/setup-build.ts", "build({ entryPoints: ['src/setup/client.mjs'] });");
+  const withBuildSource = stackFingerprint(root);
+  expect(withBuildSource).not.toBe(withStyleSource);
+
+  write(".gitignore", `${readFileSync(join(root, ".gitignore"), "utf8")}\n# changed policy\n`);
+  expect(stackFingerprint(root)).not.toBe(withBuildSource);
+});
+
+test("without a Git checkout, ignored-looking public assets are conservatively included", () => {
+  const { root, write } = fixture();
+  write(".gitignore", "public/setup/\n");
+  write("alchemy.run.ts", 'new URL("./public/", import.meta.url);');
+  const before = stackFingerprint(root);
+  write("public/setup/main.js", "built setup bundle");
+  expect(stackFingerprint(root)).not.toBe(before);
 });
 
 test("dependency checkout state is represented by its pin and patches", () => {
