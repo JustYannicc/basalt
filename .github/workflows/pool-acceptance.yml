@@ -1,0 +1,54 @@
+name: Pool acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Full includes a runner-only one-hour quiet interval and assumes otherwise quiet deployment traffic; externally deploy or crash the pool when restart observation is armed
+        required: true
+        type: choice
+        options:
+          - full
+          - restart-observation
+        default: full
+      model:
+        description: Model ID from /v1/models; required when the catalog has multiple models
+        required: false
+        type: string
+        default: ""
+      pool:
+        description: Dedicated acceptance-<run> pool containing the two test subscriptions and scoped POOL_ACCEPTANCE_KEY; required for full mode
+        required: false
+        type: string
+        default: ""
+      confirm_test_key:
+        description: Confirm POOL_ACCEPTANCE_KEY is dedicated to test use
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pool-acceptance-production
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Run live pool acceptance
+        run: node scripts/pool-acceptance.ts
+        env:
+          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          POOL_ACCEPTANCE_POOL: ${{ inputs.pool }}
+          POOL_ACCEPTANCE_MODEL: ${{ inputs.model }}
+          POOL_ACCEPTANCE_MODE: ${{ inputs.mode }}
+          POOL_ACCEPTANCE_TEST_KEY_CONFIRMED: ${{ inputs.confirm_test_key }}
