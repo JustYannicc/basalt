@@ -12,12 +12,12 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/pool-acceptance.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
     }
 
     deployment = module "Deployment" {
       metadata {
-        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml"
+        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
       }
     }
 
@@ -128,6 +128,8 @@ model {
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
   basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY and patched apps framework"
   basalt.deployment -[sync]-> basalt.router "check public routes; supply POOL_APP_SIGNING_KEY"
+  basalt.deployment -[sync]-> basalt.router "acceptance: stream test requests and read signed pool usage"
+  basalt.deployment -[sync]-> basalt.pool "import pool usage contract for acceptance"
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
@@ -135,7 +137,6 @@ model {
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
   basalt.build -[sync]-> basalt.setupHost "bundle root setup React page from shared pool UI"
   basalt.build -[sync]-> basalt.setupInstaller "install frozen setup dependencies; bundle installer asset"
-  basalt.build -[sync]-> basalt.router "acceptance: stream test requests and read signed pool usage"
   basalt.router -[sync]-> basalt.pool "import pool control path contract"
   basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
   basalt.modelGateway -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
