@@ -128,7 +128,7 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   assert.equal(env.GOOGLE_CONNECTOR_READY, "true");
   assert.equal(env.GITHUB_CONNECTOR_READY, "true");
   assert.deepEqual(connectorWarnings(env), []);
-  for (const provider of ["GOOGLE", "GITHUB_OAUTH", "ZOHO"]) {
+  for (const provider of ["GOOGLE", "GITHUB_OAUTH", "ZOHO", "ATLASSIAN", "SLACK_REST"]) {
     for (const part of ["ID", "SECRET"]) {
       const name = `EXECUTOR_OAUTH_${provider}_CLIENT_${part}`;
       assert.equal(env[name], source[name as keyof typeof source]);
@@ -153,5 +153,6 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(env.GITHUB_CONNECTOR_READY, "false");
   assert.equal(env.ZOHO_CONNECTOR_READY, "false");
   assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
+  assert.equal(env.SLACK_CONNECTOR_READY, "false");
   assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
 });

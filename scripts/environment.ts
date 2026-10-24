@@ -30,6 +30,7 @@ export const optionalConnectorClients = [
   { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
   { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },
   { name: "Atlassian", id: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID", secret: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET", ready: "ATLASSIAN_CONNECTOR_READY" },
+  { name: "Slack", id: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID", secret: "EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET", ready: "SLACK_CONNECTOR_READY" },
 ] as const;
 
 /** One warning per unavailable client, never per missing secret or containing credential values. */

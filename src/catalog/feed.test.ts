@@ -80,8 +80,8 @@ test("provider restrictions follow the actual official app names and never chang
     assert.deepEqual(entry.auth, apps[index]!.auth);
   }
   assert.match(feed.apps[0]!.connectionNotices![0]!.message, /100 users over its lifetime/);
-  assert.match(feed.apps[7]!.connectionNotices![0]!.message, /not one-click yet/);
-  assert.match(feed.apps[7]!.connectionNotices![0]!.message, /bot token/);
+  assert.match(feed.apps[7]!.connectionNotices![0]!.message, /Messages post as you/);
+  assert.match(feed.apps[7]!.connectionNotices![0]!.message, /not set up yet/);
   assert.equal(apps[0]!.connectionNotices, undefined);
 });
 
@@ -133,4 +133,28 @@ test("Zoho CRM readiness stays independent and keeps the official regional auth 
   const source = '{"package":"@executor.sh/zoho","files":[]}';
   assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/zoho.json"),
     async () => new Response(source))).text(), source);
+});
+
+test("Slack's carried app and feed select personal OAuth while other sources stay upstream", async () => {
+  const slack = { ...official.apps[0]!, id: "slack", package: "@executor.sh/slack", name: "Slack",
+    auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] };
+  const index = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
+    async () => Response.json({ version: 1, apps: [slack] }), { google: true, github: true, slack: true });
+  const entry = (await index.json()).apps[0];
+  assert.equal(entry.id, slack.id);
+  assert.equal(entry.package, slack.package);
+  assert.equal(entry.auth[0].kind, "oauth2");
+  assert.equal(entry.auth[0].method, "user");
+  assert.equal(entry.connectionNotices.length, 1);
+  const noFetch: typeof fetch = async () => { throw new Error("Slack carry must not fetch a moving package"); };
+  const source = await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/slack.json"), noFetch);
+  assert.equal(source.status, 200);
+  const packageSource = await source.json();
+  assert.equal(packageSource.package, slack.package);
+  assert.ok(packageSource.files.some((file: { path: string }) => file.path === "index.ts"));
+  const head = await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/slack.json", { method: "HEAD" }), noFetch);
+  assert.equal(await head.text(), "");
+  const changedPublisher = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
+    async () => Response.json({ version: 1, apps: [{ ...slack, package: "@example/replaced" }] }));
+  assert.equal(changedPublisher.status, 502);
 });

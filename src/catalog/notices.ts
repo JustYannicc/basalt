@@ -6,7 +6,7 @@ export interface ConnectionNotice {
 }
 
 const google = `${brand.name}'s Google connector is published but unverified. Google shows an unverified-app warning and limits this project to 100 users over its lifetime. Your Workspace admin may block access or mark the app trusted. You connect your own account and grant access only to the selected service.`;
-const slack = `Slack is not one-click yet. The catalog app's OAuth flow returns a bot token, so ${brand.name} cannot use it for your personal connection. A personal user-token flow is still needed. Unlisted apps also have conversation history and replies limited to 1 request per minute and 15 items per request. Your workspace may require admin approval.`;
+const slack = `Connect your own Slack account through ${brand.name}. Messages post as you, with your access. Unlisted apps have conversation history and replies limited to 1 request per minute and 15 items per request. Your workspace may require admin approval.`;
 
 /** Operator notices are feed data, never part of the tools API Worker. Provider names match the official apps. */
 const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> = {
@@ -27,6 +27,7 @@ export interface ConnectorAvailability {
   readonly github: boolean;
   readonly zoho?: boolean;
   readonly atlassian?: boolean;
+  readonly slack?: boolean;
 }
 
 /** Readiness is public feed data. Client credentials never reach this Worker. */
@@ -34,7 +35,8 @@ export function connectionNotices(ready: ConnectorAvailability): typeof configur
   return Object.fromEntries(Object.entries(configuredNotices).map(([name, notices]) => {
     const unavailable = name === "@executor.sh/zoho" ? !ready.zoho
       : name === "@executor.sh/github" ? !ready.github
-      : name !== "@executor.sh/slack" && name !== "@executor.sh/elevenlabs" && !ready.google;
+      : name === "@executor.sh/slack" ? !ready.slack
+      : name !== "@executor.sh/elevenlabs" && !ready.google;
     return [name, unavailable ? notices.map(notice => ({ ...notice,
       message: `${notice.providerName} is not set up yet. ${notice.message}`,
     })) : notices];
