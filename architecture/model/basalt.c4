@@ -18,6 +18,7 @@ model {
     deployment = module "Deployment" {
       metadata {
         code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|src/pool/deployment.ts|src/pool/database.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
+        bindings "stageRouter=basalt.router|this.stageRouter=basalt.router"
       }
     }
 
@@ -129,6 +130,9 @@ model {
   basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY and patched apps framework"
   basalt.deployment -[sync]-> basalt.router "check public routes; supply POOL_APP_SIGNING_KEY"
   basalt.deployment -[sync]-> basalt.router "acceptance: stream test requests and read signed pool usage"
+  basalt.deployment -[sync]-> basalt.router "preview: native sign-in and pool data; claim setup; download built installer; observe and revoke computers"
+  basalt.deployment -[sync]-> basalt.setupInstaller "preview: execute downloaded built installer and undo"
+  basalt.deployment -[sync]-> localClient "preview: run installed Claude Code and Codex in isolated homes"
   basalt.deployment -[sync]-> basalt.pool "import pool usage contract for acceptance"
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"

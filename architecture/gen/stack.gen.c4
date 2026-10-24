@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { fingerprint "b95290579415146a6333a455d14335177c9264da59d475dd0d00f8d74c2114d0"; bindings "10e46425f8c7668f9ffe10d3ace96bd53095e395de3c291ae3b64ece0f427323" }
+    metadata { fingerprint "275b2e807c2fb51678532c2e7838e8dae96a9db935e7c123bb74a0f765c574e8"; bindings "10e46425f8c7668f9ffe10d3ace96bd53095e395de3c291ae3b64ece0f427323" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {

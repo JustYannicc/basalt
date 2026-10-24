@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Preview acceptance result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "mode", "signIn", "pool", "clients", "cleanup"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "const": "preview" },
+    "signIn": { "type": "boolean" },
+    "pool": { "type": "boolean" },
+    "cleanup": { "type": "boolean" },
+    "clients": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        { "allOf": [{ "$ref": "#/$defs/client" }, { "properties": { "client": { "const": "claude" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/client" }, { "properties": { "client": { "const": "codex" } } }] }
+      ]
+    }
+  },
+  "$defs": {
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client", "exit", "timeout", "modelRequest", "toolSearch", "undo", "revoke"],
+      "properties": {
+        "client": { "enum": ["claude", "codex"] },
+        "exit": { "enum": [0, null] },
+        "timeout": { "enum": [false, null] },
+        "modelRequest": { "type": "boolean" },
+        "toolSearch": { "type": "boolean" },
+        "undo": { "type": "boolean" },
+        "revoke": { "type": "boolean" }
+      }
+    }
+  }
+}

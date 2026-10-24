@@ -184,6 +184,13 @@ async function configFromEnvironment(): Promise<AcceptanceConfig> {
 
 async function main(): Promise<void> {
   try {
+    if (process.env.POOL_ACCEPTANCE_MODE === "preview") {
+      const { runPreviewFromEnvironment } = await import("./pool-acceptance/preview.ts");
+      const passed = await runPreviewFromEnvironment();
+      console.log(`acceptance status=${passed ? "passed" : "failed"} mode=preview`);
+      if (!passed) process.exitCode = 1;
+      return;
+    }
     await runPoolAcceptance(await configFromEnvironment());
   } catch (error) {
     const message = error instanceof AcceptanceFailure ? error.message : "Unexpected acceptance runner failure";
