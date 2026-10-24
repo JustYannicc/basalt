@@ -125,14 +125,15 @@ model {
     technology "Sentry EU"
     metadata { hosts "*.ingest.de.sentry.io" }
   }
-  posthogService = adapter "EU product analytics" {
+  posthogService = adapter "Product analytics" {
     #external
-    technology "PostHog EU"
-    metadata { hosts "eu.i.posthog.com" }
+    technology "PostHog"
+    metadata { hosts "eu.i.posthog.com|us.i.posthog.com" }
   }
   basalt.telemetry -[sync]-> sentryService "send feedback, errors and scrubbed Effect and router traces over HTTP; direct mode disables runtime platform trace export"
   basalt.telemetry -[sync]-> posthogService "send account-scoped product events over HTTP"
   basalt.build -[sync]-> sentryService "use a synthetic DSN and OTLP endpoint for the worker size check; no network request"
+  basalt.build -[sync]-> posthogService "use synthetic regional capture settings for the worker size check; no network request"
 
   basalt.toolsGateway -[sync]-> basalt.toolsState "state and jobs"
   basalt.toolsGateway -[sync]-> basalt.toolsCredentials "secret custody"
