@@ -22,6 +22,7 @@ import {
   type SignInStatus,
 } from "./contract.ts";
 import { poolOrigin, productName } from "./deployment.ts";
+import type { Computer } from "./ui/computer-types.ts";
 
 // The tools service links this account for everyone when it installs a pool.
 // Its token works for this one pool only; the pool Worker holds the backend's key.
@@ -119,6 +120,11 @@ export const removeAccount = mutation(
   async (ctx: Context, { id }) => control<null>(ctx, `/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
 );
 
+export const computerContext = query(
+  { description: "Your computers in this pool and a short-lived link to set up this computer", input: object({}) },
+  async (ctx: Context) => control<{ href: string; computers: Computer[]; undoPrompt: string }>(ctx, "/setup-context"),
+);
+
 export default defineApp(requirements, {
   tools: router({
     view,
@@ -128,5 +134,6 @@ export default defineApp(requirements, {
     cancelSignIn,
     addLoginFile,
     removeAccount,
+    computerContext,
   }),
 });

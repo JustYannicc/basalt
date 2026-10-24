@@ -43,6 +43,7 @@ jobs:
         run: |
           npm run architecture:model
           npm run architecture:typecheck
+      - run: bun install --cwd src/setup --frozen-lockfile
       - run: npm run check
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers

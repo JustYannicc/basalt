@@ -6,8 +6,15 @@ function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]):
   return {
     TOOLS_SERVICE: { fetch: fetchRequest },
     POOL_SERVICE: { fetch: async () => new Response("pool", { status: 202 }) },
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
   };
 }
+
+test("private setup routes never reach a service from the public router", async () => {
+  const env = envWithToolsService(async () => { throw new Error("private path forwarded"); });
+  for (const path of ["/__setup/v1/claim", "/__setup/v1/links", "/%5f%5fsetup/v1/revoke"])
+    assert.equal((await handleRequest(new Request(`https://app.signalbox.run${path}`), env)).status, 404);
+});
 
 test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
   const paths = [
@@ -148,7 +155,7 @@ test("public management requests never reach either service binding", async () =
     for (const method of ["GET", "POST", "OPTIONS"]) {
       const response = await handleRequest(new Request(`https://app.signalbox.run${path}`, {
         method, headers: { "X-Management-Key": "example" },
-      }), { TOOLS_SERVICE: service, POOL_SERVICE: service });
+      }), { TOOLS_SERVICE: service, POOL_SERVICE: service, POOL_APP_SIGNING_KEY: "ab".repeat(32) });
       assert.equal(response.status, 404, `${method} ${path}`);
     }
   }

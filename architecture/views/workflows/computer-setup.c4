@@ -1,0 +1,134 @@
+views {
+  dynamic view v1_setup_computer {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Set up a computer"
+    description """
+      Source implementation; live setup acceptance is pending deployment and real-client proof.
+      The app-hosted pool entry remains blocked while its origin is disabled. The pool app requests a signed, expiring user-and-pool intent and opens the
+      root /setup page with it. The router serves the React screen as static assets; the screen reuses
+      apps/pool UI components. The HTTP host checks the native cookie session and creates a personal
+      tools PAT pinned to the caller's own organization. Setup and rebind refuse pools the caller does not own.
+      Shared pools and revocation on sharing removal are deferred to #1412, which must revoke affected model keys before removal finishes.
+      Private pool actions carry an action-bound signature and a 30-second expiry.
+      The model gateway owns the registry in the existing pool controller, generates a model key and
+      registers it to the user's backend record with a nonempty pool channel-group list. Both credentials
+      are encrypted under a five-minute one-time link. Claim consumption is durable before the response.
+      The Node.js installer backs up and marks config, preserves unrelated settings and supports undo.
+      Build prepares frozen setup dependencies; scripts/setup-build.ts bundles the installer with esbuild
+      from the pinned dependency; src/setup/package.json pins smol-toml 1.8.0 with its own bun.lock.
+    """
+
+    include poolOwner, localClient, basalt.pool, basalt.router, basalt.setupHost, basalt.setupInstaller, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    basalt.toolsGateway -> basalt.pool "run computerContext with the caller"
+    basalt.pool -> basalt.router "GET /pool/v1/setup-context with pool token and caller"
+    basalt.router -> basalt.modelGateway "POOL_SERVICE: request signed setup intent"
+    basalt.modelGateway -> basalt.poolController "verify pool token and caller; sign user-and-pool intent"
+    basalt.modelGateway <- basalt.poolController "signed intent and root /setup URL"
+    basalt.router <- basalt.modelGateway "signed setup context"
+    basalt.pool <- basalt.router "setup context"
+    poolOwner -> localClient "open root /setup with intent"
+    localClient -> basalt.router "GET /setup; load static React screen"
+    localClient <- basalt.router "setup screen and static assets"
+    localClient -> basalt.router "POST /setup/v1/links with intent and computer name"
+    basalt.router -> basalt.setupHost "handle same-origin browser setup"
+    basalt.setupHost -> basalt.toolsGateway "native cookie-auth get-session"
+    basalt.setupHost <- basalt.toolsGateway "verified user"
+    basalt.setupHost -> basalt.modelGateway "signed validate action with 30-second expiry via private binding"
+    basalt.setupHost <- basalt.modelGateway "intent valid for this user and pool"
+    basalt.setupHost -> basalt.toolsGateway "native cookie-auth api-key/create personal PAT"
+    basalt.setupHost <- basalt.toolsGateway "personal PAT and key id"
+    basalt.setupHost -> basalt.modelGateway "signed links action with PAT and 30-second expiry via private binding"
+    basalt.modelGateway -> basalt.poolController "serialize computer registration"
+    basalt.poolController -> basalt.poolRuntime "create user; generate and register model key with channels: [pool group]"
+    basalt.poolController <- basalt.poolRuntime "registered model key id and user id"
+    basalt.modelGateway <- basalt.poolController "persist encrypted credentials and five-minute claim digest"
+    basalt.setupHost <- basalt.modelGateway "one-time token and public computer metadata"
+    basalt.router <- basalt.setupHost "setup prompt, shell command and undo prompt"
+    localClient <- basalt.router "one-time link and setup commands"
+    localClient -> basalt.setupInstaller "run downloaded installer with one-time link"
+    basalt.setupInstaller -> basalt.router "GET /setup/claim/:token as JSON"
+    basalt.router -> basalt.setupHost "handle claim"
+    basalt.setupHost -> basalt.modelGateway "signed claim action with 30-second expiry via private binding"
+    basalt.modelGateway -> basalt.poolController "decrypt credentials; durably consume link before response"
+    basalt.modelGateway <- basalt.poolController "one-time credential payload"
+    basalt.setupHost <- basalt.modelGateway "credential payload"
+    basalt.router <- basalt.setupHost "no-store JSON or Markdown response"
+    basalt.setupInstaller <- basalt.router "one-time credentials"
+    localClient <- basalt.setupInstaller "write backed-up marked config; restart and send model and tool calls"
+    poolOwner <- localClient "setup installed; usage observation still pending"
+  }
+
+  dynamic view v1_observe_computer {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Observe a computer"
+    description """
+      Source implementation; live acceptance pending. /v1 passthrough stays unchanged. The registry
+      reads successful model usage for the exact model key and current pool binding. A real successful
+      /mcp tools/call result triggers a private signed observed action keyed by the tools-token digest.
+      Initialization and tool listing do not count. Both observations are required for the computer
+      to turn green. The router never reads model response bodies to detect activity.
+    """
+
+    include localClient, basalt.router, basalt.toolsGateway, basalt.setupHost, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    localClient -> basalt.router "POST /v1/* with model key"
+    basalt.router -> basalt.modelGateway "existing POOL_SERVICE inference passthrough"
+    basalt.modelGateway -> basalt.poolController "existing inference transport"
+    basalt.poolController -> basalt.poolRuntime "serve model request; record key usage"
+    basalt.poolController <- basalt.poolRuntime "model response"
+    basalt.modelGateway <- basalt.poolController "model response"
+    basalt.router <- basalt.modelGateway "model response"
+    localClient <- basalt.router "model response"
+    localClient -> basalt.router "POST /mcp tools/call with personal PAT"
+    basalt.router -> basalt.toolsGateway "TOOLS_SERVICE: execute real tool call"
+    basalt.router <- basalt.toolsGateway "successful tool result"
+    basalt.router -> basalt.setupHost "observe successful tools/call with token digest"
+    basalt.setupHost -> basalt.modelGateway "private signed observed action with 30-second expiry"
+    basalt.modelGateway -> basalt.poolController "persist first tool call observation for matching active computer"
+    localClient <- basalt.router "tool result"
+    localClient -> basalt.router "GET /setup/v1/computers with intent"
+    basalt.router -> basalt.setupHost "list own computers"
+    basalt.setupHost -> basalt.toolsGateway "native cookie-auth get-session"
+    basalt.setupHost <- basalt.toolsGateway "verified user"
+    basalt.setupHost -> basalt.modelGateway "signed computers action"
+    basalt.modelGateway -> basalt.poolController "read exact-key successful model usage since current binding"
+    basalt.poolController -> basalt.poolRuntime "query usage scoped to key and pool credentials"
+    basalt.poolController <- basalt.poolRuntime "successful model usage"
+    basalt.modelGateway <- basalt.poolController "public computer metadata with both observations"
+    basalt.setupHost <- basalt.modelGateway "computer metadata"
+    basalt.router <- basalt.setupHost "computer metadata"
+    localClient <- basalt.router "green only after model request and real tool call"
+  }
+
+  dynamic view v1_revoke_key {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Revoke a computer key"
+    description """
+      Source implementation; live acceptance pending. The setup host verifies the browser session and
+      intent. The pool controller revokes the backend model key first, then the host deletes the personal
+      tools PAT through native cookie authentication and marks the computer revoked. A failed native PAT
+      deletion remains retryable. Undo restores local config separately and does not revoke credentials.
+    """
+
+    include poolOwner, localClient, basalt.router, basalt.setupHost, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    poolOwner -> localClient "revoke computer"
+    localClient -> basalt.router "DELETE /setup/v1/computers/:id with intent"
+    basalt.router -> basalt.setupHost "same-origin browser revoke"
+    basalt.setupHost -> basalt.toolsGateway "native cookie-auth get-session"
+    basalt.setupHost <- basalt.toolsGateway "verified user"
+    basalt.setupHost -> basalt.modelGateway "signed validate and revoke actions with 30-second expiry"
+    basalt.modelGateway -> basalt.poolController "verify computer owner and revoke model key"
+    basalt.poolController -> basalt.poolRuntime "delete backend model key"
+    basalt.poolController <- basalt.poolRuntime "model key revoked"
+    basalt.modelGateway <- basalt.poolController "personal PAT id; state revoking"
+    basalt.setupHost <- basalt.modelGateway "personal PAT id"
+    basalt.setupHost -> basalt.toolsGateway "native cookie-auth api-key/delete personal PAT"
+    basalt.setupHost <- basalt.toolsGateway "PAT deleted or already absent"
+    basalt.setupHost -> basalt.modelGateway "signed revoked action; finalize state"
+    basalt.router <- basalt.setupHost "revoked"
+    localClient <- basalt.router "computer revoked"
+    poolOwner <- localClient "both credentials revoked; undo available separately"
+  }
+}

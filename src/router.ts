@@ -1,12 +1,14 @@
 import { isControlPath } from "../apps/pool/contract.ts";
 import { brand } from "../brand.ts";
+import { handleSetup } from "./setup/host.ts";
+import { observeToolCall } from "./setup/tool-observation.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
 
 // Service bindings name the same gateways as the architecture.
 export const serviceArchitecture = {
   TOOLS_SERVICE: "basalt.toolsGateway",
   POOL_SERVICE: "basalt.modelGateway",
-} satisfies Record<keyof RouterEnv, $ElementId>;
+} satisfies Record<"TOOLS_SERVICE" | "POOL_SERVICE", $ElementId>;
 
 interface Service {
   fetch(request: Request): Promise<Response>;
@@ -15,6 +17,7 @@ interface Service {
 export interface RouterEnv {
   TOOLS_SERVICE: Service;
   POOL_SERVICE: Service;
+  POOL_APP_SIGNING_KEY: string;
 }
 
 function isPoolPath(pathname: string): boolean {
@@ -134,10 +137,13 @@ function servicePath(pathname: string): string {
   return decoded.toLowerCase() || "/";
 }
 
-export function handleRequest(request: Request, env: RouterEnv): Promise<Response> {
+export function handleRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
   const url = new URL(request.url);
   const { search } = url;
   const pathname = servicePath(url.pathname);
+  if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/")) return handleSetup(request, env);
+  // Internal setup assertions are sent only through the private binding by the setup host.
+  if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());
   if (isPoolManagementPath(pathname)) {
     return Promise.resolve(new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }));
   }
@@ -166,7 +172,11 @@ export function handleRequest(request: Request, env: RouterEnv): Promise<Respons
     );
   }
 
-  return env.TOOLS_SERVICE.fetch(request).then(withBrandNotFound);
+  const observed = pathname === "/mcp" && request.method === "POST" && request.headers.has("authorization") ? request.clone() : undefined;
+  return env.TOOLS_SERVICE.fetch(request).then(withBrandNotFound).then((response) => {
+    if (observed && context) context.waitUntil(observeToolCall(observed, response.clone(), env));
+    return response;
+  });
 }
 
 export default { fetch: handleRequest };

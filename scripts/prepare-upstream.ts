@@ -34,6 +34,7 @@ for (const patch of readdirSync(join(root, "patches"))
 }
 bundlePoolApp(root, upstream);
 run("bun", ["install", "--frozen-lockfile"], upstream);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/setup")]);
 const modules = join(root, "node_modules");
 if (!existsSync(modules)) symlinkSync(".upstream/apps/hosted/cloud/node_modules", modules, "dir");
 else if (!lstatSync(modules).isSymbolicLink())
@@ -41,3 +42,5 @@ else if (!lstatSync(modules).isSymbolicLink())
 const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: upstream, encoding: "utf8" });
 if (revision.stdout.trim() !== pin.commit)
   throw new Error("Upstream checkout differs from the pin");
+// Deployment inventory includes static asset bytes before the full Worker build runs in CI.
+run("node", ["scripts/setup-build.ts"], root);

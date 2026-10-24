@@ -1,6 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { isControlPath } from "../../apps/pool/contract.ts";
 import { PoolControl } from "./attribution.ts";
+import { HomeClient } from "./control.ts";
+import { ComputerHome } from "./computer-home.ts";
+import { Computers } from "./computers.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 
 export interface PoolEnvironment {
@@ -15,17 +18,14 @@ export interface PoolEnvironment {
 export class PoolContainer extends DurableObject<PoolEnvironment> {
   private lifecycle: Promise<PoolLifecycle>;
   private control: PoolControl;
+  private computers: Computers;
   private managementReadyUntil = 0;
   private managementWarming?: Promise<void>;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
     this.lifecycle = this.createLifecycle(ctx, env);
-    this.control = new PoolControl(ctx.storage, {
-      signingKey: env.POOL_APP_SIGNING_KEY,
-      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
-      defer: (work) => ctx.waitUntil(work),
-      home: async (path, init) => {
+    const home = async (path: string, init?: RequestInit) => {
         if (!env.POOL_MANAGEMENT_KEY) throw new Error("Pool management key is missing");
         await this.managementReady();
         const container = this.ctx.container;
@@ -33,7 +33,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         const headers = new Headers(init?.headers);
         headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
         return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
-      },
+      };
+    this.control = new PoolControl(ctx.storage, {
+      signingKey: env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      defer: (work) => ctx.waitUntil(work), home,
+    });
+    this.computers = new Computers({
+      storage: ctx.storage, home: new ComputerHome(new HomeClient(home)),
+      signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
     });
   }
 
@@ -91,12 +99,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async alarm() {
+    await this.computers.expire();
     await (await this.lifecycle).warm();
     await this.control.expire();
   }
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
+    if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
     if (isControlPath(pathname)) return this.control.handle(request);
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
@@ -125,7 +136,7 @@ export default {
   fetch(request: Request, env: PoolEnvironment) {
     const pathname = new URL(request.url).pathname;
     // The control API checks its own pool token; everything else public is the model gateway.
-    if (!isControlPath(pathname) && !isPublicModelPath(pathname)) {
+    if (!isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
       return new Response(null, { status: 404 });
     }
     return singleton(env).fetch(request);
