@@ -17,17 +17,34 @@ export interface Computer {
   /** ISO time it was revoked, or null while it still works. */
   readonly revokedAt: string | null;
   /**
+   * ISO time its model key was deleted because the person lost access to its pool, or null.
+   * Its tools token stays theirs until they revoke the computer.
+   */
+  readonly removedAt?: string | null;
+  /**
    * The host's lifecycle, when it reports one. `issuing`: its link is out and
    * unclaimed. `revoking`: revoke started but hasn't finished, so it may still work.
+   * `removed`: the person lost access to its pool, so its model requests fail.
    */
   readonly state?: ComputerState;
 }
 
-export type ComputerState = "issuing" | "active" | "revoking" | "revoked";
+export type ComputerState = "issuing" | "active" | "revoking" | "revoked" | "removed";
 
-/** The person's own computers in the current pool. */
+/** A pool the person can point a computer at: their own, or one shared with them. */
+export interface PoolChoice {
+  readonly id: string;
+  /** The pool app's name, such as "Ada's pool". */
+  readonly name: string;
+  /** True for the person's own pool. */
+  readonly mine: boolean;
+}
+
+/** The person's own computers, in every pool they can use. */
 export interface ComputersView {
   readonly computers: readonly Computer[];
+  /** Every pool this person can pick for a computer. Absent from hosts that can't switch. */
+  readonly pools?: readonly PoolChoice[];
   /** The undo paste. It removes exactly the marked entries and restores the backups. */
   readonly undoPrompt: string;
 }
@@ -56,6 +73,16 @@ export interface ComputersApi {
   computers: () => Promise<ComputerResult<ComputersView>>;
   /** Its next request fails. */
   revoke: (computerId: string) => Promise<ComputerResult<null>>;
+  /**
+   * Points the computer's existing key at another of the person's pools. Nothing changes on the
+   * computer; its next request uses the new pool. Hosts that can't switch leave it out.
+   */
+  switchPool?: (computerId: string, pool: string) => Promise<ComputerResult<Computer>>;
+}
+
+/** What a person reads for a pool: their own is "Your pool" whatever it's named. */
+export function poolLabel(pool: PoolChoice): string {
+  return pool.mine ? "Your pool" : pool.name.trim() || "Shared pool";
 }
 
 /** Minting links. Only a host that can mint the tools token implements this. */
@@ -82,11 +109,12 @@ export type SetupMode =
  * Green needs both: a real model request and a real tool call. Anything less is
  * still waiting, and the page says which half arrived. A revoke in flight is never green.
  */
-export type ComputerStatus = "connected" | "model-only" | "tools-only" | "waiting" | "revoking" | "revoked";
+export type ComputerStatus = "connected" | "model-only" | "tools-only" | "waiting" | "revoking" | "revoked" | "removed";
 
 export function computerStatus(computer: Computer): ComputerStatus {
   if (computer.state === "revoked" || computer.revokedAt) return "revoked";
   if (computer.state === "revoking") return "revoking";
+  if (computer.state === "removed" || computer.removedAt) return "removed";
   const model = computer.firstModelRequestAt !== null;
   const tools = computer.firstToolCallAt !== null;
   if (model && tools) return "connected";

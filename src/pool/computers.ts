@@ -2,39 +2,22 @@ import { brand } from "../../brand.ts";
 import type { Computer } from "../../apps/pool/ui/computer-types.ts";
 import { callerHeader } from "../../apps/pool/contract.ts";
 import { ComputerHome, digest } from "./computer-home.ts";
+import { boundPools, publicView, type ComputerStorage, type Registry, type StoredComputer } from "./computer-registry.ts";
+export type { ComputerStorage } from "./computer-registry.ts";
+import { PoolDirectory } from "./directory.ts";
+import { readAccess } from "./access.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
-import { readIntent, seal, setupInstructions, setupTtl, signIntent, unseal, type SealedLink, type SetupIntent } from "./setup-links.ts";
+import { readIntent, seal, setupInstructions, setupTtl, signIntent, unseal, type SetupIntent } from "./setup-links.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 import { markSetupCompleted, observePendingUsage, type UsageObservationEvent } from "./usage-observation.ts";
 
-interface StoredComputer {
-  id: string; name: string; user: string; pool: string; createdAt: string; boundAt: string;
-  state: "issuing" | "active" | "revoking" | "revoked";
-  keyId?: number; userId?: number; toolsKeyId: string; toolsHash: string;
-  firstModelRequestAt: string | null; firstToolCallAt: string | null; revokedAt: string | null;
-  firstModelRequestEverAt?: string | null;
-  modelObservationCheckedAt?: number;
-  setupCompletedAt?: string | null;
-  link?: SealedLink;
-}
-export interface ComputerStorage {
-  get<T>(key: string): Promise<T | undefined>;
-  put(key: string, value: unknown): Promise<unknown>;
-}
 interface Dependencies {
   storage: ComputerStorage; home: ComputerHome; signingKey: string; previousSigningKey?: string;
   origin?: string; now?: () => number; onProductEvent?: ProductEventCallback;
 }
 const storageKey = "computer-registry-v1";
-type Registry = Record<string, StoredComputer>;
-const publicView = (computer: StoredComputer): Computer => ({
-  id: computer.id, name: computer.name, poolId: computer.pool, createdAt: computer.createdAt,
-  state: computer.state, firstModelRequestAt: computer.firstModelRequestAt,
-  firstToolCallAt: computer.firstToolCallAt, revokedAt: computer.revokedAt,
-});
-
-/** Separate from subscription attribution. Only computer operations share this queue. */
+/** Separate from subscription attribution. Computer setup and access changes share this queue. */
 export class Computers {
   private deps: Dependencies;
   private queue: Promise<unknown> = Promise.resolve();
@@ -44,6 +27,14 @@ export class Computers {
   private async run<T>(work: (registry: Registry) => Promise<T>): Promise<T> {
     const next = this.queue.then(async () => {
       const registry = await this.deps.storage.get<Registry>(storageKey) ?? {};
+      let migrated = false;
+      for (const computer of Object.values(registry)) {
+        if (!computer.switchingTo) continue;
+        computer.switching = [...new Set([...(computer.switching ?? []), computer.switchingTo])];
+        delete computer.switchingTo;
+        migrated = true;
+      }
+      if (migrated) await this.save(registry);
       return work(registry);
     });
     this.queue = next.catch(() => {});
@@ -57,6 +48,9 @@ export class Computers {
         if (computer.link && computer.link.expiresAt <= this.now()) { delete computer.link; changed = true; }
       }
       if (changed) await this.save(registry);
+      const directory = await PoolDirectory.load(this.deps.storage, this.now());
+      await directory.prune(this.now());
+      await directory.provisionPending(this.deps.home);
     });
   }
   private own(registry: Registry, user: string, id: unknown): StoredComputer {
@@ -70,27 +64,52 @@ export class Computers {
       const claims = token ? await verifyPoolToken(this.deps.signingKey, token, this.deps.previousSigningKey) : undefined;
       const user = text(request.headers.get(callerHeader));
       if (!claims || !user) return fail(401, "unauthorized", "A signed-in pool caller is required.");
-      if (claims.owner !== user) return fail(403, "not_owner", "Set up this computer with your own pool. Shared pools come with pool sharing.");
-      const intent = await signIntent(this.deps.signingKey, { ...claims, user, expiresAt: this.now() + setupTtl });
       if (request.method !== "GET") return fail(404, "not_found", "This setup endpoint does not exist.");
-      const computers = await this.list(user, claims.pool);
-      return json({ intent, href: `${this.origin()}/setup#intent=${encodeURIComponent(intent)}`, computers,
-        undoPrompt: `Undo ${brand.name} setup on this computer. Download ${this.origin()}/setup/client.mjs to a private temporary file, run it with Node.js 18 or newer and --undo, then delete it. Restore the backups and preserve later unrelated edits. Revocation is separate in your pool.` });
+      return await this.run(async (registry) => {
+        const directory = await PoolDirectory.load(this.deps.storage, this.now());
+        const value = { ...claims, user, expiresAt: this.now() + setupTtl };
+        this.check(directory, registry, value);
+        const owner = claims.owner === user;
+        if (owner) await directory.learn(claims, user);
+        const intent = await signIntent(this.deps.signingKey, value);
+        const computers = await this.listLocked(registry, user, owner ? undefined : claims.pool);
+        const pools = directory.choices(user, value.expiresAt - setupTtl, claims)
+          .filter((pool) => owner || pool.id === claims.pool);
+        return json({ intent, href: `${this.origin()}/setup#intent=${encodeURIComponent(intent)}`, computers, pools,
+          ...(claims.owner === user ? { shareHref: `${this.origin()}/share#intent=${intent}` } : {}),
+          undoPrompt: `Undo ${brand.name} setup on this computer. Download ${this.origin()}/setup/client.mjs to a private temporary file, run it with Node.js 18 or newer and --undo, then delete it. Restore the backups and preserve later unrelated edits. Revocation is separate in your pool.` });
+      });
     } catch (error) { return failureResponse(error); }
   }
-  async list(user: string, pool: string): Promise<Computer[]> {
-    return this.run(async (registry) => {
-      const computers = Object.values(registry).filter((row) => row.user === user && row.pool === pool);
-      for (const computer of computers) {
-        if (computer.link && computer.link.expiresAt <= this.now()) delete computer.link;
-      }
-      const events = await observePendingUsage(registry,
-        (targetPool, keyId, since) => this.deps.home.observed(targetPool, keyId, since),
-        () => this.now(), { user, pool });
-      await this.save(registry);
-      this.emitUsageEvents(events);
-      return computers.map(publicView).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    });
+  private check(directory: PoolDirectory, registry: Registry, intent: SetupIntent) {
+    directory.check(intent);
+    if (Object.values(registry).some((computer) => boundPools(computer).includes(intent.pool)
+      && computer.user === intent.user && computer.removalPending))
+      return fail(503, "backend_unavailable", "Removing access from this computer didn't finish. Ask the owner to retry, or try again later.");
+  }
+  async access(request: Request): Promise<Response> {
+    try {
+      const change = await readAccess(request, this.deps.signingKey, this.deps.previousSigningKey, this.now());
+      return await this.run(async (registry) => {
+        const directory = await PoolDirectory.load(this.deps.storage, this.now());
+        return json(await directory.apply(change, registry, this.deps.home, this.now(), () => this.save(registry)));
+      });
+    } catch (error) { return failureResponse(error); }
+  }
+  private async listLocked(registry: Registry, user: string, pool?: string): Promise<Computer[]> {
+    const computers = Object.values(registry).filter((row) => row.user === user && (pool === undefined || boundPools(row).includes(pool)));
+    for (const computer of computers) {
+      if (computer.link && computer.link.expiresAt <= this.now()) delete computer.link;
+    }
+    const events = await observePendingUsage(registry,
+      (targetPool, keyId, since) => this.deps.home.observed(targetPool, keyId, since),
+      () => this.now(), { user, pool });
+    await this.save(registry);
+    this.emitUsageEvents(events);
+    return computers.map(publicView).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async list(user: string, _pool?: string): Promise<Computer[]> {
+    return this.run((registry) => this.listLocked(registry, user));
   }
   /** Reconcile only pending computers against Home's successful, exact-key usage records. */
   async observeUsage(): Promise<void> {
@@ -122,21 +141,40 @@ export class Computers {
       const user = text(payload.user);
       if (!user) return fail(401, "unauthorized", "Sign in before setting up a computer.");
       const intent = await readIntent(this.deps.signingKey, payload.intent, user, this.now(), this.deps.previousSigningKey);
-      if (action === "validate") return json({ pool: intent.pool, organization: intent.organization, owner: intent.owner });
-      if (action === "computers") return json({ computers: await this.list(user, intent.pool) });
       return await this.run(async (registry) => {
+        const directory = await PoolDirectory.load(this.deps.storage, this.now());
+        if (action !== "revoked") {
+          this.check(directory, registry, intent);
+          await directory.learn(intent, user);
+        }
+        if (action === "computers" || action === "switch" || action === "links" || action === "validate")
+          await directory.learnOwn(payload.own, user, this.now());
+        const pools = directory.choices(user, intent.expiresAt - setupTtl, intent);
         switch (action) {
+          case "validate": return json({ pool: intent.pool, organization: intent.organization, owner: intent.owner, name: directory.entry(intent.pool)?.name ?? "" });
+          case "computers": return json({ computers: await this.listLocked(registry, user), pools });
           case "links": return this.create(registry, intent, payload);
-          case "refresh": return this.refresh(registry, user, payload.id);
+          case "refresh": {
+            const computer = this.own(registry, user, payload.id);
+            this.check(directory, registry, { ...intent, pool: computer.pool });
+            return this.refresh(registry, user, payload.id);
+          }
           case "revoke": return this.revoke(registry, user, payload.id);
           case "revoked": {
             const computer = this.own(registry, user, payload.id);
-            if (computer.state !== "revoking" && computer.state !== "revoked") return fail(409, "busy", "Revoke the model key first.");
+            if (computer.state !== "revoking" && computer.state !== "revoked" && computer.state !== "removed") return fail(409, "busy", "Revoke the model key first.");
             computer.state = "revoked"; computer.revokedAt ??= new Date(this.now()).toISOString();
             await this.save(registry);
             return json(null);
           }
-          case "rebind": return this.rebind(registry, user, payload.id, intent);
+          case "switch": {
+            const computer = this.own(registry, user, payload.id);
+            if (typeof payload.pool !== "string" || !pools.some((pool) => pool.id === payload.pool))
+              return fail(403, "unauthorized", "This pool is not available to you.");
+            for (const pool of new Set([...boundPools(computer), payload.pool]))
+              this.check(directory, registry, { ...intent, pool });
+            return this.switchPool(registry, computer, payload.pool, directory.entry(payload.pool)?.owner);
+          }
           default: return fail(404, "not_found", "This setup endpoint does not exist.");
         }
       });
@@ -150,11 +188,11 @@ export class Computers {
       id: crypto.randomUUID(), name, user: intent.user, pool: intent.pool,
       createdAt: new Date(this.now()).toISOString(), boundAt: new Date(this.now()).toISOString(),
       state: "issuing", toolsKeyId: input.toolsKeyId as string, toolsHash: await digest(input.toolsToken as string),
-      firstModelRequestAt: null, firstToolCallAt: null, revokedAt: null,
+      firstModelRequestAt: null, firstToolCallAt: null, revokedAt: null, removedAt: null,
     };
     registry[computer.id] = computer;
     await this.save(registry);
-    const issued = await this.deps.home.mint(computer.user, computer.pool, computer.id);
+    const issued = await this.deps.home.mint(computer.user, computer.pool, computer.id, intent.owner);
     computer.keyId = issued.keyId; computer.userId = issued.userId;
     // Store the acknowledged id before any fallible encryption or response work.
     await this.save(registry);
@@ -184,12 +222,16 @@ export class Computers {
     for (const key of keys) await this.deps.home.revoke(key);
     return json({ toolsKeyId: computer.toolsKeyId });
   }
-  private async rebind(registry: Registry, user: string, id: unknown, intent: SetupIntent): Promise<Response> {
-    const computer = this.own(registry, user, id);
-    if (computer.state !== "active" || !computer.keyId) return fail(409, "busy", "This computer cannot switch pools.");
-    await this.deps.home.rebind(computer.keyId, intent.pool, user);
+  private async switchPool(registry: Registry, computer: StoredComputer, pool: string, owner?: string): Promise<Response> {
+    if (computer.state !== "active" || computer.removalPending || !computer.keyId) return fail(409, "busy", "This computer cannot switch pools.");
+    if (computer.pool === pool && !computer.switching?.length) return json(publicView(computer));
+    computer.switching = [...new Set([...(computer.switching ?? []), pool])];
+    await this.save(registry);
+    // Only the pool's owner is credited if this re-point happens to create its group.
+    await this.deps.home.rebind(computer.keyId, pool, owner);
     computer.firstModelRequestEverAt ??= computer.firstModelRequestAt;
-    computer.pool = intent.pool; computer.boundAt = new Date(this.now()).toISOString();
+    computer.pool = pool; computer.boundAt = new Date(this.now()).toISOString();
+    delete computer.switching;
     computer.firstModelRequestAt = null;
     delete computer.modelObservationCheckedAt;
     await this.save(registry);
@@ -199,7 +241,7 @@ export class Computers {
     return this.run(async (registry) => {
       if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) return fail(410, "invalid_session", "This setup link has expired or was already used.");
       const hash = await digest(token);
-      const computer = Object.values(registry).find((computer) => computer.state === "issuing" && computer.link?.hash === hash);
+      const computer = Object.values(registry).find((computer) => computer.state === "issuing" && !computer.removalPending && computer.link?.hash === hash);
       if (!computer?.link || computer.link.expiresAt <= this.now()) return fail(410, "invalid_session", "This setup link has expired or was already used.");
       const credentials = await unseal(this.deps.signingKey, computer.link, this.deps.previousSigningKey);
       delete computer.link;

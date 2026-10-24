@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
-import { signPoolToken } from "./token.ts";
+import { signEnvelope, signPoolToken } from "./token.ts";
+import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 import providers from "./providers.json" with { type: "json" };
 
 // Node has no Workers runtime; keep the actual Worker and lifecycle with only the native base stubbed.
@@ -16,10 +17,81 @@ const hooks = registerHooks({
 });
 // Keep Workers-only declarations out of the Node typecheck, like the runtime stub above.
 const workerModule = "./worker.ts";
-const { PoolContainer }: {
-  PoolContainer: new (ctx: object, env: object) => { fetch(request: Request): Promise<Response> };
+const { PoolContainer, default: poolWorker }: {
+  PoolContainer: new (ctx: object, env: object) => { fetch(request: Request): Promise<Response>; alarm(): Promise<void> };
+  default: { fetch(request: Request, env: object): Promise<Response> };
 } = await import(workerModule);
 hooks.deregister();
+
+test("the Durable Object alarm provisions pending pool members", async () => {
+  const pool = { pool: "fake-pool", owner: "fake-owner", organization: "fake-org", name: "Pool",
+    users: ["fake-owner", "fake-member"], pending: ["fake-member"], at: Date.now() };
+  const values = new Map<string, unknown>([["pool-directory-v1", {
+    pools: { [JSON.stringify(pool.pool)]: pool }, refusals: {}, people: {}, refusalsVersion: 2,
+  }]]);
+  const users: Record<string, unknown>[] = [];
+  let alarm: number | null = null;
+  const runtime = {
+    running: false,
+    destroy: async () => { runtime.running = false; },
+    start: () => { runtime.running = true; },
+    setInactivityTimeout: async () => {},
+    getTcpPort(port: number) {
+      return { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (port === 8318) return Response.json({ boot_id: "fake-boot", started_at: "2026-01-01T00:00:00Z" });
+        const request = new Request(input, init);
+        assert.equal(new URL(request.url).pathname, "/v8/management/users");
+        if (request.method === "POST") users.push({ ...await request.json() as object, id: 42 });
+        return Response.json({ users });
+      } };
+    },
+  };
+  const worker = new PoolContainer({ container: runtime, waitUntil: () => {}, storage: {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+    getAlarm: async () => alarm,
+    setAlarm: async (time: number) => { alarm = time; },
+  } }, {
+    POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
+    POOL_MANAGEMENT_KEY: "fake-management-key", POOL_APP_SIGNING_KEY: "ab".repeat(32), POOL_IMAGE_HASH: "fake-image",
+  });
+  await worker.alarm();
+  assert.equal(users.length, 1);
+  const state = values.get("pool-directory-v1") as { pools: Record<string, { pending: string[]; provisioned: string[] }> };
+  assert.deepEqual(state.pools[JSON.stringify(pool.pool)]!.pending, []);
+  assert.deepEqual(state.pools[JSON.stringify(pool.pool)]!.provisioned, ["fake-member"]);
+  assert.ok(alarm);
+});
+
+test("signed access changes reach the computer queue before generic pool-token control routing", async () => {
+  const signingKey = "ab".repeat(32);
+  const values = new Map<string, unknown>();
+  const env = {
+    POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
+    POOL_MANAGEMENT_KEY: "fake-management-key", POOL_APP_SIGNING_KEY: signingKey, POOL_IMAGE_HASH: "fake-image",
+  };
+  const container = new PoolContainer({ container: {}, storage: {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+  } }, env);
+  const workerEnv = { ...env, PoolContainer: { jurisdiction: (region: string) => {
+    assert.equal(region, "eu");
+    return { getByName: (name: string) => { assert.equal(name, "control-plane"); return container; } };
+  } } };
+  const now = Date.now();
+  const envelope = await signEnvelope(signingKey, accessPrefix, { action: "audience", at: now, expiresAt: now + accessTtl,
+    pools: [{ pool: "fake-pool", owner: "fake-owner", organization: "fake-org", name: "Pool", users: [] }] });
+  const response = await poolWorker.fetch(new Request(`https://pool.example${accessPath}`, {
+    method: "POST", body: JSON.stringify({ envelope }),
+  }), workerEnv);
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), { revoked: 0, provisioned: 0 });
+  const token = await signPoolToken(signingKey, { pool: "fake-pool", owner: "fake-owner", organization: "fake-org" });
+  const denied = await poolWorker.fetch(new Request(`https://pool.example${accessPath}`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ envelope: token }),
+  }), workerEnv);
+  assert.equal(denied.status, 401);
+});
 
 test("management calls share readiness for 30 seconds and rewarm when the container stops", async (t) => {
   const signingKey = "ab".repeat(32);

@@ -4,7 +4,7 @@ import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
 import { ConnectDialog } from "./connect.tsx";
 import { productName } from "../deployment.ts";
-import { Button, Problem } from "./controls.tsx";
+import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 import { duration, lastReading } from "./usage.ts";
 import { Computers } from "./computers.tsx";
 import type { ComputersApi } from "./computer-types.ts";
@@ -60,10 +60,14 @@ export function App({ api }: { api: PoolApi }) {
   const [connecting, setConnecting] = useState(false);
   const [removeError, setRemoveError] = useState<string>();
   const [setupHref, setSetupHref] = useState<string>();
+  const [shareHref, setShareHref] = useState<string>();
   const computers = useMemo<ComputersApi>(() => ({
     computers: async () => {
       const result = await api.computerContext();
-      if (result.ok) setSetupHref(result.value.href);
+      if (result.ok) {
+        setSetupHref(result.value.href);
+        setShareHref(result.value.shareHref);
+      }
       return result;
     },
     revoke: async () => ({ ok: false, error: "unauthorized", message: "Open the computer's setup page to revoke it." }),
@@ -89,11 +93,18 @@ export function App({ api }: { api: PoolApi }) {
         <span className="text-sm font-semibold tracking-[-0.01em]">
           {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
-        {view?.isOwner && view.accounts.length > 0 && (
-          <Button size="sm" onClick={() => setConnecting(true)}>
-            Connect
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {view?.isOwner && shareHref && (
+            <a href={shareHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
+              Share <ExternalIcon />
+            </a>
+          )}
+          {view?.isOwner && view.accounts.length > 0 && (
+            <Button size="sm" onClick={() => setConnecting(true)}>
+              Connect
+            </Button>
+          )}
+        </div>
       </header>
 
       <main className="flex-1 pb-16">
@@ -136,7 +147,10 @@ export function App({ api }: { api: PoolApi }) {
         ) : (
           <>
             {!view.isOwner && (
-              <p className="mb-2 text-sm text-muted-foreground">Shared with you. Only the pool's owner can add or remove accounts.</p>
+              <p className="mb-2 text-sm text-muted-foreground">
+                Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove
+                them.
+              </p>
             )}
             <AccountList
               accounts={view.accounts}
