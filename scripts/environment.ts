@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { appHosting, brand, deployment } from "../brand.ts";
 import { catalog } from "../src/catalog/settings.ts";
+import { isZendeskSubdomain } from "../src/catalog/zendesk/tenant.ts";
 import { poolFrameworkVersion } from "./pool-app-bundle.ts";
 import { isSigningKey } from "../src/pool/token.ts";
 import { derivePreviewSecrets, previewKey } from "./release-preview/keys.ts";
@@ -111,12 +112,15 @@ export const optionalConnectorClients = [
   { name: "Google", id: "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID", secret: "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", ready: "GOOGLE_CONNECTOR_READY" },
   { name: "GitHub", id: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID", secret: "EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET", ready: "GITHUB_CONNECTOR_READY" },
   { name: "Atlassian", id: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID", secret: "EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET", ready: "ATLASSIAN_CONNECTOR_READY" },
+  { name: "Zendesk", id: "EXECUTOR_OAUTH_ZENDESK_CLIENT_ID", secret: "EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET", ready: "ZENDESK_CONNECTOR_READY", tenant: "EXECUTOR_ZENDESK_SUBDOMAIN" },
 ] as const;
 
 /** One warning per unavailable client, never per missing secret or containing credential values. */
 export function connectorWarnings(environment: NodeJS.ProcessEnv): string[] {
   return optionalConnectorClients.filter(client => environment[client.ready] !== "true")
-    .map(client => `${client.name} connector is not set up yet; its optional OAuth client credentials are incomplete.`);
+    .map(client => "tenant" in client
+      ? "Zendesk is not set up yet; its catalog entry needs a tenant and both optional OAuth client settings."
+      : `${client.name} connector is not set up yet; its optional OAuth client credentials are incomplete.`);
 }
 
 export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
@@ -149,11 +153,23 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
   const { commit } = JSON.parse(readFileSync(new URL("../upstream.json", import.meta.url), "utf8"));
   const connectors: NodeJS.ProcessEnv = {};
   for (const client of optionalConnectorClients) {
-    const ready = Boolean(source[client.id]?.trim() && source[client.secret]?.trim());
+    const tenantName = "tenant" in client ? client.tenant : undefined;
+    const tenantValue = tenantName === undefined ? undefined : source[tenantName];
+    if (
+      tenantValue?.trim() &&
+      (tenantValue !== tenantValue.trim() || !isZendeskSubdomain(tenantValue))
+    )
+      throw new Error("EXECUTOR_ZENDESK_SUBDOMAIN must be one lowercase Zendesk DNS label");
+    const ready = Boolean(
+      source[client.id]?.trim() &&
+      source[client.secret]?.trim() &&
+      (tenantName === undefined || tenantValue?.trim()),
+    );
     connectors[client.ready] = String(ready);
     // The upstream host rejects half-configured clients. Omit both halves until ready.
     connectors[client.id] = ready ? source[client.id] : undefined;
     connectors[client.secret] = ready ? source[client.secret] : undefined;
+    if (tenantName !== undefined) connectors[tenantName] = ready ? tenantValue : undefined;
   }
   return {
     ...source,
