@@ -6,24 +6,19 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Cause, ConfigProvider, Effect, Exit, Redacted, Schema } from "effect";
 
 const projectRoot = fileURLToPath(new URL("../../", import.meta.url));
-const upstreamRoot = resolve(
-  process.env.BASALT_UPSTREAM_ROOT ?? join(projectRoot, ".upstream"),
-);
+const upstreamRoot = resolve(process.env.BASALT_UPSTREAM_ROOT ?? join(projectRoot, ".upstream"));
 const [workflow, workflowContracts, workflowErrors] = await Promise.all([
   import(
-    pathToFileURL(
-      resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-results.ts"),
-    ).href
+    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-results.ts"))
+      .href
   ),
   import(pathToFileURL(resolve(upstreamRoot, "packages/apps/src/contracts/workflows.ts")).href),
-  import(pathToFileURL(resolve(upstreamRoot, "packages/sdk/src/contracts/workflow-errors.ts")).href),
+  import(
+    pathToFileURL(resolve(upstreamRoot, "packages/sdk/src/contracts/workflow-errors.ts")).href
+  ),
 ]);
-const {
-  encryptedWorkflowResult,
-  encryptedWorkflowTask,
-  workflowEncryptionKey,
-  workflowResults,
-} = workflow;
+const { encryptedWorkflowResult, encryptedWorkflowTask, workflowEncryptionKey, workflowResults } =
+  workflow;
 const { WorkflowFailure } = workflowContracts;
 const { decodeWorkflowFailure, workflowFailureMessage } = workflowErrors;
 
@@ -41,7 +36,9 @@ const runWithKeyExit = <A, E>(key: string, effect: Effect.Effect<A, E, unknown>)
   const configured = effect.pipe(
     Effect.provideService(
       ConfigProvider.ConfigProvider,
-      ConfigProvider.fromEnv({ env: { EXECUTOR_ENCRYPTION_KEY: key } }),
+      ConfigProvider.fromEnv({
+        env: { EXECUTOR_ENCRYPTION_KEY: key, EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true" },
+      }),
     ),
     Effect.provideService(
       Cloudflare.WorkerEnvironment,
@@ -52,10 +49,7 @@ const runWithKeyExit = <A, E>(key: string, effect: Effect.Effect<A, E, unknown>)
   return Effect.runPromiseExit(configured as Effect.Effect<A, E>);
 };
 
-const runWithKey = async <A, E>(
-  key: string,
-  effect: Effect.Effect<A, E, unknown>,
-): Promise<A> => {
+const runWithKey = async <A, E>(key: string, effect: Effect.Effect<A, E, unknown>): Promise<A> => {
   const exit = await runWithKeyExit(key, effect);
   if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
   return exit.value;
@@ -85,7 +79,7 @@ const makeJournal = () => {
         if (existing?.kind === "value") return Uint8Array.from(existing.value) as A;
         if (existing?.kind === "failure") {
           const error = new Error(existing.message);
-          return yield* (existing.cause === "fail" ? Effect.fail(error as E) : Effect.die(error));
+          return yield* existing.cause === "fail" ? Effect.fail(error as E) : Effect.die(error);
         }
 
         executions++;
@@ -112,7 +106,14 @@ const makeJournal = () => {
     sleepUntil: () => Effect.void,
     waitForEvent: () => Effect.die(new Error("The test does not call waitForEvent")),
   });
-  return { entries, accessOrder, service, get executions() { return executions; } };
+  return {
+    entries,
+    accessOrder,
+    service,
+    get executions() {
+      return executions;
+    },
+  };
 };
 
 const runStep = (
@@ -130,8 +131,7 @@ const runStep = (
       workflowFailureMessage(
         Schema.is(WorkflowFailure)(error) ? error : decodeWorkflowFailure(error),
       ),
-    isRetryable: (error: unknown) =>
-      Schema.is(WorkflowFailure)(error) ? error.retryable : true,
+    isRetryable: (error: unknown) => (Schema.is(WorkflowFailure)(error) ? error.retryable : true),
     restoreFailure: (failure: PersistedWorkflowFailure) =>
       decodeWorkflowFailure(new Error(failure.message)),
   }).pipe(Effect.provideService(Cloudflare.Workflows.WorkflowStep, journal.service));
@@ -155,10 +155,17 @@ test("persists ciphertext and replays a step without executing its callback agai
   if (persisted?.kind !== "value") assert.fail("expected a persisted ciphertext");
   assert.ok(persisted.value instanceof Uint8Array);
   assert.equal(new TextDecoder().decode(persisted.value).includes(privateValue), false);
-  assert.equal([...journal.entries.keys()].some((name) => name.includes("private label")), false);
+  assert.equal(
+    [...journal.entries.keys()].some((name) => name.includes("private label")),
+    false,
+  );
 
   assert.deepEqual(await runWithKey(firstKey, execute(firstKey)), { value: privateValue });
-  assert.equal(journal.executions, 1, "replay must return the saved ciphertext without re-running work");
+  assert.equal(
+    journal.executions,
+    1,
+    "replay must return the saved ciphertext without re-running work",
+  );
 });
 
 test("parallel branch replay keeps per-name journal identities when completion order changes", async () => {
@@ -173,17 +180,21 @@ test("parallel branch replay keeps per-name journal identities when completion o
       const results = yield* makeResults("wfr_parallel_fixture");
       const task = (name: string) =>
         (replay && name === "B" ? Effect.promise(() => gateReplayB) : Effect.void).pipe(
-          Effect.andThen(runStep(results, journal, name, () =>
-            Effect.sync(() => executed.push(name)).pipe(
-              Effect.andThen(name === "A" ? Effect.promise(() => gateA) : Effect.void),
-              Effect.as({ name }),
+          Effect.andThen(
+            runStep(results, journal, name, () =>
+              Effect.sync(() => executed.push(name)).pipe(
+                Effect.andThen(name === "A" ? Effect.promise(() => gateA) : Effect.void),
+                Effect.as({ name }),
+              ),
             ),
-          )),
-          Effect.tap(() => Effect.sync(() => {
-            completionOrder.push(name);
-            if (name === "D") releaseA();
-            if (replay && name === "C") releaseReplayB();
-          })),
+          ),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              completionOrder.push(name);
+              if (name === "D") releaseA();
+              if (replay && name === "C") releaseReplayB();
+            }),
+          ),
         );
       return yield* Effect.all(
         [
@@ -214,7 +225,11 @@ test("parallel branch replay keeps per-name journal identities when completion o
     Object.fromEntries(replay.map(namedEntry)),
     Object.fromEntries(first.map(namedEntry)),
   );
-  assert.equal(journal.executions, 4, "cached C and D must not run again after branch order changes");
+  assert.equal(
+    journal.executions,
+    4,
+    "cached C and D must not run again after branch order changes",
+  );
   assert.equal(executed.length, 4);
   assert.equal(journal.entries.size, 4);
   assert.equal(new Set(journal.accessOrder).size, 4);
@@ -276,14 +291,16 @@ test("a defect or non-retryable failure stops a mixed-cause step on first execut
   for (const secondReason of ["defect", "non-retryable failure"]) {
     const journal = makeJournal();
     const retryable = new WorkflowFailure({ reason: "execution", retryable: true });
-    const other = secondReason === "defect"
-      ? Cause.die(new Error("private mixed-cause defect fixture"))
-      : Cause.fail(new WorkflowFailure({ reason: "execution", retryable: false }));
+    const other =
+      secondReason === "defect"
+        ? Cause.die(new Error("private mixed-cause defect fixture"))
+        : Cause.fail(new WorkflowFailure({ reason: "execution", retryable: false }));
     const cause = Cause.combine(Cause.fail(retryable), other);
-    const execute = () => Effect.gen(function* () {
-      const results = yield* makeResults(`wfr_mixed_${secondReason}`);
-      return yield* runStep(results, journal, "mixed cause", () => Effect.failCause(cause));
-    });
+    const execute = () =>
+      Effect.gen(function* () {
+        const results = yield* makeResults(`wfr_mixed_${secondReason}`);
+        return yield* runStep(results, journal, "mixed cause", () => Effect.failCause(cause));
+      });
 
     const first = await runWithKeyExit(firstKey, execute());
     assert.ok(Exit.isFailure(first));
@@ -426,4 +443,185 @@ test("sleep checkpoint names hide app supplied strings", async () => {
     }),
   );
   assert.equal(String(storedName).includes(privateName), false);
+});
+
+test("same-name parallel checkpoints cannot replay another branch's result", async () => {
+  const journal = makeJournal();
+  const execute = (order: string[]) =>
+    Effect.gen(function* () {
+      const results = yield* makeResults("wfr_same_name_parallel");
+      return yield* Effect.all(
+        order.map((label) =>
+          runStep(results, journal, "same native name", () => Effect.succeed(label)).pipe(
+            Effect.map((value) => ({ label, value })),
+          ),
+        ),
+        { concurrency: "unbounded" },
+      );
+    });
+  const cold = await runWithKeyExit(firstKey, execute(["A", "B"]));
+  if (Exit.isFailure(cold)) {
+    const failure = Cause.squash(cold.cause);
+    assert.ok(Schema.is(WorkflowFailure)(failure));
+    assert.equal(failure.reason, "engine");
+    assert.equal(failure.retryable, false);
+    return;
+  }
+  const replay = await runWithKey(firstKey, execute(["B", "A"]));
+  assert.deepEqual(
+    replay,
+    [
+      { label: "B", value: "B" },
+      { label: "A", value: "A" },
+    ],
+    "same-name replay swapped the branches' saved values",
+  );
+});
+
+test("a newly created encrypted run rejects a plaintext replacement output", async () => {
+  const { cloudWorkflows } = await import(
+    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
+      .href
+  );
+  const run = "wfr_plaintext_replacement";
+  const instances = new Map<string, unknown>();
+  let created: { id?: string; params?: unknown } | undefined;
+  const native = {
+    create: async (options: { id: string; params: unknown }) => {
+      created = options;
+      instances.set(options.id, { status: "complete", output: { forged: true } });
+      return { id: options.id };
+    },
+    get: async (id: string) => ({ status: async () => instances.get(id) ?? { status: "unknown" } }),
+  };
+  const program = Effect.gen(function* () {
+    const runtime = yield* cloudWorkflows;
+    yield* runtime.start(run as never);
+    return yield* runtime.status(run as never);
+  }).pipe(
+    Effect.provideService(
+      Cloudflare.WorkerEnvironment,
+      Cloudflare.WorkerEnvironment.of({ EXECUTOR_ENCRYPTION_KEY: firstKey, AppWorkflows: native }),
+    ),
+  );
+  const exit = await runWithKeyExit(firstKey, program);
+  assert.ok(
+    created &&
+      typeof created.params === "object" &&
+      created.params !== null &&
+      "__executorWorkflowResults" in created.params,
+  );
+  assert.ok(
+    Exit.isFailure(exit),
+    "marked run accepted forged plaintext as a successful completed output",
+  );
+  if (Exit.isFailure(exit)) {
+    const error = Cause.squash(exit.cause);
+    assert.ok(Schema.is(WorkflowFailure)(error));
+    assert.equal(error.reason, "engine");
+    assert.equal(error.retryable, false);
+  }
+});
+
+test("status decodes new ciphertext, preserves old JSON, and terminates the actual native instance", async () => {
+  const { cloudWorkflows } = await import(
+    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
+      .href
+  );
+  const run = "wfr_new_ciphertext";
+  const oldRun = "wfr_old_plaintext";
+  const instances = new Map<string, unknown>([
+    [oldRun, { status: "complete", output: { legacy: true } }],
+  ]);
+  let created: string | undefined;
+  let terminated: string | undefined;
+  const native = {
+    create: async (options: { id: string; params: unknown }) => {
+      created = options.id;
+      instances.set(options.id, { status: "running" });
+      return { id: options.id };
+    },
+    get: async (id: string) => ({
+      status: async () => instances.get(id) ?? { status: "unknown" },
+      terminate: async () => {
+        terminated = id;
+        instances.set(id, { status: "terminated" });
+      },
+    }),
+  };
+  const program = Effect.gen(function* () {
+    const runtime = yield* cloudWorkflows;
+    yield* runtime.start(run as never);
+    assert.ok(created);
+    yield* runtime.terminate(run as never);
+    assert.equal(terminated, created);
+    const results = yield* makeResults(run);
+    instances.set(created, {
+      status: "complete",
+      output: yield* results.sealWorkflowOutput({ secure: true }),
+    });
+    const freshRuntime = yield* cloudWorkflows;
+    assert.deepEqual(yield* freshRuntime.status(run as never), {
+      status: "complete",
+      output: { secure: true },
+    });
+    assert.deepEqual(yield* freshRuntime.status(oldRun as never), {
+      status: "complete",
+      output: { legacy: true },
+    });
+  }).pipe(
+    Effect.provideService(
+      Cloudflare.WorkerEnvironment,
+      Cloudflare.WorkerEnvironment.of({ EXECUTOR_ENCRYPTION_KEY: firstKey, AppWorkflows: native }),
+    ),
+  );
+  await runWithKey(firstKey, program);
+});
+
+test("the disabled cutover gate shares the legacy native identity with old dispatchers", async () => {
+  const { cloudWorkflows } = await import(
+    pathToFileURL(resolve(upstreamRoot, "apps/hosted/cloud/src/infrastructure/workflow-runtime.ts"))
+      .href
+  );
+  const run = "wfr_cutover_race";
+  const instances = new Map<string, { status: string }>();
+  const created: { id: string; params: unknown }[] = [];
+  const native = {
+    get: async (id: string) => ({ status: async () => instances.get(id) ?? { status: "unknown" } }),
+    create: async (options: { id: string; params: unknown }) => {
+      assert.ok(!instances.has(options.id));
+      created.push(options);
+      instances.set(options.id, { status: "running" });
+      return { id: options.id };
+    },
+  };
+  const program = Effect.gen(function* () {
+    const current = yield* cloudWorkflows;
+    yield* current.start(run as never);
+    // The base runtime checks and creates the public run ID directly.
+    if (
+      (yield* Effect.promise(async () => await (await native.get(run)).status())).status ===
+      "unknown"
+    )
+      yield* Effect.promise(() => native.create({ id: run, params: { run } }));
+  }).pipe(
+    Effect.provideService(
+      Cloudflare.WorkerEnvironment,
+      Cloudflare.WorkerEnvironment.of({ EXECUTOR_ENCRYPTION_KEY: firstKey, AppWorkflows: native }),
+    ),
+  );
+  const configured = program.pipe(
+    Effect.provideService(
+      ConfigProvider.ConfigProvider,
+      ConfigProvider.fromEnv({ env: { EXECUTOR_ENCRYPTION_KEY: firstKey } }),
+    ),
+  );
+  await Effect.runPromise(configured as Effect.Effect<void>);
+  assert.equal(
+    created.length,
+    1,
+    "old and new dispatchers created two native instances for one run",
+  );
+  assert.equal(created[0]?.id, run);
+  assert.deepEqual(created[0]?.params, { run });
 });
