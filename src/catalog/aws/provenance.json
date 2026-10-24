@@ -1,0 +1,10 @@
+{
+  "kind": "new-app-contribution",
+  "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2372",
+  "sourceSha256": "f598d0ed42991cb8e44494370889e0e81a962bbf5f935e0dd536a9dd9039dfaa",
+  "dependencies": {
+    "apps": "0.0.1-beta.100",
+    "aws4fetch": "1.0.20",
+    "fast-xml-parser": "5.11.1"
+  }
+}

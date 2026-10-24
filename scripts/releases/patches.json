@@ -197,9 +197,19 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-zendesk-oauth",
+      "file": "0022-zendesk-hosted-oauth.patch",
+      "content_sha256": "966ad2ae6333efe2b310fb284680f012526693b8f48fc997749c24549674be36",
+      "kind": "upstream",
+      "upstream_pull_request": 2376,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "upstream_issue": 2374
+    },
+    {
       "identity": "executor-slack-user-oauth",
       "file": "0023-slack-user-oauth.patch",
-      "content_sha256": "3e6a6dba1ea5c6d9b92e8d4ab353ddc7ffce9df3e64012829f3d582f32c2d9bf",
+      "content_sha256": "30604bcf4b36b4779358df947be195fd2b79133a5e7616b2680138bd768220de",
       "kind": "upstream",
       "upstream_pull_request": 2371,
       "database_sensitive": false,

@@ -30,6 +30,11 @@ model {
     technology "Google OAuth"
     metadata { hosts "accounts.google.com|oauth2.googleapis.com" }
   }
+  zendeskTenant = adapter "Zendesk tenant" {
+    #external
+    technology "Zendesk OAuth and ticketing API"
+    metadata { hosts "configured-label.zendesk.com" }
+  }
   workspaceApi = adapter "Workspace API" {
     #external
     technology "Google Workspace APIs"
@@ -49,6 +54,7 @@ model {
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
   basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries with provider notices and unmodified sources"
   basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"
+  basalt.toolsGateway -[sync]-> zendeskTenant "authorize, exchange JSON tokens and call each person's tenant-bound grant"
   basalt.toolsGateway -[sync]-> workspaceApi "call with the person's grant"
   basalt.build -[sync]-> repositoryApi "download releases and actions"
   basalt.deployment -[sync]-> repositoryApi "download deployment actions"
@@ -73,6 +79,13 @@ model {
     metadata { hosts "api.elevenlabs.io" }
   }
   basalt.toolsGateway -[sync]-> audioService "call with the person's API key"
+
+  cloudAccountApi = adapter "Cloud account API" {
+    #external
+    technology "AWS regional STS and S3 APIs"
+    metadata { hosts "*.amazonaws.com" }
+  }
+  basalt.toolsGateway -[sync]-> cloudAccountApi "sign and call with the person's own temporary or IAM credentials"
 
   crmService = adapter "CRM service" {
     #external

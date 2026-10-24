@@ -84,12 +84,12 @@ index d2702ef..45e4543 100644
  export const firstPartyGitHubItem = "Executor.sh GitHub App";
  
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
-index 79db403..ba6dada 100644
+index af9bf62..bed3df6 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -114,6 +114,49 @@ const atlassianScopes = [
-   "search:confluence",
- ];
+@@ -140,6 +140,49 @@ const zendeskClientDefinition = (
+   };
+ };
  
 +/** Slack REST scopes shared with the user OAuth method in the Slack catalog app. */
 +const slackRestUserScopes = [
@@ -137,7 +137,7 @@ index 79db403..ba6dada 100644
  /** OAuth App scopes declared by the official GitHub REST app. */
  const githubRestScopes = [
    "repo",
-@@ -148,6 +191,10 @@ const githubRestScopes = [
+@@ -174,6 +217,10 @@ const githubRestScopes = [
   *   It is unlisted, as in v1: Slack lets an app use MCP outside its own workspace only once it is
   *   published in the Slack Marketplace, so it signs in no new accounts, but reconnects and renews
   *   those it already holds. Its tokens go only to Slack's MCP server.
@@ -148,7 +148,7 @@ index 79db403..ba6dada 100644
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    ...zohoOAuthClients,
-@@ -256,6 +303,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+@@ -282,6 +329,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
      placement: { hosts: ["mcp.slack.com"] },
      unlisted: true,
    },
@@ -170,7 +170,7 @@ index 79db403..ba6dada 100644
  ];
  
  /** The two settings that hold the credentials of the client `id`. */
-@@ -369,7 +431,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+@@ -412,7 +474,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
                ? "GitLab"
                : definition.id === "miro"
                  ? "Miro"

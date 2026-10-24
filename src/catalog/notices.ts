@@ -27,6 +27,7 @@ const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> =
 export interface ConnectorAvailability {
   readonly google: boolean;
   readonly github: boolean;
+  readonly zendesk?: boolean;
   readonly gitlab?: boolean;
   readonly miro?: boolean;
   readonly zoho?: boolean;

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { mergeFeed, type Feed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
+import sourceSnapshot from "./zendesk/source.json" with { type: "json" };
+import sourceProvenance from "./zendesk/provenance.json" with { type: "json" };
+import { zendeskAddition } from "./zendesk/source.ts";
 
 const official: Feed = {
   version: 1,
@@ -140,6 +145,103 @@ test("ElevenLabs uses its official personal API-key app without hosted-client re
   assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"), async () => new Response(source))).text(), source);
 });
 
+test("Zendesk source snapshot matches its provenance digests", () => {
+  const snapshotBytes = readFileSync(new URL("./zendesk/source.json", import.meta.url));
+  assert.equal(
+    createHash("sha256").update(snapshotBytes).digest("hex"),
+    sourceProvenance.snapshotSha256,
+  );
+  assert.equal(sourceSnapshot.package, "@signalbox/zendesk");
+  assert.equal(sourceProvenance.package, sourceSnapshot.package);
+  const catalogHashes = sourceProvenance.catalogFileSha256 as Record<string, string>;
+  for (const file of sourceSnapshot.files) {
+    assert.equal(
+      createHash("sha256").update(file.content).digest("hex"),
+      catalogHashes[file.path],
+      file.path,
+    );
+  }
+  assert.equal(sourceProvenance.tenantTemplate.setting, "EXECUTOR_ZENDESK_SUBDOMAIN");
+  assert.equal(sourceProvenance.tenantTemplate.marker, "example");
+});
+
+test("Zendesk source uses trusted configuration and cannot take a tenant from the request", async () => {
+  const trustedTenant = "synthetic-tenant";
+  const requestTenant = "untrusted-tenant";
+  const ready = { google: false, github: false, zendesk: true };
+  const response = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/index.json?tenant=" + requestTenant),
+    async input => {
+      assert.equal(String(input), "https://catalog.executor.sh/index.json");
+      return Response.json(official);
+    },
+    ready,
+    trustedTenant,
+  );
+  assert.equal(response.status, 200);
+  const feed = await response.json() as Feed;
+  const entry = feed.apps.find(app => app.id === "zendesk");
+  assert.ok(entry);
+  assert.equal(entry.package, "@signalbox/zendesk");
+  assert.equal(entry.source, "apps/zendesk.json");
+  assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
+  const notice = entry.connectionNotices?.[0]?.message ?? "";
+  assert.match(notice, /Signalbox/);
+  assert.doesNotMatch(notice, /synthetic-tenant|untrusted-tenant|CLIENT_ID|CLIENT_SECRET|.zendesk.com/);
+
+  const sourceResponse = await handleCatalog(
+    new Request(
+      "https://app.signalbox.run/catalog/apps/zendesk.json?tenant=" + requestTenant,
+    ),
+    async () => {
+      throw new Error("the configured source must be served locally");
+    },
+    ready,
+    trustedTenant,
+  );
+  assert.equal(sourceResponse.status, 200);
+  const source = await sourceResponse.json() as {
+    package: string;
+    files: { path: string; content: string }[];
+  };
+  assert.equal(source.package, entry.package);
+  const index = source.files.find(file => file.path === "index.ts")?.content ?? "";
+  assert.match(index, /createZendeskApp\("synthetic-tenant"\)/);
+  assert.doesNotMatch(index, /untrusted-tenant|example/);
+  assert.equal(
+    source.files.find(file => file.path === "configuration.ts")?.content,
+    sourceSnapshot.files.find(file => file.path === "configuration.ts")?.content,
+  );
+
+  assert.throws(() => zendeskAddition("two.labels"), /one lowercase DNS label/);
+});
+
+test("incomplete Zendesk setup keeps its notice visible and withholds app source", async () => {
+  for (const [ready, tenant] of [
+    [false, undefined], [false, "synthetic-tenant"], [true, undefined], [true, "two.labels"],
+  ] as const) {
+    const availability = { google: false, github: false, zendesk: ready };
+    const response = await handleCatalog(
+      new Request("https://app.signalbox.run/catalog/index.json?tenant=untrusted-tenant"),
+      async () => Response.json(official), availability, tenant,
+    );
+    assert.equal(response.status, 200);
+    const entry = ((await response.json()) as Feed).apps.find(app => app.id === "zendesk");
+    assert.ok(entry);
+    assert.match(entry.connectionNotices?.[0]?.message ?? "", /Zendesk is not set up yet\./);
+    assert.doesNotMatch(JSON.stringify(entry), /synthetic-tenant|untrusted-tenant|example\.zendesk/);
+    for (const method of ["GET", "HEAD"]) {
+      const source = await handleCatalog(
+        new Request("https://app.signalbox.run/catalog/apps/zendesk.json?tenant=untrusted-tenant", { method }),
+        async () => { throw new Error("Unavailable source must not contact the publisher"); },
+        availability, tenant,
+      );
+      assert.equal(source.status, 503);
+      assert.equal(source.headers.get("cache-control"), "no-store");
+      assert.equal(await source.text(), method === "HEAD" ? "" : '{"error":"Zendesk is not set up yet."}');
+    }
+  }
+});
 
 test("Zoho CRM readiness stays independent and keeps the official regional auth and source", async () => {
   const entry = { ...official.apps[0]!, id: "zoho", package: "@executor.sh/zoho", name: "Zoho",
