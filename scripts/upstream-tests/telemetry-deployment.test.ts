@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConfigProvider, Effect, Redacted } from "effect";
-import { telemetryBindings } from "./deployment.ts";
+import { telemetryBindings } from "../../src/telemetry/deployment.ts";
 
 test("telemetry bindings preserve the configured region and omit absent settings", async () => {
   const configured = await Effect.runPromise(telemetryBindings.pipe(
