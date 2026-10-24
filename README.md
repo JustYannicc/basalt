@@ -111,10 +111,10 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `PLANETSCALE_API_TOKEN`       | Database and role provisioning                                          |
 | `GOOGLE_CLIENT_ID`            | Google sign-in OAuth client                                             |
 | `GOOGLE_CLIENT_SECRET`        | Google sign-in OAuth secret                                             |
-| `EXECUTOR_OAUTH_GOOGLE_CLIENT_ID` | Hosted Google connector Web client, separate from sign-in |
-| `EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET` | Hosted Google connector secret |
-| `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID` | Hosted GitHub connector OAuth App client |
-| `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET` | Hosted GitHub connector OAuth App secret |
+| `EXECUTOR_OAUTH_GOOGLE_CLIENT_ID` | Optional hosted Google connector Web client, separate from sign-in |
+| `EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET` | Optional hosted Google connector secret |
+| `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID` | Optional hosted GitHub connector OAuth App client |
+| `EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET` | Optional hosted GitHub connector OAuth App secret |
 | `EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID` | Optional hosted Atlassian 3LO client for Confluence and Jira |
 | `EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET` | Optional hosted Atlassian 3LO secret, supplied with its client ID |
 | `AUTH_GITHUB_CLIENT_ID`       | GitHub sign-in OAuth client                                             |
@@ -160,7 +160,7 @@ A connection requests only its selected app's scopes. The connect screen explain
 
 Create a separate GitHub OAuth App named Signalbox with homepage `https://app.signalbox.run` and callback `https://app.signalbox.run/api/oauth/callback`. The official REST app requests `repo`, `read:org`, `workflow`, `gist`, `notifications`, `read:user` and `user:email`. The host's optional `github-oauth` client matches this app; its older GitHub App client remains separate. No app review is required. Organization approval and SAML sign-in can still limit repository access.
 
-Google and GitHub connector credentials use the four `EXECUTOR_OAUTH_*` secrets above. GitHub Actions supplies them and Alchemy writes their runtime copies. No person enters a client secret to connect their account.
+Google and GitHub connector credentials are optional and use the four `EXECUTOR_OAUTH_*` secrets above. GitHub Actions supplies them and Alchemy writes their runtime copies. No person enters a client secret to connect their account. Missing or incomplete pairs are omitted, with one deployment warning per unavailable connector and a "not set up yet" notice on its connect screen. Sign-in, pools and computer setup deploy independently.
 
 Create an Atlassian OAuth 2.0 (3LO) app in the developer console named after `brand.oauthAppName` (Signalbox), with callback `https://app.signalbox.run/api/oauth/callback`. Enable sharing so other people can authorize it. Add `read:jira-work` for Jira and `read:confluence-content.all` and `search:confluence` for Confluence. The app also requests `offline_access` for rotating refresh tokens. Authorization sends `audience=api.atlassian.com` and `prompt=consent`, and token exchanges use JSON. Atlassian's unreviewed-app warning is accepted for v1. Each person connects their own account; their site's permissions and app access policies still apply. Add the client ID and secret to the two `EXECUTOR_OAUTH_ATLASSIAN_*` GitHub Actions secrets above. Both may be absent during deployment; the connector then reports that it is not set up yet.
 
