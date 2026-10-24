@@ -185,6 +185,15 @@
       "upstream_pull_request": 2373,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-slack-user-oauth",
+      "file": "0022-slack-user-oauth.patch",
+      "content_sha256": "69c4bd873d89f7b75559911ed2cf103a6814a95e59958e81ac0656fe8a78fc2c",
+      "kind": "upstream",
+      "upstream_pull_request": 2371,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }
