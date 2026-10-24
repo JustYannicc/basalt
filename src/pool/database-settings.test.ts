@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { poolDatabaseUrl } from "./database-settings.ts";
+import { poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
 
 test("pool uses its own logical database and stable owner on the existing direct TLS connection", () => {
   const original = "postgresql://runtime:credential@cluster.example:5432/postgres?sslmode=verify-full";
@@ -18,4 +18,10 @@ test("pool rejects a pooled or unverified connection", () => {
     "postgresql://runtime:credential@cluster.example:6432/postgres?sslmode=verify-full",
     "postgresql://runtime:credential@cluster.example:5432/postgres?sslmode=require",
   ]) assert.throws(() => poolDatabaseUrl(url), /direct Postgres connection with verified TLS/);
+});
+
+test("each PR preview gets its own pool database branch", () => {
+  assert.equal(previewPoolDatabaseBranch("test-pr-1419"), "test-pr-1419-pool");
+  assert.throws(() => previewPoolDatabaseBranch("production"), /restricted to PR preview stages/);
+  assert.throws(() => previewPoolDatabaseBranch("test-pr-0"), /restricted to PR preview stages/);
 });
