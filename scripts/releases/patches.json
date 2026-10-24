@@ -22,6 +22,7 @@
     },
     {
       "identity": "executor-eu-durable-objects",
+      "upstream_issue": 2364,
       "file": "0003-eu-durable-objects.patch",
       "content_sha256": "3535935861fe64f93ebc155def76e3ff3ad8e71f41a7160c44c867b1eaf92e0b",
       "kind": "upstream",
