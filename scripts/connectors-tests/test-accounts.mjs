@@ -33,7 +33,6 @@ export async function provisionSelfHostActors({ executable, upstream, target, au
     const log = join(outputDirectory, `${role}.log`);
     const child = spawn(executable, [
       cli,
-      "test-account",
       "--host", "self-host",
       "--name", name,
       "--organization", "zendesk-native",
