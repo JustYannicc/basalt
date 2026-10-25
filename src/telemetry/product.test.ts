@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { captureProduct, productEvents, productPayload } from "./product.ts";
+import { captureProduct, captureProducts, productEvents, productPayload } from "./product.ts";
 import { pageTemplate, recentErrors } from "./privacy.ts";
 const forbidden = /email|name|content|query|prompt|message|credential|token|secret|input|output|body|url|header/i;
 function assertPrivate(value: unknown): void {
@@ -52,4 +52,21 @@ test("telemetry routes and errors cannot carry URL segments or exception message
   assert.equal(pageTemplate("/something/private-content"), "/other");
   assert.equal(pageTemplate("https://example.invalid/private"), "/other");
   assert.deepEqual(recentErrors([{code:"script_error"},{code:"secret-content"},{code:"http_503"},{code:"error@example.invalid"}]), [{code:"script_error"},{code:"http_503"}]);
+});
+
+test("regional configuration selects the exact ingest host and rejects arbitrary destinations", async (t) => {
+  const calls: Request[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    calls.push(new Request(url, init)); return new Response(null, { status: 200 });
+  });
+  const events = [{ event: "sign_up", accountId: "account_fixture" }] as const;
+  for (const region of ["us", "eu"]) {
+    assert.equal(await captureProducts({ POSTHOG_PROJECT_KEY: "synthetic", POSTHOG_HOST: `https://${region}.i.posthog.com` }, events), true);
+    assert.equal(calls.at(-1)!.url, `https://${region}.i.posthog.com/batch/`);
+    assert.equal(calls.at(-1)!.redirect, "manual");
+  }
+  for (const host of ["http://us.i.posthog.com", "https://us.i.posthog.com.evil.invalid", "https://us.i.posthog.com/private", "https://user@us.i.posthog.com", ""]) {
+    assert.equal(await captureProducts({ POSTHOG_PROJECT_KEY: "synthetic", POSTHOG_HOST: host }, events), false);
+  }
+  assert.equal(calls.length, 2);
 });
