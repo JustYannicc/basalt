@@ -32,17 +32,20 @@ export function deployZendeskApps({ Effect, request, checked, actors, prefix, fi
 
     for (const site of fixtures.sites) {
       const clientConfig = fixtures.client(site.id, "public");
+      // Explicit endpoint providers without an authored issuer use their token endpoint as client identity.
+      const issuer = `${site.origin}/oauth/tokens`;
       const registered = checked(yield* request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-        issuer: site.origin,
+        issuer,
         clientId: clientConfig.clientId,
       }), 200, `Register public Zendesk client for ${site.id}`);
-      assert.equal(registered.client?.issuer, site.origin);
+      assert.equal(registered.client?.issuer, issuer);
       assert.equal(registered.client?.hasSecret, false, "Stored public client must have no client secret");
       assert.equal(typeof registered.client?.id, "string", "The stored public client needs an organization id");
       clients.set(site.id, { id: registered.client.id, clientId: clientConfig.clientId });
       record("stored-public-client-registered", {
         site: site.id,
         host: site.host,
+        issuer,
         issuerOrigin: site.origin,
         secretPresent: false,
       });

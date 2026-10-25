@@ -53,17 +53,18 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
       const offered = options.clients ?? [];
       assert.deepEqual(offered.map((client) => client.id), [clients.get(site.id).id],
         `OAuth setup for ${site.id} must offer only its stored public client`);
-      assert.equal(options.issuer, site.origin, `OAuth setup must use the exact ${site.id} issuer`);
+      assert.equal(options.issuer, `${site.origin}/oauth/tokens`, `OAuth setup must use the exact ${site.id} issuer`);
       const peer = fixtures.sites.find((candidate) => candidate.id !== site.id);
       const poisoned = yield* setup(flow, peer);
-      assert.equal(poisoned.issuer, site.origin, "Caller query must not retarget the frozen connection site");
+      assert.equal(poisoned.issuer, `${site.origin}/oauth/tokens`, "Caller query must not retarget the frozen connection site");
       const wrongOptions = yield* setup(flowByKey.get(`${peer.id}:public`), peer);
       assert.equal(wrongOptions.clients.some((client) => client.id === clients.get(site.id).id), false,
         `OAuth setup for ${peer.id} must not offer ${site.id}'s stored client`);
       record("oauth-setup-client-isolated", {
         site: site.id,
         host: site.host,
-        issuerOrigin: options.issuer,
+        issuer: options.issuer,
+        issuerOrigin: new URL(options.issuer).origin,
         offeredClientCount: offered.length,
         peerClientOffered: false,
       });
