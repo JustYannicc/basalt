@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { after, test } from "node:test";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,9 @@ import { startZendeskFixtures } from "./zendesk-fixture.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const upstream = process.env.CONNECTORS_UPSTREAM ?? join(root, ".upstream");
+const pin = JSON.parse(await readFile(join(root, "upstream.json"), "utf8"));
+const upstreamHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: upstream, encoding: "utf8" }).trim();
+assert.equal(upstreamHead, pin.commit, "Catalog helper checkout must match upstream.json");
 const evidenceRoot = join(root, ".generated/connectors-proof");
 await mkdir(evidenceRoot, { recursive: true, mode: 0o700 });
 const directory = await mkdtemp(join(evidenceRoot, "zendesk-catalog-test-"));
