@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { proveInstalledClaude } from "./native-claude.mjs";
+import { singleCallValue } from "./mcp-output.mjs";
 import { proveZendeskPeerPlacement } from "./zendesk-peer-placement.mjs";
 
 function tool(items, name) {
@@ -16,7 +17,7 @@ async function connectMcp(upstream, origin, token, organization) {
   const { Client } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/index.js")).href);
   const { StreamableHTTPClientTransport } = await import(pathToFileURL(require.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js")).href);
   const client = new Client({ name: "zendesk-native-proof", version: "1" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp?elicitation_mode=model`), {
     requestInit: { headers: { authorization: `Bearer ${token}`, "X-Executor-Organization": organization } },
   }));
   return client;
@@ -80,6 +81,10 @@ export function proveZendeskMcp({
 
     for (const flow of users) {
       const client = mcpClients.get(flow.actor);
+      const linked = checked(yield* request(flow.actor, "GET", `${flow.app.path}/accounts/user/zendesk`),
+        200, "Read the caller's linked Zendesk account before the MCP call");
+      assert.deepEqual(linked.accounts.filter((entry) => entry.linked).map((entry) => entry.account.id),
+        [flow.account.id], "MCP must use this flow's account through its normal app link");
       const search = yield* Effect.promise(() => client.callTool({ name: "search", arguments: { query: flow.app.slug } }));
       assert.equal(search.isError, false, `Native MCP search failed for ${flow.site.id}`);
       const current = tool(search.structuredContent?.items, "currentUser");
@@ -87,11 +92,9 @@ export function proveZendeskMcp({
       const create = tool(search.structuredContent?.items, "createTicket");
       const described = yield* Effect.promise(() => client.callTool({ name: "describe", arguments: { paths: [current.path, tickets.path, create.path] } }));
       assert.equal(described.isError, false, `Native MCP describe failed for ${flow.site.id}`);
-      const accountInput = { accountId: flow.account.id, input: {} };
       const beforeCurrentUser = fixtures.observations().length;
-      const currentResult = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: { path: current.path, input: accountInput } } }));
-      assert.equal(currentResult.isError, false, `Native MCP currentUser failed for ${flow.site.id}`);
-      assert.ok(textOf(currentResult).includes(`Zendesk fixture ${flow.site.id}`));
+      const currentResult = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: { path: current.path, input: {} } } }));
+      assert.equal(singleCallValue(currentResult, current.path)?.name, `Zendesk fixture ${flow.site.id}`);
       if (flow.mode === "hosted") {
         const apiEvents = fixtures.observations().slice(beforeCurrentUser).filter((event) => event.phase === "api");
         assert.ok(apiEvents.some((event) =>
@@ -104,10 +107,11 @@ export function proveZendeskMcp({
           `The hosted catalog tool for ${flow.site.id} must not place its token at its peer`);
       }
       const ticketResult = yield* Effect.promise(() => client.callTool({ name: "call", arguments: {
-        calls: { path: tickets.path, input: { accountId: flow.account.id, input: { page: 1, perPage: 10 } } },
+        calls: { path: tickets.path, input: { page: 1, perPage: 10 } },
       } }));
-      assert.equal(ticketResult.isError, false, `Native MCP listTickets failed for ${flow.site.id}`);
-      assert.ok(textOf(ticketResult).includes(`Synthetic ${flow.site.id} ticket`));
+      assert.ok(singleCallValue(ticketResult, tickets.path)?.tickets.some((ticket) =>
+        ticket.subject === `Synthetic ${flow.site.id} ticket`,
+      ));
       record("native-mcp-read", {
         site: flow.site.id,
         host: flow.site.host,
@@ -124,11 +128,14 @@ export function proveZendeskMcp({
       ).length;
       const write = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: {
         path: create.path,
-        input: { accountId: flow.account.id, input: { subject: "Synthetic approval check", comment: "Must not reach Zendesk without approval" } },
+        input: { subject: "Synthetic approval check", comment: "Must not reach Zendesk without approval" },
       } } }));
-      const writeOutcome = textOf(write);
-      assert.ok(write.isError || /approval|approval.required|approval required/i.test(writeOutcome),
-        "Zendesk createTicket must request approval through MCP");
+      assert.notEqual(write.isError, true, "The approval request must be a successful MCP response");
+      assert.equal(write.structuredContent?.status, "approval-required",
+        "Zendesk createTicket must pause specifically for approval");
+      assert.equal(typeof write.structuredContent.requestId, "string");
+      assert.equal(write.structuredContent.invocation?.app, flow.app.id);
+      assert.equal(write.structuredContent.invocation?.tool, "createTicket");
       assert.equal(fixtures.observations().filter((event) =>
         event.phase === "api" && event.method === "POST" && event.endpoint === "/api/v2/tickets.json",
       ).length, ticketWritesBefore, "An unapproved createTicket must not reach the external API");
@@ -150,20 +157,22 @@ export function proveZendeskMcp({
     const owner = issuedKeys.find(({ actor }) => actor === actors.owner);
     assert.ok(owner, "Owner MCP token is missing");
     const siteAOwner = flowByKey.get("site-a:public");
-    const siteBOwner = flowByKey.get("site-b:confidential");
+    const siteBPeer = flowByKey.get("site-b:public");
     const ownerClient = mcpClients.get(actors.owner);
     const searchA = yield* Effect.promise(() => ownerClient.callTool({ name: "search", arguments: { query: siteAOwner.app.slug } }));
     const siteATool = tool(searchA.structuredContent?.items, "currentUser");
     const peerAccountCountBefore = fixtures.observations().filter((event) => event.phase === "api").length;
-    const peerAccountCall = yield* Effect.promise(() => ownerClient.callTool({ name: "call", arguments: { calls: {
-      path: siteATool.path,
-      input: { accountId: siteBOwner.account.id, input: {} },
-    } } }));
-    assert.ok(peerAccountCall.isError || /InputInvalid|account/i.test(textOf(peerAccountCall)),
-      "A site-b account must not be selectable for the site-a app");
+    const peerAccountLink = yield* request(actors.owner, "PUT",
+      `${siteAOwner.app.path}/accounts/user/zendesk/${siteBPeer.account.id}`);
+    assert.ok(peerAccountLink.status === 403 || peerAccountLink.status === 404,
+      "A caller cannot link another user's private account");
+    const stillLinked = checked(yield* request(actors.owner, "GET", `${siteAOwner.app.path}/accounts/user/zendesk`),
+      200, "Read the unchanged caller account link after peer-account refusal");
+    assert.deepEqual(stillLinked.accounts.filter((entry) => entry.linked).map((entry) => entry.account.id),
+      [siteAOwner.account.id]);
     assert.equal(fixtures.observations().filter((event) => event.phase === "api").length, peerAccountCountBefore,
-      "Rejected cross-site account selection must not send credentials to either Zendesk host");
-    record("cross-site-account-selection-denied", {
+      "Rejected peer-user account linking must not send credentials to either Zendesk host");
+    record("peer-user-account-link-denied", {
       site: "site-a",
       host: siteAOwner.site.host,
       peerSite: "site-b",
@@ -181,7 +190,7 @@ export function proveZendeskMcp({
       toolPath: agentPath,
       marker: agentMarker,
       taskPrompt: `Search the synthetic Zendesk app ${siteAOwner.app.slug}, call currentUser for my connected account, then reply connector-runtime-proof-ok.`,
-      toolInput: { accountId: siteAOwner.account.id, input: {} },
+      toolInput: {},
       searchQuery: siteAOwner.app.slug,
     }));
     record("installed-agent-native-tool-call", { site: "site-a", host: siteAOwner.site.host, toolPath: agentPath });

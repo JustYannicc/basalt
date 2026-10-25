@@ -79,6 +79,9 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
       const label = `Synthetic Zendesk ${site.id} ${flow.mode}`;
       if (flow.mode === "public") {
         const peerClient = clients.get(other.id);
+        const beforePeerSelection = fixtures.observations().filter((event) =>
+          event.phase === "authorization" || event.phase.startsWith("token_"),
+        ).length;
         const peerSelection = yield* request(flow.actor, "POST", flow.startPath, {
           method: "oauth",
           label,
@@ -93,6 +96,9 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
         });
         assert.equal(peerSelection.status, 404,
           `A ${other.id} stored public client must not be selectable for ${site.id}`);
+        assert.equal(fixtures.observations().filter((event) =>
+          event.phase === "authorization" || event.phase.startsWith("token_"),
+        ).length, beforePeerSelection, "Refused client selection must not authorize or exchange tokens");
       }
 
       const startBody = { method: "oauth", label, ...(client === undefined ? {} : { client }) };

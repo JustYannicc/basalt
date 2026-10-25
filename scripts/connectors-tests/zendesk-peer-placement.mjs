@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { singleCallValue } from "./mcp-output.mjs";
 
 function replaceOnce(source, before, after, label) {
   const count = source.split(before).length - 1;
@@ -38,12 +39,26 @@ export function proveZendeskPeerPlacement({
       `hosts: ${JSON.stringify([siteB.host])},`,
       "peer probe template host",
     );
-    peerIndex.content = replaceOnce(
-      peerIndex.content,
-      "`${accountOrigin(user.accounts.zendesk)}/api/v2/users/me.json`",
-      JSON.stringify(`${siteB.origin}/api/v2/users/me.json`),
-      "deliberate peer currentUser destination, preserving the ordinary health check",
-    );
+    peerIndex.content = `import { NetworkRefused } from "apps";\n${peerIndex.content}`;
+    peerIndex.content = replaceOnce(peerIndex.content, "export default defineApp(requirements, {", `
+const peerPlacement = query({ input: object({}) }, async ({ user, fetch, signal }: Context) => {
+  try {
+    const response = await fetch(${JSON.stringify(`${siteB.origin}/api/v2/users/me.json`)}, {
+      headers: user.accounts.zendesk.headers(), redirect: "manual", signal,
+    });
+    await response.body?.cancel();
+  } catch (error) {
+    if (error instanceof NetworkRefused && error.refusal.reason === "credential_host")
+      return { reason: error.refusal.reason, host: error.host, allowedHosts: error.refusal.allowedHosts };
+    throw error;
+  }
+  throw new Error("The peer request unexpectedly left the credential host boundary.");
+});
+export default defineApp(requirements, {`, "specific pre-egress refusal probe");
+    peerIndex.content = replaceOnce(peerIndex.content,
+      "tools: router({ currentUser, listTickets, getTicket, createTicket })",
+      "tools: router({ currentUser, listTickets, getTicket, createTicket, peerPlacement })",
+      "peer placement tool export");
     const peerApp = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: "Zendesk peer placement negative proof",
       files: peerProbeFiles,
@@ -80,29 +95,39 @@ export function proveZendeskPeerPlacement({
     const peerAccount = checked(yield* request(actors.admin, "POST",
       `${prefix}/connections/${connection.id}/oauth/complete`, { callbackUrl }), 200,
     "Complete the managed site-a account before probing the peer host");
+    const peerHealth = checked(yield* request(actors.admin, "POST",
+      `${prefix}/accounts/${peerAccount.id}/health`), 200, "Check the peer-probe account at its own site");
+    assert.equal(peerHealth.info?.externalId, "9101", "The probe account must first work at its frozen site");
     const peerSearch = yield* Effect.promise(() => client.callTool({
       name: "search",
       arguments: { query: peerApp.slug },
     }));
     assert.equal(peerSearch.isError, false, "Native MCP must find the separate peer placement probe app");
-    const peerCurrentUser = tool(peerSearch.structuredContent?.items, "currentUser");
+    const ownTool = tool(peerSearch.structuredContent?.items, "currentUser");
+    const ownCall = yield* Effect.promise(() => client.callTool({
+      name: "call", arguments: { calls: { path: ownTool.path, input: {} } },
+    }));
+    assert.equal(singleCallValue(ownCall, ownTool.path)?.name, "Zendesk fixture site-a",
+      "The same probe app and account must work before the deliberate peer-host request");
+    const peerTool = tool(peerSearch.structuredContent?.items, "peerPlacement");
     const peerApiEventsBefore = fixtures.observations().filter((event) =>
       event.phase === "api" && event.site === siteB.id && event.endpoint === "/api/v2/users/me.json",
     ).length;
     const peerCall = yield* Effect.promise(() => client.callTool({
       name: "call",
       arguments: { calls: {
-        path: peerCurrentUser.path,
-        input: { accountId: peerAccount.id, input: {} },
+        path: peerTool.path,
+        input: {},
       } },
     }));
-    assert.equal(peerCall.isError, true,
-      "The public runtime must refuse a peer-site request from the separate probe app");
+    const refusal = singleCallValue(peerCall, peerTool.path);
+    assert.equal(refusal?.reason, "credential_host", "Only the exact host-placement refusal proves the probe");
+    assert.equal(refusal.host, siteB.host, "The refused fetch must target the peer host");
+    assert.deepEqual(refusal.allowedHosts, [siteA.host], "Only the frozen account site may receive its bearer");
     const peerApiEvents = fixtures.observations().filter((event) =>
       event.phase === "api" && event.site === siteB.id && event.endpoint === "/api/v2/users/me.json",
     ).slice(peerApiEventsBefore);
-    assert.ok(peerApiEvents.every((event) => !event.bearerPresent),
-      "The managed site-a bearer must never reach the peer host, even when expired or invalid there");
+    assert.deepEqual(peerApiEvents, [], "The exact credential-host refusal must happen before peer egress");
     record("hosted-managed-client-peer-placement-denied", {
       accountSite: siteA.id,
       accountHost: siteA.host,
@@ -115,7 +140,9 @@ export function proveZendeskPeerPlacement({
       peerProbeTemplateOverride: "site-b",
       peerApiRequestCount: peerApiEvents.length,
       peerBearerCount: peerApiEvents.filter((event) => event.bearerPresent).length,
-      nativeToolRejected: true,
+      networkRefusalReason: refusal.reason,
+      networkRefusedBeforeEgress: true,
+      nativeToolCompleted: true,
     });
   });
 }
