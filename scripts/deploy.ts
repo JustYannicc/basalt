@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { connectorWarnings, deployEnvironment } from "./environment.ts";
 import { appHosting } from "../brand.ts";
+import { alchemyArgs } from "./alchemy.ts";
 import { run } from "./process.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true") {
@@ -15,24 +16,14 @@ const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.me
 if (appHosting.enabled) {
   run(
     "bun",
-    ["run", "alchemy", "deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"],
+    alchemyArgs("deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"),
     cloud,
     environment,
   );
 }
-// `bun exec` treats only its first argument as the script, so `bun exec alchemy deploy …` runs a bare
-// `alchemy` that prints help and exits 0. `bun run` resolves the local bin and passes every argument.
 run(
   "bun",
-  [
-    "run",
-    "alchemy",
-    "deploy",
-    "../../../../alchemy.run.ts",
-    "--stage",
-    environment.ALCHEMY_STAGE!,
-    "--yes",
-  ],
+  alchemyArgs("deploy", "../../../../alchemy.run.ts", "--stage", environment.ALCHEMY_STAGE!, "--yes"),
   cloud,
   environment,
 );
