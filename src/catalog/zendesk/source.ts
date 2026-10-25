@@ -3,7 +3,7 @@ import type { Addition, FeedAddition, FeedEntry } from "../feed.ts";
 import snapshot from "./source.json" with { type: "json" };
 import { isZendeskSubdomain } from "./tenant.ts";
 
-const templateExport = 'export default createZendeskApp("example");';
+const tenantTemplate = 'export const subdomain = "example";';
 
 const entry = (available: boolean): FeedEntry => ({
   id: "zendesk",
@@ -32,19 +32,19 @@ export function zendeskAddition(subdomain: string): Addition {
 
   let replaced = false;
   const files = snapshot.files.map((file) => {
-    if (file.path !== "index.ts") return file;
-    if (!file.content.includes(templateExport))
+    if (file.path !== "configuration.ts") return file;
+    if (!file.content.includes(tenantTemplate))
       throw new Error("Zendesk source template changed");
     replaced = true;
     return {
       ...file,
       content: file.content.replace(
-        templateExport,
-        "export default createZendeskApp(" + JSON.stringify(subdomain) + ");",
+        tenantTemplate,
+        "export const subdomain = " + JSON.stringify(subdomain) + ";",
       ),
     };
   });
-  if (!replaced) throw new Error("Zendesk source entrypoint is missing");
+  if (!replaced) throw new Error("Zendesk tenant configuration is missing");
 
   return {
     entry: entry(true),

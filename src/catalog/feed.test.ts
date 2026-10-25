@@ -151,7 +151,7 @@ test("Zendesk source snapshot matches its provenance digests", () => {
     createHash("sha256").update(snapshotBytes).digest("hex"),
     sourceProvenance.snapshotSha256,
   );
-  assert.equal(sourceSnapshot.package, "@signalbox/zendesk");
+  assert.equal(sourceSnapshot.package, "zendesk");
   assert.equal(sourceProvenance.package, sourceSnapshot.package);
   const catalogHashes = sourceProvenance.catalogFileSha256 as Record<string, string>;
   for (const file of sourceSnapshot.files) {
@@ -182,7 +182,7 @@ test("Zendesk source uses trusted configuration and cannot take a tenant from th
   const feed = await response.json() as Feed;
   const entry = feed.apps.find(app => app.id === "zendesk");
   assert.ok(entry);
-  assert.equal(entry.package, "@signalbox/zendesk");
+  assert.equal(entry.package, "zendesk");
   assert.equal(entry.source, "apps/zendesk.json");
   assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
   const notice = entry.connectionNotices?.[0]?.message ?? "";
@@ -206,11 +206,14 @@ test("Zendesk source uses trusted configuration and cannot take a tenant from th
   };
   assert.equal(source.package, entry.package);
   const index = source.files.find(file => file.path === "index.ts")?.content ?? "";
-  assert.match(index, /createZendeskApp\("synthetic-tenant"\)/);
-  assert.doesNotMatch(index, /untrusted-tenant|example/);
+  assert.match(index, /export default defineApp\(requirements,/);
+  assert.doesNotMatch(index, /createZendeskApp|untrusted-tenant/);
+  const configuration = source.files.find(file => file.path === "configuration.ts")?.content ?? "";
+  assert.match(configuration, /export const subdomain = "synthetic-tenant";/);
+  assert.doesNotMatch(configuration, /untrusted-tenant|example/);
   assert.equal(
-    source.files.find(file => file.path === "configuration.ts")?.content,
-    sourceSnapshot.files.find(file => file.path === "configuration.ts")?.content,
+    index,
+    sourceSnapshot.files.find(file => file.path === "index.ts")?.content,
   );
 
   assert.throws(() => zendeskAddition("two.labels"), /one lowercase DNS label/);

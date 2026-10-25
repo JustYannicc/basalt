@@ -16,7 +16,7 @@ test("AWS catalog provenance pins the self-contained published source and depend
   assert.equal(provenance.kind, "new-app-contribution");
   assert.match(provenance.upstreamIssue, /^https:\/\/github\.com\/UsefulSoftwareCo\/executor\/issues\/\d+$/);
   assert.equal(provenance.sourceSha256, createHash("sha256").update(sourceBytes).digest("hex"));
-  assert.equal(source.package, "@executor.sh/aws");
+  assert.equal(source.package, "aws");
   assert.deepEqual(
     source.files.map((file) => file.path).sort(),
     [
@@ -25,7 +25,6 @@ test("AWS catalog provenance pins the self-contained published source and depend
       "package.json",
       "src/aws.ts",
       "src/credentials.ts",
-      "src/index.ts",
       "src/regions.ts",
       "src/xml.ts",
     ],
@@ -34,8 +33,12 @@ test("AWS catalog provenance pins the self-contained published source and depend
   const manifestFile = source.files.find((file) => file.path === "package.json");
   assert.ok(manifestFile);
   const manifest = JSON.parse(manifestFile.content);
+  assert.equal(manifest.name, "aws");
+  assert.equal(source.package, "aws");
+  assert.equal(manifest.private, true);
+  assert.equal(manifest.type, "module");
   assert.deepEqual(manifest.dependencies, {
-    apps: "0.0.1-beta.100",
+    apps: "0.0.1-beta.104-basalt.1",
     aws4fetch: "1.0.20",
     "fast-xml-parser": "5.11.1",
   });
@@ -47,7 +50,7 @@ test("AWS appears in the public catalog with credential fields and bounded read 
   const entry = feed.apps.find((app) => app.id === "aws");
 
   assert.ok(entry);
-  assert.equal(entry.package, "@executor.sh/aws");
+  assert.equal(entry.package, "aws");
   assert.deepEqual(entry.auth, [{ method: "credentials", kind: "secrets", label: "AWS access keys" }]);
   const notice = entry.connectionNotices?.[0]?.message ?? "";
   assert.match(notice, /access key ID, secret access key, optional session token/);
