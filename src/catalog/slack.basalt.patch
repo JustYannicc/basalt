@@ -1,0 +1,10 @@
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,6 @@
+     "title": "Slack"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.100"
++    "apps": "0.0.1-beta.104-basalt.1"
+   }
+ }
