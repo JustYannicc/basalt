@@ -5,11 +5,12 @@ export interface ConnectionNotice {
   message: string;
 }
 
-const google = `${brand.name}'s Google connector is published but unverified. Google shows an unverified-app warning and limits this project to 100 users over its lifetime. Your Workspace admin may block access or mark the app trusted. You connect your own account and grant access only to the selected service.`;
+const google = `${brand.name}'s Google connector is in Testing. Only listed test users can connect. Google authorizations and refresh tokens expire after seven days, so you must reconnect. Your Workspace admin may block access or mark the app trusted. You connect your own account and grant access only to the selected service.`;
 const slack = `Connect your own Slack account through ${brand.name}. Messages post as you, with your access. Unlisted apps have conversation history and replies limited to 1 request per minute and 15 items per request. Your workspace may require admin approval.`;
 
 /** Operator notices are feed data, never part of the tools API Worker. Provider names match the official apps. */
 const configuredNotices: Readonly<Record<string, readonly ConnectionNotice[]>> = {
+  "@executor.sh/google": [{ providerName: "Google", message: google }],
   "@executor.sh/gmail": [{ providerName: "Gmail", message: google }],
   "@executor.sh/google-calendar": [{ providerName: "Google Calendar", message: google }],
   "@executor.sh/google-drive": [{ providerName: "Google Drive", message: google }],
