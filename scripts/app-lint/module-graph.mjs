@@ -131,20 +131,14 @@ export function createModuleGraph(context, rootProgram) {
     if (node?.type !== "MemberExpression") return null;
     const base = resolveExpression(node.object, file, seen);
     const name = propertyName(node.property);
-    if (!apiSymbols.has(name)) return null;
-    if (base === "namespace") return name;
-    if (base?.kind === "namespace") return base.members.get(name) ?? null;
+    if (base === "namespace") return apiSymbols.has(name) ? name : null;
+    if (base?.kind === "namespace") return base.resolve(name);
     if (base === "unknown") return "unknown";
     return null;
   }
 
   function resolveNamespace(file, seen) {
-    const members = new Map();
-    for (const name of apiSymbols) {
-      const symbol = resolveExport(file, name, seen);
-      if (symbol) members.set(name, symbol);
-    }
-    return members.size ? { kind: "namespace", members } : null;
+    return { kind: "namespace", resolve: (name) => resolveExport(file, name, seen) };
   }
 
   function resolveExport(file, name, seen = new Set()) {

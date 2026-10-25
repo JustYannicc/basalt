@@ -101,13 +101,6 @@ export function createBindings(context) {
     return isUnmodified(variable) && values.length === 1 ? values[0] : null;
   }
 
-  function constInitializer(variable) {
-    const definition = variableDeclarator(variable);
-    return definition?.kind === "const" && isUnmodified(variable)
-      ? definition.declarator.init
-      : null;
-  }
-
   function typeAlias(variable) {
     for (const definition of variable?.defs ?? []) {
       if (definition.node?.type === "TSTypeAliasDeclaration") return definition.node.typeAnnotation;
@@ -155,25 +148,33 @@ export function createBindings(context) {
     return null;
   }
 
-  function dynamicImportKind(variable) {
+  function importOrDestructuredKind(variable, seen) {
     if (!variable || variable.defs?.length !== 1) return null;
     const definition = variable.defs[0];
     if (definition.type !== "Variable" || definition.node?.type !== "VariableDeclarator")
       return null;
     const { id, init } = definition.node;
-    if (dynamicImportSource(init) !== "apps") return null;
+    const isAppsImport = dynamicImportSource(init) === "apps";
     if (id?.type === "Identifier" && id.name === variable.name)
-      return isUnmodified(variable) ? "namespace" : "unknown";
+      return isAppsImport ? (isUnmodified(variable) ? "namespace" : "unknown") : null;
     if (id?.type !== "ObjectPattern") return null;
+    const namespace = isAppsImport ? "namespace" : resolveSymbol(init, seen);
     for (const property of id.properties ?? []) {
       if (!["ObjectProperty", "Property"].includes(property.type)) continue;
       const value =
         property.value?.type === "AssignmentPattern" ? property.value.left : property.value;
       if (value?.type !== "Identifier" || value.name !== variable.name) continue;
       const imported = propertyName(property.key, property.computed);
-      if (!["defineApp", "mutation", "query", "QueryContext", "MutationContext"].includes(imported))
-        return null;
-      return isUnmodified(variable) ? imported : "unknown";
+      const symbol =
+        namespace?.kind === "namespace"
+          ? namespace.resolve(imported)
+          : namespace === "namespace" &&
+              ["defineApp", "mutation", "query", "QueryContext", "MutationContext"].includes(
+                imported,
+              )
+            ? imported
+            : null;
+      return symbol && !isUnmodified(variable) ? "unknown" : symbol;
     }
     return null;
   }
@@ -188,9 +189,12 @@ export function createBindings(context) {
       if (symbolCache.has(variable)) return symbolCache.get(variable);
       const imported = importKind(variable);
       if (imported) return imported;
-      const dynamic = dynamicImportKind(variable);
-      if (dynamic) return dynamic;
       seen.add(variable);
+      const dynamic = importOrDestructuredKind(variable, seen);
+      if (dynamic) {
+        seen.delete(variable);
+        return dynamic;
+      }
       const symbols = possibleValues(variable)
         .map((value) => resolveSymbol(value, seen))
         .filter(Boolean);
@@ -206,10 +210,10 @@ export function createBindings(context) {
     if (node.type === "MemberExpression") {
       const objectSymbol = resolveSymbol(node.object, seen);
       const name = propertyName(node.property, node.computed);
+      if (objectSymbol?.kind === "namespace") return objectSymbol.resolve(name);
       if (!["defineApp", "mutation", "query"].includes(name)) return null;
       if (objectSymbol === "namespace") return name;
       if (objectSymbol === "unknown") return "unknown";
-      if (objectSymbol?.kind === "namespace") return objectSymbol.members.get(name) ?? null;
       return null;
     }
     return null;
@@ -234,10 +238,7 @@ export function createBindings(context) {
 
   return {
     variableOf,
-    isUnmodified,
     localInitializer,
-    possibleValues,
-    constInitializer,
     typeAlias,
     resolveSymbol,
     resolveFunctionNode,

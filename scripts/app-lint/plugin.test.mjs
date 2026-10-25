@@ -4,6 +4,14 @@ import { assertCases } from "./plugin-test-helpers.mjs";
 test("default-app-export follows imported identity, const aliases and TypeScript wrappers", () => {
   assertCases("default-app-export", [
     {
+      source: `const { defineApp: make } = { defineApp: () => ({}) }; export default make({}, {});`,
+      expected: "imported from",
+    },
+    {
+      source: `import * as api from "apps"; const { defineApp: make } = api; export default make({}, {});`,
+      expected: null,
+    },
+    {
       source: `import { defineApp } from "apps"; let make; make = defineApp; export default make({}, {});`,
       expected: null,
     },
@@ -130,6 +138,28 @@ test("no-legacy-accounts checks only top-level requirements and framework contex
 
 test("mutation-approval follows imported aliases and proves explicit options through local spreads", () => {
   assertCases("mutation-approval", [
+    {
+      source: `const { mutation: write } = { mutation: () => null }; write({}, async () => null);`,
+      expected: null,
+    },
+    {
+      files: {
+        "index.ts": `import * as helper from "./helper.js"; const { write } = helper; write({}, async () => null);`,
+        "helper.ts": `export { mutation as write } from "apps";`,
+      },
+      expected: "Every `mutation`",
+    },
+    {
+      files: {
+        "index.ts": `import * as helper from "./helper.js"; helper.write({}, async () => null);`,
+        "helper.ts": `export { mutation as write } from "apps";`,
+      },
+      expected: "Every `mutation`",
+    },
+    {
+      source: `import * as api from "apps"; const { mutation: write } = api; write({}, async () => null);`,
+      expected: "Every `mutation`",
+    },
     {
       files: {
         "index.ts": `import { write } from "./helper.js"; write({}, async () => null);`,
