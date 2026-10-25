@@ -1,93 +1,87 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { zendeskAddition } from "../../src/catalog/zendesk/source.ts";
+import { proveZendeskOAuth } from "./zendesk-oauth.mjs";
+import { proveZendeskMcp } from "./zendesk-native.mjs";
 
-export const proveZendeskOAuthStart = ({
-  Effect,
-  request,
-  checked,
-  actors,
-  directory,
-  prefix,
-  callback,
-  candidateSha,
-  upstreamPin,
-  carriedPatches,
-  step,
-}) => Effect.gen(function* () {
-  const record = (stage, fields) => appendFileSync(join(directory, "zendesk-proof.jsonl"),
-    `${JSON.stringify({ candidateSha, upstreamPin, stage, ...fields })}\n`, { mode: 0o600 });
-  const zendeskSource = zendeskAddition(true);
-  const payload = { name: "Zendesk connector native OAuth proof", files: zendeskSource.source.files };
-  const files = payload.files.map((file) => ({
-    path: file.path,
-    sha256: createHash("sha256").update(file.content).digest("hex"),
-  }));
-  const payloadSha256 = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-  yield* Effect.promise(() => writeFile(join(directory, "zendesk-deployment.json"), `${JSON.stringify({
-    candidateSha,
-    upstreamPin,
-    carriedPatches,
-    tenantSubdomain: "example",
-    payloadSha256,
-    files,
-    providerConsentCompleted: false,
-  }, null, 2)}\n`, { mode: 0o600 }));
-  const app = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, payload),
-    200, "Deploy tenant-bound Zendesk source");
-  const path = `${prefix}/apps/${app.id}`;
-  const access = checked(yield* request(actors.owner, "GET", `${path}/access`), 200, "Read Zendesk app audience");
-  checked(yield* request(actors.owner, "PATCH", `${path}/access`, {
-    revision: access.revision, audience: { kind: "everyone" },
-  }), 200, "Share Zendesk app within organization");
-
-  const users = [actors.member, actors.admin];
-  const connections = [];
-  for (const [index, actor] of users.entries()) {
-    const connection = checked(yield* request(actor, "POST", `${path}/accounts/user/zendesk/connections`, {
-      destination: { kind: "personal" },
-    }), 200, "Create a personal Zendesk OAuth connection");
-    connections.push(connection.id);
-    const started = checked(yield* request(actor, "POST", `${prefix}/connections/${connection.id}/oauth/start`, {
-      method: "oauth", label: `Synthetic Zendesk ${index + 1}`,
-    }), 200, "Start Zendesk OAuth through the hosted runtime");
-    const url = new URL(started.authorizationUrl);
-    const scopes = (url.searchParams.get("scope") ?? "").split(" ").filter(Boolean).sort();
-    record("authorization-start", {
-      actor: index + 1,
-      authorizationOrigin: url.origin,
-      authorizationPath: url.pathname,
-      clientId: url.searchParams.get("client_id"),
-      redirectUri: started.redirectUri,
-      callbackParameter: url.searchParams.get("redirect_uri"),
-      responseType: url.searchParams.get("response_type"),
-      scopes,
-      pkceMethod: url.searchParams.get("code_challenge_method"),
-      pkceChallengePresent: Boolean(url.searchParams.get("code_challenge")),
-      clientSecretInUrl: url.searchParams.has("client_secret"),
+/** Full catalog-served two-site proof over the native hosted HTTP/MCP runtime. */
+export function proveZendeskNative({
+  Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches,
+  target, root, upstream, fixtures, catalog, step,
+}) {
+  return Effect.gen(function* () {
+    const record = (stage, fields = {}) => appendFileSync(join(directory, "zendesk-proof.jsonl"),
+      `${JSON.stringify({ candidateSha, upstreamPin, carriedPatches, stage, ...fields })}\n`, { mode: 0o600 });
+    assert.equal(catalog.source.package, "zendesk");
+    assert.equal(catalog.provenance.operatorMetadataInjectionVerified, true);
+    assert.equal(fixtures.sites.length, 2);
+    const { users, flowByKey } = yield* proveZendeskOAuth({
+      Effect, request, checked, actors, prefix, callback, fixtures, catalog, record,
     });
-    assert.equal(started.redirectUri, callback, "Zendesk uses the registered callback");
-    assert.equal(url.origin, "https://example.zendesk.com");
-    assert.equal(url.pathname, "/oauth/authorizations/new");
-    assert.equal(url.searchParams.get("client_id"), "zendesk-fixture-client");
-    assert.equal(url.searchParams.get("redirect_uri"), callback);
-    assert.equal(url.searchParams.get("response_type"), "code");
-    assert.equal(url.searchParams.get("code_challenge_method"), "S256");
-    assert.ok(url.searchParams.get("code_challenge"), "Zendesk OAuth uses a PKCE challenge");
-    assert.deepEqual(new Set(scopes), new Set(["tickets:read", "tickets:write", "users:read"]));
-    assert.equal(url.searchParams.has("client_secret"), false, "Zendesk client secret stays off the authorization URL");
-  }
-  for (const [index, actor] of users.entries()) {
-    const peerStart = yield* request(actor, "POST", `${prefix}/connections/${connections[1 - index]}/oauth/start`, {
-      method: "oauth", label: "Peer connection attempt",
+    yield* proveZendeskMcp({
+      Effect, request, checked, actors, directory, prefix, target, root, upstream, fixtures, users, flowByKey, record, step,
     });
-    record("peer-connection-denied", { actor: index + 1, status: peerStart.status });
-    assert.ok(peerStart.status === 403 || peerStart.status === 404,
-      "Zendesk peer cannot start another user's connection");
-  }
-  step("public-zendesk-oauth-start-and-peer-denials-passed");
-  return { checks: 29 };
-});
+    const observations = fixtures.observations();
+    const rotations = fixtures.rotations();
+    const expectedFlows = [
+      ["site-a", "public"], ["site-a", "confidential"], ["site-b", "public"], ["site-b", "confidential"],
+      ["site-a", "hosted"], ["site-b", "hosted"],
+    ];
+    for (const [siteId, mode] of expectedFlows) {
+      assert.ok(rotations.some((flow) => flow.site === siteId && flow.mode === mode && flow.rotated),
+        `Expected access and refresh token rotation for ${siteId} ${mode}`);
+    }
+    assert.deepEqual(fixtures.failures(), [], "Zendesk external fixtures rejected a native runtime request");
+    for (const event of observations.filter((entry) => entry.phase === "api")) {
+      assert.equal(event.credentialSiteMatches, true, "Credentials must stay at the account's exact site");
+      assert.equal(event.marketplaceHeadersMatched, true, "Operator Marketplace headers must reach every API endpoint");
+    }
+    for (const site of fixtures.sites) {
+      const hosted = observations.filter((event) => event.flowMode === "hosted" && event.site === site.id);
+      assert.ok(hosted.some((event) => event.phase === "token_exchange" && event.authMethod === "client_secret_post"),
+        `The synthetic host-owned client must exchange its code at ${site.id}`);
+      assert.ok(hosted.some((event) => event.phase === "token_refresh" && event.authMethod === "client_secret_post" && event.rotated),
+        `The synthetic host-owned client must rotate at ${site.id}`);
+      assert.ok(hosted.some((event) => event.phase === "api" && event.endpoint === "/api/v2/users/me.json" && event.credentialSiteMatches),
+        `Hosted health and tools must send only ${site.id}'s token to ${site.id}`);
+      assert.ok(hosted.some((event) => event.phase === "api" && event.endpoint === "/api/v2/tickets.json" && event.credentialSiteMatches),
+        `The hosted catalog ticket tool must read only ${site.id}`);
+      assert.equal(hosted.some((event) => event.phase === "api" && event.site !== site.id), false,
+        `Hosted token for ${site.id} must never be placed at the peer host`);
+    }
+    assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-a" && event.authMethod === "none"));
+    assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-a" && event.authMethod === "client_secret_post"));
+    assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-b" && event.authMethod === "none"));
+    assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-b" && event.authMethod === "client_secret_post"));
+    yield* Effect.promise(() => writeFile(join(directory, "zendesk-native-observations.json"), `${JSON.stringify({
+      events: observations,
+      rotations: rotations.map(({ site, mode, generation, rotated }) => ({ site, mode, generation, rotated })),
+      failures: fixtures.failures(),
+    }, null, 2)}\n`, { mode: 0o600 }));
+    const report = {
+      checks: 100,
+      zendeskNativeAuthorizationStart: true,
+      storedPublicClientSelectedAtBothSites: true,
+      confidentialByoSelectedAtBothSites: true,
+      zendeskPeerConnectionDenials: 2,
+      zendeskPeerSiteClientDenials: 2,
+      zendeskCrossSiteCallbackDenied: true,
+      zendeskSiteRetargetDenied: true,
+      zendeskCredentialPlacementBySite: true,
+      zendeskTokenRotationForStoredAndByoFlows: true,
+      zendeskToolReadAndHealthBySite: true,
+      syntheticHostedClientDefinition: true,
+      hostedManagedClientAtExactAccountSite: true,
+      hostedManagedClientRotationAtExactAccountSite: true,
+      hostedManagedClientPeerHostPlacementDenied: true,
+      zendeskTicketCreateApprovalPreserved: true,
+      installedAgentNativeToolCall: true,
+      hostedZendeskClientRegistrationProven: false,
+      liveZendeskConsentProven: false,
+    };
+    record("native-proof-complete", report);
+    step("zendesk-native-two-site-proof-passed");
+    return report;
+  });
+}

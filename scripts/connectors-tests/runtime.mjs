@@ -5,21 +5,25 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { Effect, Layer, Context } from "effect";
+import { Effect, Layer, Context, Redacted } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FetchHttpClient } from "effect/http";
 import { startEnvironment } from "../../.upstream/e2e/sdk/environment.ts";
-import { startScenario } from "../../.upstream/e2e/sdk/scenario.ts";
+import { prepareScenario } from "../../.upstream/e2e/sdk/scenario.ts";
+import { startManagedServer } from "../../.upstream/e2e/support/managed-server.ts";
 import { Target } from "../../.upstream/e2e/support/platform.ts";
-import { Actors } from "../../.upstream/e2e/support/actors.ts";
 import { SessionClients } from "../../.upstream/e2e/support/api.ts";
 import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { proveInstalledClaude } from "./native-claude.mjs";
-import { proveZendeskOAuthStart } from "./zendesk.mjs";
+import { startZendeskFixtures } from "./zendesk-fixture.mjs";
+import { startZendeskCatalogWorker, loadZendeskCatalogSource } from "./zendesk-catalog.mjs";
+import { provisionSelfHostActors } from "./test-accounts.mjs";
+import { proveZendeskNative } from "./zendesk.mjs";
 
 const [root, upstream, directory, emulateBin, browserExecutable, upstreamPin, candidateSha, patchesJson] = process.argv.slice(2);
 const carriedPatches = JSON.parse(patchesJson);
@@ -114,6 +118,30 @@ const program = Effect.gen(function* () {
   step("published-emulator-ready");
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* lockedNpmRegistry;
+  const marketplace = { name: "Signalbox", organizationId: "fixture-organization", appId: "fixture-app" };
+  const marketplaceHeaders = {
+    "X-Zendesk-Marketplace-Name": marketplace.name,
+    "X-Zendesk-Marketplace-Organization-Id": marketplace.organizationId,
+    "X-Zendesk-Marketplace-App-Id": marketplace.appId,
+  };
+  const zendeskFixtures = yield* Effect.acquireRelease(
+    Effect.promise(() => startZendeskFixtures({ marketplaceHeaders })),
+    (fixtures) => Effect.promise(() => fixtures.stop()),
+  );
+  const catalogWorker = yield* Effect.acquireRelease(
+    Effect.promise(() => startZendeskCatalogWorker({ root, upstream, directory, marketplace })),
+    (worker) => Effect.promise(() => worker.stop()),
+  );
+  const catalog = yield* Effect.promise(() => loadZendeskCatalogSource({
+    root,
+    catalogOrigin: catalogWorker.origin,
+    directory,
+    sites: zendeskFixtures.sites,
+    marketplace,
+    candidateSha,
+    upstreamPin,
+    carriedPatches,
+  }));
   const definition = {
     id: "connector-fixture", label: "Synthetic hosted Google",
     server: { authorizationUrl: `${provider.origin}/o/oauth2/v2/auth`, tokenUrl: `${provider.origin}/oauth2/token`,
@@ -121,26 +149,56 @@ const program = Effect.gen(function* () {
     tokenEndpointAuthMethod: "client_secret_post", defaultScopes: scopes, allowedScopes: scopes,
     placement: { hosts: [new URL(provider.origin).host] },
   };
-  const target = yield* startScenario(base.target, "Connector OAuth and native MCP proof", undefined, {
-    EXECUTOR_NPM_REGISTRY: registry.url, EXECUTOR_OAUTH_CALLBACK_URL: callback,
+  const prepared = yield* prepareScenario(base.target, "Connector OAuth and native MCP proof");
+  const port = yield* Effect.promise(freePort);
+  const authSecret = randomBytes(32).toString("hex");
+  const preparedTarget = Target.of({ ...prepared, metadata: { ...prepared.metadata, origin: `http://127.0.0.1:${port}` } });
+  const cliActors = yield* Effect.promise(() => provisionSelfHostActors({
+    executable: process.execPath,
+    upstream,
+    target: preparedTarget,
+    authSecret,
+    directory,
+  }));
+  const allowedOrigins = [provider.origin, ...zendeskFixtures.sites.map(({ origin }) => origin)].sort();
+  const server = yield* startManagedServer(preparedTarget, "product", {
+    BETTER_AUTH_SECRET: authSecret,
+    EXECUTOR_NPM_REGISTRY: registry.url,
+    EXECUTOR_OAUTH_CALLBACK_URL: callback,
     EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([definition]),
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_ID: "connector-fixture-client",
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_SECRET: "connector-fixture-secret",
     EXECUTOR_ZENDESK_SUBDOMAIN: "example",
     EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "zendesk-fixture-client",
     EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "zendesk-fixture-secret",
+    EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true",
+    EXECUTOR_URL_ALLOW_HTTP_ORIGINS: JSON.stringify(allowedOrigins),
   });
-  const services = yield* Layer.build(Actors.layer.pipe(Layer.provideMerge(SessionClients.layer), Layer.provideMerge(Layer.succeed(Target, target))));
-  const actors = Context.get(services, Actors);
+  const target = Target.of({ ...preparedTarget, controlOrigin: server.controlOrigin, metadata: { ...preparedTarget.metadata, origin: server.origin } });
+  const services = yield* Layer.build(SessionClients.layer.pipe(Layer.provideMerge(Layer.succeed(Target, target))));
   const sessionsApi = Context.get(services, SessionClients);
+  const actors = {
+    organization: cliActors.organization,
+    owner: yield* sessionsApi.session(Redacted.make(cliActors.owner.cookies)),
+    admin: yield* sessionsApi.session(Redacted.make(cliActors.admin.cookies)),
+    member: yield* sessionsApi.session(Redacted.make(cliActors.member.cookies)),
+  };
   const request = (actor, method, path, data) => sessionsApi.request(actor, method, path, data);
   const checked = (response, status, operation) => {
-    if (response.status !== status) appendFileSync(join(directory, "responses.jsonl"), JSON.stringify({ operation, response }) + "\n", { mode: 0o600 });
+    if (response.status !== status) {
+      const errorTag = typeof response.body?._tag === "string" ? response.body._tag : undefined;
+      appendFileSync(join(directory, "responses.jsonl"), JSON.stringify({
+        operation,
+        status: response.status,
+        ...(errorTag === undefined ? {} : { errorTag }),
+      }) + "\n", { mode: 0o600 });
+    }
     assert.equal(response.status, status, operation); return response.body;
   };
   const prefix = `/api/organizations/${actors.organization.id}`;
-  const zendeskProof = yield* proveZendeskOAuthStart({
-    Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches, step,
+  const zendeskProof = yield* proveZendeskNative({
+    Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches,
+    target, root, upstream, fixtures: zendeskFixtures, catalog, step,
   });
   const app = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
     name: "Synthetic Gmail connector proof", files: [{ path: "index.ts", content: source(provider.origin) }, appsManifest],
@@ -213,10 +271,22 @@ const program = Effect.gen(function* () {
   // Keep model and CLI processes outside the runtime's storage and credentials.
   yield* Effect.promise(() => proveInstalledClaude({ root, directory, origin: target.metadata.origin, token: tokens[0], slug: app.slug, toolPath, marker: markers[0] }));
   step("installed-claude-real-mcp-passed");
-  return { checks: 23 + zendeskProof.checks, sameOrganizationUsers: true, sharedHostedApp: true, privateAccountLinks: true,
-    runtimeMcpCall: true, publishedGoogleEmulatorOAuth: true, zendeskNativeAuthorizationStart: true,
-    zendeskPeerConnectionDenials: 2, zendeskProviderConsentCompleted: false, installedClaude: true,
-    BasaltPoolAppAccess: false, productionOfficialGmailEndToEnd: false };
+  return {
+    ...zendeskProof,
+    checks: 23 + zendeskProof.checks,
+    sameOrganizationUsers: true,
+    sharedHostedApp: true,
+    privateAccountLinks: true,
+    runtimeMcpCall: true,
+    publishedGoogleEmulatorOAuth: true,
+    testAccountsProvisionedByPinnedCli: true,
+    zendeskNativeAuthorizationStart: true,
+    zendeskPeerConnectionDenials: 2,
+    zendeskProviderConsentCompleted: false,
+    installedClaude: true,
+    BasaltPoolAppAccess: false,
+    productionOfficialGmailEndToEnd: false,
+  };
 });
 
 await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);

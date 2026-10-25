@@ -33,7 +33,7 @@ async function run(command: string, args: string[], cwd: string, log: string, ho
 
 /** Public self-host runtime, published provider emulator, native PATs, and installed Claude. */
 export async function runConnectorsProof({ root, upstream, commit, candidate, patches }: ConnectorsProofInput): Promise<{ readonly checks: number }> {
-  if (!root || !upstream || !commit || !/^[a-f0-9]{40}$/.test(candidate) || patches.length === 0)
+  if (!root || !upstream || !/^[a-f0-9]{40}$/.test(commit) || !/^[a-f0-9]{40}$/.test(candidate) || patches.length === 0)
     throw new Error("A frozen candidate and prepared runtime inputs are required.");
   for (const path of ["host.json", "apps.tgz", "npm"]) {
     await access(join(upstream, ".local/test-runtime", path)).catch(() => {
@@ -43,17 +43,22 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   const runs = join(root, ".generated/connectors-proof");
   await mkdir(runs, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(runs, "run-"));
+  const home = join(directory, "home");
+  await mkdir(join(home, "tmp"), { recursive: true, mode: 0o700 });
   await writeFile(join(directory, "proof-input.json"), `${JSON.stringify({
     candidateSha: candidate,
     upstreamPin: commit,
     patches,
   }, null, 2)}\n`, { mode: 0o600 });
+  const configuredPin = (JSON.parse(await readFile(join(root, "upstream.json"), "utf8")) as { commit?: unknown }).commit;
+  if (configuredPin !== commit) throw new Error("Connector proof input does not match upstream.json.");
+  const upstreamHead = await run("git", ["rev-parse", "HEAD"], upstream,
+    join(directory, "upstream-head.json"), join(directory, "home"));
+  if (upstreamHead.trim() !== commit) throw new Error("Prepared upstream checkout does not match upstream.json.");
   // Reuse the installed browser binary, while Playwright creates its profile under the private HOME/TMPDIR.
   const { chromium } = createRequire(join(upstream, "package.json"))("playwright") as { chromium: { executablePath(): string } };
   const browser = chromium.executablePath();
   await access(browser);
-  const home = join(directory, "home");
-  await mkdir(join(home, "tmp"), { recursive: true, mode: 0o700 });
   const installation = join(directory, "provider");
   await mkdir(installation, { recursive: true, mode: 0o700 });
   await writeFile(join(installation, "package.json"), JSON.stringify({ private: true }), { mode: 0o600 });
@@ -71,7 +76,11 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   const report = output.split(/\r?\n/).map((line) => {
     try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; }
   }).find((value) => value?.installedClaude === true && value?.publishedGoogleEmulatorOAuth === true
-    && value?.zendeskNativeAuthorizationStart === true && value?.zendeskPeerConnectionDenials === 2);
+    && value?.testAccountsProvisionedByPinnedCli === true
+    && value?.zendeskNativeAuthorizationStart === true && value?.zendeskPeerConnectionDenials === 2
+    && value?.hostedManagedClientAtExactAccountSite === true
+    && value?.hostedManagedClientRotationAtExactAccountSite === true
+    && value?.hostedManagedClientPeerHostPlacementDenied === true);
   if (!report || typeof report.checks !== "number") throw new Error("Connector runtime proof did not report full completion.");
   console.log(JSON.stringify(report));
   return { checks: report.checks };
