@@ -87,7 +87,7 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 index af9bf62..bed3df6 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -140,6 +140,49 @@ const zendeskClientDefinition = (
+@@ -140,6 +140,48 @@ const zendeskClientDefinition = (
    };
  };
  
@@ -124,7 +124,6 @@ index af9bf62..bed3df6 100644
 +  "remote_files:share",
 +  "search:read",
 +  "team:read",
-+  "tokens.basic",
 +  "usergroups:read",
 +  "usergroups:write",
 +  "users.profile:read",
@@ -137,7 +136,7 @@ index af9bf62..bed3df6 100644
  /** OAuth App scopes declared by the official GitHub REST app. */
  const githubRestScopes = [
    "repo",
-@@ -174,6 +217,10 @@ const githubRestScopes = [
+@@ -174,6 +216,10 @@ const githubRestScopes = [
   *   It is unlisted, as in v1: Slack lets an app use MCP outside its own workspace only once it is
   *   published in the Slack Marketplace, so it signs in no new accounts, but reconnects and renews
   *   those it already holds. Its tokens go only to Slack's MCP server.
@@ -148,7 +147,7 @@ index af9bf62..bed3df6 100644
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    ...zohoOAuthClients,
-@@ -282,6 +329,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
+@@ -282,6 +328,21 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
      placement: { hosts: ["mcp.slack.com"] },
      unlisted: true,
    },
@@ -170,7 +169,7 @@ index af9bf62..bed3df6 100644
  ];
  
  /** The two settings that hold the credentials of the client `id`. */
-@@ -412,7 +474,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+@@ -412,7 +473,7 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
                ? "GitLab"
                : definition.id === "miro"
                  ? "Miro"

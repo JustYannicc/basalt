@@ -43,7 +43,7 @@ test("the Slack carry is its frozen source, public contribution and Basalt frame
   }
 });
 
-test("the Slack registration manifest requests exactly the carried app's user scopes", () => {
+test("Slack registration and the hosted client request the carried app's supported user scopes", () => {
   const carried = JSON.parse(readFileSync(new URL("./slack.json", import.meta.url), "utf8"));
   const manifest = JSON.parse(readFileSync(new URL("./slack.manifest.json", import.meta.url), "utf8"));
   const source = carried.files.find((file: { path: string }) => file.path === "index.ts").content as string;
@@ -51,6 +51,11 @@ test("the Slack registration manifest requests exactly the carried app's user sc
   assert.ok(declared, "The carried scope list must stay statically inspectable");
   const scopes = [...declared[1]!.matchAll(/"([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(manifest.oauth_config.scopes, { user: scopes });
+  assert.ok(!scopes.includes("tokens.basic"), "Slack rejects tokens.basic with illegal_user_scopes");
+  const hostPatch = readFileSync(new URL("../../patches/0023-slack-user-oauth.patch", import.meta.url), "utf8");
+  const hostScopes = hostPatch.match(/\+const slackRestUserScopes = \[([\s\S]*?)\+\];/);
+  assert.ok(hostScopes, "The hosted Slack client must declare its allowed and requested user scopes");
+  assert.deepEqual([...hostScopes[1]!.matchAll(/\+  "([^"]+)"/g)].map(match => match[1]), scopes);
   assert.deepEqual(manifest.oauth_config.redirect_urls, ["https://app.signalbox.run/api/oauth/callback"]);
   assert.equal(manifest.features?.bot_user, undefined);
 });
