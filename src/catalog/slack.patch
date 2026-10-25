@@ -1,6 +1,6 @@
 --- a/README.md
 +++ b/README.md
-@@ -8,12 +8,26 @@
+@@ -8,12 +8,27 @@
  
  **Auth**
  
@@ -15,7 +15,7 @@
 +  - Messages and search: `chat:write`, `links:write`, `reactions:read`, `reactions:write`, `search:read`.
 +  - Files: `files:read`, `files:write`, `remote_files:read`, `remote_files:share`.
 +  - Calls and presence: `calls:read`, `calls:write`, `dnd:read`, `dnd:write`, `users:write`.
-+  - Pins, reminders and workspace data: `emoji:read`, `pins:read`, `pins:write`, `reminders:read`, `reminders:write`, `team:read`, `tokens.basic`, `usergroups:read`, `usergroups:write`, `users.profile:read`, `users.profile:write`, `users:read`, `users:read.email`.
++  - Pins, reminders and workspace data: `emoji:read`, `pins:read`, `pins:write`, `reminders:read`, `reminders:write`, `team:read`, `usergroups:read`, `usergroups:write`, `users.profile:read`, `users.profile:write`, `users:read`, `users:read.email`.
 +
 +- Bot OAuth (`oauth`): use the existing bot-token flow with the redirect URI shown on the host's connect page, then enter the Slack app's client ID and secret. It requests the existing bot scopes and continues to use the top-level bot access token.
 +
@@ -26,13 +26,14 @@
 +- The OpenAPI router exposes 171 methods. Admin methods still need admin scopes, and methods whose Slack documentation requires a bot or app-level token cannot use this user grant.
 +- [`files.remote.add`](https://docs.slack.dev/reference/methods/files.remote.add/), [`files.remote.remove`](https://docs.slack.dev/reference/methods/files.remote.remove/), and [`files.remote.update`](https://docs.slack.dev/reference/methods/files.remote.update/) require `remote_files:write`. Slack documents that scope as bot-token-only and says remote files must be added by bots, not individual users. The user grant includes `remote_files:read` and `remote_files:share`, but not these writes.
 +- Slack's [`stars.add`](https://docs.slack.dev/reference/methods/stars.add/), [`stars.list`](https://docs.slack.dev/reference/methods/stars.list/), and [`stars.remove`](https://docs.slack.dev/reference/methods/stars.remove/) methods still accept user scopes, but current docs say users can no longer view or interact with saved items through these APIs and recommend retiring app functionality that relies on them. The user grant does not request `stars:read` or `stars:write`.
++- Slack rejects `tokens.basic` as an illegal user scope during app registration. The user grant omits it.
 +- [`users.identity`](https://docs.slack.dev/reference/methods/users.identity/) requires Slack identity scopes, which this grant intentionally omits.
 +- The user grant omits `bookmarks:*` and `canvases:*` because the maintained OpenAPI description contains no corresponding operations.
  - File uploads via the legacy multipart `files.upload` are not supported.
  - Icon is Slack's hash mark from the Slack website (`a.slack-edge.com`), as Simple Icons has no Slack entry.
 --- a/index.ts
 +++ b/index.ts
-@@ -11,11 +11,53 @@
+@@ -11,11 +11,52 @@
    string,
    withApprovals,
  } from "apps";
@@ -74,7 +75,6 @@
 +  "remote_files:share",
 +  "search:read",
 +  "team:read",
-+  "tokens.basic",
 +  "usergroups:read",
 +  "usergroups:write",
 +  "users.profile:read",
@@ -87,7 +87,7 @@
  // Slack answers HTTP 200 with {ok:false,error} for bad tokens, so decode `ok` first and only
  // then rely on the fields that are present on success.
  const Auth = object({
-@@ -30,6 +72,16 @@
+@@ -30,6 +71,16 @@
    name: "Slack",
    hosts: ["slack.com"],
    auth: {
@@ -104,7 +104,7 @@
      token: secrets({
        label: "Bot or user token (xoxb-/xoxp-)",
        fields: object({ token: string({ minLength: 1 }) }),
-@@ -75,7 +127,10 @@
+@@ -75,7 +126,10 @@
      }),
    },
    async health({ account, fetch, signal }) {
@@ -116,7 +116,7 @@
      const response = await fetch("https://slack.com/api/auth.test", {
        method: "POST",
        signal,
-@@ -97,7 +152,7 @@
+@@ -97,7 +151,7 @@
          user?.accounts.slack ?? [],
          (account) =>
            withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>

@@ -211,7 +211,7 @@
     {
       "identity": "executor-slack-user-oauth",
       "file": "0023-slack-user-oauth.patch",
-      "content_sha256": "30604bcf4b36b4779358df947be195fd2b79133a5e7616b2680138bd768220de",
+      "content_sha256": "1397172efda54a084e9b37b86bb2ab72eb3112e4cb76d83e4dc06fa36a329e10",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

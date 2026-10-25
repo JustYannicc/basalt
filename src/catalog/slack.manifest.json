@@ -40,7 +40,6 @@
         "remote_files:share",
         "search:read",
         "team:read",
-        "tokens.basic",
         "usergroups:read",
         "usergroups:write",
         "users.profile:read",
