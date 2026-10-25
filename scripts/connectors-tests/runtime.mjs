@@ -24,6 +24,7 @@ import { startZendeskFixtures } from "./zendesk-fixture.mjs";
 import { startZendeskCatalogWorker, loadZendeskCatalogSource } from "./zendesk-catalog.mjs";
 import { provisionSelfHostActors } from "./test-accounts.mjs";
 import { proveZendeskNative } from "./zendesk.mjs";
+import { proveAccountSiteUi } from "./account-site-ui.mjs";
 
 const [root, upstream, directory, emulateBin, browserExecutable, upstreamPin, candidateSha, patchesJson] = process.argv.slice(2);
 const carriedPatches = JSON.parse(patchesJson);
@@ -217,6 +218,10 @@ const program = Effect.gen(function* () {
     Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches,
     target, root, upstream, fixtures: zendeskFixtures, catalog, step,
   });
+  const uiProof = yield* proveAccountSiteUi({
+    Effect, request, checked, actors, browser, directory, target, sites: zendeskFixtures.sites,
+    cookies: Redacted.value(yield* actors.member.cookies),
+  });
   const app = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
     name: "Synthetic Gmail connector proof", files: [{ path: "index.ts", content: source(provider.origin) }, appsManifest],
   }), 200, "Deploy synthetic Gmail app");
@@ -290,6 +295,7 @@ const program = Effect.gen(function* () {
   step("installed-claude-real-mcp-passed");
   return {
     ...zendeskProof,
+    ...uiProof,
     checks: 23 + zendeskProof.checks,
     sameOrganizationUsers: true,
     sharedHostedApp: true,
