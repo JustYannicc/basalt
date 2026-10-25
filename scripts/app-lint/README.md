@@ -53,7 +53,7 @@ Unrelated local helpers may use named, default, namespace or literal dynamic imp
 Computed module discovery and reflection are outside this check's static contract.
 Import `QueryContext` and `MutationContext` directly from `apps` too. Local context
 type aliases remain supported, but re-exporting those types or aliases is rejected.
-CommonJS loading through global `require` or `node:module`/`module` is unsupported.
+CommonJS loading through global `require`, global `module` or `node:module`/`module` imports is unsupported.
 Use ESM imports in helpers and browser code too.
 
 Use context HTTP and a direct named `decodeJson` import for decoding. Existing context

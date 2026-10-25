@@ -38,13 +38,17 @@ test("CommonJS loaders fail in shipped helpers while shadowed require helpers st
   }], version);
   for (const [path, source] of [
     ["helper.cjs", `const { mutation } = require('apps'); exports.write = mutation({}, () => {});`],
+    ["module-helper.cjs", `const { mutation } = module.require('apps'); exports.write = mutation({}, () => {});`],
+    ["module-alias.cjs", `const loader = module; const { mutation } = loader.require('apps'); exports.write = mutation({}, () => {});`],
     ["helper.js", `const load = require; const { mutation } = load('apps'); export const write = mutation({}, () => {});`],
     ["helper.ts", `import { createRequire } from 'node:module'; const load = createRequire(import.meta.url); load('apps');`],
     ["ui/helper.js", `require('apps');`],
+    ["ui/module-helper.js", `module.require('apps');`],
   ]) {
     assert.match(check(path, source).join("\n"), /no-restricted-(globals|imports)/);
   }
   assert.deepEqual(check("helper.ts", `function require(name: string) { return name; } export const result = require('ordinary');`), []);
+  assert.deepEqual(check("helper.ts", `const module = { require: (name: string) => name }; export const result = module.require('ordinary');`), []);
 });
 
 for (const [name, helper, consumer] of helperBindings) {

@@ -41,6 +41,7 @@ export function appConfig(entryFile = "index.ts") {
           message: "Use ctx.fetch (or a destructured context fetch) so the host owns HTTP.",
         },
         { name: "require", message: "Use ESM imports; CommonJS loading is unsupported in app source." },
+        { name: "module", message: "Use ESM imports; the CommonJS module global is unsupported in app source." },
       ],
       "eslint/no-restricted-properties": [
         "error",
@@ -61,6 +62,7 @@ export function appConfig(entryFile = "index.ts") {
           "eslint/no-restricted-globals": [
             "error",
             { name: "require", message: "Use ESM imports; CommonJS loading is unsupported in app source." },
+            { name: "module", message: "Use ESM imports; the CommonJS module global is unsupported in app source." },
           ],
           "eslint/no-restricted-properties": "off",
           "executor-apps/default-app-export": "off",
