@@ -33,7 +33,7 @@ model {
   zendeskTenant = adapter "Zendesk tenant" {
     #external
     technology "Zendesk OAuth and ticketing API"
-    metadata { hosts "configured-label.zendesk.com" }
+    metadata { hosts "account-selected-label.zendesk.com" }
   }
   workspaceApi = adapter "Workspace API" {
     #external
@@ -54,7 +54,7 @@ model {
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
   basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries with provider notices and unmodified sources"
   basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"
-  basalt.toolsGateway -[sync]-> zendeskTenant "authorize, exchange JSON tokens and call each person's tenant-bound grant"
+  basalt.toolsGateway -[sync]-> zendeskTenant "authorize, renew JSON tokens and call each account's selected site"
   basalt.toolsGateway -[sync]-> workspaceApi "call with the person's grant"
   basalt.build -[sync]-> repositoryApi "download releases and actions"
   basalt.deployment -[sync]-> repositoryApi "download deployment actions"
