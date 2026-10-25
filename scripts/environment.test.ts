@@ -230,9 +230,10 @@ test("optional telemetry destinations never block the first deployment", () => {
   assert.match(disabled.TELEMETRY_RELAY_KEY!, /^[a-f0-9]{64}$/);
   assert.notEqual(disabled.TELEMETRY_RELAY_KEY, credentials.POOL_APP_SIGNING_KEY);
   assert.equal(disabled.EXECUTOR_TELEMETRY_RELAY_TOKEN, disabled.TELEMETRY_RELAY_KEY);
-  const configured = deployEnvironment({ ...credentials, SENTRY_DSN: "synthetic", POSTHOG_PROJECT_KEY: "synthetic" });
+  const configured = deployEnvironment({ ...credentials, SENTRY_DSN: "synthetic", POSTHOG_PROJECT_KEY: "synthetic", POSTHOG_HOST: "https://us.i.posthog.com" });
   assert.equal(configured.SENTRY_DSN, "synthetic");
   assert.equal(configured.POSTHOG_PROJECT_KEY, "synthetic");
+  assert.equal(configured.POSTHOG_HOST, "https://us.i.posthog.com");
   assert.equal(configured.DO_NOT_TRACK, "0");
 });
 

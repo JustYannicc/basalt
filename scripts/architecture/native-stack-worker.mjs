@@ -33,6 +33,7 @@ try {
     SENTRY_DSN: "https://fixture_public_key@o0.ingest.de.sentry.io/123456",
     SENTRY_OTLP_ENDPOINT: "https://o0.ingest.de.sentry.io/api/123456/integration/otlp/v1/traces",
     POSTHOG_PROJECT_KEY: "fixture_posthog_project_key",
+    POSTHOG_HOST: "https://us.i.posthog.com",
   });
   const settings = deployEnvironment(synthetic);
   phase = "import";

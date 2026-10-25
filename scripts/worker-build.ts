@@ -11,6 +11,7 @@ credentials.CLOUDFLARE_ACCOUNT_ID = "0".repeat(32);
 credentials.SENTRY_DSN = "https://fixture_public_key@o0.ingest.de.sentry.io/1";
 credentials.SENTRY_OTLP_ENDPOINT = "https://o0.ingest.de.sentry.io/api/1/integration/otlp/v1/traces";
 credentials.POSTHOG_PROJECT_KEY = "synthetic_project_key";
+credentials.POSTHOG_HOST = "https://us.i.posthog.com";
 const configuration = deployEnvironment(credentials);
 const source = readFileSync(`${cloud}/scripts/worker-sizes.ts`, "utf8");
 const pattern = /const production: Target = \{[\s\S]*?\n\};/;

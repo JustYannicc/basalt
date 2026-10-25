@@ -5,7 +5,7 @@ export const productEvents = [
   "connector_connect_failed", "tool_called", "tool_search_empty", "service_requested",
 ] as const;
 export type ProductEvent = typeof productEvents[number];
-export interface TelemetryEnv { POSTHOG_PROJECT_KEY?: string; SENTRY_DSN?: string }
+export interface TelemetryEnv { POSTHOG_PROJECT_KEY?: string; POSTHOG_HOST?: string; SENTRY_DSN?: string }
 export interface ProductProperties { app_id?: string; service_id?: string }
 export interface ProductRecord { event: ProductEvent; accountId: string; properties?: ProductProperties; timestamp?: string }
 const identifier = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -38,6 +38,8 @@ export async function captureProduct(env: TelemetryEnv, event: ProductEvent, acc
 export async function captureProducts(env: TelemetryEnv, events: readonly ProductRecord[]): Promise<boolean> {
   if (!env.POSTHOG_PROJECT_KEY || !events.length) return true;
   try {
+    const host = env.POSTHOG_HOST ?? "https://eu.i.posthog.com";
+    if (host !== "https://eu.i.posthog.com" && host !== "https://us.i.posthog.com") return false;
     if (events.length > 2000) return false;
     const now = new Date().toISOString();
     const batch = events.map(({ event, accountId, properties, timestamp = now }) => {
@@ -45,11 +47,14 @@ export async function captureProducts(env: TelemetryEnv, events: readonly Produc
         throw new Error("Invalid event timestamp");
       return { ...productPayload(event, accountId, properties), timestamp };
     });
-    const response = await fetch("https://eu.i.posthog.com/batch/", {
+    const request: RequestInit = {
       method: "POST", headers: { "Content-Type": "application/json" }, redirect: "manual",
       body: JSON.stringify({ api_key: env.POSTHOG_PROJECT_KEY, batch }),
       signal: AbortSignal.timeout(3_000),
-    });
+    };
+    const response = host === "https://us.i.posthog.com"
+      ? await fetch("https://us.i.posthog.com/batch/", request)
+      : await fetch("https://eu.i.posthog.com/batch/", request);
     await response.body?.cancel();
     return response.ok;
   } catch { return false; }
