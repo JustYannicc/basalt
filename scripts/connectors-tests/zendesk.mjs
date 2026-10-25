@@ -4,7 +4,6 @@ import { appendFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { zendeskAddition } from "../../src/catalog/zendesk/source.ts";
-import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 
 export const proveZendeskOAuthStart = ({
   Effect,
@@ -22,8 +21,7 @@ export const proveZendeskOAuthStart = ({
   const record = (stage, fields) => appendFileSync(join(directory, "zendesk-proof.jsonl"),
     `${JSON.stringify({ candidateSha, upstreamPin, stage, ...fields })}\n`, { mode: 0o600 });
   const zendeskSource = zendeskAddition("example");
-  const zendeskFiles = zendeskSource.source.files.filter((file) => file.path !== "package.json");
-  const payload = { name: "Zendesk connector native OAuth proof", files: [...zendeskFiles, appsManifest] };
+  const payload = { name: "Zendesk connector native OAuth proof", files: zendeskSource.source.files };
   const files = payload.files.map((file) => ({
     path: file.path,
     sha256: createHash("sha256").update(file.content).digest("hex"),
