@@ -29,13 +29,6 @@ function unwrap(node) {
   return node;
 }
 
-function declarationName(declaration) {
-  if (declaration?.type === "VariableDeclaration") {
-    return declaration.declarations?.find((item) => item.id?.type === "Identifier")?.id?.name;
-  }
-  return declaration?.id?.type === "Identifier" ? declaration.id.name : undefined;
-}
-
 function localName(specifier) {
   return propertyName(specifier?.local);
 }
@@ -177,15 +170,15 @@ export function createModuleGraph(context, rootProgram) {
           return resolveLocal(file, program, local, nextSeen);
         }
         const declaration = statement.declaration;
-        if (declarationName(declaration) === name) {
-          if (declaration?.type === "VariableDeclaration" && declaration.kind === "const") {
-            const value = declaration.declarations?.find(
-              (item) => item.id?.type === "Identifier" && item.id.name === name,
-            );
-            return resolveExpression(value?.init, file, nextSeen);
+        if (declaration?.type === "VariableDeclaration") {
+          const value = declaration.declarations?.find(
+            (item) => item.id?.type === "Identifier" && item.id.name === name,
+          );
+          if (value) {
+            const symbol = resolveExpression(value.init, file, nextSeen);
+            return declaration.kind === "const" ? symbol : symbol ? "unknown" : null;
           }
-          return null;
-        }
+        } else if (declaration?.id?.name === name) return null;
       }
 
       if (statement.type === "ExportAllDeclaration" && statement.source) {

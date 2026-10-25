@@ -28,3 +28,33 @@ jobs:
         run: node scripts/app-lint/check.mjs
       - name: Prove rule failures and automatic app discovery
         run: node --test scripts/app-lint/*.test.mjs
+
+  deliberate-regression-red:
+    name: red alias (${{ matrix.case }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        case:
+          [
+            global-alias,
+            mutation-reexport,
+            mutation-late,
+            legacy-requirements-late,
+            legacy-context-late,
+          ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --cwd scripts/app-lint --frozen-lockfile
+      - run: node scripts/app-lint/prepare-host.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Deliberately fail an alias regression
+        run: node scripts/app-lint/proof.mjs ${{ matrix.case }}

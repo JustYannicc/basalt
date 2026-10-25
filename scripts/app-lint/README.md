@@ -31,6 +31,8 @@ and global HTTP. An additional AST rule rejects HTTP reached through aliases of 
 The AST rules resolve framework imports and local aliases. Every
 mutation must own an `approval` option. `approval: undefined` is an explicit no-approval
 choice; operations that need consent can use `always()` from `apps/operations/approval`.
+The HTTP alias check considers every assignment. Reusing one alias for both a global
+object and a context is rejected, even if the final assignment selects the context.
 Destructuring `fetch` from a context is valid. Browser files under `ui/` use browser HTTP;
 Effect and SDK imports remain prohibited there.
 

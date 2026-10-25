@@ -4,6 +4,10 @@ import { assertCases } from "./plugin-test-helpers.mjs";
 test("default-app-export follows imported identity, const aliases and TypeScript wrappers", () => {
   assertCases("default-app-export", [
     {
+      source: `import { defineApp } from "apps"; let make; make = defineApp; export default make({}, {});`,
+      expected: null,
+    },
+    {
       source: `import { defineApp } from "apps"; export default defineApp({}, {});`,
       expected: null,
     },
@@ -45,6 +49,14 @@ test("default-app-export follows imported identity, const aliases and TypeScript
 
 test("no-legacy-accounts checks only top-level requirements and framework contexts", () => {
   assertCases("no-legacy-accounts", [
+    {
+      source: `import { defineApp } from "apps"; let requirements; requirements = { accounts: {} }; export default defineApp(requirements, {});`,
+      expected: "top-level `accounts` requirements",
+    },
+    {
+      source: `import { query } from "apps"; query({}, (ctx) => { let old; old = ctx; return old.accounts; });`,
+      expected: "Read accounts through",
+    },
     {
       source: `import { defineApp } from "apps"; defineApp({ accounts: {} }, {});`,
       expected: "top-level `accounts` requirements",
@@ -118,6 +130,21 @@ test("no-legacy-accounts checks only top-level requirements and framework contex
 
 test("mutation-approval follows imported aliases and proves explicit options through local spreads", () => {
   assertCases("mutation-approval", [
+    {
+      files: {
+        "index.ts": `import { write } from "./helper.js"; write({}, async () => null);`,
+        "helper.ts": `import { mutation } from "apps"; export const marker = 1, write = mutation;`,
+      },
+      expected: "Every `mutation`",
+    },
+    {
+      source: `import { mutation } from "apps"; let write; write = mutation; write({}, async () => null);`,
+      expected: "Every `mutation`",
+    },
+    {
+      source: `import { mutation, query } from "apps"; let write; write = mutation; write = query; write({}, async () => null);`,
+      expected: "Cannot prove",
+    },
     {
       source: `import { mutation } from "apps"; mutation({}, () => {});`,
       expected: "must explicitly declare `approval`",

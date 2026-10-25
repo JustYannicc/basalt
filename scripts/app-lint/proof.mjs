@@ -20,6 +20,11 @@ const valid = `import { defineApp, mutation, object, router } from 'apps';
 const update = mutation({ input: object({}), approval: undefined }, async (ctx) => ctx.fetch('https://example.com'));
 export default defineApp({}, { tools: router({ update }) });\n`;
 export const cases = [
+  "global-alias",
+  "mutation-reexport",
+  "mutation-late",
+  "legacy-requirements-late",
+  "legacy-context-late",
   "default-export",
   "effect-import",
   "sdk-import",
@@ -51,6 +56,37 @@ function inject(name) {
     }
   };
   switch (name) {
+    case "global-alias":
+      source = "const host = globalThis;\n" + valid.replace("ctx.fetch(", "host.fetch(");
+      break;
+    case "mutation-reexport":
+      put(
+        "authoring.ts",
+        "import { mutation } from 'apps'; export const marker = 1, write = mutation;\n",
+      );
+      source =
+        "import { write as mutation } from './authoring.js';\n" +
+        valid
+          .replace("defineApp, mutation, object", "defineApp, object")
+          .replace(", approval: undefined", "");
+      break;
+    case "mutation-late":
+      source = valid
+        .replace("const update = mutation(", "let write; write = mutation;\nconst update = write(")
+        .replace(", approval: undefined", "");
+      break;
+    case "legacy-requirements-late":
+      source = valid.replace(
+        "export default defineApp({},",
+        "let requirements; requirements = { accounts: {} };\nexport default defineApp(requirements,",
+      );
+      break;
+    case "legacy-context-late":
+      source = valid.replace(
+        "ctx.fetch('https://example.com')",
+        "(() => { let old; old = ctx; return old.accounts; })()",
+      );
+      break;
     case "default-export":
       source = valid.replace("export default defineApp", "const app = defineApp");
       break;

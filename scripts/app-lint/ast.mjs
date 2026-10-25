@@ -68,10 +68,9 @@ export function createBindings(context) {
 
   function isUnmodified(variable) {
     if (!variable || !Array.isArray(variable.references)) return false;
-    return variable.references.every((reference) => {
-      if (typeof reference.isWrite !== "function") return false;
-      return !reference.isWrite() || reference.init === true;
-    });
+    if (variable.references.some((reference) => typeof reference.isWrite !== "function"))
+      return false;
+    return variable.references.filter((reference) => reference.isWrite()).length <= 1;
   }
 
   function variableDeclarator(variable) {
@@ -82,13 +81,24 @@ export function createBindings(context) {
     if (definition.type !== "Variable" || !["const", "let", "var"].includes(kind)) return null;
     if (declarator?.type !== "VariableDeclarator" || declarator.id?.type !== "Identifier")
       return null;
-    if (declarator.id.name !== variable.name || !declarator.init) return null;
+    if (declarator.id.name !== variable.name) return null;
     return { declarator, kind };
   }
 
-  function localInitializer(variable) {
+  function possibleValues(variable) {
     const definition = variableDeclarator(variable);
-    return definition && isUnmodified(variable) ? definition.declarator.init : null;
+    if (!definition) return [];
+    const values = new Set();
+    if (definition.declarator.init) values.add(definition.declarator.init);
+    for (const reference of variable.references ?? []) {
+      if (reference.isWrite() && reference.writeExpr) values.add(reference.writeExpr);
+    }
+    return [...values];
+  }
+
+  function localInitializer(variable) {
+    const values = possibleValues(variable);
+    return isUnmodified(variable) && values.length === 1 ? values[0] : null;
   }
 
   function constInitializer(variable) {
@@ -181,10 +191,15 @@ export function createBindings(context) {
       const dynamic = dynamicImportKind(variable);
       if (dynamic) return dynamic;
       seen.add(variable);
-      const definition = variableDeclarator(variable);
-      const symbol = resolveSymbol(definition?.declarator.init, seen);
+      const symbols = possibleValues(variable)
+        .map((value) => resolveSymbol(value, seen))
+        .filter(Boolean);
       seen.delete(variable);
-      const result = symbol && !isUnmodified(variable) ? "unknown" : symbol;
+      const symbol = symbols[0] ?? null;
+      const result =
+        symbol && (!isUnmodified(variable) || symbols.some((value) => value !== symbol))
+          ? "unknown"
+          : symbol;
       symbolCache.set(variable, result);
       return result;
     }
@@ -221,6 +236,7 @@ export function createBindings(context) {
     variableOf,
     isUnmodified,
     localInitializer,
+    possibleValues,
     constInitializer,
     typeAlias,
     resolveSymbol,
