@@ -1,6 +1,8 @@
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Planetscale from "alchemy/Planetscale";
+import { adopt } from "alchemy/AdoptPolicy";
+import { retain } from "alchemy/RemovalPolicy";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
@@ -45,9 +47,31 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
         };
       })
     : yield* Effect.gen(function* () {
-        const cluster = yield* Planetscale.PostgresDatabase.ref("Database");
+        if (globalThis.__ALCHEMY_RUNTIME__) {
+          return {
+            admin: yield* Planetscale.PostgresRole.ref("MigrationRole"),
+            runtime: yield* Planetscale.PostgresRole.ref("PoolDatabaseRole"),
+          };
+        }
+        // `.ref` reads deployed state, which a first deploy does not have yet. Registering the tools
+        // service's cluster and schema-owner role again with its exact props and policies returns the
+        // instances its cloud deployment registered, in either order.
+        const settings = yield* Config.all({
+          name: Config.String("PLANETSCALE_DATABASE_NAME"),
+          clusterSize: Config.String("PLANETSCALE_CLUSTER_SIZE"),
+          region: Config.String("PLANETSCALE_REGION"),
+          adopt: Config.Boolean("PLANETSCALE_ADOPT_DATABASE").pipe(Config.withDefault(false)),
+        });
+        const cluster = yield* Planetscale.PostgresDatabase("Database", {
+          name: settings.name,
+          clusterSize: settings.clusterSize,
+          region: { slug: settings.region },
+        }).pipe(adopt(settings.adopt), retain());
         return {
-          admin: yield* Planetscale.PostgresRole.ref("MigrationRole"),
+          admin: yield* Planetscale.PostgresRole("MigrationRole", {
+            database: cluster,
+            inheritedRoles: ["postgres"],
+          }).pipe(retain()),
           runtime: yield* Planetscale.PostgresRole("PoolDatabaseRole", {
             database: cluster,
             inheritedRoles: [],
