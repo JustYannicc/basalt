@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { proveInstalledClaude } from "./native-claude.mjs";
-import { singleCallValue } from "./mcp-output.mjs";
+import { singleCallValue, singleCallOutcome } from "./mcp-output.mjs";
 import { proveZendeskPeerPlacement } from "./zendesk-peer-placement.mjs";
 
 function tool(items, name) {
@@ -94,6 +94,8 @@ export function proveZendeskMcp({
       assert.equal(described.isError, false, `Native MCP describe failed for ${flow.site.id}`);
       const beforeCurrentUser = fixtures.observations().length;
       const currentResult = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: { path: current.path, input: {} } } }));
+      const currentOutcome = singleCallOutcome(currentResult, current.path);
+      if (!currentOutcome.ok) record("native-mcp-failure", { site: flow.site.id, mode: flow.mode, path: current.path, error: currentOutcome.error });
       assert.equal(singleCallValue(currentResult, current.path)?.name, `Zendesk fixture ${flow.site.id}`);
       if (flow.mode === "hosted") {
         const apiEvents = fixtures.observations().slice(beforeCurrentUser).filter((event) => event.phase === "api");

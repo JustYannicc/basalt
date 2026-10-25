@@ -96,6 +96,14 @@ test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-
     }
   }
 
+  // Refreshed responses advertise one hour, so they must outlive the original one-second grant.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  for (const { site, second } of issued) {
+    assert.equal(second.expires_in, 3600);
+    assert.equal((await readCurrentUser(site, second.access_token)).status, 200,
+      "A refreshed token must stay active for its advertised lifetime");
+  }
+
   const wrongSite = await readCurrentUser(issued[0].site === fixture.sites[0] ? fixture.sites[1] : fixture.sites[0], issued[0].token);
   assert.equal(wrongSite.status, 401, "A token issued for one mock site cannot be placed at its peer");
   assert.deepEqual(fixture.failures(), []);

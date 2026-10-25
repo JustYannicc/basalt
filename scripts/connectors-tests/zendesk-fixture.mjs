@@ -79,12 +79,13 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
     const previous = flows.get(flow.id);
     if (previous?.accessToken) accessTokens.delete(previous.accessToken);
     if (previous?.refreshToken) refreshTokens.delete(previous.refreshToken);
+    const expiresIn = generation === 0 ? 1 : 3600;
     const value = {
       ...flow,
       generation,
       accessToken,
       refreshToken,
-      expiresAt: Date.now() + 1000,
+      expiresAt: Date.now() + expiresIn * 1000,
     };
     flows.set(flow.id, value);
     accessTokens.set(accessToken, value);
@@ -94,7 +95,7 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
       refresh_token: refreshToken,
       token_type: "Bearer",
       scope: zendeskScopes.join(" "),
-      expires_in: generation === 0 ? 1 : 3600,
+      expires_in: expiresIn,
     });
   };
 
