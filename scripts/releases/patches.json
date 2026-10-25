@@ -6,10 +6,11 @@
       "identity": "executor-optional-cloud-vendors",
       "file": "0001-optional-cloud-vendors.patch",
       "content_sha256": "384d49ad8e3c8be1e13aab68e38573049c0ce62131664a2dd8d506a594e43f0e",
-      "kind": "upstream",
-      "upstream_pull_request": 2348,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
-      "workflow_sensitive": false
+      "workflow_sensitive": false,
+      "upstream_issue": 2378
     },
     {
       "identity": "basalt-cloud-deployment",
@@ -25,7 +26,7 @@
       "upstream_issue": 2364,
       "file": "0003-eu-durable-objects.patch",
       "content_sha256": "3535935861fe64f93ebc155def76e3ff3ad8e71f41a7160c44c867b1eaf92e0b",
-      "kind": "upstream",
+      "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": true
@@ -52,17 +53,18 @@
       "identity": "executor-product-brand",
       "file": "0006-product-brand.patch",
       "content_sha256": "aff71f50332dc425b286c49bcf70a3e611978e7097a7f9999ef1bce8d3c325ab",
-      "kind": "upstream",
-      "upstream_pull_request": 2350,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
-      "workflow_sensitive": false
+      "workflow_sensitive": false,
+      "upstream_issue": 2386
     },
     {
       "identity": "executor-product-brand-surfaces",
       "file": "0007-product-brand-surfaces.patch",
       "content_sha256": "fb671302dc610b18e2fc2546ebd104813bf55ef7b33f8cc7d8a7fd27bb69a629",
-      "kind": "upstream",
-      "upstream_pull_request": 2352,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -89,7 +91,7 @@
     {
       "identity": "basalt-member-pools",
       "file": "0010-member-pools.patch",
-      "content_sha256": "a77d067c32a86c1a17e9bc1ca0ae648af0b4ad6db4ee405dac90cb8dececac3e",
+      "content_sha256": "8910fac6fbf2ab82d97f3c6d539e3614eb0ceed6399799de6d5a8d37879791e4",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -100,8 +102,8 @@
       "identity": "executor-hosted-connectors",
       "file": "0011-hosted-connectors.patch",
       "content_sha256": "66b367f6c446d6a79073fc14dbe06d4c017523eb7e2d8812cbab5ee142d6a133",
-      "kind": "upstream",
-      "upstream_pull_request": 2361,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -154,8 +156,8 @@
       "identity": "executor-atlassian",
       "file": "0017-atlassian.patch",
       "content_sha256": "958413ecde916ceb28eafd25fdef3003ebfc65b78d53442bf580c8e96747e843",
-      "kind": "upstream",
-      "upstream_pull_request": 2367,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -173,8 +175,8 @@
       "identity": "executor-preview-auth",
       "file": "0019-preview-auth.patch",
       "content_sha256": "f804fdc679e90fff242fb6cec9fd91d4383099fdaaa261d60a3260fad48aacbd",
-      "kind": "upstream",
-      "upstream_pull_request": 2360,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -182,8 +184,8 @@
       "identity": "executor-gitlab-miro-oauth",
       "file": "0020-gitlab-miro-oauth.patch",
       "content_sha256": "a5c6c604260b70283dd98a4b862f4218c2360c3a913a575233f606e9ac8481a7",
-      "kind": "upstream",
-      "upstream_pull_request": 2366,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -191,8 +193,8 @@
       "identity": "executor-zoho-oauth",
       "file": "0021-zoho-oauth.patch",
       "content_sha256": "2f54ac20814fca30c9f09e8b389423eaff4d8bef625d66146519807f41c7ea79",
-      "kind": "upstream",
-      "upstream_pull_request": 2373,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -200,8 +202,8 @@
       "identity": "executor-zendesk-oauth",
       "file": "0022-zendesk-hosted-oauth.patch",
       "content_sha256": "966ad2ae6333efe2b310fb284680f012526693b8f48fc997749c24549674be36",
-      "kind": "upstream",
-      "upstream_pull_request": 2376,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false,
       "upstream_issue": 2374
@@ -210,8 +212,8 @@
       "identity": "executor-slack-user-oauth",
       "file": "0023-slack-user-oauth.patch",
       "content_sha256": "30604bcf4b36b4779358df947be195fd2b79133a5e7616b2680138bd768220de",
-      "kind": "upstream",
-      "upstream_pull_request": 2371,
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false,
       "upstream_issue": 2368

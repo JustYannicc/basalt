@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-test("the carried Slack package is exactly its frozen published source plus the contributed patch", () => {
+test("the Slack carry is its frozen source, public contribution and Basalt framework pin", () => {
   const originalBytes = readFileSync(new URL("./slack.published.json", import.meta.url));
   const original = JSON.parse(originalBytes.toString());
   const carried = JSON.parse(readFileSync(new URL("./slack.json", import.meta.url), "utf8"));
@@ -14,6 +14,7 @@ test("the carried Slack package is exactly its frozen published source plus the 
   assert.equal(createHash("sha256").update(originalBytes).digest("hex"), provenance.publishedSha256);
   assert.equal(createHash("sha256").update(readFileSync(new URL("./slack.json", import.meta.url))).digest("hex"), provenance.carriedSha256);
   assert.equal(createHash("sha256").update(readFileSync(new URL("./slack.patch", import.meta.url))).digest("hex"), provenance.patchSha256);
+  assert.equal(createHash("sha256").update(readFileSync(new URL("./slack.basalt.patch", import.meta.url))).digest("hex"), provenance.basaltOverlay.sha256);
   assert.equal(original.package, "@executor.sh/slack");
   assert.equal(carried.package, original.package);
   const directory = mkdtempSync(join(tmpdir(), "basalt-slack-carry-"));
@@ -26,6 +27,13 @@ test("the carried Slack package is exactly its frozen published source plus the 
       writeFileSync(target, file.content);
     }
     execFileSync("git", ["apply", new URL("./slack.patch", import.meta.url).pathname], { cwd: directory });
+    const publicManifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+    const publishedManifest = JSON.parse(original.files.find((file: { path: string }) => file.path === "package.json").content);
+    assert.equal(publicManifest.dependencies.apps, publishedManifest.dependencies.apps,
+      "The public contribution must retain its published framework release");
+    execFileSync("git", ["apply", new URL("./slack.basalt.patch", import.meta.url).pathname], { cwd: directory });
+    const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
+    assert.equal(manifest.dependencies.apps, provenance.basaltOverlay.appsVersion);
     const files = readdirSync(directory, { recursive: true, withFileTypes: true })
       .filter(file => file.isFile()).map(file => join(file.parentPath, file.name).slice(directory.length + 1)).sort();
     assert.deepEqual(files, carried.files.map((file: { path: string }) => file.path).sort());
