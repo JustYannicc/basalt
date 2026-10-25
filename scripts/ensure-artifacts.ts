@@ -18,14 +18,19 @@ export interface ArtifactsApi {
 
 export type ArtifactsFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-async function bodyResult<T>(response: Response, operation: string): Promise<T> {
+/** The Cloudflare v4 envelope: `result` plus, on list routes, cursor `result_info`. */
+async function envelope<T>(response: Response, operation: string): Promise<{ result: T; result_info?: { cursor?: string } }> {
   if (!response.ok) throw new Error(`Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`);
   const body: unknown = await response.json();
   if (typeof body !== "object" || body === null || !("result" in body))
     throw new Error(`Cloudflare Artifacts ${operation} returned an invalid response`);
   if ("success" in body && body.success !== true)
     throw new Error(`Cloudflare Artifacts ${operation} was rejected`);
-  return body.result as T;
+  return body as { result: T; result_info?: { cursor?: string } };
+}
+
+async function bodyResult<T>(response: Response, operation: string): Promise<T> {
+  return (await envelope<T>(response, operation)).result;
 }
 
 /** Cloudflare Artifacts API; responses and errors never include credentials or hostnames. */
@@ -45,7 +50,8 @@ export function cloudflareArtifactsApi(
     const target = new URL(url);
     target.searchParams.set("limit", "200");
     if (cursor) target.searchParams.set("cursor", cursor);
-    return bodyResult<Page<T>>(await request(target, "GET"), "list");
+    // Pages keep the envelope: the items are `result` and the next cursor is in `result_info`.
+    return envelope<T[]>(await request(target, "GET"), "list");
   };
   return {
     listNamespaces: (cursor) => list(`${base}/namespaces`, cursor),

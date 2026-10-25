@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  cloudflareArtifactsApi,
   deleteEuNamespace,
   ensureEuNamespace,
   type ArtifactsApi,
@@ -110,4 +111,25 @@ test("namespace removal fails while provider readback still finds repositories",
     }),
     /repositories are still present/,
   );
+});
+
+test("the HTTP client reads Cloudflare's paginated list envelope before creating an EU namespace", async () => {
+  // Shapes from the Artifacts REST API reference: list routes return `result` items and a `result_info` cursor.
+  const requests: string[] = [];
+  const pages: Record<string, unknown> = {
+    "": { result: [{ namespace: "other", jurisdiction: "eu" }], success: true, errors: [], messages: [], result_info: { cursor: "page-2", per_page: 1, count: 1 } },
+    "page-2": { result: [], success: true, errors: [], messages: [], result_info: { cursor: "", per_page: 1, count: 0 } },
+  };
+  const api = cloudflareArtifactsApi("account", "fixture-token", async (input, init) => {
+    const url = new URL(String(input));
+    requests.push(`${init?.method} ${url.pathname}${url.search}`);
+    if (init?.method === "GET") return Response.json(pages[url.searchParams.get("cursor") ?? ""]);
+    return Response.json({ result: { namespace: "basalt-apps", jurisdiction: "eu" }, success: true, errors: [], messages: [] });
+  });
+  await ensureEuNamespace(api, "basalt-apps");
+  assert.deepEqual(requests, [
+    "GET /client/v4/accounts/account/artifacts/namespaces?limit=200",
+    "GET /client/v4/accounts/account/artifacts/namespaces?limit=200&cursor=page-2",
+    "POST /client/v4/accounts/account/artifacts/namespaces",
+  ]);
 });
