@@ -7,10 +7,11 @@ upstream checkout must match that pin; current upstream branches are not a subst
 Before carrying a patch or opening an upstream PR, search the pinned upstream
 docs, scripts and fixtures for an existing supported path.
 
-For authenticated testing, upstream's fixture at
-`apps/hosted/cloud/scripts/test-accounts.ts` covers self-host, cloud dev and test
-stages. Basalt previews use the `0019-preview-auth.patch` password sign-in overlay.
-Keep generated session files private.
+For authenticated testing, use upstream's `apps/hosted/testing/cli.ts` for self-host,
+cloud dev and running test stages. `apps/hosted/cloud/scripts/test-accounts.ts` is
+the deploy-time fixture for dedicated E2E stages. Basalt previews use the
+`0019-preview-auth.patch` password sign-in overlay. Keep generated session files
+private.
 
 `scripts/releases/patches.json` binds each carry's identity, filename and exact
 SHA-256 to its retirement mapping. Update the registry when patch content or its
