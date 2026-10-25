@@ -18,15 +18,16 @@ export interface ArtifactsApi {
 
 export type ArtifactsFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-/** The Cloudflare v4 envelope: `result` plus, on list routes, cursor `result_info`. */
-async function envelope<T>(response: Response, operation: string): Promise<{ result: T; result_info?: { cursor?: string } }> {
+/** The Cloudflare v4 envelope: `result` plus, on list routes, pagination `result_info`. */
+async function envelope<T>(response: Response, operation: string): Promise<{ result: T; result_info?: Record<string, unknown> }> {
   if (!response.ok) throw new Error(`Cloudflare Artifacts ${operation} failed with HTTP ${response.status}`);
   const body: unknown = await response.json();
   if (typeof body !== "object" || body === null || !("result" in body))
     throw new Error(`Cloudflare Artifacts ${operation} returned an invalid response`);
   if ("success" in body && body.success !== true)
     throw new Error(`Cloudflare Artifacts ${operation} was rejected`);
-  return body as { result: T; result_info?: { cursor?: string } };
+  const info = "result_info" in body ? body.result_info : undefined;
+  return { result: body.result as T, ...(typeof info === "object" && info !== null ? { result_info: info as Record<string, unknown> } : {}) };
 }
 
 async function bodyResult<T>(response: Response, operation: string): Promise<T> {
@@ -51,7 +52,9 @@ export function cloudflareArtifactsApi(
     target.searchParams.set("limit", "200");
     if (cursor) target.searchParams.set("cursor", cursor);
     // Pages keep the envelope: the items are `result` and the next cursor is in `result_info`.
-    return envelope<T[]>(await request(target, "GET"), "list");
+    const page = await envelope<T[]>(await request(target, "GET"), "list");
+    const next = page.result_info?.cursor;
+    return { result: page.result, result_info: { cursor: typeof next === "string" ? next : undefined } };
   };
   return {
     listNamespaces: (cursor) => list(`${base}/namespaces`, cursor),
@@ -79,11 +82,21 @@ export function cloudflareArtifactsApi(
       if (!response.ok)
         throw new Error(`Cloudflare Artifacts repository deletion failed with HTTP ${response.status}`);
     },
-    listRepositoryTokens: (namespace, repository, cursor) =>
-      list(
+    // The token route pages by number (`page`, `per_page`, `total_pages`), not by cursor. The page
+    // number travels as the cursor so every list shares one loop.
+    listRepositoryTokens: async (namespace, repository, cursor) => {
+      const page = cursor === undefined ? 1 : Number(cursor);
+      const target = new URL(
         `${base}/namespaces/${encodeURIComponent(namespace)}/repos/${encodeURIComponent(repository)}/tokens`,
-        cursor,
-      ),
+      );
+      target.searchParams.set("per_page", "100");
+      target.searchParams.set("page", String(page));
+      const body = await envelope<Token[]>(await request(target, "GET"), "token list");
+      const totalPages = body.result_info?.total_pages;
+      if (typeof totalPages !== "number" || !Number.isInteger(totalPages) || totalPages < 0)
+        throw new Error("Cloudflare Artifacts token list has no page count");
+      return { result: body.result, result_info: { cursor: page < totalPages ? String(page + 1) : undefined } };
+    },
     deleteToken: async (namespace, tokenId) => {
       const response = await request(
         `${base}/namespaces/${encodeURIComponent(namespace)}/tokens/${encodeURIComponent(tokenId)}`,
@@ -96,6 +109,8 @@ export function cloudflareArtifactsApi(
   };
 }
 
+const maximumPages = 1000;
+
 async function allPages<T>(read: (cursor?: string) => Promise<Page<T>>): Promise<T[]> {
   const results: T[] = [];
   const seen = new Set<string>();
@@ -107,6 +122,8 @@ async function allPages<T>(read: (cursor?: string) => Promise<Page<T>>): Promise
     const next = page.result_info?.cursor || undefined;
     if (next && seen.has(next)) throw new Error("Cloudflare Artifacts pagination repeated a cursor");
     if (next) seen.add(next);
+    // The docs do not define the last cursor; a provider that keeps issuing fresh ones must not hang a deploy.
+    if (next && seen.size >= maximumPages) throw new Error("Cloudflare Artifacts pagination did not end");
     cursor = next;
   } while (cursor);
   return results;

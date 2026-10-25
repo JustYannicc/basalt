@@ -133,3 +133,38 @@ test("the HTTP client reads Cloudflare's paginated list envelope before creating
     "POST /client/v4/accounts/account/artifacts/namespaces",
   ]);
 });
+
+test("the HTTP client pages repository tokens by number and stops after the last page", async () => {
+  const requests: string[] = [];
+  const api = cloudflareArtifactsApi("account", "fixture-token", async (input) => {
+    const url = new URL(String(input));
+    requests.push(`${url.pathname}${url.search}`);
+    const page = Number(url.searchParams.get("page"));
+    return Response.json({
+      result: [{ id: `token-${page}` }],
+      success: true, errors: [], messages: [],
+      result_info: { page, per_page: 100, total_pages: 2, count: 1, total_count: 2 },
+    });
+  });
+  const first = await api.listRepositoryTokens("ns", "repo");
+  assert.deepEqual(first, { result: [{ id: "token-1" }], result_info: { cursor: "2" } });
+  const second = await api.listRepositoryTokens("ns", "repo", "2");
+  assert.deepEqual(second, { result: [{ id: "token-2" }], result_info: { cursor: undefined } });
+  assert.deepEqual(requests, [
+    "/client/v4/accounts/account/artifacts/namespaces/ns/repos/repo/tokens?per_page=100&page=1",
+    "/client/v4/accounts/account/artifacts/namespaces/ns/repos/repo/tokens?per_page=100&page=2",
+  ]);
+  const unpaged = cloudflareArtifactsApi("account", "fixture-token", async () =>
+    Response.json({ result: [], success: true, errors: [], messages: [] }));
+  await assert.rejects(unpaged.listRepositoryTokens("ns", "repo"), /no page count/);
+});
+
+test("a listing that keeps issuing fresh cursors stops instead of hanging the deploy", async () => {
+  let reads = 0;
+  const api = cloudflareArtifactsApi("account", "fixture-token", async () => {
+    reads += 1;
+    return Response.json({ result: [], success: true, errors: [], messages: [], result_info: { cursor: `fresh-${reads}` } });
+  });
+  await assert.rejects(ensureEuNamespace(api, "basalt-apps"), /pagination did not end/);
+  assert.equal(reads, 1000);
+});
