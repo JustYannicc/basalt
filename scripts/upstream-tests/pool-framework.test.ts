@@ -55,7 +55,7 @@ test("the hosted compiler selects its configured patched framework without npm",
 });
 
 test(
-  "built production framework speaks protocol 14 and preserves callers in UI and tool dispatch",
+  "built production framework speaks protocol 15 and preserves callers in UI and tool dispatch",
   {
     skip:
       process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
@@ -70,8 +70,8 @@ test(
     const runtime = JSON.parse(files["runtime.json"]!);
     assert.equal(manifest.version, poolFrameworkVersion);
     assert.equal(runtime.version, poolFrameworkVersion);
-    assert.equal(runtime.protocol, 14);
-  assert.equal(JSON.parse(files["framework-reference.json"]!).version, poolFrameworkVersion);
+    assert.equal(runtime.protocol, 15);
+    assert.equal(JSON.parse(files["framework-reference.json"]!).version, poolFrameworkVersion);
     const { appProtocol } = await load("packages/sdk/src/implementation/app-protocols.ts");
     await Effect.runPromise(appProtocol(runtime.protocol));
     const author = await load("packages/apps/dist/js/index.js");
