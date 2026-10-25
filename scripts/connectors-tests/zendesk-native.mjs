@@ -26,7 +26,7 @@ const textOf = (result) => JSON.stringify(result?.structuredContent ?? result?.c
 
 /** Exercise native MCP health, reads, approvals, peer isolation, and the installed agent client. */
 export function proveZendeskMcp({
-  Effect, request, checked, actors, directory, prefix, target, root, upstream, fixtures, users, flowByKey, record, step,
+  Effect, request, checked, actors, directory, prefix, target, root, upstream, fixtures, catalog, users, flowByKey, record, step,
 }) {
   return Effect.gen(function* () {
     const issuedKeys = [];

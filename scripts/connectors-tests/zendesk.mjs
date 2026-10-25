@@ -20,7 +20,7 @@ export function proveZendeskNative({
       Effect, request, checked, actors, prefix, callback, fixtures, catalog, record,
     });
     yield* proveZendeskMcp({
-      Effect, request, checked, actors, directory, prefix, target, root, upstream, fixtures, users, flowByKey, record, step,
+      Effect, request, checked, actors, directory, prefix, target, root, upstream, fixtures, catalog, users, flowByKey, record, step,
     });
     const observations = fixtures.observations();
     const rotations = fixtures.rotations();
@@ -34,6 +34,7 @@ export function proveZendeskNative({
     }
     assert.deepEqual(fixtures.failures(), [], "Zendesk external fixtures rejected a native runtime request");
     for (const event of observations.filter((entry) => entry.phase === "api")) {
+      if (!event.bearerPresent) continue;
       assert.equal(event.credentialSiteMatches, true, "Credentials must stay at the account's exact site");
       assert.equal(event.marketplaceHeadersMatched, true, "Operator Marketplace headers must reach every API endpoint");
     }

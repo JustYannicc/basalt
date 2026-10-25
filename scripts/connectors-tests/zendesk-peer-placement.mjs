@@ -40,14 +40,9 @@ export function proveZendeskPeerPlacement({
     );
     peerIndex.content = replaceOnce(
       peerIndex.content,
-      `function accountOrigin(account: ZendeskAccount): string {
-  if (account.site === undefined) throw new Error("Reconnect this account and select its Zendesk site.");
-  return account.site;
-}`,
-      `function accountOrigin(_account: ZendeskAccount): string {
-  return ${JSON.stringify(siteB.origin)};
-}`,
-      "deliberate peer API destination",
+      "`${accountOrigin(user.accounts.zendesk)}/api/v2/users/me.json`",
+      JSON.stringify(`${siteB.origin}/api/v2/users/me.json`),
+      "deliberate peer currentUser destination, preserving the ordinary health check",
     );
     const peerApp = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: "Zendesk peer placement negative proof",
@@ -106,8 +101,8 @@ export function proveZendeskPeerPlacement({
     const peerApiEvents = fixtures.observations().filter((event) =>
       event.phase === "api" && event.site === siteB.id && event.endpoint === "/api/v2/users/me.json",
     ).slice(peerApiEventsBefore);
-    assert.ok(peerApiEvents.every((event) => !event.tokenActive),
-      "The managed site-a credential must never be active at the peer host");
+    assert.ok(peerApiEvents.every((event) => !event.bearerPresent),
+      "The managed site-a bearer must never reach the peer host, even when expired or invalid there");
     record("hosted-managed-client-peer-placement-denied", {
       accountSite: siteA.id,
       accountHost: siteA.host,
@@ -119,7 +114,7 @@ export function proveZendeskPeerPlacement({
       peerProbeIndexSha256: sha256(peerIndex.content),
       peerProbeTemplateOverride: "site-b",
       peerApiRequestCount: peerApiEvents.length,
-      peerActiveCredentialCount: peerApiEvents.filter((event) => event.tokenActive).length,
+      peerBearerCount: peerApiEvents.filter((event) => event.bearerPresent).length,
       nativeToolRejected: true,
     });
   });
