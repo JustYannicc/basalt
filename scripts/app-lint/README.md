@@ -28,9 +28,32 @@ same host version. It does not deploy or contact the app's external services.
 Oxlint 1.89.0 loads `plugin.mjs` through its ESLint-compatible `jsPlugins` API.
 `config.mjs` combines the custom rules with built-in restrictions on Effect/SDK imports
 and global HTTP. An additional AST rule rejects HTTP reached through aliases of global objects.
-The AST rules follow local re-exports, namespace imports, dynamic imports and aliases
-with one known assignment. Every mutation must own an `approval` option. `approval: undefined` is an explicit no-approval
-choice; operations that need consent can use `always()` from `apps/operations/approval`.
+The accepted framework forms are deliberately small:
+
+- Import `defineApp`, `mutation`, `query` and `decodeJson` by name from exactly `apps`,
+  in the module that calls them. Renaming within the import is supported, such as
+  `import { mutation as write } from "apps"; write(...)`.
+- The app entry must use `export default defineApp(...)` directly. Parentheses and
+  TypeScript expression wrappers are supported; exporting an intermediate app variable
+  or forwarding a helper's default export is rejected.
+- Call these imported functions directly. Do not assign them to another variable,
+  destructure them, return or pass them as values, or re-export them. Default, namespace
+  and dynamic imports of `apps`, and exports of its namespace, are rejected.
+- Every mutation must own an `approval` option. `approval: undefined` is an explicit
+  no-approval choice; operations that need consent can use `always()` from
+  `apps/operations/approval`. Local options objects and spreads remain supported when
+  their approval property can be proved.
+
+`plain-framework-bindings` rejects unsupported forms at their framework import or
+escape, even when a later call supplies approval. Every shipped helper is checked,
+so a barrel, default import or dynamic local import cannot hide a forbidden framework
+re-export. There is no cross-module binding inference. Ordinary helpers, DTO properties
+named `mutation` or `write`, and exported results of checked framework calls remain legal.
+Unrelated local helpers may use named, default, namespace or literal dynamic imports.
+Computed module discovery and reflection are outside this check's static contract.
+
+Use context HTTP and a direct named `decodeJson` import for decoding. Existing context
+fetch destructuring and passing a context fetch into an HTTP helper remain supported.
 The HTTP alias check considers every assignment. Reusing one alias for both a global
 object and a context is rejected, even if the final assignment selects the context.
 Destructuring `fetch` from a context is valid. Browser files under `ui/` use browser HTTP;

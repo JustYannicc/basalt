@@ -45,6 +45,7 @@ export function appConfig(entryFile = "index.ts") {
         { object: "window", property: "fetch", message: "Use ctx.fetch." },
         { object: "self", property: "fetch", message: "Use ctx.fetch." },
       ],
+      "executor-apps/plain-framework-bindings": "error",
       "executor-apps/default-app-export": ["error", { entryFile }],
       "executor-apps/no-legacy-accounts": "error",
       "executor-apps/no-global-fetch": "error",

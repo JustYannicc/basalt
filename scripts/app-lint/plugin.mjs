@@ -4,38 +4,7 @@ import { createBindings, propertyName, unwrapExpression, walkAst } from "./ast.m
 import { ruleMeta } from "./rule-meta.mjs";
 import { noLegacyAccountsRule } from "./legacy-accounts.mjs";
 import { noGlobalFetchRule } from "./global-fetch.mjs";
-
-function isAppValue(expression, bindings, seen = new Set()) {
-  const node = unwrapExpression(expression);
-  if (node?.type === "CallExpression") return bindings.resolveSymbol(node.callee) === "defineApp";
-  if (node?.type !== "Identifier") return false;
-  const variable = bindings.variableOf(node);
-  if (!variable || seen.has(variable)) return false;
-  seen.add(variable);
-  const result = isAppValue(bindings.localInitializer(variable), bindings, seen);
-  seen.delete(variable);
-  return result;
-}
-
-function defaultExport(program) {
-  for (const statement of program.body ?? []) {
-    if (statement.type === "ExportDefaultDeclaration")
-      return { node: statement.declaration, value: statement.declaration };
-    if (statement.type === "ExportNamedDeclaration") {
-      const specifier = statement.specifiers?.find(
-        (item) => propertyName(item.exported) === "default",
-      );
-      if (specifier) return { node: specifier, value: statement.source ? null : specifier.local };
-    }
-    if (
-      statement.type === "ExportAllDeclaration" &&
-      propertyName(statement.exported) === "default"
-    ) {
-      return { node: statement, value: null };
-    }
-  }
-  return null;
-}
+import { plainFrameworkBindingsRule } from "./plain-framework-bindings.mjs";
 
 const defaultAppExport = {
   meta: {
@@ -54,9 +23,13 @@ const defaultAppExport = {
       return {};
     return {
       Program(program) {
-        const exported = defaultExport(program);
-        if (!exported || !isAppValue(exported.value, createBindings(context))) {
-          context.report({ node: exported?.node ?? program, messageId: "defaultApp" });
+        const exported = program.body.find((node) => node.type === "ExportDefaultDeclaration");
+        const value = unwrapExpression(exported?.declaration);
+        if (
+          value?.type !== "CallExpression" ||
+          createBindings(context).resolveSymbol(value.callee) !== "defineApp"
+        ) {
+          context.report({ node: exported?.declaration ?? program, messageId: "defaultApp" });
         }
       },
     };
@@ -104,15 +77,12 @@ const mutationApproval = {
         walkAst(program, (node) => {
           if (node.type !== "CallExpression") return;
           const symbol = bindings.resolveSymbol(node.callee);
-          if (symbol !== "mutation" && symbol !== "unknown") return;
+          if (symbol !== "mutation") return;
           const options = analyzeMutationOptions(node.arguments?.[0], bindings);
           if (options.kind !== "explicit") {
             context.report({
               node: node.arguments?.[0] ?? node.callee,
-              messageId:
-                symbol === "unknown" || options.kind === "unknown"
-                  ? "unknownApproval"
-                  : "missingApproval",
+              messageId: options.kind === "unknown" ? "unknownApproval" : "missingApproval",
             });
           }
         });
@@ -124,6 +94,7 @@ const mutationApproval = {
 export default {
   meta: { name: "executor-apps" },
   rules: {
+    "plain-framework-bindings": plainFrameworkBindingsRule,
     "default-app-export": defaultAppExport,
     "no-legacy-accounts": noLegacyAccountsRule,
     "mutation-approval": mutationApproval,

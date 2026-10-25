@@ -60,6 +60,14 @@ function check(rule, cases) {
 }
 
 export function assertCases(rule, cases) {
+  if (cases.some((item) => item.rule && item.rule !== rule)) {
+    for (const selected of new Set(cases.map((item) => item.rule ?? rule)))
+      assertCases(
+        selected,
+        cases.filter((item) => (item.rule ?? rule) === selected),
+      );
+    return;
+  }
   const results = check(rule, cases);
   for (const [index, result] of results.entries()) {
     if (result.expected === null)

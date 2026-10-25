@@ -1,6 +1,6 @@
 const messages = {
   defaultApp:
-    "The resolved app entry must default-export a call to `defineApp` imported from `apps`.",
+    "Use `export default defineApp(...)` directly, with `defineApp` imported from `apps` by a named import.",
   legacyRequirements:
     "Legacy top-level `accounts` requirements are unsupported; declare accounts under `user` or `app`.",
   legacyContext:

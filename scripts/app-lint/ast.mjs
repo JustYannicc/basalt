@@ -1,5 +1,3 @@
-import { createModuleGraph } from "./module-graph.mjs";
-
 const expressionWrappers = new Set([
   "ChainExpression",
   "ParenthesizedExpression",
@@ -9,6 +7,8 @@ const expressionWrappers = new Set([
   "TSTypeAssertion",
   "TSInstantiationExpression",
 ]);
+
+export const frameworkFunctions = new Set(["defineApp", "mutation", "query", "decodeJson"]);
 
 export function unwrapExpression(node) {
   while (node && expressionWrappers.has(node.type)) node = node.expression;
@@ -46,7 +46,6 @@ export function propertyName(key, computed = false) {
 
 export function createBindings(context) {
   const sourceCode = context.sourceCode;
-  const moduleGraph = createModuleGraph(context, sourceCode.ast);
   const variableCache = new WeakMap();
 
   function variableOf(identifier) {
@@ -108,115 +107,27 @@ export function createBindings(context) {
     return null;
   }
 
-  function importKind(variable) {
-    if (!variable) return null;
-    for (const definition of variable.defs ?? []) {
-      if (definition.type !== "ImportBinding") continue;
-      let declaration = definition.parent ?? definition.node?.parent;
-      while (declaration && declaration.type !== "ImportDeclaration")
-        declaration = declaration.parent;
-      if (!declaration?.source || typeof declaration.source.value !== "string") continue;
-      if (definition.node?.type === "ImportNamespaceSpecifier") {
-        return moduleGraph.resolveExport(declaration.source.value, "*");
-      }
-      if (definition.node?.type === "ImportSpecifier") {
-        const imported = definition.node.imported?.name ?? definition.node.imported?.value;
-        if (
-          (declaration.importKind === "type" || definition.node?.importKind === "type") &&
-          !["QueryContext", "MutationContext"].includes(imported)
-        )
-          continue;
-        if (typeof imported === "string")
-          return moduleGraph.resolveExport(declaration.source.value, imported);
-      }
-    }
-    return null;
-  }
-
-  function literalString(node) {
-    return ["Literal", "StringLiteral"].includes(node?.type) && typeof node.value === "string"
-      ? node.value
-      : null;
-  }
-
-  function dynamicImportSource(expression) {
-    let node = unwrapExpression(expression);
-    if (node?.type === "AwaitExpression") node = unwrapExpression(node.argument);
-    if (node?.type === "ImportExpression") return literalString(node.source);
-    if (node?.type === "CallExpression" && node.callee?.type === "Import")
-      return literalString(node.arguments?.[0]);
-    return null;
-  }
-
-  function importOrDestructuredKind(variable, seen) {
-    if (!variable || variable.defs?.length !== 1) return null;
-    const definition = variable.defs[0];
-    if (definition.type !== "Variable" || definition.node?.type !== "VariableDeclarator")
-      return null;
-    const { id, init } = definition.node;
-    const isAppsImport = dynamicImportSource(init) === "apps";
-    if (id?.type === "Identifier" && id.name === variable.name)
-      return isAppsImport ? (isUnmodified(variable) ? "namespace" : "unknown") : null;
-    if (id?.type !== "ObjectPattern") return null;
-    const namespace = isAppsImport ? "namespace" : resolveSymbol(init, seen);
-    for (const property of id.properties ?? []) {
-      if (!["ObjectProperty", "Property"].includes(property.type)) continue;
-      const value =
-        property.value?.type === "AssignmentPattern" ? property.value.left : property.value;
-      if (value?.type !== "Identifier" || value.name !== variable.name) continue;
-      const imported = propertyName(property.key, property.computed);
-      const symbol =
-        namespace?.kind === "namespace"
-          ? namespace.resolve(imported)
-          : namespace === "namespace" &&
-              ["defineApp", "mutation", "query", "QueryContext", "MutationContext"].includes(
-                imported,
-              )
-            ? imported
-            : null;
-      return symbol && !isUnmodified(variable) ? "unknown" : symbol;
-    }
-    return null;
-  }
-
-  const symbolCache = new WeakMap();
-  function resolveSymbol(expression, seen = new Set()) {
+  // Framework identities have one supported source. The plain-bindings rule rejects
+  // escaping these imports, so helpers never need a second binding resolver.
+  function resolveSymbol(expression) {
     const node = unwrapExpression(expression);
-    if (!node) return null;
-    if (node.type === "Identifier") {
-      const variable = variableOf(node);
-      if (!variable || seen.has(variable)) return null;
-      if (symbolCache.has(variable)) return symbolCache.get(variable);
-      const imported = importKind(variable);
-      if (imported) return imported;
-      seen.add(variable);
-      const dynamic = importOrDestructuredKind(variable, seen);
-      if (dynamic) {
-        seen.delete(variable);
-        return dynamic;
-      }
-      const symbols = possibleValues(variable)
-        .map((value) => resolveSymbol(value, seen))
-        .filter(Boolean);
-      seen.delete(variable);
-      const symbol = symbols[0] ?? null;
-      const result =
-        symbol && (!isUnmodified(variable) || symbols.some((value) => value !== symbol))
-          ? "unknown"
-          : symbol;
-      symbolCache.set(variable, result);
-      return result;
-    }
-    if (node.type === "MemberExpression") {
-      const objectSymbol = resolveSymbol(node.object, seen);
-      const name = propertyName(node.property, node.computed);
-      if (objectSymbol?.kind === "namespace") return objectSymbol.resolve(name);
-      if (!["defineApp", "mutation", "query"].includes(name)) return null;
-      if (objectSymbol === "namespace") return name;
-      if (objectSymbol === "unknown") return "unknown";
+    if (node?.type !== "Identifier") return null;
+    const variable = variableOf(node);
+    if (variable?.defs?.length !== 1) return null;
+    const definition = variable.defs[0];
+    if (definition.type !== "ImportBinding" || definition.node?.type !== "ImportSpecifier")
       return null;
-    }
-    return null;
+    const declaration = definition.parent ?? definition.node.parent;
+    if (declaration?.type !== "ImportDeclaration" || declaration.source.value !== "apps")
+      return null;
+    const imported = propertyName(definition.node.imported);
+    const contextType = ["QueryContext", "MutationContext"].includes(imported);
+    if (
+      (declaration.importKind === "type" || definition.node.importKind === "type") &&
+      !contextType
+    )
+      return null;
+    return contextType || frameworkFunctions.has(imported) ? imported : null;
   }
 
   function resolveFunctionNode(expression, seen = new Set()) {

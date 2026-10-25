@@ -12,7 +12,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild|oxc-parser" }
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
     }
 
     deployment = module "Deployment" {
