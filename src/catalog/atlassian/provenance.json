@@ -1,11 +1,22 @@
 {
   "repository": "https://github.com/JustYannicc/executor-upstream",
-  "revision": "8e7ce4b6fedd6a4dfc8940a9c13dbd7e658081aa",
+  "revision": "3f97ddff8ce4eb358ca942b93f34c90ccc7c948c",
   "directory": "playground/demo-apps/atlassian",
   "license": "MIT",
   "files": {
-    "index.ts": "bbbc619b8fa4bf6b99534982dc64ff76f61c2e4b094f0062d0368da653feac1e",
-    "package.json": "2035cf919732116d500b5d97c770cb1d8f2cca734d9dfebce99edf6674efc252"
+    "index.ts": "d58d11d56445fbf5030b43583ddfec88316313880d352237e83cc7fdd88d49c4",
+    "package.json": "46187a3b15d071bb1820117f4898e8bf225783c31fc1698cd508f0414795bba5"
   },
-  "snapshotSha256": "ee4d0ba02296be43b2403f7618fdb7b7288bac36964fee43b07a9e7b7cf13ad7"
+  "snapshotSha256": "3a3a3a7f33107aa1139a15f73cb78d43fe6b0a45010c2b30657b1f2d0705e921",
+  "publicSource": {
+    "snapshotSha256": "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
+    "files": {
+      "index.ts": "d58d11d56445fbf5030b43583ddfec88316313880d352237e83cc7fdd88d49c4",
+      "package.json": "eb08c49bb3deb1eee90007b577a60baf0b877cacf1665ed9ea44f91bf47d09e3"
+    }
+  },
+  "localPatch": {
+    "path": "source.patch",
+    "sha256": "1a4e2b438dac485b197882513b07c333765dea26f10087e36d5d972dcb9c216d"
+  }
 }

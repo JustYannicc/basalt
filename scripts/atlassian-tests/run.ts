@@ -11,6 +11,8 @@ type AtlassianProofInput = {
   readonly commit: string;
 };
 
+const frozenSourceHash = "3a3a3a7f33107aa1139a15f73cb78d43fe6b0a45010c2b30657b1f2d0705e921";
+
 async function run(command: string, args: string[], cwd: string, log: string, home: string): Promise<string> {
   const environment = {
     PATH: process.env.PATH ?? "",
@@ -53,6 +55,8 @@ export async function runAtlassianProof({ root, upstream, commit }: AtlassianPro
   const expectedSourceHash = process.env.ATLASSIAN_EXPECTED_SOURCE_SHA256 ?? "";
   if (!/^[a-f0-9]{64}$/.test(expectedSourceHash))
     throw new Error("Set ATLASSIAN_EXPECTED_SOURCE_SHA256 to the expected frozen snapshot hash before proof.");
+  if (expectedSourceHash !== frozenSourceHash)
+    throw new Error(`ATLASSIAN_EXPECTED_SOURCE_SHA256 must match the immutable served snapshot ${frozenSourceHash}.`);
   const snapshot = await readFile(join(root, "src/catalog/atlassian/source.json"));
   const actualSourceHash = createHash("sha256").update(snapshot).digest("hex");
   if (actualSourceHash !== expectedSourceHash)
@@ -77,7 +81,7 @@ export async function runAtlassianProof({ root, upstream, commit }: AtlassianPro
     upstream, join(directory, "runtime.json"), home);
   const report = output.split(/\r?\n/).map((line) => {
     try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; }
-  }).find((value) => value?.actualCatalogApp === "@executor.sh/atlassian" && value?.syntheticProvider === true);
+  }).find((value) => value?.actualCatalogApp === "atlassian" && value?.syntheticProvider === true);
   if (!report || typeof report.checks !== "number" || !report.nativeClients || typeof report.nativeClients !== "object")
     throw new Error("Atlassian runtime proof did not report full completion.");
   console.log(JSON.stringify(report));
