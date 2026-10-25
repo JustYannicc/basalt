@@ -46,9 +46,9 @@ export function redactFailureOutput(output: string, environment: NodeJS.ProcessE
     .sort((left, right) => right.length - left.length);
   for (const value of values) text = text.split(value).join("[redacted]");
   text = text
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/?#]*@/gi, "$1[redacted]@")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1[redacted]@")
     .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
-    .replace(/\b(pass(?:word)?|pwd|secret|token|api[_-]?key)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi, "$1$2[redacted]")
+    .replace(/(\w*(?:pass(?:word)?|pwd|secret|token|api[_-]?key)["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'&,;}]+)/gi, "$1[redacted]")
     .replace(/[A-Za-z0-9+/_=-]{32,}/g, (run) => (/\d/.test(run) && /[A-Za-z]/.test(run) ? "[redacted]" : run));
   return text.trimEnd().split("\n").slice(-tailLines).join("\n");
 }

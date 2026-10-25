@@ -47,16 +47,22 @@ test("key-value and multi-@ URL credentials are removed even when they are not i
   const redacted = redactFailureOutput([
     "password=hunter2 next",
     '{"password":"Tr0ub4dor&3","name":"basalt"}',
+    '{"password":"correct horse battery"}',
     "postgres://host/db?password=s3cr3t-short&sslmode=verify-full",
     "postgresql://role:pa@ss@aws.connect.psdb.cloud/postgres",
+    "postgres://user:p#ss@db.example.com/db and postgres://user:q?ss@db.example.com/db",
     "secret: abc token=xyz api_key=k1",
+    "access_token=ya29.shortTok client_secret=GOCSPX-abc CLOUDFLARE_API_TOKEN=cfshort accessToken=camel1 db_password=dbpw1",
   ].join("\n"), { PADDED_SECRET: "  padded-value-123  " });
-  for (const leaked of ["hunter2", "Tr0ub4dor", "s3cr3t-short", "pa@ss", "ss@aws", "abc", "xyz", "k1"])
+  for (const leaked of ["hunter2", "Tr0ub4dor", "&3", "horse", "battery", "s3cr3t-short", "pa@ss", "ss@aws", "p#ss", "q?ss",
+    "abc", "xyz", "k1", "ya29", "GOCSPX", "cfshort", "camel1", "dbpw1"])
     assert.ok(!redacted.includes(leaked), leaked);
   assert.match(redacted, /"name":"basalt"/);
   assert.match(redacted, /sslmode=verify-full/);
   assert.match(redacted, /postgresql:\/\/\[redacted\]@aws\.connect\.psdb\.cloud\/postgres/);
+  assert.match(redacted, /postgres:\/\/\[redacted\]@db\.example\.com\/db and/);
   assert.equal(redactFailureOutput("value padded-value-123 here", { PADDED_SECRET: "  padded-value-123  " }), "value [redacted] here");
+  assert.equal(redactFailureOutput("see https://example.com/path?email=a@b.example", {}), "see https://example.com/path?email=a@b.example");
 });
 
 test("a failed command reports its redacted output tail and a successful one stays silent", async () => {
