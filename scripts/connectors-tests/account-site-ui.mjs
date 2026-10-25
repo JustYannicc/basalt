@@ -50,10 +50,10 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({
       assert.equal(preflight.length, 0, "No OAuth setup request may run before the site exists");
       assert.equal(await page.getByRole("button", { name: "Continue", exact: true }).isDisabled(), true);
       await site.fill(selected.origin);
-      await page.screenshot({ path: join(directory, "account-site-entry.png") });
+      await page.screenshot({ path: join(directory, "account-site-entry.png"), animations: "disabled" });
       const created = page.waitForResponse((response) => response.request().method() === "POST"
         && new URL(response.url()).pathname === `${path}/accounts/user/service/connections`);
-      const setup = page.waitForResponse((response) => /\/oauth\/oauth\/setup$/.test(new URL(response.url()).pathname));
+      const setup = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/oauth/oauth/setup"));
       await page.getByRole("button", { name: "Continue", exact: true }).click();
       const connection = await created;
       assert.equal(connection.status(), 200);
@@ -66,7 +66,10 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({
       await clientId.fill("synthetic-public-client");
       const connect = page.getByRole("button", { name: "Connect Account site UI fixture", exact: true });
       assert.equal(await connect.isEnabled(), true, "Public BYO must not require a secret");
-      await page.screenshot({ path: join(directory, "account-site-byo-after-setup-failure.png") });
+      const access = page.locator("[data-credential-hosts]");
+      assert.ok((await access.innerText()).includes(selected.host), "Safety text must name the selected site");
+      assert.equal((await access.innerText()).includes(template.host), false, "Safety text must not name the template host");
+      await page.screenshot({ path: join(directory, "account-site-byo-after-setup-failure.png"), animations: "disabled" });
       const start = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/oauth/start"));
       await connect.click();
       const started = await start;

@@ -276,9 +276,16 @@ index 62c58d4..ce5cf7f 100644
      AccountConnectionTargetChanged: () =>
        "The app’s account setup changed. Close this form and try again.",
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index bb75f68..3575b3e 100644
+index bb75f68..55fd0bf 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+@@ -1,5 +1,5 @@
+ import { use, useContext, useState } from "react";
+-import { RegistryContext, useAtomSet, useAtomMount } from "@effect/atom-react";
++import { RegistryContext, useAtomSet, useAtomMount, useAtomValue } from "@effect/atom-react";
+ import { AsyncResult, AtomRegistry } from "effect/reactivity";
+ import { Effect, Option } from "effect";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
 @@ -17,6 +17,7 @@ import type { RequirementLink } from "@executor-js/ui/contracts/app-accounts";
  import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
  import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
@@ -395,7 +402,7 @@ index bb75f68..3575b3e 100644
    readonly onPendingChange: (pending: boolean) => void;
    readonly onSaved: () => void;
  }) {
-@@ -367,9 +419,9 @@ function AppConnectionFields({
+@@ -367,16 +419,19 @@ function AppConnectionFields({
        requirement: slot,
        provider: form.provider.id,
        account: account?.id,
@@ -405,9 +412,11 @@ index bb75f68..3575b3e 100644
 -  useAtomMount(atoms.request);
    const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
    const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
++  const pending = useAtomValue(atoms.request);
    return (
-@@ -377,6 +429,7 @@ function AppConnectionFields({
+     <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
        provider={form.provider}
++      site={pending?.target.site ?? account?.site}
        app={checks ? app : undefined}
        {...(account ? { account } : {})}
 +      setupQuery={atoms.oauthSetup}
@@ -415,7 +424,7 @@ index bb75f68..3575b3e 100644
        initialMethod={form.method}
        submit={submit}
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 4009d39..451d789 100644
+index 4009d39..8e3d16d 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -1,3 +1,4 @@
@@ -439,7 +448,13 @@ index 4009d39..451d789 100644
    startOAuthAtom,
    submitConnectionAtom,
    PendingOAuth,
-@@ -89,6 +92,9 @@ export function ConnectionFields({
+@@ -84,11 +87,15 @@ export function ConnectionFields({
+   return (
+     <HostedAccountForm
+       provider={connection.provider}
++      site={connection.target.site}
+       app={connection.checkable ? connection.target.app : undefined}
+       {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
        redirectUri={connection.redirectUri}
        initialMethod={initialMethod}
        manualClient={manualClient}
@@ -449,15 +464,26 @@ index 4009d39..451d789 100644
        submit={submit}
        start={startOAuth}
        onSaved={onSaved}
-@@ -113,6 +119,7 @@ export function ConnectionFields({
+@@ -113,8 +120,10 @@ export function ConnectionFields({
  
  /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
  export function HostedAccountForm<A extends HostedOAuthSignIn>({
 +  setupQuery,
    provider,
    account,
++  site,
    redirectUri,
-@@ -132,6 +139,8 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   initialMethod,
+   manualClient,
+@@ -126,12 +135,16 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   app,
+ }: {
+   readonly provider: Provider;
++  /** The canonical site saved by the host for this connection. */
++  readonly site?: string | undefined;
+   /** The app that will use the account; its check confirms entered credentials. */
+   readonly app?: AppId | null | undefined;
+   readonly account?: Account;
    readonly redirectUri: string;
    readonly initialMethod?: string | undefined;
    readonly manualClient?: boolean | undefined;
@@ -466,7 +492,15 @@ index 4009d39..451d789 100644
    readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<Account, HostedError>>;
    readonly start: (
      input: OAuthSubmission & { readonly method: string },
-@@ -194,12 +203,18 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -180,6 +193,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   return (
+     <AccountForm
+       provider={provider}
++      site={site}
+       {...(account ? { account } : {})}
+       initialMethod={method}
+       Failure={HostedFailure}
+@@ -194,12 +208,18 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
        oauth={({ method, disabled, onPendingChange, access }) => (
@@ -737,7 +771,7 @@ index 4da7c9d..2126ea7 100644
        .handle("userConnectOAuth", ({ params, payload }) =>
          connectWithOAuth(params, "user", payload),
 diff --git a/apps/local/web/src/contracts/app-connections.ts b/apps/local/web/src/contracts/app-connections.ts
-index f4a6b39..8ea563a 100644
+index f4a6b39..edca075 100644
 --- a/apps/local/web/src/contracts/app-connections.ts
 +++ b/apps/local/web/src/contracts/app-connections.ts
 @@ -3,9 +3,10 @@
@@ -752,7 +786,7 @@ index f4a6b39..8ea563a 100644
    AccountFieldsInput,
    AccountId,
    AccountScope,
-@@ -26,15 +27,42 @@ export function appConnectionAtoms(key: {
+@@ -26,15 +27,43 @@ export function appConnectionAtoms(key: {
    readonly scope: AccountScope;
    readonly requirement: string;
    readonly account?: AccountId | undefined;
@@ -792,11 +826,12 @@ index f4a6b39..8ea563a 100644
      refreshAppDiscovery(get, key);
    };
    return {
++    pending,
 +    oauthSetup: (method: string) => setup(method),
      submit: DashboardClient.runtime.fn(
        (
          input: {
-@@ -46,7 +74,8 @@ export function appConnectionAtoms(key: {
+@@ -46,7 +75,8 @@ export function appConnectionAtoms(key: {
        ) =>
          Effect.gen(function* () {
            const client = yield* DashboardClient;
@@ -806,7 +841,7 @@ index f4a6b39..8ea563a 100644
            const account = yield* key.scope === "app"
              ? client.dashboard.appConnect(request)
              : client.dashboard.userConnect(request);
-@@ -65,7 +94,8 @@ export function appConnectionAtoms(key: {
+@@ -65,7 +95,8 @@ export function appConnectionAtoms(key: {
        ) =>
          Effect.gen(function* () {
            const client = yield* DashboardClient;
@@ -832,15 +867,18 @@ index e4b9f8b..7fa5ad1 100644
        message("This connection has ended", "Ask your agent for a new connection link."),
      AccountConnectionRefused: () =>
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index 8e717cb..96c67d3 100644
+index 8e717cb..b011655 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
-@@ -1,3 +1,5 @@
+@@ -1,5 +1,7 @@
 +import { Button } from "@executor-js/ui/components/button";
 +import { Input } from "@executor-js/ui/components/input";
  import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
- import { useAtomSet } from "@effect/atom-react";
+-import { useAtomSet } from "@effect/atom-react";
++import { useAtomSet, useAtomValue } from "@effect/atom-react";
  import { useState, type ReactNode } from "react";
+ import type { Account, AccountScope, AppId, VersionId, Provider } from "@executor-js/sdk";
+ import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 @@ -14,19 +16,7 @@ import { AppOAuthFields } from "./oauth-fields.tsx";
   * Connect an account for one app requirement, or replace a linked account's credentials. Saving a
   * new account links it to the requirement in the given scope.
@@ -931,7 +969,7 @@ index 8e717cb..96c67d3 100644
    // One dialog is one attempt.
    const [atoms] = useState(() =>
      appConnectionAtoms({
-@@ -49,6 +99,7 @@ export function AppAccountForm({
+@@ -49,10 +99,12 @@ export function AppAccountForm({
        version,
        scope,
        requirement,
@@ -939,8 +977,21 @@ index 8e717cb..96c67d3 100644
        ...(account === undefined ? {} : { account: account.id }),
      }),
    );
+   const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
++  const pending = useAtomValue(atoms.pending);
+   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
+   const requestName = useAtomSet(accountToNameAtom);
+   // A new account is named once saved; a reconnect keeps its name.
+@@ -64,6 +116,7 @@ export function AppAccountForm({
+   return (
+     <SharedAccountForm<Account, DashboardError>
+       provider={provider}
++      site={pending?.target.site ?? account?.site}
+       {...(account ? { account } : {})}
+       Failure={Failure}
+       submitLabel={account ? "Save credentials" : "Add account"}
 diff --git a/apps/local/web/src/implementation/pages/connect-account.tsx b/apps/local/web/src/implementation/pages/connect-account.tsx
-index 0116d5b..2252399 100644
+index 0116d5b..edf4eff 100644
 --- a/apps/local/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/local/web/src/implementation/pages/connect-account.tsx
 @@ -106,6 +106,9 @@ function ConnectionForm({
@@ -953,7 +1004,7 @@ index 0116d5b..2252399 100644
          <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
            You can return to your agent.
          </p>
-@@ -119,6 +122,11 @@ function ConnectionForm({
+@@ -119,10 +122,16 @@ function ConnectionForm({
            Connect {connection.provider.definition.name}
          </h1>
          <p className="text-[13px] text-muted-foreground">For {connection.target.name}</p>
@@ -965,6 +1016,11 @@ index 0116d5b..2252399 100644
        </header>
        {failure && <div className="-mt-3 mb-4">{failure}</div>}
        <AccountForm
+         provider={connection.provider}
++        site={connection.target.site}
+         {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
+         Failure={ConnectionLinkFailure}
+         submitLabel="Connect account"
 diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
 index efe8698..eb70d87 100644
 --- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
@@ -5579,6 +5635,77 @@ index 962fa95..68ec5bb 100644
            Effect.flatMap((renewed) =>
              renewed === undefined
                ? Effect.fail(catalogFailure(state, error))
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+index 5345ce2..54cf913 100644
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -27,11 +27,13 @@ import {
+   SelectValue,
+ } from "../components/select.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { siteCredentialHosts } from "@executor-js/utils/account-site";
+ 
+ /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
+ export function AccountForm<A, E>({
+   provider,
+   account,
++  site,
+   header,
+   actions,
+   submitLabel,
+@@ -50,7 +52,9 @@ export function AccountForm<A, E>({
+    */
+   readonly check?: (input: AccountSubmission) => Promise<Exit.Exit<CredentialCheck | null, E>>;
+   readonly provider: Provider;
+-  readonly account?: Pick<Account, "method">;
++  readonly account?: Pick<Account, "method" | "site">;
++  /** The canonical site returned by the host for this pending connection. */
++  readonly site?: string | undefined;
+   readonly header?: ReactNode;
+   readonly actions?: ReactNode;
+   readonly submitLabel: string;
+@@ -62,6 +66,11 @@ export function AccountForm<A, E>({
+   readonly onPendingChange?: (pending: boolean) => void;
+   readonly initialMethod?: string | undefined;
+ }) {
++  const selectedSite = site ?? account?.site;
++  const hosts =
++    provider.definition.site !== undefined && selectedSite === undefined
++      ? undefined
++      : siteCredentialHosts(provider.definition.hosts, provider.definition.site, selectedSite);
+   const methods = Object.entries(provider.definition.auth).sort(
+     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
+   );
+@@ -158,9 +167,10 @@ export function AccountForm<A, E>({
+             method,
+             disabled,
+             onPendingChange: updatePending,
+-            access: (
+-              <SignInAccess provider={provider.definition.name} hosts={provider.definition.hosts} />
+-            ),
++            access:
++              provider.definition.site !== undefined && selectedSite === undefined ? undefined : (
++                <SignInAccess provider={provider.definition.name} hosts={hosts} />
++              ),
+           })}
+         </div>
+       ) : fields ? (
+@@ -170,13 +180,10 @@ export function AccountForm<A, E>({
+               ? "This connection sends no credentials. Continue only if the service supports public access."
+               : `Get these credentials from your ${provider.definition.name} account settings.`}
+           </p>
+-          <CredentialAccess
+-            hosts={provider.definition.hosts}
+-            {...secretAccess(fields, provider.definition.hosts)}
+-          />
++          <CredentialAccess hosts={hosts} {...secretAccess(fields, hosts)} />
+           <CredentialFields
+             fields={fields}
+-            hosts={provider.definition.hosts}
++            hosts={hosts}
+             values={values}
+             onChange={changeValues}
+             pending={pending}
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 index d641be9..1e5b036 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
