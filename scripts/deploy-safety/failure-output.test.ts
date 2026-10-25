@@ -31,6 +31,34 @@ test("failure output keeps only a bounded tail", () => {
   assert.equal(lines.at(-1), "line 4999");
 });
 
+test("a tail cut by the byte bound drops its partial first line, which could hold half a secret", () => {
+  const tail = new OutputTail();
+  tail.push(Buffer.from(`{"client_secret":"GOCSPX-shortTail-WxYz12" ${"x".repeat(70 * 1024)}\nlast line\n`));
+  const text = tail.text();
+  assert.doesNotMatch(text, /WxYz12|GOCSPX/);
+  assert.equal(text, "[truncated]\nlast line\n");
+  const chunked = new OutputTail();
+  chunked.push(Buffer.from(`secret=hunter2-partial ${"y".repeat(40 * 1024)}`));
+  chunked.push(Buffer.from(`${"z".repeat(40 * 1024)}\nkept\n`));
+  assert.equal(chunked.text(), "[truncated]\nkept\n");
+});
+
+test("key-value and multi-@ URL credentials are removed even when they are not in the environment", () => {
+  const redacted = redactFailureOutput([
+    "password=hunter2 next",
+    '{"password":"Tr0ub4dor&3","name":"basalt"}',
+    "postgres://host/db?password=s3cr3t-short&sslmode=verify-full",
+    "postgresql://role:pa@ss@aws.connect.psdb.cloud/postgres",
+    "secret: abc token=xyz api_key=k1",
+  ].join("\n"), { PADDED_SECRET: "  padded-value-123  " });
+  for (const leaked of ["hunter2", "Tr0ub4dor", "s3cr3t-short", "pa@ss", "ss@aws", "abc", "xyz", "k1"])
+    assert.ok(!redacted.includes(leaked), leaked);
+  assert.match(redacted, /"name":"basalt"/);
+  assert.match(redacted, /sslmode=verify-full/);
+  assert.match(redacted, /postgresql:\/\/\[redacted\]@aws\.connect\.psdb\.cloud\/postgres/);
+  assert.equal(redactFailureOutput("value padded-value-123 here", { PADDED_SECRET: "  padded-value-123  " }), "value [redacted] here");
+});
+
 test("a failed command reports its redacted output tail and a successful one stays silent", async () => {
   const reports: string[] = [];
   const env = { ...process.env, DEPLOY_SECRET: "super-secret-value" };
@@ -43,4 +71,22 @@ test("a failed command reports its redacted output tail and a successful one sta
   const passed = await runCommand(process.execPath, ["-e", "console.log('fine')"], process.cwd(), env, (text) => reports.push(text));
   assert.deepEqual(passed, { started: true, exitCode: 0 });
   assert.equal(reports.length, 1);
+});
+
+test("stdout and stderr are reported separately so their lines cannot interleave", async () => {
+  const reports: string[] = [];
+  await runCommand(process.execPath, ["-e", "process.stdout.write('out-line\\n'); process.stderr.write('err-line\\n'); process.exit(2)"], process.cwd(), process.env, (text) => reports.push(text));
+  assert.match(reports[0]!, /--- stdout\nout-line\n--- stderr\nerr-line/);
+});
+
+test("a signal exit names the signal and a descendant holding the pipes cannot hold the release open", async () => {
+  const reports: string[] = [];
+  const killed = await runCommand(process.execPath, ["-e", "process.kill(process.pid, 'SIGKILL')"], process.cwd(), process.env, (text) => reports.push(text));
+  assert.equal(killed.exitCode, null);
+  assert.match(reports[0]!, /exited with SIGKILL/);
+  const started = Date.now();
+  const orphaned = await runCommand("sh", ["-c", "(sleep 10 &) ; echo parent; exit 1"], process.cwd(), process.env, (text) => reports.push(text));
+  assert.equal(orphaned.exitCode, 1);
+  assert.ok(Date.now() - started < 5000, "release waited for a descendant");
+  assert.match(reports[1]!, /parent/);
 });

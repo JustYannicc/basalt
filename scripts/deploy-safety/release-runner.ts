@@ -318,10 +318,11 @@ export function runCommand(
   return new Promise((resolve) => {
     let started = false;
     let settled = false;
-    const output = new OutputTail();
+    const stdout = new OutputTail();
+    const stderr = new OutputTail();
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
     child.once("spawn", () => { started = true; });
     child.once("error", () => {
       if (!settled) {
@@ -329,15 +330,32 @@ export function runCommand(
         resolve({ started, exitCode: null });
       }
     });
-    child.once("close", (code) => {
+    // Settle on exit: a descendant that inherited the pipes must not hold the release open. Remaining
+    // output gets a short grace period to drain before the pipes are closed.
+    child.once("exit", (code, signal) => {
       if (settled) return;
       settled = true;
-      if (code !== 0) {
-        const commandLine = redactFailureOutput([command, ...args].join(" "), env);
-        const tail = redactFailureOutput(output.text(), env);
-        report(`${commandLine} exited with ${code}. Last output lines, credentials removed:\n${tail}\n`);
-      }
-      resolve({ started, exitCode: code });
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        child.stdout.destroy();
+        child.stderr.destroy();
+        if (code !== 0) {
+          const commandLine = redactFailureOutput([command, ...args].join(" "), env);
+          const sections = [["stdout", stdout], ["stderr", stderr]] as const;
+          const output = sections
+            .map(([name, tail]) => `--- ${name}\n${redactFailureOutput(tail.text(), env)}`)
+            .join("\n");
+          report(`${commandLine} exited with ${code ?? signal}. Last output lines, credentials removed:\n${output}\n`);
+        }
+        resolve({ started, exitCode: code });
+      };
+      const grace = setTimeout(finish, 2000);
+      child.once("close", () => {
+        clearTimeout(grace);
+        finish();
+      });
     });
   });
 }
