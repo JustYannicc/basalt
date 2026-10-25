@@ -201,7 +201,7 @@
     {
       "identity": "executor-zendesk-oauth",
       "file": "0022-zendesk-hosted-oauth.patch",
-      "content_sha256": "966ad2ae6333efe2b310fb284680f012526693b8f48fc997749c24549674be36",
+      "content_sha256": "e1c862ad74e9ba30c4f4c068e33c5dd03a1d1ad115418dc6f2d6966b6ec336f7",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -217,6 +217,15 @@
       "database_sensitive": false,
       "workflow_sensitive": false,
       "upstream_issue": 2368
+    },
+    {
+      "identity": "basalt-account-site-origin",
+      "file": "0024-account-site-origin.patch",
+      "content_sha256": "f2fcddee30d65e043a2d8272031936cb7951f7bbdc507855bb8eb8737630357c",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": true
     }
   ]
 }
