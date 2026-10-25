@@ -15,15 +15,17 @@ const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.me
 if (appHosting.enabled) {
   run(
     "bun",
-    ["exec", "alchemy", "deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"],
+    ["run", "alchemy", "deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"],
     cloud,
     environment,
   );
 }
+// `bun exec` treats only its first argument as the script, so `bun exec alchemy deploy …` runs a bare
+// `alchemy` that prints help and exits 0. `bun run` resolves the local bin and passes every argument.
 run(
   "bun",
   [
-    "exec",
+    "run",
     "alchemy",
     "deploy",
     "../../../../alchemy.run.ts",
