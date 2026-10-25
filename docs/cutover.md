@@ -120,22 +120,35 @@ Use Executor's MCP tools and the repository host's tools. Do not use a browser
 against real services. Work from exact resource identifiers in the private
 inventory, never a name pattern or a whole-account cleanup command.
 
-1. Stop only the old deployment producers, including their scheduled or push
-   workflows, so they cannot recreate a retired service. Preserve any shared
-   deployment job. Read back the workflow state.
-2. Detach only dedicated old ingress routes, custom domains and DNS records.
-   Verify each exact record or route is absent. Keep shared zones and domains.
-3. Stop the dedicated old pool containers and tools workloads. Remove their
-   container applications, Worker services and dedicated Durable Object
-   namespaces in the dependency order recorded in the private inventory.
-   Check instance lists as well as service definitions. A missing route alone
-   does not prove a workload is gone.
-4. Remove the dedicated storage and adapters after their last consumer is gone:
+The existing tools VM is outside the default retirement set. Retire it only on
+an explicit owner decision, after all its consumers have moved. Its connections,
+data, integration networks and deployment tooling remain protected. If the old
+1.x tools service is absent from the checked deployments, record the evidence
+and **absent, nothing to retire**. Do not treat another tools service as its
+replacement shutdown target.
+
+Follow this service order after import and every computer's move are verified:
+
+1. Retire the old model proxy and its manager after the imported accounts serve
+   requests through v1. Stop only their dedicated deployment producers first,
+   including scheduled or push workflows, so they cannot recreate the services.
+   Preserve shared jobs and read back the changed workflow state. Stop dedicated
+   manager/ingress workloads before the proxy backend. Check exact instance lists
+   as well as service definitions.
+2. Retire the old demo and its dedicated tunnel. Verify both workloads are gone;
+   a missing route alone does not prove a workload is gone.
+3. Retire the predecessor model load balancer only if a fresh consumer check
+   finds no remaining caller. Its name in a client config is insufficient:
+   inspect the actual endpoint selected. An unresolved consumer keeps it running.
+4. Remove dedicated storage and adapters only after their last consumer is gone:
    D1, KV, R2, Hyperdrive and any external database listed in the inventory.
    A binding disappearing does not prove the underlying storage was deleted.
    Do not delete shared storage, database clusters, buckets or account-level
-   secrets. Require a fresh consumer check before each removal.
-5. Remove obsolete dedicated runtime and deployment secret entries last.
+   secrets. Preserve source login/config data until import and recovery needs are
+   satisfied. Require a fresh consumer check before each removal.
+5. Remove obsolete dedicated ingress routes, custom domains and DNS records.
+   Verify each exact record or route is absent. Keep shared zones and domains.
+   Remove obsolete dedicated runtime and deployment secret entries last.
    Verify names only; never read or print values. Preserve every secret still
    used by Basalt, the runtime, Pumice or another active deployment.
 
