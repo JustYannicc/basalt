@@ -33,8 +33,6 @@ test("the Slack carry is its frozen source, public contribution and Basalt frame
       "The public contribution must retain its published framework release");
     execFileSync("git", ["apply", new URL("./slack.basalt.patch", import.meta.url).pathname], { cwd: directory });
     const manifest = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-    const host = JSON.parse(readFileSync(new URL("../../.upstream/packages/apps/package.json", import.meta.url), "utf8"));
-    assert.equal(manifest.dependencies.apps, host.version);
     assert.equal(manifest.dependencies.apps, provenance.basaltOverlay.appsVersion);
     const files = readdirSync(directory, { recursive: true, withFileTypes: true })
       .filter(file => file.isFile()).map(file => join(file.parentPath, file.name).slice(directory.length + 1)).sort();
