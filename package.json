@@ -21,7 +21,9 @@
     "architecture:typecheck": "bun run --cwd scripts/architecture typecheck",
     "architecture:deployment": "bun run --cwd scripts/architecture deployment",
     "architecture:test": "bun run --cwd scripts/architecture test",
-    "architecture:inventory": "bun run --cwd scripts/architecture inventory"
+    "architecture:inventory": "bun run --cwd scripts/architecture inventory",
+    "lint:apps": "node scripts/app-lint/check.mjs",
+    "check:app-lint": "node --test scripts/app-lint/*.test.mjs"
   },
   "engines": {
     "node": ">=24.3.0"
