@@ -132,6 +132,16 @@ test("manual mode requires a trusted main workflow dispatch", () => {
   assert.throws(() => assertReleaseMode(report(), "automatic", "push", "refs/heads/release"), /main branch/);
 });
 
+test("automatic mode accepts only main's Deploy workflow on workflow_run", () => {
+  const deployRef = "owner/basalt/.github/workflows/deploy.yml@refs/heads/main";
+  assert.doesNotThrow(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", deployRef, "owner/basalt"));
+  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", "owner/basalt/.github/workflows/other.yml@refs/heads/main", "owner/basalt"), /main Deploy workflow/);
+  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", "owner/basalt/.github/workflows/deploy.yml@refs/heads/feature", "owner/basalt"), /main Deploy workflow/);
+  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", deployRef, "fork/basalt"), /main Deploy workflow/);
+  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", deployRef, undefined), /main Deploy workflow/);
+  assert.throws(() => assertReleaseMode(report({ databaseChanged: true }), "automatic", "workflow_run", "refs/heads/main", deployRef, "owner/basalt"), /require manual release mode/);
+});
+
 test("manual database rollback builds the exact old source, deploys it, smokes production and completes the ledger", async () => {
   const calls: string[] = [];
   const deps: ManualRollbackDependencies = {

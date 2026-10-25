@@ -110,14 +110,20 @@ export function assertReleaseMode(
   mode: ReleaseMode,
   eventName = process.env.GITHUB_EVENT_NAME,
   ref = process.env.GITHUB_REF,
+  workflowRef = process.env.GITHUB_WORKFLOW_REF,
+  repository = process.env.GITHUB_REPOSITORY,
 ): void {
   const manualRequired = report.databaseChanged || report.workflowChanged;
   if (manualRequired && mode !== "manual")
     throw new SafetyGateError("Database-changing and Workflow-identity releases require manual release mode");
   if (mode === "manual" && (eventName !== "workflow_dispatch" || ref !== "refs/heads/main"))
     throw new SafetyGateError("Manual release mode requires workflow_dispatch from trusted main");
-  if (mode === "automatic" && ((eventName !== "push" && eventName !== "workflow_dispatch") || ref !== "refs/heads/main"))
-    throw new SafetyGateError("Automatic release mode is available only to main branch push or bootstrap dispatch workflows");
+  // Deploy runs on `workflow_run` after Check passes on main; only main's own Deploy workflow may use it.
+  const trustedDeployRun = eventName === "workflow_run" && !!repository &&
+    workflowRef === `${repository}/.github/workflows/deploy.yml@refs/heads/main`;
+  if (mode === "automatic" &&
+      ((eventName !== "push" && eventName !== "workflow_dispatch" && !trustedDeployRun) || ref !== "refs/heads/main"))
+    throw new SafetyGateError("Automatic release mode is available only to main branch push, the main Deploy workflow or bootstrap dispatch workflows");
 }
 
 export function productionReleaseDependencies(sourceRoot = repositoryRoot, candidateCommit?: string): ReleaseDependencies {
