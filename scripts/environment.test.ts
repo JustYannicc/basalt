@@ -245,7 +245,6 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   for (const client of optionalConnectorClients) {
     source[client.id] = `fixture-${client.id}`;
     source[client.secret] = `fixture-${client.secret}`;
-    if ("tenant" in client) source[client.tenant] = "trusted-tenant";
   }
   const env = deployEnvironment(source);
   assert.equal(env.EXECUTOR_CATALOG_URL, "https://app.signalbox.run/catalog/index.json");
@@ -258,14 +257,12 @@ test("connector credentials are separate from sign-in and the feed belongs to th
     const names = [
       client.id,
       client.secret,
-      ...("tenant" in client ? [client.tenant] : []),
     ];
     for (const name of names) {
       assert.equal(env[name], source[name]);
       const missing = deployEnvironment({ ...source, [name]: "" });
       assert.equal(missing[client.id], undefined);
       assert.equal(missing[client.secret], undefined);
-      if ("tenant" in client) assert.equal(missing[client.tenant], undefined);
       assert.equal(missing[client.ready], "false");
       assert.equal(connectorWarnings(missing).length, 1);
       const warning = connectorWarnings(missing)[0]!;
@@ -276,31 +273,28 @@ test("connector credentials are separate from sign-in and the feed belongs to th
   }
 });
 
-test("Zendesk accepts only a plain tenant label and keeps the whole optional triple unset on omission", () => {
+test("Zendesk optional hosted credentials do not select an account tenant", () => {
   const base: NodeJS.ProcessEnv = {
     ...Object.fromEntries(requiredSecrets.map(name => [name, "fixture"])),
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "synthetic-client",
     EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "synthetic-secret",
   };
-  const partial = deployEnvironment(base);
-  assert.equal(partial.ZENDESK_CONNECTOR_READY, "false");
-  assert.equal(partial.EXECUTOR_ZENDESK_SUBDOMAIN, undefined);
-  assert.equal(partial.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID, undefined);
-  assert.equal(partial.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET, undefined);
+  const configured = deployEnvironment(base);
+  assert.equal(configured.ZENDESK_CONNECTOR_READY, "true");
+  assert.equal(configured.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID, "synthetic-client");
+  assert.equal(configured.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET, "synthetic-secret");
   assert.ok(!requiredSecrets.some(name => name.includes("ZENDESK")));
-
-  for (const tenant of ["tenant.zendesk.com", "Uppercase", "-invalid", "two.labels"]) {
-    assert.throws(
-      () => deployEnvironment({ ...base, EXECUTOR_ZENDESK_SUBDOMAIN: tenant }),
-      (error: unknown) => {
-        if (!(error instanceof Error)) return false;
-        assert.match(error.message, /EXECUTOR_ZENDESK_SUBDOMAIN/);
-        assert.ok(!error.message.includes(tenant));
-        return true;
-      },
-    );
+  for (const legacyTenant of ["old-tenant", "tenant.zendesk.com", "two.labels"]) {
+    const environment = deployEnvironment({ ...base, EXECUTOR_ZENDESK_SUBDOMAIN: legacyTenant });
+    assert.equal(environment.EXECUTOR_ZENDESK_SUBDOMAIN, undefined);
+    assert.equal(environment.ZENDESK_CONNECTOR_READY, "true");
   }
+  const absent = deployEnvironment({ ...base, EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "" });
+  assert.equal(absent.ZENDESK_CONNECTOR_READY, "false");
+  assert.equal(absent.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID, undefined);
+  assert.equal(absent.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET, undefined);
+  assert.match(connectorWarnings(absent).find(warning => warning.includes("Zendesk"))!, /BYO remain available/);
 });
 
 test("absent optional connector clients do not block sign-in, pools or setup", () => {
@@ -314,5 +308,8 @@ test("absent optional connector clients do not block sign-in, pools or setup", (
   assert.equal(env.ZOHO_CONNECTOR_READY, "false");
   assert.equal(env.SLACK_CONNECTOR_READY, "false");
   assert.equal(connectorWarnings(env).length, optionalConnectorClients.length);
-  assert.ok(connectorWarnings(env).every(warning => warning.includes("not set up yet") && !warning.includes("fixture")));
+  for (const warning of connectorWarnings(env)) {
+    assert.ok(!warning.includes("fixture"));
+    assert.match(warning, warning.startsWith("Zendesk") ? /optional hosted OAuth client is unavailable/ : /not set up yet/);
+  }
 });

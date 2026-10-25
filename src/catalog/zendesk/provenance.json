@@ -3,7 +3,7 @@
   "package": "zendesk",
   "sourceSdk": "apps@0.0.1-beta.104-basalt.1",
   "origin": "provided tested Zendesk source snapshot",
-  "snapshotSha256": "2236f3157d166ba9787a11ce88dc4e936fc1d6f5d30c551c21b0cd8093e756bf",
+  "snapshotSha256": "022b79b5f5c8987ef0cfeb61915e9499097d80626c0a88bc44d2a00c1c48a213",
   "originalFileSha256": {
     "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
     "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
@@ -11,18 +11,19 @@
     "package.json": "5511f2c53b7800d3743be6b66a6e3d9a5d69a7b954ae99ab860ef093c2cb0734"
   },
   "catalogFileSha256": {
-    "README.md": "84d6863da2897cfc514df694910f0264cb3f5a59d431d0d6c5b66e465b2cc400",
-    "configuration.ts": "8191827e73bf08945b5d6969550498c81600a9710736ba06433c1e35d0e3dbbe",
-    "index.ts": "6d967b5e6326ca3990ffc8e191bc1f1fa03a8289a0de3f18368fedc2166752ec",
+    "README.md": "cbe59bd4d629b843d14e0058284c07c06b8a875a20b1e5a97cacc1768b96aa48",
+    "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
+    "index.ts": "f9e7bf3f79d2d6f566b6d8b1309b12464c48d29f5426cd6c5af46fd5123bd069",
     "package.json": "0a5061e430e8593e1c0c8b6184b337c3c82290503485b5fee6c2fb4a28cf71df"
-  },
-  "tenantTemplate": {
-    "file": "configuration.ts",
-    "marker": "example",
-    "setting": "EXECUTOR_ZENDESK_SUBDOMAIN"
   },
   "authoringDocs": "https://executor.sh/docs/author-an-app",
   "frameworkRelease": "0.0.1-beta.104-basalt.1",
   "frameworkSource": "prepared host packages/apps/package.json",
-  "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2374"
+  "upstreamIssue": "https://github.com/UsefulSoftwareCo/executor/issues/2374",
+  "siteConfiguration": {
+    "kind": "native-account-origin",
+    "declarationOrigin": "https://example.zendesk.com",
+    "subdomainOf": "zendesk.com",
+    "integrationMetadataFile": "configuration.ts"
+  }
 }

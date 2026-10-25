@@ -64,7 +64,10 @@ function containsText(value, expected, depth = 0) {
 }
 
 /** Fake only the model. Claude's generated signalbox config talks directly to the real runtime. */
-export async function proveInstalledClaude({ root, directory, origin, token, slug, toolPath, marker }) {
+export async function proveInstalledClaude({ root, directory, origin, token, slug, toolPath, marker,
+  toolInput = {}, searchQuery = slug,
+  taskPrompt = `Search for the synthetic app ${slug}, call its tool, then reply connector-runtime-proof-ok.`,
+}) {
   const home = join(directory, "native");
   const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "en_US.UTF-8", HOME: home,
     TMPDIR: join(home, "tmp"), CODEX_HOME: join(home, "codex"), CLAUDE_CONFIG_DIR: join(home, "claude") };
@@ -92,15 +95,15 @@ export async function proveInstalledClaude({ root, directory, origin, token, slu
       let tool, input;
       if (turn === 1) {
         tool = offered.find((name) => name === "mcp__signalbox__search");
-        assert.ok(tool, "Claude did not load real search tool"); input = { query: slug };
+        assert.ok(tool, "Claude did not load real search tool"); input = { query: searchQuery };
       } else if (turn === 2) {
         searchReturned = results.some((entry) => containsText(entry.content, toolPath));
         assert.ok(searchReturned, "Real MCP search result was not returned to Claude's model");
         tool = offered.find((name) => name === "mcp__signalbox__call");
-        assert.ok(tool, "Claude did not load real call tool"); input = { calls: { path: toolPath, input: {} } };
+        assert.ok(tool, "Claude did not load real call tool"); input = { calls: { path: toolPath, input: toolInput } };
       } else {
         callReturned = results.some((entry) => containsText(entry.content, marker));
-        assert.ok(callReturned, "Real Gmail result was not returned to Claude's model");
+        assert.ok(callReturned, "Real tool result was not returned to Claude's model");
       }
       res.setHeader("content-type", "text/event-stream"); res.end(message(body.model, tool, input, "connector-runtime-proof-ok"));
     } catch (error) { failures.push(String(error)); res.writeHead(400); res.end('{"error":"Model fixture assertion failed"}'); }
@@ -118,7 +121,7 @@ export async function proveInstalledClaude({ root, directory, origin, token, slu
     const output = await launch(await binary("claude"), ["--bare", "--print", "--no-session-persistence", "--setting-sources", "",
       "--settings", settings, "--strict-mcp-config", "--mcp-config", mcp, "--tools", "", "--allowedTools",
       "mcp__signalbox__search", "mcp__signalbox__call", "--model", "claude-sonnet-4-6", "--output-format", "json",
-      "Search signalbox for the synthetic Gmail app, call its messages tool, then reply connector-runtime-proof-ok."],
+      taskPrompt],
     env, cwd, join(home, "claude.json"));
     assert.equal(JSON.parse(output).result, "connector-runtime-proof-ok");
     assert.deepEqual(failures, []); assert.ok(searchReturned && callReturned); assert.equal(turns, 3);

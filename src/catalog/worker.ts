@@ -4,8 +4,8 @@ import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { aws } from "./aws/index.ts";
-import { zendeskAddition, unavailableZendeskAddition } from "./zendesk/source.ts";
-import { isZendeskSubdomain } from "./zendesk/tenant.ts";
+import { zendeskAddition } from "./zendesk/source.ts";
+import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
 const sourceAdditions: readonly Addition[] = [aws];
@@ -21,12 +21,10 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
 
 function configuredAdditions(
   ready: ConnectorAvailability,
-  zendeskSubdomain?: string,
+  metadata?: ZendeskMarketplaceMetadata,
 ): readonly FeedAddition[] {
   const additions = [atlassianAddition(ready.atlassian === true)];
-  const zendesk = ready.zendesk && zendeskSubdomain !== undefined && isZendeskSubdomain(zendeskSubdomain)
-    ? zendeskAddition(zendeskSubdomain)
-    : unavailableZendeskAddition();
+  const zendesk = zendeskAddition(ready.zendesk === true, metadata);
   return [...additions, ...sourceAdditions, zendesk];
 }
 
@@ -35,11 +33,11 @@ export async function handleCatalog(
   request: Request,
   fetcher: typeof fetch = fetch,
   ready: ConnectorAvailability = { google: false, github: false },
-  zendeskSubdomain?: string,
+  metadata?: ZendeskMarketplaceMetadata,
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-  const additions = configuredAdditions(ready, zendeskSubdomain);
+  const additions = configuredAdditions(ready, metadata);
   const path = new URL(request.url).pathname;
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
@@ -80,9 +78,10 @@ export default {
       ZOHO_CONNECTOR_READY?: string;
       SLACK_CONNECTOR_READY?: string;
       ZENDESK_CONNECTOR_READY?: string;
+      ZENDESK_MARKETPLACE_ORGANIZATION_ID?: string;
+      ZENDESK_MARKETPLACE_APP_ID?: string;
       GITLAB_CONNECTOR_READY?: string;
       MIRO_CONNECTOR_READY?: string;
-      EXECUTOR_ZENDESK_SUBDOMAIN?: string;
     },
   ) =>
     handleCatalog(
@@ -98,6 +97,6 @@ export default {
         gitlab: env.GITLAB_CONNECTOR_READY === "true",
         miro: env.MIRO_CONNECTOR_READY === "true",
       },
-      env.EXECUTOR_ZENDESK_SUBDOMAIN,
+      zendeskMarketplaceMetadata(env.ZENDESK_MARKETPLACE_ORGANIZATION_ID, env.ZENDESK_MARKETPLACE_APP_ID),
     ),
 };

@@ -1,9 +1,7 @@
 import { brand } from "../../../brand.ts";
-import type { Addition, FeedAddition, FeedEntry } from "../feed.ts";
+import type { Addition, FeedEntry } from "../feed.ts";
 import snapshot from "./source.json" with { type: "json" };
-import { isZendeskSubdomain } from "./tenant.ts";
-
-const tenantTemplate = 'export const subdomain = "example";';
+import type { ZendeskMarketplaceMetadata } from "./metadata.ts";
 
 const entry = (available: boolean): FeedEntry => ({
   id: "zendesk",
@@ -16,38 +14,22 @@ const entry = (available: boolean): FeedEntry => ({
   source: "apps/zendesk.json",
   connectionNotices: [{
     providerName: "Zendesk",
-    message: available
-      ? `Connect your own Zendesk user through ${brand.name}. Access follows that user's Zendesk permissions, and ticket creation requires approval.`
-      : `Zendesk is not set up yet. ${brand.name} must be configured for Zendesk before you can add it.`,
+    message: `Enter your Zendesk site and connect your own user through ${brand.name}. Access follows your Zendesk permissions, and ticket creation requires approval.${available ? "" : " A compatible OAuth client must already be available for your site. You can use your own client under Advanced."}`,
   }],
 });
 
-/** Keep setup status visible without publishing a placeholder tenant's source. */
-export const unavailableZendeskAddition = (): FeedAddition => ({ entry: entry(false) });
-
-/** Build the one tenant-bound app source served by this catalog Worker. */
-export function zendeskAddition(subdomain: string): Addition {
-  if (!isZendeskSubdomain(subdomain))
-    throw new TypeError("Zendesk subdomain must be one lowercase DNS label");
-
-  let replaced = false;
-  const files = snapshot.files.map((file) => {
-    if (file.path !== "configuration.ts") return file;
-    if (!file.content.includes(tenantTemplate))
-      throw new Error("Zendesk source template changed");
-    replaced = true;
-    return {
-      ...file,
-      content: file.content.replace(
-        tenantTemplate,
-        "export const subdomain = " + JSON.stringify(subdomain) + ";",
-      ),
-    };
-  });
-  if (!replaced) throw new Error("Zendesk tenant configuration is missing");
-
+/** Source availability is independent of the operator's optional hosted OAuth client. */
+export function zendeskAddition(hostedReady = false, metadata?: ZendeskMarketplaceMetadata): Addition {
+  const headers = metadata === undefined ? {} : {
+    "X-Zendesk-Marketplace-Name": brand.name,
+    "X-Zendesk-Marketplace-Organization-Id": metadata.organizationId,
+    "X-Zendesk-Marketplace-App-Id": metadata.appId,
+  };
+  const files = snapshot.files.map(file => file.path === "configuration.ts"
+    ? { ...file, content: `export const integrationHeaders: Readonly<Record<string, string>> = ${JSON.stringify(headers)};\n` }
+    : file);
   return {
-    entry: entry(true),
-    source: { package: snapshot.package, files },
+    entry: entry(hostedReady),
+    source: { ...snapshot, files },
   };
 }
