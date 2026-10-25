@@ -42,7 +42,7 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
 
     const setup = (flow, selectedSite) => Effect.gen(function* () {
       const response = yield* request(flow.actor, "GET",
-        `${prefix}/providers/${flow.app.provider}/oauth/oauth/setup?site=${encodeURIComponent(selectedSite.origin)}`);
+        `${prefix}/connections/${flow.connection.id}/oauth/oauth/setup?site=${encodeURIComponent(selectedSite.origin)}`);
       assert.equal(response.status, 200, `OAuth setup failed for ${selectedSite.id}`);
       return response.body;
     });
@@ -55,7 +55,9 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
         `OAuth setup for ${site.id} must offer only its stored public client`);
       assert.equal(options.issuer, site.origin, `OAuth setup must use the exact ${site.id} issuer`);
       const peer = fixtures.sites.find((candidate) => candidate.id !== site.id);
-      const wrongOptions = yield* setup(flow, peer);
+      const poisoned = yield* setup(flow, peer);
+      assert.equal(poisoned.issuer, site.origin, "Caller query must not retarget the frozen connection site");
+      const wrongOptions = yield* setup(flowByKey.get(`${peer.id}:public`), peer);
       assert.equal(wrongOptions.clients.some((client) => client.id === clients.get(site.id).id), false,
         `OAuth setup for ${peer.id} must not offer ${site.id}'s stored client`);
       record("oauth-setup-client-isolated", {
