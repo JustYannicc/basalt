@@ -43,6 +43,7 @@ export async function startZendeskCatalogWorker({ root, upstream, directory, mar
   const miniflare = new Miniflare({
     name: "basalt-zendesk-catalog-proof",
     scriptPath: bundle,
+    modulesRoot: directory,
     modules: true,
     host: "127.0.0.1",
     port: await freePort(),
