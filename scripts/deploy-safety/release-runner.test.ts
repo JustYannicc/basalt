@@ -138,7 +138,8 @@ test("automatic mode accepts only main's Deploy workflow on workflow_run", () =>
   assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", "owner/basalt/.github/workflows/other.yml@refs/heads/main", "owner/basalt"), /main Deploy workflow/);
   assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", "owner/basalt/.github/workflows/deploy.yml@refs/heads/feature", "owner/basalt"), /main Deploy workflow/);
   assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", deployRef, "fork/basalt"), /main Deploy workflow/);
-  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", deployRef, undefined), /main Deploy workflow/);
+  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/main", deployRef, ""), /main Deploy workflow/);
+  assert.throws(() => assertReleaseMode(report(), "automatic", "workflow_run", "refs/heads/release", deployRef, "owner/basalt"), /main Deploy workflow/);
   assert.throws(() => assertReleaseMode(report({ databaseChanged: true }), "automatic", "workflow_run", "refs/heads/main", deployRef, "owner/basalt"), /require manual release mode/);
 });
 
