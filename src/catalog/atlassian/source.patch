@@ -1,0 +1,11 @@
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+     ".": "./index.ts"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.103"
++    "apps": "0.0.1-beta.104-basalt.1"
+   },
+   "executor": {
+     "title": "Atlassian"

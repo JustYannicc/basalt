@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { handleCatalog } from "./worker.ts";
@@ -13,7 +18,7 @@ test("the feed offers the personal Atlassian app with setup and consent notices"
     assert.equal(response.status, 200);
     const body = await response.json() as Feed;
     const entry = body.apps.find(app => app.id === "atlassian")!;
-    assert.equal(entry.package, "@executor.sh/atlassian");
+    assert.equal(entry.package, "atlassian");
     assert.equal(entry.source, "apps/atlassian.json");
     assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
     const notice = entry.connectionNotices![0]!;
@@ -37,4 +42,49 @@ test("the app source is served locally without contacting the official publisher
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
   assert.equal((await handleCatalog(new Request(url, { method: "POST" }), noFetch)).status, 405);
+});
+
+
+test("the private Atlassian carry changes only the captured public framework pin", () => {
+  const capture = (name: string) => readFileSync(new URL(`./atlassian/${name}`, import.meta.url));
+  const digest = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
+  const publicBytes = capture("source.published.json");
+  const servedBytes = capture("source.json");
+  const publicSource = JSON.parse(publicBytes.toString());
+  const served = JSON.parse(servedBytes.toString());
+  const provenance = JSON.parse(capture("provenance.json").toString());
+  const patch = capture("source.patch");
+  assert.equal(provenance.revision, "3f97ddff8ce4eb358ca942b93f34c90ccc7c948c");
+  assert.equal(digest(publicBytes), provenance.publicSource.snapshotSha256);
+  assert.equal(digest(servedBytes), provenance.snapshotSha256);
+  assert.equal(digest(patch), provenance.localPatch.sha256);
+  assert.equal(provenance.localPatch.path, "source.patch");
+  assert.equal(publicSource.package, "atlassian");
+  assert.equal(served.package, publicSource.package);
+  assert.deepEqual(served.files.map((file: { path: string }) => file.path), ["index.ts", "package.json"]);
+  const directory = mkdtempSync(join(tmpdir(), "basalt-atlassian-carry-"));
+  try {
+    for (const file of publicSource.files) {
+      assert.ok(["index.ts", "package.json"].includes(file.path));
+      assert.equal(digest(file.content), provenance.publicSource.files[file.path]);
+      writeFileSync(join(directory, file.path), file.content);
+    }
+    execFileSync("git", ["apply", new URL("./atlassian/source.patch", import.meta.url).pathname], { cwd: directory });
+    for (const file of served.files) {
+      assert.equal(readFileSync(join(directory, file.path), "utf8"), file.content);
+      assert.equal(digest(file.content), provenance.files[file.path]);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  const manifest = (source: typeof served) => JSON.parse(source.files.find((file: { path: string }) => file.path === "package.json").content);
+  const originalManifest = manifest(publicSource);
+  const servedManifest = manifest(served);
+  assert.equal(originalManifest.dependencies.apps, "0.0.1-beta.103");
+  assert.equal(servedManifest.dependencies.apps, "0.0.1-beta.104-basalt.1");
+  assert.equal(servedManifest.name, "atlassian");
+  assert.equal(servedManifest.private, true);
+  assert.equal(servedManifest.type, "module");
+  assert.deepEqual(servedManifest, { ...originalManifest, dependencies: { ...originalManifest.dependencies, apps: "0.0.1-beta.104-basalt.1" } });
+  assert.equal(served.files[0].content, publicSource.files[0].content);
 });

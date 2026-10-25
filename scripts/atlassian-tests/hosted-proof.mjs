@@ -57,8 +57,23 @@ export const proveHostedAtlassian = ({
   };
   const prefix = `/api/organizations/${actors.organization.id}`;
   check(catalogApp.entry.id === "atlassian", "Use catalog app id atlassian");
-  check(catalogApp.packageName === "@executor.sh/atlassian", "Use the published Atlassian package");
+  check(catalogApp.packageName === "atlassian", "Use the private neutral Atlassian package");
   check(oauthDefinition.id === "atlassian-local-proof", "Use the unique local OAuth client id");
+
+  const packageFile = catalogApp.files.find((file) => file.path === "package.json");
+  check(packageFile, "Deploy the captured Atlassian package manifest");
+  const manifest = JSON.parse(packageFile.content);
+  check(manifest.name === catalogApp.packageName, "Served Atlassian package and manifest names match");
+  const servedSdkVersion = manifest.dependencies?.apps;
+  check(servedSdkVersion === "0.0.1-beta.104-basalt.1", "Serve the pinned Basalt framework release");
+  const frameworkRelease = checked(
+    yield* request(actors.owner, "GET", `${prefix}/framework/release`),
+    200,
+    "Read the actual organization framework release before app deployment",
+  );
+  check(typeof frameworkRelease.version === "string", "Framework release API returns a version");
+  check(frameworkRelease.version === servedSdkVersion,
+    "Organization framework release matches the served Atlassian manifest pin");
 
   const deployed = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
     name: "Atlassian catalog proof",
