@@ -87,3 +87,31 @@ test("syntax errors fail the app check rather than passing on empty plugin diagn
 test("only the root index is the app entry; nested index modules may export helpers", () => {
   assert.equal(messages(valid, [file("src/index.ts", "export const helper = 1;")]), "");
 });
+
+test("global HTTP aliases and destructuring fail while context and shadowed-object aliases pass", () => {
+  for (const extra of [
+    'const host = globalThis; host.fetch("https://example.com");',
+    'let host = globalThis; const alias = host; alias["fetch"]("https://example.com");',
+    'let host; host = globalThis; host.fetch("https://example.com");',
+    'const host = globalThis; const { fetch: request } = host; request("https://example.com");',
+  ])
+    assert.match(messages(valid, [file("http.ts", extra)]), /no-global-fetch/);
+  assert.equal(
+    messages(valid, [
+      file(
+        "http.ts",
+        'export const request = (ctx) => { const host = ctx; return host.fetch("https://example.com"); };',
+      ),
+    ]),
+    "",
+  );
+  assert.equal(
+    messages(valid, [
+      file(
+        "http.ts",
+        'export const request = (globalThis) => { const host = globalThis; return host.fetch("https://example.com"); };',
+      ),
+    ]),
+    "",
+  );
+});

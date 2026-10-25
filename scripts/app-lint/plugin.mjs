@@ -3,6 +3,7 @@ import { createBindings, propertyName, unwrapExpression, walkAst } from "./ast.m
 
 import { ruleMeta } from "./rule-meta.mjs";
 import { noLegacyAccountsRule } from "./legacy-accounts.mjs";
+import { noGlobalFetchRule } from "./global-fetch.mjs";
 
 function isAppValue(expression, bindings, seen = new Set()) {
   const node = unwrapExpression(expression);
@@ -11,7 +12,7 @@ function isAppValue(expression, bindings, seen = new Set()) {
   const variable = bindings.variableOf(node);
   if (!variable || seen.has(variable)) return false;
   seen.add(variable);
-  const result = isAppValue(bindings.constInitializer(variable), bindings, seen);
+  const result = isAppValue(bindings.localInitializer(variable), bindings, seen);
   seen.delete(variable);
   return result;
 }
@@ -86,7 +87,7 @@ function analyzeMutationOptions(expression, bindings, seen = new Set()) {
   if (node?.type !== "Identifier") return { kind: "unknown", node };
   const variable = bindings.variableOf(node);
   if (!variable || seen.has(variable)) return { kind: "unknown", node };
-  const initializer = bindings.constInitializer(variable);
+  const initializer = bindings.localInitializer(variable);
   if (!initializer) return { kind: "unknown", node };
   seen.add(variable);
   const result = analyzeMutationOptions(initializer, bindings, seen);
@@ -101,13 +102,17 @@ const mutationApproval = {
       Program(program) {
         const bindings = createBindings(context);
         walkAst(program, (node) => {
-          if (node.type !== "CallExpression" || bindings.resolveSymbol(node.callee) !== "mutation")
-            return;
+          if (node.type !== "CallExpression") return;
+          const symbol = bindings.resolveSymbol(node.callee);
+          if (symbol !== "mutation" && symbol !== "unknown") return;
           const options = analyzeMutationOptions(node.arguments?.[0], bindings);
           if (options.kind !== "explicit") {
             context.report({
               node: node.arguments?.[0] ?? node.callee,
-              messageId: options.kind === "unknown" ? "unknownApproval" : "missingApproval",
+              messageId:
+                symbol === "unknown" || options.kind === "unknown"
+                  ? "unknownApproval"
+                  : "missingApproval",
             });
           }
         });
@@ -122,5 +127,6 @@ export default {
     "default-app-export": defaultAppExport,
     "no-legacy-accounts": noLegacyAccountsRule,
     "mutation-approval": mutationApproval,
+    "no-global-fetch": noGlobalFetchRule,
   },
 };

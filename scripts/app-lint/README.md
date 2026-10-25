@@ -27,7 +27,8 @@ same host version. It does not deploy or contact the app's external services.
 
 Oxlint 1.89.0 loads `plugin.mjs` through its ESLint-compatible `jsPlugins` API.
 `config.mjs` combines the custom rules with built-in restrictions on Effect/SDK imports
-and global HTTP. The AST rules resolve framework imports and local aliases. Every
+and global HTTP. An additional AST rule rejects HTTP reached through aliases of global objects.
+The AST rules resolve framework imports and local aliases. Every
 mutation must own an `approval` option. `approval: undefined` is an explicit no-approval
 choice; operations that need consent can use `always()` from `apps/operations/approval`.
 Destructuring `fetch` from a context is valid. Browser files under `ui/` use browser HTTP;

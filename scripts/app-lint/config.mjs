@@ -47,6 +47,7 @@ export function appConfig(entryFile = "index.ts") {
       ],
       "executor-apps/default-app-export": ["error", { entryFile }],
       "executor-apps/no-legacy-accounts": "error",
+      "executor-apps/no-global-fetch": "error",
       "executor-apps/mutation-approval": "error",
     },
     overrides: [
@@ -57,6 +58,7 @@ export function appConfig(entryFile = "index.ts") {
           "eslint/no-restricted-properties": "off",
           "executor-apps/default-app-export": "off",
           "executor-apps/no-legacy-accounts": "off",
+          "executor-apps/no-global-fetch": "off",
           "executor-apps/mutation-approval": "off",
         },
       },

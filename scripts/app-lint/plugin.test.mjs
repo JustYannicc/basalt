@@ -1,81 +1,5 @@
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
-
-const directory = fileURLToPath(new URL(".", import.meta.url));
-const oxlint = join(directory, "node_modules/oxlint/bin/oxlint");
-const plugin = fileURLToPath(new URL("./plugin.mjs", import.meta.url));
-
-function check(rule, cases) {
-  const scratch = mkdtempSync(join(tmpdir(), "executor-app-lint-plugin-"));
-  try {
-    const config = join(scratch, ".oxlintrc.json");
-    writeFileSync(
-      config,
-      JSON.stringify({
-        categories: { correctness: "off" },
-        plugins: [],
-        jsPlugins: [{ name: "executor-apps", specifier: plugin }],
-        rules: { [`executor-apps/${rule}`]: "error" },
-      }),
-    );
-    const files = cases.map((item, index) => {
-      const name = `case-${index}.ts`;
-      writeFileSync(join(scratch, name), item.source);
-      return name;
-    });
-    const result = spawnSync(
-      process.execPath,
-      [oxlint, "--config", config, "--no-ignore", "--threads", "1", "--format", "json", ...files],
-      {
-        cwd: scratch,
-        encoding: "utf8",
-        maxBuffer: 4 * 1024 * 1024,
-      },
-    );
-    assert.ifError(result.error);
-    assert.ok([0, 1].includes(result.status), result.stderr || result.stdout);
-    const output = JSON.parse(result.stdout);
-    return cases.map((item, index) => {
-      const filename = `case-${index}.ts`;
-      return {
-        expected: item.expected,
-        diagnostics: (output.diagnostics ?? []).filter(
-          (diagnostic) => basename(diagnostic.filename ?? "") === filename,
-        ),
-      };
-    });
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
-}
-
-function assertCases(rule, cases) {
-  const results = check(rule, cases);
-  for (const [index, result] of results.entries()) {
-    if (result.expected === null)
-      assert.equal(
-        result.diagnostics.length,
-        0,
-        `${rule} case ${index}: ${JSON.stringify(result.diagnostics)}`,
-      );
-    else {
-      assert.equal(
-        result.diagnostics.length,
-        1,
-        `${rule} case ${index}: ${JSON.stringify(result.diagnostics)}`,
-      );
-      assert.ok(
-        result.diagnostics[0].message.includes(result.expected),
-        `${rule} case ${index}: ${result.diagnostics[0].message}`,
-      );
-    }
-  }
-}
+import { assertCases } from "./plugin-test-helpers.mjs";
 
 test("default-app-export follows imported identity, const aliases and TypeScript wrappers", () => {
   assertCases("default-app-export", [
@@ -90,6 +14,14 @@ test("default-app-export follows imported identity, const aliases and TypeScript
     {
       source: `import * as apps from "apps"; const create = apps.defineApp; export default create({}, {}) as unknown;`,
       expected: null,
+    },
+    {
+      source: `import { defineApp } from "apps"; let factory = defineApp; export default factory({}, {});`,
+      expected: null,
+    },
+    {
+      source: `import { defineApp } from "apps"; let factory = defineApp; factory = () => ({}); export default factory({}, {});`,
+      expected: "imported from",
     },
     {
       source: `import { defineApp } from "apps"; const app = defineApp({}, {}); export { app as default };`,
@@ -126,6 +58,10 @@ test("no-legacy-accounts checks only top-level requirements and framework contex
       expected: "top-level `accounts` requirements",
     },
     {
+      source: `import { defineApp } from "apps"; let requirements = { accounts: {} }; defineApp(requirements, {});`,
+      expected: "top-level `accounts` requirements",
+    },
+    {
       source: `import { defineApp } from "apps"; defineApp({ user: { accounts: {} } }, {});`,
       expected: null,
     },
@@ -148,6 +84,14 @@ test("no-legacy-accounts checks only top-level requirements and framework contex
     {
       source: `import { defineApp } from "apps"; defineApp({}, async (ctx) => ctx.accounts);`,
       expected: "Read accounts through",
+    },
+    {
+      source: `import { defineApp } from "apps"; defineApp({}, async (ctx) => { let legacy = ctx; return legacy.accounts; });`,
+      expected: "Read accounts through",
+    },
+    {
+      source: `import { defineApp } from "apps"; defineApp({}, async (ctx) => { let legacy = ctx; legacy = {}; return legacy.accounts; });`,
+      expected: null,
     },
     {
       source: `import { query } from "apps"; const handler = (context: unknown) => { const local = context; local.accounts; context.user.accounts; function nested(context: { accounts: string[] }) { return context.accounts; } }; query({}, handler);`,
@@ -183,12 +127,50 @@ test("mutation-approval follows imported aliases and proves explicit options thr
       expected: "must explicitly declare `approval`",
     },
     {
+      source: `import { mutation } from "apps"; let write = mutation; write({}, () => {});`,
+      expected: "must explicitly declare `approval`",
+    },
+    {
+      source: `import { mutation } from "apps"; let write = mutation; write = () => {}; write({}, () => {});`,
+      expected: "Cannot prove this mutation's `approval`",
+    },
+    {
       source: `import * as apps from "apps"; apps.mutation({}, () => {});`,
       expected: "must explicitly declare `approval`",
     },
     {
       source: `import * as apps from "apps"; const api = apps; api.mutation({}, () => {});`,
       expected: "must explicitly declare `approval`",
+    },
+    {
+      files: {
+        "index.ts": `import { write } from "./actions.js"; write({}, () => {});`,
+        "actions.ts": `export { mutation as write } from "apps";`,
+      },
+      expected: "must explicitly declare `approval`",
+    },
+    {
+      files: {
+        "index.ts": `import { write } from "./barrel.js"; write({}, () => {});`,
+        "barrel.ts": `export { write } from "./actions.js";`,
+        "actions.ts": `export { mutation as write } from "apps";`,
+      },
+      expected: "must explicitly declare `approval`",
+    },
+    {
+      source: `const { mutation: write } = await import("apps"); write({}, () => {});`,
+      expected: "must explicitly declare `approval`",
+    },
+    {
+      source: `const apps = await import("apps"); const write = apps.mutation; write({}, () => {});`,
+      expected: "must explicitly declare `approval`",
+    },
+    {
+      files: {
+        "index.ts": `import { write } from "./helpers.js"; write({}, () => {});`,
+        "helpers.ts": `export function write(options: unknown, handler: Function) {}`,
+      },
+      expected: null,
     },
     {
       source: `import { mutation } from "apps"; mutation({ approval: undefined }, () => {});`,

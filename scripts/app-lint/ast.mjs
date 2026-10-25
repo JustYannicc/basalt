@@ -1,3 +1,5 @@
+import { createModuleGraph } from "./module-graph.mjs";
+
 const expressionWrappers = new Set([
   "ChainExpression",
   "ParenthesizedExpression",
@@ -44,6 +46,7 @@ export function propertyName(key, computed = false) {
 
 export function createBindings(context) {
   const sourceCode = context.sourceCode;
+  const moduleGraph = createModuleGraph(context, sourceCode.ast);
   const variableCache = new WeakMap();
 
   function variableOf(identifier) {
@@ -63,15 +66,36 @@ export function createBindings(context) {
     return variable;
   }
 
-  function constInitializer(variable) {
+  function isUnmodified(variable) {
+    if (!variable || !Array.isArray(variable.references)) return false;
+    return variable.references.every((reference) => {
+      if (typeof reference.isWrite !== "function") return false;
+      return !reference.isWrite() || reference.init === true;
+    });
+  }
+
+  function variableDeclarator(variable) {
     if (!variable || variable.defs?.length !== 1) return null;
     const definition = variable.defs[0];
     const declarator = definition.node;
-    if (definition.type !== "Variable" || definition.parent?.kind !== "const") return null;
+    const kind = definition.parent?.kind;
+    if (definition.type !== "Variable" || !["const", "let", "var"].includes(kind)) return null;
     if (declarator?.type !== "VariableDeclarator" || declarator.id?.type !== "Identifier")
       return null;
     if (declarator.id.name !== variable.name || !declarator.init) return null;
-    return declarator.init;
+    return { declarator, kind };
+  }
+
+  function localInitializer(variable) {
+    const definition = variableDeclarator(variable);
+    return definition && isUnmodified(variable) ? definition.declarator.init : null;
+  }
+
+  function constInitializer(variable) {
+    const definition = variableDeclarator(variable);
+    return definition?.kind === "const" && isUnmodified(variable)
+      ? definition.declarator.init
+      : null;
   }
 
   function typeAlias(variable) {
@@ -88,15 +112,58 @@ export function createBindings(context) {
       let declaration = definition.parent ?? definition.node?.parent;
       while (declaration && declaration.type !== "ImportDeclaration")
         declaration = declaration.parent;
-      if (declaration?.source?.value !== "apps") continue;
-      if (definition.node?.type === "ImportNamespaceSpecifier") return "namespace";
+      if (!declaration?.source || typeof declaration.source.value !== "string") continue;
+      if (definition.node?.type === "ImportNamespaceSpecifier") {
+        return moduleGraph.resolveExport(declaration.source.value, "*");
+      }
       if (definition.node?.type === "ImportSpecifier") {
         const imported = definition.node.imported?.name ?? definition.node.imported?.value;
         if (
-          ["defineApp", "mutation", "query", "QueryContext", "MutationContext"].includes(imported)
+          (declaration.importKind === "type" || definition.node?.importKind === "type") &&
+          !["QueryContext", "MutationContext"].includes(imported)
         )
-          return imported;
+          continue;
+        if (typeof imported === "string")
+          return moduleGraph.resolveExport(declaration.source.value, imported);
       }
+    }
+    return null;
+  }
+
+  function literalString(node) {
+    return ["Literal", "StringLiteral"].includes(node?.type) && typeof node.value === "string"
+      ? node.value
+      : null;
+  }
+
+  function dynamicImportSource(expression) {
+    let node = unwrapExpression(expression);
+    if (node?.type === "AwaitExpression") node = unwrapExpression(node.argument);
+    if (node?.type === "ImportExpression") return literalString(node.source);
+    if (node?.type === "CallExpression" && node.callee?.type === "Import")
+      return literalString(node.arguments?.[0]);
+    return null;
+  }
+
+  function dynamicImportKind(variable) {
+    if (!variable || variable.defs?.length !== 1) return null;
+    const definition = variable.defs[0];
+    if (definition.type !== "Variable" || definition.node?.type !== "VariableDeclarator")
+      return null;
+    const { id, init } = definition.node;
+    if (dynamicImportSource(init) !== "apps") return null;
+    if (id?.type === "Identifier" && id.name === variable.name)
+      return isUnmodified(variable) ? "namespace" : "unknown";
+    if (id?.type !== "ObjectPattern") return null;
+    for (const property of id.properties ?? []) {
+      if (!["ObjectProperty", "Property"].includes(property.type)) continue;
+      const value =
+        property.value?.type === "AssignmentPattern" ? property.value.left : property.value;
+      if (value?.type !== "Identifier" || value.name !== variable.name) continue;
+      const imported = propertyName(property.key, property.computed);
+      if (!["defineApp", "mutation", "query", "QueryContext", "MutationContext"].includes(imported))
+        return null;
+      return isUnmodified(variable) ? imported : "unknown";
     }
     return null;
   }
@@ -108,20 +175,27 @@ export function createBindings(context) {
     if (node.type === "Identifier") {
       const variable = variableOf(node);
       if (!variable || seen.has(variable)) return null;
+      if (symbolCache.has(variable)) return symbolCache.get(variable);
       const imported = importKind(variable);
       if (imported) return imported;
+      const dynamic = dynamicImportKind(variable);
+      if (dynamic) return dynamic;
       seen.add(variable);
-      if (symbolCache.has(variable)) return symbolCache.get(variable);
-      const symbol = resolveSymbol(constInitializer(variable), seen);
+      const definition = variableDeclarator(variable);
+      const symbol = resolveSymbol(definition?.declarator.init, seen);
       seen.delete(variable);
-      symbolCache.set(variable, symbol);
-      return symbol;
+      const result = symbol && !isUnmodified(variable) ? "unknown" : symbol;
+      symbolCache.set(variable, result);
+      return result;
     }
     if (node.type === "MemberExpression") {
       const objectSymbol = resolveSymbol(node.object, seen);
-      if (objectSymbol !== "namespace") return null;
       const name = propertyName(node.property, node.computed);
-      return ["defineApp", "mutation", "query"].includes(name) ? name : null;
+      if (!["defineApp", "mutation", "query"].includes(name)) return null;
+      if (objectSymbol === "namespace") return name;
+      if (objectSymbol === "unknown") return "unknown";
+      if (objectSymbol?.kind === "namespace") return objectSymbol.members.get(name) ?? null;
+      return null;
     }
     return null;
   }
@@ -133,7 +207,7 @@ export function createBindings(context) {
     const variable = variableOf(node);
     if (!variable || seen.has(variable)) return null;
     seen.add(variable);
-    const initializer = unwrapExpression(constInitializer(variable));
+    const initializer = unwrapExpression(localInitializer(variable));
     if (initializer) return resolveFunctionNode(initializer, seen);
     for (const definition of variable.defs ?? []) {
       if (definition.type === "FunctionName" && definition.node?.type === "FunctionDeclaration") {
@@ -143,5 +217,13 @@ export function createBindings(context) {
     return null;
   }
 
-  return { variableOf, constInitializer, typeAlias, resolveSymbol, resolveFunctionNode };
+  return {
+    variableOf,
+    isUnmodified,
+    localInitializer,
+    constInitializer,
+    typeAlias,
+    resolveSymbol,
+    resolveFunctionNode,
+  };
 }

@@ -25,7 +25,7 @@ function findTopLevelAccounts(expression, bindings, seen = new Set()) {
   if (node?.type !== "Identifier") return null;
   const variable = bindings.variableOf(node);
   if (!variable || seen.has(variable)) return null;
-  const initializer = bindings.constInitializer(variable);
+  const initializer = bindings.localInitializer(variable);
   if (!initializer) return null;
   seen.add(variable);
   const found = findTopLevelAccounts(initializer, bindings, seen);
@@ -64,7 +64,7 @@ function isContextVariable(variable, bindings, marked, seen = new Set()) {
   if (!variable || seen.has(variable)) return false;
   if (marked.has(variable)) return true;
   seen.add(variable);
-  const initializer = unwrapExpression(bindings.constInitializer(variable));
+  const initializer = unwrapExpression(bindings.localInitializer(variable));
   const result =
     initializer?.type === "Identifier"
       ? isContextVariable(bindings.variableOf(initializer), bindings, marked, seen)
