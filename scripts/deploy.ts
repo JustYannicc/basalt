@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { connectorWarnings, deployEnvironment } from "./environment.ts";
 import { appHosting } from "../brand.ts";
+import { alchemyArgs } from "./alchemy.ts";
 import { run } from "./process.ts";
 
 if (process.env.GITHUB_ACTIONS !== "true") {
@@ -15,22 +16,14 @@ const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.me
 if (appHosting.enabled) {
   run(
     "bun",
-    ["exec", "alchemy", "deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"],
+    alchemyArgs("deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"),
     cloud,
     environment,
   );
 }
 run(
   "bun",
-  [
-    "exec",
-    "alchemy",
-    "deploy",
-    "../../../../alchemy.run.ts",
-    "--stage",
-    environment.ALCHEMY_STAGE!,
-    "--yes",
-  ],
+  alchemyArgs("deploy", "../../../../alchemy.run.ts", "--stage", environment.ALCHEMY_STAGE!, "--yes"),
   cloud,
   environment,
 );
