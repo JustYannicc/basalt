@@ -38,7 +38,7 @@ model {
 
     catalog = module "Connector catalog" {
       #basalt #v1
-      description "Read-only feed in a separate Worker. Merges the official catalog with published additions and provider notices. No person credentials. Carries the official messaging app with its contributed personal user-token method until published upstream. It serves tenant-bound Zendesk source only when trusted tenant and hosted OAuth client settings are complete. Source and provider notices stay outside the tools API Worker."
+      description "Read-only feed in a separate Worker. Merges the official catalog with published additions and provider notices. No person credentials. Carries the official messaging app with its contributed personal user-token method until published upstream. Carried apps pin the prepared host framework and declare each operation's approval. It substitutes trusted tenant configuration only when tenant and hosted OAuth client settings are complete. Source and provider notices stay outside the tools API Worker."
       metadata { code "src/catalog" }
     }
 
