@@ -26,8 +26,10 @@ export function appConfig(entryFile = "index.ts") {
                 "@executor.sh/sdk/**",
                 "@usefulsoftware/executor-sdk",
                 "@usefulsoftware/executor-sdk/**",
+                "node:module",
+                "module",
               ],
-              message: "Use the apps framework; Effect and the Executor SDK belong to the host.",
+              message: "Use ESM imports and the apps framework; CommonJS loaders, Effect and the Executor SDK are unsupported in app source.",
             },
           ],
         },
@@ -38,6 +40,7 @@ export function appConfig(entryFile = "index.ts") {
           name: "fetch",
           message: "Use ctx.fetch (or a destructured context fetch) so the host owns HTTP.",
         },
+        { name: "require", message: "Use ESM imports; CommonJS loading is unsupported in app source." },
       ],
       "eslint/no-restricted-properties": [
         "error",
@@ -55,7 +58,10 @@ export function appConfig(entryFile = "index.ts") {
       {
         files: ["**/ui/**"],
         rules: {
-          "eslint/no-restricted-globals": "off",
+          "eslint/no-restricted-globals": [
+            "error",
+            { name: "require", message: "Use ESM imports; CommonJS loading is unsupported in app source." },
+          ],
           "eslint/no-restricted-properties": "off",
           "executor-apps/default-app-export": "off",
           "executor-apps/no-legacy-accounts": "off",

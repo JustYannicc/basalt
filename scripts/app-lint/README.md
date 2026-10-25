@@ -51,6 +51,10 @@ re-export. There is no cross-module binding inference. Ordinary helpers, DTO pro
 named `mutation` or `write`, and exported results of checked framework calls remain legal.
 Unrelated local helpers may use named, default, namespace or literal dynamic imports.
 Computed module discovery and reflection are outside this check's static contract.
+Import `QueryContext` and `MutationContext` directly from `apps` too. Local context
+type aliases remain supported, but re-exporting those types or aliases is rejected.
+CommonJS loading through global `require` or `node:module`/`module` is unsupported.
+Use ESM imports in helpers and browser code too.
 
 Use context HTTP and a direct named `decodeJson` import for decoding. Existing context
 fetch destructuring and passing a context fetch into an HTTP helper remain supported.
