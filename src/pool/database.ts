@@ -5,6 +5,7 @@ import { adopt } from "alchemy/AdoptPolicy";
 import { retain } from "alchemy/RemovalPolicy";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
 
@@ -80,7 +81,9 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
       });
   const script = fileURLToPath(new URL("../../scripts/ensure-pool-database.ts", import.meta.url));
   const ready = yield* Command.Exec("PoolDatabase", {
-    command: "node '" + script.replaceAll("'", "'\\''") + "'",
+    // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.
+    command: `node ${basename(script)}`,
+    cwd: dirname(script),
     env: {
       POOL_DATABASE_ADMIN_URL: admin.connectionUrl,
       POOL_DATABASE_RUNTIME_ROLE: runtime.name,

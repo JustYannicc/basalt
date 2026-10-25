@@ -3,6 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import { Stage } from "alchemy/Stage";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, Effect } from "effect";
 import { telemetryBindings } from "./src/telemetry/deployment.ts";
@@ -57,7 +58,9 @@ export default Alchemy.Stack(
       new URL("./scripts/ensure-artifacts.ts", import.meta.url),
     );
     const namespace = yield* Command.Exec("AppSourceNamespace", {
-      command: "node '" + namespaceScript.replaceAll("'", "'\\''") + "'",
+      // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.
+      command: `node ${basename(namespaceScript)}`,
+      cwd: dirname(namespaceScript),
       env: {
         CLOUDFLARE_ACCOUNT_ID: accountId,
         CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
@@ -78,7 +81,8 @@ export default Alchemy.Stack(
         new URL("./scripts/preview-auth/seed.ts", import.meta.url),
       );
       yield* Command.Exec("PreviewAuthSeed", {
-        command: "node '" + seedScript.replaceAll("'", "'\\''") + "'",
+        command: `node ${basename(seedScript)}`,
+        cwd: dirname(seedScript),
         env: {
           ALCHEMY_STAGE: stage,
           TEST_STAGE_DOMAIN: preview.domain,
