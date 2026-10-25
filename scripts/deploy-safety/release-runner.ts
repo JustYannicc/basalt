@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClassificationReport } from "../releases/types.ts";
 import { SafetyGateError } from "./contracts.ts";
+import { OutputTail, redactFailureOutput } from "./failure-output.ts";
 import { beginReleaseDeployment, beginRollbackDeployment, finishDeployment, readLedgerEnvironment } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { requirePlanetScaleEnvironment } from "./runtime.ts";
@@ -312,11 +313,15 @@ export function runCommand(
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
+  report: (text: string) => void = (text) => { process.stderr.write(text); },
 ): Promise<CommandResult> {
   return new Promise((resolve) => {
     let started = false;
     let settled = false;
-    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "ignore", "ignore"] });
+    const output = new OutputTail();
+    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => output.push(chunk));
     child.once("spawn", () => { started = true; });
     child.once("error", () => {
       if (!settled) {
@@ -325,10 +330,14 @@ export function runCommand(
       }
     });
     child.once("close", (code) => {
-      if (!settled) {
-        settled = true;
-        resolve({ started, exitCode: code });
+      if (settled) return;
+      settled = true;
+      if (code !== 0) {
+        const commandLine = redactFailureOutput([command, ...args].join(" "), env);
+        const tail = redactFailureOutput(output.text(), env);
+        report(`${commandLine} exited with ${code}. Last output lines, credentials removed:\n${tail}\n`);
       }
+      resolve({ started, exitCode: code });
     });
   });
 }

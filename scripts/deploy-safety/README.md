@@ -44,7 +44,7 @@ node scripts/deploy-safety/release.ts deploy \
 
 Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports still require the separate protected manual release workflow. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
 
-If deployment or smoke starts and fails for a safe release, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
+If deployment or smoke starts and fails for a safe release, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. Release subprocesses run quietly. Actions logs are public, so a failed command prints only its last 60 output lines, after removing credential-named environment values, URL userinfo, bearer and basic credentials, and long runs mixing letters and digits. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
 
 ### Database or Workflow identity changes
 
