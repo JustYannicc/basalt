@@ -72,6 +72,7 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
     observations.push({ site: site.id, host: site.host, ...fields });
   };
 
+
   const issueTokens = (site, flow, generation, response) => {
     const accessToken = `synthetic-access-${site.id}-${randomUUID()}`;
     const refreshToken = `synthetic-refresh-${site.id}-${randomUUID()}`;
@@ -97,15 +98,15 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
     });
   };
 
-  const startSite = async (id) => {
-    const server = createServer(async (request, response) => {
+  const siteHandler = (site) => {
+    return async (request, response) => {
       const endpoint = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
       const host = String(request.headers.host ?? "").toLowerCase();
       if (host !== site.host.toLowerCase()) {
         safeFailure(site, endpoint, "unexpected_host");
         return json(response, 421, { error: "invalid_host" });
       }
-
+      const id = site.id;
       try {
         if (request.method === "GET" && endpoint === "/oauth/authorizations/new") {
           const url = new URL(request.url ?? "/", site.origin);
@@ -232,6 +233,7 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
             method: request.method,
             endpoint,
             authMethod: "bearer",
+            bearerPresent: token !== undefined,
             credentialSiteMatches: owner?.siteId === id,
             tokenActive: owner !== undefined && owner.expiresAt > Date.now(),
             flowMode: owner?.mode,
@@ -286,21 +288,32 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
         safeFailure(site, endpoint, "fixture_handler_error");
         return json(response, 400, { error: "invalid_request" });
       }
-    });
-
-    server.listen(0, "::1");
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Zendesk fixture did not bind an IPv6 loopback port");
-    const hostName = `${id}.localhost`;
-    const site = { id, host: `${hostName}:${address.port}`, hostName, origin: `http://${hostName}:${address.port}` };
-    servers.push(server);
-    sites.push(site);
-    return site;
+    };
   };
 
-  await startSite("site-a");
-  await startSite("site-b");
+  const handlersByHost = new Map();
+  const server = createServer(async (request, response) => {
+    const endpoint = new URL(request.url ?? "/", "http://fixture.invalid").pathname;
+    const host = String(request.headers.host ?? "").toLowerCase();
+    const handler = handlersByHost.get(host);
+    if (!handler) {
+      failures.push({ site: "unknown", host, endpoint, reason: "unexpected_host" });
+      return json(response, 421, { error: "invalid_host" });
+    }
+    return handler(request, response);
+  });
+
+  server.listen(0, "::1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Zendesk fixture did not bind an IPv6 loopback port");
+  for (const id of ["site-a", "site-b"]) {
+    const hostName = `${id}.localhost`;
+    const site = { id, host: `${hostName}:${address.port}`, hostName, origin: `http://${hostName}:${address.port}` };
+    handlersByHost.set(site.host.toLowerCase(), siteHandler(site));
+    sites.push(site);
+  }
+  servers.push(server);
 
   return {
     sites,

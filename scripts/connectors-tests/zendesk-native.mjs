@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { proveInstalledClaude } from "./native-claude.mjs";
+import { proveZendeskPeerPlacement } from "./zendesk-peer-placement.mjs";
 
 function tool(items, name) {
   const found = items?.find((entry) => entry.path.endsWith(`.${name}`));
@@ -60,9 +61,9 @@ export function proveZendeskMcp({
       flow.health = health;
       if (flow.mode === "hosted") {
         const expectedId = flow.site.id === "site-a" ? "9101" : "9202";
-        assert.equal(health.accountInfo?.externalId, expectedId,
+        assert.equal(health.info?.externalId, expectedId,
           `Hosted health for ${flow.site.id} must describe that site's connected user`);
-        assert.equal(health.accountInfo?.displayName, `Zendesk fixture ${flow.site.id}`);
+        assert.equal(health.info?.displayName, `Zendesk fixture ${flow.site.id}`);
         const healthEvents = fixtures.observations().slice(beforeHealth);
         const apiEvents = healthEvents.filter((event) => event.phase === "api");
         assert.ok(apiEvents.some((event) =>
@@ -133,6 +134,18 @@ export function proveZendeskMcp({
       ).length, ticketWritesBefore, "An unapproved createTicket must not reach the external API");
       record("ticket-create-approval-preserved", { site: flow.site.id, host: flow.site.host, providerWriteCount: 0 });
     }
+
+    yield* proveZendeskPeerPlacement({
+      Effect,
+      request,
+      checked,
+      actors,
+      prefix,
+      fixtures,
+      catalog,
+      client: mcpClients.get(actors.admin),
+      record,
+    });
 
     const owner = issuedKeys.find(({ actor }) => actor === actors.owner);
     assert.ok(owner, "Owner MCP token is missing");

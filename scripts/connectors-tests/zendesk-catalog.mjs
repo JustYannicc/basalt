@@ -133,7 +133,7 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   const originalIndexHash = sha256(index.content);
   const before = index.content;
   const templateOrigin = sites[0].origin;
-  const hosts = sites.map(({ hostName }) => hostName).sort();
+  const templateHost = sites[0].host;
   index.content = exactReplace(
     index.content,
     'const declarationOrigin = "https://example.zendesk.com";',
@@ -143,7 +143,7 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   index.content = exactReplace(
     index.content,
     'hosts: ["example.zendesk.com"],',
-    `hosts: ${JSON.stringify(hosts)},`,
+    `hosts: ${JSON.stringify([templateHost])},`,
     "Zendesk provider host allowlist",
   );
   index.content = exactReplace(
@@ -177,7 +177,7 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
     operatorMetadataInjectionVerified: true,
     testOverrides: {
       endpointOrigin: { from: "https://example.zendesk.com", to: templateOrigin },
-      providerHosts: { from: ["example.zendesk.com"], to: hosts },
+      providerHosts: { from: ["example.zendesk.com"], to: [templateHost] },
       siteSubdomainOf: { from: "zendesk.com", to: "localhost" },
       sites: sites.map(({ id, origin, host }) => ({ id, origin, host })),
       urlPolicy: {

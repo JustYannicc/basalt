@@ -45,6 +45,7 @@ test("Zendesk source comes from the catalog Worker and carries pinned provenance
   assert.equal(provenance.operatorMetadataInjectionVerified, true);
   assert.equal(provenance.testOverrides.siteSubdomainOf.from, "zendesk.com");
   assert.equal(provenance.testOverrides.siteSubdomainOf.to, "localhost");
+  assert.deepEqual(provenance.testOverrides.providerHosts.to, [fixtures.sites[0].host]);
   assert.equal(provenance.testOverrides.urlPolicy.exactAllowedOriginsEnvironment, "EXECUTOR_URL_ALLOW_HTTP_ORIGINS");
   assert.equal(provenance.testOverrides.urlPolicy.allowLoopbackHttpEnvironment, "EXECUTOR_URL_ALLOW_LOOPBACK_HTTP");
   assert.deepEqual(provenance.testOverrides.urlPolicy.exactAllowedOrigins, fixtures.sites.map(({ origin }) => origin).sort());
@@ -53,6 +54,7 @@ test("Zendesk source comes from the catalog Worker and carries pinned provenance
   const index = source.files.find((file) => file.path === "index.ts");
   assert.ok(index);
   assert.ok(index.content.includes(`const declarationOrigin = ${JSON.stringify(fixtures.sites[0].origin)};`));
-  for (const site of fixtures.sites) assert.ok(index.content.includes(JSON.stringify(site.hostName)));
+  assert.ok(index.content.includes(`hosts: ${JSON.stringify([fixtures.sites[0].host])}`));
+  assert.equal(index.content.includes(JSON.stringify(fixtures.sites[1].host)), false);
   assert.ok(index.content.includes('subdomainOf: "localhost"'));
 });

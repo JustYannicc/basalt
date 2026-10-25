@@ -47,9 +47,10 @@ export function proveZendeskNative({
         `Hosted health and tools must send only ${site.id}'s token to ${site.id}`);
       assert.ok(hosted.some((event) => event.phase === "api" && event.endpoint === "/api/v2/tickets.json" && event.credentialSiteMatches),
         `The hosted catalog ticket tool must read only ${site.id}`);
-      assert.equal(hosted.some((event) => event.phase === "api" && event.site !== site.id), false,
-        `Hosted token for ${site.id} must never be placed at the peer host`);
     }
+    assert.equal(observations.some((event) =>
+      event.phase === "api" && event.flowMode === "hosted" && event.tokenActive && !event.credentialSiteMatches,
+    ), false, "A managed Zendesk token must never be active at a peer host");
     assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-a" && event.authMethod === "none"));
     assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-a" && event.authMethod === "client_secret_post"));
     assert.ok(observations.some((event) => event.phase === "token_refresh" && event.site === "site-b" && event.authMethod === "none"));

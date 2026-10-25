@@ -67,6 +67,8 @@ async function readCurrentUser(site, token) {
 test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-client JSON PKCE", async () => {
   assert.equal(fixture.sites.length, 2);
   assert.notEqual(fixture.sites[0].origin, fixture.sites[1].origin);
+  assert.equal(new URL(fixture.sites[0].origin).port, new URL(fixture.sites[1].origin).port,
+    "The two loopback site labels must share the issuer template port");
 
   const issued = [];
   for (const site of fixture.sites) {
@@ -127,6 +129,10 @@ test("two Zendesk fixtures exercise stored public, confidential BYO, and hosted-
     assert.deepEqual(event.marketplaceHeaderNames, [...marketplaceHeaderNames]);
   }
   assert.ok(events.some((event) => event.phase === "api" && !event.credentialSiteMatches));
+  const peerPlacement = events.findLast((event) => event.phase === "api" && !event.credentialSiteMatches);
+  assert.equal(peerPlacement?.bearerPresent, true);
+  assert.equal(peerPlacement?.tokenActive, true,
+    "The fixture must identify an active peer-site token without recording the token value");
   assert.deepEqual(fixture.rotations().map(({ site, mode, generation, rotated }) => ({ site, mode, generation, rotated })), [
     { site: "site-a", mode: "public", generation: 1, rotated: true },
     { site: "site-a", mode: "confidential", generation: 1, rotated: true },

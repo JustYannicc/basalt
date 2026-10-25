@@ -149,6 +149,21 @@ const program = Effect.gen(function* () {
     tokenEndpointAuthMethod: "client_secret_post", defaultScopes: scopes, allowedScopes: scopes,
     placement: { hosts: [new URL(provider.origin).host] },
   };
+  const zendeskTemplate = zendeskFixtures.sites[0];
+  const zendeskDefinition = {
+    id: "zendesk-native-proof",
+    label: "Synthetic Zendesk native proof",
+    server: {
+      authorizationUrl: `${zendeskTemplate.origin}/oauth/authorizations/new`,
+      tokenUrl: `${zendeskTemplate.origin}/oauth/tokens`,
+      tokenRequestFormat: "json",
+    },
+    issuerSite: { subdomainOf: "localhost" },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: ["tickets:read", "tickets:write", "users:read"],
+    allowedScopes: ["tickets:read", "tickets:write", "users:read"],
+    placement: { hosts: [zendeskTemplate.host] },
+  };
   const prepared = yield* prepareScenario(base.target, "Connector OAuth and native MCP proof");
   const port = yield* Effect.promise(freePort);
   const authSecret = randomBytes(32).toString("hex");
@@ -165,12 +180,14 @@ const program = Effect.gen(function* () {
     BETTER_AUTH_SECRET: authSecret,
     EXECUTOR_NPM_REGISTRY: registry.url,
     EXECUTOR_OAUTH_CALLBACK_URL: callback,
-    EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([definition]),
+    EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([definition, zendeskDefinition]),
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_ID: "connector-fixture-client",
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_SECRET: "connector-fixture-secret",
-    EXECUTOR_ZENDESK_SUBDOMAIN: "example",
-    EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "zendesk-fixture-client",
-    EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "zendesk-fixture-secret",
+    EXECUTOR_ZENDESK_SUBDOMAIN: "",
+    EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: "",
+    EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: "",
+    EXECUTOR_OAUTH_ZENDESK_NATIVE_PROOF_CLIENT_ID: "zendesk-fixture-client",
+    EXECUTOR_OAUTH_ZENDESK_NATIVE_PROOF_CLIENT_SECRET: "zendesk-fixture-secret",
     EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true",
     EXECUTOR_URL_ALLOW_HTTP_ORIGINS: JSON.stringify(allowedOrigins),
   });
