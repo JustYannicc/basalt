@@ -12,6 +12,7 @@ import {
   secrets,
   string,
 } from "apps";
+import { always } from "apps/operations/approval";
 import {
   callerHeader,
   controlBasePath,
@@ -91,6 +92,7 @@ export const usage = query(
 export const startSignIn = mutation(
   {
     description: "Start connecting a subscription; only the pool's owner can. Give the person `url` to open. With flow `callback`, they sign in and paste back the localhost address the page ends on: pass it to finishSignIn. With flow `device`, they approve on that page (entering `userCode` if set) and the pool finishes by itself. Check signInStatus until it isn't `waiting`. One open sign-in per pool; a new start replaces it.",
+    approval: always(),
     input: object({ provider: string({ minLength: 1 }) }),
   },
   async (ctx: Context, { provider }) =>
@@ -100,6 +102,7 @@ export const startSignIn = mutation(
 export const finishSignIn = mutation(
   {
     description: "Finish a sign-in with the localhost address the provider's page ended on",
+    approval: always(),
     input: object({ ...sessionFields, redirectUrl: string({ minLength: 1 }) }),
   },
   async (ctx: Context, input) => control<SignInStatus>(ctx, "/sign-ins/callback", { method: "POST", body: input }),
@@ -112,7 +115,7 @@ export const signInStatus = query(
 );
 
 export const cancelSignIn = mutation(
-  { description: "Cancel a started sign-in", input: session },
+  { description: "Cancel a started sign-in", approval: always(), input: session },
   async (ctx: Context, input) =>
     control<null>(ctx, `/sign-ins?session=${encodeURIComponent(input.session)}`, { method: "DELETE" }),
 );
@@ -120,13 +123,14 @@ export const cancelSignIn = mutation(
 export const addLoginFile = mutation(
   {
     description: "Connect a subscription from a login file the pool backend exported",
+    approval: always(),
     input: object({ file: json() }),
   },
   async (ctx: Context, { file }) => control<LoginFileAdded>(ctx, "/login-files", { method: "POST", body: file }),
 );
 
 export const removeAccount = mutation(
-  { description: "Remove an account from this pool", input: object({ id: string({ minLength: 1 }) }) },
+  { description: "Remove an account from this pool", approval: always(), input: object({ id: string({ minLength: 1 }) }) },
   async (ctx: Context, { id }) => control<null>(ctx, `/accounts/${encodeURIComponent(id)}`, { method: "DELETE" }),
 );
 
