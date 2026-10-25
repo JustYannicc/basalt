@@ -84,14 +84,14 @@ test("provider restrictions follow the actual official app names and never chang
     assert.equal(entry.connectionNotices?.[0]?.providerName, apps[index]!.name);
     assert.deepEqual(entry.auth, apps[index]!.auth);
   }
-  assert.match(feed.apps[0]!.connectionNotices![0]!.message, /100 users over its lifetime/);
+  assert.match(feed.apps[0]!.connectionNotices![0]!.message, /Only listed test users can connect/);
   assert.match(feed.apps[7]!.connectionNotices![0]!.message, /Messages post as you/);
   assert.match(feed.apps[7]!.connectionNotices![0]!.message, /not set up yet/);
   assert.equal(apps[0]!.connectionNotices, undefined);
 });
 
 test("the public feed marks only unconfigured hosted connectors as not set up yet", async () => {
-  const feed: Feed = { version: 1, apps: ["gmail", "google-drive", "github"].map(id => ({ ...official.apps[0]!, id,
+  const feed: Feed = { version: 1, apps: ["google", "gmail", "google-calendar", "google-drive", "google-docs", "google-sheets", "google-slides", "github"].map(id => ({ ...official.apps[0]!, id,
     name: id, package: `@executor.sh/${id}` })) };
   for (const ready of [{ google: false, github: false }, { google: true, github: false }, { google: false, github: true }, { google: true, github: true }]) {
     const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(feed), ready);
@@ -102,6 +102,14 @@ test("the public feed marks only unconfigured hosted connectors as not set up ye
       const configured = entry.id === "github" ? ready.github : ready.google;
       assert.equal(entry.connectionNotices?.some(notice => notice.message.includes("not set up yet")), !configured);
       assert.deepEqual(entry.auth, source.auth);
+      if (entry.id !== "github") {
+        const notice = entry.connectionNotices![0]!.message;
+        assert.match(notice, /in Testing/);
+        assert.match(notice, /Only listed test users can connect/);
+        assert.match(notice, /authorizations and refresh tokens expire after seven days/);
+        assert.match(notice, /must reconnect/);
+        assert.doesNotMatch(notice, /published|100 users|lifetime/);
+      }
     }
   }
 });

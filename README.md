@@ -180,7 +180,7 @@ Create a GitHub OAuth App named after `brand.oauthAppName` (Signalbox) with home
 
 The tools service reads `https://app.signalbox.run/catalog/index.json`. A separate read-only Worker serves official catalog entries, operator notices and contributed app sources. The contributed Slack user-token method is carried as a pinned package snapshot until its upstream release. The tenant-bound Zendesk source is served only by the Catalog Worker. New app sources stay with the catalog while community publication awaits an approved publisher scope and checks against the chosen public host. Relative icons resolve to the official publisher. The feed and provider notices are outside the tools API Worker bundle; the existing 5.45 MB upload budget stays unchanged.
 
-Create the Google connector as a separate OAuth Web application named Signalbox in a separate Cloud project from sign-in. Choose External audience, publish it as Production, and leave it unverified. Testing status expires refresh tokens after seven days. Register `https://app.signalbox.run/api/oauth/callback` and the authorized JavaScript origin `https://app.signalbox.run`. Enable Gmail, Calendar, Drive, Docs, Sheets and Slides APIs. The consent scope union for these catalog apps is:
+Create the Google connector as a separate OAuth Web application named Signalbox in a separate Cloud project from sign-in. The current connector project uses External audience and Testing status. Only listed test users can connect; their authorizations and refresh tokens expire after seven days. Production publishing, verification and CASA assessment await operator approval. Register `https://app.signalbox.run/api/oauth/callback` and the authorized JavaScript origin `https://app.signalbox.run`. Enable Gmail, Calendar, Drive, Docs, Sheets and Slides APIs. The consent scope union for these six service apps is:
 
 - `openid`, `email`, `profile`
 - `https://mail.google.com/`
@@ -191,7 +191,7 @@ Create the Google connector as a separate OAuth Web application named Signalbox 
 - `https://www.googleapis.com/auth/spreadsheets`
 - `https://www.googleapis.com/auth/presentations`
 
-A connection requests only its selected app's scopes. The connect screen explains the unverified warning, the project's lifetime cap of 100 users and Workspace admin restrictions. Full Gmail and Drive access is intentional. The identity-only sign-in client stays independent of connector grants, consent and rotation. Two clients in one project would still share the project's user cap.
+A connection requests only its selected app's scopes. The connect screen explains Testing access, seven-day expiry and Workspace admin restrictions. The all-in-one Google app requests additional scopes and APIs; see [its scope and API readiness check](docs/google-connector-readiness.md). Full Gmail and Drive access is intentional. The identity-only sign-in client stays independent of connector grants, consent and rotation. Two clients in one project would still share the project's user cap.
 
 Create a separate GitHub OAuth App named Signalbox with homepage `https://app.signalbox.run` and callback `https://app.signalbox.run/api/oauth/callback`. The official REST app requests `repo`, `read:org`, `workflow`, `gist`, `notifications`, `read:user` and `user:email`. The host's optional `github-oauth` client matches this app; its older GitHub App client remains separate. No app review is required. Organization approval and SAML sign-in can still limit repository access.
 
