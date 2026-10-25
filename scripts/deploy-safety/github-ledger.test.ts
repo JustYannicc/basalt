@@ -247,7 +247,8 @@ test("database rollback ledger start rejects a changed deployment id before crea
 test("initial attempts that all ended without success leave the ledger uninitialized", async () => {
   const value = report();
   const initial = { ...value, base: value.candidate };
-  const ledgerFor = (records: Array<{ id: number; status: string | undefined; environment?: string }>) => {
+  type Record = { id: number; history: string[]; environment?: string };
+  const ledgerFor = (records: Record[]) => {
     const fetcher = async (input: string | URL | Request) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/deployments"))
@@ -260,24 +261,34 @@ test("initial attempts that all ended without success leave the ledger uninitial
         })));
       const match = /\/deployments\/(\d+)\/statuses$/.exec(url.pathname);
       const record = records.find(({ id }) => String(id) === match?.[1]);
-      if (record) return Response.json(record.status ? [{ id: record.id * 10, state: record.status, created_at: "2026-10-25T20:00:00Z" }] : []);
+      // GitHub lists statuses newest first; each record's history is written oldest first.
+      if (record)
+        return Response.json(record.history.map((state, index) => ({
+          id: record.id * 10 + index,
+          state,
+          created_at: `2026-10-25T20:0${index}:00Z`,
+        })).reverse());
       throw new Error(`Unexpected GitHub fixture request: ${url.pathname}`);
     };
     return readDeploymentLedger({ token: "fixture-token", repository: "owner/repo" }, fetcher);
   };
+  const failed = ["in_progress", "failure"];
 
-  assert.deepEqual(await ledgerFor([{ id: 3, status: "failure" }]), { state: "uninitialized" });
-  assert.deepEqual(await ledgerFor([{ id: 3, status: "error" }, { id: 2, status: "failure" }, { id: 1, status: "inactive" }]), { state: "uninitialized" });
+  assert.deepEqual(await ledgerFor([{ id: 3, history: failed }]), { state: "uninitialized" });
+  assert.deepEqual(await ledgerFor([{ id: 3, history: ["in_progress", "error"] }, { id: 2, history: failed }]), { state: "uninitialized" });
 
   for (const records of [
-    [{ id: 3, status: "in_progress" }],
-    [{ id: 3, status: undefined }],
-    [{ id: 3, status: "failure" }, { id: 2, status: "pending" }],
-    [{ id: 3, status: "failure" }, { id: 2, status: undefined }],
-    [{ id: 3, status: "failure" }, { id: 2, status: "failure", environment: "staging" }],
+    [{ id: 3, history: ["in_progress"] }],
+    [{ id: 3, history: [] }],
+    [{ id: 3, history: ["in_progress", "inactive"] }],
+    [{ id: 3, history: failed }, { id: 2, history: ["pending"] }],
+    [{ id: 3, history: failed }, { id: 2, history: [] }],
+    [{ id: 3, history: failed }, { id: 2, history: ["in_progress", "success", "inactive"] }],
+    [{ id: 3, history: ["in_progress", "success", "failure"] }],
+    [{ id: 3, history: failed }, { id: 2, history: failed, environment: "staging" }],
   ]) assert.equal((await ledgerFor(records)).state, "unresolved", JSON.stringify(records));
 
-  const afterSuccess = await ledgerFor([{ id: 3, status: "failure" }, { id: 2, status: "success" }]);
+  const afterSuccess = await ledgerFor([{ id: 4, history: failed }, { id: 3, history: failed }, { id: 2, history: ["in_progress", "success"] }]);
   assert.equal(afterSuccess.state, "unresolved");
   assert.equal(afterSuccess.state === "unresolved" ? afterSuccess.lastSuccessful?.deploymentId : undefined, 2);
 });

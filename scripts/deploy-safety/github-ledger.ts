@@ -97,7 +97,7 @@ export async function readDeploymentLedger(
     // Attempts that all ended before production ever succeeded leave no baseline to protect, so a retry
     // starts as an initial release and the initial-database check still runs. Pending or unfinished
     // attempts, and any failure after a success, stay unresolved.
-    if (!lastSuccessful && endedAttempt.has(status.state) &&
+    if (!lastSuccessful && endedWithoutSuccess(statuses) &&
         await allAttemptsEnded(deployments.slice(1), environment, fetcher))
       return { state: "uninitialized" };
     return {
@@ -379,14 +379,19 @@ async function listStatuses(
   throw new SafetyGateError("GitHub deployment status history exceeded the pagination limit");
 }
 
-const endedAttempt = new Set(["failure", "error", "inactive"]);
+/** Only the runner's own terminal failure states count; `inactive` is set by hand and may retire a success. */
+const endedAttempt = new Set(["failure", "error"]);
+
+function endedWithoutSuccess(statuses: Array<{ state: string }>): boolean {
+  return endedAttempt.has(statuses[0]?.state ?? "missing") && !statuses.some(({ state }) => state === "success");
+}
 
 async function allAttemptsEnded(deployments: Deployment[], environment: LedgerEnvironment, fetcher: Fetcher): Promise<boolean> {
   for (const deployment of deployments) {
     if (deployment.environment !== "production") return false;
     const statuses = await listStatuses(environment, deployment.id, fetcher);
     statuses.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
-    if (!endedAttempt.has(statuses[0]?.state ?? "missing")) return false;
+    if (!endedWithoutSuccess(statuses)) return false;
   }
   return true;
 }
