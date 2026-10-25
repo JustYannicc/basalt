@@ -8,7 +8,7 @@
 -- OAuth: create a Slack app at https://api.slack.com/apps, add the redirect URI shown on Executor's connect page under "OAuth & Permissions", and enter its client ID and secret. The flow requests bot scopes (comma separated) and yields a bot token; reduce the scopes to what the app needs. Every requested scope was checked against its docs.slack.dev scope page as a bot scope; `mpim:write` is user-token only and is not requested.
 +- Token: a bot token (`xoxb-`) or user token (`xoxp-`) from your Slack app's "OAuth & Permissions" page at https://api.slack.com/apps. This method keeps the supplied token as-is.
 +- User OAuth (`user`): create a Slack app at https://api.slack.com/apps, add the redirect URI shown on the host's connect page, add the scopes below under **User Token Scopes**, and enter the client ID and secret. This flow sends a comma-separated `user_scope` only; it omits the OAuth `scope` parameter and does not request a bot grant. The exchange requires `authed_user.access_token`, which is used for health checks and API calls.
-+
+ 
 +  `user_scope` contains:
 +
 +  - Conversations: `channels:history`, `channels:read`, `channels:write`, `groups:history`, `groups:read`, `groups:write`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `mpim:write`.
@@ -18,7 +18,7 @@
 +  - Pins, reminders and workspace data: `emoji:read`, `pins:read`, `pins:write`, `reminders:read`, `reminders:write`, `team:read`, `tokens.basic`, `usergroups:read`, `usergroups:write`, `users.profile:read`, `users.profile:write`, `users:read`, `users:read.email`.
 +
 +- Bot OAuth (`oauth`): use the existing bot-token flow with the redirect URI shown on the host's connect page, then enter the Slack app's client ID and secret. It requests the existing bot scopes and continues to use the top-level bot access token.
- 
++
  **Known gaps**
  
  - No operations are skipped after the patches (171 of the 174 spec operations are exposed; the 3 removed are the oauth.* methods above).
@@ -32,7 +32,13 @@
  - Icon is Slack's hash mark from the Slack website (`a.slack-edge.com`), as Simple Icons has no Slack entry.
 --- a/index.ts
 +++ b/index.ts
-@@ -16,6 +16,48 @@
+@@ -11,11 +11,53 @@
+   string,
+   withApprovals,
+ } from "apps";
+-import { always } from "apps/operations/approval";
++import { always, never } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
  import { icons } from "./icon.js";
  import { options } from "./openapi.js";
  
@@ -110,6 +116,15 @@
      const response = await fetch("https://slack.com/api/auth.test", {
        method: "POST",
        signal,
+@@ -97,7 +152,7 @@
+         user?.accounts.slack ?? [],
+         (account) =>
+           withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-            tool.kind === "mutation" ? always() : undefined,
++            tool.kind === "mutation" ? always() : never(),
+           ),
+         { signal },
+       ),
 --- a/openapi.ts
 +++ b/openapi.ts
 @@ -40,6 +40,7 @@

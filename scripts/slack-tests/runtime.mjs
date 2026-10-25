@@ -37,13 +37,14 @@ let checks = 0;
 const check = (condition, message) => { assert.ok(condition, message); checks++; };
 const equal = (actual, expected, message) => { assert.equal(actual, expected, message); checks++; };
 const privateAppend = (path, value) => appendFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-const appsReleaseReport = (manifest, selectedApps, frameworkManifest) => ({
-  publishedAppsVersion: manifest.dependencies.apps,
-  publishedAppsProtocol: selectedApps.frameworkProtocol,
-  selectedAppsVersion: selectedApps.version,
-  selectedAppsProtocol: selectedApps.frameworkProtocol,
+const appsReleaseReport = (manifest, publishedApps, frameworkManifest, frameworkProtocol) => ({
+  publishedAppsVersion: publishedApps.version,
+  publishedAppsProtocol: publishedApps.frameworkProtocol,
+  selectedAppsVersion: manifest.dependencies.apps,
+  selectedAppsProtocol: frameworkProtocol,
   hostConfiguredAppsVersion: frameworkManifest.version,
-  publishedAppsIntegrity: selectedApps.integrity,
+  selectedReleaseIsHostOverride: true,
+  publishedAppsIntegrity: publishedApps.integrity,
 });
 
 async function vendorSpec(url, directory) {
@@ -94,13 +95,17 @@ const program = Effect.gen(function* () {
   const captured = JSON.parse(yield* Effect.promise(() => readFile(join(root, "src/catalog/slack.published.json"), "utf8")));
   equal(captured.package, source.package, "The carried package differs from the captured published package");
   const capturedManifest = JSON.parse(captured.files.find((file) => file.path === "package.json").content);
-  equal(manifest.dependencies?.apps, capturedManifest.dependencies?.apps,
-    "The maintained package changed the published apps dependency");
   const frameworkDirectory = join(upstream, ".local/basalt-framework");
   yield* Effect.promise(() => accessFile(join(frameworkDirectory, "framework.json")));
   const framework = JSON.parse(yield* Effect.promise(() => readFile(join(frameworkDirectory, "framework.json"), "utf8")));
   const frameworkManifest = JSON.parse(framework["package.json"]);
   equal(frameworkManifest.version, appsVersion, "The built compiler framework does not match the pinned apps release");
+  equal(manifest.dependencies?.apps, frameworkManifest.version,
+    "The Basalt catalog package must pin the prepared host's exact apps release");
+  const frameworkProtocol = Number(framework["types/apps/src/contracts/protocol-version.d.ts"]
+    ?.match(/frameworkProtocol\s*=\s*(\d+)/)?.[1]);
+  check(Number.isInteger(frameworkProtocol) && frameworkProtocol > 0,
+    "The built Basalt framework must identify its protocol");
 
   const hostedClient = firstPartyOAuthClientDefinitions.find((client) => client.id === "slack-rest");
   check(hostedClient, "The pinned host has not added the slack-rest client yet");
@@ -140,11 +145,7 @@ const program = Effect.gen(function* () {
 
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* localNpmRegistry;
-  const selectedApps = yield* Effect.promise(() => inspectPublishedAppsRelease(registry.url, manifest.dependencies.apps));
-  equal(selectedApps.version, manifest.dependencies.apps,
-    "The catalog app must select the apps release declared in its published package");
-  assert.notEqual(selectedApps.version, frameworkManifest.version,
-    "The fixture must exercise the published release instead of the host framework override");
+  const publishedApps = yield* Effect.promise(() => inspectPublishedAppsRelease(registry.url, capturedManifest.dependencies.apps));
   const target = yield* startScenario(base.target, "Slack user-token acceptance proof", undefined, {
     EXECUTOR_OAUTH_CALLBACK_URL: "http://127.0.0.1:0/api/oauth/callback",
     EXECUTOR_NPM_REGISTRY: registry.url,
@@ -172,6 +173,10 @@ const program = Effect.gen(function* () {
     return response.body;
   };
   const prefix = `/api/organizations/${actors.organization.id}`;
+  const release = checked(yield* request(actors.owner, "GET", `${prefix}/framework/release`),
+    200, "Read the selected Basalt host's framework release");
+  equal(release.version, manifest.dependencies.apps,
+    "The catalog package does not match the selected host's framework release");
 
   const catalog = checked(yield* request(actors.owner, "GET", "/api/catalog"), 200, "Read the local app catalog");
   const entry = catalog.find((item) => item.id === "slack");
@@ -192,7 +197,7 @@ const program = Effect.gen(function* () {
       checks,
       outcome: ui.installed ? "installed" : "install_failed",
       installResponse: ui.installResponse,
-      appPackage: appsReleaseReport(manifest, selectedApps, frameworkManifest),
+      appPackage: appsReleaseReport(manifest, publishedApps, frameworkManifest, frameworkProtocol),
       screenshot: ui.installed ? "slack-connect-notice.png" : "slack-connect-failure.png",
     };
     yield* Effect.promise(() => writeFile(join(directory, "install-diagnostic.json"),
@@ -215,7 +220,7 @@ const program = Effect.gen(function* () {
         completionResponse: ui.completionResponse,
         connectedText: ui.connectedText,
       },
-      appPackage: appsReleaseReport(manifest, selectedApps, frameworkManifest),
+      appPackage: appsReleaseReport(manifest, publishedApps, frameworkManifest, frameworkProtocol),
     };
     yield* Effect.promise(() => writeFile(join(directory, "callback-diagnostic.json"),
       JSON.stringify(report, null, 2), { mode: 0o600 }));
@@ -270,7 +275,7 @@ const program = Effect.gen(function* () {
       nestedGrant: "authed_user",
       requiredOnExchange: true,
     },
-    appPackage: appsReleaseReport(manifest, selectedApps, frameworkManifest),
+    appPackage: appsReleaseReport(manifest, publishedApps, frameworkManifest, frameworkProtocol),
     callerTokensUsedForApi: true,
     approvalAsNativeMcpCaller: true,
     sameOrganizationIsolation: true,
