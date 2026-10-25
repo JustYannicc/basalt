@@ -21,8 +21,8 @@ function docker(args: string[], timeout = 60_000): string {
   return result.stdout.trim();
 }
 
-async function until(probe: () => Promise<boolean>, description: string): Promise<void> {
-  const deadline = Date.now() + 90_000;
+async function until(probe: () => Promise<boolean>, description: string, timeoutMs = 90_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < deadline) {
     try { if (await probe()) return; } catch (error) { last = error; }
@@ -38,14 +38,27 @@ export interface HomeUser { id: number; username: string }
 export interface HomeProvider { name: string; keys: { id: string; "api-key": string }[] }
 export interface HomeEvent { method: string; path: string; status: number }
 
+export interface SharingFixtureOptions {
+  readonly resourcePrefix?: string;
+  readonly poolContainerArgs?: readonly string[];
+  readonly operationTimeoutMs?: number;
+  readonly readinessTimeoutMs?: number;
+  readonly onStage?: (stage: string) => void;
+}
+
 /** Owns only its uniquely named resources. Run the caller through heavy-slot. */
 export class SharingFixture {
-  private name = `basalt-usage-${process.pid}-${Date.now().toString(36)}`;
+  private name: string;
+  private poolContainerArgs: readonly string[];
+  private operationTimeoutMs: number;
+  private readinessTimeoutMs: number;
+  private onStage?: (stage: string) => void;
   // CI builds the pinned image once; a local run builds and later removes its own.
-  private image = process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
+  private image: string;
   private resources: string[] = [];
   private network: string | undefined;
   private imageAttempted = false;
+  private logRedactions = ["fixture-management-key", "fixture-only"];
   private release = () => {};
   private gate = new Promise<void>((resolve) => { this.release = resolve; });
   private upstream = createServer(async (request, response) => {
@@ -84,44 +97,86 @@ export class SharingFixture {
   node = "";
   readonly managementKey = "fixture-management-key";
 
+  constructor(options: SharingFixtureOptions = {}) {
+    this.name = `${options.resourcePrefix ?? "basalt-usage"}-${process.pid}-${Date.now().toString(36)}`;
+    this.image = process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
+    this.poolContainerArgs = options.poolContainerArgs ?? [];
+    this.operationTimeoutMs = options.operationTimeoutMs ?? 60_000;
+    this.readinessTimeoutMs = options.readinessTimeoutMs ?? 90_000;
+    this.onStage = options.onStage;
+  }
+
+  private stage(value: string): void { this.onStage?.(value); }
+
+  addLogRedactions(values: readonly string[]): void {
+    this.logRedactions.push(...values.filter((value) => value.length > 0));
+  }
+
+  async captureContainerLogs(): Promise<{ pool: string; postgres: string }> {
+    const read = (name: string): string => {
+      const result = spawnSync("docker", ["logs", "--tail", "100", name], { encoding: "utf8", timeout: 5_000 });
+      const raw = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      return this.logRedactions.reduce((value, secret) => value.replaceAll(secret, "[redacted]"), raw)
+        .replace(/postgresql:\/\/[^\s"']+/g, "[redacted-database-url]");
+    };
+    return { pool: read(`${this.name}-pool`), postgres: read(`${this.name}-postgres`) };
+  }
+
   private origin(container: string, port: number) {
-    const mapping = docker(["port", container, String(port)]);
+    const mapping = docker(["port", container, String(port)], this.operationTimeoutMs);
     assert.match(mapping, /^127\.0\.0\.1:\d+$/);
     return `http://${mapping}`;
   }
   async start(): Promise<void> {
     console.log(`Resources: ${this.name}-postgres, ${this.name}-pool, ${this.image}`);
     if (!process.env.POOL_TEST_IMAGE) {
+      this.stage("docker build started");
       this.imageAttempted = true;
       docker(["build", "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64", "--tag", this.image, "containers/pool"], 240_000);
+      this.stage("docker build complete");
     }
     // A private network: on Linux, host.docker.internal can't reach ports published on loopback.
     this.network = `${this.name}-net`;
-    docker(["network", "create", this.network]);
+    this.stage("docker network create started");
+    docker(["network", "create", this.network], this.operationTimeoutMs);
+    this.stage("docker network create complete");
     const postgres = `${this.name}-postgres`;
     this.resources.push(postgres);
+    this.stage("postgres container start started");
     docker(["run", "--detach", "--name", postgres, "--network", this.network, "--memory", "256m",
       "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
       "--env", "POSTGRES_USER=fixture_admin", "--env", "POSTGRES_PASSWORD=fixture-only",
-      "--env", "POSTGRES_DB=basalt_pool", "postgres:16"]);
+      "--env", "POSTGRES_DB=basalt_pool", "postgres:16"], this.operationTimeoutMs);
+    this.stage("postgres container start complete");
+    this.stage("postgres readiness started");
     await until(async () => {
-      const result = spawnSync("docker", ["exec", postgres, "pg_isready", "-U", "fixture_admin", "-d", "basalt_pool"], { encoding: "utf8" });
+      const result = spawnSync("docker", ["exec", postgres, "pg_isready", "-U", "fixture_admin", "-d", "basalt_pool"], {
+        encoding: "utf8", timeout: this.operationTimeoutMs,
+      });
       return result.status === 0;
-    }, "isolated Postgres");
+    }, "isolated Postgres", this.readinessTimeoutMs);
+    this.stage("postgres readiness complete");
+    this.stage("upstream listener start started");
     await new Promise<void>((resolve) => this.upstream.listen(0, "0.0.0.0", resolve));
+    this.stage("upstream listener start complete");
     const container = `${this.name}-pool`;
     this.resources.push(container);
+    this.stage("pool container start started");
     docker(["run", "--detach", "--name", container, "--network", this.network, "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64",
       "--memory", "256m", ...(process.platform === "linux" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
       "--publish", "127.0.0.1::8317", "--publish", "127.0.0.1::8318", "--publish", "127.0.0.1::8327",
       "--env", `POOL_DATABASE_URL=postgresql://fixture_admin:fixture-only@${postgres}:5432/basalt_pool`,
-      "--env", `POOL_MANAGEMENT_KEY=${this.managementKey}`, "--env", "POOL_MANAGEMENT_ALLOW_REMOTE=true", this.image]);
+      "--env", `POOL_MANAGEMENT_KEY=${this.managementKey}`, "--env", "POOL_MANAGEMENT_ALLOW_REMOTE=true",
+      ...this.poolContainerArgs, this.image], this.operationTimeoutMs);
+    this.stage("pool container start complete");
+    this.stage("pool readiness started");
     this.home = this.origin(container, 8327);
     this.node = this.origin(container, 8317);
     const readiness = this.origin(container, 8318);
     await until(async () => (await fetch(`${readiness}/ready`, {
       headers: { Authorization: `Bearer ${this.managementKey}` }, signal: AbortSignal.timeout(3_000),
-    })).ok, "pinned Home and node readiness");
+    })).ok, "pinned Home and node readiness", this.readinessTimeoutMs);
+    this.stage("pool readiness complete");
     assert.equal((await fetch(`${this.home}/v8/management/users`)).status, 401);
     assert.equal((await fetch(`${this.node}/v1/models`)).status, 401);
     const address = this.upstream.address();
@@ -130,6 +185,7 @@ export class SharingFixture {
       name: `fixture-${pool}`, "base-url": `http://host.docker.internal:${address.port}/v1`,
       keys: [{ "api-key": `fixture-${pool}` }], models: ["fixture-model", "fixture-alt"].map((name) => ({ name, alias: name })),
     })) } });
+    this.stage("pool fixture configuration complete");
   }
   async fetchHome(input: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);
@@ -160,21 +216,26 @@ export class SharingFixture {
   finishStream() { this.release(); }
   async close(): Promise<void> {
     this.release();
-    this.upstream.closeAllConnections();
-    await new Promise<void>((resolve) => this.upstream.close(() => resolve()));
     const failures: unknown[] = [];
+    this.upstream.closeAllConnections();
+    const upstreamClosed = new Promise<void>((resolve) => this.upstream.close(() => resolve()));
+    if (!await Promise.race([upstreamClosed.then(() => true), delay(5_000).then(() => false)])) {
+      failures.push(new Error("Synthetic OpenAI fixture listener did not close within 5 seconds"));
+    }
     for (const name of this.resources.reverse()) {
-      try { docker(["rm", "--force", "--volumes", name]); console.log(`Removed container ${name}`); }
+      try { docker(["rm", "--force", "--volumes", name], this.operationTimeoutMs); console.log(`Removed container ${name}`); }
       catch (error) { failures.push(error); }
     }
     if (this.network) {
-      try { docker(["network", "rm", this.network]); console.log(`Removed network ${this.network}`); }
+      try { docker(["network", "rm", this.network], this.operationTimeoutMs); console.log(`Removed network ${this.network}`); }
       catch (error) { failures.push(error); }
     }
     if (this.imageAttempted) {
-      const exists = spawnSync("docker", ["image", "inspect", this.image], { encoding: "utf8" });
+      const exists = spawnSync("docker", ["image", "inspect", this.image], {
+        encoding: "utf8", timeout: this.operationTimeoutMs,
+      });
       if (exists.status === 0) {
-        try { docker(["image", "rm", this.image]); console.log(`Removed image ${this.image}`); }
+        try { docker(["image", "rm", this.image], this.operationTimeoutMs); console.log(`Removed image ${this.image}`); }
         catch (error) { failures.push(error); }
       }
     }
