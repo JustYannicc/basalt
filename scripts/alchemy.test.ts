@@ -42,3 +42,12 @@ test("the production entrypoint invokes Alchemy only through alchemyArgs", () =>
   assert.doesNotMatch(source, /"exec"/);
   assert.equal(source.match(/alchemyArgs\("deploy"/g)?.length, 2);
 });
+
+test("stack provisioning jobs run Node scripts without shell quoting", () => {
+  // Alchemy's Command.Exec splits on whitespace without a shell, so quotes reach node as part of the path.
+  for (const file of ["../alchemy.run.ts", "../src/pool/database.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /command:\s*"node '/, file);
+    assert.match(source, /command: `node \$\{basename\(\w+\)\}`,\s*cwd: dirname\(\w+\)/, file);
+  }
+});
