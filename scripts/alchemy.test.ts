@@ -56,3 +56,9 @@ test("stack provisioning jobs run Node scripts without shell quoting", () => {
       assert.doesNotMatch(command!.replace(/^`|`,?$/g, ""), /['"&|;=]/, `${file}: ${command}`);
   }
 });
+
+test("the pool database grants its owner to the runtime role's Postgres login, not its display name", () => {
+  const source = readFileSync(new URL("../src/pool/database.ts", import.meta.url), "utf8");
+  assert.match(source, /POOL_DATABASE_RUNTIME_ROLE: runtime\.username,/);
+  assert.doesNotMatch(source, /POOL_DATABASE_RUNTIME_ROLE: runtime\.name/);
+});
