@@ -1076,7 +1076,7 @@ index 55fd0bf..dfe80e5 100644
        onSaved={onSaved}
        onAuthorized={(value) =>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 8e3d16d..5c94d5d 100644
+index 8e3d16d..44eafbe 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -17,12 +17,17 @@ import type {
@@ -1084,7 +1084,7 @@ index 8e3d16d..5c94d5d 100644
  } from "@executor-js/hosted-server";
  import { Link } from "@tanstack/react-router";
 -import { createContext, useContext, useState } from "react";
-+import { createContext, useContext, useRef, useState } from "react";
++import { createContext, useContext, useEffect, useRef, useState } from "react";
  import { Cause, Match, Option, Exit, Schema } from "effect";
  import { Button } from "@executor-js/ui/components/button";
  import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
@@ -1098,11 +1098,9 @@ index 8e3d16d..5c94d5d 100644
  import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
  import {
    oauthSetupAtom,
-@@ -31,7 +36,14 @@ import {
-   submitConnectionAtom,
+@@ -32,6 +37,12 @@ import {
    PendingOAuth,
    type OAuthReturn,
-+  connectionAtom,
  } from "../../contracts/apps.ts";
 +import {
 +  cancelInteractiveConnectionAtom,
@@ -1113,35 +1111,34 @@ index 8e3d16d..5c94d5d 100644
  import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
  import { RegisterServiceClient } from "./oauth-clients.tsx";
  
-@@ -65,13 +77,26 @@ export function ConnectionFields({
+@@ -65,6 +76,26 @@ export function ConnectionFields({
    const params = { organization, connection: connection.id };
    const submit = useAtomSet(submitConnectionAtom(params), { mode: "promiseExit" });
    const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
 +  const cancel = useAtomSet(cancelInteractiveConnectionAtom(params), { mode: "promiseExit" });
-+  const registry = useContext(RegistryContext);
++  const start = useAtomSet(startInteractiveConnectionAtom(params), { mode: "promiseExit" });
++  // This page has only this one request, so changing methods must not end it: the next start or
++  // submit retires the attempt left behind. Leaving the page with an attempt open cancels it.
++  const started = useRef(false);
++  useEffect(
++    () => () => {
++      if (started.current) void cancel();
++    },
++    [cancel],
++  );
 +  const interactive = {
-+    start: useAtomSet(startInteractiveConnectionAtom(params), { mode: "promiseExit" }),
++    start: (input: { readonly method: string }) => {
++      started.current = true;
++      return start(input);
++    },
 +    status: useAtomSet(interactiveConnectionStatusAtom(params), { mode: "promiseExit" }),
 +    submit: useAtomSet(submitInteractiveConnectionAtom(params), { mode: "promiseExit" }),
-+    // Cancelling ends this request, so re-read it and offer the way back instead of a dead form.
-+    cancel: () =>
-+      cancel().then((exit) => {
-+        registry.refresh(connectionAtom(params));
-+        return exit;
-+      }),
++    cancel: () => Promise.resolve(),
 +  };
    if (connection.state.status !== "pending")
      return (
        <>
-         <p className="text-sm">
-           {connection.state.status === "completed"
-             ? "Account connected."
--            : "This connection has expired. Start a new connection from the app."}
-+            : "This connection ended. Start a new connection from the app."}
-         </p>
-         <Button asChild variant="outline">
-           <Link
-@@ -98,6 +123,7 @@ export function ConnectionFields({
+@@ -98,6 +129,7 @@ export function ConnectionFields({
        }
        submit={submit}
        start={startOAuth}
@@ -1149,7 +1146,7 @@ index 8e3d16d..5c94d5d 100644
        onSaved={onSaved}
        {...(onPendingChange ? { onPendingChange } : {})}
        onAuthorized={(value) =>
-@@ -118,6 +144,18 @@ export function ConnectionFields({
+@@ -118,6 +150,18 @@ export function ConnectionFields({
    );
  }
  
@@ -1168,7 +1165,7 @@ index 8e3d16d..5c94d5d 100644
  /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
  export function HostedAccountForm<A extends HostedOAuthSignIn>({
    setupQuery,
-@@ -133,7 +171,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -133,7 +177,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    onAuthorized,
    onPendingChange,
    app,
@@ -1179,7 +1176,7 @@ index 8e3d16d..5c94d5d 100644
    readonly provider: Provider;
    /** The canonical site saved by the host for this connection. */
    readonly site?: string | undefined;
-@@ -160,6 +201,15 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -160,6 +207,15 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
    // Only administrators register clients, so members are told to enter their own details.
    const role = useOrganizationDetails()?.role;
@@ -1195,7 +1192,7 @@ index 8e3d16d..5c94d5d 100644
    const admin = role !== undefined && role !== "member";
    const registry = useContext(RegistryContext);
    // Registering replaces the account form, since it is a form itself, then returns to the method.
-@@ -198,7 +248,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -198,7 +254,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
        initialMethod={method}
        Failure={HostedFailure}
        submitLabel={account ? "Save credentials" : "Connect account"}
@@ -1204,7 +1201,7 @@ index 8e3d16d..5c94d5d 100644
        {...(app === undefined || app === null
          ? {}
          : {
-@@ -207,6 +257,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -207,6 +263,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            })}
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
@@ -1228,7 +1225,7 @@ index 8e3d16d..5c94d5d 100644
        oauth={({ method, disabled, onPendingChange, access }) => (
          <OAuthSetup
            query={
-@@ -254,7 +321,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -254,7 +327,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                  return required;
                }}
                start={(input: OAuthSubmission) =>
@@ -1349,10 +1346,10 @@ index 7fa5ad1..c60366b 100644
      ConnectionAccessInvalid: ({ reason }) =>
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
 new file mode 100644
-index 0000000..18b8ebb
+index 0000000..5b5f8f0
 --- /dev/null
 +++ b/e2e/support/interactive-account-backend.ts
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,259 @@
 +/** A tiny credential custodian, reached by the fixture app over real HTTP. */
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
@@ -1381,6 +1378,7 @@ index 0000000..18b8ebb
 +  const calls = yield* Ref.make<readonly Input[]>([]);
 +  const next = yield* Ref.make(0);
 +  const refuseRemoval = yield* Ref.make(false);
++  const refuseCancellation = yield* Ref.make(false);
 +  const removeRemaining = yield* Ref.make<number | undefined>(undefined);
 +  const removalGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const removalStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
@@ -1442,6 +1440,7 @@ index 0000000..18b8ebb
 +      )
 +        return HttpServerResponse.empty({ status: 409 });
 +      if (input.step === "cancel") {
++        if (yield* Ref.get(refuseCancellation)) return HttpServerResponse.empty({ status: 503 });
 +        yield* Ref.update(
 +          sessions,
 +          (current) => new Map([...current].filter(([id]) => id !== input.session)),
@@ -1498,6 +1497,7 @@ index 0000000..18b8ebb
 +  return {
 +    origin: `http://127.0.0.1:${server.address.port}`,
 +    calls: Ref.get(calls),
++    refuseCancellation: (refuse: boolean) => Ref.set(refuseCancellation, refuse),
 +    refuseRemoval: (refuse: boolean) =>
 +      Ref.set(refuseRemoval, refuse).pipe(Effect.andThen(Ref.set(removeRemaining, undefined))),
 +    refuseAfter: (successful: number) => Ref.set(removeRemaining, successful),
@@ -1546,16 +1546,19 @@ index 0000000..18b8ebb
 +  plain = false,
 +  withWorkflow = false,
 +  callbackUrl?: string,
++  oauthOrigin?: string,
 +) => `import {
 +  defineApp, defineProvider, interactive, secrets, object, string, query, router, bearer, header,
 +  ${withWorkflow ? "mutation, workflow, appInterval, type MutationContext, type WorkflowContext," : ""}
 +  type ConnectContext, type QueryContext, type InteractiveStart, type InteractiveStatus
++  ${oauthOrigin === undefined ? "" : ", oauth2"}
 +} from "apps";
 +const backend = defineProvider({ name: "Credential backend", hosts: ${JSON.stringify([new URL(origin).host, ...(callbackUrl === undefined ? [] : [new URL(callbackUrl).host])])},
 +  auth: { key: secrets({ label: "Key", fields: object({ token: string()${callbackUrl === undefined ? "" : ", cookie: string()"} }), request: ${callbackUrl === undefined ? "({ token }) => bearer(token)" : "({ token, cookie }) => [bearer(token), header('cookie', cookie)]"} }) } });
 +const acquired = defineProvider({ name: "Interactive account", hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
 +  device: interactive({ label: "Device code" }), paste: interactive({ label: "Paste address" }),
 +  expired: interactive({ label: "Expired" }), failure: interactive({ label: "Failure" }), slow: interactive({ label: "Slow" }),
++  ${oauthOrigin === undefined ? "" : `manual: secrets({ label: "Manual", fields: object({ token: string() }) }), browser: oauth2({ discover: ${JSON.stringify(oauthOrigin + "/mcp")} }),`}
 +} });
 +const requirements = { app: { accounts: { backend, sharedIdentity: acquired.many() } }, user: { accounts: { identity: acquired${plain ? "" : ".many()"} } } };
 +async function call<T>(ctx: ConnectContext<typeof requirements>, step: string, input: object): Promise<T> {
@@ -1607,15 +1610,16 @@ index 0000000..18b8ebb
 +  ${withWorkflow ? "workflows: { hold }, schedules: { tick: appInterval({ minutes: 1 }, tick, {}) }," : ""}
 +  connect: { identity: handlers, sharedIdentity: handlers } });`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ab997d0..1b5102d 100644
+index ab997d0..d506111 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7259,6 +7259,64 @@ export const scenarios = plan({
+@@ -7259,6 +7259,76 @@ export const scenarios = plan({
        local: na("This scenario uses hosted memberships, API keys and MCP."),
      },
    },
 +  interactiveAccountLifecycle: {
 +    fixtures: "actors",
++    legacyStorage: true,
 +    file: "interactive-account-lifecycle.spec.ts",
 +    title:
 +      "interactive account retirement enforces deletion authority, replacement and concurrent claims",
@@ -1657,6 +1661,17 @@ index ab997d0..1b5102d 100644
 +        "This scenario uses a loopback credential backend and the shared hosted server through self-host.",
 +      ),
 +      local: na("This scenario exercises hosted connection and account-link permissions."),
++    },
++  },
++  interactiveAccountResume: {
++    fixtures: "actors",
++    file: "interactive-account-resume.spec.ts",
++    title:
++      "pending interactive connections restart failed and expired attempts and switch to secrets or OAuth",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses loopback sign-in and OAuth backends through the shared hosted server."),
++      local: na("Uses hosted pending connection HTTP routes."),
 +    },
 +  },
 +  interactiveAccountDialog: {
@@ -2158,10 +2173,10 @@ index 0000000..d1b4e89
 +});
 diff --git a/e2e/tests/interactive-account-lifecycle.spec.ts b/e2e/tests/interactive-account-lifecycle.spec.ts
 new file mode 100644
-index 0000000..9afdfe6
+index 0000000..91671aa
 --- /dev/null
 +++ b/e2e/tests/interactive-account-lifecycle.spec.ts
-@@ -0,0 +1,312 @@
+@@ -0,0 +1,346 @@
 +/** App-owned account lifecycle through real hosted HTTP and a controlled external backend. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schedule, Schema } from "effect";
@@ -2178,6 +2193,8 @@ index 0000000..9afdfe6
 +} from "../support/interactive-account-backend.ts";
 +import { linkedAccountIds } from "../support/app-accounts.ts";
 +import { scenarios } from "../test-plan.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
 +const Account = Schema.Struct({ id: Schema.String, method: Schema.String, label: Schema.String });
 +const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Account });
 +const Access = Schema.Struct({ revision: Schema.String });
@@ -2361,9 +2378,41 @@ index 0000000..9afdfe6
 +        expect(yield* calls()).toHaveLength(before + 1);
 +        // Bulk deletion attempts cleanup, but provider refusal cannot keep the app or accounts.
 +        const surviving = yield* make(actors.owner);
++        const beforeHook = (yield* calls()).length;
++        // A storage fault in the real appRemoving hook refuses the deletion transaction.
++        yield* legacyStorage([
++          {
++            sql: "create function e2e_refuse_app_removing() returns trigger language plpgsql as $$ begin raise exception 'Synthetic appRemoving refusal'; end $$",
++          },
++          {
++            sql: "create trigger e2e_refuse_app_removing before delete on hosted_app_account_links for each statement execute function e2e_refuse_app_removing()",
++          },
++        ]);
++        yield* serverControl("start");
++        yield* Effect.gen(function* () {
++          expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(500);
++          expect(yield* calls()).toHaveLength(beforeHook);
++          expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
++          expect((yield* detail(surviving.id)).status).toBe(200);
++        }).pipe(
++          Effect.ensuring(
++            legacyStorage([
++              { sql: "drop trigger e2e_refuse_app_removing on hosted_app_account_links" },
++              { sql: "drop function e2e_refuse_app_removing()" },
++            ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
++          ),
++        );
 +        yield* backend.refuseRemoval(true);
 +        const appCallsBefore = (yield* calls()).length;
-+        expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++        const cleanupHold = yield* backend.holdRemoval;
++        yield* Effect.addFinalizer(() => cleanupHold.release);
++        const deleting = yield* Effect.forkChild(api.request(actors.owner, "DELETE", path));
++        yield* cleanupHold.started;
++        // The app and account rows are already committed away while external cleanup is held.
++        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(403);
++        expect((yield* detail(surviving.id)).status).toBe(403);
++        yield* cleanupHold.release;
++        expect((yield* Fiber.join(deleting)).status).toBe(200);
 +        expect((yield* calls()).length).toBeGreaterThan(appCallsBefore);
 +        expect((yield* detail(surviving.id)).status).toBe(403);
 +        expect((yield* detail(sharedB.id)).status).toBe(403);
@@ -2470,6 +2519,163 @@ index 0000000..9afdfe6
 +        expect((yield* backend.calls).filter((c) => c.step === "remove").length).toBeGreaterThan(
 +          before,
 +        );
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/interactive-account-resume.spec.ts b/e2e/tests/interactive-account-resume.spec.ts
+new file mode 100644
+index 0000000..450a235
+--- /dev/null
++++ b/e2e/tests/interactive-account-resume.spec.ts
+@@ -0,0 +1,151 @@
++/** A pending connection keeps working when the person chooses another sign-in method. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import {
++  interactiveAccountBackend,
++  interactiveAccountSource,
++  interactiveBackendKey,
++} from "../support/interactive-account-backend.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Resume interactive accounts", (it) => {
++  it.effect(scenarios.interactiveAccountResume.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const backend = yield* interactiveAccountBackend,
++          issuer = yield* oauthSetupIssuer;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Resumed sign-in ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: interactiveAccountSource(
++                backend.origin,
++                false,
++                false,
++                undefined,
++                issuer.origin,
++              ),
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
++        );
++        const pending = (scope = "user", slot = "identity") =>
++          api
++            .request(actors.owner, "POST", `${path}/accounts/${scope}/${slot}/connections`, {})
++            .pipe(Effect.flatMap((r) => body(Resource, r)));
++        const cp = (id: string) => `${prefix}/connections/${id}`;
++        const start = (id: string, method: string) =>
++          api.request(actors.owner, "POST", `${cp(id)}/interactive/start`, { method });
++        const key = yield* pending("app", "backend");
++        expect(
++          (yield* api.request(actors.owner, "POST", `${cp(key.id)}/submit`, {
++            method: "key",
++            fields: { token: interactiveBackendKey },
++          })).status,
++        ).toBe(200);
++        for (const [oldMethod, nextMethod] of [
++          ["failure", "failure"],
++          ["expired", "expired"],
++          ["device", "paste"],
++        ] as const) {
++          const connection = yield* pending();
++          const previous = yield* start(connection.id, oldMethod);
++          expect(previous.status).toBe(200);
++          if (oldMethod === "failure") {
++            expect(
++              (yield* api.request(actors.owner, "GET", `${cp(connection.id)}/interactive/status`))
++                .body,
++            ).toMatchObject({ state: "failed" });
++            // Cancellation failure is advisory and must not prevent a new attempt.
++            yield* backend.refuseCancellation(true);
++          }
++          const before = (yield* backend.calls).filter((c) => c.step === "cancel").length;
++          const restarted = yield* start(connection.id, nextMethod);
++          expect(restarted.status, JSON.stringify(restarted.body)).toBe(200);
++          expect(restarted.body).not.toEqual(previous.body);
++          expect((yield* backend.calls).filter((c) => c.step === "cancel")).toHaveLength(
++            before + 1,
++          );
++          expect((yield* api.request(actors.owner, "GET", cp(connection.id))).body).toMatchObject({
++            state: { status: "pending" },
++          });
++          expect(JSON.stringify(restarted.body)).not.toContain("private-session-");
++          yield* backend.refuseCancellation(false);
++          expect(
++            (yield* api.request(actors.owner, "POST", `${cp(connection.id)}/interactive/cancel`))
++              .status,
++          ).toBe(200);
++          expect((yield* api.request(actors.owner, "GET", cp(connection.id))).body).toMatchObject({
++            state: { status: "cancelled" },
++          });
++        }
++        // Switching methods invalidates an in-flight poll without letting its result overwrite the new attempt.
++        const polling = yield* pending();
++        expect((yield* start(polling.id, "device")).status).toBe(200);
++        const held = yield* backend.holdStatus;
++        yield* Effect.addFinalizer(() => held.release);
++        const status = yield* Effect.forkChild(
++          api.request(actors.owner, "GET", `${cp(polling.id)}/interactive/status`),
++        );
++        yield* held.started;
++        expect((yield* start(polling.id, "paste")).status).toBe(200);
++        yield* held.release;
++        expect((yield* Fiber.join(status)).status).toBe(422);
++        expect(
++          (yield* api.request(actors.owner, "POST", `${cp(polling.id)}/interactive/cancel`)).status,
++        ).toBe(200);
++        const secrets = yield* pending();
++        expect((yield* start(secrets.id, "device")).status).toBe(200);
++        const beforeSecrets = (yield* backend.calls).filter((c) => c.step === "cancel").length;
++        const submitted = yield* api.request(actors.owner, "POST", `${cp(secrets.id)}/submit`, {
++          method: "manual",
++          fields: { token: "synthetic-manual-key" },
++        });
++        expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
++        expect(submitted.body).toMatchObject({ method: "manual" });
++        expect((yield* api.request(actors.owner, "GET", cp(secrets.id))).body).toMatchObject({
++          state: { status: "completed" },
++        });
++        expect((yield* backend.calls).filter((c) => c.step === "cancel")).toHaveLength(
++          beforeSecrets + 1,
++        );
++        const oauth = yield* pending();
++        expect((yield* start(oauth.id, "device")).status).toBe(200);
++        const beforeOAuth = (yield* backend.calls).filter((c) => c.step === "cancel").length;
++        const redirected = yield* api.request(actors.owner, "POST", `${cp(oauth.id)}/oauth/start`, {
++          method: "browser",
++        });
++        expect(redirected.status, JSON.stringify(redirected.body)).toBe(200);
++        const redirect = yield* body(
++          Schema.Struct({ status: Schema.Literal("redirect"), authorizationUrl: Schema.String }),
++          redirected,
++        );
++        expect(new URL(redirect.authorizationUrl).origin).toBe(issuer.origin);
++        expect((yield* backend.calls).filter((c) => c.step === "cancel")).toHaveLength(
++          beforeOAuth + 1,
++        );
++        expect((yield* api.request(actors.owner, "GET", cp(oauth.id))).body).toMatchObject({
++          state: { status: "pending" },
++        });
 +      }),
 +    ),
 +  );
@@ -9252,11 +9458,11 @@ index e50a8d5..a7b985d 100644
 +) =>
 +  lifecycle?.connectionSaving === undefined ? save : lifecycle.connectionSaving(connection, save);
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index d2e8115..52ec9e6 100644
+index d2e8115..135f853 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,6 @@
-+import { validateRemovalChange } from "./removal-validation.ts";
++import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
 +import { transaction } from "./database.ts";
 +import { makeInteractiveRetirement } from "./interactive-retirement.ts";
  import { WebhookSourceHost } from "../contracts/webhooks.ts";
@@ -9351,7 +9557,22 @@ index d2e8115..52ec9e6 100644
          ...accountHealth,
          revocation: (input) =>
            storedAccount(db, input.account, input.owner).pipe(
-@@ -269,6 +317,24 @@ export const createExecutor = (
+@@ -261,6 +309,14 @@ export const createExecutor = (
+       accountConnections: {
+         ...connections,
+         ...oauth.connections,
++        submit: (input) =>
++          interactive
++            .clearAttempt({ ...input, type: "secrets" })
++            .pipe(Effect.andThen(connections.submit(input))),
++        startOAuth: (input) =>
++          interactive
++            .clearAttempt({ ...input, type: "oauth2" })
++            .pipe(Effect.andThen(oauth.connections.startOAuth(input))),
+         findOAuth: (input) =>
+           Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
+             Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
+@@ -269,6 +325,27 @@ export const createExecutor = (
        oauthClients: oauth.clients,
        apps: {
          ...apps,
@@ -9360,23 +9581,26 @@ index d2e8115..52ec9e6 100644
 +            const app = yield* checkAppRemoval(db, input);
 +            if (app === undefined) return yield* apps.remove(input);
 +            const acquired = yield* retirement.acquired({ owner: app.owner, app: app.id });
-+            yield* retirement.cleanup({ owner: app.owner, accounts: acquired });
-+            return yield* transaction(db, () =>
++            const cleanup = yield* prepareInteractiveCleanup(interactive.prepareRemoval, {
++              owner: app.owner,
++              accounts: acquired,
++            });
++            const result = yield* transaction(db, () =>
 +              Effect.gen(function* () {
 +                const result = yield* apps.remove(input);
 +                const current = yield* retirement.acquired({ owner: app.owner, app: app.id });
 +                yield* retirement.discard({ owner: app.owner, accounts: current });
 +                return result;
 +              }),
-+            ).pipe(
-+              Effect.provideService(AppFileReleaseDeferred, true),
-+              Effect.tap(() => releaseRemovedAppFiles(options.blobs, AppCodeId.make(app.code))),
-+            );
++            ).pipe(Effect.provideService(AppFileReleaseDeferred, true));
++            yield* cleanup;
++            yield* releaseRemovedAppFiles(options.blobs, AppCodeId.make(app.code));
++            return result;
 +          }),
          deploy: (input) =>
            apps
              .deploy(input)
-@@ -280,7 +346,17 @@ export const createExecutor = (
+@@ -280,7 +357,20 @@ export const createExecutor = (
          activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
          checkCredentials,
        },
@@ -9385,11 +9609,14 @@ index d2e8115..52ec9e6 100644
 +        ...ownerOperations,
 +        remove: (input) =>
 +          Effect.gen(function* () {
-+            // The canonical purge checks active work and live webhooks before cleanup can run.
-+            yield* validateRemovalChange(db, ownerOperations.remove(input));
 +            const acquired = yield* retirement.acquired({ owner: input.owner });
-+            yield* retirement.cleanup({ owner: input.owner, accounts: acquired });
-+            return yield* ownerOperations.remove(input);
++            const cleanup = yield* prepareInteractiveCleanup(interactive.prepareRemoval, {
++              owner: input.owner,
++              accounts: acquired,
++            });
++            const result = yield* ownerOperations.remove(input);
++            yield* cleanup;
++            return result;
 +          }),
 +      },
        publications: catalog.publications,
@@ -9397,10 +9624,10 @@ index d2e8115..52ec9e6 100644
        skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
 diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
 new file mode 100644
-index 0000000..a29d779
+index 0000000..c37992f
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-accounts.ts
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,355 @@
 +/** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
 +import { Clock, type Crypto, Effect, Schema } from "effect";
 +import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
@@ -9412,6 +9639,7 @@ index 0000000..a29d779
 +} from "../contracts/interactive-accounts.ts";
 +import { CurrentActor } from "../contracts/executor.ts";
 +import { backgroundAccounts } from "./background-accounts.ts";
++import { makeInteractiveAttempts, interactiveCancelMillis } from "./interactive-attempts.ts";
 +import { StorageError } from "../contracts/shared.ts";
 +import type { Credentials } from "../contracts/storage.ts";
 +import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -9472,7 +9700,15 @@ index 0000000..a29d779
 +    ReturnType<InteractiveHost["remove"]>,
 +    import("../contracts/interactive-accounts.ts").InteractiveConnectionFailed | StorageError
 +  >;
++  readonly clearAttempt: ReturnType<typeof makeInteractiveAttempts>["clearAttempt"];
 +} => {
++  const { cancelAttempt, clearAttempt } = makeInteractiveAttempts(
++    db,
++    crypto,
++    runtime,
++    resolveAccount,
++    lifecycle,
++  );
 +  const invoke = interactiveRunner(db, runtime, resolveAccount);
 +  const prepareCall = prepareInteractiveCall(db, runtime, resolveAccount);
 +  const prepareContext = prepareInteractiveContext(db, runtime, resolveAccount);
@@ -9497,6 +9733,7 @@ index 0000000..a29d779
 +    db,
 +    crypto,
 +    interactiveStepMillis,
++    interactiveStepMillis + interactiveCancelMillis,
 +  );
 +  const cleanup = (input: Input, claimed: Claim, command: ConnectCommand) =>
 +    run(input, claimed.row, claimed.session, command).pipe(
@@ -9667,11 +9904,16 @@ index 0000000..a29d779
 +            existing.state.status === "pending" &&
 +            previous?.method === input.method &&
 +            previous.instructions !== undefined &&
-+            previous.failed === undefined
++            previous.failed === undefined &&
++            (previous.running === undefined ||
++              (previous.leaseExpiresAt ?? 0) > (yield* Clock.currentTimeMillis)) &&
++            (previous.instructions.expiresAt === undefined ||
++              previous.instructions.expiresAt > (yield* Clock.currentTimeMillis))
 +          )
 +            return previous.instructions;
 +          const claimed = yield* claim(input, input.method);
 +          if (claimed === undefined) return yield* failure();
++          yield* cancelAttempt(claimed.row, input.accounts);
 +          const started = yield* run(input, claimed.row, claimed.session, {
 +            operation: "connect",
 +            slot: claimed.row.target.requirement,
@@ -9737,45 +9979,171 @@ index 0000000..a29d779
 +        }),
 +      ),
 +    prepareRemoval,
++    clearAttempt,
 +    remove: (input) => safe(Effect.flatten(prepareRemoval(input))),
 +  };
 +};
+diff --git a/packages/sdk/src/implementation/interactive-attempts.ts b/packages/sdk/src/implementation/interactive-attempts.ts
+new file mode 100644
+index 0000000..6a852b3
+--- /dev/null
++++ b/packages/sdk/src/implementation/interactive-attempts.ts
+@@ -0,0 +1,89 @@
++/** Abandon a pending app session without ending the connection or holding SQL during cancel. */
++import { type Crypto, Effect } from "effect";
++import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
++import { AuthMethodInvalid } from "../contracts/provider.ts";
++import type { AppAccounts } from "../contracts/apps.ts";
++import type { Runtime } from "../contracts/runtime.ts";
++import type { AccountConnectionId, OwnerId } from "../contracts/shared.ts";
++import type { makeOAuth } from "./oauth.ts";
++import { backgroundAccounts } from "./background-accounts.ts";
++import { lockConnection, requireOpen, type ConnectionRow } from "./connection-state.ts";
++import { requireTargetProvider } from "./connection-target.ts";
++import { query, transaction, type Query } from "./database.ts";
++import { pendingInteractive } from "./interactive-state.ts";
++import { interactiveRunner } from "./interactive-runner.ts";
++
++export const interactiveCancelMillis = 5_000;
++export const makeInteractiveAttempts = (
++  db: Query,
++  crypto: Crypto.Crypto,
++  runtime: Runtime,
++  resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
++  lifecycle?: ResourceLifecycle,
++) => {
++  const invoke = interactiveRunner(db, runtime, resolveAccount);
++  const cancelAttempt = (row: ConnectionRow, supplied?: AppAccounts) =>
++    Effect.gen(function* () {
++      const session = pendingInteractive(row);
++      if (session?.session === undefined) return;
++      const accounts =
++        supplied ??
++        (yield* backgroundAccounts(db, lifecycle, {
++          app: row.target.app,
++          version: session.version,
++          actor: yield* CurrentActor,
++          connecting: row.target.requirement,
++        }));
++      yield* invoke({
++        owner: row.owner,
++        accounts,
++        acquisition: {
++          app: row.target.app,
++          slot: row.target.requirement,
++          version: session.version,
++        },
++        command: {
++          operation: "connect",
++          slot: row.target.requirement,
++          step: "cancel",
++          input: { method: session.method, session: session.session },
++        },
++      });
++    }).pipe(
++      Effect.timeout(interactiveCancelMillis),
++      Effect.catchCause(() =>
++        Effect.logWarning("Abandoned interactive attempt cleanup did not finish"),
++      ),
++    );
++  const clearAttempt = (input: {
++    readonly owner?: OwnerId | undefined;
++    readonly connection: AccountConnectionId;
++    readonly method: string;
++    readonly type: "secrets" | "oauth2";
++  }) =>
++    Effect.gen(function* () {
++      const previous = yield* transaction(db, (tx) =>
++        Effect.gen(function* () {
++          const row = yield* lockConnection(tx, input, crypto);
++          if (row.state.status !== "pending" || pendingInteractive(row) === undefined)
++            return undefined;
++          yield* requireOpen(input, row);
++          const provider = yield* requireTargetProvider(tx, row);
++          const selected = Object.hasOwn(provider.definition.auth, input.method)
++            ? provider.definition.auth[input.method]
++            : undefined;
++          if (selected?.type !== input.type)
++            return yield* new AuthMethodInvalid({ provider: row.provider, method: input.method });
++          yield* query(() =>
++            tx.updateMany("accountConnections", {
++              where: (b) => b("id", "=", row.id),
++              set: { state: { status: "pending" }, oauthAttempt: null },
++            }),
++          );
++          return row;
++        }),
++      );
++      if (previous !== undefined) yield* cancelAttempt(previous);
++    });
++  return { cancelAttempt, clearAttempt };
++};
 diff --git a/packages/sdk/src/implementation/interactive-cleanup.ts b/packages/sdk/src/implementation/interactive-cleanup.ts
 new file mode 100644
-index 0000000..d22a18f
+index 0000000..302dbed
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-cleanup.ts
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,61 @@
 +/** Bulk cleanup is bounded and advisory; a provider never vetoes the local purge. */
-+import { Effect } from "effect";
++import { Clock, Effect } from "effect";
 +import type { InteractiveHost } from "../contracts/interactive-accounts.ts";
 +import type { AccountId, OwnerId } from "../contracts/shared.ts";
 +import { interactiveStepMillis } from "./interactive-runner.ts";
 +/** Self-host's HTTP idle limit is 30 seconds; leave 10 seconds for the local mutation. */
 +export const interactiveCleanupMillis = 20_000;
-+export const cleanupInteractiveAccounts = (
-+  remove: InteractiveHost["remove"],
++/** Capture resolved handler calls while the app, version and linked credentials still exist. */
++export const prepareInteractiveCleanup = <E, E2>(
++  prepare: (
++    input: Parameters<InteractiveHost["remove"]>[0],
++  ) => Effect.Effect<Effect.Effect<void, E>, E2>,
 +  input: { readonly owner: OwnerId; readonly accounts: readonly AccountId[] },
 +) =>
-+  Effect.suspend(() => {
-+    const pending = new Set(input.accounts);
++  Effect.gen(function* () {
++    const deadline = (yield* Clock.currentTimeMillis) + interactiveCleanupMillis;
++    const prepared = new Map<AccountId, Effect.Effect<void, E>>();
 +    const warning = (account: AccountId) =>
-+      Effect.logWarning("Interactive account cleanup did not finish; continuing deletion", {
++      Effect.logWarning("Interactive account cleanup could not be prepared; continuing deletion", {
 +        account,
 +      });
-+    return Effect.forEach(
-+      [...pending],
++    yield* Effect.forEach(
++      input.accounts,
 +      (account) =>
-+        remove({ owner: input.owner, account }).pipe(
++        prepare({ owner: input.owner, account }).pipe(
 +          Effect.timeout(interactiveStepMillis),
-+          Effect.catch(() => warning(account)),
-+          Effect.tap(() => Effect.sync(() => pending.delete(account))),
++          Effect.tap((call) => Effect.sync(() => prepared.set(account, call))),
++          Effect.catchCause(() => warning(account)),
 +        ),
 +      { concurrency: 4, discard: true },
 +    ).pipe(
 +      Effect.timeout(interactiveCleanupMillis),
-+      Effect.catch(() => Effect.forEach([...pending], warning, { discard: true })),
++      Effect.catchCause(() =>
++        Effect.forEach(
++          input.accounts.filter((account) => !prepared.has(account)),
++          warning,
++          { discard: true },
++        ),
++      ),
 +    );
++    return Effect.gen(function* () {
++      const remaining = deadline - (yield* Clock.currentTimeMillis);
++      const pending = new Set(prepared.keys());
++      const warn = (account: AccountId) =>
++        Effect.logWarning("Interactive account cleanup did not finish after deletion", { account });
++      if (remaining <= 0) return yield* Effect.forEach([...pending], warn, { discard: true });
++      yield* Effect.forEach(
++        [...prepared],
++        ([account, call]) =>
++          call.pipe(
++            Effect.timeout(interactiveStepMillis),
++            Effect.catchCause(() => warn(account)),
++            Effect.tap(() => Effect.sync(() => pending.delete(account))),
++          ),
++        { concurrency: 4, discard: true },
++      ).pipe(
++        Effect.timeout(remaining),
++        Effect.catchCause(() => Effect.forEach([...pending], warn, { discard: true })),
++      );
++    });
 +  });
 diff --git a/packages/sdk/src/implementation/interactive-retirement-claims.ts b/packages/sdk/src/implementation/interactive-retirement-claims.ts
 new file mode 100644
@@ -9953,10 +10321,10 @@ index 0000000..bfed8bb
 +};
 diff --git a/packages/sdk/src/implementation/interactive-retirement.ts b/packages/sdk/src/implementation/interactive-retirement.ts
 new file mode 100644
-index 0000000..0929d3e
+index 0000000..70c8aeb
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-retirement.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,128 @@
 +/** Explicit retirement validates, leases, invokes without SQL, then rechecks and commits. */
 +import { type Crypto, Effect, Option, Schema } from "effect";
 +import { InteractiveRemovalDone, type InteractiveHost } from "../contracts/interactive-accounts.ts";
@@ -9967,7 +10335,6 @@ index 0000000..0929d3e
 +import { query, transaction, type Query } from "./database.ts";
 +import { StoredState } from "./connection-state.ts";
 +import { makeRetirementClaims, retirementRecords } from "./interactive-retirement-claims.ts";
-+import { cleanupInteractiveAccounts } from "./interactive-cleanup.ts";
 +import { interactiveStepMillis } from "./interactive-runner.ts";
 +import { validateRemovalChange } from "./removal-validation.ts";
 +const decode = Schema.decodeUnknownOption(StoredState);
@@ -10067,8 +10434,6 @@ index 0000000..0929d3e
 +        ),
 +      );
 +    });
-+  const cleanup = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
-+    cleanupInteractiveAccounts(remove, input);
 +  /** Bulk authority is the app/owner deletion. Its bound references cannot survive that app. */
 +  const discard = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
 +    Effect.gen(function* () {
@@ -10086,7 +10451,7 @@ index 0000000..0929d3e
 +        }),
 +      );
 +    });
-+  return { retire, acquired, cleanup, discard };
++  return { retire, acquired, discard };
 +};
 diff --git a/packages/sdk/src/implementation/interactive-runner.ts b/packages/sdk/src/implementation/interactive-runner.ts
 new file mode 100644
@@ -10268,10 +10633,10 @@ index 0000000..085e742
 +  });
 diff --git a/packages/sdk/src/implementation/interactive-state.ts b/packages/sdk/src/implementation/interactive-state.ts
 new file mode 100644
-index 0000000..7903601
+index 0000000..e102b26
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-state.ts
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,197 @@
 +/** Acquisition provenance shares the completed connection's existing JSON column. */
 +import { Clock, type Crypto, Effect, Option, Schema } from "effect";
 +import { Account } from "../contracts/account.ts";
@@ -10359,7 +10724,12 @@ index 0000000..7903601
 +  readonly token: string;
 +};
 +/** Persist claims and their outcomes independently of handler execution. */
-+export const interactiveClaims = (db: Query, crypto: Crypto.Crypto, stepMillis: number) => {
++export const interactiveClaims = (
++  db: Query,
++  crypto: Crypto.Crypto,
++  stepMillis: number,
++  startMillis = stepMillis,
++) => {
 +  const failure = () => new InteractiveConnectionFailed({ reason: "step" });
 +  const claim = (input: InteractiveInput, method?: string) =>
 +    transaction(db, (tx) =>
@@ -10384,7 +10754,7 @@ index 0000000..7903601
 +        const provider = yield* requireTargetProvider(tx, row);
 +        const now = yield* Clock.currentTimeMillis;
 +        const previous = pendingInteractive(row);
-+        if (previous?.running !== undefined) {
++        if (method === undefined && previous?.running !== undefined) {
 +          // An expired lease is an uncertain invocation, not permission to repeat a mutation.
 +          if ((previous.leaseExpiresAt ?? 0) <= now)
 +            yield* writeInteractive(tx, row, {
@@ -10393,8 +10763,9 @@ index 0000000..7903601
 +            });
 +          return undefined;
 +        }
-+        if (previous?.failed !== undefined) return yield* failure();
++        if (method === undefined && previous?.failed !== undefined) return yield* failure();
 +        if (
++          method === undefined &&
 +          previous?.instructions?.expiresAt !== undefined &&
 +          previous.instructions.expiresAt <= now
 +        )
@@ -10404,7 +10775,16 @@ index 0000000..7903601
 +          const selected = Object.hasOwn(provider.definition.auth, method)
 +            ? provider.definition.auth[method]
 +            : undefined;
-+          if (selected?.type !== "interactive" || previous !== undefined) return yield* failure();
++          if (selected?.type !== "interactive") return yield* failure();
++          if (
++            previous?.method === method &&
++            previous.running !== undefined &&
++            (previous.leaseExpiresAt ?? 0) > now &&
++            previous.failed === undefined &&
++            (previous.instructions?.expiresAt === undefined ||
++              previous.instructions.expiresAt > now)
++          )
++            return undefined;
 +          const app = yield* storedApp(tx, { app: row.target.app, owner: row.target.owner });
 +          const version = yield* storedVersion(tx, app);
 +          session = { method, version: version.id };
@@ -10418,7 +10798,11 @@ index 0000000..7903601
 +        }
 +        if (session === undefined) return yield* failure();
 +        const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
-+        const claimed = { ...session, running: token, leaseExpiresAt: now + stepMillis };
++        const claimed = {
++          ...session,
++          running: token,
++          leaseExpiresAt: now + (method === undefined ? stepMillis : startMillis),
++        };
 +        yield* writeInteractive(tx, row, claimed);
 +        return { row, session: claimed, token };
 +      }),
@@ -11042,7 +11426,7 @@ index 54cf913..21e2f5b 100644
          <>
            <p className="text-xs leading-relaxed text-muted-foreground">
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index c051320..39ee053 100644
+index c051320..98a16f9 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -56,11 +56,14 @@ const accountName = (account: AccountSummary) => account.label || "Unnamed accou
@@ -11101,7 +11485,40 @@ index c051320..39ee053 100644
        {error && (
          <div className="basis-full text-xs">
            <Failure cause={error} />
-@@ -699,11 +720,15 @@ function ChoiceRow<E>({
+@@ -612,8 +633,21 @@ function EditableChoices<E>({
+     }),
+   );
+   const ready = Option.isSome(loaded) && edit.connecting !== true;
++  // Picking another account for a plain requirement retires an app-bound one, so it asks first.
++  const bound = plain
++    ? choices.find(
++        (choice) =>
++          choice.linked &&
++          requirement.definition.auth[choice.account.method]?.type === "interactive",
++      )
++    : undefined;
+   const rows = choices.map((choice) => (
+     <ChoiceRow
++      replaces={
++        bound !== undefined && bound.account.id !== choice.account.id
++          ? accountName(bound.account)
++          : undefined
++      }
+       key={choice.account.id}
+       app={app}
+       slot={slot}
+@@ -676,7 +710,10 @@ function ChoiceRow<E>({
+   edit,
+   data,
+   Failure,
++  replaces,
+ }: {
++  /** The app-bound account that selecting this one would retire. */
++  readonly replaces?: string | undefined;
+   readonly app: App;
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+@@ -699,11 +736,15 @@ function ChoiceRow<E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const id = useId();
    const name = accountName(account);
@@ -11117,7 +11534,18 @@ index c051320..39ee053 100644
    };
    return (
      <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
-@@ -726,7 +751,18 @@ function ChoiceRow<E>({
+@@ -715,7 +756,9 @@ function ChoiceRow<E>({
+           disabled={!ready || pending}
+           className={radioClass}
+           onClick={() => {
+-            if (!linked) void change(true);
++            if (linked) return;
++            if (replaces !== undefined) setConfirming(true);
++            else void change(true);
+           }}
+         >
+           <RadioGroup.Indicator className={radioDot} />
+@@ -726,7 +769,19 @@ function ChoiceRow<E>({
            checked={linked}
            aria-label={name}
            disabled={!ready || pending}
@@ -11129,15 +11557,16 @@ index c051320..39ee053 100644
 +      )}
 +      {confirming && (
 +        <RemoveAppBoundAccount
-+          name={name}
++          name={replaces ?? name}
 +          app={app.name}
 +          pending={pending}
++          {...(replaces === undefined ? {} : { replacement: name })}
 +          onKeep={() => setConfirming(false)}
-+          onRemove={() => void change(false).then(() => setConfirming(false))}
++          onRemove={() => void change(replaces !== undefined).then(() => setConfirming(false))}
          />
        )}
        <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
-@@ -749,6 +785,78 @@ function ChoiceRow<E>({
+@@ -749,6 +804,83 @@ function ChoiceRow<E>({
    );
  }
  
@@ -11178,10 +11607,13 @@ index c051320..39ee053 100644
 +  name,
 +  app,
 +  pending,
++  replacement,
 +  onKeep,
 +  onRemove,
 +}: {
 +  readonly name: string;
++  /** Set when choosing another account for the requirement is what removes this one. */
++  readonly replacement?: string | undefined;
 +  readonly app: string;
 +  readonly pending: boolean;
 +  readonly onKeep: () => void;
@@ -11195,7 +11627,9 @@ index c051320..39ee053 100644
 +      }}
 +    >
 +      <DialogContent className="sm:max-w-[440px]">
-+        <DialogTitle>Remove {name}?</DialogTitle>
++        <DialogTitle>
++          {replacement === undefined ? `Remove ${name}?` : `Use ${replacement} instead of ${name}?`}
++        </DialogTitle>
 +        <DialogDescription>
 +          Only {app} can use this account, because it signed the account in itself. Removing it
 +          deletes the account here and where {app} keeps it. Adding it back means signing in again.
@@ -11205,7 +11639,7 @@ index c051320..39ee053 100644
 +            Keep account
 +          </Button>
 +          <Button variant="destructive" loading={pending} onClick={onRemove}>
-+            Remove account
++            {replacement === undefined ? "Remove account" : `Remove ${name}`}
 +          </Button>
 +        </DialogFooter>
 +      </DialogContent>
