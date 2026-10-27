@@ -18,3 +18,13 @@ export function poolDatabaseUrl(connectionUrl: string): string {
   url.searchParams.set("options", `-c role=${poolDatabase.owner}`);
   return url.toString();
 }
+
+/**
+ * PlanetScale logins are `<role>.<branch id>`; the suffix only routes the connection to a branch.
+ * Grants need the Postgres role itself, the part before the first dot.
+ */
+export function postgresRoleName(login: string): string {
+  const dot = login.indexOf(".");
+  if (dot <= 0 || dot === login.length - 1) throw new Error("The pool runtime login is not a PlanetScale branch login");
+  return login.slice(0, dot);
+}

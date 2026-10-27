@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { alchemyArgs } from "./alchemy.ts";
+import { postgresRoleName } from "../src/pool/database-settings.ts";
 
 test("Bun runs the workspace's Alchemy bin with every argument and returns its exit code", () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-alchemy-"));
@@ -61,4 +62,10 @@ test("the pool database grants its owner to the runtime role's Postgres login, n
   const source = readFileSync(new URL("../src/pool/database.ts", import.meta.url), "utf8");
   assert.match(source, /POOL_DATABASE_RUNTIME_ROLE: runtime\.username,/);
   assert.doesNotMatch(source, /POOL_DATABASE_RUNTIME_ROLE: runtime\.name/);
+});
+
+test("grants use the Postgres role without PlanetScale's branch routing suffix", () => {
+  assert.equal(postgresRoleName("pscale_api_7vbr1djszc0l.3p0usohvonk3"), "pscale_api_7vbr1djszc0l");
+  for (const login of ["pscale_api_7vbr1djszc0l", ".3p0usohvonk3", "pscale_api_7vbr1djszc0l.", ""])
+    assert.throws(() => postgresRoleName(login), /not a PlanetScale branch login/, login);
 });
