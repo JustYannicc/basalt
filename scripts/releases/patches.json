@@ -25,7 +25,7 @@
       "identity": "executor-eu-durable-objects",
       "upstream_issue": 2364,
       "file": "0003-eu-durable-objects.patch",
-      "content_sha256": "3535935861fe64f93ebc155def76e3ff3ad8e71f41a7160c44c867b1eaf92e0b",
+      "content_sha256": "fef3d77f06b2166d9ec0e428011be1f9f6197d9cc4c0f4a39c10b0f16ab549fc",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
