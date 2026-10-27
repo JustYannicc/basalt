@@ -44,9 +44,9 @@ diff --git a/apps/hosted/web/src/implementation/pages/oauth-clients.tsx b/apps/h
            <DialogDescription>
 -            Clients members can sign in with when they connect accounts. Secrets are never shown
 -            again.
-+            Hosted {brand.name} clients are used automatically when available and do not appear
-+            here. To connect an account, open the app's Accounts tab. This list contains additional
-+            clients registered for your organization. Secrets are never shown again.
++            Clients hosted by {brand.name} for one-click sign-in are not listed here. To connect an
++            account, open the app's Accounts tab. This list contains your organization's own OAuth
++            clients. Secrets are never shown again.
            </DialogDescription>
          </DialogHeader>
          <QueryView
