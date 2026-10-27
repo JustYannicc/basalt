@@ -3,13 +3,6 @@ import type { ChangedFile, Evidence, PatchManifestV3, PatchRecord, SourceCompari
 const databasePath = /(^|\/)(migrations?|schema|schema_migration|[^/]*_migration)(\/|\.|$)/i;
 const databaseModelPath = /(^|\/)internal\/cluster\//i;
 export const workflowPath = /(^|\/)[^/]*workflow[^/]*(\/|$)/i;
-/** Basalt's GitHub Actions workflows and test files, which no deployment runs. */
-const undeployedLocalPath = /^(?:\.github|architecture)\/|\.test\.[cm]?[jt]sx?$/;
-/**
- * Basalt files that set the stage and the brand, which every deployed resource name derives from.
- * The stack file, `alchemy.run.ts`, is judged line by line instead (`stack-impact.ts`).
- */
-const localIdentityPath = /^(?:brand\.ts|scripts\/environment\.ts)$/;
 const ignoredWorkflowArea = /(^|\/)(docs?|e2e|playground|test|tests|__tests__)(\/|$)/i;
 const workflowCode = /(?:Cloudflare\.Workflows|WorkflowStep|workflowName|workflowStep|workflowRun|waitForEvent|\.task\s*\(|\.sleep\s*\()/i;
 const nonRuntimePath = /(^|\/)(docs?|e2e|playground|test|tests|__tests__|marketing)(\/|$)|\.(?:md|mdx|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|map)$/i;
@@ -100,14 +93,3 @@ export function changedPatchFiles(paths: string[]): string[] {
   return paths.filter((path) => path.startsWith("patches/") && path.endsWith(".patch"));
 }
 
-export function localDatabasePaths(paths: string[]): string[] {
-  return paths.filter((path) => isDatabasePath(path) || localIdentityPath.test(path));
-}
-
-/**
- * Basalt paths named for Workflows, and the stage and brand files that name their hosts. GitHub
- * Actions workflows, architecture models and test files are not deployed.
- */
-export function localWorkflowPaths(paths: string[]): string[] {
-  return paths.filter((path) => localIdentityPath.test(path) || isWorkflowPath(path) && !undeployedLocalPath.test(path));
-}

@@ -85,19 +85,53 @@ The result is `unknown`, which also requires a manual release, in these cases, u
 - a nested change has no readable inner file header;
 - a changed line sits in a template literal whose start or end is not visible and which shows no database keyword.
 
-Basalt's own `.github/` workflows, architecture models and test files are not Cloudflare Workflow changes. Its `brand.ts` and `scripts/environment.ts` set the stage and every physical name, so a change to either is both database- and Workflow-changing.
+Basalt's own changed files are judged by an allow-list (`scripts/releases/local-impact.ts`). A file is clear only when it is on the reviewed list of paths no production deployment reads or runs, or when a precise rule shows it changes neither the database nor a Workflow. Anything else is `unknown` for both areas.
+
+The reviewed list holds:
+
+- documentation, the architecture model, tests and test fixtures;
+- the CI, lint and release-PR workflows;
+- CI checks;
+- the release updater and its receipts;
+- the merge gate's own steps;
+- one-off operator tools;
+- static assets.
+
+`local-impact.ts` gives the reason for each entry. The following are never on it:
+
+- workflows that deploy production or hold its deploy secrets: deploy, the three release workflows, credentials, preview, cleanup and pool acceptance;
+- deploy-time scripts;
+- every module a deploy entry point imports, including the release gate, deploy-safety, the main-release candidate and the preview keys `scripts/environment.ts` reads.
+
+`classify-local.test.ts` walks the imports of every deploy entry point and fails if any module it reaches is on the list.
+
+Other rules for Basalt's own files:
+
+- `brand.ts` and `scripts/environment.ts` set the stage and every physical name, so a change to either is both database- and Workflow-changing.
+- Runtime source (`src/`, `apps/pool/`, `containers/pool/`) is database-`unknown`. The one exception is the reviewed provider table `src/pool/providers.json`, which is clear.
+- For Workflows, runtime source is changed when its path or a changed line names a Workflow. It is `unknown` when it is a module a deploy imports for resources or settings. Otherwise it is clear.
 
 Its stack file, `alchemy.run.ts`, is judged line by line, from its contents at both commits (`scripts/releases/stack-impact.ts`). A changed line is checked together with the lines within three of it (imports aside) and the nearest call that encloses it.
 
 - It is both database- and Workflow-changing when one of those names the stack (`Alchemy.Stack(`), its state store (`stackState`, `state:`) or the stage.
-- It is also database-changing when one of those names PlanetScale, a Postgres database, role or branch, Hyperdrive, or a database.
-- It is also Workflow-changing when one of those names a Workflow, a Worker or script name, a Durable Object, or a jurisdiction, or when the line is a `name:` inside a `Worker(` call.
+- It is also database-changing when one of those names PlanetScale, a Postgres database, role or branch, Hyperdrive, a database, a Durable Object, or a jurisdiction.
+- It is also Workflow-changing when one of those names a Workflow, a Worker or script name, a Durable Object, a jurisdiction, a binding's `className:` or a `Container(`, or when the line is a `name:` inside a `Worker(` call.
 
-A changed line that itself names something carrying the upstream stack in also counts for both. That means the upstream deployment, Workers or providers, `Api`, the pool Worker, the preview database, or an adopt or removal policy. An import from `.upstream/`, `src/pool/` or alchemy counts too.
+A changed line that itself names something carrying the upstream stack in also counts for both. That means the upstream deployment, Workers or providers, `Api`, the pool Worker, the preview database, or an adopt or removal policy. An import from `.upstream/`, `src/pool/` or alchemy counts too, even inside a multi-line import.
 
-A changed bare `yield* name;` runs resources this cannot see, so it is `unknown`. So is a stack file whose brackets cannot be matched, or whose contents were not supplied.
+These make a stack change `unknown`:
 
-Other resources, such as a zone ruleset, are clear. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
+- **Control flow:** `return`, `throw`, `if`, `else`, a loop, `switch`, `try`, `break`, `continue`, `process.exit`, or any `Effect.` call other than `gen` and `orDie`, because it can skip resources Alchemy would then delete. The exception is an added `if (...) {` whose whole block is new and never exits.
+- **Commands:** a `Command.` call or a line inside one.
+- **Indirect resource groups:** any `yield` whose operand is not a direct `Cloudflare.` or `Config.` constructor, wherever it sits, including in a template.
+- **Conditional resources:** a `yield` on a line with `?`, `&&` or `||`.
+- **Rebinding:** a name the stack resolves through, bound again.
+- **Module loading:** a dynamic `import()` or `require()`, a re-export, or an import of a local module not reviewed as declaring nothing.
+- **Unreadable files:** a stack file whose brackets cannot be matched, or whose contents were not supplied.
+
+Other resources, such as a zone ruleset, are clear.
+
+Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A carried-patch change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
 
 The classifier's current report is the decision input. When either change flag is true, the release updater must keep the PR open, apply the relevant `database-change` and/or `workflow-identity-change` labels plus `manual-release`, and refrain from auto-merging it. These labels do not authorize deployment.
 

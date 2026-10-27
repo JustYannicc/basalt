@@ -307,10 +307,10 @@ test("adapted bytes keep stable identity and mapping while their new digest is c
   assert.equal(report.databaseChanged, false);
 });
 
-test("GitHub Actions workflow and test files are not Cloudflare Workflow changes", () => {
+test("non-deploy GitHub Actions workflows and test files are not Cloudflare Workflow changes", () => {
   const report = classifySnapshots({
     baseGitCommit: sha("1"), candidateGitCommit: sha("2"), basePins: pins(), candidatePins: pins(),
-    localChangedPaths: [".github/workflows/release-main.yml", "scripts/architecture/telemetry-workflows.test.ts"],
+    localChangedPaths: [".github/workflows/ci.yml", "scripts/architecture/telemetry-workflows.test.ts"],
   });
   assert.equal(report.workflowChanged, false);
   const runtime = classifySnapshots({
