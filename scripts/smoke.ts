@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { brand } from "../brand.ts";
+import { afterFreshDns } from "./fresh-dns.ts";
 import { visibleText } from "./visible-text.ts";
 
 const origin = `https://${brand.host}`;
-const root = await fetch(origin, { redirect: "manual" });
+// A first deploy creates the custom domain moments before this check runs.
+const root = await afterFreshDns(() => fetch(origin, { redirect: "manual" }));
 assert.equal(root.status, 302, "A signed-out homepage must send people to sign-in");
 assert.equal(root.headers.get("location"), "/login");
 const login = await fetch(`${origin}/login`);
