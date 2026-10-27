@@ -151,7 +151,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       const headers = new Headers(response.headers);
       headers.set("X-Signalbox-Pool-Boot", status.boot_id);
       return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
-    } catch {
+    } catch (error) {
+      // Startup and port errors are fixed runtime messages without request data or credentials.
+      console.error("Pool backend unavailable", error instanceof Error ? error.message.slice(0, 300) : "unknown error");
       return new Response(null, { status: 503, headers: { "Retry-After": "5", "Cache-Control": "no-store" } });
     }
   }
