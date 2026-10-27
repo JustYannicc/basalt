@@ -103,6 +103,8 @@ test("a retry after failed initial attempts still requires the production databa
     await assert.rejects(latestProductionBase(), /PlanetScale database already exists/);
     databases = [basalt];
     await assert.rejects(latestProductionBase(), /PlanetScale database already exists/);
+    databases = [{ ...basalt, created_at: "2026-10-25T16:06:00Z" }];
+    await assert.rejects(latestProductionBase(), /PlanetScale database already exists/);
     databases = [{ ...basalt, created_at: "2026-10-25T16:01:00Z" }];
     assert.deepEqual(await latestProductionBase(), { state: "uninitialized" });
     databases = [];
