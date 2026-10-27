@@ -1,0 +1,157 @@
+name: Manual release of main
+
+on:
+  # Releases the current main head through the same backup, report and approval as an update PR. Used when
+  # a merged change needs the manual path, for example a runtime carried-patch change.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  deployments: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      head: ${{ steps.candidate.outputs.head }}
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Validate that the main head passed its push Check
+        id: candidate
+        run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
+      - name: Select the validated release source
+        run: |
+          git fetch --no-tags origin "$RELEASE_HEAD"
+          git worktree add --detach "$RUNNER_TEMP/candidate" "$RELEASE_HEAD"
+        env:
+          RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - name: Classify against the last successful production deployment
+        run: |
+          mkdir -p .local
+          node scripts/deploy-safety/release.ts report --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" > .local/production-report.json
+        env:
+          RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - name: Complete the release backup before protected environment approval
+        run: node scripts/deploy-safety/release.ts backup-only --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
+        env:
+          RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: main-release-report
+          path: .local/production-report.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+  deploy:
+    needs: backup
+    if: github.ref == 'refs/heads/main'
+    environment: production-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+      PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+      PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID }}
+      EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
+      EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID }}
+      EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_GITLAB_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_ID }}
+      EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_MIRO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_ID }}
+      EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_ZOHO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_ID }}
+      EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID }}
+      EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET }}
+      EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID }}
+      EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET }}
+      AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+      AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+      BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+      EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+      MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
+      MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
+      APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+      POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+      SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+      POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+      POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+      POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+      APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
+      POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+    steps:
+      # Approve only after manually draining workflows and quiescing writes as the report requires.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Reject a main change while approval was pending
+        run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
+        env:
+          MAIN_RELEASE_EXPECTED_HEAD: ${{ needs.backup.outputs.head }}
+          MAIN_RELEASE_REQUIRE_EXPECTED: "true"
+      - name: Select the same immutable release source
+        run: |
+          git fetch --no-tags origin "$RELEASE_HEAD"
+          git worktree add --detach "$RUNNER_TEMP/candidate" "$RELEASE_HEAD"
+        env:
+          RELEASE_HEAD: ${{ needs.backup.outputs.head }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: main-release-report
+          path: .local
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Rebuild and check the approved candidate
+        working-directory: ${{ runner.temp }}/candidate
+        run: |
+          npm run prepare:upstream
+          npm run check
+          npm run check:upstream
+          npm run build
+          npm run check:build
+          bun install --cwd scripts/architecture --frozen-lockfile
+          npm run architecture:model
+          npm run typecheck
+      - name: Journal changes require all existing workflow runs drained before deployment
+        run: node scripts/deploy-safety/release.ts inspect-workflows --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
+        env:
+          RELEASE_HEAD: ${{ needs.backup.outputs.head }}
+      - name: Recheck the backup and deploy the approved release
+        run: node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json --mode manual
+        env:
+          RELEASE_HEAD: ${{ needs.backup.outputs.head }}
