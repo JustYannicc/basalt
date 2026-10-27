@@ -15,7 +15,7 @@ export function deploymentKind(kind: string): string {
   if (/Container$/.test(kind)) return "container";
   if (/Queue$/.test(kind)) return "queue";
   if (/Exec|Build|Dev|Workflow|Monitor|Lifecycle|Resume/.test(kind)) return "workflow";
-  if (/Hyperdrive|Volume|ObservabilityDestination|Bucket|Database|Role|Branch|Certificate|Connection|Secret|Random|Token|Dataset|Subdomain|Record|Pages|Tunnel|Application|Domain|Zone/.test(kind)) return "storage";
+  if (/Hyperdrive|Volume|ObservabilityDestination|Bucket|Database|Role|Branch|Certificate|Connection|Secret|Random|Token|Dataset|Subdomain|Record|Pages|Tunnel|Application|Domain|Zone|Ruleset/.test(kind)) return "storage";
   throw new Error(`Unclassified deployment kind '${kind}'; map it to a glossary deployment kind`);
 }
 
