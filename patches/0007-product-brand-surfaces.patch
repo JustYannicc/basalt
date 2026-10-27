@@ -64,7 +64,7 @@ index 80d4b4905..d58c4d6f2 100644
        # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
        # document there, which authorization servers must be able to fetch over public HTTPS.
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
-index ee4f4233a..b1f746120 100644
+index ee4f4233a..2d2586d44 100644
 --- a/apps/hosted/server/src/contracts/api.ts
 +++ b/apps/hosted/server/src/contracts/api.ts
 @@ -8,4 +8,5 @@ export { HostedAppManagementApi } from "./app-management.ts";
@@ -73,7 +73,7 @@ index ee4f4233a..b1f746120 100644
 +import { isDefaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
  import { HostedGroups } from "./groups.ts";
  import { HostedMcpConnections } from "./mcp-connections.ts";
-@@ -218,2 +219,21 @@ export const HostedApi = HttpApi.make("executor-hosted")
+@@ -218,2 +219,23 @@ export const HostedApi = HttpApi.make("executor-hosted")
    .addHttpApi(HostedAppManagementApi)
    .addHttpApi(HostedFrameworkApi);
 +
@@ -90,7 +90,9 @@ index ee4f4233a..b1f746120 100644
 +  if (isDefaultProductBrand(brand)) return document;
 +  const branded: HostedApiDocument = JSON.parse(JSON.stringify(document), (key, value) =>
 +    typeof value === "string" && (key === "description" || key === "summary")
-+      ? value.replace(/\bExecutor app\b/g, "`executor` app").replace(/\bExecutor\b/g, brand.name)
++      ? value
++          .replace(/\bExecutor app\b/g, "`executor` app")
++          .replace(/\bExecutor\b/g, () => brand.name)
 +      : value,
 +  );
 +  return { ...branded, info: { ...branded.info, title: `${brand.name} API` } };

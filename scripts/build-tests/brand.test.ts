@@ -61,8 +61,14 @@ test("under the tools service's own name the API document is unchanged", async (
   assert.equal(brandApiDocument(document, defaultProductBrand), document);
 });
 
-for (const product of [{ name: brand.name, logo: brand.logo }, swapped]) {
-  test(`the API document at /openapi.json presents ${product.name}`, async () => {
+test("the Cloud host serves the branded API document at /openapi.json", () => {
+  const main = readFileSync(`${upstream}apps/hosted/cloud/src/main.ts`, "utf8");
+  assert.match(main, /lazyHostedApiDocument\(\(\) =>\s*brandApiDocument\(executorCloudApiDocument\(apiOrigin\), brand\)/);
+});
+
+// A name with replacement-pattern characters must come through as written.
+for (const product of [{ name: brand.name, logo: brand.logo }, swapped, { name: "Cost $& Co", logo: "/cost.png" }]) {
+  test(`the API document presents ${product.name}`, async () => {
     const { executorCloudApiDocument } = await import(`${upstream}apps/hosted/cloud/src/contracts/api.ts`);
     const { brandApiDocument } = await import(`${upstream}apps/hosted/server/src/contracts/api.ts`);
     const document = brandApiDocument(executorCloudApiDocument(`https://${brand.host}`), product);
@@ -73,7 +79,9 @@ for (const product of [{ name: brand.name, logo: brand.logo }, swapped]) {
     // Agents reach the built-in app by its slug, which no brand changes.
     assert.ok(prose.some((text) => text.includes("`executor` app's app-authoring skill")), "the built-in app keeps its slug");
   });
+}
 
+for (const product of [{ name: brand.name, logo: brand.logo }, swapped]) {
   test(`built sign-in pages present ${product.name} and never the tools service's name`, async () => {
     for (const path of ["/login", "/login/sso", "/email/unsubscribe?result=invalid"]) {
       const html = await render(path, product);
