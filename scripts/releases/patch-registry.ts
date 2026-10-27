@@ -39,13 +39,19 @@ export function assertPatchManifestContentMatchesFiles(
   manifest: PatchManifestV3,
   contentByFile: Record<string, Uint8Array>,
 ): void {
+  const mismatches: string[] = [];
   for (const patch of manifest.patches) {
     const content = contentByFile[patch.file];
     if (!content) throw new Error(`Registered patch content is missing: ${patch.file}`);
     const actual = sha256PatchContent(content);
     if (actual !== patch.content_sha256)
-      throw new Error(`Patch content digest does not match registry identity: ${patch.identity}`);
+      mismatches.push(
+        `Patch content digest does not match registry identity: ${patch.identity} (patches/${patch.file})\n` +
+        `Registered content_sha256: ${patch.content_sha256}\n` +
+        `Expected content_sha256 for current patch bytes: ${actual}`,
+      );
   }
+  if (mismatches.length) throw new Error(mismatches.join("\n"));
 }
 
 export function sha256PatchContent(content: string | Uint8Array): string {

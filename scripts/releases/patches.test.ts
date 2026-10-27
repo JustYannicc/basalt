@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   assertPatchManifestContentMatchesFiles,
   assertPatchManifestMatchesFiles,
@@ -10,8 +11,12 @@ import {
   sha256PatchContent,
   updatedManifest,
 } from "./patch-registry.ts";
-import { decidePatchRemovals } from "./patches.ts";
+import { decidePatchRemovals, readPatchManifest } from "./patches.ts";
 import { patchFixtureContent, patchManifest, sha } from "./fixtures.test-helpers.ts";
+
+test("the checked-in registry matches every carried patch's exact bytes", () => {
+  readPatchManifest(fileURLToPath(new URL("../../", import.meta.url)));
+});
 
 test("format 3 registry requires unique semantic identities, locators, and content digests", () => {
   assert.deepEqual(parsePatchManifestV3(JSON.stringify(patchManifest)), patchManifest);
