@@ -63,6 +63,13 @@ const databaseCode = [
   /\b(?:new_sqlite_classes|new_classes|deleted_classes|renamed_classes|transferred_classes|durable_objects)\b|\b(?:ctx|state)\.storage\b|\bstorage\.sql\b/,
 ];
 
+// The production stage and the Alchemy state store name every resource: the Worker hosting the
+// Workflows and the database alike. Their upstream modules count wholesale.
+const stageIdentity = /productionStage|localStages|localState|stackState|stageName|\.state\(\)/;
+const stageModule = /^apps\/hosted\/cloud\/src\/infrastructure\/(?:stage|state)\.ts$/;
+// The stack, the API Worker entry and the Provisioning Workflow, whose names lack "workflow".
+const workflowHostModule = /^apps\/hosted\/cloud\/(?:alchemy\.run\.ts|src\/main\.ts|src\/infrastructure\/provisioning\.ts)$/;
+
 const workflowCode = [
   /workflow/i,
   /\bstep\.\w+\s*\(/,
@@ -73,8 +80,11 @@ const workflowCode = [
   /\bextends\s+Cloudflare\.\w+\s*<|\bCloudflare\.Worker\s*[(<]/,
   /\bAlchemy\.Stack\b|\bStack\s*\(|\bstackName\b|\bALCHEMY_STACK_NAME\b/,
   /physicalName/i,
-  // `className:` names a binding's class; JSX `className=` does not.
-  /\b(?:scriptName|workerName)\b|\bclassName\s*:/,
+  // Worker and script names, such as productionApiWorkerName; `className:` names a binding's
+  // class, JSX `className=` does not.
+  /workerName|scriptName/i,
+  /\bclassName\s*:/,
+  stageIdentity,
 ];
 
 // alchemy provisions both the Workflow hosts and the PlanetScale database.
@@ -82,15 +92,15 @@ const infrastructurePackages = String.raw`\balchemy\b|@alchemy\.run/|@distilled\
 
 export const databaseRules: AreaRules = {
   name: "database",
-  isPath: (path) => isDatabasePath(path) || databasePath.test(path),
-  isCode: (line) => databaseCode.some((rule) => rule.test(line)),
+  isPath: (path) => isDatabasePath(path) || databasePath.test(path) || stageModule.test(path),
+  isCode: (line) => stageIdentity.test(line) || databaseCode.some((rule) => rule.test(line)),
   packages: new RegExp(String.raw`better-auth|@effect/sql|(?:^|["'\s/])pg(?:["'\s:@]|$)|\bpg-|postgres|fumadb|kysely|drizzle|pglite|@electric-sql/|${infrastructurePackages}`),
   templates: true,
 };
 
 export const workflowRules: AreaRules = {
   name: "Workflow",
-  isPath: (path) => workflowPath.test(path) || /physical-?name/i.test(path),
+  isPath: (path) => workflowPath.test(path) || /physical-?name/i.test(path) || stageModule.test(path) || workflowHostModule.test(path),
   isCode: (line) => workflowCode.some((rule) => rule.test(line)),
   packages: new RegExp(String.raw`cloudflare|wrangler|miniflare|workerd|${infrastructurePackages}`),
   templates: false,

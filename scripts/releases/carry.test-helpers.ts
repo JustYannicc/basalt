@@ -92,12 +92,12 @@ export function section(path: string, context: string[], removed: string[], adde
 }
 
 /** A section that adds `lines` to `path` as new content. */
-export function addition(path: string, lines: string[]): string {
+export function addition(path: string, lines: string[], after = 40): string {
   return [
     `diff --git a/${path} b/${path}`,
     `--- a/${path}`,
     `+++ b/${path}`,
-    `@@ -40,0 +41,${lines.length} @@`,
+    `@@ -${after},0 +${after + 1},${lines.length} @@`,
     ...lines.map((line) => `+${line}`),
     "",
   ].join("\n");
@@ -117,7 +117,7 @@ export function assertClear(report: ClassificationReport) {
 }
 
 // The EU carry edits a dependency patch; its inner `diff --git` headers are carry context lines.
-export function nestedCarry(innerPath: string, removed: string[], added: string[], header = true): string {
+export function nestedCarry(innerPath: string, removed: string[], added: string[], header = true, patch?: string): string {
   const inner = [
     ...header ? [
       ` diff --git a/${innerPath} b/${innerPath}`,
@@ -130,17 +130,17 @@ export function nestedCarry(innerPath: string, removed: string[], added: string[
     ...removed.map((line) => `-+${line}`),
     ...added.map((line) => `++${line}`),
   ];
-  return nestedPatch(inner);
+  return nestedPatch(inner, patch);
 }
 
 /** The carry section editing alchemy's dependency patch with `outer` (carry-prefixed) lines. */
-export function nestedPatch(outer: string[]): string {
+export function nestedPatch(outer: string[], patch = "alchemy@2.0.0-beta.80.patch"): string {
   const oldCount = outer.filter((line) => !line.startsWith("+")).length;
   const newCount = outer.filter((line) => !line.startsWith("-")).length;
   return [
-    "diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch",
-    "--- a/patches/alchemy@2.0.0-beta.80.patch",
-    "+++ b/patches/alchemy@2.0.0-beta.80.patch",
+    `diff --git a/patches/${patch} b/patches/${patch}`,
+    `--- a/patches/${patch}`,
+    `+++ b/patches/${patch}`,
     `@@ -456,${oldCount} +2848,${newCount} @@ index 1d27a07..553a8c5 100644`,
     ...outer,
     "",

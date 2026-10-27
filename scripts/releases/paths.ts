@@ -4,8 +4,13 @@ const databasePath = /(^|\/)(migrations?|schema|schema_migration|[^/]*_migration
 const databaseModelPath = /(^|\/)internal\/cluster\//i;
 export const workflowPath = /(^|\/)[^/]*workflow[^/]*(\/|$)/i;
 /** Basalt's GitHub Actions workflows and test files, which no deployment runs. */
-const undeployedLocalPath = /^\.github\/|\.test\.[cm]?[jt]sx?$/;
-const ignoredWorkflowArea =/(^|\/)(docs?|e2e|playground|test|tests|__tests__)(\/|$)/i;
+const undeployedLocalPath = /^(?:\.github|architecture)\/|\.test\.[cm]?[jt]sx?$/;
+/**
+ * Basalt files that set the stack, its state store, the stage and the brand, which every deployed
+ * resource name derives from.
+ */
+const localIdentityPath = /^(?:alchemy\.run\.ts|brand\.ts|scripts\/environment\.ts)$/;
+const ignoredWorkflowArea = /(^|\/)(docs?|e2e|playground|test|tests|__tests__)(\/|$)/i;
 const workflowCode = /(?:Cloudflare\.Workflows|WorkflowStep|workflowName|workflowStep|workflowRun|waitForEvent|\.task\s*\(|\.sleep\s*\()/i;
 const nonRuntimePath = /(^|\/)(docs?|e2e|playground|test|tests|__tests__|marketing)(\/|$)|\.(?:md|mdx|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|map)$/i;
 const runtimeRoot = /^(?:apps\/hosted\/|packages\/|lib\/)/;
@@ -96,10 +101,13 @@ export function changedPatchFiles(paths: string[]): string[] {
 }
 
 export function localDatabasePaths(paths: string[]): string[] {
-  return paths.filter(isDatabasePath);
+  return paths.filter((path) => isDatabasePath(path) || localIdentityPath.test(path));
 }
 
-/** Basalt paths named for Workflows; GitHub Actions workflows and test files are not deployed. */
+/**
+ * Basalt paths named for Workflows, and the stage and brand files that name their hosts. GitHub
+ * Actions workflows, architecture models and test files are not deployed.
+ */
 export function localWorkflowPaths(paths: string[]): string[] {
-  return paths.filter((path) => isWorkflowPath(path) && !undeployedLocalPath.test(path));
+  return paths.filter((path) => localIdentityPath.test(path) || isWorkflowPath(path) && !undeployedLocalPath.test(path));
 }

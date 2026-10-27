@@ -320,6 +320,25 @@ test("GitHub Actions workflow and test files are not Cloudflare Workflow changes
   assert.equal(runtime.workflowChanged, true);
 });
 
+test("architecture models named for workflows are not Cloudflare Workflow changes", () => {
+  const report = classifySnapshots({
+    baseGitCommit: sha("1"), candidateGitCommit: sha("2"), basePins: pins(), candidatePins: pins(),
+    localChangedPaths: ["architecture/views/workflows/v1.c4"],
+  });
+  assert.equal(report.workflowChanged, false);
+});
+
+test("Basalt's stage and brand files name every deployed resource", () => {
+  for (const path of ["alchemy.run.ts", "brand.ts", "scripts/environment.ts"]) {
+    const report = classifySnapshots({
+      baseGitCommit: sha("1"), candidateGitCommit: sha("2"), basePins: pins(), candidatePins: pins(),
+      localChangedPaths: [path],
+    });
+    assert.equal(report.databaseChanged, true, path);
+    assert.equal(report.workflowChanged, true, path);
+  }
+});
+
 test("a pin rollback reports the exact previous candidate and its reverse migration impact", () => {
   const previous = pins();
   const newer = structuredClone(previous);

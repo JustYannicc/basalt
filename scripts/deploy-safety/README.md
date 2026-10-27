@@ -62,7 +62,12 @@ A file is database-changing when its path names migrations, schemas, SQL, fumadb
 
 A change anywhere inside a JavaScript template literal (such as a `sql` statement) that holds DDL also counts.
 
-A file is Workflow-changing when its path or such a line names a Workflow, an alchemy physical name, the Worker class or stack that hosts Workflows, or a binding's script or class. A line that calls a Workflow step, sleep, task or event wait also counts.
+A file is Workflow-changing when its path or such a line names a Workflow, an alchemy physical name, the Worker class or stack that hosts Workflows, or a Worker, script or binding class name. A line that calls a Workflow step, sleep, task or event wait also counts.
+
+Some upstream modules count wholesale:
+
+- the stack (`apps/hosted/cloud/alchemy.run.ts`), the API Worker entry (`src/main.ts`) and the Provisioning Workflow (`src/infrastructure/provisioning.ts`) are Workflow-changing;
+- the production stage and the Alchemy state store (`src/infrastructure/stage.ts` and `state.ts`, and any line naming `productionStage`, `localStages`, `localState`, `stackState`, `stageName` or `.state()`) are both Workflow- and database-changing, because they name every resource.
 
 A changed dependency version in `package.json` or a lockfile is a change in the area its package serves:
 
@@ -71,7 +76,7 @@ A changed dependency version in `package.json` or a lockfile is a change in the 
 
 Any other dependency version change is `unknown`.
 
-A nested dependency patch, such as the alchemy patch carried in the EU carry, is judged by the inner file each changed line belongs to. Visible changes to documentation, tests, playgrounds, Markdown and static images are ignored. Rename and copy names count as touched paths.
+A nested dependency patch, such as the alchemy patch carried in the EU carry, is judged by the inner file each changed line belongs to, with the nested patch's own line prefix removed. It is also judged by the dependency it patches, the same way as a version bump: an edit inside alchemy's patch is both database- and Workflow-changing, and an edit inside a patch for any other dependency is at least `unknown`. When any line of a hunk changed, including its header, its edits may have moved, so every line it adds or removes counts as changed. Visible changes to documentation, tests, playgrounds, Markdown and static images are ignored. Rename and copy names count as touched paths.
 
 The result is `unknown`, which also requires a manual release, in these cases, unless a rule already marks the change:
 
@@ -80,7 +85,7 @@ The result is `unknown`, which also requires a manual release, in these cases, u
 - a nested change has no readable inner file header;
 - a changed line sits in a template literal whose start or end is not visible and which shows no database keyword.
 
-Basalt's own `.github/` workflows and test files are not Cloudflare Workflow changes. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
+Basalt's own `.github/` workflows, architecture models and test files are not Cloudflare Workflow changes. Its `alchemy.run.ts`, `brand.ts` and `scripts/environment.ts` set the stack, its state store, the stage and every physical name, so a change to any of them is both database- and Workflow-changing. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
 
 The classifier's current report is the decision input. When either change flag is true, the release updater must keep the PR open, apply the relevant `database-change` and/or `workflow-identity-change` labels plus `manual-release`, and refrain from auto-merging it. These labels do not authorize deployment.
 

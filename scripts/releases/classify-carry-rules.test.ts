@@ -214,13 +214,16 @@ test("a nested header this cannot read leaves the following lines unknown", () =
     " @@ -9,7 +9,8 @@ import * as Effect from \"effect/Effect\";",
     "  export const platform = 1;",
   ];
-  const before = nestedPatch(workers);
+  // A dependency neither area names, so only the attribution can decide.
+  const before = nestedPatch(workers, "effect@4.0.1.patch");
   const after = nestedPatch([
     ...workers,
     "+diff --git a/lib/Cloudflare/Queues/my queue.js b/lib/Cloudflare/Queues/my queue.js",
     "+@@ -1,1 +1,1 @@",
     "+-export const delay = 0;",
     "++export const delay = 5;",
-  ]);
-  assert.deepEqual(states(classifyCarry(before, after)), { database: "unknown", workflow: "unknown" });
+  ], "effect@4.0.1.patch");
+  const report = classifyCarry(before, after);
+  assert.deepEqual(states(report), { database: "unknown", workflow: "unknown" });
+  assert.match(report.evidence.workflow.sources[0]?.reason ?? "", /outside a visible file header/);
 });

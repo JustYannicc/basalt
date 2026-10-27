@@ -1,6 +1,6 @@
 import type { Evidence, PatchManifestV3, PatchRecord } from "./types.ts";
 import { patchMappingKey, patchOriginKey, sha256PatchContent } from "./patch-registry.ts";
-import { patchDelta } from "./patch-diff.ts";
+import { nestedPatchPath, patchDelta } from "./patch-diff.ts";
 import { databaseRules, isDependencyFile, workflowRules, type AreaRules } from "./carry-rules.ts";
 import { isInertPath } from "./paths.ts";
 
@@ -149,12 +149,16 @@ export function carryImpact(before: string | null, after: string | null): { data
       if (!file.opaque && file.rulePaths.length && file.rulePaths.every(isInertPath)) continue;
       const dependencies = file.rulePaths.some(isDependencyFile) ? file.changed : [];
       const sql = rules.templates ? file.blocks : [];
+      // A change inside a dependency's patch changes that dependency, like a version bump.
+      const patched = file.dependency === undefined ? undefined : dependencyName(file.dependency);
       if (file.rulePaths.some(rules.isPath) || file.lines.some(rules.isCode) ||
         sql.some((block) => block.lines.some(rules.isCode)) ||
-        dependencies.some((line) => rules.packages.test(line)))
+        dependencies.some((line) => rules.packages.test(line)) ||
+        patched !== undefined && rules.packages.test(patched))
         hits.push(file.path);
       else if (file.opaque) opaque.push(`${file.path} (${file.opaque})`);
       else if (dependencies.length) opaque.push(`${file.path} (dependency versions changed)`);
+      else if (patched !== undefined) opaque.push(`${file.path} (patched dependency ${patched})`);
       else if (sql.some((block) => !block.bounded)) opaque.push(`${file.path} (template literal bounds not visible)`);
     }
     if (hits.length) return { state: "changed", detail: `touches ${rules.name} code in ${hits.join(", ")}` };
@@ -162,6 +166,13 @@ export function carryImpact(before: string | null, after: string | null): { data
     return { state: "unchanged" };
   };
   return { database: judge(databaseRules), workflow: judge(workflowRules) };
+}
+
+/** The package a dependency patch file patches, such as `@better-auth/sso@1.7.5`. */
+function dependencyName(path: string): string {
+  const file = path.slice(path.lastIndexOf("/") + 1).replace(nestedPatchPath, "");
+  try { return decodeURIComponent(file); }
+  catch { return file; }
 }
 
 function joined(rows: ObservedPatch[]): string | null {

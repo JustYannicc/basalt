@@ -19,11 +19,13 @@ export type FileChange = {
   blocks: TemplateBlock[];
   /** Why part of this change cannot be seen, when it cannot. */
   opaque?: string;
+  /** For a file inside a nested dependency patch, that patch's path, such as `patches/x@1.patch`. */
+  dependency?: string;
 };
 
 export type PatchDelta = { ok: true; files: FileChange[] } | { ok: false; reason: string };
 
-const nestedPatchPath = /\.(?:patch|diff)$/;
+export const nestedPatchPath = /\.(?:patch|diff)$/;
 const nestedOpaque = /^(?:(?:rename|copy) (?:from|to) |deleted file mode |Binary files |GIT binary patch$)/;
 /** Files whose backticks delimit template literals. */
 const scriptPath = /\.(?:[cm]?[jt]sx?)$/;
@@ -49,7 +51,8 @@ export function patchDelta(before: string | null, after: string | null): PatchDe
     const { a, b } = (oldFile ?? newFile)!;
     const opaque = oldFile?.opaque ?? newFile?.opaque;
     const moved = [...oldFile?.moved ?? [], ...newFile?.moved ?? []];
-    const [oldChanged, newChanged] = changedIndices(oldBody, newBody);
+    const [oldChanged, newChanged] = changedIndices(oldBody, newBody).map((changed, side) =>
+      withMovedHunks(side ? newBody : oldBody, changed));
     if (nestedPatchPath.test(b) && !opaque) {
       files.push(...nestedChanges(b, [[oldBody, oldChanged], [newBody, newChanged]]));
       continue;
@@ -112,6 +115,32 @@ function scanLines(body: string[], changed: Set<number>): Array<[number, string]
 
 const isEdit = (line: string) => line[0] === "+" || line[0] === "-";
 
+/** Each hunk of a section body: its header's index (if any) and its line indices. */
+function hunks(body: string[]): Array<{ header?: number; lines: number[] }> {
+  const found: Array<{ header?: number; lines: number[] }> = [];
+  let current: { header?: number; lines: number[] } = { lines: [] };
+  body.forEach((line, index) => {
+    if (line.startsWith("@@") || line.startsWith("#")) {
+      found.push(current);
+      current = line.startsWith("@@") ? { header: index, lines: [] } : { lines: [] };
+    } else if (line[0] !== "\\") current.lines.push(index);
+  });
+  found.push(current);
+  return found.filter(({ lines }) => lines.length);
+}
+
+/**
+ * When any line of a hunk changed, including its header, its edits may have moved, which the line
+ * diff can attribute to a context line instead. Every edit line in such a hunk counts as changed.
+ */
+function withMovedHunks(body: string[], changed: Set<number>): Set<number> {
+  const all = new Set(changed);
+  for (const { header, lines } of hunks(body))
+    if (header !== undefined && changed.has(header) || lines.some((index) => changed.has(index)))
+      for (const index of lines) if (isEdit(body[index]!)) all.add(index);
+  return all;
+}
+
 function editTexts(body: string[], changed: Set<number>): string[] {
   return [...changed].sort((left, right) => left - right)
     .filter((index) => isEdit(body[index]!)).map((index) => body[index]!.slice(1));
@@ -120,22 +149,12 @@ function editTexts(body: string[], changed: Set<number>): string[] {
 /** Template literals around changed edit lines, read in each hunk's old and new image. */
 function blocksAround(body: string[], changed: Set<number>): TemplateBlock[] {
   const blocks: TemplateBlock[] = [];
-  let hunk: number[] = [];
-  const flush = () => {
+  for (const { lines } of hunks(body))
     for (const side of ["-", "+"]) {
-      const image = hunk.filter((index) => body[index]![0] === " " || body[index]![0] === side);
-      // When any line of a hunk changed, its edits may have moved, so all of them count.
-      const touched = hunk.some((index) => changed.has(index));
-      const edits = new Set(image.flatMap((index, position) => touched && isEdit(body[index]!) ? [position] : []));
+      const image = lines.filter((index) => body[index]![0] === " " || body[index]![0] === side);
+      const edits = new Set(image.flatMap((index, position) => changed.has(index) && isEdit(body[index]!) ? [position] : []));
       blocks.push(...templateBlocks(image.map((index) => body[index]!.slice(1)), edits));
     }
-    hunk = [];
-  };
-  body.forEach((line, index) => {
-    if (line.startsWith("@@") || line.startsWith("#")) flush();
-    else if (line[0] !== "\\") hunk.push(index);
-  });
-  flush();
   return blocks;
 }
 
@@ -145,6 +164,9 @@ function lineText(line: string): string {
 }
 
 type Attribution = string[] | "unknown";
+
+/** A nested patch line without its own ` `, `+` or `-` prefix; headers stay as they are. */
+const innerText = (text: string) => /^[ +-](?!-- |\+\+ )/.test(text) ? text.slice(1) : text;
 
 /**
  * A nested patch (such as a dependency patch the carry edits) changes the files named by its own
@@ -158,7 +180,8 @@ function nestedChanges(outer: string, versions: Array<[string[], Set<number>]>):
     let change = groups.get(key);
     if (!change) {
       // The outer name stays a rule path: it names the dependency, such as better-auth@x.patch.
-      const empty = (path: string, rulePaths: string[]): FileChange => ({ path, rulePaths: [outer, ...rulePaths], lines: [], changed: [], blocks: [] });
+      const empty = (path: string, rulePaths: string[]): FileChange =>
+        ({ path, rulePaths: [outer, ...rulePaths], lines: [], changed: [], blocks: [], dependency: outer });
       change = attribution === undefined ? empty(outer, [])
         : attribution === "unknown" ? { ...empty(outer, []), opaque: "nested patch change outside a visible file header" }
           : attribution.length === 0 ? empty(`${outer} (preamble)`, [])
@@ -176,10 +199,11 @@ function nestedChanges(outer: string, versions: Array<[string[], Set<number>]>):
       const edit = isEdit(line);
       const attribution = attributions[index] === "unknown" && !edit ? undefined : attributions[index];
       const change = group(attribution);
-      change.lines.push(text);
+      // Judge the dependency's own line: drop the nested patch's ` `, `+` or `-` too.
+      change.lines.push(innerText(text));
       if (edit && !counted.has(index)) {
         counted.add(index);
-        change.changed.push(line.slice(1));
+        change.changed.push(innerText(line.slice(1)));
       }
       if (!edit || !Array.isArray(attribution)) continue;
       if (attribution.some((path) => nestedPatchPath.test(path)))

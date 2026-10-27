@@ -74,26 +74,33 @@ test("Workflow definition, binding and step identity changes are Workflow-changi
   }
 });
 
-test("a nested alchemy patch is judged by its own inner file paths", () => {
+test("a nested dependency patch is judged by its inner file paths and by the dependency", () => {
+  // In a dependency neither area names, the inner Workflow path still decides Workflow.
+  const other = "effect@4.0.1.patch";
   const workflow = classifyCarry(
-    nestedCarry("lib/Cloudflare/Workflows/Workflow.js", ["export const scoped = false;"], []),
-    nestedCarry("lib/Cloudflare/Workflows/Workflow.js", ["export const scoped = false;"], ["export const scoped = true;"]),
+    nestedCarry("lib/Cloudflare/Workflows/Workflow.js", ["export const scoped = false;"], [], true, other),
+    nestedCarry("lib/Cloudflare/Workflows/Workflow.js", ["export const scoped = false;"], ["export const scoped = true;"], true, other),
   );
-  assert.equal(workflow.workflowChanged, true);
+  assert.equal(workflow.evidence.workflow.sources[0]?.state, "changed");
   assert.match(workflow.evidence.workflow.sources[0]?.reason ?? "", /lib\/Cloudflare\/Workflows\/Workflow\.js/);
-  assert.equal(workflow.databaseChanged, false);
+  assert.equal(workflow.evidence.database.sources[0]?.state, "unknown");
 
-  const workers = classifyCarry(
-    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], []),
-    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], ["const cache = new Map();"]),
+  const plain = (patch?: string) => classifyCarry(
+    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], [], true, patch),
+    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], ["const cache = new Map();"], true, patch),
   );
-  assertClear(workers);
+  // alchemy provisions both the Workflow hosts and the database, so any edit to it counts.
+  assert.equal(plain().evidence.database.sources[0]?.state, "changed");
+  assert.equal(plain().evidence.workflow.sources[0]?.state, "changed");
+  assert.equal(plain(other).evidence.database.sources[0]?.state, "unknown");
+  assert.equal(plain(other).evidence.workflow.sources[0]?.state, "unknown");
 });
 
 test("a nested patch edit with no visible inner file header stays unknown", () => {
+  const other = "effect@4.0.1.patch";
   const report = classifyCarry(
-    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], [], false),
-    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], ["const cache = new Map();"], false),
+    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], [], false, other),
+    nestedCarry("lib/Cloudflare/Workers/cloudflare_workers.js", ["const scoped = new Map();"], ["const cache = new Map();"], false, other),
   );
   assert.equal(report.databaseChanged, true);
   assert.equal(report.workflowChanged, true);
