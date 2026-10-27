@@ -530,7 +530,7 @@ index a97fd86..e4ac45a 100644
    }),
  );
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index f934bcc..19af736 100644
+index f934bcc..c951ba9 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -1,3 +1,5 @@
@@ -576,7 +576,7 @@ index f934bcc..19af736 100644
        from executor_apps app
        left join executor_deployments d on d.id = app.active_deployment
        left join executor_accounts a on a.id = ${input.account} and a.owner = app.owner
-@@ -406,6 +415,12 @@ export const addLink = (
+@@ -406,6 +415,14 @@ export const addLink = (
      if (required.provider === null || (required.scope ?? "user") !== scope)
        return yield* refuse("requirement");
      if (required.provider !== required.accountProvider) return yield* refuse("provider");
@@ -584,12 +584,14 @@ index f934bcc..19af736 100644
 +      return yield* refuse("app_bound");
 +    const retiring =
 +      yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed'
-+      and state -> 'account' ->> 'id' = ${input.account} and (state -> 'interactive' -> 'retirement' ->> 'token' is not null or state -> 'interactive' -> 'retirement' ->> 'removed' = 'true')`;
++      and state -> 'account' ->> 'id' = ${input.account} and ((state -> 'interactive' -> 'retirement' ->> 'token' is not null
++        and coalesce((state -> 'interactive' -> 'retirement' ->> 'expiresAt')::double precision, 0) > extract(epoch from clock_timestamp()) * 1000)
++        or state -> 'interactive' -> 'retirement' ->> 'removed' = 'true')`;
 +    if (retiring.length > 0) return yield* new StorageError();
      const replaced =
        required.cardinality === "many"
          ? []
-@@ -415,7 +430,18 @@ export const addLink = (
+@@ -415,7 +432,18 @@ export const addLink = (
                  and ${sameSubject(sql, input.subject)} and account <> ${input.account}
                order by created_at, account`,
            );
@@ -1074,7 +1076,7 @@ index 55fd0bf..dfe80e5 100644
        onSaved={onSaved}
        onAuthorized={(value) =>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 8e3d16d..0595622 100644
+index 8e3d16d..5c94d5d 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -17,12 +17,17 @@ import type {
@@ -1096,9 +1098,11 @@ index 8e3d16d..0595622 100644
  import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
  import {
    oauthSetupAtom,
-@@ -32,6 +37,12 @@ import {
+@@ -31,7 +36,14 @@ import {
+   submitConnectionAtom,
    PendingOAuth,
    type OAuthReturn,
++  connectionAtom,
  } from "../../contracts/apps.ts";
 +import {
 +  cancelInteractiveConnectionAtom,
@@ -1109,20 +1113,35 @@ index 8e3d16d..0595622 100644
  import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
  import { RegisterServiceClient } from "./oauth-clients.tsx";
  
-@@ -65,6 +76,12 @@ export function ConnectionFields({
+@@ -65,13 +77,26 @@ export function ConnectionFields({
    const params = { organization, connection: connection.id };
    const submit = useAtomSet(submitConnectionAtom(params), { mode: "promiseExit" });
    const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
++  const cancel = useAtomSet(cancelInteractiveConnectionAtom(params), { mode: "promiseExit" });
++  const registry = useContext(RegistryContext);
 +  const interactive = {
 +    start: useAtomSet(startInteractiveConnectionAtom(params), { mode: "promiseExit" }),
 +    status: useAtomSet(interactiveConnectionStatusAtom(params), { mode: "promiseExit" }),
 +    submit: useAtomSet(submitInteractiveConnectionAtom(params), { mode: "promiseExit" }),
-+    cancel: useAtomSet(cancelInteractiveConnectionAtom(params), { mode: "promiseExit" }),
++    // Cancelling ends this request, so re-read it and offer the way back instead of a dead form.
++    cancel: () =>
++      cancel().then((exit) => {
++        registry.refresh(connectionAtom(params));
++        return exit;
++      }),
 +  };
    if (connection.state.status !== "pending")
      return (
        <>
-@@ -98,6 +115,7 @@ export function ConnectionFields({
+         <p className="text-sm">
+           {connection.state.status === "completed"
+             ? "Account connected."
+-            : "This connection has expired. Start a new connection from the app."}
++            : "This connection ended. Start a new connection from the app."}
+         </p>
+         <Button asChild variant="outline">
+           <Link
+@@ -98,6 +123,7 @@ export function ConnectionFields({
        }
        submit={submit}
        start={startOAuth}
@@ -1130,7 +1149,7 @@ index 8e3d16d..0595622 100644
        onSaved={onSaved}
        {...(onPendingChange ? { onPendingChange } : {})}
        onAuthorized={(value) =>
-@@ -118,6 +136,18 @@ export function ConnectionFields({
+@@ -118,6 +144,18 @@ export function ConnectionFields({
    );
  }
  
@@ -1149,7 +1168,7 @@ index 8e3d16d..0595622 100644
  /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
  export function HostedAccountForm<A extends HostedOAuthSignIn>({
    setupQuery,
-@@ -133,7 +163,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -133,7 +171,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    onAuthorized,
    onPendingChange,
    app,
@@ -1160,22 +1179,32 @@ index 8e3d16d..0595622 100644
    readonly provider: Provider;
    /** The canonical site saved by the host for this connection. */
    readonly site?: string | undefined;
-@@ -160,6 +193,14 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -160,6 +201,15 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
    // Only administrators register clients, so members are told to enter their own details.
    const role = useOrganizationDetails()?.role;
-+  // One connection's sign-in steps run in order: a cancel from the method just left finishes before
-+  // the next method starts, and a poll never overlaps a pasted value.
++  // One connection's steps run in order, whatever the method: a cancel from the method just left
++  // finishes before the next one starts or submits, and a poll never overlaps a pasted value.
 +  const steps = useRef<Promise<unknown>>(Promise.resolve());
 +  const inOrder = <T,>(run: () => Promise<T>): Promise<T> => {
 +    const next = steps.current.then(run, run);
 +    steps.current = next.catch(() => undefined);
 +    return next;
 +  };
++  const orderedSubmit = (input: AccountSubmission) => inOrder(() => submit(input));
    const admin = role !== undefined && role !== "member";
    const registry = useContext(RegistryContext);
    // Registering replaces the account form, since it is a form itself, then returns to the method.
-@@ -207,6 +248,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -198,7 +248,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+       initialMethod={method}
+       Failure={HostedFailure}
+       submitLabel={account ? "Save credentials" : "Connect account"}
+-      submit={submit}
++      submit={orderedSubmit}
+       {...(app === undefined || app === null
+         ? {}
+         : {
+@@ -207,6 +257,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            })}
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
@@ -1199,6 +1228,15 @@ index 8e3d16d..0595622 100644
        oauth={({ method, disabled, onPendingChange, access }) => (
          <OAuthSetup
            query={
+@@ -254,7 +321,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+                 return required;
+               }}
+               start={(input: OAuthSubmission) =>
+-                start({ method, ...input }).then((exit) =>
++                inOrder(() => start({ method, ...input })).then((exit) =>
+                   Exit.map(exit, (value) => ({
+                     ...value,
+                     // Entered details reopen after a failed return; chosen clients do not.
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
 index 50536fb..21dd03f 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
@@ -1311,10 +1349,10 @@ index 7fa5ad1..c60366b 100644
      ConnectionAccessInvalid: ({ reason }) =>
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
 new file mode 100644
-index 0000000..188fd33
+index 0000000..18b8ebb
 --- /dev/null
 +++ b/e2e/support/interactive-account-backend.ts
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,253 @@
 +/** A tiny credential custodian, reached by the fixture app over real HTTP. */
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
@@ -1346,6 +1384,8 @@ index 0000000..188fd33
 +  const removeRemaining = yield* Ref.make<number | undefined>(undefined);
 +  const removalGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const removalStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
++  const submitGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
++  const submitStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const statusGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const statusStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const routes = HttpRouter.add(
@@ -1414,6 +1454,12 @@ index 0000000..188fd33
 +        if (started !== undefined) yield* Deferred.succeed(started, undefined);
 +        if (gate !== undefined) yield* Deferred.await(gate);
 +      }
++      if (input.step === "submit") {
++        const gate = yield* Ref.get(submitGate),
++          started = yield* Ref.get(submitStarted);
++        if (started !== undefined) yield* Deferred.succeed(started, undefined);
++        if (gate !== undefined) yield* Deferred.await(gate);
++      }
 +      if (input.method === "slow") return yield* Effect.never;
 +      if (input.method === "failure")
 +        return yield* HttpServerResponse.json({ state: "failed", message: "Synthetic refusal" });
@@ -1467,6 +1513,18 @@ index 0000000..188fd33
 +        ),
 +      };
 +    }),
++    holdSubmit: Effect.gen(function* () {
++      const gate = yield* Deferred.make<void>(),
++        started = yield* Deferred.make<void>();
++      yield* Ref.set(submitGate, gate);
++      yield* Ref.set(submitStarted, started);
++      return {
++        started: Deferred.await(started),
++        release: Deferred.succeed(gate, undefined).pipe(
++          Effect.andThen(Ref.set(submitGate, undefined)),
++        ),
++      };
++    }),
 +    holdStatus: Effect.gen(function* () {
 +      const gate = yield* Deferred.make<void>(),
 +        started = yield* Deferred.make<void>();
@@ -1487,13 +1545,14 @@ index 0000000..188fd33
 +  origin: string,
 +  plain = false,
 +  withWorkflow = false,
++  callbackUrl?: string,
 +) => `import {
-+  defineApp, defineProvider, interactive, secrets, object, string, query, router, bearer,
++  defineApp, defineProvider, interactive, secrets, object, string, query, router, bearer, header,
 +  ${withWorkflow ? "mutation, workflow, appInterval, type MutationContext, type WorkflowContext," : ""}
 +  type ConnectContext, type QueryContext, type InteractiveStart, type InteractiveStatus
 +} from "apps";
-+const backend = defineProvider({ name: "Credential backend", hosts: [${JSON.stringify(new URL(origin).host)}],
-+  auth: { key: secrets({ label: "Key", fields: object({ token: string() }), request: ({ token }) => bearer(token) }) } });
++const backend = defineProvider({ name: "Credential backend", hosts: ${JSON.stringify([new URL(origin).host, ...(callbackUrl === undefined ? [] : [new URL(callbackUrl).host])])},
++  auth: { key: secrets({ label: "Key", fields: object({ token: string()${callbackUrl === undefined ? "" : ", cookie: string()"} }), request: ${callbackUrl === undefined ? "({ token }) => bearer(token)" : "({ token, cookie }) => [bearer(token), header('cookie', cookie)]"} }) } });
 +const acquired = defineProvider({ name: "Interactive account", hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
 +  device: interactive({ label: "Device code" }), paste: interactive({ label: "Paste address" }),
 +  expired: interactive({ label: "Expired" }), failure: interactive({ label: "Failure" }), slow: interactive({ label: "Slow" }),
@@ -1514,7 +1573,17 @@ index 0000000..188fd33
 +  status: async (ctx: ConnectContext<typeof requirements>, input: { method: string; session: string }) => call<InteractiveStatus>(ctx, "status", input),
 +  submit: async (ctx: ConnectContext<typeof requirements>, input: { method: string; session: string; value: string }) => call<InteractiveStatus>(ctx, "submit", input),
 +  cancel: async (ctx: ConnectContext<typeof requirements>, input: { method: string; session: string }) => { await call(ctx, "cancel", input); },
-+  remove: async (ctx: ConnectContext<typeof requirements>, input: { method: string; ref: string }) => { await call(ctx, "remove", input); },
++  remove: async (ctx: ConnectContext<typeof requirements>, input: { method: string; ref: string }) => {
++    ${
++      callbackUrl === undefined
++        ? ""
++        : `const backend = ctx.app.accounts.backend;
++    if (backend === undefined) throw new Error("Connect the backend first");
++    const response = await ctx.fetch(${JSON.stringify(callbackUrl)}, { signal: ctx.signal, headers: { cookie: backend.fields.cookie } });
++    if (!response.ok) throw new Error("The authenticated server callback failed");`
++    }
++    await call(ctx, "remove", input);
++  },
 +};
 +const refs = query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ({
 +  caller: ctx.user.id,
@@ -1538,10 +1607,10 @@ index 0000000..188fd33
 +  ${withWorkflow ? "workflows: { hold }, schedules: { tick: appInterval({ minutes: 1 }, tick, {}) }," : ""}
 +  connect: { identity: handlers, sharedIdentity: handlers } });`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ab997d0..f784dfd 100644
+index ab997d0..1b5102d 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7259,6 +7259,53 @@ export const scenarios = plan({
+@@ -7259,6 +7259,64 @@ export const scenarios = plan({
        local: na("This scenario uses hosted memberships, API keys and MCP."),
      },
    },
@@ -1564,6 +1633,17 @@ index ab997d0..f784dfd 100644
 +      "self-host": scheduled,
 +      cloud: na("Uses a loopback backend through the shared hosted server."),
 +      local: na("Uses hosted account deletion authority and links."),
++    },
++  },
++  interactiveAccountRemovalCallback: {
++    fixtures: "actors",
++    file: "interactive-account-callback.spec.ts",
++    title:
++      "interactive removal calls the same server authenticated API without holding its database",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Proves same-process PGlite re-entry on an isolated self-host."),
++      local: na("Uses hosted account links and authentication."),
 +    },
 +  },
 +  interactiveAccounts: {
@@ -1608,6 +1688,176 @@ index 06dfc11..af398c7 100644
          });
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
+diff --git a/e2e/tests/interactive-account-callback.spec.ts b/e2e/tests/interactive-account-callback.spec.ts
+new file mode 100644
+index 0000000..c7239e5
+--- /dev/null
++++ b/e2e/tests/interactive-account-callback.spec.ts
+@@ -0,0 +1,164 @@
++/** An app-owned remove handler re-enters the same authenticated product server over HTTP. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Exit, Fiber, Redacted, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import {
++  interactiveAccountBackend,
++  interactiveAccountSource,
++  interactiveBackendKey,
++} from "../support/interactive-account-backend.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++/** PGlite's filesystem lock stays live for roughly ten seconds after a hard kill. */
++const restartAfterCrash = Effect.gen(function* () {
++  for (let attempt = 1; ; attempt++) {
++    const started = yield* Effect.exit(serverControl("start"));
++    if (Exit.isSuccess(started)) return;
++    if (attempt === 20) return yield* started;
++    yield* Effect.sleep("1 second");
++  }
++});
++layer(HostedLive, { excludeTestServices: true })("Interactive removal callback", (it) => {
++  it.effect(scenarios.interactiveAccountRemovalCallback.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target;
++        const backend = yield* interactiveAccountBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const callback = `${targetHosts(target).browser}${prefix}/access`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Removal callback ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: interactiveAccountSource(backend.origin, false, false, callback),
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
++        );
++        const pending = (scope: string, slot: string) =>
++          api
++            .request(actors.owner, "POST", `${path}/accounts/${scope}/${slot}/connections`, {})
++            .pipe(Effect.flatMap((r) => body(Resource, r)));
++        const key = yield* pending("app", "backend");
++        // The callback credential belongs to the synthetic scenario owner and stays in sealed fields.
++        const cookie = Redacted.value(yield* actors.owner.cookies)
++          .map((c) => `${c.name}=${c.value}`)
++          .join("; ");
++        expect(
++          (yield* api.request(actors.owner, "POST", `${prefix}/connections/${key.id}/submit`, {
++            method: "key",
++            fields: { token: interactiveBackendKey, cookie },
++          })).status,
++        ).toBe(200);
++        const make = Effect.gen(function* () {
++          const connection = yield* pending("user", "identity"),
++            cp = `${prefix}/connections/${connection.id}/interactive`;
++          expect(
++            (yield* api.request(actors.owner, "POST", `${cp}/start`, { method: "paste" })).status,
++          ).toBe(200);
++          const result = yield* api.request(actors.owner, "POST", `${cp}/submit`, {
++            value: "http://localhost:48765/done?code=synthetic",
++          });
++          expect(result.status).toBe(200);
++          return (yield* body(Connected, result)).account;
++        });
++        const first = yield* make;
++        // The external backend records remove only after the authenticated callback returned 200.
++        const unlinked = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${path}/accounts/user/identity/${first.id}`,
++        );
++        expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++        expect((yield* backend.calls).filter((c) => c.step === "remove")).toHaveLength(1);
++        // A hard crash leaves the committed claim and local link intact. It expires on restart.
++        const crashed = yield* make;
++        const held = yield* backend.holdRemoval;
++        yield* Effect.addFinalizer(() => held.release);
++        const crashing = yield* Effect.forkChild(
++          api
++            .request(actors.owner, "DELETE", `${path}/accounts/user/identity/${crashed.id}`)
++            .pipe(Effect.exit),
++        );
++        yield* held.started;
++        yield* serverControl("kill");
++        yield* held.release;
++        yield* Fiber.join(crashing);
++        yield* restartAfterCrash;
++        const callsBeforeExpiry = (yield* backend.calls).filter((c) => c.step === "remove").length;
++        const stillClaimed = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${path}/accounts/user/identity/${crashed.id}`,
++        );
++        expect(stillClaimed.status).toBe(409);
++        expect(stillClaimed.body).toMatchObject({ _tag: "InteractiveRetirementBusy" });
++        expect((yield* backend.calls).filter((c) => c.step === "remove")).toHaveLength(
++          callsBeforeExpiry,
++        );
++        yield* serverControl("stop");
++        yield* serverControl("clock/advance", 200, { milliseconds: 21_000 });
++        yield* serverControl("start");
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${path}/accounts/user/identity/${crashed.id}`,
++          )).status,
++        ).toBe(200);
++        expect((yield* backend.calls).filter((c) => c.step === "remove").length).toBeGreaterThan(
++          callsBeforeExpiry,
++        );
++        const second = yield* make;
++        const racing = yield* pending("user", "identity");
++        const cp = `${prefix}/connections/${racing.id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${cp}/start`, { method: "paste" })).status,
++        ).toBe(200);
++        const hold = yield* backend.holdSubmit;
++        yield* Effect.addFinalizer(() => hold.release);
++        const completing = yield* Effect.forkChild(
++          api.request(actors.owner, "POST", `${cp}/submit`, {
++            value: "http://localhost:48765/done?code=synthetic",
++          }),
++        );
++        yield* hold.started;
++        yield* backend.refuseRemoval(true);
++        const before = (yield* backend.calls).filter((c) => c.step === "remove").length;
++        const removed = yield* api.request(actors.owner, "DELETE", path);
++        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++        expect((yield* backend.calls).filter((c) => c.step === "remove").length).toBeGreaterThan(
++          before,
++        );
++        const afterBulk = (yield* backend.calls).filter((c) => c.step === "remove").length;
++        yield* hold.release;
++        expect((yield* Fiber.join(completing)).status).not.toBe(200);
++        // Even though the app is gone, the sign-in's captured context still attempts compensation.
++        expect((yield* backend.calls).filter((c) => c.step === "remove").length).toBeGreaterThan(
++          afterBulk,
++        );
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${second.id}`)).status,
++        ).toBe(403);
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/interactive-account-dialog.spec.ts b/e2e/tests/interactive-account-dialog.spec.ts
 new file mode 100644
 index 0000000..d1b4e89
@@ -1908,10 +2158,10 @@ index 0000000..d1b4e89
 +});
 diff --git a/e2e/tests/interactive-account-lifecycle.spec.ts b/e2e/tests/interactive-account-lifecycle.spec.ts
 new file mode 100644
-index 0000000..051a5c6
+index 0000000..9afdfe6
 --- /dev/null
 +++ b/e2e/tests/interactive-account-lifecycle.spec.ts
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,312 @@
 +/** App-owned account lifecycle through real hosted HTTP and a controlled external backend. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schedule, Schema } from "effect";
@@ -2098,37 +2348,23 @@ index 0000000..051a5c6
 +        yield* Effect.addFinalizer(() => removalHold.release);
 +        const retiring = yield* Effect.forkChild(unlink(actors.owner, second.id));
 +        yield* removalHold.started;
-+        const deleting = yield* Effect.forkChild(
-+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${second.id}`),
++        const duplicate = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${prefix}/accounts/${second.id}`,
 +        );
-+        yield* Effect.yieldNow;
++        expect(duplicate.status).toBe(409);
++        expect(duplicate.body).toMatchObject({ _tag: "InteractiveRetirementBusy" });
 +        expect(yield* calls()).toHaveLength(before + 1);
 +        yield* removalHold.release;
 +        expect((yield* Fiber.join(retiring)).status).toBe(200);
-+        // A pooled driver can see the claim immediately; a single-connection driver waits for
-+        // the transaction, then refuses access to the deleted account. Neither removes twice.
-+        expect([403, 409]).toContain((yield* Fiber.join(deleting)).status);
 +        expect(yield* calls()).toHaveLength(before + 1);
-+        // App deletion fails before deleting any record, releases claims, and retires on retry.
++        // Bulk deletion attempts cleanup, but provider refusal cannot keep the app or accounts.
 +        const surviving = yield* make(actors.owner);
-+        yield* backend.refuseAfter(1);
++        yield* backend.refuseRemoval(true);
 +        const appCallsBefore = (yield* calls()).length;
-+        const refused = yield* api.request(actors.owner, "DELETE", path);
-+        expect(refused.status).toBe(503);
-+        expect(refused.body).toMatchObject({ _tag: "InteractiveRetirementFailed" });
-+        expect((yield* api.request(actors.owner, "GET", path)).status).toBe(200);
-+        expect((yield* detail(surviving.id)).status).toBe(200);
-+        expect((yield* detail(sharedB.id)).status).toBe(200);
-+        const firstRemoval = (yield* calls())[appCallsBefore];
-+        expect(firstRemoval).toBeDefined();
-+        const firstRemovalCount = (yield* calls()).filter(
-+          (call) => call.ref === firstRemoval?.ref,
-+        ).length;
-+        yield* backend.refuseRemoval(false);
 +        expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
-+        expect((yield* calls()).filter((call) => call.ref === firstRemoval?.ref)).toHaveLength(
-+          firstRemovalCount,
-+        );
++        expect((yield* calls()).length).toBeGreaterThan(appCallsBefore);
 +        expect((yield* detail(surviving.id)).status).toBe(403);
 +        expect((yield* detail(sharedB.id)).status).toBe(403);
 +      }),
@@ -2231,14 +2467,16 @@ index 0000000..051a5c6
 +            .status,
 +        ).toBe(200);
 +        expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
-+        expect((yield* backend.calls).filter((c) => c.step === "remove")).toHaveLength(before + 1);
++        expect((yield* backend.calls).filter((c) => c.step === "remove").length).toBeGreaterThan(
++          before,
++        );
 +      }),
 +    ),
 +  );
 +});
 diff --git a/e2e/tests/interactive-accounts.spec.ts b/e2e/tests/interactive-accounts.spec.ts
 new file mode 100644
-index 0000000..c13bcca
+index 0000000..e13a785
 --- /dev/null
 +++ b/e2e/tests/interactive-accounts.spec.ts
 @@ -0,0 +1,350 @@
@@ -2585,9 +2823,9 @@ index 0000000..c13bcca
 +        expect(
 +          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
 +        ).toBe(200);
-+        expect((yield* backend.calls).filter((call) => call.step === "remove")).toHaveLength(
-+          calls.filter((call) => call.step === "remove").length + 1,
-+        );
++        expect(
++          (yield* backend.calls).filter((call) => call.step === "remove").length,
++        ).toBeGreaterThan(calls.filter((call) => call.step === "remove").length);
 +      }),
 +    ),
 +  );
@@ -8162,10 +8400,10 @@ index 63307d0..36fe1bb 100644
  export * from "./oauth-clients.ts";
 diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
 new file mode 100644
-index 0000000..e998d79
+index 0000000..a1858c8
 --- /dev/null
 +++ b/packages/sdk/src/contracts/interactive-accounts.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,121 @@
 +/** Host-only interactive connection state and operations. No session enters a public response. */
 +import { Context, Schema, type Effect } from "effect";
 +import { InteractiveInstructions, AccountInfo } from "apps/contracts";
@@ -8217,7 +8455,11 @@ index 0000000..e998d79
 +  accountInfo: Schema.optionalKey(AccountInfo),
 +  acquiredAt: Schema.Finite,
 +  retirement: Schema.optionalKey(
-+    Schema.Struct({ token: Schema.optionalKey(Schema.String), removed: Schema.Boolean }),
++    Schema.Struct({
++      token: Schema.optionalKey(Schema.String),
++      expiresAt: Schema.optionalKey(Schema.Finite),
++      removed: Schema.Boolean,
++    }),
 +  ),
 +});
 +export type InteractiveBinding = typeof InteractiveBinding.Type;
@@ -8240,7 +8482,7 @@ index 0000000..e998d79
 +  | InteractiveConnectionFailed
 +  | import("./interactive-errors.ts").InteractiveRetirementBusy
 +  | import("./interactive-errors.ts").InteractiveRetirementFailed;
-+/** A host has already run remove while retiring an authorized link. Scoped to that one delete. */
++/** Accounts whose local deletion this retirement owns, including its rolled-back validation. */
 +export const InteractiveRemovalDone = Context.Reference<ReadonlySet<AccountId>>(
 +  "executor/InteractiveRemovalDone",
 +  { defaultValue: () => new Set() },
@@ -8248,7 +8490,7 @@ index 0000000..e998d79
 +export const InteractiveHost = Symbol("executor.InteractiveHost");
 +/** Products authorize the pending connection and supply its caller's current linked accounts. */
 +export interface InteractiveHost {
-+  /** Claim references, validate local changes under lock, then remove externally before committing. */
++  /** Validate locally, commit a lease, invoke without SQL, then recheck and commit. */
 +  readonly retire: <A, E, R>(
 +    input: { readonly accounts: readonly AccountId[]; readonly owner: OwnerId },
 +    action: Effect.Effect<A, E, R>,
@@ -8261,7 +8503,7 @@ index 0000000..e998d79
 +    R
 +  >;
 +  readonly acquired: (input: {
-+    readonly app: import("./shared.ts").AppId;
++    readonly app?: import("./shared.ts").AppId;
 +    readonly owner: OwnerId;
 +  }) => Effect.Effect<readonly AccountId[], StorageError>;
 +  readonly start: (
@@ -8797,7 +9039,7 @@ index af3eab0..02ac489 100644
          dispatch(
            { ...input, database: false },
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 4c87319..0884799 100644
+index 4c87319..6cdd555 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -3,7 +3,7 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
@@ -8809,11 +9051,11 @@ index 4c87319..0884799 100644
  import { SqlError } from "effect/sql";
  import {
    App,
-@@ -69,6 +69,20 @@ import {
+@@ -69,8 +69,53 @@ import {
    type StoredBytes,
  } from "./public-files.ts";
  
-+/** The outer account-retirement transaction owns the final commit and public-file release. */
++/** The outer app-removal transaction owns the final commit and public-file release. */
 +export const AppFileReleaseDeferred = Context.Reference<boolean>(
 +  "executor/AppFileReleaseDeferred",
 +  {
@@ -8829,8 +9071,65 @@ index 4c87319..0884799 100644
 +
  type DeployInput = NonNullable<Parameters<Executor["apps"]["deploy"]>[0]>;
  
++/** The same pure eligibility checks run before bulk cleanup and again at the actual deletion. */
++const assertAppRemovalAllowed = (tx: Query, app: AppId) =>
++  Effect.gen(function* () {
++    const live = yield* query(() =>
++      tx.findFirst("webhooks", {
++        where: (b) => b.and(b("app", "=", app), b("status", "!=", "stopped")),
++      }),
++    );
++    if (live !== null) return yield* new AppWebhooksActive({ app: app });
++    const run = yield* query(() =>
++      tx.findFirst("workflowRuns", {
++        where: (b) =>
++          b.and(b("app", "=", app), b.or(b("status", "=", "queued"), b("status", "=", "running"))),
++      }),
++    );
++    if (run !== null) return yield* new AppWorkflowsActive({ app: app });
++  });
++export const checkAppRemoval = (db: Query, input: Parameters<Executor["apps"]["remove"]>[0]) =>
++  transaction(db, (tx) =>
++    Effect.gen(function* () {
++      const app = yield* storedApp(tx, input).pipe(
++        Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)),
++      );
++      if (app !== undefined) {
++        yield* lockApp(tx, input);
++        yield* assertAppRemovalAllowed(tx, app.id);
++      }
++      return app;
++    }),
++  ).pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
++
  /** Read a configured app, applying an optional owner constraint. */
-@@ -831,13 +845,9 @@ export const makeApps = (
+ 
+ /** Carry the runtime's stage, location and underlying failure to the deployer. */
+@@ -763,22 +808,7 @@ export const makeApps = (
+                 set: { createdAt: app.createdAt },
+               }),
+             );
+-            const live = yield* query(() =>
+-              tx.findFirst("webhooks", {
+-                where: (b) => b.and(b("app", "=", app.id), b("status", "!=", "stopped")),
+-              }),
+-            );
+-            if (live !== null) return yield* new AppWebhooksActive({ app: app.id });
+-            const run = yield* query(() =>
+-              tx.findFirst("workflowRuns", {
+-                where: (b) =>
+-                  b.and(
+-                    b("app", "=", app.id),
+-                    b.or(b("status", "=", "queued"), b("status", "=", "running")),
+-                  ),
+-              }),
+-            );
+-            if (run !== null) return yield* new AppWorkflowsActive({ app: app.id });
++            yield* assertAppRemovalAllowed(tx, app.id);
+             if (lifecycle) yield* lifecycle.appRemoving(app.id);
+             yield* query(() =>
+               tx.deleteMany("workflowRuns", { where: (b) => b("app", "=", app.id) }),
+@@ -831,13 +861,9 @@ export const makeApps = (
          // The lineage's public files belong to no other app: release them once its row is gone.
          // A failed release leaves files no version can serve; it does not undo the removal.
          Effect.tap(({ code }) =>
@@ -8953,22 +9252,27 @@ index e50a8d5..a7b985d 100644
 +) =>
 +  lifecycle?.connectionSaving === undefined ? save : lifecycle.connectionSaving(connection, save);
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index d2e8115..b1bc3f2 100644
+index d2e8115..52ec9e6 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,6 @@
-+import { InteractiveRetirementBusy } from "../contracts/interactive-errors.ts";
++import { validateRemovalChange } from "./removal-validation.ts";
 +import { transaction } from "./database.ts";
 +import { makeInteractiveRetirement } from "./interactive-retirement.ts";
  import { WebhookSourceHost } from "../contracts/webhooks.ts";
  import { makeWebhookSources } from "./webhook-sources.ts";
  import { WorkflowHost } from "../contracts/workflow-runtime.ts";
-@@ -11,15 +14,23 @@ import { remoteRegistry } from "./remote-registry.ts";
+@@ -11,15 +14,28 @@ import { remoteRegistry } from "./remote-registry.ts";
  import { aesGcmCredentials } from "./credentials.ts";
  import { hostedExecutorOrigin } from "../contracts/registry.ts";
  import { defaultToolListingPolicy } from "../contracts/declarations.ts";
 -import { storedApp } from "./apps.ts";
-+import { storedApp, lockApp, AppFileReleaseDeferred, releaseRemovedAppFiles } from "./apps.ts";
++import {
++  storedApp,
++  checkAppRemoval,
++  AppFileReleaseDeferred,
++  releaseRemovedAppFiles,
++} from "./apps.ts";
  import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
  import { makeWorkflowRuns } from "./workflows.ts";
  /** Compose native operations once for in-process and HTTP callers. */
@@ -8985,11 +9289,11 @@ index d2e8115..b1bc3f2 100644
  import { makeWebhooks } from "./webhooks.ts";
  import { makeAppData } from "./app-storage.ts";
 +import { makeInteractiveAccounts } from "./interactive-accounts.ts";
-+import { InteractiveHost, InteractiveRemovalDone } from "../contracts/interactive-accounts.ts";
++import { InteractiveHost } from "../contracts/interactive-accounts.ts";
  import { makeAccountConnections } from "./account-connections.ts";
  import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
  import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
-@@ -161,6 +172,14 @@ export const createExecutor = (
+@@ -161,6 +177,14 @@ export const createExecutor = (
        workflows.controls,
        options.hooks,
      );
@@ -9004,21 +9308,22 @@ index d2e8115..b1bc3f2 100644
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
        db,
-@@ -169,6 +188,13 @@ export const createExecutor = (
+@@ -169,6 +193,14 @@ export const createExecutor = (
        options.hooks,
        oauth.revokeRemoved,
      );
 +    const retirement = makeInteractiveRetirement(
 +      db,
 +      crypto,
-+      interactive.prepareRemoval,
++      interactive.remove,
 +      accountOperations.remove,
 +      options.hooks,
 +    );
++    const ownerOperations = makeOwners(db);
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
        runtime,
-@@ -245,11 +271,27 @@ export const createExecutor = (
+@@ -245,11 +277,27 @@ export const createExecutor = (
          new URL("/api/oauth/callback", origin).href,
        ]),
        [OwnerMovesHost]: makeOwnerMoves(db, credentials),
@@ -9046,46 +9351,56 @@ index d2e8115..b1bc3f2 100644
          ...accountHealth,
          revocation: (input) =>
            storedAccount(db, input.account, input.owner).pipe(
-@@ -269,6 +311,33 @@ export const createExecutor = (
+@@ -269,6 +317,24 @@ export const createExecutor = (
        oauthClients: oauth.clients,
        apps: {
          ...apps,
 +        remove: (input) =>
 +          Effect.gen(function* () {
-+            const app = yield* storedApp(db, input).pipe(
-+              Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)),
-+            );
++            const app = yield* checkAppRemoval(db, input);
 +            if (app === undefined) return yield* apps.remove(input);
 +            const acquired = yield* retirement.acquired({ owner: app.owner, app: app.id });
-+            return yield* retirement
-+              .retire(
-+                { owner: app.owner, accounts: acquired },
-+                transaction(db, () =>
-+                  Effect.gen(function* () {
-+                    yield* lockApp(db, input).pipe(Effect.mapError(() => new StorageError()));
-+                    const held = yield* InteractiveRemovalDone;
-+                    const current = yield* retirement.acquired({ owner: app.owner, app: app.id });
-+                    const added = current.find((account) => !held.has(account));
-+                    if (added !== undefined)
-+                      return yield* new InteractiveRetirementBusy({ account: added });
-+                    return yield* apps.remove(input);
-+                  }),
-+                ),
-+              )
-+              .pipe(
-+                Effect.provideService(AppFileReleaseDeferred, true),
-+                Effect.tap(() => releaseRemovedAppFiles(options.blobs, AppCodeId.make(app.code))),
-+              );
++            yield* retirement.cleanup({ owner: app.owner, accounts: acquired });
++            return yield* transaction(db, () =>
++              Effect.gen(function* () {
++                const result = yield* apps.remove(input);
++                const current = yield* retirement.acquired({ owner: app.owner, app: app.id });
++                yield* retirement.discard({ owner: app.owner, accounts: current });
++                return result;
++              }),
++            ).pipe(
++              Effect.provideService(AppFileReleaseDeferred, true),
++              Effect.tap(() => releaseRemovedAppFiles(options.blobs, AppCodeId.make(app.code))),
++            );
 +          }),
          deploy: (input) =>
            apps
              .deploy(input)
+@@ -280,7 +346,17 @@ export const createExecutor = (
+         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
+         checkCredentials,
+       },
+-      owners: makeOwners(db),
++      owners: {
++        ...ownerOperations,
++        remove: (input) =>
++          Effect.gen(function* () {
++            // The canonical purge checks active work and live webhooks before cleanup can run.
++            yield* validateRemovalChange(db, ownerOperations.remove(input));
++            const acquired = yield* retirement.acquired({ owner: input.owner });
++            yield* retirement.cleanup({ owner: input.owner, accounts: acquired });
++            return yield* ownerOperations.remove(input);
++          }),
++      },
+       publications: catalog.publications,
+       registry: catalog.registry,
+       skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
 diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
 new file mode 100644
-index 0000000..82983ba
+index 0000000..a29d779
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-accounts.ts
-@@ -0,0 +1,319 @@
+@@ -0,0 +1,339 @@
 +/** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
 +import { Clock, type Crypto, Effect, Schema } from "effect";
 +import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
@@ -9122,6 +9437,7 @@ index 0000000..82983ba
 +import {
 +  interactiveRunner,
 +  prepareInteractiveCall,
++  prepareInteractiveContext,
 +  interactiveStepMillis,
 +  saveInteractiveAccount,
 +} from "./interactive-runner.ts";
@@ -9159,6 +9475,7 @@ index 0000000..82983ba
 +} => {
 +  const invoke = interactiveRunner(db, runtime, resolveAccount);
 +  const prepareCall = prepareInteractiveCall(db, runtime, resolveAccount);
++  const prepareContext = prepareInteractiveContext(db, runtime, resolveAccount);
 +  const acquisition = (row: ConnectionRow, session: InteractiveSession) => ({
 +    app: row.target.app,
 +    slot: row.target.requirement,
@@ -9221,7 +9538,14 @@ index 0000000..82983ba
 +              step,
 +              input: { method: claimed.session.method, session },
 +            };
-+      const result = yield* run(input, claimed.row, claimed.session, command).pipe(
++      // Retain the actual invocation context before the handler can race with app deletion.
++      const invoke = yield* prepareContext({
++        owner: input.owner,
++        accounts: input.accounts,
++        acquisition: acquisition(claimed.row, claimed.session),
++        command,
++      });
++      const result = yield* invoke(command).pipe(
 +        Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStatus)),
 +        Effect.onError(() => recordFailure(input, claimed)),
 +      );
@@ -9262,14 +9586,25 @@ index 0000000..82983ba
 +      ).pipe(
 +        Effect.onError(() =>
 +          Effect.gen(function* () {
-+            yield* recordFailure(input, claimed);
++            yield* recordFailure(input, claimed).pipe(
++              Effect.catch(() =>
++                Effect.logWarning("The completed sign-in could not record its failure"),
++              ),
++            );
 +            if (result.state === "connected")
-+              yield* cleanup(input, claimed, {
++              yield* invoke({
 +                operation: "connect",
 +                slot: claimed.row.target.requirement,
 +                step: "remove",
 +                input: { method: claimed.session.method, ref: result.ref },
-+              });
++              }).pipe(
++                Effect.asVoid,
++                Effect.catch(() =>
++                  Effect.logWarning(
++                    "Completed interactive sign-in cleanup did not finish; dropping the reference",
++                  ),
++                ),
++              );
 +          }),
 +        ),
 +      );
@@ -9405,58 +9740,248 @@ index 0000000..82983ba
 +    remove: (input) => safe(Effect.flatten(prepareRemoval(input))),
 +  };
 +};
-diff --git a/packages/sdk/src/implementation/interactive-retirement.ts b/packages/sdk/src/implementation/interactive-retirement.ts
+diff --git a/packages/sdk/src/implementation/interactive-cleanup.ts b/packages/sdk/src/implementation/interactive-cleanup.ts
 new file mode 100644
-index 0000000..6fc79ab
+index 0000000..d22a18f
 --- /dev/null
-+++ b/packages/sdk/src/implementation/interactive-retirement.ts
-@@ -0,0 +1,221 @@
-+/** Persist account retirement claims before external I/O; keep successful acknowledgements for retries. */
-+import { type Crypto, Effect, Option, Schema } from "effect";
-+import {
-+  InteractiveRemovalDone,
-+  type InteractiveHost,
-+  type InteractiveBinding,
-+} from "../contracts/interactive-accounts.ts";
++++ b/packages/sdk/src/implementation/interactive-cleanup.ts
+@@ -0,0 +1,31 @@
++/** Bulk cleanup is bounded and advisory; a provider never vetoes the local purge. */
++import { Effect } from "effect";
++import type { InteractiveHost } from "../contracts/interactive-accounts.ts";
++import type { AccountId, OwnerId } from "../contracts/shared.ts";
++import { interactiveStepMillis } from "./interactive-runner.ts";
++/** Self-host's HTTP idle limit is 30 seconds; leave 10 seconds for the local mutation. */
++export const interactiveCleanupMillis = 20_000;
++export const cleanupInteractiveAccounts = (
++  remove: InteractiveHost["remove"],
++  input: { readonly owner: OwnerId; readonly accounts: readonly AccountId[] },
++) =>
++  Effect.suspend(() => {
++    const pending = new Set(input.accounts);
++    const warning = (account: AccountId) =>
++      Effect.logWarning("Interactive account cleanup did not finish; continuing deletion", {
++        account,
++      });
++    return Effect.forEach(
++      [...pending],
++      (account) =>
++        remove({ owner: input.owner, account }).pipe(
++          Effect.timeout(interactiveStepMillis),
++          Effect.catch(() => warning(account)),
++          Effect.tap(() => Effect.sync(() => pending.delete(account))),
++        ),
++      { concurrency: 4, discard: true },
++    ).pipe(
++      Effect.timeout(interactiveCleanupMillis),
++      Effect.catch(() => Effect.forEach([...pending], warning, { discard: true })),
++    );
++  });
+diff --git a/packages/sdk/src/implementation/interactive-retirement-claims.ts b/packages/sdk/src/implementation/interactive-retirement-claims.ts
+new file mode 100644
+index 0000000..bfed8bb
+--- /dev/null
++++ b/packages/sdk/src/implementation/interactive-retirement-claims.ts
+@@ -0,0 +1,168 @@
++/** Durable explicit-retirement leases. No transaction escapes these helpers. */
++import { Clock, type Crypto, Effect, Option, Schema } from "effect";
 +import {
 +  InteractiveRetirementBusy,
 +  InteractiveRetirementFailed,
 +} from "../contracts/interactive-errors.ts";
++import type { ResourceLifecycle } from "../contracts/executor.ts";
++import {
++  StorageError,
++  type AccountId,
++  type AccountConnectionId,
++  type OwnerId,
++} from "../contracts/shared.ts";
++import { lockConnection, StoredState } from "./connection-state.ts";
++import { ownedAccount, publicAccount } from "./accounts.ts";
++import { query, transaction, type Query } from "./database.ts";
++const decode = Schema.decodeUnknownOption(StoredState),
++  encode = Schema.encodeSync(StoredState);
++/** The complete remove step is limited to 15 seconds, leaving 5 seconds to settle its lease. */
++export const retirementLeaseMillis = 20_000;
++export interface RetirementClaim {
++  readonly connection: AccountConnectionId;
++  readonly account: AccountId;
++  readonly owner: OwnerId;
++  readonly token: string;
++  readonly removed: boolean;
++}
++export const retirementRecords = (db: Query, owner: OwnerId) =>
++  query(() =>
++    db.findMany("accountConnections", {
++      where: (b) => b("owner", "=", owner),
++      orderBy: ["createdAt", "desc"],
++    }),
++  );
++export const makeRetirementClaims = (
++  db: Query,
++  crypto: Crypto.Crypto,
++  lifecycle?: ResourceLifecycle,
++) => {
++  const check = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
++    Effect.gen(function* () {
++      const now = yield* Clock.currentTimeMillis;
++      const wanted = new Set(input.accounts);
++      for (const row of yield* retirementRecords(db, input.owner)) {
++        const state = decode(row.state);
++        if (
++          Option.isSome(state) &&
++          state.value.status === "completed" &&
++          wanted.delete(state.value.account.id)
++        ) {
++          const lease = state.value.interactive?.retirement;
++          if (lease?.token !== undefined && (lease.expiresAt ?? 0) > now)
++            return yield* new InteractiveRetirementBusy({ account: state.value.account.id });
++        }
++      }
++    });
++  const begin = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
++    transaction(db, (tx) =>
++      Effect.gen(function* () {
++        const now = yield* Clock.currentTimeMillis;
++        const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
++        const wanted = new Set(input.accounts),
++          claims: RetirementClaim[] = [];
++        for (const record of yield* retirementRecords(tx, input.owner)) {
++          const parsed = decode(record.state);
++          if (
++            Option.isNone(parsed) ||
++            parsed.value.status !== "completed" ||
++            parsed.value.interactive === undefined ||
++            !wanted.delete(parsed.value.account.id)
++          )
++            continue;
++          const row = yield* lockConnection(
++            tx,
++            { connection: record.id, owner: input.owner },
++            crypto,
++          ).pipe(Effect.mapError(() => new StorageError()));
++          if (row.storedState.status !== "completed" || row.storedState.interactive === undefined)
++            return yield* new StorageError();
++          const state = row.storedState,
++            binding = row.storedState.interactive,
++            account = state.account.id;
++          const lease = binding.retirement;
++          // A legacy claim without an expiry is reclaimable too; it cannot block an upgrade forever.
++          if (lease?.token !== undefined && (lease.expiresAt ?? 0) > now)
++            return yield* new InteractiveRetirementBusy({ account });
++          const saved = yield* ownedAccount(tx, { account, owner: input.owner }).pipe(
++            Effect.mapError(() => new StorageError()),
++          );
++          yield* (lifecycle?.accountRetiring?.(yield* publicAccount(saved)) ?? Effect.void).pipe(
++            Effect.mapError(
++              () => new InteractiveRetirementFailed({ account, reason: "authority" }),
++            ),
++          );
++          for (const table of ["webhookAccounts", "workflowAccounts"] as const)
++            if (
++              (yield* query(() =>
++                tx.findFirst(table, { where: (b) => b("account", "=", account) }),
++              )) !== null
++            )
++              return yield* new InteractiveRetirementFailed({ account, reason: "active" });
++          yield* query(() =>
++            tx.updateMany("accountConnections", {
++              where: (b) => b("id", "=", row.id),
++              set: {
++                state: encode({
++                  ...state,
++                  interactive: {
++                    ...binding,
++                    retirement: {
++                      token,
++                      expiresAt: now + retirementLeaseMillis,
++                      removed: lease?.removed ?? false,
++                    },
++                  },
++                }),
++              },
++            }),
++          );
++          claims.push({
++            owner: input.owner,
++            account,
++            connection: row.id,
++            token,
++            removed: lease?.removed ?? false,
++          });
++        }
++        return claims;
++      }),
++    );
++  const current = (claim: RetirementClaim) =>
++    lockConnection(db, claim, crypto).pipe(
++      Effect.catchTag("AccountConnectionNotFound", () => Effect.succeed(undefined)),
++      Effect.mapError(() => new StorageError()),
++    );
++  const ensure = (claim: RetirementClaim) =>
++    Effect.gen(function* () {
++      const row = yield* current(claim);
++      if (
++        row?.storedState.status !== "completed" ||
++        row.storedState.interactive?.retirement?.token !== claim.token
++      )
++        return yield* new InteractiveRetirementBusy({ account: claim.account });
++    });
++  const release = (claim: RetirementClaim, removed: boolean) =>
++    transaction(db, () =>
++      Effect.gen(function* () {
++        const row = yield* current(claim);
++        if (
++          row?.storedState.status !== "completed" ||
++          row.storedState.interactive?.retirement?.token !== claim.token
++        )
++          return;
++        const state = row.storedState,
++          binding = state.interactive;
++        if (binding === undefined) return;
++        yield* query(() =>
++          db.updateMany("accountConnections", {
++            where: (b) => b("id", "=", row.id),
++            set: {
++              state: encode({ ...state, interactive: { ...binding, retirement: { removed } } }),
++            },
++          }),
++        );
++      }),
++    );
++  return { check, begin, ensure, release };
++};
+diff --git a/packages/sdk/src/implementation/interactive-retirement.ts b/packages/sdk/src/implementation/interactive-retirement.ts
+new file mode 100644
+index 0000000..0929d3e
+--- /dev/null
++++ b/packages/sdk/src/implementation/interactive-retirement.ts
+@@ -0,0 +1,131 @@
++/** Explicit retirement validates, leases, invokes without SQL, then rechecks and commits. */
++import { type Crypto, Effect, Option, Schema } from "effect";
++import { InteractiveRemovalDone, type InteractiveHost } from "../contracts/interactive-accounts.ts";
++import { InteractiveRetirementFailed } from "../contracts/interactive-errors.ts";
 +import { type AccountWebhooksActive, type AccountWorkflowsActive } from "../contracts/account.ts";
 +import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.ts";
 +import type { ResourceLifecycle } from "../contracts/executor.ts";
 +import { query, transaction, type Query } from "./database.ts";
-+import { lockConnection, StoredState } from "./connection-state.ts";
-+import { ownedAccount, publicAccount } from "./accounts.ts";
++import { StoredState } from "./connection-state.ts";
++import { makeRetirementClaims, retirementRecords } from "./interactive-retirement-claims.ts";
++import { cleanupInteractiveAccounts } from "./interactive-cleanup.ts";
++import { interactiveStepMillis } from "./interactive-runner.ts";
++import { validateRemovalChange } from "./removal-validation.ts";
 +const decode = Schema.decodeUnknownOption(StoredState);
-+const encode = Schema.encodeSync(StoredState);
-+type Claim = {
-+  readonly connection: import("../contracts/shared.ts").AccountConnectionId;
-+  readonly account: AccountId;
-+  readonly binding: InteractiveBinding;
-+};
 +export const makeInteractiveRetirement = (
 +  db: Query,
 +  crypto: Crypto.Crypto,
-+  prepareRemove: (
-+    input: Parameters<InteractiveHost["remove"]>[0],
-+  ) => Effect.Effect<
-+    ReturnType<InteractiveHost["remove"]>,
-+    StorageError | import("../contracts/interactive-accounts.ts").InteractiveConnectionFailed
-+  >,
++  remove: InteractiveHost["remove"],
 +  deleteAccount: (input: {
 +    owner: OwnerId;
 +    account: AccountId;
 +  }) => Effect.Effect<unknown, StorageError | AccountWebhooksActive | AccountWorkflowsActive>,
 +  lifecycle?: ResourceLifecycle,
-+): Pick<InteractiveHost, "retire" | "acquired"> => {
-+  const records = (owner: OwnerId) =>
-+    query(() =>
-+      db.findMany("accountConnections", {
-+        where: (b) => b("owner", "=", owner),
-+        orderBy: ["createdAt", "desc"],
-+      }),
-+    );
++) => {
++  const leases = makeRetirementClaims(db, crypto, lifecycle);
 +  const acquired: InteractiveHost["acquired"] = (input) =>
 +    Effect.gen(function* () {
 +      const present = new Set(
@@ -9465,12 +9990,13 @@ index 0000000..6fc79ab
 +        )).map((a) => a.id),
 +      );
 +      const ids = new Set<AccountId>();
-+      for (const row of yield* records(input.owner)) {
++      for (const row of yield* retirementRecords(db, input.owner)) {
 +        const parsed = decode(row.state);
 +        if (
 +          Option.isSome(parsed) &&
 +          parsed.value.status === "completed" &&
-+          parsed.value.interactive?.app === input.app &&
++          parsed.value.interactive !== undefined &&
++          (input.app === undefined || parsed.value.interactive.app === input.app) &&
 +          present.has(parsed.value.account.id)
 +        )
 +          ids.add(parsed.value.account.id);
@@ -9480,164 +10006,94 @@ index 0000000..6fc79ab
 +  const retire: InteractiveHost["retire"] = (input, action) =>
 +    Effect.gen(function* () {
 +      const held = yield* InteractiveRemovalDone;
-+      if (input.accounts.every((id) => held.has(id))) return yield* action;
-+      const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
-+      const claims = yield* transaction(db, (tx) =>
-+        Effect.gen(function* () {
-+          const wanted = new Set(input.accounts.filter((id) => !held.has(id)));
-+          const claims: Claim[] = [];
-+          for (const record of yield* records(input.owner)) {
-+            const parsed = decode(record.state);
-+            if (
-+              Option.isNone(parsed) ||
-+              parsed.value.status !== "completed" ||
-+              parsed.value.interactive === undefined ||
-+              !wanted.delete(parsed.value.account.id)
-+            )
-+              continue;
-+            const row = yield* lockConnection(
-+              tx,
-+              { connection: record.id, owner: input.owner },
-+              crypto,
-+            ).pipe(Effect.mapError(() => new StorageError()));
-+            if (row.storedState.status !== "completed" || row.storedState.interactive === undefined)
-+              return yield* new StorageError();
-+            const state = row.storedState;
-+            const binding = row.storedState.interactive;
-+            const account = state.account.id;
-+            const saved = yield* ownedAccount(tx, { account, owner: input.owner }).pipe(
-+              Effect.mapError(() => new StorageError()),
-+            );
-+            yield* (lifecycle?.accountRetiring?.(yield* publicAccount(saved)) ?? Effect.void).pipe(
-+              Effect.mapError(
-+                () => new InteractiveRetirementFailed({ account, reason: "authority" }),
-+              ),
-+            );
-+            if (binding.retirement?.token !== undefined)
-+              return yield* new InteractiveRetirementBusy({ account });
-+            for (const table of ["webhookAccounts", "workflowAccounts"] as const)
-+              if (
-+                (yield* query(() =>
-+                  tx.findFirst(table, { where: (b) => b("account", "=", account) }),
-+                )) !== null
-+              )
-+                return yield* new InteractiveRetirementFailed({ account, reason: "active" });
-+            yield* query(() =>
-+              tx.updateMany("accountConnections", {
-+                where: (b) => b("id", "=", row.id),
-+                set: {
-+                  state: encode({
-+                    ...state,
-+                    interactive: {
-+                      ...binding,
-+                      retirement: { token, removed: binding.retirement?.removed ?? false },
-+                    },
-+                  }),
-+                },
-+              }),
-+            );
-+            claims.push({ connection: row.id, account, binding });
-+          }
-+          return claims;
-+        }),
-+      );
-+      const write = (claim: Claim, removed: boolean, release: boolean) =>
-+        transaction(db, (tx) =>
-+          Effect.gen(function* () {
-+            const row = yield* lockConnection(
-+              tx,
-+              { owner: input.owner, connection: claim.connection },
-+              crypto,
-+            ).pipe(Effect.mapError(() => new StorageError()));
-+            if (
-+              row.storedState.status !== "completed" ||
-+              row.storedState.interactive?.retirement?.token !== token
-+            )
-+              return;
-+            const state = row.storedState;
-+            const binding = row.storedState.interactive;
-+            if (binding === undefined) return;
-+            yield* query(() =>
-+              tx.updateMany("accountConnections", {
-+                where: (b) => b("id", "=", row.id),
-+                set: {
-+                  state: encode({
-+                    ...state,
-+                    interactive: {
-+                      ...binding,
-+                      retirement: { ...(release ? {} : { token }), removed },
-+                    },
-+                  }),
-+                },
-+              }),
-+            );
-+          }),
-+        );
++      const accounts = input.accounts.filter((account) => !held.has(account));
++      const first = accounts[0];
++      if (first === undefined) return yield* action;
++      yield* leases.check({ ...input, accounts });
++      const change = Effect.gen(function* () {
++        const result = yield* action;
++        for (const account of accounts)
++          yield* deleteAccount({ owner: input.owner, account }).pipe(
++            Effect.mapError(() => new StorageError()),
++          );
++        return result;
++      }).pipe(Effect.provideService(InteractiveRemovalDone, new Set([...held, ...accounts])));
++      // Use the canonical mutation's complete checks, then roll back and release every SQL lock.
++      yield* validateRemovalChange(db, change);
++      const claims = yield* leases.begin({ ...input, accounts });
 +      const removed = new Set(
-+        claims.filter((c) => c.binding.retirement?.removed).map((c) => c.account),
++        claims.filter((claim) => claim.removed).map((claim) => claim.account),
 +      );
 +      return yield* Effect.gen(function* () {
-+        // Capture the original handler context while all app/account rows still exist.
-+        const removals = new Map<AccountId, ReturnType<InteractiveHost["remove"]>>();
-+        for (const claim of claims) {
-+          if (!removed.has(claim.account))
-+            removals.set(
-+              claim.account,
-+              yield* prepareRemove({ owner: input.owner, account: claim.account }).pipe(
-+                Effect.mapError(
-+                  () =>
-+                    new InteractiveRetirementFailed({ account: claim.account, reason: "remove" }),
++        yield* Effect.forEach(
++          claims,
++          (claim) =>
++            removed.has(claim.account)
++              ? Effect.void
++              : remove({ owner: input.owner, account: claim.account }).pipe(
++                  Effect.timeout(interactiveStepMillis),
++                  Effect.mapError(
++                    () =>
++                      new InteractiveRetirementFailed({ account: claim.account, reason: "remove" }),
++                  ),
++                  Effect.tap(() => Effect.sync(() => removed.add(claim.account))),
 +                ),
-+              ),
-+            );
-+        }
-+        return yield* transaction(db, () =>
-+          Effect.gen(function* () {
-+            const result = yield* action;
-+            for (const claim of claims)
-+              yield* deleteAccount({ owner: input.owner, account: claim.account }).pipe(
-+                Effect.mapError(() => new StorageError()),
-+              );
-+            // All canonical checks and reversible writes have succeeded. Keep their locks until
-+            // the external removals finish; a failed batch rolls these local changes back.
-+            for (const [account, remove] of removals) {
-+              yield* remove.pipe(
-+                Effect.mapError(
-+                  () => new InteractiveRetirementFailed({ account, reason: "remove" }),
-+                ),
-+              );
-+              removed.add(account);
-+            }
-+            return result;
-+          }).pipe(
-+            Effect.provideService(
-+              InteractiveRemovalDone,
-+              new Set([...held, ...claims.map((c) => c.account)]),
-+            ),
++          { concurrency: 4, discard: true },
++        ).pipe(
++          Effect.timeout(interactiveStepMillis),
++          Effect.catchTag("TimeoutError", () =>
++            Effect.fail(new InteractiveRetirementFailed({ account: first, reason: "remove" })),
 +          ),
 +        );
++        return yield* transaction(db, () =>
++          Effect.gen(function* () {
++            for (const claim of claims) yield* leases.ensure(claim);
++            const result = yield* change;
++            for (const claim of claims) yield* leases.release(claim, removed.has(claim.account));
++            return result;
++          }),
++        );
 +      }).pipe(
-+        // This runs after commit/rollback, outside the mutation's transaction. Successful remote
-+        // removals remain acknowledged even when a later handler failed and SQL rolled back.
 +        Effect.ensuring(
-+          Effect.forEach(claims, (claim) => write(claim, removed.has(claim.account), true), {
++          Effect.forEach(claims, (claim) => leases.release(claim, removed.has(claim.account)), {
 +            discard: true,
 +          }).pipe(
 +            Effect.catch(() =>
-+              Effect.logWarning("Interactive retirement claim could not be released"),
++              Effect.logWarning(
++                "Interactive retirement claim could not be released; its lease will expire",
++              ),
 +            ),
 +          ),
 +        ),
 +      );
 +    });
-+  return { retire, acquired };
++  const cleanup = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
++    cleanupInteractiveAccounts(remove, input);
++  /** Bulk authority is the app/owner deletion. Its bound references cannot survive that app. */
++  const discard = (input: { owner: OwnerId; accounts: readonly AccountId[] }) =>
++    Effect.gen(function* () {
++      if (input.accounts.length === 0) return;
++      for (const table of ["webhookSources", "accountChecks"] as const)
++        yield* query(() =>
++          db.deleteMany(table, { where: (b) => b("account", "in", input.accounts) }),
++        );
++      yield* query(() =>
++        db.deleteMany("oauthGrants", { where: (b) => b("id", "in", input.accounts) }),
++      );
++      yield* query(() =>
++        db.deleteMany("accounts", {
++          where: (b) => b.and(b("owner", "=", input.owner), b("id", "in", input.accounts)),
++        }),
++      );
++    });
++  return { retire, acquired, cleanup, discard };
 +};
 diff --git a/packages/sdk/src/implementation/interactive-runner.ts b/packages/sdk/src/implementation/interactive-runner.ts
 new file mode 100644
-index 0000000..67c9f1d
+index 0000000..085e742
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-runner.ts
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,172 @@
 +/** Run acquisition handlers through the ordinary app host, with current linked credentials. */
 +import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
 +import type { ConnectCommand, InteractiveStatus } from "apps/contracts";
@@ -9661,7 +10117,7 @@ index 0000000..67c9f1d
 +export const interactiveStepMillis = 15_000;
 +
 +/** Resolve the retained handler and credentials before a local mutation can remove their rows. */
-+export const prepareInteractiveCall =
++export const prepareInteractiveContext =
 +  (db: Query, runtime: Runtime, resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"]) =>
 +  (input: {
 +    readonly owner: OwnerId;
@@ -9698,20 +10154,34 @@ index 0000000..67c9f1d
 +      const context = yield* input.command.step === "remove"
 +        ? resolveRemoval(state, resolveAccount)
 +        : resolve(state, resolveAccount);
-+      return Effect.gen(function* () {
-+        const deadline = (yield* Clock.currentTimeMillis) + interactiveStepMillis;
-+        return yield* runtime.connect({
-+          ...context,
-+          app: state.app.id,
-+          build: state.version.build,
-+          database: state.version.requirements.sql === true,
-+          deadline,
-+          command: input.command,
-+        });
-+      }).pipe(
-+        Effect.timeout(interactiveStepMillis),
-+        Effect.mapError(() => new InteractiveConnectionFailed({ reason: "step" })),
-+      );
++      return (command: ConnectCommand) =>
++        Effect.gen(function* () {
++          const bound = Redacted.value(context.accounts);
++          const omitSlot = <A>(slots: Readonly<Record<string, A>>) =>
++            Object.fromEntries(
++              Object.entries(slots).filter(([slot]) => slot !== input.acquisition.slot),
++            );
++          const accounts =
++            command.step === "remove"
++              ? Redacted.make({
++                  app: omitSlot(bound.app),
++                  ...(bound.user === undefined ? {} : { user: omitSlot(bound.user) }),
++                })
++              : context.accounts;
++          const deadline = (yield* Clock.currentTimeMillis) + interactiveStepMillis;
++          return yield* runtime.connect({
++            ...context,
++            accounts,
++            app: state.app.id,
++            build: state.version.build,
++            database: state.version.requirements.sql === true,
++            deadline,
++            command,
++          });
++        }).pipe(
++          Effect.timeout(interactiveStepMillis),
++          Effect.mapError(() => new InteractiveConnectionFailed({ reason: "step" })),
++        );
 +    }).pipe(
 +      Effect.timeout(interactiveStepMillis),
 +      Effect.mapError((error) =>
@@ -9721,6 +10191,15 @@ index 0000000..67c9f1d
 +      ),
 +      Effect.withSpan("sdk.connections.interactive.invoke"),
 +    );
++
++/** A single command, or a retained context used to compensate an in-flight sign-in. */
++export const prepareInteractiveCall = (
++  ...services: Parameters<typeof prepareInteractiveContext>
++) => {
++  const prepare = prepareInteractiveContext(...services);
++  return (input: Parameters<typeof prepare>[0]) =>
++    prepare(input).pipe(Effect.map((invoke) => invoke(input.command)));
++};
 +
 +export const interactiveRunner = (...services: Parameters<typeof prepareInteractiveCall>) => {
 +  const prepare = prepareInteractiveCall(...services);
@@ -10374,6 +10853,20 @@ index 2cdf75c..d30b97f 100644
        const reconnect = (reason: ReconnectReason) =>
          reconnectRequired("oauth.usable", account.id, reason);
        const row = yield* query(() =>
+diff --git a/packages/sdk/src/implementation/removal-validation.ts b/packages/sdk/src/implementation/removal-validation.ts
+new file mode 100644
+index 0000000..190b3ab
+--- /dev/null
++++ b/packages/sdk/src/implementation/removal-validation.ts
+@@ -0,0 +1,8 @@
++/** Exercise canonical local checks without committing the mutation or keeping its locks. */
++import { Data, Effect } from "effect";
++import { transaction, type Query } from "./database.ts";
++class ChangeValidated extends Data.TaggedError("InteractiveChangeValidated") {}
++export const validateRemovalChange = <A, E, R>(db: Query, change: Effect.Effect<A, E, R>) =>
++  transaction(db, () => change.pipe(Effect.andThen(Effect.fail(new ChangeValidated())))).pipe(
++    Effect.catchTag("InteractiveChangeValidated", () => Effect.void),
++  );
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
 index be63c3d..00acb76 100644
 --- a/packages/sdk/src/implementation/runtime.ts
