@@ -145,6 +145,6 @@ The catalog also carries a private read-only knowledge and issue app. Its proven
 
 ## App outbound requests
 
-The private app outbound Worker supplies `User-Agent: Executor` when an app
+The private app outbound Worker supplies a default User-Agent header when an app
 request has no User-Agent header. Some outside services require this header before they check
 authentication. Explicit app headers and request bodies pass through unchanged.
