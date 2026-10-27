@@ -1,9 +1,11 @@
 /**
- * Paths whose callers are API, MCP, model, OAuth, webhook and installer clients rather than browsers.
+ * Paths whose callers are API, MCP, model, OAuth, webhook, Git and installer clients rather than browsers.
  * The zone keeps its Browser Integrity Check for everything else, including the app's own pages.
  */
-const apiBases = ["/mcp", "/v1", "/pool/v1", "/api", "/catalog", "/.well-known", "/setup/claim"];
+const apiBases = ["/v1", "/pool/v1", "/api", "/catalog", "/.well-known", "/git", "/setup/claim"];
 const apiExactPaths = [
+  // MCP is served only here and at the organization path; `/mcp/*` holds consent and approval pages.
+  "/mcp",
   // Model paths the gateway also serves without a version prefix.
   "/messages", "/chat/completions", "/completions",
   "/openapi.json", "/oauth/client-metadata.json",

@@ -59,7 +59,7 @@ export default Alchemy.Stack(
         description: "Basalt API paths skip Browser Integrity Check",
         rules: [{
           action: "set_config",
-          action_parameters: { bic: false },
+          actionParameters: { bic: false },
           expression: apiPathsExpression(host),
           description: "Non-browser API paths on the app host",
           enabled: true,
