@@ -144,7 +144,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       if (pathname === "/__warm") return new Response(null, { status: 204 });
       const container = this.ctx.container;
       if (!container || !port) throw new Error("Pool container unavailable");
-      const upstream = await container.getTcpPort(port).fetch(containerRequest(request));
+      const upstream = await container.getTcpPort(port).fetch(containerRequest(request, "http://pool"));
       const response = await rewriteCapResponse(upstream, pathname);
       if (request.method === "POST" && modelPaths.has(pathname) && response.ok)
         this.ctx.waitUntil(this.computers.observeUsage());
