@@ -5,12 +5,59 @@ const databaseModelPath = /(^|\/)internal\/cluster\//i;
 const workflowPath = /(^|\/)[^/]*workflow[^/]*(\/|$)/i;
 const ignoredWorkflowArea = /(^|\/)(docs?|e2e|playground|test|tests|__tests__)(\/|$)/i;
 const workflowCode = /(?:Cloudflare\.Workflows|WorkflowStep|workflowName|workflowStep|workflowRun|waitForEvent|\.task\s*\(|\.sleep\s*\()/i;
-const databaseCode = /(?:CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE|schema_migration|migrations?)/i;
 const nonRuntimePath = /(^|\/)(docs?|e2e|playground|test|tests|__tests__|marketing)(\/|$)|\.(?:md|mdx|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|map)$/i;
 const runtimeRoot = /^(?:apps\/hosted\/|packages\/|lib\/)/;
 const sourceExtension = /\.(?:go|ts|tsx|js|jsx|mjs|cjs|py|sql|prisma|rs|java|kt|swift|c|cc|cpp|h|hpp)$/i;
 
 export type PathState = "unchanged" | "changed" | "unknown";
+
+// Carried-patch rules, derived from where the pinned upstream keeps its database and Workflow code:
+// SQL migrations and schema modules, fumadb, PlanetScale roles and Hyperdrive in `database.ts`,
+// Cloudflare Workflow classes, bindings and steps, and alchemy's `Cloudflare/Workflows` library.
+// They judge a carry's touched paths and changed lines, so they may over-match but must not miss.
+const carryDatabasePath = /(^|\/)[^/]*(?:migrat|schema|database|fumadb|planetscale|hyperdrive|postgres|pglite|sqlite|drizzle|prisma)[^/]*(\/|$)|(^|\/)sql(\/|\.[^/]+$)|(^|[/_.-])roles?([/_.-]|$)/i;
+const carryDatabaseCode = [
+  /migrat/i,
+  /\b(?:create|alter|drop|truncate)\s+(?:(?:or\s+replace|unique|temp|temporary|unlogged|materialized|if\s+(?:not\s+)?exists|concurrently)\s+)*(?:table|index|schema|role|user|type|extension|trigger|function|procedure|view|sequence|policy|database|domain)\b/i,
+  /\b(?:add|drop|alter|rename)\s+(?:column|constraint)\b/i,
+  /\b(?:grant|revoke)\s+(?:all|select|insert|update|delete|usage|create|connect|execute|references|trigger|truncate|temp|temporary|maintain)\b/i,
+  /\b(?:grant|revoke)\s+"?pg_\w+/i,
+  /\b(?:primary\s+key|foreign\s+key|references\s+"?\w+"?\s*\()/i,
+  /^\s*"?[a-z_][a-z0-9_]*"?\s+(?:text|integer|int|bigint|smallint|boolean|bool|timestamptz|timestamp|jsonb|json|uuid|varchar|bytea|numeric|serial|bigserial|real|date)\b\s*(?:,|$|\(\d|(?:not\s+null|null|primary|references|default|unique|check|generated)\b)/i,
+  /\b(?:pg_roles|pg_authid|rolname|pg_read_all_data|pg_write_all_data|search_path|information_schema|pg_catalog|schema_migration|session\s+authorization|set\s+role)\b/i,
+  /-c\s+role=/i,
+  /\b(?:PostgresRole|inheritedRoles|planetscale|hyperdrive|DATABASE_URL|DatabaseUrl|fumadb)/i,
+  /\b(?:idColumn|column|table)\s*\(\s*["'`]/,
+  /\bschema\s*\(\s*\{/,
+];
+const carryWorkflowCode = [
+  /workflow/i,
+  /\bstep\.\w+\s*\(/,
+  /waitForEvent|sleepUntil|NonRetryableError/,
+  /\.task\s*\(/,
+  /(?<!\bEffect)\.sleep\s*\(/,
+];
+
+/** A path no deployment executes: docs, tests, playgrounds, Markdown and static images. */
+export function isInertPath(path: string): boolean {
+  return nonRuntimePath.test(path);
+}
+
+export function isCarryDatabasePath(path: string): boolean {
+  return isDatabasePath(path) || carryDatabasePath.test(path);
+}
+
+export function isCarryWorkflowPath(path: string): boolean {
+  return workflowPath.test(path);
+}
+
+export function isCarryDatabaseCode(line: string): boolean {
+  return carryDatabaseCode.some((rule) => rule.test(line));
+}
+
+export function isCarryWorkflowCode(line: string): boolean {
+  return carryWorkflowCode.some((rule) => rule.test(line));
+}
 
 export function isDatabasePath(path: string): boolean {
   return databasePath.test(path) || databaseModelPath.test(path) || /\.(?:sql|prisma)$/i.test(path);
@@ -37,10 +84,6 @@ export function toolsWorkflowPathState(file: ChangedFile): PathState {
 export function nodeDatabasePathState(path: string): PathState {
   if (isDatabasePath(path)) return "changed";
   return isPotentialRuntimePath(path) ? "unknown" : "unchanged";
-}
-
-export function patchTouchesDatabase(patch: string): boolean {
-  return patch.split("\n").some((line) => /^[-+](?![-+])/.test(line) && databaseCode.test(line.slice(1)));
 }
 
 export function patchTouchesWorkflow(patch: string): boolean {

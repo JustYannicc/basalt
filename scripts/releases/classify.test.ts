@@ -303,7 +303,8 @@ test("adapted bytes keep stable identity and mapping while their new digest is c
     patchContents: { "0008-worker-workflow.patch": { base: before, candidate: after } },
   });
   assert.equal(report.workflowChanged, true);
-  assert.equal(report.databaseChanged, true);
+  // Only Workflow code changed; the old blanket rule also called this database-changing.
+  assert.equal(report.databaseChanged, false);
 });
 
 test("a pin rollback reports the exact previous candidate and its reverse migration impact", () => {
