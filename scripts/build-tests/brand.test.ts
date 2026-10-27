@@ -43,6 +43,44 @@ test("the MCP entry name is the one the tools service derives from the name", as
   assert.equal(productServerName({ name: brand.name, logo: brand.logo }), brand.mcpServerName);
 });
 
+/** The API document's title and the descriptions and summaries people and agents read. */
+function documentProse(document: unknown): string[] {
+  const prose: string[] = [];
+  JSON.stringify(document, (key, value) => {
+    if (typeof value === "string" && (key === "description" || key === "summary")) prose.push(value);
+    return value;
+  });
+  return prose;
+}
+
+test("under the tools service's own name the API document is unchanged", async () => {
+  const { executorCloudApiDocument } = await import(`${upstream}apps/hosted/cloud/src/contracts/api.ts`);
+  const { brandApiDocument } = await import(`${upstream}apps/hosted/server/src/contracts/api.ts`);
+  const { defaultProductBrand } = await import(`${upstream}packages/utils/src/product-brand.ts`);
+  const document = executorCloudApiDocument(`https://${brand.host}`);
+  assert.equal(brandApiDocument(document, defaultProductBrand), document);
+});
+
+test("the Cloud host serves the branded API document at /openapi.json", () => {
+  const main = readFileSync(`${upstream}apps/hosted/cloud/src/main.ts`, "utf8");
+  assert.match(main, /lazyHostedApiDocument\(\(\) =>\s*brandApiDocument\(executorCloudApiDocument\(apiOrigin\), brand\)/);
+});
+
+// A name with replacement-pattern characters must come through as written.
+for (const product of [{ name: brand.name, logo: brand.logo }, swapped, { name: "Cost $& Co", logo: "/cost.png" }]) {
+  test(`the API document presents ${product.name}`, async () => {
+    const { executorCloudApiDocument } = await import(`${upstream}apps/hosted/cloud/src/contracts/api.ts`);
+    const { brandApiDocument } = await import(`${upstream}apps/hosted/server/src/contracts/api.ts`);
+    const document = brandApiDocument(executorCloudApiDocument(`https://${brand.host}`), product);
+    assert.equal(document.info.title, `${product.name} API`);
+    const prose = documentProse(document);
+    assert.ok(prose.some((text) => text.includes(product.name)), "descriptions name the product");
+    assert.deepEqual(prose.filter((text) => /\bExecutor\b/.test(text)), [], "no description names the tools service");
+    // Agents reach the built-in app by its slug, which no brand changes.
+    assert.ok(prose.some((text) => text.includes("`executor` app's app-authoring skill")), "the built-in app keeps its slug");
+  });
+}
+
 for (const product of [{ name: brand.name, logo: brand.logo }, swapped]) {
   test(`built sign-in pages present ${product.name} and never the tools service's name`, async () => {
     for (const path of ["/login", "/login/sso", "/email/unsubscribe?result=invalid"]) {
