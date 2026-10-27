@@ -113,3 +113,38 @@ function backupNameFromRequests(requests: Array<{ method: string; body?: unknown
   if (!request || !request.body) throw new Error("Backup was not created");
   return (request.body as { name: string }).name;
 }
+
+test("an initial retry continues only with a database created inside a failed attempt", async () => {
+  const safetyWith = (databases: unknown[]) => new PlanetScaleSafety(
+    { organization: "basalt-org", tokenId: "service-id-fixture", token: "service-secret-fixture" },
+    async () => Response.json(paginated(databases)),
+    { now: () => 1, timeoutMs: 10, pollIntervalMs: 0, sleep: async () => {} },
+  );
+  const basalt = (createdAt?: string) => ({
+    name: "basalt", kind: "postgresql", ready: true, default_branch: "main",
+    ...(createdAt === undefined ? {} : { created_at: createdAt }),
+  });
+  // The live case: attempt record 15:27:42Z, database 15:28:17Z, failure status 15:32:16Z.
+  const attempts = [
+    { startedAt: "2026-10-27T15:27:42Z", endedAt: "2026-10-27T15:32:16Z" },
+    { startedAt: "2026-10-25T19:10:31Z", endedAt: "2026-10-25T19:11:18Z" },
+  ];
+  await safetyWith([]).assertInitialDatabaseAbsent();
+  await safetyWith([]).assertInitialDatabaseAbsent(attempts);
+  await safetyWith([basalt("2026-10-27T15:28:17.006Z")]).assertInitialDatabaseAbsent(attempts);
+  await safetyWith([basalt("2026-10-25T19:11:00Z")]).assertInitialDatabaseAbsent(attempts);
+  for (const [databases, windows] of [
+    [[basalt("2026-10-27T15:28:17.006Z")], []],
+    [[basalt("2026-10-27T15:27:41Z")], attempts],
+    [[basalt("2026-10-26T12:00:00Z")], attempts],
+    [[basalt("2026-10-27T15:40:00Z")], attempts],
+    [[basalt()], attempts],
+    [[basalt("not a time")], attempts],
+    [[basalt("2026-10-27T15:28:17.006Z")], [{ startedAt: "not a time", endedAt: "2026-10-27T15:32:16Z" }]],
+  ] as const)
+    await assert.rejects(
+      safetyWith([...databases]).assertInitialDatabaseAbsent([...windows]),
+      /PlanetScale database already exists/,
+      JSON.stringify({ databases, windows }),
+    );
+});

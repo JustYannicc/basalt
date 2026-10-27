@@ -33,7 +33,7 @@ export async function latestProductionBase(): Promise<{
   const environment = readLedgerEnvironment();
   const ledger = await readDeploymentLedger(environment);
   if (ledger.state === "uninitialized") {
-    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent();
+    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent(ledger.attempts);
     return { state: "uninitialized" };
   }
   if (ledger.state === "ready")
@@ -54,7 +54,7 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   if (ledger.state === "ready") baseCommit = ledger.gitCommit;
   else if (ledger.state === "unresolved" && ledger.lastSuccessful) baseCommit = ledger.lastSuccessful.gitCommit;
   else if (ledger.state === "uninitialized") {
-    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent();
+    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent(ledger.attempts);
     baseCommit = candidateRef;
   } else {
     throw new SafetyGateError("Production has no successful deployment baseline; reconcile it before classifying a release");

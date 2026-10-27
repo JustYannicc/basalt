@@ -29,8 +29,11 @@ export type DeploymentPayload = {
   rollbackOf?: string;
 };
 
+export type AttemptWindow = { startedAt: string; endedAt: string };
+
 export type DeploymentLedger =
-  | { state: "uninitialized" }
+  /** `attempts` is set when only failed initial attempts exist: each one's start and final status time. */
+  | { state: "uninitialized"; attempts?: AttemptWindow[] }
   | {
       state: "ready";
       deploymentId: number;
@@ -97,9 +100,10 @@ export async function readDeploymentLedger(
     // Attempts that all ended before production ever succeeded leave no baseline to protect, so a retry
     // starts as an initial release and the initial-database check still runs. Pending or unfinished
     // attempts, and any failure after a success, stay unresolved.
-    if (!lastSuccessful && endedWithoutSuccess(statuses) &&
-        await allAttemptsEnded(deployments.slice(1), environment, fetcher))
-      return { state: "uninitialized" };
+    const earlier = !lastSuccessful && endedWithoutSuccess(statuses)
+      ? await endedAttemptWindows(deployments.slice(1), environment, fetcher)
+      : undefined;
+    if (earlier) return { state: "uninitialized", attempts: [{ startedAt: latest.created_at, endedAt: status.created_at }, ...earlier] };
     return {
       state: "unresolved",
       deploymentId: latest.id,
@@ -386,14 +390,21 @@ function endedWithoutSuccess(statuses: Array<{ state: string }>): boolean {
   return endedAttempt.has(statuses[0]?.state ?? "missing") && !statuses.some(({ state }) => state === "success");
 }
 
-async function allAttemptsEnded(deployments: Deployment[], environment: LedgerEnvironment, fetcher: Fetcher): Promise<boolean> {
+/** Each attempt's window, or undefined when any attempt is unfinished, succeeded or outside production. */
+async function endedAttemptWindows(
+  deployments: Deployment[],
+  environment: LedgerEnvironment,
+  fetcher: Fetcher,
+): Promise<AttemptWindow[] | undefined> {
+  const windows: AttemptWindow[] = [];
   for (const deployment of deployments) {
-    if (deployment.environment !== "production") return false;
+    if (deployment.environment !== "production") return undefined;
     const statuses = await listStatuses(environment, deployment.id, fetcher);
     statuses.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
-    if (!endedWithoutSuccess(statuses)) return false;
+    if (!endedWithoutSuccess(statuses)) return undefined;
+    windows.push({ startedAt: deployment.created_at, endedAt: statuses[0]!.created_at });
   }
-  return true;
+  return windows;
 }
 
 async function findPreviousSuccessfulDeployment(

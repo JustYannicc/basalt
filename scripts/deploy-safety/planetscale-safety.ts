@@ -1,3 +1,4 @@
+import type { AttemptWindow } from "./github-ledger.ts";
 import type { ClassificationReport } from "../releases/types.ts";
 import {
   createBackupName,
@@ -52,9 +53,20 @@ export class PlanetScaleSafety {
     this.waitOptions = waitOptions;
   }
 
-  async assertInitialDatabaseAbsent(): Promise<void> {
+  /**
+   * Every initial attempt checks absence before it deploys and records its start before it can create
+   * the database. A database created inside a failed attempt's window, between its start and its final
+   * status, was created by that attempt, so a retry may continue with it. Any other existing database,
+   * or one without a creation time, still stops the release.
+   */
+  async assertInitialDatabaseAbsent(attempts: readonly AttemptWindow[] = []): Promise<void> {
     const matches = await this.api.listDatabases(DATABASE_SCOPE.database);
-    if (matches.some((database) => database.name === DATABASE_SCOPE.database))
+    const existing = matches.find((database) => database.name === DATABASE_SCOPE.database);
+    if (!existing) return;
+    const createdAt = typeof existing.created_at === "string" ? Date.parse(existing.created_at) : Number.NaN;
+    const ownAttempt = Number.isFinite(createdAt) && attempts.some(({ startedAt, endedAt }) =>
+      Date.parse(startedAt) <= createdAt && createdAt <= Date.parse(endedAt));
+    if (!ownAttempt)
       throw new SafetyGateError("No successful deploy ledger exists, but the PlanetScale database already exists");
   }
 
