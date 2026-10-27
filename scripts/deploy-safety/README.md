@@ -48,7 +48,39 @@ If deployment or smoke starts and fails for a safe release, the runner marks tha
 
 ### Database or Workflow identity changes
 
-A changed carried patch is judged by what it changes in the deployed upstream source, not by the fact that it changed. The classifier parses the base and candidate versions of the patch and compares them file by file; the pinned upstream is the same on both sides, so only files whose patch lines differ have different content. Such a file is database-changing when its path names migrations, schemas, SQL, fumadb, PlanetScale, Hyperdrive, Postgres or database roles, or when a changed line (or a line within three lines of one) holds DDL, a column or constraint definition, a `GRANT`/`REVOKE`, a role setting, a migration, or a fumadb table definition. It is Workflow-changing when its path or such a line names a Workflow, or a line calls a Workflow step, sleep, task or event wait. A nested dependency patch, such as the alchemy patch carried in the EU carry, is judged by the inner file each changed line belongs to. Visible changes to documentation, tests, playgrounds, Markdown and static images are ignored. Rename and copy names count as touched paths. The result is `unknown`, which also requires a manual release, when the patch cannot be parsed, is not UTF-8, or changes a binary, renamed, copied or content-less deleted file, or when a nested change has no visible inner file header, unless a rule already marks it changed. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
+A changed carried patch is judged by what it changes in the deployed upstream source, not by the fact that it changed. The classifier parses the base and candidate versions of the patch and compares them file by file; the pinned upstream is the same on both sides, so only files whose patch lines differ have different content. The rules are in `scripts/releases/carry-rules.ts`. Database state includes Durable Object storage.
+
+A file is database-changing when its path names migrations, schemas, SQL, fumadb, PlanetScale, Hyperdrive, Postgres, database roles, Better Auth options, Durable Objects or app data storage. It is also database-changing when a changed line, or a line within three lines of one, holds any of the following:
+
+- DDL;
+- a column, constraint or index fragment;
+- a `GRANT`/`REVOKE`, ownership or role change;
+- a migration;
+- a fumadb table;
+- Better Auth plugins or fields;
+- a Durable Object class, transfer, name key, facet name, jurisdiction or class migration.
+
+A change anywhere inside a JavaScript template literal (such as a `sql` statement) that holds DDL also counts.
+
+A file is Workflow-changing when its path or such a line names a Workflow, an alchemy physical name, the Worker class or stack that hosts Workflows, or a binding's script or class. A line that calls a Workflow step, sleep, task or event wait also counts.
+
+A changed dependency version in `package.json` or a lockfile is a change in the area its package serves:
+
+- better-auth, `pg`, `@effect/sql*`, fumadb and similar packages: database;
+- alchemy and `@distilled.cloud/*`: both.
+
+Any other dependency version change is `unknown`.
+
+A nested dependency patch, such as the alchemy patch carried in the EU carry, is judged by the inner file each changed line belongs to. Visible changes to documentation, tests, playgrounds, Markdown and static images are ignored. Rename and copy names count as touched paths.
+
+The result is `unknown`, which also requires a manual release, in these cases, unless a rule already marks the change:
+
+- the patch cannot be parsed or is not UTF-8;
+- it changes a binary, renamed, copied or content-less deleted file;
+- a nested change has no readable inner file header;
+- a changed line sits in a template literal whose start or end is not visible and which shows no database keyword.
+
+Basalt's own `.github/` workflows and test files are not Cloudflare Workflow changes. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
 
 The classifier's current report is the decision input. When either change flag is true, the release updater must keep the PR open, apply the relevant `database-change` and/or `workflow-identity-change` labels plus `manual-release`, and refrain from auto-merging it. These labels do not authorize deployment.
 

@@ -1,7 +1,8 @@
 import type { Evidence, PatchManifestV3, PatchRecord } from "./types.ts";
 import { patchMappingKey, patchOriginKey, sha256PatchContent } from "./patch-registry.ts";
 import { patchDelta } from "./patch-diff.ts";
-import { isCarryDatabaseCode, isCarryDatabasePath, isCarryWorkflowCode, isCarryWorkflowPath, isInertPath } from "./paths.ts";
+import { databaseRules, isDependencyFile, workflowRules, type AreaRules } from "./carry-rules.ts";
+import { isInertPath } from "./paths.ts";
 
 export type PatchClassificationInput = {
   baseGitCommit: string;
@@ -76,7 +77,7 @@ export function classifyPatchChanges(
   const workflow = new Findings();
   for (const { oldRows, newRows } of changed) {
     const rows = [...oldRows, ...newRows];
-    const paths = rows.map(({ path }) => `patches/${path}`);
+    const paths = [...new Set(rows.map(({ path }) => `patches/${path}`))];
     const impact = carryImpact(joined(oldRows), joined(newRows));
     database.add(paths, rows.some(({ record }) => record.database_sensitive)
       ? { state: "changed", detail: "is marked database-sensitive in the registry" }
@@ -129,8 +130,10 @@ class Findings {
 
 /**
  * Database and Workflow impact of a carry's content change. Only upstream files whose effective
- * content differs count. Such a file is database-changing when its path or a changed line matches
- * the database rules, and Workflow-changing likewise. A change this cannot see into is unknown.
+ * content differs count. Such a file is database-changing when its path, a changed line, a
+ * template literal holding a changed line, or a changed dependency matches the database rules
+ * (`carry-rules.ts`), and Workflow-changing likewise. A change this cannot see into, an unbounded
+ * template without a database keyword, or any other dependency version change is unknown.
  */
 export function carryImpact(before: string | null, after: string | null): { database: CarryImpact; workflow: CarryImpact } {
   const delta = patchDelta(before, after);
@@ -138,23 +141,27 @@ export function carryImpact(before: string | null, after: string | null): { data
     const unknown: CarryImpact = { state: "unknown", detail: `cannot be classified: ${delta.reason}` };
     return { database: unknown, workflow: unknown };
   }
-  const judge = (isPath: (path: string) => boolean, isCode: (line: string) => boolean, area: string): CarryImpact => {
+  const judge = (rules: AreaRules): CarryImpact => {
     const hits: string[] = [];
     const opaque: string[] = [];
     for (const file of delta.files) {
       // An inert file is skipped only when every line of its change is visible.
       if (!file.opaque && file.rulePaths.length && file.rulePaths.every(isInertPath)) continue;
-      if (file.rulePaths.some(isPath) || file.lines.some(isCode)) hits.push(file.path);
+      const dependencies = file.rulePaths.some(isDependencyFile) ? file.changed : [];
+      const sql = rules.templates ? file.blocks : [];
+      if (file.rulePaths.some(rules.isPath) || file.lines.some(rules.isCode) ||
+        sql.some((block) => block.lines.some(rules.isCode)) ||
+        dependencies.some((line) => rules.packages.test(line)))
+        hits.push(file.path);
       else if (file.opaque) opaque.push(`${file.path} (${file.opaque})`);
+      else if (dependencies.length) opaque.push(`${file.path} (dependency versions changed)`);
+      else if (sql.some((block) => !block.bounded)) opaque.push(`${file.path} (template literal bounds not visible)`);
     }
-    if (hits.length) return { state: "changed", detail: `touches ${area} code in ${hits.join(", ")}` };
+    if (hits.length) return { state: "changed", detail: `touches ${rules.name} code in ${hits.join(", ")}` };
     if (opaque.length) return { state: "unknown", detail: `hides a change in ${opaque.join(", ")}` };
     return { state: "unchanged" };
   };
-  return {
-    database: judge(isCarryDatabasePath, isCarryDatabaseCode, "database"),
-    workflow: judge(isCarryWorkflowPath, isCarryWorkflowCode, "Workflow"),
-  };
+  return { database: judge(databaseRules), workflow: judge(workflowRules) };
 }
 
 function joined(rows: ObservedPatch[]): string | null {
