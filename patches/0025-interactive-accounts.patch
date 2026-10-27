@@ -1076,7 +1076,7 @@ index 55fd0bf..dfe80e5 100644
        onSaved={onSaved}
        onAuthorized={(value) =>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index 8e3d16d..44eafbe 100644
+index 8e3d16d..cc61fb6 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
 @@ -17,12 +17,17 @@ import type {
@@ -1111,7 +1111,7 @@ index 8e3d16d..44eafbe 100644
  import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
  import { RegisterServiceClient } from "./oauth-clients.tsx";
  
-@@ -65,6 +76,26 @@ export function ConnectionFields({
+@@ -65,6 +76,22 @@ export function ConnectionFields({
    const params = { organization, connection: connection.id };
    const submit = useAtomSet(submitConnectionAtom(params), { mode: "promiseExit" });
    const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
@@ -1120,12 +1120,6 @@ index 8e3d16d..44eafbe 100644
 +  // This page has only this one request, so changing methods must not end it: the next start or
 +  // submit retires the attempt left behind. Leaving the page with an attempt open cancels it.
 +  const started = useRef(false);
-+  useEffect(
-+    () => () => {
-+      if (started.current) void cancel();
-+    },
-+    [cancel],
-+  );
 +  const interactive = {
 +    start: (input: { readonly method: string }) => {
 +      started.current = true;
@@ -1134,11 +1128,13 @@ index 8e3d16d..44eafbe 100644
 +    status: useAtomSet(interactiveConnectionStatusAtom(params), { mode: "promiseExit" }),
 +    submit: useAtomSet(submitInteractiveConnectionAtom(params), { mode: "promiseExit" }),
 +    cancel: () => Promise.resolve(),
++    // Runs in the form's step order, after any poll still answering.
++    leave: () => (started.current ? cancel() : Promise.resolve()),
 +  };
    if (connection.state.status !== "pending")
      return (
        <>
-@@ -98,6 +129,7 @@ export function ConnectionFields({
+@@ -98,6 +125,7 @@ export function ConnectionFields({
        }
        submit={submit}
        start={startOAuth}
@@ -1146,7 +1142,7 @@ index 8e3d16d..44eafbe 100644
        onSaved={onSaved}
        {...(onPendingChange ? { onPendingChange } : {})}
        onAuthorized={(value) =>
-@@ -118,6 +150,18 @@ export function ConnectionFields({
+@@ -118,6 +146,20 @@ export function ConnectionFields({
    );
  }
  
@@ -1160,12 +1156,14 @@ index 8e3d16d..44eafbe 100644
 +    readonly value: string;
 +  }) => Promise<Exit.Exit<InteractiveState<Account>, HostedError>>;
 +  readonly cancel: () => Promise<unknown>;
++  /** Run once when the form goes away, in step order; for a page that owns one request. */
++  readonly leave?: (() => Promise<unknown>) | undefined;
 +}
 +
  /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
  export function HostedAccountForm<A extends HostedOAuthSignIn>({
    setupQuery,
-@@ -133,7 +177,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -133,7 +175,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    onAuthorized,
    onPendingChange,
    app,
@@ -1176,7 +1174,7 @@ index 8e3d16d..44eafbe 100644
    readonly provider: Provider;
    /** The canonical site saved by the host for this connection. */
    readonly site?: string | undefined;
-@@ -160,6 +207,15 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -160,6 +205,28 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
    // Only administrators register clients, so members are told to enter their own details.
    const role = useOrganizationDetails()?.role;
@@ -1189,10 +1187,23 @@ index 8e3d16d..44eafbe 100644
 +    return next;
 +  };
 +  const orderedSubmit = (input: AccountSubmission) => inOrder(() => submit(input));
++  // The latest leave step, run once when the form goes away rather than on every re-render.
++  const leave = useRef(interactive?.leave);
++  useEffect(() => {
++    leave.current = interactive?.leave;
++  });
++  useEffect(
++    () => () => {
++      const run = leave.current;
++      if (run) void inOrder(run);
++    },
++    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the queue lives as long as the form
++    [],
++  );
    const admin = role !== undefined && role !== "member";
    const registry = useContext(RegistryContext);
    // Registering replaces the account form, since it is a form itself, then returns to the method.
-@@ -198,7 +254,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -198,7 +265,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
        initialMethod={method}
        Failure={HostedFailure}
        submitLabel={account ? "Save credentials" : "Connect account"}
@@ -1201,7 +1212,7 @@ index 8e3d16d..44eafbe 100644
        {...(app === undefined || app === null
          ? {}
          : {
-@@ -207,6 +263,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -207,6 +274,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
            })}
        onSaved={saved}
        {...(onPendingChange ? { onPendingChange } : {})}
@@ -1225,7 +1236,7 @@ index 8e3d16d..44eafbe 100644
        oauth={({ method, disabled, onPendingChange, access }) => (
          <OAuthSetup
            query={
-@@ -254,7 +327,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -254,7 +338,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                  return required;
                }}
                start={(input: OAuthSubmission) =>
@@ -11426,7 +11437,7 @@ index 54cf913..21e2f5b 100644
          <>
            <p className="text-xs leading-relaxed text-muted-foreground">
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index c051320..98a16f9 100644
+index c051320..ed27395 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -56,11 +56,14 @@ const accountName = (account: AccountSummary) => account.label || "Unnamed accou
@@ -11485,11 +11496,13 @@ index c051320..98a16f9 100644
        {error && (
          <div className="basis-full text-xs">
            <Failure cause={error} />
-@@ -612,8 +633,21 @@ function EditableChoices<E>({
+@@ -612,8 +633,23 @@ function EditableChoices<E>({
      }),
    );
    const ready = Option.isSome(loaded) && edit.connecting !== true;
-+  // Picking another account for a plain requirement retires an app-bound one, so it asks first.
++  // Picking or connecting another account for a plain requirement retires an app-bound one, so it
++  // asks first.
++  const [replacingWithNew, setReplacingWithNew] = useState(false);
 +  const bound = plain
 +    ? choices.find(
 +        (choice) =>
@@ -11507,7 +11520,36 @@ index c051320..98a16f9 100644
        key={choice.account.id}
        app={app}
        slot={slot}
-@@ -676,7 +710,10 @@ function ChoiceRow<E>({
+@@ -657,11 +693,27 @@ function EditableChoices<E>({
+         size="sm"
+         className="h-10 w-full justify-start rounded-none px-3.5 text-[13px] text-muted-foreground hover:text-foreground"
+         disabled={edit.connecting === true}
+-        onClick={() => edit.connect(slot, requirement)}
++        onClick={() =>
++          bound === undefined ? edit.connect(slot, requirement) : setReplacingWithNew(true)
++        }
+       >
+         <HugeiconsIcon icon={Add01Icon} size={14} aria-hidden />
+         Connect new account
+       </Button>
++      {replacingWithNew && bound !== undefined && (
++        <RemoveAppBoundAccount
++          name={accountName(bound.account)}
++          app={app.name}
++          pending={false}
++          replacement="a new account"
++          confirmLabel="Continue"
++          onKeep={() => setReplacingWithNew(false)}
++          onRemove={() => {
++            setReplacingWithNew(false);
++            edit.connect(slot, requirement);
++          }}
++        />
++      )}
+     </div>
+   );
+ }
+@@ -676,7 +728,10 @@ function ChoiceRow<E>({
    edit,
    data,
    Failure,
@@ -11518,7 +11560,7 @@ index c051320..98a16f9 100644
    readonly app: App;
    readonly slot: string;
    readonly requirement: AccountRequirement;
-@@ -699,11 +736,15 @@ function ChoiceRow<E>({
+@@ -699,11 +754,15 @@ function ChoiceRow<E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const id = useId();
    const name = accountName(account);
@@ -11534,7 +11576,7 @@ index c051320..98a16f9 100644
    };
    return (
      <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
-@@ -715,7 +756,9 @@ function ChoiceRow<E>({
+@@ -715,7 +774,9 @@ function ChoiceRow<E>({
            disabled={!ready || pending}
            className={radioClass}
            onClick={() => {
@@ -11545,7 +11587,7 @@ index c051320..98a16f9 100644
            }}
          >
            <RadioGroup.Indicator className={radioDot} />
-@@ -726,7 +769,19 @@ function ChoiceRow<E>({
+@@ -726,7 +787,19 @@ function ChoiceRow<E>({
            checked={linked}
            aria-label={name}
            disabled={!ready || pending}
@@ -11566,7 +11608,7 @@ index c051320..98a16f9 100644
          />
        )}
        <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
-@@ -749,6 +804,83 @@ function ChoiceRow<E>({
+@@ -749,6 +822,86 @@ function ChoiceRow<E>({
    );
  }
  
@@ -11608,10 +11650,13 @@ index c051320..98a16f9 100644
 +  app,
 +  pending,
 +  replacement,
++  confirmLabel,
 +  onKeep,
 +  onRemove,
 +}: {
 +  readonly name: string;
++  /** The confirming button, when it doesn't remove the account right away. */
++  readonly confirmLabel?: string | undefined;
 +  /** Set when choosing another account for the requirement is what removes this one. */
 +  readonly replacement?: string | undefined;
 +  readonly app: string;
@@ -11639,7 +11684,7 @@ index c051320..98a16f9 100644
 +            Keep account
 +          </Button>
 +          <Button variant="destructive" loading={pending} onClick={onRemove}>
-+            {replacement === undefined ? "Remove account" : `Remove ${name}`}
++            {confirmLabel ?? (replacement === undefined ? "Remove account" : `Remove ${name}`)}
 +          </Button>
 +        </DialogFooter>
 +      </DialogContent>
