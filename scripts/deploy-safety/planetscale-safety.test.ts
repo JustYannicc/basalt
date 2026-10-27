@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { deflateRawSync } from "node:zlib";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
 import {
   createBackupName,
   createBackupMetadata,
   createRecordedBackup,
   MAXIMUM_BACKUP_NAME_LENGTH,
+  stableStringify,
   type RecordedBackup,
 } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
@@ -220,7 +222,7 @@ test("the rollback target is the exact recorded v2 backup, matched by digest and
     manualRestoreRequired: true,
   });
 
-  // Without a ledger record, each branch's expected name is recomputed from its current context.
+  // Without a ledger record, the production branch's expected name is recomputed from its current context.
   const ready = await rollbackSafety(branches).safety.assertBackupReady(report);
   assert.equal(ready.backup.id, "backup-id");
   assert.deepEqual(ready.metadata, recorded.metadata);
@@ -257,4 +259,23 @@ test("rollback target selection fails closed on digest mismatch, ambiguity and m
     /digest is malformed/,
   );
   await assert.rejects(rollbackSafety(branchWith()).safety.manualRollbackTarget(report, recorded), /Expected exactly one/);
+});
+
+test("without a ledger record, only a production-branch backup counts", async () => {
+  const onDevelopment = recordedFor(report, "development");
+  const branches = {
+    main: { cluster: "PS_5", replicas: true, backups: [] },
+    development: { cluster: "PS_5", replicas: true, backups: [{ id: "development-backup", name: onDevelopment.name }] },
+  };
+  await assert.rejects(rollbackSafety(branches).safety.assertBackupReady(report), /Expected exactly one/);
+  // A recorded backup names its branch, so a restore that moved production does not strand it.
+  assert.equal((await rollbackSafety(branches).safety.assertBackupReady(report, onDevelopment)).backup.id, "development-backup");
+});
+
+test("a v1 backup name only counts when the ledger records it", async () => {
+  const { metadata } = recordedFor(report);
+  const v1 = `basalt-release-v1-${deflateRawSync(Buffer.from(stableStringify(metadata))).toString("base64url")}`;
+  const branches = { main: { cluster: "PS_5", replicas: true, backups: [{ id: "v1-backup", name: v1 }] } };
+  await assert.rejects(rollbackSafety(branches).safety.assertBackupReady(report), /Expected exactly one/);
+  assert.equal((await rollbackSafety(branches).safety.assertBackupReady(report, { name: v1, metadata })).backup.id, "v1-backup");
 });

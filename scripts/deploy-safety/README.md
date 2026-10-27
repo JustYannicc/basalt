@@ -123,10 +123,10 @@ The full metadata is stored in the GitHub deployment payload as `backupMetadata`
 Matching is exact:
 
 - `backup-only` recomputes the expected name from the report and the current production branch, then reuses or creates exactly that backup.
-- Before a database-changing deploy, each PostgreSQL branch's expected name is recomputed from the report and that branch's current context. If the branch was resized between backup and deploy, nothing matches and the deploy stops.
-- `rollback-target` and `manual-rollback` use the backup the release recorded in GitHub Deployments, so a later resize doesn't hide it.
+- Before a database-changing deploy, the production branch's expected name is recomputed from the report and that branch's current context. Backups on other branches don't count. If the branch was resized between backup and deploy, nothing matches and the deploy stops.
+- `rollback-target` and `manual-rollback` use the backup the release recorded in GitHub Deployments and look only on the branch it names, so a later resize or a restore that moved production doesn't hide it.
 
-Exactly one backup must match. Other backups, such as PlanetScale's own, are ignored. A malformed `basalt-release-` name, a digest mismatch, missing or orphaned payload metadata, or more than one match stops the release. The earlier `basalt-release-v1-` format embedded compressed metadata in the name. Those names can still be read, but new backups always use v2.
+Exactly one backup must match. Other backups, such as PlanetScale's own, are ignored. A malformed `basalt-release-` name, a digest mismatch, missing or orphaned payload metadata, or more than one match stops the release. The earlier `basalt-release-v1-` format embedded compressed metadata in the name. Those names can still be read and count only when the release recorded them; new backups always use v2.
 
 ## Provider contracts
 
