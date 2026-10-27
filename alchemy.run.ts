@@ -6,6 +6,7 @@ import { Stage } from "alchemy/Stage";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, Effect } from "effect";
+import { apiPathsExpression } from "./src/browser-check.ts";
 import { telemetryBindings } from "./src/telemetry/deployment.ts";
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
@@ -48,6 +49,23 @@ export default Alchemy.Stack(
       Effect.orDie,
     );
     if (!zone) return yield* Effect.die(new Error("Cloudflare zone for this stage is missing"));
+    if (preview === undefined) {
+      // API, MCP and CLI clients are not browsers, so Browser Integrity Check (1010) would block them.
+      // The zone keeps it for everything else. This resource owns the zone's whole configuration-rules
+      // phase, which is why previews, sharing one zone, don't create it. Ruleset reads only `zoneId`.
+      yield* Cloudflare.Ruleset.Ruleset("ApiBrowserCheckExemption", {
+        zone: { zoneId: zone.id } as unknown as Cloudflare.Zone.Zone,
+        phase: "http_config_settings",
+        description: "Basalt API paths skip Browser Integrity Check",
+        rules: [{
+          action: "set_config",
+          action_parameters: { bic: false },
+          expression: apiPathsExpression(host),
+          description: "Non-browser API paths on the app host",
+          enabled: true,
+        }],
+      });
+    }
     const emailReady = preview === undefined
       ? (yield* Cloudflare.Email.SendingSubdomain("AuthEmailDomain", {
           zoneId: zone.id,

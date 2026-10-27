@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "dcbfc75653b6502a7ab68d7a8e2cf9dcc140dfd40b2d7ee1814920c35c1fc936" }
+    metadata { bindings "7aa883cca93b1514be33ef173148a355c9dc9b8043cb3aedbbc2a9d25d79cc9e" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -60,6 +60,11 @@ deployment {
       }
     }
     zone group-bf8a1fdd7ff69e09 "Router" {
+      storage resource-2d0912f096d4ea6992cc8817d403d4d3fe340178ea7be30c3cafec982fcafac3 "Api Browser Check Exemption" {
+        app = instanceOf basalt.router {
+          metadata { resource "resource-2d0912f096d4ea6992cc8817d403d4d3fe340178ea7be30c3cafec982fcafac3" }
+        }
+      }
       worker resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838 "Router" {
         app = instanceOf basalt.router {
           metadata { resource "resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838" }
