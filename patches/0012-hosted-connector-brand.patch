@@ -20,3 +20,44 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
      const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
        firstPartyOAuthClientDefinitions,
      ).pipe(Effect.orDie);
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-clients.tsx b/apps/hosted/web/src/implementation/pages/oauth-clients.tsx
+--- a/apps/hosted/web/src/implementation/pages/oauth-clients.tsx
++++ b/apps/hosted/web/src/implementation/pages/oauth-clients.tsx
+@@ -2,6 +2,7 @@
+ import { useAtomSet } from "@effect/atom-react";
+ import { Cause, Exit, Option, Redacted } from "effect";
+ import { useState, type ReactNode } from "react";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import type { HttpUrl, OAuthClientId } from "@executor-js/sdk";
+ import type { AppAudience } from "@executor-js/hosted-server/resource-access";
+ import type {
+@@ -59,14 +60,16 @@
+   readonly onOpenChange: (open: boolean) => void;
+ }) {
+   const organization = useOrganization();
++  const brand = useProductBrand();
+   return (
+     <Dialog open={open} onOpenChange={onOpenChange}>
+       <DialogContent className="max-h-[85dvh] grid-cols-[minmax(0,1fr)] gap-4 overflow-x-hidden overflow-y-auto sm:max-w-[560px]">
+         <DialogHeader>
+           <DialogTitle className="text-base">OAuth clients</DialogTitle>
+           <DialogDescription>
+-            Clients members can sign in with when they connect accounts. Secrets are never shown
+-            again.
++            Hosted {brand.name} clients are used automatically when available and do not appear
++            here. To connect an account, open the app's Accounts tab. This list contains additional
++            clients registered for your organization. Secrets are never shown again.
+           </DialogDescription>
+         </DialogHeader>
+         <QueryView
+@@ -97,7 +100,9 @@
+     <div className="flex flex-col gap-4">
+       <div>
+         {directory.clients.length === 0 ? (
+-          <p className="text-[13px] text-muted-foreground">No OAuth clients yet.</p>
++          <p className="text-[13px] text-muted-foreground">
++            No additional OAuth clients registered.
++          </p>
+         ) : (
+           <ul aria-label="OAuth clients" className="divide-y rounded-md border">
+             {directory.clients.map((entry) => (

@@ -110,7 +110,7 @@
     {
       "identity": "basalt-hosted-connector-brand",
       "file": "0012-hosted-connector-brand.patch",
-      "content_sha256": "969f9f3257622ab9691752c81acdd6458edc0d92cc7d8b5495e1f3fb833fd739",
+      "content_sha256": "95703025a256ac2ba1a6484ea6884f6b702c5e330895107f6bd75bb3ff79c31d",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
