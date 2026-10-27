@@ -2,6 +2,7 @@ import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.t
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
+import { miroSource, withMiroBoards } from "./miro.ts";
 import { aws } from "./aws/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
@@ -39,6 +40,8 @@ export async function handleCatalog(
     return new Response(null, { status: 404 });
   if (relative === "apps/slack.json")
     return new Response(request.method === "HEAD" ? null : JSON.stringify(slackSource), { headers });
+  if (relative === "apps/miro.json")
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(miroSource), { headers });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) {
     if (!added.source)
@@ -55,7 +58,7 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(withSlackUserAuth(await response.json() as Feed), additions))
+      ? JSON.stringify(mergeFeed(withMiroBoards(withSlackUserAuth(await response.json() as Feed)), additions))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {

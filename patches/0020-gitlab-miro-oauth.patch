@@ -1,7 +1,7 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -150,6 +150,35 @@
+@@ -150,6 +150,29 @@
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    {
@@ -24,20 +24,14 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 +      tokenUrl: "https://api.miro.com/v1/oauth/token",
 +    },
 +    tokenEndpointAuthMethod: "client_secret_post",
-+    defaultScopes: [
-+      "boards:read",
-+      "boards:write",
-+      "organizations:read",
-+      "organizations:teams:read",
-+      "organizations:teams:write",
-+    ],
++    defaultScopes: ["boards:read", "boards:write"],
 +    placement: { hosts: ["api.miro.com"] },
 +  },
 +  {
      id: "github",
      label: "Executor for GitHub",
      server: {
-@@ -332,11 +361,15 @@
+@@ -332,11 +355,15 @@
            ? "Google"
            : definition.id === "github" || definition.id === "github-oauth"
              ? "GitHub"

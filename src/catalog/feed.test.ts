@@ -82,7 +82,7 @@ test("our connectors list like every other app, with no notice beside their desc
   for (const entry of result.apps) {
     assert.equal(entry.connectionNotices, undefined, entry.id);
     const source = feed.apps.find(app => app.id === entry.id);
-    if (source && entry.id !== "slack") assert.deepEqual(entry.auth, source.auth);
+    if (source && entry.id !== "slack" && entry.id !== "miro") assert.deepEqual(entry.auth, source.auth);
   }
 });
 
@@ -92,7 +92,7 @@ test("notices from the official feed are dropped", () => {
   assert.equal(feed.apps[0]!.connectionNotices, undefined);
 });
 
-test("GitLab and Miro keep their official source and auth", async () => {
+test("GitLab keeps official source while Miro serves board-only OAuth", async () => {
   const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
     package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
   const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps));
@@ -100,14 +100,20 @@ test("GitLab and Miro keep their official source and auth", async () => {
   for (const expected of apps.apps) {
     const entry = feed.apps.find(item => item.id === expected.id)!;
     assert.ok(entry);
-    assert.deepEqual(entry.auth, expected.auth);
+    if (entry.id === "miro")
+      assert.deepEqual(entry.auth.map(method => method.method), ["oauth", "token"]);
+    else assert.deepEqual(entry.auth, expected.auth);
     assert.equal(entry.source, `apps/${entry.id}.json`);
     const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
     const source = await handleCatalog(new Request(`https://app.signalbox.run/catalog/${entry.source}`), async input => {
       assert.equal(String(input), `https://catalog.executor.sh/${entry.source}`);
       return new Response(document);
     });
-    assert.equal(await source.text(), document);
+    if (entry.id === "miro") {
+      const carried = await source.json() as { package: string; files: { path: string }[] };
+      assert.equal(carried.package, "@executor.sh/miro");
+      assert.ok(carried.files.some(file => file.path === "openapi.ts"));
+    } else assert.equal(await source.text(), document);
   }
 });
 
