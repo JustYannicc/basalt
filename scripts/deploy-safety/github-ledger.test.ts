@@ -274,8 +274,12 @@ test("initial attempts that all ended without success leave the ledger uninitial
   };
   const failed = ["in_progress", "failure"];
 
-  assert.deepEqual(await ledgerFor([{ id: 3, history: failed }]), { state: "uninitialized" });
-  assert.deepEqual(await ledgerFor([{ id: 3, history: ["in_progress", "error"] }, { id: 2, history: failed }]), { state: "uninitialized" });
+  assert.deepEqual(await ledgerFor([{ id: 3, history: failed }]), { state: "uninitialized", firstAttemptAt: "2026-10-25T19:00:00Z" });
+  // The oldest attempt bounds which existing production database a retry may continue with.
+  assert.deepEqual(
+    await ledgerFor([{ id: 3, history: ["in_progress", "error"] }, { id: 2, history: failed }]),
+    { state: "uninitialized", firstAttemptAt: "2026-10-25T18:00:00Z" },
+  );
 
   for (const records of [
     [{ id: 3, history: ["in_progress"] }],

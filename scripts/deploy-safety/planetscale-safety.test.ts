@@ -113,3 +113,31 @@ function backupNameFromRequests(requests: Array<{ method: string; body?: unknown
   if (!request || !request.body) throw new Error("Backup was not created");
   return (request.body as { name: string }).name;
 }
+
+test("an initial retry continues only with a database created after the first recorded attempt", async () => {
+  const safetyWith = (databases: unknown[]) => new PlanetScaleSafety(
+    { organization: "basalt-org", tokenId: "service-id-fixture", token: "service-secret-fixture" },
+    async () => Response.json(paginated(databases)),
+    { now: () => 1, timeoutMs: 10, pollIntervalMs: 0, sleep: async () => {} },
+  );
+  const basalt = (createdAt?: string) => ({
+    name: "basalt", kind: "postgresql", ready: true, default_branch: "main",
+    ...(createdAt === undefined ? {} : { created_at: createdAt }),
+  });
+  const firstAttempt = "2026-10-27T15:27:42Z";
+  await safetyWith([]).assertInitialDatabaseAbsent();
+  await safetyWith([]).assertInitialDatabaseAbsent(firstAttempt);
+  await safetyWith([basalt("2026-10-27T15:28:17.006Z")]).assertInitialDatabaseAbsent(firstAttempt);
+  for (const [databases, attempt] of [
+    [[basalt("2026-10-27T15:28:17.006Z")], undefined],
+    [[basalt("2026-10-27T15:27:41Z")], firstAttempt],
+    [[basalt()], firstAttempt],
+    [[basalt("not a time")], firstAttempt],
+    [[basalt("2026-10-27T15:28:17.006Z")], "not a time"],
+  ] as const)
+    await assert.rejects(
+      safetyWith([...databases]).assertInitialDatabaseAbsent(attempt),
+      /PlanetScale database already exists/,
+      JSON.stringify({ databases, attempt }),
+    );
+});

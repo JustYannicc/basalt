@@ -98,8 +98,13 @@ test("a retry after failed initial attempts still requires the production databa
     throw new Error(`Unexpected fixture request: ${url}`);
   };
   try {
-    databases = [{ name: "basalt", kind: "postgresql", ready: true, default_branch: "main" }];
+    const basalt = { name: "basalt", kind: "postgresql", ready: true, default_branch: "main" };
+    databases = [{ ...basalt, created_at: "2026-10-25T15:59:59Z" }];
     await assert.rejects(latestProductionBase(), /PlanetScale database already exists/);
+    databases = [basalt];
+    await assert.rejects(latestProductionBase(), /PlanetScale database already exists/);
+    databases = [{ ...basalt, created_at: "2026-10-25T16:01:00Z" }];
+    assert.deepEqual(await latestProductionBase(), { state: "uninitialized" });
     databases = [];
     assert.deepEqual(await latestProductionBase(), { state: "uninitialized" });
   } finally {

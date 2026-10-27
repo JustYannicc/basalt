@@ -52,10 +52,19 @@ export class PlanetScaleSafety {
     this.waitOptions = waitOptions;
   }
 
-  async assertInitialDatabaseAbsent(): Promise<void> {
+  /**
+   * Every initial attempt checks absence before it deploys, so a database created after the first
+   * recorded attempt started was created by one of those attempts and a retry may continue with it.
+   * Any other existing database, or one without a creation time, still stops the release.
+   */
+  async assertInitialDatabaseAbsent(firstAttemptAt?: string): Promise<void> {
     const matches = await this.api.listDatabases(DATABASE_SCOPE.database);
-    if (matches.some((database) => database.name === DATABASE_SCOPE.database))
-      throw new SafetyGateError("No successful deploy ledger exists, but the PlanetScale database already exists");
+    const existing = matches.find((database) => database.name === DATABASE_SCOPE.database);
+    if (!existing) return;
+    const createdAt = typeof existing.created_at === "string" ? Date.parse(existing.created_at) : Number.NaN;
+    const attemptStart = firstAttemptAt === undefined ? Number.NaN : Date.parse(firstAttemptAt);
+    if (Number.isFinite(createdAt) && Number.isFinite(attemptStart) && createdAt >= attemptStart) return;
+    throw new SafetyGateError("No successful deploy ledger exists, but the PlanetScale database already exists");
   }
 
   async ensureBackup(report: ClassificationReport, ledgerUninitialized: boolean): Promise<BackupGateResult> {

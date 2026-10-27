@@ -30,7 +30,8 @@ export type DeploymentPayload = {
 };
 
 export type DeploymentLedger =
-  | { state: "uninitialized" }
+  /** `firstAttemptAt` is set when only failed initial attempts exist: the oldest attempt's start. */
+  | { state: "uninitialized"; firstAttemptAt?: string }
   | {
       state: "ready";
       deploymentId: number;
@@ -99,7 +100,7 @@ export async function readDeploymentLedger(
     // attempts, and any failure after a success, stay unresolved.
     if (!lastSuccessful && endedWithoutSuccess(statuses) &&
         await allAttemptsEnded(deployments.slice(1), environment, fetcher))
-      return { state: "uninitialized" };
+      return { state: "uninitialized", firstAttemptAt: deployments[deployments.length - 1]!.created_at };
     return {
       state: "unresolved",
       deploymentId: latest.id,
