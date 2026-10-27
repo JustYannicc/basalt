@@ -31,6 +31,25 @@ index 8d8819eaa..490cc77d9 100644
 +const settings = Object.values(productBrandSettings);
  
  /** Only the settings the deploy sets are bound; an unset one keeps Executor's own. */
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index d1dc20279..b4f4f1177 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -139,4 +139,5 @@ import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
++import { brandApiDocument } from "@executor-js/hosted-server/contracts";
+ export { Api } from "./infrastructure/api-worker.ts";
+ 
+@@ -429,5 +430,7 @@ export default Api.make(
+     // Clients and the Executor app call the API at its canonical origin.
+     const apiOrigin = auth.resourceOrigins.api[0];
+-    const document = lazyHostedApiDocument(() => executorCloudApiDocument(apiOrigin));
++    const document = lazyHostedApiDocument(() =>
++      brandApiDocument(executorCloudApiDocument(apiOrigin), brand),
++    );
+     // Only framework lookups and the published skills read the large authoring reference.
+     const authoring = yield* cloudAuthoringReference;
 diff --git a/apps/hosted/self-host/compose.yaml b/apps/hosted/self-host/compose.yaml
 index 80d4b4905..d58c4d6f2 100644
 --- a/apps/hosted/self-host/compose.yaml
@@ -44,6 +63,38 @@ index 80d4b4905..d58c4d6f2 100644
 +      EXECUTOR_PRODUCT_TERMS_URL:
        # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
        # document there, which authorization servers must be able to fetch over public HTTPS.
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index ee4f4233a..b1f746120 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -8,4 +8,5 @@ export { HostedAppManagementApi } from "./app-management.ts";
+ import { CatalogEntry, CatalogQuery, CatalogUnavailable } from "@executor-js/catalog/contracts";
+ import { Context, Schema } from "effect";
++import { isDefaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
+ import { HostedGroups } from "./groups.ts";
+ import { HostedMcpConnections } from "./mcp-connections.ts";
+@@ -218,2 +219,21 @@ export const HostedApi = HttpApi.make("executor-hosted")
+   .addHttpApi(HostedAppManagementApi)
+   .addHttpApi(HostedFrameworkApi);
++
++/**
++ * The document under the deployment's own name. People read its title and agents read its prose,
++ * so under another brand the title names the product and descriptions and summaries say its name
++ * instead of Executor. Identifiers, paths and scopes stay as they are, and the built-in app is
++ * named by its slug, which agents use to reach it.
++ */
++export const brandApiDocument = (
++  document: HostedApiDocument,
++  brand: ProductBrand,
++): HostedApiDocument => {
++  if (isDefaultProductBrand(brand)) return document;
++  const branded: HostedApiDocument = JSON.parse(JSON.stringify(document), (key, value) =>
++    typeof value === "string" && (key === "description" || key === "summary")
++      ? value.replace(/\bExecutor app\b/g, "`executor` app").replace(/\bExecutor\b/g, brand.name)
++      : value,
++  );
++  return { ...branded, info: { ...branded.info, title: `${brand.name} API` } };
++};
 diff --git a/apps/hosted/server/src/contracts/auth.ts b/apps/hosted/server/src/contracts/auth.ts
 index 4d059016d..55b4fe4e1 100644
 --- a/apps/hosted/server/src/contracts/auth.ts
