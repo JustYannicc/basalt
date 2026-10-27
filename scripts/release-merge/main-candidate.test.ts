@@ -5,11 +5,12 @@ import { mainCandidateOutputLines, validateMainCandidate, type MainCandidateFetc
 const head = "a".repeat(40);
 const other = "b".repeat(40);
 
-function github(main: string, runs: unknown[]): MainCandidateFetch & { urls: string[] } {
+function github(main: string, runs: unknown[], pulls: unknown[] = [{ head: { ref: "fix/user-agent" } }]): MainCandidateFetch & { urls: string[] } {
   const urls: string[] = [];
   const fetcher = async (url: string) => {
     urls.push(url);
     if (url.endsWith("/commits/main")) return Response.json({ sha: main });
+    if (url.endsWith(`/commits/${main}/pulls`)) return Response.json(pulls);
     if (url.includes("/actions/workflows/ci.yml/runs?")) return Response.json({ workflow_runs: runs });
     return new Response(null, { status: 404 });
   };
@@ -35,6 +36,7 @@ test("a stale, unverified or moved main head is refused", async () => {
     ["pull request Check", github(head, [{ ...passing, event: "pull_request" }]), undefined, /no successful push Check/],
     ["another workflow", github(head, [{ ...passing, path: ".github/workflows/app-lint.yml" }]), undefined, /no successful push Check/],
     ["another commit", github(head, [{ ...passing, head_sha: other }]), undefined, /no successful push Check/],
+    ["release update", github(head, [passing], [{ head: { ref: "release-updates/tools-1.2.3" } }]), undefined, /release it through Manual release/],
   ];
   for (const [name, fetcher, expected, error] of cases)
     await assert.rejects(validateMainCandidate("owner/basalt", "token", head, expected, fetcher), error, name);

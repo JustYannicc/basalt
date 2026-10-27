@@ -122,6 +122,7 @@ jobs:
         run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
         env:
           MAIN_RELEASE_EXPECTED_HEAD: ${{ needs.backup.outputs.head }}
+          MAIN_RELEASE_REQUIRE_EXPECTED: "true"
       - name: Select the same immutable release source
         run: |
           git fetch --no-tags origin "$RELEASE_HEAD"

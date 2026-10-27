@@ -47,6 +47,11 @@ export async function validateMainCandidate(
     typeof run.head_sha === "string" && run.head_sha.toLowerCase() === head &&
     run.event === "push" && run.conclusion === "success" && run.path === ".github/workflows/ci.yml");
   if (!passed) throw new Error("the main release candidate has no successful push Check");
+  // Upstream update PRs must keep their live preview proof, which only the PR-based manual release checks.
+  const pulls = await json(fetcher, token, `${api}/commits/${head}/pulls`);
+  if (!Array.isArray(pulls)) throw new Error("GitHub returned no pull request list for the main release candidate");
+  if (pulls.some((pull: { head?: { ref?: unknown } }) => typeof pull.head?.ref === "string" && pull.head.ref.startsWith("release-updates/")))
+    throw new Error("the main head is a release update; release it through Manual release with its pull request");
   return { head };
 }
 
@@ -59,11 +64,14 @@ async function runMainCandidateCli(env = process.env): Promise<void> {
   const token = env.GH_TOKEN ?? env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN is required");
   if (env.GITHUB_REF !== "refs/heads/main") throw new Error("manual main releases run only from main");
+  const expected = env.MAIN_RELEASE_EXPECTED_HEAD;
+  if (env.MAIN_RELEASE_REQUIRE_EXPECTED === "true" && !expected)
+    throw new Error("the approved main head is missing; start a new release");
   const candidate = await validateMainCandidate(
     env.GITHUB_REPOSITORY ?? "",
     token,
     env.MAIN_RELEASE_CHECKOUT ?? "",
-    env.MAIN_RELEASE_EXPECTED_HEAD || undefined,
+    expected || undefined,
   );
   const lines = mainCandidateOutputLines(candidate);
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, lines, { encoding: "utf8", mode: 0o600 });
