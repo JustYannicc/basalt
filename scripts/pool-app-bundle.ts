@@ -34,6 +34,11 @@ function placeRouterFonts(root: string, upstream: string) {
   for (const file of fontFiles) copyFileSync(join(fonts, file), join(served, file));
 }
 
+function providerTable(root: string): readonly { id: string; name: string }[] {
+  const table: { id: string; name: string }[] = JSON.parse(readFileSync(join(root, "src/pool/providers.json"), "utf8"));
+  return table.map(({ id, name }) => ({ id, name }));
+}
+
 /** Bundle the app after patches choose the host's framework release. */
 export function bundlePoolApp(root: string, upstream: string): readonly PoolAppFile[] {
   const source = join(root, "apps/pool");
@@ -52,6 +57,9 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
         let content = readFileSync(path, "utf8");
         if (name === "deployment.ts")
           content = `export const poolOrigin = ${JSON.stringify(`https://${brand.host}`)};\nexport const productName = ${JSON.stringify(brand.name)};\n`;
+        // The Connect dialog offers one sign-in method per service in the provider table.
+        if (name === "providers.ts")
+          content = `export const providers: readonly { readonly id: string; readonly name: string }[] = ${JSON.stringify(providerTable(root))};\n`;
         if (name === "package.json") {
           const manifest = JSON.parse(content);
           manifest.dependencies = { ...manifest.dependencies, apps: framework.version };
