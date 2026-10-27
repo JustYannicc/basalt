@@ -103,7 +103,7 @@ export class PlanetScaleSafety {
 
   /**
    * With `recorded` (the ledger's backup name and metadata), only that exact verified backup counts.
-   * Without it, each branch's expected name is recomputed from the report and that branch's current
+   * Without it, the production branch's expected name is recomputed from the report and its current
    * context, so a branch resized since the backup no longer matches and the gate fails closed.
    */
   async assertBackupReady(report: ClassificationReport, recorded?: RecordedBackup): Promise<ReadyBackup> {
@@ -163,20 +163,19 @@ export class PlanetScaleSafety {
     if (!databaseMatches.some((database) => database.name === DATABASE_SCOPE.database && database.kind === "postgresql"))
       throw new SafetyGateError("PlanetScale production database is not available for rollback");
 
+    // A recorded backup names its branch, so a restore that moved production does not strand it.
+    // Unrecorded backups are only taken on the production branch.
+    const candidates = recorded
+      ? [{ branch: recorded.metadata.scope.branch, expected: recorded }]
+      : (await this.api.listBranches(DATABASE_SCOPE.database))
+        .filter((branch) => branch.kind === "postgresql" && branch.production)
+        .map((branch) => ({ branch: branch.name, expected: expectedBackup(report, branch) }));
     const matches: ReadyBackup[] = [];
-    const branches = await this.api.listBranches(DATABASE_SCOPE.database);
-    for (const branch of branches) {
-      if (branch.kind !== "postgresql") continue;
-      const expected = recorded ?? expectedBackup(report, branch);
-      for (const backup of await this.api.listBackups(DATABASE_SCOPE.database, branch.name)) {
-        // Foreign backups are skipped; a malformed Basalt name throws here.
-        const format = readBackupName(backup.name);
-        if (format?.format === "v1") {
-          if ((!recorded || backup.name === recorded.name) && backupMatchesReport(format.metadata, report))
-            matches.push({ backup, metadata: format.metadata });
-        } else if (format && backup.name === expected.name) {
-          matches.push({ backup, metadata: expected.metadata });
-        }
+    for (const { branch, expected } of candidates) {
+      for (const backup of await this.api.listBackups(DATABASE_SCOPE.database, branch)) {
+        // Foreign backups are skipped; a malformed Basalt name throws here. A v1 name can only equal
+        // a recorded name, whose metadata was verified against it above.
+        if (readBackupName(backup.name) && backup.name === expected.name) matches.push({ backup, metadata: expected.metadata });
       }
     }
     return matches;
