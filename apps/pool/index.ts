@@ -2,11 +2,14 @@ import {
   bearer,
   defineApp,
   defineProvider,
+  interactive,
   json,
   mutation,
   number,
   object,
   query,
+  type ConnectContext,
+  type InteractiveMethod,
   type QueryContext,
   router,
   secrets,
@@ -25,6 +28,8 @@ import {
   type UsageSummary,
 } from "./contract.ts";
 import { poolOrigin, productName } from "./deployment.ts";
+import { providers } from "./providers.ts";
+import { loginFileMethod, prompt, signedIn } from "./sign-in.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 // The tools service links this account for everyone when it installs a pool.
@@ -41,19 +46,33 @@ const pool = defineProvider({
   },
 });
 
-const requirements = { app: { accounts: { pool } } };
+// Each subscription the pool serves is an account here, connected from the app's Accounts tab.
+// One sign-in method per service the backend signs in, plus pasting a login file.
+const subscription = defineProvider({
+  name: "Subscription",
+  auth: {
+    ...Object.fromEntries(providers.map(({ id, name }) => [id, interactive({ label: name })])),
+    [loginFileMethod]: interactive({ label: "Login file" }),
+  } as Readonly<Record<string, InteractiveMethod>>,
+});
+
+const requirements = { app: { accounts: { pool, subscriptions: subscription.many() } } };
 type Context = QueryContext<typeof requirements>;
+// Connect steps run before every slot is filled, so the pool's own account may be missing there.
+type Caller = Context | ConnectContext<typeof requirements>;
 
 export type Result<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: ControlErrorCode; readonly message: string };
 
 async function control<T>(
-  ctx: Context,
+  ctx: Caller,
   path: string,
   init: { method?: string; body?: unknown } = {},
 ): Promise<Result<T>> {
-  const headers: Record<string, string> = { ...ctx.app.accounts.pool.headers(), accept: "application/json" };
+  const pool = ctx.app.accounts.pool;
+  if (!pool) return { ok: false, error: "unauthorized", message: "This pool isn't linked to its access account." };
+  const headers: Record<string, string> = { ...pool.headers(), accept: "application/json" };
   // The pool Worker decides what the caller may change. Without a caller, nothing changes.
   const caller = ctx.user?.id;
   if (caller) headers[callerHeader] = caller;
@@ -73,12 +92,15 @@ async function control<T>(
   return { ok: false, error: "backend_unavailable", message: "The pool didn't answer. Try again in a moment." };
 }
 
-const sessionFields = { session: string({ minLength: 1 }) };
-const session = object(sessionFields);
-
 export const view = query(
   { description: "This pool's accounts with their usage windows, and the providers it can connect", input: object({}) },
-  async (ctx: Context) => control<PoolView>(ctx, "/pool"),
+  async (ctx: Context): Promise<Result<PoolView>> => {
+    const result = await control<PoolView>(ctx, "/pool");
+    if (!result.ok) return result;
+    const linked = new Set(ctx.app.accounts.subscriptions.map((account) => account.fields.ref));
+    const accounts = result.value.accounts.map((account) => ({ ...account, inAccounts: linked.has(account.id) }));
+    return { ok: true, value: { ...result.value, accounts } };
+  },
 );
 
 export const usage = query(
@@ -87,38 +109,6 @@ export const usage = query(
     input: object({ days: number().optional() }),
   },
   async (ctx: Context, { days }) => control<UsageSummary>(ctx, `/usage/summary?days=${Math.min(30, Math.max(1, Math.round(days ?? 30)))}`),
-);
-
-// The owner acts directly; the pool Worker refuses changes from anyone else.
-export const startSignIn = mutation(
-  {
-    description: "Start connecting a subscription; only the pool's owner can. Give the person `url` to open. With flow `callback`, they sign in and paste back the localhost address the page ends on: pass it to finishSignIn. With flow `device`, they approve on that page (entering `userCode` if set) and the pool finishes by itself. Check signInStatus until it isn't `waiting`. One open sign-in per pool; a new start replaces it.",
-    approval: never(),
-    input: object({ provider: string({ minLength: 1 }) }),
-  },
-  async (ctx: Context, { provider }) =>
-    control<SignInStarted>(ctx, "/sign-ins", { method: "POST", body: { provider } }),
-);
-
-export const finishSignIn = mutation(
-  {
-    description: "Finish a sign-in with the localhost address the provider's page ended on",
-    approval: never(),
-    input: object({ ...sessionFields, redirectUrl: string({ minLength: 1 }) }),
-  },
-  async (ctx: Context, input) => control<SignInStatus>(ctx, "/sign-ins/callback", { method: "POST", body: input }),
-);
-
-export const signInStatus = query(
-  { description: "Whether a started sign-in has finished: `waiting`, `connected` with the new account, or `failed` with the reason. Polling every few seconds is fine; the pool keeps a sign-in alive while the provider still waits.", input: session },
-  async (ctx: Context, input) =>
-    control<SignInStatus>(ctx, `/sign-ins/status?session=${encodeURIComponent(input.session)}`),
-);
-
-export const cancelSignIn = mutation(
-  { description: "Cancel a started sign-in", approval: never(), input: session },
-  async (ctx: Context, input) =>
-    control<null>(ctx, `/sign-ins?session=${encodeURIComponent(input.session)}`, { method: "DELETE" }),
 );
 
 export const addLoginFile = mutation(
@@ -152,16 +142,56 @@ export const computerContext = query(
   async (ctx: Context) => control<ComputerContext>(ctx, "/setup-context"),
 );
 
+/** A control call that must succeed; the Connect dialog shows the pool's message when it doesn't. */
+function unwrap<T>(result: Result<T>): T {
+  if (!result.ok) throw new Error(result.message);
+  return result.value;
+}
+
+/** A step's answer: the pool refusing or failing ends the sign-in with its message. */
+function step<T>(result: Result<T>, read: (value: T) => ConnectState): ConnectState {
+  return result.ok ? read(result.value) : { state: "failed", message: result.message };
+}
+type ConnectState = ReturnType<typeof signedIn>;
+
+const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
+
 export default defineApp(requirements, {
-  tools: router({
-    view,
-    usage,
-    startSignIn,
-    finishSignIn,
-    signInStatus,
-    cancelSignIn,
-    addLoginFile,
-    removeAccount,
-    computerContext,
-  }),
+  tools: router({ view, usage, addLoginFile, removeAccount, computerContext }),
+  // The pool Worker refuses every step unless the caller owns the pool.
+  connect: {
+    subscriptions: {
+      start: async (ctx, { method }) => {
+        if (method === loginFileMethod) return prompt.loginFile;
+        return prompt.signIn(unwrap(await control<SignInStarted>(ctx, "/sign-ins", { method: "POST", body: { provider: method } })));
+      },
+      status: async (ctx, { method, session }) =>
+        method === loginFileMethod
+          ? { state: "waiting" as const }
+          : step(await control<SignInStatus>(ctx, `/sign-ins/status${sessionPath(session)}`), signedIn),
+      submit: async (ctx, { method, session, value: pasted }) => {
+        if (method !== loginFileMethod)
+          return step(await control<SignInStatus>(ctx, "/sign-ins/callback", { method: "POST", body: { session, redirectUrl: pasted } }), signedIn);
+        let file: unknown;
+        try {
+          file = JSON.parse(pasted);
+        } catch {
+          return { state: "failed" as const, message: "That isn't a login file. Paste the whole file's contents." };
+        }
+        return step(await control<LoginFileAdded>(ctx, "/login-files", { method: "POST", body: file }), ({ accountId }) => ({
+          state: "connected",
+          ref: accountId,
+        }));
+      },
+      cancel: async (ctx, { method, session }) => {
+        // A sign-in that already ended has nothing to cancel.
+        if (method !== loginFileMethod) await control<null>(ctx, `/sign-ins${sessionPath(session)}`, { method: "DELETE" });
+      },
+      // Unlinking or deleting the account removes the subscription from the pool and its backend.
+      remove: async (ctx, { ref }) => {
+        const result = await control<null>(ctx, `/accounts/${encodeURIComponent(ref)}`, { method: "DELETE" });
+        if (!result.ok && result.error !== "not_found") throw new Error(result.message);
+      },
+    },
+  },
 });

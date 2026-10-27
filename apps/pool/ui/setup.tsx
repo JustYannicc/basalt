@@ -8,9 +8,8 @@ import {
   type SetupApi,
   type SetupLink,
 } from "./computer-types.ts";
-import { Button, CheckIcon, Dialog, Problem, Spinner } from "./controls.tsx";
+import { Button, CheckIcon, Dialog, Header, Problem, Spinner } from "./controls.tsx";
 import { CopyBlock, Disclosure, Fallback } from "./setup-controls.tsx";
-import { Header } from "./sign-in-steps.tsx";
 import { duration } from "./usage.ts";
 
 export { CopyBlock } from "./setup-controls.tsx";

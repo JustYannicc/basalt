@@ -129,3 +129,12 @@ export function Problem({ children }: { children: string }) {
     </p>
   );
 }
+
+export function Header({ title, body }: { title: string; body: string }) {
+  return (
+    <header className="grid gap-1">
+      <h2 className="text-base font-semibold tracking-[-0.015em] text-balance">{title}</h2>
+      <p className="text-sm text-muted-foreground text-pretty">{body}</p>
+    </header>
+  );
+}

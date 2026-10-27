@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Account, PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
-import { ConnectDialog } from "./connect.tsx";
 import { productName } from "../deployment.ts";
 import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
+
+/** Where the owner connects and removes subscriptions: the host's own Accounts tab for this app. */
+const connectHint = "Connect subscriptions from this app's Accounts tab: choose Connect new account under Subscription.";
 import { duration, lastReading } from "./usage.ts";
 import { Computers } from "./computers.tsx";
 import { Usage } from "./usage-view.tsx";
@@ -58,7 +60,6 @@ function useNow(every = 30_000) {
 export function App({ api }: { api: PoolApi }) {
   const { view, error, load } = usePool(api);
   const now = useNow();
-  const [connecting, setConnecting] = useState(false);
   const [removeError, setRemoveError] = useState<string>();
   const [setupHref, setSetupHref] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
@@ -100,11 +101,6 @@ export function App({ api }: { api: PoolApi }) {
               Share <ExternalIcon />
             </a>
           )}
-          {view?.isOwner && view.accounts.length > 0 && (
-            <Button size="sm" onClick={() => setConnecting(true)}>
-              Connect
-            </Button>
-          )}
         </div>
       </header>
 
@@ -144,15 +140,14 @@ export function App({ api }: { api: PoolApi }) {
         {view === undefined ? (
           !error && <Skeleton />
         ) : view.accounts.length === 0 ? (
-          <Empty view={view} onConnect={() => setConnecting(true)} />
+          <Empty view={view} />
         ) : (
           <>
-            {!view.isOwner && (
-              <p className="mb-2 text-sm text-muted-foreground">
-                Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove
-                them.
-              </p>
-            )}
+            <p className="mb-2 text-sm text-muted-foreground text-pretty">
+              {view.isOwner
+                ? connectHint
+                : "Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them."}
+            </p>
             <AccountList
               accounts={view.accounts}
               providers={view.providers}
@@ -166,20 +161,11 @@ export function App({ api }: { api: PoolApi }) {
         <Computers api={computers} setup={{ kind: "link", href: () => setupHref ?? "#", manageHref: () => setupHref ?? "#" }} />
       </main>
 
-      {view?.isOwner && (
-        <ConnectDialog
-          open={connecting}
-          providers={view.providers}
-          api={api}
-          onClose={() => setConnecting(false)}
-          onConnected={load}
-        />
-      )}
     </div>
   );
 }
 
-function Empty({ view, onConnect }: { view: PoolView; onConnect: () => void }) {
+function Empty({ view }: { view: PoolView }) {
   const names = view.providers.map((provider) => provider.name);
   const offered =
     names.length > 3 ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more` : names.join(", ");
@@ -191,11 +177,10 @@ function Empty({ view, onConnect }: { view: PoolView; onConnect: () => void }) {
         </h2>
         <p className="text-sm text-muted-foreground text-pretty">
           {view.isOwner
-            ? `Requests through this pool use the subscriptions you connect here, and each one's limits and resets show on this page.${offered ? ` You can connect ${offered}.` : ""}`
+            ? `Requests through this pool use the subscriptions you connect, and each one's limits and resets show on this page.${offered ? ` You can connect ${offered}.` : ""} ${connectHint}`
             : "Its owner hasn't connected a subscription. Accounts show up here once they do."}
         </p>
       </div>
-      {view.isOwner && <Button onClick={onConnect}>Connect a subscription</Button>}
     </div>
   );
 }

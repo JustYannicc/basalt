@@ -50,6 +50,11 @@ export interface Account {
   readonly windows: readonly UsageWindow[];
   /** ISO time usage was last read, or null before the first read. */
   readonly observedAt: string | null;
+  /**
+   * Set by the pool app, not the Worker: the app's Accounts tab holds this subscription, so it's
+   * removed there. Accounts added before the tab could connect them have none.
+   */
+  readonly inAccounts?: boolean;
 }
 
 /** GET /pool */

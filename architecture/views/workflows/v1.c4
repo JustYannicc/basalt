@@ -162,9 +162,11 @@ views {
     variant sequence
     title "Workflows/Basalt/Connect a subscription"
     description """
-      Status: Implemented in source, live acceptance pending. Opening the pool screen through app hosting
-      remains planned because that origin is disabled. The tools service runs the app with the caller;
-      every control call carries a signed pool token. Changes are owner-only and accounts are scoped to
+      Status: Implemented in source, live acceptance pending. The owner connects from the pool app's
+      Accounts tab in the dashboard (Connect new account under Subscription), which needs no app hosting.
+      The tools service runs the app's connect steps (carried app-acquired account method) with the caller
+      and saves an account holding only the pool account id; unlinking or deleting it runs the app's remove
+      step, which deletes the subscription. Every control call carries a signed pool token. Changes are owner-only and accounts are scoped to
       the pool's channel group. The controller locks the provider and snapshots credentials before starting;
       callback flows reacquire the lock and snapshot before exchanging the pasted localhost address.
       On status ok, an exact backend credential id is used when supplied; otherwise the controller diffs
@@ -174,11 +176,9 @@ views {
       and the exact id from the saved filename, never a credential diff.
     """
 
-    include poolOwner, appHosting, basalt.toolsGateway, basalt.pool, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, modelProviders
-    poolOwner -> appHosting "open pool screen (planned hosting)"
-    appHosting -> basalt.pool "host Accounts screen (planned hosting)"
-    poolOwner -> basalt.toolsGateway "startSignIn from hosted screen (planned hosting)"
-    basalt.toolsGateway -> basalt.pool "run startSignIn with ctx.user.id"
+    include poolOwner, basalt.toolsGateway, basalt.pool, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, modelProviders
+    poolOwner -> basalt.toolsGateway "Accounts tab: Connect new account, pick the provider"
+    basalt.toolsGateway -> basalt.pool "run connect start with method and ctx.user.id"
     basalt.pool -> basalt.router "POST /pool/v1/sign-ins with pool token and caller"
     basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/sign-ins"
     basalt.modelGateway -> basalt.poolController "verify token and owner; lock provider and snapshot credentials"
@@ -188,16 +188,16 @@ views {
     basalt.router <- basalt.modelGateway "sign-in session and URL"
     basalt.pool <- basalt.router "sign-in session and URL"
     basalt.toolsGateway <- basalt.pool "sign-in session and URL"
-    poolOwner <- basalt.toolsGateway "show provider sign-in link (planned hosting)"
+    poolOwner <- basalt.toolsGateway "dialog shows provider sign-in link, code or paste box"
     poolOwner -> modelProviders "sign in on the provider's page in own browser"
-    poolOwner -> basalt.toolsGateway "paste localhost address back (planned hosting)"
-    basalt.toolsGateway -> basalt.pool "run finishSignIn with caller and pasted address"
+    poolOwner -> basalt.toolsGateway "paste localhost address into the dialog"
+    basalt.toolsGateway -> basalt.pool "run connect submit with caller and pasted address"
     basalt.pool -> basalt.router "POST /pool/v1/sign-ins/callback with pool token"
     basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/sign-ins/callback"
     basalt.modelGateway -> basalt.poolController "verify owner and session; lock provider and snapshot credentials"
     basalt.poolController -> basalt.poolRuntime "POST /v8/management/oauth/callback on 8327"
     basalt.poolController <- basalt.poolRuntime "callback accepted"
-    basalt.toolsGateway -> basalt.pool "poll signInStatus with caller"
+    basalt.toolsGateway -> basalt.pool "poll connect status with caller"
     basalt.pool -> basalt.router "GET /pool/v1/sign-ins/status with pool token"
     basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/sign-ins/status"
     basalt.modelGateway -> basalt.poolController "verify token, owner and sign-in session"
@@ -208,8 +208,8 @@ views {
     basalt.modelGateway <- basalt.poolController "connected account id"
     basalt.router <- basalt.modelGateway "connected account id"
     basalt.pool <- basalt.router "connected account id"
-    basalt.toolsGateway <- basalt.pool "connected account id"
-    basalt.toolsGateway -> basalt.pool "run view to refresh Accounts screen"
+    basalt.toolsGateway <- basalt.pool "connected: pool account id; save it as the account ref and link it"
+    basalt.toolsGateway -> basalt.pool "run view for the pool page"
     basalt.pool -> basalt.router "GET /pool/v1/pool with pool token and caller"
     basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/pool"
     basalt.modelGateway -> basalt.poolController "read accounts in this pool's channel group"
@@ -219,7 +219,7 @@ views {
     basalt.router <- basalt.modelGateway "pool view"
     basalt.pool <- basalt.router "pool view"
     basalt.toolsGateway <- basalt.pool "pool accounts"
-    poolOwner <- basalt.toolsGateway "see account in Accounts screen (planned hosting)"
+    poolOwner <- basalt.toolsGateway "see the account on the Accounts tab"
   }
 
   dynamic view v1_invite_pool {

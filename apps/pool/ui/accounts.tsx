@@ -96,7 +96,10 @@ function AccountRow({
         {account.message && account.state !== "active" && (
           <p className="mt-1.5 text-xs text-muted-foreground">{account.message}</p>
         )}
-        {canChange && (
+        {canChange && account.inAccounts && (
+          <p className="mt-2 text-xs text-muted-foreground">Remove it from this app's Accounts tab.</p>
+        )}
+        {canChange && !account.inAccounts && (
           <div
             className={`mt-2 flex items-center gap-2 text-xs transition-opacity duration-150 ${
               confirming ? "" : "[@media(pointer:fine)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
