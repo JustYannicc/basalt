@@ -66,6 +66,7 @@ test("the pool database grants its owner to the runtime role's Postgres login, n
 
 test("grants use the Postgres role without PlanetScale's branch routing suffix", () => {
   assert.equal(postgresRoleName("pscale_api_7vbr1djszc0l.3p0usohvonk3"), "pscale_api_7vbr1djszc0l");
-  for (const login of ["pscale_api_7vbr1djszc0l", ".3p0usohvonk3", "pscale_api_7vbr1djszc0l.", ""])
-    assert.throws(() => postgresRoleName(login), /not a PlanetScale branch login/, login);
+  assert.equal(postgresRoleName("pool_runtime"), "pool_runtime");
+  for (const login of [".3p0usohvonk3", "pscale_api_7vbr1djszc0l.", ""])
+    assert.throws(() => postgresRoleName(login), /malformed/, login);
 });

@@ -41,7 +41,8 @@ test("logical database persists across runtime-role rotation and excludes unrela
     await first.query("INSERT INTO pool_proof VALUES ('retained')");
     await first.end();
 
-    provision("pool_test_second", migrationUrl);
+    // A PlanetScale login carries a branch routing suffix after the role name.
+    provision("pool_test_second.fixturebranch", migrationUrl);
     const second = connection("pool_test_second");
     await second.connect();
     assert.deepEqual((await second.query("SELECT * FROM pool_proof")).rows, [{ value: "retained" }]);

@@ -21,10 +21,11 @@ export function poolDatabaseUrl(connectionUrl: string): string {
 
 /**
  * PlanetScale logins are `<role>.<branch id>`; the suffix only routes the connection to a branch.
- * Grants need the Postgres role itself, the part before the first dot.
+ * Grants need the Postgres role itself, the part before the first dot. Other Postgres logins are the
+ * role. The provisioning job still checks the role exists before granting.
  */
 export function postgresRoleName(login: string): string {
   const dot = login.indexOf(".");
-  if (dot <= 0 || dot === login.length - 1) throw new Error("The pool runtime login is not a PlanetScale branch login");
-  return login.slice(0, dot);
+  if (!login || dot === 0 || dot === login.length - 1) throw new Error("The pool runtime login is malformed");
+  return dot === -1 ? login : login.slice(0, dot);
 }
