@@ -88,6 +88,8 @@ const fixture = <A>(
           "create table executor_apps (id text primary key, owner text, name text unique, active_deployment text, files jsonb, workspace jsonb, copied_from jsonb)",
           "create table executor_deployments (id text primary key, requirements jsonb)",
           "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text)",
+          // Account deletion reads connection state to tell app-acquired accounts apart.
+          "create table executor_account_connections (id text primary key, owner text, state jsonb, created_at timestamptz default now())",
           "create table hosted_app_access (id text, organization_id text, creator_id text, audience text)",
           "create table hosted_account_access (account_id text, organization_id text, creator_id text, kind text, personal_user_id text)",
           "create table hosted_app_account_links (app text, requirement text, subject text, account text, linked_by text, created_at timestamptz)",
