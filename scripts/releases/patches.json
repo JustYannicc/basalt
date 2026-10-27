@@ -101,7 +101,7 @@
     {
       "identity": "executor-hosted-connectors",
       "file": "0011-hosted-connectors.patch",
-      "content_sha256": "66b367f6c446d6a79073fc14dbe06d4c017523eb7e2d8812cbab5ee142d6a133",
+      "content_sha256": "d0670382457c38692a847c9ad96449988369a090f66bb65e02bde6c3e582a4a3",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

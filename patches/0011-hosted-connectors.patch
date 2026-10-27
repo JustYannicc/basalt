@@ -874,3 +874,22 @@ index 4f806b8cd..d5cb5933c 100644
 +    </ul>
 +  );
 +}
+diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-outbound.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+@@ -22,7 +22,14 @@
+     compatibility: { date: "2026-09-08", flags: ["global_fetch_strictly_public"] },
+     // This private service has no application bindings or credentials.
+     script: `export default {
+-      fetch(request) { return fetch(request); }
++      fetch(request) {
++        if (!request.headers.has("User-Agent")) {
++          const headers = new Headers(request.headers);
++          headers.set("User-Agent", "Executor");
++          request = new Request(request, { headers });
++        }
++        return fetch(request);
++      }
+     };`,
+   });
+ });
