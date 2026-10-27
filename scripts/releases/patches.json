@@ -226,6 +226,16 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": true
+    },
+    {
+      "identity": "basalt-interactive-accounts",
+      "file": "0025-interactive-accounts.patch",
+      "content_sha256": "6d905098ca5c8d22823dbe8b9c5ac651ebbf93931fdb4c69acf0432aefba5fb0",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": true,
+      "upstream_issue": 2414
     }
   ]
 }
