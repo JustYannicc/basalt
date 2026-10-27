@@ -1,13 +1,17 @@
 import pg from "pg";
-import { poolDatabase } from "../src/pool/database-settings.ts";
+import { poolDatabase, postgresRoleName } from "../src/pool/database-settings.ts";
 
 function identifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
 
+/** Raised for checks this script makes itself; its message never contains connection details. */
+class ProvisioningError extends Error {}
+
 const connectionString = process.env.POOL_DATABASE_ADMIN_URL;
-const runtimeRole = process.env.POOL_DATABASE_RUNTIME_ROLE;
-if (!connectionString || !runtimeRole) throw new Error("Missing pool database provisioning credentials");
+const runtimeLogin = process.env.POOL_DATABASE_RUNTIME_ROLE;
+if (!connectionString || !runtimeLogin) throw new Error("Missing pool database provisioning credentials");
+const runtimeRole = postgresRoleName(runtimeLogin);
 const adminUrl = new URL(connectionString);
 adminUrl.searchParams.set("options", "-c role=postgres");
 const admin = new pg.Client({ connectionString: adminUrl.toString() });
@@ -23,7 +27,7 @@ try {
   if (!existingOwner.rowCount) {
     await admin.query(`CREATE ROLE ${owner} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
   } else if (Object.values(existingOwner.rows[0]).some(Boolean)) {
-    throw new Error("The pool database owner has unexpected privileges");
+    throw new ProvisioningError("The pool database owner has unexpected privileges");
   }
   // CREATEDB alone cannot assign another owner. PlanetScale's postgres is not a superuser.
   await admin.query(`GRANT ${owner} TO postgres`);
@@ -34,9 +38,11 @@ try {
   if (!existingDatabase.rowCount) {
     await admin.query(`CREATE DATABASE ${database} OWNER ${owner}`);
   } else if (existingDatabase.rows[0].owner !== poolDatabase.owner) {
-    throw new Error("The pool database has an unexpected owner");
+    throw new ProvisioningError("The pool database has an unexpected owner");
   }
   await admin.query(`REVOKE ALL ON DATABASE ${database} FROM PUBLIC`);
+  const runtime = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [runtimeRole]);
+  if (!runtime.rowCount) throw new ProvisioningError("The pool runtime role does not exist on the cluster");
   await admin.query(`GRANT ${owner} TO ${identifier(runtimeRole)}`);
   const scopedUrl = new URL(adminUrl);
   scopedUrl.pathname = `/${poolDatabase.name}`;
@@ -50,6 +56,7 @@ try {
   }
   console.log("Pool database ready on the existing cluster");
 } catch (error) {
+  if (error instanceof ProvisioningError) throw new Error(`Pool database provisioning failed: ${error.message}`);
   // Driver messages can contain connection details. Keep deploy logs credential-free.
   const code = error instanceof Error && "code" in error && /^[A-Z0-9]{5}$/.test(String(error.code))
     ? ` (${error.code})` : "";

@@ -86,7 +86,8 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     cwd: dirname(script),
     env: {
       POOL_DATABASE_ADMIN_URL: admin.connectionUrl,
-      POOL_DATABASE_RUNTIME_ROLE: runtime.name,
+      // `name` is PlanetScale's display name; the Postgres role that logs in is `username`.
+      POOL_DATABASE_RUNTIME_ROLE: runtime.username,
     },
     memo: false,
     timeout: "1 minute",
