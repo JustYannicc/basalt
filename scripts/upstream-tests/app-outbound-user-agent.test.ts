@@ -58,7 +58,7 @@ test("app outbound supplies the User-Agent GitHub requires and preserves explici
       headers: { Authorization: "Bearer fixture", "User-Agent": "fixture-absent" },
     });
     assert.equal(health.status, 200, "GitHub health must pass the User-Agent gate");
-    assert.ok(delivered[0]!.agent);
+    assert.equal(delivered[0]!.agent, "Executor");
     assert.equal(delivered[0]!.auth, "Bearer fixture");
     const explicit = await mf.dispatchFetch("https://api.github.com/user?fixture=1", {
       method: "POST",
@@ -72,6 +72,19 @@ test("app outbound supplies the User-Agent GitHub requires and preserves explici
       agent: "app-owned-agent",
       auth: "Bearer fixture",
       body: "request-body",
+    });
+    const cloned = await mf.dispatchFetch("https://api.github.com/user?fixture=2", {
+      method: "POST",
+      headers: { "User-Agent": "fixture-absent", Authorization: "Bearer fixture" },
+      body: "cloned-request-body",
+    });
+    assert.equal(cloned.status, 200);
+    assert.deepEqual(delivered[2], {
+      url: "https://api.github.com/user?fixture=2",
+      method: "POST",
+      agent: "Executor",
+      auth: "Bearer fixture",
+      body: "cloned-request-body",
     });
   } finally {
     await mf.dispose();
