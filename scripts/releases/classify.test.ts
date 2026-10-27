@@ -329,7 +329,7 @@ test("architecture models named for workflows are not Cloudflare Workflow change
 });
 
 test("Basalt's stage and brand files name every deployed resource", () => {
-  for (const path of ["alchemy.run.ts", "brand.ts", "scripts/environment.ts"]) {
+  for (const path of ["brand.ts", "scripts/environment.ts"]) {
     const report = classifySnapshots({
       baseGitCommit: sha("1"), candidateGitCommit: sha("2"), basePins: pins(), candidatePins: pins(),
       localChangedPaths: [path],

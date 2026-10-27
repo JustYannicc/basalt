@@ -70,7 +70,7 @@ export function patchDelta(before: string | null, after: string | null): PatchDe
 }
 
 /** Indices of lines outside a longest common subsequence; over the size cap, the whole middle. */
-function changedIndices(x: string[], y: string[]): [Set<number>, Set<number>] {
+export function changedIndices(x: string[], y: string[]): [Set<number>, Set<number>] {
   let start = 0;
   while (start < x.length && start < y.length && x[start] === y[start]) start++;
   let endX = x.length;

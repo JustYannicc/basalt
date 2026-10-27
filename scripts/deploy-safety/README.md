@@ -85,7 +85,19 @@ The result is `unknown`, which also requires a manual release, in these cases, u
 - a nested change has no readable inner file header;
 - a changed line sits in a template literal whose start or end is not visible and which shows no database keyword.
 
-Basalt's own `.github/` workflows, architecture models and test files are not Cloudflare Workflow changes. Its `alchemy.run.ts`, `brand.ts` and `scripts/environment.ts` set the stack, its state store, the stage and every physical name, so a change to any of them is both database- and Workflow-changing. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
+Basalt's own `.github/` workflows, architecture models and test files are not Cloudflare Workflow changes. Its `brand.ts` and `scripts/environment.ts` set the stage and every physical name, so a change to either is both database- and Workflow-changing.
+
+Its stack file, `alchemy.run.ts`, is judged line by line, from its contents at both commits (`scripts/releases/stack-impact.ts`). A changed line is checked together with the lines within three of it (imports aside) and the nearest call that encloses it.
+
+- It is both database- and Workflow-changing when one of those names the stack (`Alchemy.Stack(`), its state store (`stackState`, `state:`) or the stage.
+- It is also database-changing when one of those names PlanetScale, a Postgres database, role or branch, Hyperdrive, or a database.
+- It is also Workflow-changing when one of those names a Workflow, a Worker or script name, a Durable Object, or a jurisdiction, or when the line is a `name:` inside a `Worker(` call.
+
+A changed line that itself names something carrying the upstream stack in also counts for both. That means the upstream deployment, Workers or providers, `Api`, the pool Worker, the preview database, or an adopt or removal policy. An import from `.upstream/`, `src/pool/` or alchemy counts too.
+
+A changed bare `yield* name;` runs resources this cannot see, so it is `unknown`. So is a stack file whose brackets cannot be matched, or whose contents were not supplied.
+
+Other resources, such as a zone ruleset, are clear. Registry content, identity and mapping mismatches stay `unknown`, and `database_sensitive` or `workflow_sensitive` set to true still forces a change. A change that matches no rule is clear: an HTTP header added to an outbound Worker can release automatically.
 
 The classifier's current report is the decision input. When either change flag is true, the release updater must keep the PR open, apply the relevant `database-change` and/or `workflow-identity-change` labels plus `manual-release`, and refrain from auto-merging it. These labels do not authorize deployment.
 

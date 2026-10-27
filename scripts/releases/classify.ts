@@ -3,7 +3,8 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { GitHubApi } from "./github.ts";
 import { changedPatchFiles, isDatabasePath, localDatabasePaths, localWorkflowPaths, mergeEvidence, nodeDatabasePathState, sourceEvidence, toolsDatabasePathState, toolsWorkflowPathState } from "./paths.ts";
-import { classifyPatchChanges } from "./classify-patches.ts";
+import { classifyPatchChanges, type CarryImpact } from "./classify-patches.ts";
+import { stackImpact } from "./stack-impact.ts";
 import {
   assertPatchManifestContentMatchesFiles,
   assertPatchManifestMatchesFiles,
@@ -26,7 +27,11 @@ export type ClassificationInput = {
   basePatchManifest?: PatchManifestV3;
   candidatePatchManifest?: PatchManifestV3;
   patchContents?: Record<string, { base?: string | Uint8Array; candidate?: string | Uint8Array }>;
+  /** Basalt's `alchemy.run.ts` at both commits when it changed; empty where it is absent. */
+  stackContents?: { base: string; candidate: string };
 };
+
+const stackFile = "alchemy.run.ts";
 
 export async function classifyRefs(
   repositoryRoot: string,
@@ -79,6 +84,12 @@ export async function classifyRefs(
     basePatchManifest,
     candidatePatchManifest,
     patchContents,
+    ...(localChangedPaths.includes(stackFile) ? {
+      stackContents: {
+        base: readOptionalAt(repositoryRoot, baseGitCommit, stackFile) ?? "",
+        candidate: readOptionalAt(repositoryRoot, candidateGitCommit, stackFile) ?? "",
+      },
+    } : {}),
   });
 }
 
@@ -133,6 +144,16 @@ export function classifySnapshots(input: ClassificationInput): ClassificationRep
   const flowPaths = localWorkflowPaths(changedPaths);
   if (flowPaths.length)
     workflowSources.push({ name: "Basalt source", state: "changed", base: input.baseGitCommit, candidate: input.candidateGitCommit, changedPaths: flowPaths });
+
+  if (changedPaths.includes(stackFile)) {
+    const unsupplied: CarryImpact = { state: "unknown", detail: "changed without its contents to judge" };
+    const impact = input.stackContents
+      ? stackImpact(input.stackContents.base, input.stackContents.candidate)
+      : { database: unsupplied, workflow: unsupplied };
+    for (const [sources, { state, detail }] of [[dbSources, impact.database], [workflowSources, impact.workflow]] as const)
+      if (state !== "unchanged")
+        sources.push({ name: "Basalt stack", state, base: input.baseGitCommit, candidate: input.candidateGitCommit, changedPaths: [stackFile], reason: `${stackFile} ${detail}` });
+  }
 
   const patchEvidence = classifyPatchChanges(input);
   if (patchEvidence.database) dbSources.push(patchEvidence.database);
