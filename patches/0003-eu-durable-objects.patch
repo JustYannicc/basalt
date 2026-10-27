@@ -1,4 +1,5 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index 2e741723b..605f4e8e2 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
 @@ -1,3 +1,2395 @@
@@ -2397,7 +2398,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
  diff --git a/lib/Action.js b/lib/Action.js
  index 8d4f9b29e6d845414e76fc709c0ae26206c17af5..a26e84f0593159d30a8c77625b7cd62d71da83a9 100644
  --- a/lib/Action.js
-@@ -456,32 +2848,47 @@
+@@ -456,32 +2848,55 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
               throw error;
           }));
  diff --git a/lib/Cloudflare/Workers/cloudflare_workers.d.ts b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
@@ -2415,27 +2416,35 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
  +//# sourceMappingURL=cloudflare_workers.d.ts.map
  +export declare const platformSpan: <A>(name: string, run: () => Promise<A>) => Promise<A>;
 -\ No newline at end of file
-++export declare function scopeEuNamespaces(env: Record<string, unknown>): Record<string, unknown>;
+++export declare function scopeEuNamespaces(env: Record<PropertyKey, unknown>): Record<PropertyKey, unknown>;
  diff --git a/lib/Cloudflare/Workers/cloudflare_workers.js b/lib/Cloudflare/Workers/cloudflare_workers.js
 -index a9ec2cb5cf000f5af377af80e3833146101ba9da..08d72a08c1a70b604d8bcaf41b4abdf0c5d517c0 100644
 +index a9ec2cb..edf8dcb 100644
  --- a/lib/Cloudflare/Workers/cloudflare_workers.js
  +++ b/lib/Cloudflare/Workers/cloudflare_workers.js
 -@@ -9,7 +9,8 @@ import * as Effect from "effect/Effect";
-+@@ -8,8 +8,21 @@ import * as Effect from "effect/Effect";
++@@ -8,8 +8,29 @@ import * as Effect from "effect/Effect";
 + // attached immediately so the rejection is always handled.
   // Type the import before chaining to avoid expanding the full module namespace
   // while TypeScript infers the catch result.
+++const euScoped = Symbol.for("basalt.euScopedEnv");
+++const isNamespace = (value) => value !== null && typeof value === "object" &&
+++  typeof value.jurisdiction === "function" && typeof value.idFromName === "function" &&
+++  typeof value.fetch !== "function";
+++// The importable env resolves bindings on access and need not expose own keys, so it is
+++// wrapped instead of copied. Namespaces are scoped on first access; service stubs have fetch.
 ++export function scopeEuNamespaces(env) {
-++  if (env.ALCHEMY_STACK_NAME !== "basalt") return env;
-++  return Object.fromEntries(Object.entries(env).map(([name, value]) => [
-++    name,
-++    value !== null && typeof value === "object" &&
-++    "jurisdiction" in value && typeof value.jurisdiction === "function" &&
-++    "idFromName" in value && typeof value.idFromName === "function"
-++      ? value.jurisdiction("eu")
-++      : value,
-++  ]));
+++  if (env?.[euScoped] || env?.ALCHEMY_STACK_NAME !== "basalt") return env;
+++  const scoped = new Map();
+++  return new Proxy(env, {
+++    get(target, name) {
+++      if (name === euScoped) return true;
+++      const value = Reflect.get(target, name);
+++      if (!isNamespace(value)) return value;
+++      if (!scoped.has(name)) scoped.set(name, value.jurisdiction("eu"));
+++      return scoped.get(name);
+++    },
+++  });
 ++}
 ++
   const moduleImport = import("cloudflare:workers");
@@ -2447,12 +2456,12 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
       DurableObject: class {
       },
 -@@ -20,3 +21,18 @@ const modulePromise = moduleImport.catch(() => ({
-+@@ -19,4 +32,19 @@ const modulePromise = moduleImport.catch(() => ({
++@@ -19,4 +40,19 @@ const modulePromise = moduleImport.catch(() => ({
 + }));
   const cloudflare_workers = Effect.promise(() => modulePromise);
   export default cloudflare_workers;
  -//# sourceMappingURL=cloudflare_workers.js.map
-@@ -1059,21 +3466,35 @@
+@@ -1059,21 +3474,45 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
         throw error;
       }));
  diff --git a/src/Cloudflare/Workers/cloudflare_workers.ts b/src/Cloudflare/Workers/cloudflare_workers.ts
@@ -2461,20 +2470,30 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
  --- a/src/Cloudflare/Workers/cloudflare_workers.ts
  +++ b/src/Cloudflare/Workers/cloudflare_workers.ts
 -@@ -11,8 +11,9 @@ import * as Effect from "effect/Effect";
-+@@ -9,10 +9,23 @@ import * as Effect from "effect/Effect";
++@@ -9,10 +9,33 @@ import * as Effect from "effect/Effect";
 + // attached immediately so the rejection is always handled.
 + // Type the import before chaining to avoid expanding the full module namespace
   // while TypeScript infers the catch result.
-++export function scopeEuNamespaces(env: Record<string, unknown>) {
-++  if (env.ALCHEMY_STACK_NAME !== "basalt") return env;
-++  return Object.fromEntries(Object.entries(env).map(([name, value]) => [
-++    name,
-++    value !== null && typeof value === "object" &&
-++    "jurisdiction" in value && typeof value.jurisdiction === "function" &&
-++    "idFromName" in value && typeof value.idFromName === "function"
-++      ? value.jurisdiction("eu")
-++      : value,
-++  ]));
+++const euScoped = Symbol.for("basalt.euScopedEnv");
+++type Namespace = { jurisdiction(value: "eu"): unknown; idFromName(name: string): unknown };
+++const isNamespace = (value: unknown): value is Namespace => value !== null && typeof value === "object" &&
+++  typeof (value as Partial<Namespace>).jurisdiction === "function" &&
+++  typeof (value as Partial<Namespace>).idFromName === "function" &&
+++  typeof (value as { fetch?: unknown }).fetch !== "function";
+++// The importable env resolves bindings on access and need not expose own keys, so it is
+++// wrapped instead of copied. Namespaces are scoped on first access; service stubs have fetch.
+++export function scopeEuNamespaces(env: Record<PropertyKey, unknown>) {
+++  if (env?.[euScoped] || env?.ALCHEMY_STACK_NAME !== "basalt") return env;
+++  const scoped = new Map<PropertyKey, unknown>();
+++  return new Proxy(env, {
+++    get(target, name) {
+++      if (name === euScoped) return true;
+++      const value = Reflect.get(target, name);
+++      if (!isNamespace(value)) return value;
+++      if (!scoped.has(name)) scoped.set(name, value.jurisdiction("eu"));
+++      return scoped.get(name);
+++    },
+++  });
 ++}
 ++
   const moduleImport: Promise<typeof import("cloudflare:workers")> =
@@ -2488,7 +2507,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
         ({
           env: {},
 -@@ -27,3 +28,20 @@ const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")> =
-+@@ -27,3 +40,20 @@ const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")> =
++@@ -27,3 +50,20 @@ const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")> =
     Effect.promise(() => modulePromise);
   
   export default cloudflare_workers;
