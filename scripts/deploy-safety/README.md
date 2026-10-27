@@ -1,6 +1,6 @@
 # Production release safety
 
-These scripts run inside the production GitHub Actions workflow. They read the latest successful GitHub production deployment as the release baseline, classify the candidate against that commit, and keep a small rollback record in GitHub Deployments. The record contains only public commit pins, the source classification, and a report digest.
+These scripts run inside the production GitHub Actions workflow. They read the latest successful GitHub production deployment as the release baseline, classify the candidate against that commit, and keep a small rollback record in GitHub Deployments. The record contains only public commit pins, the source classification, a report digest and, for a database change, the backup name and metadata.
 
 ## Workflow contract
 
@@ -59,7 +59,7 @@ node scripts/deploy-safety/release.ts backup-only \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-For a database change, the command takes a PlanetScale Postgres branch backup, waits until its state is `success`, protects it from deletion and reads it back. The backup name carries the exact before and after Git SHAs and provider pins. The PlanetScale backup API is branch scoped, so the backup covers the production branch containing both logical databases, `postgres` and `basalt_pool`. The protected backup remains at PlanetScale, independent of the Actions run.
+For a database change, the command takes a PlanetScale Postgres branch backup, waits until its state is `success`, protects it from deletion and reads it back. The backup name identifies the exact release transition; see [Backup name and metadata](#backup-name-and-metadata). The PlanetScale backup API is branch scoped, so the backup covers the production branch containing both logical databases, `postgres` and `basalt_pool`. The protected backup remains at PlanetScale, independent of the Actions run.
 
 After the protected Environment approves the manual deploy job, use:
 
@@ -113,6 +113,20 @@ node scripts/deploy-safety/release.ts manual-rollback \
 ```
 
 The `manual-rollback` command reclassifies the exact report against the failed release and its last successful base. It records the rollback transition after the parent workflow's operator-owned restore step. It has no environment variable, shell hook or caller-supplied “restore succeeded” receipt.
+
+### Backup name and metadata
+
+A release backup is named `basalt-release-v2-<digest>`, 61 characters. The digest is the unpadded base64url SHA-256 of the backup metadata, serialized as JSON with sorted keys. The metadata holds the base and candidate Git SHAs and provider pins, the database scope with both logical databases and the production branch name, and that branch's cluster size and replica topology when the backup was taken. A name longer than 64 characters is refused before the backup is requested. PlanetScale rejects long names with HTTP 422, so the name can't carry the metadata itself.
+
+The full metadata is stored in the GitHub deployment payload as `backupMetadata`, next to `backupName`. Every read of a recorded backup checks that the metadata's digest equals the digest in the name and that the metadata names the same transition as the payload: base and candidate commits, base pins and, for a release, candidate pins. The deploy runner passes the verified backup to the release record, and a rollback record copies it from the release it rolls back.
+
+Matching is exact:
+
+- `backup-only` recomputes the expected name from the report and the current production branch, then reuses or creates exactly that backup.
+- Before a database-changing deploy, each PostgreSQL branch's expected name is recomputed from the report and that branch's current context. If the branch was resized between backup and deploy, nothing matches and the deploy stops.
+- `rollback-target` and `manual-rollback` use the backup the release recorded in GitHub Deployments, so a later resize doesn't hide it.
+
+Exactly one backup must match. Other backups, such as PlanetScale's own, are ignored. A malformed `basalt-release-` name, a digest mismatch, missing or orphaned payload metadata, or more than one match stops the release. The earlier `basalt-release-v1-` format embedded compressed metadata in the name. Those names can still be read, but new backups always use v2.
 
 ## Provider contracts
 

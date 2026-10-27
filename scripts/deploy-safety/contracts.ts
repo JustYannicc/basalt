@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { deflateRawSync, inflateRawSync } from "node:zlib";
+import { inflateRawSync } from "node:zlib";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
 
 export const WORKFLOW_DRAIN_STEP_NAME =
@@ -14,7 +14,12 @@ export const DATABASE_SCOPE = {
 
 const shaPattern = /^[a-f0-9]{40}$/i;
 const hashPattern = /^[a-f0-9]{64}$/i;
-const backupPrefix = "basalt-release-v1-";
+const basaltBackupPrefix = "basalt-release-";
+const legacyBackupPrefix = `${basaltBackupPrefix}v1-`;
+const backupPrefix = `${basaltBackupPrefix}v2-`;
+const backupDigestPattern = /^[A-Za-z0-9_-]{43}$/;
+/** PlanetScale rejected an 880-character v1 name with HTTP 422; its own backup names are about 23 characters. */
+export const MAXIMUM_BACKUP_NAME_LENGTH = 64;
 
 export class SafetyGateError extends Error {
   constructor(message: string) {
@@ -46,6 +51,9 @@ export type BackupMetadata = {
   scope: typeof DATABASE_SCOPE & { branch: string };
   branchContext: { clusterSize: string; hasReplicas: boolean };
 };
+
+/** A backup name together with the metadata its name digest commits to. */
+export type RecordedBackup = { name: string; metadata: BackupMetadata };
 
 export type WorkflowStatus =
   | "queued"
@@ -114,29 +122,101 @@ export function parsePinSummary(value: unknown, label = "deployment pins"): PinS
   };
 }
 
+export function createBackupMetadata(
+  report: ClassificationReport,
+  branchName: string,
+  branchClusterSize: string,
+  branchHasReplicas: boolean,
+): BackupMetadata {
+  return parseBackupMetadata({
+    schemaVersion: 1,
+    base: { gitCommit: report.base.gitCommit, pins: summarizePins(report.base.pins) },
+    candidate: { gitCommit: report.candidate.gitCommit, pins: summarizePins(report.candidate.pins) },
+    scope: { ...DATABASE_SCOPE, branch: nonEmptyString(branchName, "backup branch name") },
+    branchContext: { clusterSize: branchClusterSize, hasReplicas: branchHasReplicas },
+  });
+}
+
+/** The name carries only a digest of the metadata; the GitHub deployment payload records the metadata itself. */
+export function backupNameFor(metadata: BackupMetadata): string {
+  const name = `${backupPrefix}${backupMetadataDigest(metadata)}`;
+  if (name.length > MAXIMUM_BACKUP_NAME_LENGTH)
+    throw new SafetyGateError("Release backup name exceeds the provider name limit");
+  return name;
+}
+
+export function createRecordedBackup(
+  report: ClassificationReport,
+  branchName: string,
+  branchClusterSize: string,
+  branchHasReplicas: boolean,
+): RecordedBackup {
+  const metadata = createBackupMetadata(report, branchName, branchClusterSize, branchHasReplicas);
+  return { name: backupNameFor(metadata), metadata };
+}
+
 export function createBackupName(
   report: ClassificationReport,
   branchName: string,
   branchClusterSize: string,
   branchHasReplicas: boolean,
 ): string {
-  const metadata: BackupMetadata = {
-    schemaVersion: 1,
-    base: { gitCommit: report.base.gitCommit, pins: summarizePins(report.base.pins) },
-    candidate: { gitCommit: report.candidate.gitCommit, pins: summarizePins(report.candidate.pins) },
-    scope: { ...DATABASE_SCOPE, branch: nonEmptyString(branchName, "backup branch name") },
-    branchContext: { clusterSize: branchClusterSize, hasReplicas: branchHasReplicas },
-  };
-  const compressed = deflateRawSync(Buffer.from(stableStringify(metadata))).toString("base64url");
-  const name = `${backupPrefix}${compressed}`;
-  if (name.length > 4096) throw new SafetyGateError("Release backup metadata exceeds the provider name limit");
-  return name;
+  return createRecordedBackup(report, branchName, branchClusterSize, branchHasReplicas).name;
 }
 
-export function parseBackupName(name: unknown): BackupMetadata {
-  if (typeof name !== "string" || !name.startsWith(backupPrefix))
-    throw new SafetyGateError("PlanetScale backup is missing Basalt rollback metadata");
-  const encoded = name.slice(backupPrefix.length);
+export type BackupNameFormat = { format: "v2" } | { format: "v1"; metadata: BackupMetadata };
+
+/**
+ * Undefined for a backup Basalt doesn't own, such as PlanetScale's own. Throws for any malformed
+ * `basalt-release-` name, including an unknown version.
+ */
+export function readBackupName(name: unknown): BackupNameFormat | undefined {
+  if (typeof name !== "string" || !name.startsWith(basaltBackupPrefix)) return undefined;
+  if (name.startsWith(backupPrefix)) {
+    if (!backupDigestPattern.test(name.slice(backupPrefix.length)))
+      throw new SafetyGateError("PlanetScale backup name digest is malformed");
+    return { format: "v2" };
+  }
+  if (name.startsWith(legacyBackupPrefix)) return { format: "v1", metadata: decodeLegacyBackupName(name) };
+  throw new SafetyGateError("PlanetScale backup name uses an unknown Basalt format");
+}
+
+/**
+ * Proves `metadata` is what `name` identifies and returns it validated: a v2 name's digest must equal
+ * the metadata digest. A legacy v1 name embeds its metadata, so `metadata` may be omitted, and must
+ * match when given.
+ */
+export function verifyBackupMetadata(name: unknown, metadata?: unknown): BackupMetadata {
+  const format = readBackupName(name);
+  if (!format) throw new SafetyGateError("PlanetScale backup is missing Basalt rollback metadata");
+  if (format.format === "v1") {
+    if (metadata === undefined) return format.metadata;
+    const parsed = parseBackupMetadata(metadata);
+    if (stableStringify(parsed) !== stableStringify(format.metadata))
+      throw new SafetyGateError("PlanetScale backup metadata does not match its legacy name");
+    return parsed;
+  }
+  if (metadata === undefined) throw new SafetyGateError("Backup reference is missing its rollback metadata");
+  const parsed = parseBackupMetadata(metadata);
+  if (backupNameFor(parsed) !== name)
+    throw new SafetyGateError("PlanetScale backup metadata does not match the digest in its name");
+  return parsed;
+}
+
+/** Whether recorded backup metadata describes the classified release transition. */
+export function backupMatchesReport(metadata: BackupMetadata, report: ClassificationReport): boolean {
+  return metadata.base.gitCommit === report.base.gitCommit &&
+    metadata.candidate.gitCommit === report.candidate.gitCommit &&
+    stableStringify(metadata.base.pins) === stableStringify(summarizePins(report.base.pins)) &&
+    stableStringify(metadata.candidate.pins) === stableStringify(summarizePins(report.candidate.pins));
+}
+
+function backupMetadataDigest(metadata: BackupMetadata): string {
+  return createHash("sha256").update(stableStringify(metadata)).digest("base64url");
+}
+
+function decodeLegacyBackupName(name: string): BackupMetadata {
+  const encoded = name.slice(legacyBackupPrefix.length);
   if (!/^[A-Za-z0-9_-]+$/.test(encoded) || encoded.length > 6000)
     throw new SafetyGateError("PlanetScale backup metadata is malformed");
 

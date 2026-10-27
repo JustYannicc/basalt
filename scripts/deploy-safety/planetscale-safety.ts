@@ -1,13 +1,14 @@
 import type { AttemptWindow } from "./github-ledger.ts";
 import type { ClassificationReport } from "../releases/types.ts";
 import {
-  createBackupName,
+  backupMatchesReport,
+  createRecordedBackup,
   DATABASE_SCOPE,
-  parseBackupName,
+  readBackupName,
   SafetyGateError,
-  stableStringify,
-  summarizePins,
+  verifyBackupMetadata,
   type BackupMetadata,
+  type RecordedBackup,
 } from "./contracts.ts";
 import { record, type Fetcher } from "./http.ts";
 import { PlanetScaleApi, type BackupRecord, type BranchRecord, type DatabaseRecord, type PlanetScaleCredentials } from "./planetscale-api.ts";
@@ -15,6 +16,8 @@ import { PlanetScaleApi, type BackupRecord, type BranchRecord, type DatabaseReco
 export type BackupGateResult =
   | { state: "skipped"; reason: "not-database-changing" | "initial-database-absent" }
   | { state: "ready"; backupName: string; backupId: string };
+
+export type ReadyBackup = { backup: BackupRecord; metadata: BackupMetadata };
 
 export type ManualRollbackTarget = {
   backupId: string;
@@ -88,30 +91,35 @@ export class PlanetScaleSafety {
     const branch = await this.api.getBranch(DATABASE_SCOPE.database, database.default_branch);
     assertProductionBranch(branch);
 
-    const backupName = createBackupName(report, branch.name, branch.cluster_name, branch.has_replicas);
+    const expected = expectedBackup(report, branch);
     const existing = (await this.api.listBackups(DATABASE_SCOPE.database, branch.name))
-      .filter((backup) => backup.name === backupName);
+      .filter((backup) => backup.name === expected.name);
     if (existing.length > 1) throw new SafetyGateError("Multiple PlanetScale backups claim the same release transition");
 
-    const backup = existing[0] ?? await this.api.createBackup(DATABASE_SCOPE.database, branch.name, backupName);
-    const complete = await this.waitForBackup(report, backupName, branch.name, backup);
-    return { state: "ready", backupName, backupId: complete.id };
+    const backup = existing[0] ?? await this.api.createBackup(DATABASE_SCOPE.database, branch.name, expected.name);
+    const complete = await this.waitForBackup(expected, backup);
+    return { state: "ready", backupName: expected.name, backupId: complete.id };
   }
 
-  async assertBackupReady(report: ClassificationReport, expectedBackupName?: string): Promise<BackupRecord> {
+  /**
+   * With `recorded` (the ledger's backup name and metadata), only that exact verified backup counts.
+   * Without it, each branch's expected name is recomputed from the report and that branch's current
+   * context, so a branch resized since the backup no longer matches and the gate fails closed.
+   */
+  async assertBackupReady(report: ClassificationReport, recorded?: RecordedBackup): Promise<ReadyBackup> {
     if (!report.databaseChanged) throw new SafetyGateError("No database backup is required for this release");
-    const matches = await this.findMatchingBackups(report, expectedBackupName);
+    const matches = await this.findMatchingBackups(report, recorded);
     if (matches.length !== 1) throw new SafetyGateError("Expected exactly one recorded rollback backup for this release transition");
     const { backup, metadata } = matches[0]!;
     assertBackupRecord(backup, metadata);
     const detail = await this.api.getBackup(DATABASE_SCOPE.database, metadata.scope.branch, backup.id);
+    if (detail.name !== backup.name) throw new SafetyGateError("PlanetScale returned a backup with an unexpected name");
     assertBackupRecord(detail, metadata);
-    return detail;
+    return { backup: detail, metadata };
   }
 
-  async manualRollbackTarget(report: ClassificationReport, expectedBackupName?: string): Promise<ManualRollbackTarget> {
-    const backup = await this.assertBackupReady(report, expectedBackupName);
-    const metadata = parseBackupName(backup.name);
+  async manualRollbackTarget(report: ClassificationReport, recorded?: RecordedBackup): Promise<ManualRollbackTarget> {
+    const { backup, metadata } = await this.assertBackupReady(report, recorded);
     return {
       backupId: backup.id,
       backupName: backup.name,
@@ -123,26 +131,22 @@ export class PlanetScaleSafety {
     };
   }
 
-  private async waitForBackup(
-    report: ClassificationReport,
-    name: string,
-    branchName: string,
-    initial: BackupRecord,
-  ): Promise<BackupRecord> {
+  /** `expected` was just derived from the report and branch, so only the provider's record needs checking. */
+  private async waitForBackup(expected: RecordedBackup, initial: BackupRecord): Promise<BackupRecord> {
+    const branchName = expected.metadata.scope.branch;
     let backup = initial;
     const wait = { ...defaultWait, ...this.waitOptions };
     const deadline = wait.now() + wait.timeoutMs;
     while (true) {
-      if (backup.name !== name) throw new SafetyGateError("PlanetScale returned a backup with an unexpected name");
+      if (backup.name !== expected.name) throw new SafetyGateError("PlanetScale returned a backup with an unexpected name");
       if (backup.state === "success") {
         let current = backup;
         if (!current.protected) current = await this.api.protectBackup(DATABASE_SCOPE.database, branchName, current.id);
         if (current.state !== "success" || !current.protected)
           throw new SafetyGateError("PlanetScale backup completed but could not be protected");
         current = await this.api.getBackup(DATABASE_SCOPE.database, branchName, current.id);
-        const metadata = parseBackupName(current.name);
-        assertBackupMatchesReport(metadata, report);
-        assertBackupRecord(current, metadata);
+        if (current.name !== expected.name) throw new SafetyGateError("PlanetScale returned a backup with an unexpected name");
+        assertBackupRecord(current, expected.metadata);
         return current;
       }
       if (backup.state !== "pending" && backup.state !== "running")
@@ -153,34 +157,34 @@ export class PlanetScaleSafety {
     }
   }
 
-  private async findMatchingBackups(report: ClassificationReport, expectedBackupName?: string): Promise<Array<{ backup: BackupRecord; metadata: BackupMetadata }>> {
+  private async findMatchingBackups(report: ClassificationReport, recorded?: RecordedBackup): Promise<ReadyBackup[]> {
+    if (recorded) assertBackupMatchesReport(verifyBackupMetadata(recorded.name, recorded.metadata), report);
     const databaseMatches = await this.api.listDatabases(DATABASE_SCOPE.database);
     if (!databaseMatches.some((database) => database.name === DATABASE_SCOPE.database && database.kind === "postgresql"))
       throw new SafetyGateError("PlanetScale production database is not available for rollback");
 
-    const matches: Array<{ backup: BackupRecord; metadata: BackupMetadata }> = [];
+    const matches: ReadyBackup[] = [];
     const branches = await this.api.listBranches(DATABASE_SCOPE.database);
     for (const branch of branches) {
       if (branch.kind !== "postgresql") continue;
+      const expected = recorded ?? expectedBackup(report, branch);
       for (const backup of await this.api.listBackups(DATABASE_SCOPE.database, branch.name)) {
-        if (!backup.name.startsWith("basalt-release-v1-")) continue;
-        const metadata = parseBackupName(backup.name);
-        if ((!expectedBackupName || backup.name === expectedBackupName) && backupMatchesReport(metadata, report))
-          matches.push({ backup, metadata });
+        // Foreign backups are skipped; a malformed Basalt name throws here.
+        const format = readBackupName(backup.name);
+        if (format?.format === "v1") {
+          if ((!recorded || backup.name === recorded.name) && backupMatchesReport(format.metadata, report))
+            matches.push({ backup, metadata: format.metadata });
+        } else if (format && backup.name === expected.name) {
+          matches.push({ backup, metadata: expected.metadata });
+        }
       }
     }
     return matches;
   }
 }
 
-export function backupMatchesReport(metadata: BackupMetadata, report: ClassificationReport): boolean {
-  return metadata.base.gitCommit === report.base.gitCommit &&
-    metadata.candidate.gitCommit === report.candidate.gitCommit &&
-    stableStringify(metadata.base.pins) === stableStringify(summarizePins(report.base.pins)) &&
-    stableStringify(metadata.candidate.pins) === stableStringify(summarizePins(report.candidate.pins)) &&
-    metadata.scope.provider === DATABASE_SCOPE.provider &&
-    metadata.scope.database === DATABASE_SCOPE.database &&
-    DATABASE_SCOPE.logicalDatabases.every((database) => metadata.scope.logicalDatabases.includes(database));
+function expectedBackup(report: ClassificationReport, branch: BranchRecord): RecordedBackup {
+  return createRecordedBackup(report, branch.name, branch.cluster_name, branch.has_replicas);
 }
 
 function assertProductionDatabase(database: DatabaseRecord): void {

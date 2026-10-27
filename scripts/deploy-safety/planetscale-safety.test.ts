@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
-import { parseBackupName } from "./contracts.ts";
+import {
+  createBackupName,
+  createBackupMetadata,
+  createRecordedBackup,
+  MAXIMUM_BACKUP_NAME_LENGTH,
+  type RecordedBackup,
+} from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 
 const sha = (character: string) => character.repeat(40);
@@ -98,10 +104,10 @@ test("branch backup is completed, protected and records both logical databases w
 
   const create = requests.find((request) => request.method === "POST")!;
   const backupName = (create.body as { name: string }).name;
-  const metadata = parseBackupName(backupName);
-  assert.equal(metadata.base.gitCommit, report.base.gitCommit);
-  assert.equal(metadata.candidate.gitCommit, report.candidate.gitCommit);
-  assert.deepEqual(metadata.scope.logicalDatabases, ["postgres", "basalt_pool"]);
+  assert.equal(backupName, result.backupName);
+  assert.ok(backupName.length <= MAXIMUM_BACKUP_NAME_LENGTH);
+  assert.equal(backupName, createBackupName(report, "main", "PS_5", true));
+  assert.deepEqual(createBackupMetadata(report, "main", "PS_5", true).scope.logicalDatabases, ["postgres", "basalt_pool"]);
   assert.deepEqual(create.body, { name: backupName, emergency: false });
   assert.equal(requests.some((request) => request.method === "PATCH" && (request.body as { protected?: boolean }).protected === true), true);
   assert.ok(requests.every((request) => request.headers.get("authorization") === "service-id-fixture:service-secret-fixture"));
@@ -147,4 +153,108 @@ test("an initial retry continues only with a database created inside a failed at
       /PlanetScale database already exists/,
       JSON.stringify({ databases, windows }),
     );
+});
+
+type FixtureBranch = { cluster: string; replicas: boolean; backups: Array<{ id: string; name: string }> };
+
+function rollbackSafety(branches: Record<string, FixtureBranch>) {
+  const requests: string[] = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    requests.push(`${method} ${url.pathname}`);
+    if (method !== "GET") throw new Error(`Unexpected PlanetScale write: ${method} ${url.pathname}`);
+    const path = url.pathname.replace(/^.*\/databases/, "");
+    if (path === "")
+      return Response.json(paginated([{ name: "basalt", kind: "postgresql", ready: true, default_branch: "main" }]));
+    if (path === "/basalt/branches")
+      return Response.json(paginated(Object.entries(branches).map(([name, branch]) => ({
+        id: `${name}-id`, name, kind: "postgresql", state: "ready", ready: true, production: name === "main",
+        cluster_name: branch.cluster, has_replicas: branch.replicas,
+      }))));
+    const match = /^\/basalt\/branches\/([^/]+)\/backups(?:\/([^/]+))?$/.exec(path);
+    const branch = match && branches[match[1]!];
+    if (match && branch) {
+      const records = branch.backups.map((backup) => ({ ...backupRecord(backup.name, "success", true), id: backup.id, database_branch: { name: match[1] } }));
+      if (!match[2]) return Response.json(paginated(records));
+      const found = records.find((backup) => backup.id === match[2]);
+      if (found) return Response.json(found);
+    }
+    throw new Error(`Unexpected PlanetScale fixture request: ${method} ${url.pathname}`);
+  };
+  const safety = new PlanetScaleSafety(
+    { organization: "basalt-org", tokenId: "service-id-fixture", token: "service-secret-fixture" },
+    fetcher,
+  );
+  return { safety, requests };
+}
+
+function recordedFor(value: ClassificationReport, branch = "main", cluster = "PS_5", replicas = true): RecordedBackup {
+  return createRecordedBackup(value, branch, cluster, replicas);
+}
+
+test("the rollback target is the exact recorded v2 backup, matched by digest and verified against the report", async () => {
+  const recorded = recordedFor(report);
+  const otherRelease = recordedFor({ ...report, candidate: { ...report.candidate, gitCommit: "4".repeat(40) } });
+  const branches = {
+    main: {
+      cluster: "PS_5",
+      replicas: true,
+      backups: [
+        { id: "system", name: "2026.10.27 03:00:00" },
+        { id: "other", name: otherRelease.name },
+        { id: "backup-id", name: recorded.name },
+      ],
+    },
+    restored: { cluster: "PS_5", replicas: true, backups: [] },
+  };
+
+  const target = await rollbackSafety(branches).safety.manualRollbackTarget(report, recorded);
+  assert.deepEqual(target, {
+    backupId: "backup-id",
+    backupName: recorded.name,
+    productionBranch: "main",
+    base: recorded.metadata.base,
+    candidate: recorded.metadata.candidate,
+    logicalDatabases: ["postgres", "basalt_pool"],
+    manualRestoreRequired: true,
+  });
+
+  // Without a ledger record, each branch's expected name is recomputed from its current context.
+  const ready = await rollbackSafety(branches).safety.assertBackupReady(report);
+  assert.equal(ready.backup.id, "backup-id");
+  assert.deepEqual(ready.metadata, recorded.metadata);
+
+  // After a resize the recomputed name no longer matches, but the recorded metadata still finds it.
+  const resized = { ...branches, main: { ...branches.main, cluster: "PS_10" } };
+  await assert.rejects(rollbackSafety(resized).safety.assertBackupReady(report), /Expected exactly one/);
+  assert.equal((await rollbackSafety(resized).safety.manualRollbackTarget(report, recorded)).backupId, "backup-id");
+});
+
+test("rollback target selection fails closed on digest mismatch, ambiguity and malformed Basalt names", async () => {
+  const recorded = recordedFor(report);
+  const branchWith = (...backups: Array<{ id: string; name: string }>) => ({ main: { cluster: "PS_5", replicas: true, backups } });
+
+  const tampered = rollbackSafety(branchWith({ id: "backup-id", name: recorded.name }));
+  await assert.rejects(
+    tampered.safety.manualRollbackTarget(report, { name: recorded.name, metadata: recordedFor(report, "main", "PS_10").metadata }),
+    /does not match the digest in its name/,
+  );
+  assert.deepEqual(tampered.requests, []);
+
+  const otherRelease = recordedFor({ ...report, base: { ...report.base, gitCommit: "5".repeat(40) } });
+  await assert.rejects(
+    rollbackSafety(branchWith({ id: "backup-id", name: otherRelease.name })).safety.manualRollbackTarget(report, otherRelease),
+    /does not match the classified release transition/,
+  );
+
+  await assert.rejects(
+    rollbackSafety(branchWith({ id: "a", name: recorded.name }, { id: "b", name: recorded.name })).safety.manualRollbackTarget(report, recorded),
+    /Expected exactly one/,
+  );
+  await assert.rejects(
+    rollbackSafety(branchWith({ id: "backup-id", name: recorded.name }, { id: "bad", name: "basalt-release-v2-short" })).safety.manualRollbackTarget(report, recorded),
+    /digest is malformed/,
+  );
+  await assert.rejects(rollbackSafety(branchWith()).safety.manualRollbackTarget(report, recorded), /Expected exactly one/);
 });

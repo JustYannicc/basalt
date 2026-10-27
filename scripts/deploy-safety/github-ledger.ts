@@ -1,6 +1,18 @@
 import { appendFileSync } from "node:fs";
 import type { ClassificationReport } from "../releases/types.ts";
-import { parseBackupName, parsePinSummary, reportDigest, SafetyGateError, stableStringify, summarizePins, verifyReportBase, type PinSummary } from "./contracts.ts";
+import {
+  backupMatchesReport,
+  parsePinSummary,
+  reportDigest,
+  SafetyGateError,
+  stableStringify,
+  summarizePins,
+  verifyBackupMetadata,
+  verifyReportBase,
+  type BackupMetadata,
+  type PinSummary,
+  type RecordedBackup,
+} from "./contracts.ts";
 import { record, requestJson, stringField, withBearer, type Fetcher } from "./http.ts";
 
 const apiOrigin = "https://api.github.com";
@@ -26,6 +38,8 @@ export type DeploymentPayload = {
   workflowChanged: boolean;
   reportDigest: string;
   backupName?: string;
+  /** The full metadata behind `backupName`'s digest. Parsing verifies it and fills it in for a legacy v1 name. */
+  backupMetadata?: BackupMetadata;
   rollbackOf?: string;
 };
 
@@ -154,15 +168,15 @@ export async function beginReleaseDeployment(
   report: ClassificationReport,
   environment: LedgerEnvironment,
   fetcher: Fetcher = fetch,
-  backupName?: string,
+  backup?: RecordedBackup,
 ): Promise<number> {
   const ledger = await readDeploymentLedger(environment, fetcher);
   assertReportUsesLatestDeploy(report, ledger);
   if (ledger.state === "unresolved") throw new SafetyGateError("Cannot begin while another production deployment is unresolved");
-  if (report.databaseChanged && !backupName)
-    throw new SafetyGateError("Database-changing release requires the protected backup name before deployment begins");
-  if (backupName) assertBackupNameMatchesReport(backupName, report);
-  const payload = makePayload(report, report.candidate.gitCommit, report.candidate.pins, "release", backupName);
+  if (report.databaseChanged && !backup)
+    throw new SafetyGateError("Database-changing release requires the protected backup before deployment begins");
+  if (backup) assertBackupMatchesReport(backup, report);
+  const payload = makePayload(report, report.candidate.gitCommit, report.candidate.pins, "release", backup);
   return createDeployment(environment, payload, fetcher);
 }
 
@@ -178,14 +192,9 @@ export async function beginRollbackDeployment(
     throw new SafetyGateError("Production deployment changed after the rollback plan was prepared");
   assertManualRollbackCandidate(report, ledger);
 
-  const rollbackPayload = makePayload(report, report.base.gitCommit, report.base.pins, "rollback");
+  const backup = report.databaseChanged ? releaseBackup(ledger) : undefined;
+  const rollbackPayload = makePayload(report, report.base.gitCommit, report.base.pins, "rollback", backup);
   rollbackPayload.rollbackOf = report.candidate.gitCommit;
-  if (report.databaseChanged) {
-    const releasePayload = ledger.payload;
-    if (!releasePayload?.backupName)
-      throw new SafetyGateError("Database rollback is missing its protected backup reference");
-    rollbackPayload.backupName = releasePayload.backupName;
-  }
   return createDeployment(environment, rollbackPayload, fetcher);
 }
 
@@ -221,11 +230,19 @@ export async function finishDeployment(
 export function deploymentPayloadFor(
   report: ClassificationReport,
   kind: "release" | "rollback" = "release",
-  backupName?: string,
+  backup?: RecordedBackup,
 ): DeploymentPayload {
   const gitCommit = kind === "release" ? report.candidate.gitCommit : report.base.gitCommit;
   const pins = kind === "release" ? report.candidate.pins : report.base.pins;
-  return makePayload(report, gitCommit, pins, kind, backupName);
+  return makePayload(report, gitCommit, pins, kind, backup);
+}
+
+/** The protected backup the latest production release recorded, verified when its payload was parsed. */
+export function releaseBackup(ledger: DeploymentLedger): RecordedBackup {
+  const payload = ledger.state === "uninitialized" ? undefined : ledger.payload;
+  if (!payload?.backupName || !payload.backupMetadata)
+    throw new SafetyGateError("Database rollback is missing its protected backup reference");
+  return { name: payload.backupName, metadata: payload.backupMetadata };
 }
 
 async function createDeployment(
@@ -269,7 +286,7 @@ function makePayload(
   gitCommit: string,
   pins: ClassificationReport["candidate"]["pins"],
   kind: "release" | "rollback",
-  backupName?: string,
+  backup?: RecordedBackup,
 ): DeploymentPayload {
   const payload: DeploymentPayload = {
     system: systemName,
@@ -284,7 +301,10 @@ function makePayload(
     workflowChanged: report.workflowChanged,
     reportDigest: reportDigest(report),
   };
-  if (backupName) payload.backupName = backupName;
+  if (backup) {
+    payload.backupName = backup.name;
+    payload.backupMetadata = backup.metadata;
+  }
   return payload;
 }
 
@@ -310,7 +330,10 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
   if (payload.backupName !== undefined) {
     if (typeof payload.backupName !== "string") throw new SafetyGateError("Deployment backup name is invalid");
     parsed.backupName = payload.backupName;
-    parseBackupName(payload.backupName);
+    parsed.backupMetadata = verifyBackupMetadata(payload.backupName, payload.backupMetadata);
+    assertBackupMatchesPayload(parsed.backupMetadata, parsed);
+  } else if (payload.backupMetadata !== undefined) {
+    throw new SafetyGateError("Deployment backup metadata has no backup name");
   } else if (parsed.databaseChanged && parsed.kind === "release") {
     throw new SafetyGateError("Database-changing deployment ledger is missing its rollback backup name");
   }
@@ -319,12 +342,16 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
   return parsed;
 }
 
-function assertBackupNameMatchesReport(name: string, report: ClassificationReport): void {
-  const metadata = parseBackupName(name);
-  if (metadata.base.gitCommit !== report.base.gitCommit ||
-      metadata.candidate.gitCommit !== report.candidate.gitCommit ||
-      stableStringify(metadata.base.pins) !== stableStringify(summarizePins(report.base.pins)) ||
-      stableStringify(metadata.candidate.pins) !== stableStringify(summarizePins(report.candidate.pins)))
+function assertBackupMatchesPayload(metadata: BackupMetadata, payload: DeploymentPayload): void {
+  if (metadata.base.gitCommit !== payload.baseGitCommit ||
+      metadata.candidate.gitCommit !== payload.candidateGitCommit ||
+      stableStringify(metadata.base.pins) !== stableStringify(payload.basePins) ||
+      (payload.kind === "release" && stableStringify(metadata.candidate.pins) !== stableStringify(payload.pins)))
+    throw new SafetyGateError("Deployment backup metadata does not match its release transition");
+}
+
+function assertBackupMatchesReport(backup: RecordedBackup, report: ClassificationReport): void {
+  if (!backupMatchesReport(verifyBackupMetadata(backup.name, backup.metadata), report))
     throw new SafetyGateError("PlanetScale backup metadata does not match the release classification");
 }
 
