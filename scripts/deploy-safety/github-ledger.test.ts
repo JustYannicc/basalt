@@ -4,15 +4,27 @@ import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
 import {
   assertManualRollbackCandidate,
   assertReportUsesLatestDeploy,
+  beginReleaseDeployment,
   beginRollbackDeployment,
   deploymentPayloadFor,
   readDeploymentLedger,
+  releaseBackup,
   type DeploymentLedger,
 } from "./github-ledger.ts";
-import { createBackupName, summarizePins } from "./contracts.ts";
+import {
+  createBackupMetadata,
+  createRecordedBackup,
+  MAXIMUM_BACKUP_NAME_LENGTH,
+  summarizePins,
+  type RecordedBackup,
+} from "./contracts.ts";
 import { manualRollbackBaselineCommit } from "./release-plan.ts";
 
 const sha = (character: string) => character.repeat(40);
+
+function backupFor(value: ClassificationReport): RecordedBackup {
+  return createRecordedBackup(value, "main", "PS_5", true);
+}
 
 const pins: ReleasePins = {
   tools: { repository: "https://github.com/UsefulSoftwareCo/executor.git", commit: sha("a") },
@@ -52,13 +64,13 @@ function databaseReport(): ClassificationReport {
 }
 
 function readyLedger(value: ClassificationReport): Extract<DeploymentLedger, { state: "ready" }> {
-  const backupName = value.databaseChanged ? createBackupName(value, "main", "PS_5", true) : undefined;
+  const backup = value.databaseChanged ? backupFor(value) : undefined;
   return {
     state: "ready",
     deploymentId: 8,
     gitCommit: value.candidate.gitCommit,
     pins: summarizePins(value.candidate.pins),
-    payload: deploymentPayloadFor(value, "release", backupName),
+    payload: deploymentPayloadFor(value, "release", backup),
   };
 }
 
@@ -102,8 +114,8 @@ test("rollback is blocked when the latest release payload records a different ba
 
 test("database rollback creates a prior-pin ledger entry for failed and successful releases", async () => {
   const value = databaseReport();
-  const backupName = createBackupName(value, "main", "PS_5", true);
-  const latestPayload = deploymentPayloadFor(value, "release", backupName);
+  const backup = backupFor(value);
+  const latestPayload = deploymentPayloadFor(value, "release", backup);
   const priorReport: ClassificationReport = {
     ...value,
     base: { gitCommit: sha("0"), pins },
@@ -142,7 +154,7 @@ test("database rollback creates a prior-pin ledger entry for failed and successf
     assert.equal(create.body?.ref, value.base.gitCommit);
     assert.equal(create.body?.description, "Basalt production rollback");
     assert.deepEqual(create.body?.payload, {
-      ...deploymentPayloadFor(value, "rollback", backupName),
+      ...deploymentPayloadFor(value, "rollback", backup),
       rollbackOf: value.candidate.gitCommit,
     });
     assert.deepEqual(requests.filter((request) => request.method === "POST").map((request) => request.body?.state), [undefined, "in_progress"]);
@@ -151,8 +163,8 @@ test("database rollback creates a prior-pin ledger entry for failed and successf
 
 test("manual DB rollback rejects unresolved and newer production records", async () => {
   const value = databaseReport();
-  const backupName = createBackupName(value, "main", "PS_5", true);
-  const latestPayload = deploymentPayloadFor(value, "release", backupName);
+  const backup = backupFor(value);
+  const latestPayload = deploymentPayloadFor(value, "release", backup);
   const priorReport: ClassificationReport = {
     ...value,
     base: { gitCommit: sha("0"), pins },
@@ -187,7 +199,7 @@ test("manual DB rollback rejects unresolved and newer production records", async
   }
 
   const newer = { ...value, candidate: { ...value.candidate, gitCommit: sha("4") } };
-  const newerPayload = deploymentPayloadFor(newer, "release", backupName);
+  const newerPayload = deploymentPayloadFor(newer, "release", backupFor(newer));
   const requests: string[] = [];
   const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
@@ -212,8 +224,8 @@ test("manual DB rollback rejects unresolved and newer production records", async
 
 test("database rollback ledger start rejects a changed deployment id before creating a record", async () => {
   const value = report();
-  const backupName = createBackupName(value, "main", "PS_5", true);
-  const latestPayload = deploymentPayloadFor(value, "release", backupName);
+  const backup = backupFor(value);
+  const latestPayload = deploymentPayloadFor(value, "release", backup);
   const priorReport: ClassificationReport = {
     ...value,
     base: { gitCommit: sha("0"), pins },
@@ -242,6 +254,93 @@ test("database rollback ledger start rejects a changed deployment id before crea
     /changed after the rollback plan was prepared/,
   );
   assert.equal(requests.some((request) => request === "POST https://api.github.com/repos/owner/repo/deployments"), false);
+});
+
+function priorReportFor(value: ClassificationReport): ClassificationReport {
+  return {
+    ...value,
+    base: { gitCommit: sha("0"), pins },
+    candidate: { gitCommit: value.base.gitCommit, pins: value.base.pins },
+    databaseChanged: false,
+    workflowChanged: false,
+    evidence: { database: { state: "unchanged", sources: [] }, workflow: { state: "unchanged", sources: [] } },
+  };
+}
+
+function ledgerFetcher(latestPayload: unknown, value: ClassificationReport) {
+  return async (input: string | URL | Request) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/deployments"))
+      return Response.json([{ id: 8, sha: value.candidate.gitCommit, environment: "production", payload: latestPayload, created_at: "2026-10-24T12:00:00Z" }]);
+    if (url.pathname.endsWith("/deployments/8/statuses"))
+      return Response.json([{ id: 82, state: "success", created_at: "2026-10-24T12:05:00Z" }]);
+    throw new Error(`Unexpected GitHub fixture request: ${url.pathname}`);
+  };
+}
+
+test("a database release records the full backup metadata next to its short name and reads it back verified", async () => {
+  const value = databaseReport();
+  const backup = backupFor(value);
+  const priorPayload = deploymentPayloadFor(priorReportFor(value));
+  const posted: Array<Record<string, unknown>> = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+    if (url.pathname.endsWith("/deployments") && method === "GET")
+      return Response.json([{ id: 7, sha: value.base.gitCommit, environment: "production", payload: priorPayload, created_at: "2026-10-24T11:00:00Z" }]);
+    if (url.pathname.endsWith("/deployments/7/statuses"))
+      return Response.json([{ id: 72, state: "success", created_at: "2026-10-24T11:05:00Z" }]);
+    if (url.pathname.endsWith("/deployments") && method === "POST") {
+      posted.push(body!.payload as Record<string, unknown>);
+      return Response.json({ id: 8, sha: body!.ref, environment: "production", payload: body!.payload }, { status: 201 });
+    }
+    if (url.pathname.endsWith("/deployments/8/statuses") && method === "POST")
+      return Response.json({ id: 82, state: "in_progress" }, { status: 201 });
+    throw new Error(`Unexpected GitHub fixture request: ${method} ${url.pathname}`);
+  };
+  const environment = { token: "fixture-token", repository: "owner/repo" };
+
+  await assert.rejects(beginReleaseDeployment(value, environment, fetcher), /requires the protected backup/);
+  const other = backupFor({ ...value, candidate: { ...value.candidate, gitCommit: sha("4") } });
+  await assert.rejects(beginReleaseDeployment(value, environment, fetcher, other), /does not match the release classification/);
+  await assert.rejects(
+    beginReleaseDeployment(value, environment, fetcher, { name: backup.name, metadata: other.metadata }),
+    /does not match the digest in its name/,
+  );
+  assert.equal(posted.length, 0, "a rejected backup creates no deployment record");
+
+  assert.equal(await beginReleaseDeployment(value, environment, fetcher, backup), 8);
+  const created = posted[0]!;
+  assert.ok(String(created.backupName).length <= MAXIMUM_BACKUP_NAME_LENGTH);
+  assert.deepEqual(created.backupName, backup.name);
+  assert.deepEqual(created.backupMetadata, backup.metadata);
+
+  const ledger = await readDeploymentLedger(environment, ledgerFetcher(created, value));
+  assert.equal(ledger.state, "ready");
+  assert.deepEqual(releaseBackup(ledger), backup);
+});
+
+test("ledger payloads fail closed on missing, mismatched or orphaned backup metadata", async () => {
+  const value = databaseReport();
+  const backup = backupFor(value);
+  const payload = deploymentPayloadFor(value, "release", backup);
+  const environment = { token: "fixture-token", repository: "owner/repo" };
+  const otherTransition = backupFor({ ...value, base: { ...value.base, gitCommit: sha("5") } });
+  const otherBranch = createBackupMetadata(value, "restored", "PS_5", true);
+  const cases: Array<[string, unknown, RegExp]> = [
+    ["missing metadata", { ...payload, backupMetadata: undefined }, /missing its rollback metadata/],
+    ["digest mismatch", { ...payload, backupMetadata: otherBranch }, /does not match the digest in its name/],
+    ["other transition", { ...payload, backupName: otherTransition.name, backupMetadata: otherTransition.metadata }, /does not match its release transition/],
+    ["orphaned metadata", { ...payload, backupName: undefined }, /has no backup name/],
+    ["unknown format", { ...payload, backupName: "nightly-backup" }, /missing Basalt rollback metadata/],
+    ["malformed digest", { ...payload, backupName: `${backup.name}x` }, /digest is malformed/],
+  ];
+  for (const [label, latestPayload, message] of cases)
+    await assert.rejects(readDeploymentLedger(environment, ledgerFetcher(JSON.parse(JSON.stringify(latestPayload)), value)), message, label);
+
+  assert.throws(() => releaseBackup(readyLedger(report())), /missing its protected backup reference/);
+  assert.throws(() => releaseBackup({ state: "uninitialized" }), /missing its protected backup reference/);
 });
 
 test("initial attempts that all ended without success leave the ledger uninitialized", async () => {

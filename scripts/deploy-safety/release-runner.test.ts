@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
+import { createRecordedBackup, type RecordedBackup } from "./contracts.ts";
 import { assertReleaseMode, executeManualRollback, executeRelease, type ManualRollbackDependencies, type ReleaseDependencies } from "./release-runner.ts";
 
 const sha = (character: string) => character.repeat(40);
@@ -35,13 +36,19 @@ function report(overrides: Partial<ClassificationReport> = {}): ClassificationRe
   };
 }
 
-function dependencies(overrides: Partial<ReleaseDependencies> = {}): ReleaseDependencies & { calls: string[] } {
+function fixtureBackup(value: ClassificationReport): RecordedBackup {
+  return createRecordedBackup(value, "main", "PS_5", true);
+}
+
+function dependencies(overrides: Partial<ReleaseDependencies> = {}): ReleaseDependencies & { calls: string[]; begun: Array<RecordedBackup | undefined> } {
   const calls: string[] = [];
+  const begun: Array<RecordedBackup | undefined> = [];
   return {
     calls,
+    begun,
     validateCredentials: () => { calls.push("validate"); },
-    assertBackup: async () => { calls.push("backup"); },
-    begin: async () => { calls.push("begin"); return 7; },
+    assertBackup: async (value) => { calls.push("backup"); return fixtureBackup(value); },
+    begin: async (_value, backup) => { calls.push("begin"); begun.push(backup); return 7; },
     mark: async (_id, state) => { calls.push(`mark:${state}`); },
     deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; },
     smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
@@ -115,8 +122,10 @@ test("manual release failures do not trigger automatic rollback", async () => {
   process.env.GITHUB_REF = "refs/heads/main";
   try {
     const deps = dependencies({ deploy: async () => { deps.calls.push("deploy"); return { started: true, exitCode: 1 }; } });
-    await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", deps), /manual rollback path/);
+    const value = report({ databaseChanged: true });
+    await assert.rejects(executeRelease(value, "manual", deps), /manual rollback path/);
     assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.deepEqual(deps.begun, [fixtureBackup(value)], "the verified backup reaches the deployment record");
   } finally {
     restore("GITHUB_EVENT_NAME", oldEvent);
     restore("GITHUB_REF", oldRef);

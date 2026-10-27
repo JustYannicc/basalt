@@ -4,9 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClassificationReport } from "../releases/types.ts";
-import { SafetyGateError } from "./contracts.ts";
+import { SafetyGateError, type RecordedBackup } from "./contracts.ts";
 import { OutputTail, redactFailureOutput } from "./failure-output.ts";
-import { beginReleaseDeployment, beginRollbackDeployment, finishDeployment, readLedgerEnvironment } from "./github-ledger.ts";
+import {
+  beginReleaseDeployment,
+  beginRollbackDeployment,
+  finishDeployment,
+  readLedgerEnvironment,
+  releaseBackup,
+  type DeploymentLedger,
+} from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { requirePlanetScaleEnvironment } from "./runtime.ts";
 
@@ -16,8 +23,9 @@ export type CommandResult = { started: boolean; exitCode: number | null };
 
 export type ReleaseDependencies = {
   validateCredentials(): void;
-  assertBackup(report: ClassificationReport): Promise<void>;
-  begin(report: ClassificationReport): Promise<number>;
+  /** Verifies the protected backup and returns it so the deployment record can carry its metadata. */
+  assertBackup(report: ClassificationReport): Promise<RecordedBackup>;
+  begin(report: ClassificationReport, backup?: RecordedBackup): Promise<number>;
   mark(deploymentId: number, state: "success" | "failure"): Promise<void>;
   deploy(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
@@ -49,9 +57,9 @@ export async function executeRelease(
 ): Promise<ReleaseResult> {
   assertReleaseMode(report, mode);
   dependencies.validateCredentials();
-  if (report.databaseChanged) await dependencies.assertBackup(report);
+  const backup = report.databaseChanged ? await dependencies.assertBackup(report) : undefined;
 
-  const deploymentId = await dependencies.begin(report);
+  const deploymentId = await dependencies.begin(report, backup);
   const deploy = await dependencies.deploy();
   if (!deploy.started) {
     await dependencies.mark(deploymentId, "failure");
@@ -133,11 +141,12 @@ export function productionReleaseDependencies(sourceRoot = repositoryRoot, candi
   return {
     validateCredentials: () => validateCandidateSource(sourceRoot, candidateCommit),
     assertBackup: async (report) => {
-      const target = await planetscale.assertBackupReady(report);
-      if (target.state !== "success" || !target.protected)
+      const { backup, metadata } = await planetscale.assertBackupReady(report);
+      if (backup.state !== "success" || !backup.protected)
         throw new SafetyGateError("PlanetScale rollback backup is not both complete and protected");
+      return { name: backup.name, metadata };
     },
-    begin: (report) => beginReleaseDeployment(report, github),
+    begin: (report, backup) => beginReleaseDeployment(report, github, fetch, backup),
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, github),
     deploy: () => runCommand("npm", ["run", "deploy"], sourceRoot),
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
@@ -201,13 +210,14 @@ function validateCandidateSource(sourceRoot: string, candidateCommit?: string): 
 export function productionManualRollbackDependencies(
   sourceRoot: string,
   rollbackCommit: string,
+  ledger: DeploymentLedger,
 ): ManualRollbackDependencies {
   const environment = readLedgerEnvironment();
   const planetscale = new PlanetScaleSafety(requirePlanetScaleEnvironment());
   const release = productionReleaseDependencies(sourceRoot, rollbackCommit);
   return {
     assertBackup: async (report) => {
-      const target = await planetscale.manualRollbackTarget(report);
+      const target = await planetscale.manualRollbackTarget(report, releaseBackup(ledger));
       if (!target.manualRestoreRequired)
         throw new SafetyGateError("Database rollback backup is not available for the classified release");
     },

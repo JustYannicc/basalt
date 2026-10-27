@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
 import { inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
+import { releaseBackup } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { executeManualRollback, executeRelease, productionManualRollbackDependencies, productionReleaseDependencies, resolveCandidateSourceRoot, type ReleaseMode } from "./release-runner.ts";
 import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
@@ -112,7 +113,7 @@ async function main(args: string[]): Promise<void> {
       print({ manualRestoreRequired: false, reason: "database-unchanged" });
       return;
     }
-    const target = await new PlanetScaleSafety(requirePlanetScaleEnvironment()).manualRollbackTarget(plan.report);
+    const target = await new PlanetScaleSafety(requirePlanetScaleEnvironment()).manualRollbackTarget(plan.report, releaseBackup(plan.ledger));
     writeActionOutputs({ manual_restore_required: "true", rollback_backup_id: target.backupId, rollback_backup_name: target.backupName });
     print(target);
     return;
@@ -132,7 +133,7 @@ async function main(args: string[]): Promise<void> {
     const result = await executeManualRollback(
       plan.report,
       expectedDeploymentId,
-      productionManualRollbackDependencies(rollbackRoot, plan.report.base.gitCommit),
+      productionManualRollbackDependencies(rollbackRoot, plan.report.base.gitCommit, plan.ledger),
     );
     writeActionOutputs({ rollback_state: "success", deployment_state: "success" });
     print(result);
@@ -149,8 +150,8 @@ async function main(args: string[]): Promise<void> {
       throw new SafetyGateError("Latest production deployment is unresolved; reconcile it before another release");
     const dependencies = productionReleaseDependencies(candidateRoot, candidate);
     const priorBegin = dependencies.begin;
-    dependencies.begin = async (report) => {
-      const id = await priorBegin(report);
+    dependencies.begin = async (report, backup) => {
+      const id = await priorBegin(report, backup);
       writeActionOutputs({ deployment_id: String(id), deployment_state: "in_progress" });
       return id;
     };
