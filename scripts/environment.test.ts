@@ -65,6 +65,7 @@ test("deploys hand the brand's name and logo to the tools service", () => {
     POOL_APP_SIGNING_KEY: "0".repeat(64),
   });
   assert.equal(env.EXECUTOR_PRODUCT_NAME, brand.name);
+  assert.equal(env.EXECUTOR_COMPUTER_SETUP_URL, "/setup");
   assert.equal(env.EXECUTOR_PRODUCT_LOGO_URL, brand.logo);
   assert.equal(env.AUTH_EMAIL_DOMAIN, brand.emailDomain);
   assert.equal(env.EXECUTOR_PRODUCT_DOCS_URL, brand.links.docs ?? undefined);

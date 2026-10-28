@@ -2,6 +2,7 @@ import {
   body, inputBody, json, native, pool, record, SetupError, security, text, user, type SetupEnv,
 } from "./session.ts";
 import { emitProductEvent } from "./product-events.ts";
+import { readIntent } from "../pool/setup-links.ts";
 export type { SetupEnv } from "./session.ts";
 
 /** Only public computer metadata can leave the browser endpoints. */
@@ -59,6 +60,27 @@ async function ownPool(request: Request, env: SetupEnv, person: string): Promise
 /** Lists still work while the organization list is unavailable; only minting needs it. */
 const ownPoolIfAvailable = (request: Request, env: SetupEnv, person: string) =>
   ownPool(request, env, person).catch(() => undefined);
+
+/** Connections enters the same pool-authored setup flow without minting either credential. */
+async function setupContext(request: Request, env: SetupEnv): Promise<Response> {
+  const person = await user(request, env);
+  const own = await ownPool(request, env, person);
+  if (!own?.pool) throw new SetupError(409, "Your own pool is still being set up. Try again in a minute.");
+  const response = await native(request, env,
+    `/api/organizations/${encodeURIComponent(own.organization)}/apps/${encodeURIComponent(own.pool)}/data/query`,
+    { name: "computerContext", input: {} });
+  if (!response.ok) throw new SetupError(502, "Could not complete setup. Try again.");
+  const result = await body(response);
+  const href = record(result.value).href;
+  const target = typeof href === "string" ? URL.parse(href) : null;
+  if (result.ok !== true || !target || target.origin !== new URL(request.url).origin || target.pathname !== "/setup")
+    throw new SetupError(502, "Could not complete setup. Try again.");
+  const intent = new URLSearchParams(target.hash.slice(1)).get("intent");
+  const selection = await readIntent(env.POOL_APP_SIGNING_KEY, intent, person, Date.now());
+  if (selection.pool !== own.pool || selection.organization !== own.organization || selection.owner !== person)
+    throw new SetupError(502, "Could not complete setup. Try again.");
+  return json({ intent });
+}
 
 async function deleteTools(request: Request, env: SetupEnv, keyId: string): Promise<void> {
   const response = await native(request, env, "api-key/delete", { keyId });
@@ -124,6 +146,10 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
   try {
     const url = new URL(request.url);
     if (request.headers.has("authorization")) throw new SetupError(403, "Setup requires a browser session.");
+    if (url.pathname === "/setup/v1/context") {
+      if (request.method !== "GET") return json({ error: "Method not allowed." }, 405, { Allow: "GET" });
+      return await setupContext(request, env);
+    }
     const claim = /^\/setup\/claim\/([A-Za-z0-9_-]{1,512})$/.exec(url.pathname);
     const computer = /^\/setup\/v1\/computers\/([A-Za-z0-9_-]{1,512})$/.exec(url.pathname);
     const switching = /^\/setup\/v1\/computers\/([A-Za-z0-9_-]{1,512})\/pool$/.exec(url.pathname);
