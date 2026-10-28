@@ -48,7 +48,7 @@ index 93cdce4..8502e4e 100644
        wake: () => Effect.void,
        heartbeat: () => Effect.void,
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
-index 077cd51..a62a76a 100644
+index 077cd51..1d31c85 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
 @@ -1,16 +1,23 @@
@@ -67,7 +67,7 @@ index 077cd51..a62a76a 100644
  import { AlchemyContext } from "alchemy/AlchemyContext";
  import * as Cloudflare from "alchemy/Cloudflare";
 -import { Config, Effect, Layer, Option } from "effect";
-+import { Cause, Config, Effect, Layer, Option } from "effect";
++import { Cause, Config, Effect, Layer, Option, Predicate } from "effect";
  import { HttpApiBuilder } from "effect/http-api";
  import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
  import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
@@ -77,7 +77,59 @@ index 077cd51..a62a76a 100644
  import { cloudSentry } from "./implementation/error-reporting.ts";
  import { cloudAnalytics } from "./implementation/product-analytics.ts";
  import { postHogBindings } from "./infrastructure/posthog.ts";
-@@ -55,6 +62,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -30,6 +37,51 @@ import {
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
++/** Where a config read failed: key paths and issue kinds only, never the value it read. */
++const configIssues = (error: unknown): string[] => {
++  if (!Predicate.hasProperty(error, "_tag") || error._tag !== "ConfigError") return [];
++  const cause = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
++  if (!Predicate.hasProperty(cause, "issue")) return ["(source unavailable)"];
++  const found: string[] = [];
++  const walk = (issue: unknown, path: readonly PropertyKey[]): void => {
++    if (!Predicate.hasProperty(issue, "_tag") || typeof issue._tag !== "string") return;
++    if (
++      issue._tag === "Pointer" &&
++      Predicate.hasProperty(issue, "path") &&
++      Array.isArray(issue.path)
++    )
++      walk(Predicate.hasProperty(issue, "issue") ? issue.issue : undefined, [
++        ...path,
++        ...issue.path,
++      ]);
++    else if (Predicate.hasProperty(issue, "issue")) walk(issue.issue, path);
++    else if (
++      Predicate.hasProperty(issue, "issues") &&
++      Array.isArray(issue.issues) &&
++      issue.issues.length > 0
++    )
++      for (const nested of issue.issues) walk(nested, path);
++    else found.push(`${path.map(String).join(".") || "(root)"}: ${issue._tag}`);
++  };
++  walk(cause.issue, []);
++  return found;
++};
++
++/** Log a failure as telemetry records it, plus the config keys a ConfigError names. */
++const logFailure = (cause: Cause.Cause<unknown>) =>
++  Effect.sync(() => {
++    const keys = cause.reasons.flatMap((reason) =>
++      Cause.isFailReason(reason)
++        ? configIssues(reason.error)
++        : Cause.isDieReason(reason)
++          ? configIssues(reason.defect)
++          : [],
++    );
++    console.error(
++      Cause.pretty(recordedCause(cause)) + (keys.length ? `\nconfig: ${keys.join("; ")}` : ""),
++    );
++  });
++
+ /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
+ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+   "AppPages",
+@@ -55,6 +107,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          ...(yield* telemetryBindings),
          ...(yield* sentryBindings).env,
          ...(yield* productBrandBindings),
@@ -86,7 +138,7 @@ index 077cd51..a62a76a 100644
        },
        compatibility: {
          date: "2026-09-08",
-@@ -66,10 +75,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -66,10 +120,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
              onNone: () => ({}),
              onSome: (region) => ({ placement: { region } }),
            })),
@@ -98,11 +150,11 @@ index 077cd51..a62a76a 100644
        dev: { host: "127.0.0.1", port: yield* cloudAppUiPort.pipe(Effect.orDie), strictPort: true },
      };
 -  }),
-+  }).pipe(Effect.tapCause((cause) => Effect.sync(() => console.error(Cause.pretty(recordedCause(cause)))))),
++  }).pipe(Effect.tapCause(logFailure)),
    Effect.gen(function* () {
      const reportErrors = yield* cloudSentry;
      const analytics = yield* cloudAnalytics;
-@@ -77,7 +89,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -77,7 +134,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      const executor = yield* cloudServingProduct(yield* appDataSupervisors);
      const base = yield* cloudAppUiBase.pipe(Effect.orDie);
      // App pages send sign-in to the dashboard, on the browser origin.
@@ -118,7 +170,7 @@ index 077cd51..a62a76a 100644
      const services = requestServices(Layer.mergeAll(appSessions, executor));
      const notFound = HttpServerResponse.empty({ status: 404 });
      const protectedRoutes = Layer.mergeAll(
-@@ -107,7 +126,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -107,7 +171,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      );
      const lifetime = yield* previewLifetime;
      return {
@@ -127,7 +179,7 @@ index 077cd51..a62a76a 100644
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
-@@ -119,16 +138,19 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -119,16 +183,21 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          analytics.wrap,
          recordRequestRejections,
          reportErrors,
@@ -138,12 +190,14 @@ index 077cd51..a62a76a 100644
 -            ? Effect.fail(error)
 -            : Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders })),
 -        ),
-+        Effect.tapCause((cause) => Effect.sync(() => console.error(Cause.pretty(recordedCause(cause))))),
++        Effect.tapCause(logFailure),
 +        Effect.catchCause((cause) => {
 +          const error = Option.getOrUndefined(Cause.findErrorOption(cause));
 +          if (error !== undefined && HttpServerError.isHttpServerError(error))
 +            return Effect.fail(error);
-+          return Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders }));
++          return Effect.succeed(
++            HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders }),
++          );
 +        }),
          requestTiming,
          lifetime.http,
@@ -152,7 +206,7 @@ index 077cd51..a62a76a 100644
 -  }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),
 +  }).pipe(
 +    Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry)),
-+    Effect.tapCause((cause) => Effect.sync(() => console.error(Cause.pretty(recordedCause(cause))))),
++    Effect.tapCause(logFailure),
 +  ),
  ) {}
 diff --git a/apps/hosted/cloud/src/contracts/browser.ts b/apps/hosted/cloud/src/contracts/browser.ts
