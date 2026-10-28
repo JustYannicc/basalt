@@ -13,9 +13,8 @@ const implementation = "apps/hosted/server/src/implementation/";
 const { breakingChanges, catalogEntryId, decideCatalogOffer, decideCatalogUpdate } = await load(
   `${implementation}catalog-app-updates.ts`,
 );
-const { updateCatalogApp } = await load(`${implementation}catalog-app-defaults.ts`);
+const { sweepCatalogApp } = await load(`${implementation}catalog-app-defaults.ts`);
 const { applyCatalogUpdate } = await load(`${implementation}catalog-app-offers.ts`);
-const { catalogDecision, reportCatalogApp } = await load(`${implementation}catalog-app-records.ts`);
 const { AppVersionChanged } = await load("packages/sdk/src/contracts/version.ts");
 const { SourceError } = await load("packages/sdk/src/contracts/source.ts");
 const { AppInputs } = await load("packages/sdk/src/contracts/apps.ts");
@@ -23,7 +22,11 @@ const { frameworkPinRelease } = await load("packages/app-management/src/contract
 
 type Files = { path: string; content: string }[];
 type Offer = { source: string; active: string; reconnect: number; reasons: string[]; touched: boolean };
-type Outcome = { record: { version?: string; workspace?: string; applied?: string; offer: Offer }; active: string; deployed: boolean };
+type Outcome = {
+  record: { version?: string; workspace?: string; workspaceSource?: string; applied?: string; offer: Offer };
+  active: string;
+  deployed: boolean;
+};
 type Commit = { owner: string; app: string; expected: string | null; files: Files; message: string };
 type Slot = { provider: string; scope: string; cardinality: string };
 type Link = { requirement: string; scope: string; subject: string | null; account: string; provider: string };
@@ -33,8 +36,10 @@ const files = (body: string): Files => [
 ];
 const original = files("export default 1;\n");
 const current = files("export default 2;\n");
-/** The feed's source digest, as the sweep records it. */
-const digest = createHash("sha256").update(JSON.stringify(current)).digest("hex");
+/** A source's digest, as the sweep records it. */
+const sha = (source: Files) => createHash("sha256").update(JSON.stringify(source)).digest("hex");
+/** The feed's source digest. */
+const digest = sha(current);
 const crm: Record<string, Slot> = { crm: { provider: "provider-crm", scope: "user", cardinality: "one" } };
 const linked = (account: string, subject: string | null = "member-a"): Link => ({
   requirement: "crm", scope: subject === null ? "app" : "user", subject, account, provider: "provider-crm",
@@ -58,9 +63,11 @@ const fixture = (options: {
   commitDuringDeploy?: boolean;
   /** Git storage fails the workspace commit. */
   commitFails?: boolean;
+  /** The record write fails. */
+  saveFails?: boolean;
 }) => {
   const versions = new Map((options.versions ?? [{ id: "v1", files: original }]).map((v) => [v.id, v.files]));
-  const state = { active: options.active ?? "v1", builds: 0, deploys: 0, commits: [] as Commit[] };
+  const state = { active: options.active ?? "v1", builds: 0, deploys: 0, commits: [] as Commit[], saves: [] as Outcome[] };
   const workspace = { ...(options.workspace ?? { commit: "c1", files: original }) };
   const app = () => ({
     id: "app_catalog",
@@ -76,7 +83,8 @@ const fixture = (options: {
       source: ({ version }: { version?: string }) =>
         Effect.sync(() => ({ id: version ?? state.active, files: versions.get(version ?? state.active)! })),
       workspace: () => Effect.succeed({ revision: { code: "code", commit: workspace.commit }, files: workspace.files }),
-      versions: () => Effect.succeed([...versions.keys()].map((id) => ({ id }))),
+      // Versions are created in insertion order.
+      versions: () => Effect.succeed([...versions.keys()].map((id, index) => ({ id, createdAt: new Date(index) }))),
       build: () =>
         Effect.sync(() => {
           state.builds++;
@@ -113,21 +121,27 @@ const fixture = (options: {
         }),
     },
   };
+  const reference = "https://basalt.example/catalog/apps/crm.json";
   const sweeping = (recorded?: Record<string, unknown>, links: Link[] = [], feed: Files = current) =>
-    updateCatalogApp(executor, {
+    sweepCatalogApp(executor, {
       organization: "org_team",
       owner: "organization:team",
       app: app(),
-      files: feed,
+      entry: "crm",
+      catalog: { prepare: () => Effect.succeed({ files: feed, origin: { reference } }) },
       recorded,
       links: Effect.succeed(links),
+      save: (outcome: Outcome) =>
+        options.saveFails
+          ? Effect.fail(new SourceError({ reason: "storage" }))
+          : Effect.sync(() => (state.saves.push(outcome), true)),
     }) as Effect.Effect<Outcome | undefined>;
   const sweep = (recorded?: Record<string, unknown>, links: Link[] = [], feed: Files = current): Promise<Outcome> =>
     Effect.runPromise(sweeping(recorded, links, feed)) as Promise<Outcome>;
   const apply = (recorded?: Record<string, unknown>) =>
     Effect.runPromiseExit(
       applyCatalogUpdate(executor, { owner: "organization:team", app: app(), files: current, recorded }),
-    );
+    ) as Promise<Exit.Exit<Outcome, unknown>>;
   return { state, workspace, sweep, sweeping, apply };
 };
 
@@ -175,7 +189,7 @@ test("breaking changes count accounts that stop working and name why", () => {
 test("an untouched copy no linked account breaks on moves to the catalog's current source", async () => {
   const app = fixture({});
   assert.deepEqual(await app.sweep(undefined, [linked("a1")]), {
-    record: { version: "v2", workspace: "c2", applied: digest },
+    record: { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest },
     active: "v2",
     deployed: true,
   });
@@ -188,8 +202,10 @@ test("an untouched copy no linked account breaks on moves to the catalog's curre
   assert.ok(app.state.commits[0]!.message.length > 0);
   assert.deepEqual(app.workspace, { commit: "c2", files: current });
   // The recorded commit is clean: the next sweep of the same source records without deploying.
-  const again = await app.sweep({ version: "v2", workspace: "c2", applied: digest });
-  assert.deepEqual(again.record, { version: "v2", workspace: "c2", applied: digest });
+  const recorded = { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest };
+  const again = await app.sweep(recorded);
+  assert.deepEqual(again.record, recorded);
+  assert.equal(app.state.saves.length, 1);
   assert.equal(app.state.deploys, 1);
   assert.equal(app.state.commits.length, 1);
 });
@@ -217,13 +233,24 @@ test("a workspace that moved during the deploy keeps its commit and counts as to
   assert.equal(app.state.builds, 1);
 });
 
-test("a failed commit records no clean workspace while newer source runs", async () => {
-  const app = fixture({ commitFails: true });
-  // The deploy stands; the commit read holds the replaced source, so it is not recorded clean.
-  assert.deepEqual(await app.sweep({ version: "v1", workspace: "c1" }), {
-    record: { version: "v2", applied: digest }, active: "v2", deployed: true,
+test("a failed commit records the commit read, and the next sweep heals it", async () => {
+  const options = { commitFails: true };
+  const app = fixture(options);
+  // The deploy stands; the commit read still holds the replaced catalog source.
+  const outcome = await app.sweep({ version: "v1", workspace: "c1" });
+  assert.deepEqual(outcome, {
+    record: { version: "v2", applied: digest, workspace: "c1", workspaceSource: sha(original) },
+    active: "v2",
+    deployed: true,
   });
   assert.equal(app.state.active, "v2");
+  // Git recovers: the next sweep commits what runs over that commit, deploying nothing.
+  options.commitFails = false;
+  const healed = await logged(app.sweeping(outcome.record));
+  assert.deepEqual(app.state.commits.map(({ expected, files }) => ({ expected, files })), [{ expected: "c1", files: current }]);
+  assert.equal(healed.value?.record.workspace, "c2");
+  assert.equal(app.state.deploys, 1);
+  assert.deepEqual(healed.lines.map((line) => line.healed), [true]);
 });
 
 test("a workspace clean only for its framework pin keeps the pin in its commit", async () => {
@@ -261,8 +288,8 @@ test("a workspace that already holds the deployed files is not committed again",
   // A clean recorded commit can already hold the catalog's source. With no recorded version the
   // sweep never heals it back to the active source first.
   const app = fixture({ workspace: { commit: "c1", files: current } });
-  const outcome = await app.sweep({ workspace: "c1" });
-  assert.deepEqual(outcome.record, { version: "v2", workspace: "c1", applied: digest });
+  const outcome = await app.sweep({ workspace: "c1", workspaceSource: digest });
+  assert.deepEqual(outcome.record, { version: "v2", workspace: "c1", workspaceSource: digest, applied: digest });
   assert.equal(app.state.commits.length, 0);
 });
 
@@ -279,7 +306,7 @@ test("an untouched copy whose recorded digest matches the feed is never redeploy
   // Binary public files make stored and served files differ; the recorded digest decides.
   const app = fixture({});
   const outcome = await app.sweep({ version: "v1", workspace: "c1", applied: digest });
-  assert.deepEqual(outcome.record, { version: "v1", workspace: "c1", applied: digest });
+  assert.deepEqual(outcome.record, { version: "v1", workspace: "c1", workspaceSource: sha(original), applied: digest });
   assert.equal(outcome.deployed, false);
   assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
@@ -339,7 +366,7 @@ test("a touched copy is offered, never deployed", async () => {
 test("unchanged catalog files only record the active version", async () => {
   const app = fixture({ versions: [{ id: "v1", files: current }], workspace: { commit: "c1", files: current } });
   const stale = { version: "v0", offer: { source: "x", active: "v1", reconnect: 1, reasons: ["provider"], touched: false } };
-  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1", applied: digest });
+  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1", workspaceSource: digest, applied: digest });
   assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
 });
@@ -382,7 +409,11 @@ test("a manager applies an offer only while it is current and the workspace is c
   const app = fixture({});
   const exit = await app.apply({ version: "v1", workspace: "c1", offer });
   assert.ok(Exit.isSuccess(exit));
-  assert.deepEqual(exit.value, { record: { version: "v2", workspace: "c2", applied: digest }, active: "v2", deployed: true });
+  assert.deepEqual(exit.value, {
+    record: { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest },
+    active: "v2",
+    deployed: true,
+  });
   assert.deepEqual(app.state.commits.map(({ expected, files }) => ({ expected, files })), [{ expected: "c1", files: current }]);
   assert.deepEqual(app.workspace, { commit: "c2", files: current });
   // A workspace that moved during the Update keeps its commit; the deploy is recorded without it.
@@ -420,7 +451,6 @@ const logged = async <A>(work: Effect.Effect<A>) => {
   const value = await Effect.runPromise(work.pipe(Effect.provide(Logger.layer([capture]))));
   return { lines, value };
 };
-const decisionLines = async (work: Effect.Effect<unknown>) => (await logged(work)).lines;
 
 test("a drifted untouched install gets the active source committed once, and logs it", async () => {
   // The earlier carry deployed v2 without committing it; main still holds v1's source.
@@ -430,18 +460,24 @@ test("a drifted untouched install gets the active source committed once, and log
   const { lines, value } = await logged(app.sweeping(settled));
   assert.deepEqual(app.state.commits.map(({ expected, files }) => ({ expected, files })), [{ expected: "c1", files: current }]);
   assert.deepEqual(app.workspace, { commit: "c2", files: current });
-  assert.deepEqual(lines, [{ app: "app_catalog", organization: "org_team", decision: "healed", version: "v2" }]);
+  // One line for the app: its decision, marked healed.
+  assert.deepEqual(lines, [
+    { app: "app_catalog", organization: "org_team", decision: "recorded", version: "v2", healed: true },
+  ]);
   // The healed commit is recorded clean; nothing was deployed.
-  assert.deepEqual(value?.record, { version: "v2", workspace: "c2", applied: digest });
+  assert.deepEqual(value?.record, { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest });
   assert.equal(app.state.deploys, 0);
   // Healed once: the next sweep finds main holding the active source.
-  assert.deepEqual((await logged(app.sweeping(value!.record))).lines, []);
+  assert.deepEqual((await logged(app.sweeping(value!.record))).lines.map((line) => [line.decision, line.healed]), [
+    ["unchanged", undefined],
+  ]);
   assert.equal(app.state.commits.length, 1);
   // A failed heal leaves the app alone, recording nothing.
   const failing = fixture({ ...drifted, commitFails: true });
   const failed = await logged(failing.sweeping(settled));
   assert.equal(failed.value, undefined);
-  assert.deepEqual(failed.lines, []);
+  assert.deepEqual(failed.lines.map((line) => line.decision), ["skipped"]);
+  assert.equal(failing.state.saves.length, 0);
   assert.equal(failing.state.builds + failing.state.deploys, 0);
 });
 
@@ -465,41 +501,58 @@ test("a person's deploy or unsaved edits are never healed", async () => {
   assert.ok(!draft.lines.some((line) => line.decision === "healed"));
 });
 
+test("a person's committed source is never healed over after they roll back", async () => {
+  // Installed v1; a person committed cp and deployed it as v2, so the sweep offers the update.
+  const mine = files("export default 'mine';\n");
+  const versions = [{ id: "v1", files: original }, { id: "v2", files: mine }];
+  const person = { versions, active: "v2", workspace: { commit: "cp", files: mine } };
+  // v1 holds the catalog's earlier source, which the feed has since replaced.
+  const ours = { version: "v1", workspace: "c1", workspaceSource: sha(original), applied: sha(original) };
+  const app = fixture(person);
+  const offered = await app.sweep(ours);
+  assert.equal(offered.record.offer.touched, true);
+  // The offer keeps the recorded version and the workspace recorded beside it, not theirs.
+  assert.equal(offered.record.version, "v1");
+  assert.equal(offered.record.workspace, "c1");
+  // They roll back to v1. Their commit stays theirs: no heal, no deploy.
+  app.state.active = "v1";
+  assert.equal(await app.sweep(offered.record), undefined);
+  assert.equal(app.state.commits.length, 0);
+  assert.equal(app.state.deploys, 0);
+  assert.deepEqual(app.workspace, { commit: "cp", files: mine });
+  // The first sweeps recorded their commit beside v1 in the offer; it never held a catalog source.
+  const earlier = fixture(person);
+  earlier.state.active = "v1";
+  const old = { version: "v1", workspace: "cp", offer: { ...offered.record.offer } };
+  assert.equal(await earlier.sweep(old), undefined);
+  assert.equal(earlier.state.commits.length + earlier.state.deploys, 0);
+});
+
 test("every sweep decision logs one line with IDs only", async () => {
-  const report = async (recorded: Record<string, unknown> | undefined, outcome: Outcome | undefined) =>
-    decisionLines(
-      reportCatalogApp(
-        "org_team",
-        "app_catalog",
-        catalogDecision(recorded, outcome),
-        outcome?.active ?? "v1",
-        outcome?.record.offer,
-      ),
-    );
+  const run = async (app: ReturnType<typeof fixture>, recorded?: Record<string, unknown>, links: Link[] = []) =>
+    (await logged(Effect.exit(app.sweeping(recorded, links)))).lines;
   const line = (decision: string, version: string, extra = {}) => [
     { app: "app_catalog", organization: "org_team", decision, version, ...extra },
   ];
-  assert.deepEqual(await report(undefined, await fixture({}).sweep()), line("upgraded", "v2"));
+  assert.deepEqual(await run(fixture({})), line("upgraded", "v2"));
   const breaking = { built: { crm: { provider: "provider-crm-v2", scope: "user", cardinality: "one" } } };
   const held = { version: "v1", workspace: "c1" };
-  assert.deepEqual(
-    await report(held, await fixture(breaking).sweep(held, [linked("a1")])),
-    line("offered", "v1", { reasons: ["provider"], reconnect: 1 }),
-  );
+  assert.deepEqual(await run(fixture(breaking), held, [linked("a1")]), line("offered", "v1", { reasons: ["provider"], reconnect: 1 }));
   const same = { versions: [{ id: "v1", files: current }], workspace: { commit: "c1", files: current } };
-  const settled = { version: "v1", workspace: "c1", applied: digest };
-  assert.deepEqual(await report(settled, await fixture(same).sweep(settled)), line("unchanged", "v1"));
-  assert.deepEqual(await report(undefined, await fixture(same).sweep()), line("recorded", "v1"));
-  const draft = fixture({ workspace: { commit: "c9", files: files("draft") } });
-  assert.deepEqual(await report(held, await draft.sweep(held)), line("skipped", "v1"));
-  // Each sweep and Update outcome passes through one report; nothing else logs the decision.
-  const sweep = read(`${implementation}catalog-app-defaults.ts`);
-  assert.equal(sweep.match(/reportCatalogApp\(/g)?.length, 1);
-  assert.match(sweep, /Effect\.catchTags\(\{[\s\S]*?\}\),\s*Effect\.flatMap\(\(outcome: CatalogOutcome \| undefined\) =>\s*reportCatalogApp\(\s*organization,\s*app\.id,\s*catalogDecision\(recorded, outcome\),/);
+  const settled = { version: "v1", workspace: "c1", workspaceSource: digest, applied: digest };
+  assert.deepEqual(await run(fixture(same), settled), line("unchanged", "v1"));
+  assert.deepEqual(await run(fixture(same)), line("recorded", "v1"));
+  assert.deepEqual(await run(fixture({ workspace: { commit: "c9", files: files("draft") } }), held), line("skipped", "v1"));
+  // The line names the version the sweep read; the person's deploy that won is theirs.
+  assert.deepEqual(await run(fixture({ deployDuringDeploy: true }), held), line("skipped", "v1"));
+  // A deploy whose record write fails still says it upgraded, once, before the failure retries.
+  const unsaved = fixture({ saveFails: true });
+  assert.deepEqual(await run(unsaved), line("upgraded", "v2"));
+  assert.equal(unsaved.state.active, "v2");
+  // Update logs once whether its record write succeeds or not.
   const update = read(`${implementation}catalog-app-offers.ts`);
   assert.equal(update.match(/reportCatalogApp\(/g)?.length, 2);
-  assert.match(update, /saveCatalogRecord\(executor, organization, app\.id, recorded, outcome\);\s*yield\* reportCatalogApp\(organization, app\.id, "upgraded", outcome\.active\);/);
-  assert.match(update, /error\._tag === "CatalogUpdateUnavailable"\s*\? reportCatalogApp\(organization, app\.id, "skipped", app\.activeVersion\)/);
+  assert.match(update, /saveCatalogRecord\(executor, organization, app\.id, recorded, outcome\)\.pipe\(\s*Effect\.ensuring\(reportCatalogApp\(organization, app\.id, "upgraded", outcome\.active\)\),/);
 });
 
 test("each release queues one catalog sweep per organization, run by its member jobs", () => {
