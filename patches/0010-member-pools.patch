@@ -182,7 +182,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hoste
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,359 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -321,11 +321,33 @@ new file mode 100644
 +        array[${basaltPools}], ${JSON.stringify({ ...pools, [user]: pool })}::jsonb)::text
 +        where id = ${organization}`;
 +    if (saved !== undefined) {
++      // One line per pool per job says what this reconcile decided, with ids and counts only.
++      let decision:
++        | "rotation-only"
++        | "not-owner"
++        | "already-current"
++        | "version-mismatch"
++        | "source-edited"
++        | "upgraded"
++        | "superseded" = rotationOnly
++        ? "rotation-only"
++        : members.length !== 1
++          ? "not-owner"
++          : saved.bundle === poolAppVersion
++            ? "already-current"
++            : "version-mismatch";
++      let accessRepaired = 0;
++      let tokenRepaired = false;
++      const report = (app: string) =>
++        Effect.logInfo("Pool reconcile", { app, decision, accessRepaired, tokenRepaired });
 +      const app = yield* executor.apps
 +        .get({ owner, app: saved.app })
 +        .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
 +      // A recorded deletion is deliberate. Never recreate its app or credentials.
-+      if (app === undefined) return;
++      if (app === undefined) {
++        yield* Effect.logInfo("Pool reconcile", { app: saved.app, decision: "deleted" });
++        return;
++      }
 +      let version = saved.version;
 +      let bundle = saved.bundle;
 +      // Owner deployments and workspace edits keep their source; credentials can still be repaired.
@@ -338,9 +360,12 @@ new file mode 100644
 +        const source = yield* executor.apps.source({ owner, app: app.id });
 +        if (source.id === app.activeVersion) {
 +          const poolAppFiles = yield* poolSeed.files;
-+          if (sourceFilesEqual(source.files, poolAppFiles)) bundle = poolAppVersion;
-+          else {
++          if (sourceFilesEqual(source.files, poolAppFiles)) {
++            bundle = poolAppVersion;
++            decision = "already-current";
++          } else {
 +            const workspace = yield* executor.apps.workspace({ owner, app: app.id });
++            decision = "source-edited";
 +            if (pinnedOnly(workspace.files, source.files)) {
 +              const deployed = yield* executor.apps
 +                .deploy({
@@ -352,15 +377,16 @@ new file mode 100644
 +              if (deployed.app.activeVersion === null) return yield* new StorageError();
 +              version = deployed.app.activeVersion;
 +              bundle = poolAppVersion;
++              decision = "upgraded";
 +              intent = true;
 +            }
 +          }
 +        }
 +      }
-+      yield* executor[StorageHost].transaction(
++      const settled = yield* executor[StorageHost].transaction(
 +        Effect.gen(function* () {
 +          const current = yield* lockedState(!rotating);
-+          if (current === undefined) return;
++          if (current === undefined) return false;
 +          const recorded = Object.hasOwn(current.pools, user) ? current.pools[user] : undefined;
 +          // Another installer may have advanced the record while this compile was in flight.
 +          if (
@@ -370,10 +396,9 @@ new file mode 100644
 +            recorded.account !== saved.account ||
 +            recorded.tokenKeyVersion !== saved.tokenKeyVersion
 +          )
-+            return;
++            return false;
 +          yield* lockAppLinks(sql, app.id);
-+          if (yield* repairPoolAccess(sql, app.id, organization, user))
-+            yield* Effect.logInfo("Pool access record repaired", { repaired: 1 });
++          if (yield* repairPoolAccess(sql, app.id, organization, user)) accessRepaired = 1;
 +          const locked = yield* executor.apps
 +            .get({ owner, app: app.id })
 +            .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
@@ -381,7 +406,7 @@ new file mode 100644
 +            locked === undefined ||
 +            locked.activeVersion !== (version === saved.version ? app.activeVersion : version)
 +          )
-+            return;
++            return false;
 +          const repaired = yield* repairPoolAccount(
 +            executor,
 +            sql,
@@ -392,7 +417,10 @@ new file mode 100644
 +            saved.account,
 +            rotating,
 +          );
-+          if (repaired.changed) intent = true;
++          if (repaired.changed) {
++            intent = true;
++            tokenRepaired = true;
++          }
 +          yield* record(current.pools, {
 +            app: app.id,
 +            version,
@@ -400,8 +428,12 @@ new file mode 100644
 +            account: repaired.account,
 +            tokenKeyVersion,
 +          });
++          return true;
 +        }),
 +      );
++      // Another job advanced the record or the app meanwhile; a repair made before that still counts.
++      if (!settled) decision = "superseded";
++      yield* report(app.id);
 +      return;
 +    }
 +    const member = yield* Schema.decodeUnknownEffect(Member)(members[0]);
