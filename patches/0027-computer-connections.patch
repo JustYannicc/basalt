@@ -19,7 +19,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/
      {
        mcpServers: {
 -        executor: {
-+        [productServerName(brand)]: {
++        [brand.computerSetup ? productServerName(brand) : "executor"]: {
            type: "http",
            url: `${mcpOrigin}/org/${encodeURIComponent(slug)}/mcp`,
            headers: { Authorization: "Bearer <YOUR_PAT>" },

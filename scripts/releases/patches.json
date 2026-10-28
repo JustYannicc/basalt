@@ -249,7 +249,7 @@
     {
       "identity": "basalt-computer-connections",
       "file": "0027-computer-connections.patch",
-      "content_sha256": "2b37681d05fffe0fdc2ccd2a21b91c60ce0b9446257f4d8b876e0bc72100ac63",
+      "content_sha256": "bd1e01d93737a069b6b0b5d29364be81afc4f6d9c95a683fca95eaaf7267213f",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
