@@ -78,3 +78,32 @@ export function identityOf(
     ...(site ? { avatarUrl: `https://integrations.sh/logo/${site}?sz=64` } : {}),
   };
 }
+
+export type AccountIdentity = ReturnType<typeof identityOf>;
+
+/** Identity is optional, so its lookup gets a short slice of the connect step and never fails it. */
+export const identityLookupMs = 3_000;
+
+/**
+ * Add the account's identity to a connected sign-in. Any failure of the lookup, including a
+ * malformed or late answer, keeps the connected result as it was.
+ */
+export async function withIdentity<S extends { readonly state: string; readonly ref?: string }>(
+  state: S,
+  lookup: () => Promise<{ readonly ok: boolean; readonly value?: { readonly accounts?: readonly Account[] } }>,
+  sites: readonly { readonly id: string; readonly site?: string }[],
+  timeoutMs = identityLookupMs,
+): Promise<S | (S & { accountInfo: AccountIdentity })> {
+  if (state.state !== "connected") return state;
+  const late = new Promise<S>((resolve) =>
+    AbortSignal.timeout(timeoutMs).addEventListener("abort", () => resolve(state), { once: true }),
+  );
+  const found = Promise.resolve()
+    .then(lookup)
+    .then((view) => {
+      const account = view.ok ? view.value?.accounts?.find((candidate) => candidate.id === state.ref) : undefined;
+      return account === undefined ? state : { ...state, accountInfo: identityOf(account, sites) };
+    })
+    .catch(() => state);
+  return await Promise.race([found, late]);
+}

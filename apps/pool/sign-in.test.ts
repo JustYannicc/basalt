@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callbackOrigin, identityOf, isLoopbackUrl, prompt, signedIn } from "./sign-in.ts";
+import { callbackOrigin, identityOf, isLoopbackUrl, prompt, signedIn, withIdentity } from "./sign-in.ts";
 
 test("only local addresses count as the pasted callback", () => {
   assert.ok(isLoopbackUrl("http://localhost:5000/callback?code=c&state=s"));
@@ -59,4 +59,20 @@ test("a connected subscription reports its email or label, and its provider's lo
   });
   assert.deepEqual(identityOf({ label: "Team login", provider: "kimi" }, sites), { displayName: "Team login" });
   assert.deepEqual(identityOf({ label: "  ", provider: "other" }, sites), {});
+});
+
+test("identity never undoes a connected sign-in", async () => {
+  const connected = { state: "connected" as const, ref: "a1" };
+  const sites = [{ id: "codex", site: "chatgpt.com" }];
+  const account = { id: "a1", provider: "codex", label: "someone@example.com" };
+  assert.equal(
+    (await withIdentity(connected, async () => ({ ok: true, value: { accounts: [account as never] } }), sites)).accountInfo?.email,
+    "someone@example.com",
+  );
+  // Malformed, refused, rejected and late answers all keep the connected result.
+  assert.deepEqual(await withIdentity(connected, async () => ({ ok: true }), sites), connected);
+  assert.deepEqual(await withIdentity(connected, async () => ({ ok: false }), sites), connected);
+  assert.deepEqual(await withIdentity(connected, () => Promise.reject(new Error("network")), sites), connected);
+  assert.deepEqual(await withIdentity(connected, () => new Promise(() => {}), sites, 10), connected);
+  assert.deepEqual(await withIdentity({ state: "waiting" as const }, async () => ({ ok: true }), sites), { state: "waiting" });
 });

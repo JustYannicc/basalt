@@ -29,7 +29,7 @@ import {
 } from "./contract.ts";
 import { poolOrigin, productName } from "./deployment.ts";
 import { providers } from "./providers.ts";
-import { identityOf, loginFileMethod, prompt, signedIn } from "./sign-in.ts";
+import { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity } from "./sign-in.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 // The tools service links this account for everyone when it installs a pool.
@@ -154,24 +154,11 @@ function step<T>(result: Result<T>, read: (value: T) => ConnectState): ConnectSt
 }
 type ConnectState =
   | ReturnType<typeof signedIn>
-  | { state: "connected"; ref: string; accountInfo: ReturnType<typeof identityOf> };
-
-/** Identity is optional, so its lookup gets a short slice of the connect step and never fails it. */
-const identityLookupMs = 3_000;
+  | { state: "connected"; ref: string; accountInfo: AccountIdentity };
 
 /** Name a new subscription after the pool's own label for it, with its provider's logo. */
-async function identified(ctx: Caller, state: ConnectState): Promise<ConnectState> {
-  if (state.state !== "connected") return state;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), identityLookupMs);
-  });
-  const view = await Promise.race([control<PoolView>(ctx, "/pool").catch(() => undefined), late]).finally(() =>
-    clearTimeout(timer),
-  );
-  const account = view?.ok ? view.value.accounts.find((candidate) => candidate.id === state.ref) : undefined;
-  return account === undefined ? state : { ...state, accountInfo: identityOf(account, providers) };
-}
+const identified = (ctx: Caller, state: ConnectState): Promise<ConnectState> =>
+  withIdentity(state, () => control<PoolView>(ctx, "/pool"), providers);
 
 const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
 
