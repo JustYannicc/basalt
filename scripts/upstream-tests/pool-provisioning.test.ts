@@ -39,7 +39,7 @@ const poolAppFiles: SourceFiles = Schema.decodeUnknownSync(sdk.SourceFiles)(
     ),
   ),
 );
-const { queuePoolAppUpgrades } = upgrades;
+const { queuePoolAppUpgrades, poolReconcileRevision } = upgrades;
 const { poolTokenKeyVersion } = await load("apps/hosted/server/src/implementation/pool-account.ts");
 const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
 const { provision, selfHostProvisioningServices } = await load(
@@ -456,10 +456,31 @@ test("bundle rollouts queue verified owners once while rotation has its own jour
           name: "basalt-pool-tokens",
           completed: true,
         },
-        { name: `basalt-pools:${poolAppVersion}`, completed: true },
+        { name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`, completed: true },
       ]);
       yield* queuePoolAppUpgrades(key, "next-bundle");
       assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
+    }),
+  );
+});
+
+test("a reconcile revision reconciles every pool once even when the bundle is unchanged", async () => {
+  await fixture(({ sql }) =>
+    Effect.gen(function* () {
+      // A rollout of this bundle finished under the earlier step name, before the revision existed.
+      yield* sql`insert into private_hosted_data_steps (name, run, mode, completed_at)
+        values (${`basalt-pools:${poolAppVersion}`}, 'apply', 'apply', now())`;
+      yield* queuePoolAppUpgrades(key);
+      const members = yield* sql`select user_id from hosted_provisioning where kind = 'member'
+        and id not like 'basalt-pool-token:%' order by user_id`;
+      assert.deepEqual(members, [{ user_id: "person-a" }, { user_id: "person-b" }]);
+      // The same revision never queues twice.
+      yield* queuePoolAppUpgrades(key);
+      assert.equal(
+        (yield* sql`select * from hosted_provisioning where kind = 'member' and id not like 'basalt-pool-token:%'`)
+          .length,
+        2,
+      );
     }),
   );
 });
