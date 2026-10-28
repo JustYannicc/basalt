@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport } from "../releases/types.ts";
-import { inspectWorkflowChange } from "./cloudflare.ts";
+import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
 import { SafetyGateError } from "./contracts.ts";
 
 const credentials = { accountId: "account-fixture", apiToken: "token-fixture" };
@@ -76,12 +76,18 @@ test("workflow inspection reports manual quiescence even when the listing is emp
   assert.equal(fixture.requested.length, 2);
 });
 
-test("active instances are reported without termination", async () => {
+test("active instances are reported without termination and block the release", async () => {
   const fixture = mockFetch([[{ id: "run-1", status: "running" }]]);
   const snapshot = await inspectWorkflowChange(workflowReport(), credentials, fixture.fetcher);
   assert.deepEqual(snapshot.unresolved, [{ id: "run-1", workflowName: "AppWorkflows", status: "running" }]);
   assert.equal(snapshot.manualQuiescenceRequired, true);
   assert.equal(fixture.requested.length, 2);
+  assert.throws(() => assertWorkflowsDrained(snapshot), /1 Workflow instance\(s\) are still queued, running, paused or waiting/);
+});
+
+test("a drained listing lets the release continue, and an errored instance does not block it", async () => {
+  const fixture = mockFetch([[{ id: "run-1", status: "complete" }, { id: "run-2", status: "terminated" }, { id: "run-3", status: "errored" }]]);
+  assertWorkflowsDrained(await inspectWorkflowChange(workflowReport(), credentials, fixture.fetcher));
 });
 
 test("repeated pagination cursor fails closed", async () => {
@@ -100,4 +106,10 @@ test("repeated pagination cursor fails closed", async () => {
 test("unknown instance state fails closed", async () => {
   const fixture = mockFetch([[{ id: "run-1", status: "future-status" }]]);
   await assert.rejects(inspectWorkflowChange(workflowReport(), credentials, fixture.fetcher), /unknown Workflow instance status/);
+});
+
+test("waiting and unknown instances block the release", async () => {
+  const fixture = mockFetch([[{ id: "run-1", status: "waiting" }, { id: "run-2", status: "unknown" }]]);
+  const snapshot = await inspectWorkflowChange(workflowReport(), credentials, fixture.fetcher);
+  assert.throws(() => assertWorkflowsDrained(snapshot), /2 Workflow instance\(s\)/);
 });

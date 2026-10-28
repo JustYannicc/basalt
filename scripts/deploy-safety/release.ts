@@ -2,7 +2,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
-import { inspectWorkflowChange } from "./cloudflare.ts";
+import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
 import { releaseBackup } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
@@ -100,6 +100,7 @@ async function main(args: string[]): Promise<void> {
       workflow_unresolved_count: String(snapshot.unresolved.length),
     });
     print(result);
+    assertWorkflowsDrained(snapshot);
     return;
   }
 
@@ -114,6 +115,8 @@ async function main(args: string[]): Promise<void> {
       return;
     }
     const target = await new PlanetScaleSafety(requirePlanetScaleEnvironment()).manualRollbackTarget(plan.report, releaseBackup(plan.ledger));
+    // Optional here so the target can be read before restoring; the rollback workflow always passes it.
+    if (options["--restored-backup"] !== undefined) assertRestoredBackup(options["--restored-backup"], target.backupName);
     writeActionOutputs({ manual_restore_required: "true", rollback_backup_id: target.backupId, rollback_backup_name: target.backupName });
     print(target);
     return;
@@ -125,6 +128,7 @@ async function main(args: string[]): Promise<void> {
     const plan = await verifyFreshManualRollbackReport(
       parseReportFile(required(options, "--report")), candidate, expectedDeploymentId,
     );
+    assertRestoredBackup(required(options, "--restored-backup"), releaseBackup(plan.ledger).name);
     const rollbackRoot = resolveManualRollbackSourceRoot(
       plan.report.base.gitCommit,
       options["--rollback-root"],
@@ -210,6 +214,12 @@ function isPathInside(path: string, parent: string): boolean {
     !pathFromParent.startsWith(`..${sep}`) && !isAbsolute(pathFromParent);
 }
 
+/** No one approves a rollback, so whoever dispatches names the backup they restored; it must be the recorded one. */
+export function assertRestoredBackup(restored: string, recorded: string): void {
+  if (restored.trim() !== recorded)
+    throw new SafetyGateError(`--restored-backup must be this release's recorded backup, ${recorded}; restore that exact backup first`);
+}
+
 export function resolveManualRollbackSourceRoot(
   expectedCommit: string,
   requestedRoot: string | undefined,
@@ -244,7 +254,7 @@ function parseOptions(args: string[]): ReleaseCliOptions {
     const value = args[++index];
     if (!value || value.startsWith("--")) throw new SafetyGateError(`Missing value for ${key}`);
     if (options[key] !== undefined) throw new SafetyGateError(`Duplicate option ${key}`);
-    if (!new Set(["--report", "--candidate", "--mode", "--candidate-root", "--rollback-root", "--deployment-id"]).has(key))
+    if (!new Set(["--report", "--candidate", "--mode", "--candidate-root", "--rollback-root", "--deployment-id", "--restored-backup"]).has(key))
       throw new SafetyGateError(`Unknown option ${key}`);
     options[key] = value;
   }

@@ -22,7 +22,7 @@ async function json(fetcher: MainCandidateFetch, token: string, url: string): Pr
 
 /**
  * The current main commit may be released manually only when the push Check from the CI workflow
- * passed on exactly that commit. An expected head pins the commit the approval was granted for.
+ * passed on exactly that commit. An expected head pins the commit the backup was taken for.
  */
 export async function validateMainCandidate(
   repository: string,
@@ -35,7 +35,7 @@ export async function validateMainCandidate(
   const head = checkedOut.trim().toLowerCase();
   if (!sha.test(head)) throw new Error("the checked-out main commit must be a full commit SHA");
   if (expectedHead !== undefined && expectedHead.toLowerCase() !== head)
-    throw new Error("main changed since this manual release was approved; start a new release");
+    throw new Error("main changed since this manual release was backed up; start a new release");
   const api = `https://api.github.com/repos/${repository}`;
   const main = await json(fetcher, token, `${api}/commits/main`) as { sha?: unknown };
   if (typeof main.sha !== "string" || main.sha.toLowerCase() !== head)
@@ -66,7 +66,7 @@ async function runMainCandidateCli(env = process.env): Promise<void> {
   if (env.GITHUB_REF !== "refs/heads/main") throw new Error("manual main releases run only from main");
   const expected = env.MAIN_RELEASE_EXPECTED_HEAD;
   if (env.MAIN_RELEASE_REQUIRE_EXPECTED === "true" && !expected)
-    throw new Error("the approved main head is missing; start a new release");
+    throw new Error("the backed-up main head is missing; start a new release");
   const candidate = await validateMainCandidate(
     env.GITHUB_REPOSITORY ?? "",
     token,

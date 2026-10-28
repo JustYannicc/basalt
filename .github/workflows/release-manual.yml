@@ -57,7 +57,7 @@ jobs:
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" > .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
-      - name: Complete the release backup before protected environment approval
+      - name: Complete the release backup before the deploy job
         run: node scripts/deploy-safety/release.ts backup-only --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
@@ -116,7 +116,7 @@ jobs:
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
       POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
     steps:
-      # Approve only after manually draining workflows and quiescing writes as the report requires.
+      # No one approves this job. Whoever dispatches stops new work first, and quiesces writes for a database change; the drain step below fails closed.
       - uses: actions/checkout@v4
         with:
           ref: main
@@ -125,7 +125,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      - name: Reject any candidate or base change while approval was pending
+      - name: Reject any candidate or base change since the backup
         run: node scripts/release-merge/manual-candidate.ts "$MANUAL_RELEASE_PR"
         env:
           MANUAL_RELEASE_PR: ${{ inputs.pull_request }}
@@ -144,7 +144,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - name: Rebuild and check the approved candidate
+      - name: Rebuild and check the backed-up candidate
         working-directory: ${{ runner.temp }}/candidate
         run: |
           npm run prepare:upstream
@@ -159,7 +159,7 @@ jobs:
         run: node scripts/deploy-safety/release.ts inspect-workflows --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
         env:
           RELEASE_HEAD: ${{ needs.backup.outputs.head }}
-      - name: Recheck the backup and deploy the approved release
+      - name: Recheck the backup and deploy the release
         run: node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json --mode manual
         env:
           RELEASE_HEAD: ${{ needs.backup.outputs.head }}

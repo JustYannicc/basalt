@@ -167,6 +167,18 @@ export async function inspectWorkflowChange(
   const workflows = await listCloudflareWorkflows(credentials, fetcher);
   const instances = await Promise.all(workflows.map((workflow) => listWorkflowInstances(workflow.name, credentials, fetcher)));
   const all = instances.flat();
-  const unresolved = all.filter((instance) => instance.status !== "complete" && instance.status !== "terminated");
+  // An errored instance has stopped and re-runs only if someone restarts it, so it doesn't block a release.
+  const unresolved = all.filter((instance) => !["complete", "terminated", "errored"].includes(instance.status));
   return { workflowCount: workflows.length, instanceCount: all.length, unresolved, manualQuiescenceRequired: true };
+}
+
+/**
+ * A Workflow-identity release deploys only once every listed instance is complete, terminated or errored.
+ * The listing is an observation, not a lock: whoever dispatches must have stopped new work first.
+ */
+export function assertWorkflowsDrained(snapshot: WorkflowDrainSnapshot): void {
+  if (snapshot.unresolved.length > 0)
+    throw new SafetyGateError(
+      `${snapshot.unresolved.length} Workflow instance(s) are still queued, running, paused or waiting; drain or terminate them before releasing a Workflow identity change`,
+    );
 }

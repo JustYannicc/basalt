@@ -30,7 +30,7 @@ test("the current main head with a passing push Check is a manual release candid
 test("a stale, unverified or moved main head is refused", async () => {
   const cases: Array<[string, MainCandidateFetch, string | undefined, RegExp]> = [
     ["main moved", github(other, [passing]), undefined, /not the current main head/],
-    ["approval for another head", github(head, [passing]), other, /main changed since this manual release was approved/],
+    ["backup for another head", github(head, [passing]), other, /main changed since this manual release was backed up/],
     ["no Check run", github(head, []), undefined, /no successful push Check/],
     ["failed Check", github(head, [{ ...passing, conclusion: "failure" }]), undefined, /no successful push Check/],
     ["pull request Check", github(head, [{ ...passing, event: "pull_request" }]), undefined, /no successful push Check/],
