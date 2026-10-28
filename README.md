@@ -64,7 +64,7 @@ The owner connects subscriptions the way any account is connected: on the pool a
 
 Released Home v1.1.6 doesn't say which credential a sign-in saved ([CLIProxyAPIHome#168](https://github.com/router-for-me/CLIProxyAPIHome/pull/168) adds that). The control-plane DO serializes sign-ins for every pool. It holds one lock per provider while an exchange can produce a credential, and it files the one new credential by diffing the credential list. A second sign-in for the same provider waits or gets a retryable `busy`. A device sign-in that stops being polled for 60 seconds is cancelled. If the diff isn't exactly one credential, nothing is added. Switch to the credential id once a Home release includes it.
 
-The pool's screen follows the prototype's Accounts view: each account's usage windows, with a bar for what's left, a mark for how much of the window's time is left, and when it resets, plus capacity per provider. Its fonts are the dashboard's own Geist faces. The pool app bundler copies them from the pinned source into the router's static assets, under `/brand/fonts/`, and the page links them across origins. The app compiler drops font files from npm packages, and binary files in the bundled source would ride in the API Worker. The screen needs app UI hosting, which is off; see below.
+The pool's screen follows the prototype's Accounts view: each account's usage windows, with a bar for what's left, a mark for how much of the window's time is left, and when it resets, plus capacity per provider. Its fonts are the dashboard's own Geist faces. The pool app bundler copies them from the pinned source into the router's static assets, under `/brand/fonts/`, and the page links them across origins. The app compiler drops font files from npm packages, and binary files in the bundled source would ride in the API Worker. The screen opens in the app page’s **App** tab, on an isolated app origin; see below.
 
 Container startup, management endpoints and release validation are documented in [containers/pool](containers/pool/README.md). Local routing and lifecycle tests do not establish live model service: release acceptance also needs test subscriptions, a streamed request, account-affinity and spread checks, and an hour of idle time with the same boot identity.
 
@@ -122,7 +122,7 @@ The setup page lists every computer the person has, in every pool they can use, 
 
 Codex needs any ChatGPT sign-in. Account-side features follow that account's plan. The Claude desktop app is not covered. The computer turns green after a successful model request scoped to its key and pool, plus an observed successful tools call. Catalog reads and MCP initialization do not count.
 
-Source and local checks are separate from release acceptance. Live acceptance still needs a deployed stack, connected test subscriptions, actual CLI requests with matching usage records, unchanged-secret pool switching, and denial of the next model and tools requests after revocation. App screen hosting is still disabled until its certificate prerequisite is resolved.
+Source and local checks are separate from release acceptance. Live acceptance still needs a deployed stack, connected test subscriptions, actual CLI requests with matching usage records, unchanged-secret pool switching, and denial of the next model and tools requests after revocation. App screens are enabled in source through opaque same-site origins. Live routing and certificate acceptance still need a deployed check.
 
 ## GitHub Actions secrets
 
@@ -162,8 +162,8 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `POOL_MANAGEMENT_KEY`         | Pool management API and local readiness authentication                 |
 | `POOL_APP_SIGNING_KEY`        | 32-byte lowercase hex key that signs pool tokens; shared by provisioning and the pool Worker |
 | `POOL_APP_SIGNING_KEY_PREVIOUS` | Optional, only while rotating: the pool Worker still accepts tokens signed with it |
-| `APP_DOMAIN_CONTROL_SECRET`   | App-domain lifecycle control key                                        |
-| `APP_DOMAIN_CONTROLLER_TOKEN` | Scoped DNS/certificate token, required only when app hosting is enabled |
+| `APP_DOMAIN_CONTROL_SECRET`   | App-domain lifecycle key, needed only by the nested address scheme                                        |
+| `APP_DOMAIN_CONTROLLER_TOKEN` | Scoped DNS/certificate token, needed only by the nested address scheme |
 
 The workflow maps `AUTH_GITHUB_*` to upstream's `GITHUB_*` environment variables because GitHub reserves the latter prefix for Actions secrets. Generated signing and lifecycle secrets are created directly in Actions secrets. Their values never belong in logs, repository files or artifacts.
 
@@ -244,11 +244,19 @@ For Slack, run `node scripts/check-slack.ts --preflight`, then `node scripts/che
 
 ### App UI hosting
 
-App UI hosting is off in [brand.ts](brand.ts) until its domain and certificate setup is approved. Sign-in, connections and MCP remain available. Apps with screens report that no app domain is configured. Pools are installed and work through their tools meanwhile; their screens show once hosting is on, with no other change.
+App screens open inside their dashboard page’s **App** tab. Apps with a deployed UI select that tab by default; tool-only apps keep Overview. Explicit tab and tool links keep their destination. **Open in new tab** remains available. The Apps list marks apps with an App screen.
 
-Set `appHosting.enabled`, `appHosting.origin` and `appHosting.zone` together to enable a selected domain. The deploy first applies upstream's app-domain foundation, then the cloud application. The scoped controller token comes from `APP_DOMAIN_CONTROLLER_TOKEN` in Actions secrets. It needs DNS Write, Zone Read, and SSL and Certificates Read for that zone. The lifecycle key comes from `APP_DOMAIN_CONTROL_SECRET`.
+[brand.ts](brand.ts) enables hosting with `scheme: "opaque"`, `embedded: true` and `origin: "https://signalbox.run"`. Deployment sets `EXECUTOR_APP_UI_BASE_URL`, `EXECUTOR_APP_UI_ADDRESS_SCHEME=opaque` and `EXECUTOR_APP_UI_EMBEDDED=true`. The carried patch defaults upstream to `nested` and embedding off. `EXECUTOR_APP_UI_MANAGED_ROUTE=false` leaves routing to Basalt’s router.
 
-The managed path needs an existing Advanced Certificate Manager subscription and enables Total TLS. No deploy purchases the subscription. App addresses are `<app>.<organization>.<base>`, so Universal SSL's `*.<base>` certificate is insufficient even on a dedicated domain. A dedicated domain can use the same managed path; a Universal SSL-only path requires a separate addressing change before it can be enabled.
+The reserved app-host namespace is exactly `a-<lowercase app UUID>.signalbox.run`: remove `app_` from the immutable app ID and prefix `a-`. Product hosts must never use this namespace. App and organization renames keep the same opaque origin. Resolution yields the immutable app and its current organization before authorization; a later public readable-host mapping can use the same resolution boundary. Public hosting and custom domains are outside this change.
+
+These single-label hosts fit the deployment’s existing `*.signalbox.run` certificate. Opaque mode does not provision per-organization domains, require Advanced Certificate Manager or run the domain controller. Nested mode keeps upstream’s managed-domain behavior. The router forwards only exact opaque app hosts to the tools service’s app-page Worker, before path routing, and never serves dashboard assets or pool/setup APIs on them.
+
+Cloudflare [does not support infix wildcards in routes](https://developers.cloudflare.com/workers/configuration/routing/routes/), so `a-*.signalbox.run/*` cannot be a route. The deployment uses a proxied wildcard DNS record and `*.signalbox.run/*`; explicit product-host bypasses preserve existing custom-domain origins. The router returns an empty 404 for other wildcard hosts. `appHosting.bypassHosts` lists custom-domain product hosts without their own more-specific zone route. More-specific existing routes remain untouched. The new DNS record and bypass resources refuse adoption, so they cannot replace existing records or routes. Existing exact DNS records, including email and verification records, keep their normal precedence over wildcard DNS. Live DNS, route precedence and certificate behavior remain deployment acceptance work.
+
+Embedded app responses allow only the dashboard origin in CSP `frame-ancestors`. The dashboard’s `/app-auth` route allows `'self'`; other dashboard documents retain `'none'` and `X-Frame-Options: DENY`. The iframe has the approved sandbox permissions, `clipboard-write`, and no referrer. A host-owned message confirms loading; a missed deadline offers Retry.
+
+The app origin, dashboard and redirect callback share the HTTPS `signalbox.run` site while remaining different origins. [WebKit defines a site as a registrable domain and its subdomains](https://webkit.org/tracking-prevention/), so Safari’s third-party cookie block does not make these app frames third-party. This is a documented expectation, not a Safari device test. Existing app sessions remain HttpOnly, Secure, SameSite=Lax `__Host-executor_app` cookies without a Domain attribute. Same-site does not allow app code to read the dashboard DOM, host-only dashboard cookies or another app’s session. The server also checks the exact request origin and session target. Isolated test stages keep hosting disabled until they have their own app DNS and certificate configuration.
 
 ### Rotation and rollback
 
@@ -289,6 +297,8 @@ Roll back by reverting the upstream pin and carried patch changes together and r
 - `0026-connect-method-labels.patch`: one label per sign-in method in connect forms, with methods that would share a label saying which one they are, and OAuth client choices named "{brand} (automatic)" and "Your own {Provider} app (OAuth)".
 - `0027-computer-connections.patch`: an optional computer-setup link leads the existing Connections card. Basalt opens its signed setup flow for pool models and personal tools; the existing MCP instructions remain the tools-only option. The OAuth agent list distinguishes its grants from computer keys. This manual overlay has no database or Workflow changes.
 - `0029-catalog-app-auto-update.patch`: installed, untouched catalog apps roll forward to the feed's current source once per Basalt release. The catalog source is built first without saving anything; only an untouched copy whose linked accounts and requirements all keep working is deployed. Copies someone changed, and updates that would break accounts, are never deployed: they become an offer that the app's Versions tab shows with the number of accounts to reconnect, and its Update button deploys through a manager-only endpoint. Upstream preparation writes the release revision. This Basalt-only overlay stays manual.
+
+- `0028-embedded-app-ui.patch` adds optional embedded app screens and opaque app origins. Upstream proposal: [UsefulSoftwareCo/executor#2419](https://github.com/UsefulSoftwareCo/executor/issues/2419). It changes no stored database schema or workflow identity; retirement requires a reviewed equivalent upstream implementation and browser proof.
 
 
 Existing runs from the earlier encryption patch must be drained before deploying this revision because their parameters have no format marker. Basalt has not deployed that earlier format. Keep this format marker and native ID scheme when adopting the generic upstream implementation. Basalt explicitly enables `EXECUTOR_ENCRYPTED_WORKFLOW_STARTS` for this fresh installation. Existing upstream installs must first deploy marker-aware dispatchers with that gate disabled, wait for earlier invocations to finish, then enable it in a second deploy. After activation, retain marker-aware code for rollback. Later changes to Workflow checkpoint names require a separate compatibility assessment or drain.

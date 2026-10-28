@@ -1,0 +1,1482 @@
+diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
+index 62f2ea8..3be897d 100644
+--- a/apps/hosted/cloud/alchemy.run.ts
++++ b/apps/hosted/cloud/alchemy.run.ts
+@@ -9,6 +9,7 @@ import * as Docker from "alchemy/Docker";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+ import { Effect, Layer, Option } from "effect";
+ import AppPages from "./src/app-ui.ts";
++import { appUiAddressScheme } from "@executor-js/hosted-server/app-ui";
+ import { cloudAppUiBase } from "./src/contracts/app-ui.ts";
+ import ApiLive, { Api } from "./src/main.ts";
+ import AppCompilerLive from "./src/compiler.ts";
+@@ -99,7 +100,10 @@ export const cloudDeployment = Effect.gen(function* () {
+   if (appBase !== undefined) {
+     const pages = yield* AppPages;
+     yield* uploadCloudSourceMaps("app-pages", pages.hash).pipe(Effect.orDie);
+-    if (!(yield* AlchemyContext).dev) {
++    if (
++      !(yield* AlchemyContext).dev &&
++      (yield* appUiAddressScheme.pipe(Effect.orDie)) === "nested"
++    ) {
+       const controller = yield* AppDomainController;
+       const lifecycle = yield* AppDomainLifecycle("AppDomains", {
+         origin: yield* cloudOrigin.pipe(Effect.orDie),
+diff --git a/apps/hosted/cloud/src/app-domains.ts b/apps/hosted/cloud/src/app-domains.ts
+index 93cdce4..8502e4e 100644
+--- a/apps/hosted/cloud/src/app-domains.ts
++++ b/apps/hosted/cloud/src/app-domains.ts
+@@ -8,6 +8,7 @@ import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Cr
+ import { PgClient } from "@effect/sql-pg";
+ import { Cause, Clock, DateTime, Effect, Layer, Redacted, Schema, Semaphore } from "effect";
+ import { SqlClient } from "effect/sql";
++import { appUiAddressScheme } from "@executor-js/hosted-server/app-ui/contracts";
+ import { cloudAppUiBase } from "./contracts/app-ui.ts";
+ import { AppDomainZoneSettings } from "./contracts/app-domains.ts";
+ import { appDomainCertificates } from "./implementation/app-domain-inventory.ts";
+@@ -47,7 +48,11 @@ const observeDomainFailure = (phase: string, cause: Cause.Cause<unknown>) =>
+ 
+ const makeAppDomainCoordinator = Effect.gen(function* () {
+   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+-  if (base === undefined || new URL(base).protocol !== "https:") {
++  if (
++    base === undefined ||
++    new URL(base).protocol !== "https:" ||
++    (yield* appUiAddressScheme) === "opaque"
++  ) {
+     return Effect.succeed({
+       wake: () => Effect.void,
+       heartbeat: () => Effect.void,
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index 077cd51..e8eca07 100644
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -1,7 +1,12 @@
+ import { requestServices } from "@executor-js/hosted-server";
+ import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
+ /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
+-import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
++import {
++  appUiAddressScheme,
++  appUiEmbedded,
++  hostedAppUi,
++  appAddresses,
++} from "@executor-js/hosted-server/app-ui";
+ import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
+ import { AppUiApi } from "apps/ui/contracts";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+@@ -55,6 +60,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         ...(yield* telemetryBindings),
+         ...(yield* sentryBindings).env,
+         ...(yield* productBrandBindings),
++        EXECUTOR_APP_UI_ADDRESS_SCHEME: yield* appUiAddressScheme,
++        EXECUTOR_APP_UI_EMBEDDED: String(yield* appUiEmbedded),
+       },
+       compatibility: {
+         date: "2026-09-08",
+@@ -66,7 +73,10 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+             onNone: () => ({}),
+             onSome: (region) => ({ placement: { region } }),
+           })),
+-      ...(dev ? {} : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
++      ...(dev ||
++      !(yield* Config.Boolean("EXECUTOR_APP_UI_MANAGED_ROUTE").pipe(Config.withDefault(true)))
++        ? {}
++        : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
+       dev: { host: "127.0.0.1", port: yield* cloudAppUiPort.pipe(Effect.orDie), strictPort: true },
+     };
+   }),
+@@ -77,7 +87,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+     const executor = yield* cloudServingProduct(yield* appDataSupervisors);
+     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+     // App pages send sign-in to the dashboard, on the browser origin.
+-    const appUi = hostedAppUi(appAddresses((yield* cloudHosts.pipe(Effect.orDie)).browser, base));
++    const appUi = hostedAppUi(
++      appAddresses(
++        (yield* cloudHosts.pipe(Effect.orDie)).browser,
++        base,
++        yield* appUiAddressScheme.pipe(Effect.orDie),
++        yield* appUiEmbedded.pipe(Effect.orDie),
++      ),
++    );
+     const services = requestServices(Layer.mergeAll(appSessions, executor));
+     const notFound = HttpServerResponse.empty({ status: 404 });
+     const protectedRoutes = Layer.mergeAll(
+@@ -107,7 +124,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+     );
+     const lifetime = yield* previewLifetime;
+     return {
+-      fetch: handle.pipe(
++      fetch: appUi.frameResponse(handle).pipe(
+         // Every GET reaches the page route, so an unmatched route is another method. Not found,
+         // as on self-host.
+         Effect.catchIf(
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domains.ts b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+index 58a010e..d6f82d6 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-domains.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+@@ -1,7 +1,10 @@
+ /** App domain status for API callers; the AppDomainController Worker hosts the coordinator. */
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { RuntimeContext } from "alchemy";
+-import { AppUiAddressInvalid } from "@executor-js/hosted-server/app-ui/contracts";
++import {
++  appUiAddressScheme,
++  AppUiAddressInvalid,
++} from "@executor-js/hosted-server/app-ui/contracts";
+ import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server/organization";
+ import { UiFailed } from "apps/ui/contracts";
+ import { Clock, Effect, Redacted, Schema } from "effect";
+@@ -50,6 +53,13 @@ const staleAfter = 15 * 60_000;
+  * schedule if it was lost.
+  */
+ export const cloudAppDomains = Effect.gen(function* () {
++  if ((yield* appUiAddressScheme.pipe(Effect.orDie)) === "opaque")
++    return {
++      status: (_team: typeof Team.Type) => Effect.succeed("ready" as const),
++      control: (_operation: "resume" | "drain") =>
++        Effect.succeed(HttpServerResponse.empty({ status: 404 })),
++      heartbeat: Effect.void,
++    };
+   const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
+   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+   // Local development serves apps over HTTP and provisions no domains.
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index b4f4f11..308a7e0 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -6,7 +6,12 @@ import {
+ } from "./infrastructure/provisioning.ts";
+ import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
+ import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
+-import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
++import {
++  appUiAddressScheme,
++  appUiEmbedded,
++  hostedAppUi,
++  appAddresses,
++} from "@executor-js/hosted-server/app-ui";
+ import { cloudAppUiBase } from "./contracts/app-ui.ts";
+ import { cloudAppDomains } from "./infrastructure/app-domains.ts";
+ import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
+@@ -353,7 +358,12 @@ export default Api.make(
+       billingEnabled: (yield* Billing.pipe(Effect.provide(billing))).enabled,
+     });
+     const appUi = hostedAppUi(
+-      appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
++      appAddresses(
++        auth.origin,
++        yield* cloudAppUiBase.pipe(Effect.orDie),
++        yield* appUiAddressScheme.pipe(Effect.orDie),
++        yield* appUiEmbedded.pipe(Effect.orDie),
++      ),
+       appDomains.status,
+     );
+     // Session objects run in the MCP server Worker; this isolate authenticates and forwards.
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index eee4f95..82895c0 100644
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -36,7 +36,12 @@ import {
+   ProductAnalytics,
+ } from "@executor-js/hosted-server";
+ import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
+-import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
++import {
++  appUiAddressScheme,
++  appUiEmbedded,
++  appAddresses,
++  hostedAppUi,
++} from "@executor-js/hosted-server/app-ui";
+ import { appSignInCallbackPath } from "apps/ui/auth";
+ import { AppUiApi } from "apps/ui/contracts";
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -105,7 +110,12 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+       origin: auth.origin,
+       oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
+     });
+-    const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
++    const addresses = appAddresses(
++      auth.origin,
++      yield* appUiBaseUrl(auth.origin),
++      yield* appUiAddressScheme,
++      yield* appUiEmbedded,
++    );
+     const appUi = hostedAppUi(addresses);
+     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
+     const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
+@@ -227,7 +237,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+         Effect.gen(function* () {
+           const request = yield* HttpServerRequest.HttpServerRequest;
+           if (Option.isSome(addresses.fromHost(request.headers.host)))
+-            return yield* observed(apps.pipe(requestTiming));
++            return yield* observed(appUi.frameResponse(apps).pipe(requestTiming));
+           if (addresses.ownsHost(request.headers.host)) return notFound;
+           return yield* observed(product);
+         }).pipe(recordRequestRejections, Effect.provideService(CurrentProductBrand, brand)),
+diff --git a/apps/hosted/self-host/src/main.ts b/apps/hosted/self-host/src/main.ts
+index 4e49914..58aa9e2 100644
+--- a/apps/hosted/self-host/src/main.ts
++++ b/apps/hosted/self-host/src/main.ts
+@@ -90,13 +90,17 @@ export const main = Effect.scoped(
+     const overrides: Record<string, string> = { PORT: String(address.port) };
+     // Port zero is a real OS allocation, not a released-port probe. Resolve local URLs
+     // before auth, managed app installation, or any callback is configured.
+-    for (const key of ["BETTER_AUTH_URL", "EXECUTOR_OAUTH_CALLBACK_URL"]) {
++    for (const key of [
++      "BETTER_AUTH_URL",
++      "EXECUTOR_OAUTH_CALLBACK_URL",
++      "EXECUTOR_APP_UI_BASE_URL",
++    ]) {
+       const value = yield* Config.String(key).pipe(Config.option);
+       if (Option.isSome(value)) {
+         const url = URL.parse(value.value);
+         if (url !== null && url.port === "0") {
+           url.port = String(address.port);
+-          overrides[key] = key === "BETTER_AUTH_URL" ? url.origin : url.href;
++          overrides[key] = key === "EXECUTOR_OAUTH_CALLBACK_URL" ? url.href : url.origin;
+         }
+       }
+     }
+diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
+index 677230b..0c64605 100644
+--- a/apps/hosted/server/src/contracts/app-ui.ts
++++ b/apps/hosted/server/src/contracts/app-ui.ts
+@@ -12,7 +12,7 @@ import {
+ } from "@executor-js/sdk/core";
+ import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
+ import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
+-import { Context, type Effect, Schema } from "effect";
++import { Config, Context, type Effect, Schema } from "effect";
+ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+ import { Principal } from "./auth.ts";
+ import {
+@@ -25,6 +25,15 @@ import {
+ } from "./organization.ts";
+ export { AppSignInFailure, AppSignInId } from "apps/ui/auth/contracts";
+ 
++/** Nested remains the default. Opaque uses the reserved a-<UUID> label, independent of names. */
++export const appUiAddressScheme = Config.Literals(
++  ["nested", "opaque"],
++  "EXECUTOR_APP_UI_ADDRESS_SCHEME",
++).pipe(Config.withDefault("nested"));
++export const appUiEmbedded = Config.Boolean("EXECUTOR_APP_UI_EMBEDDED").pipe(
++  Config.withDefault(false),
++);
++
+ /** Immutable ownership plus the exact current browser origin. Slug reuse cannot transfer a session. */
+ export const AppUiTarget = Schema.Struct({
+   app: AppId,
+@@ -79,16 +88,25 @@ export type AppUiUnavailable = typeof AppUiUnavailable.Type;
+  * usable link. An unavailable page says why, because an app without a UI is not an outage.
+  */
+ export const AppUiLocation = Schema.Union([
+-  Schema.Struct({ status: Schema.Literal("ready"), url: HttpUrl }),
++  Schema.Struct({
++    status: Schema.Literal("ready"),
++    url: HttpUrl,
++    embedded: Schema.optional(Schema.Boolean),
++  }),
+   Schema.Struct({
+     status: Schema.Literal("unavailable"),
++    embedded: Schema.optional(Schema.Boolean),
+     url: Schema.Null,
+     reason: Schema.Literals(["no_ui", "no_app_domain"]).annotate({
+       description:
+         "no_ui: the active version has no UI (no index.html), as for tool-only apps. no_app_domain: this deployment has no app domain configured, so no app UI has an address.",
+     }),
+   }),
+-  Schema.Struct({ status: Schema.Literals(["pending", "failed"]), url: Schema.Null }),
++  Schema.Struct({
++    status: Schema.Literals(["pending", "failed"]),
++    url: Schema.Null,
++    embedded: Schema.optional(Schema.Boolean),
++  }),
+ ]);
+ /** A browser started this attempt on an app origin; only a digest of its HttpOnly proof is retained. */
+ export const AppUiAttempt = Schema.Struct({
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+index b9e3a83..8df17a2 100644
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -220,7 +220,7 @@ export const HostedApps = HttpApiGroup.make("apps")
+       .annotate(RequiredAction, "manage")
+       .annotate(
+         OpenApi.Description,
+-        "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace, Git clone URL and the page address appUi.location returns, and the old address stops working. The name and slug must be unique in the organization.",
++        "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace and Git clone URL. Nested app UI addresses follow the new slugs and the old address stops working; opaque app UI addresses retain the app ID. The name and slug must be unique in the organization.",
+       ),
+   )
+   .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/implementation/app-addresses.ts b/apps/hosted/server/src/implementation/app-addresses.ts
+index 225328f..54d4bdf 100644
+--- a/apps/hosted/server/src/implementation/app-addresses.ts
++++ b/apps/hosted/server/src/implementation/app-addresses.ts
+@@ -1,21 +1,25 @@
+ /** Address construction and parsing share one configured suffix; forwarding headers never select an app. */
+-import { AppSlug, HttpUrl, type App } from "@executor-js/sdk/core";
++import { AppId, AppSlug, HttpUrl, type App } from "@executor-js/sdk/core";
+ import { UiFailed } from "apps/ui/contracts";
+ import { Effect, Option, Schema } from "effect";
+ import { AppUiAddressInvalid, AppUiHostnameLabel, type AppUiBaseUrl } from "../contracts/app-ui.ts";
+ import { OrganizationSlug } from "../contracts/organization.ts";
+ 
+ /** Hosted app.organization addresses resolve current names before authorizing immutable identities. */
+-export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | undefined) => {
++export const appAddresses = (
++  dashboardOrigin: string,
++  baseUrl: AppUiBaseUrl | undefined,
++  scheme: "nested" | "opaque" = "nested",
++  embedded = false,
++) => {
+   const base = baseUrl === undefined ? undefined : new URL(baseUrl);
+   const dashboardHost = new URL(dashboardOrigin).host;
+-  const origin = (app: Pick<App, "slug">, slug: OrganizationSlug) =>
++  const origin = (app: Pick<App, "id" | "slug">, slug: OrganizationSlug) =>
+     Effect.gen(function* () {
+       if (base === undefined) return yield* new UiFailed({ reason: "unavailable" });
+-      const labels = yield* Schema.decodeUnknownEffect(Schema.Array(AppUiHostnameLabel))([
+-        app.slug,
+-        slug,
+-      ]).pipe(
++      const labels = yield* Schema.decodeUnknownEffect(Schema.Array(AppUiHostnameLabel))(
++        scheme === "opaque" ? [] : [app.slug, slug],
++      ).pipe(
+         Effect.mapError(
+           () =>
+             new AppUiAddressInvalid({
+@@ -24,14 +28,29 @@ export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | un
+         ),
+       );
+       const url = new URL(base);
+-      const hostname = `${labels.join(".")}.${base.hostname}`;
++      const hostname =
++        scheme === "opaque"
++          ? `a-${app.id.slice(4)}.${base.hostname}`
++          : `${labels.join(".")}.${base.hostname}`;
++      if (scheme === "opaque" && !/^app_[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(app.id))
++        return yield* new AppUiAddressInvalid({ reason: "invalid_slug" });
+       url.hostname = hostname;
++      if (url.host === dashboardHost)
++        return yield* new AppUiAddressInvalid({ reason: "invalid_slug" });
+       if (url.hostname !== hostname)
+         return yield* new AppUiAddressInvalid({ reason: "invalid_slug" });
+       if (url.hostname.length > 253) return yield* new AppUiAddressInvalid({ reason: "too_long" });
+       return HttpUrl.make(url.origin);
+     });
+-  const fromHost = (host: string | undefined) => {
++  type Host =
++    | { readonly kind: "opaque"; readonly app: App["id"]; readonly origin: string }
++    | {
++        readonly kind: "nested";
++        readonly find: { readonly slug: App["slug"] };
++        readonly slug: OrganizationSlug;
++        readonly origin: string;
++      };
++  const fromHost = (host: string | undefined): Option.Option<Host> => {
+     if (base === undefined || host === undefined) return Option.none();
+     const url = URL.parse(`${base.protocol}//${host}`);
+     const suffix = `.${base.hostname}`;
+@@ -43,22 +62,35 @@ export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | un
+     )
+       return Option.none();
+     const labels = url.hostname.slice(0, -suffix.length).split(".");
++    if (scheme === "opaque") {
++      const match = /^a-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.exec(labels.join("."));
++      return match === null || url.host === dashboardHost
++        ? Option.none()
++        : Option.some({
++            kind: "opaque" as const,
++            app: AppId.make(`app_${match[1]}`),
++            origin: HttpUrl.make(url.origin),
++          });
++    }
+     if (labels.length !== 2) return Option.none();
+     return Option.flatMap(
+       Schema.decodeUnknownOption(Schema.Array(AppUiHostnameLabel))(labels),
+       ([app, slug]) => {
+         return Schema.decodeUnknownOption(
+           Schema.Struct({
++            kind: Schema.Literal("nested"),
+             find: Schema.Struct({ slug: AppSlug }),
+             slug: OrganizationSlug,
+             origin: HttpUrl,
+           }),
+-        )({ find: { slug: app }, slug, origin: url.origin });
++        )({ kind: "nested", find: { slug: app }, slug, origin: url.origin });
+       },
+     );
+   };
+   return {
+     dashboardOrigin,
++    scheme,
++    embedded,
+     enabled: base !== undefined,
+     origin,
+     fromHost,
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+index 372254f..b72b5a2 100644
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -57,6 +57,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import {
+   CurrentOrganization,
+   OrganizationForbidden,
++  OrganizationId,
+   organizationOwner,
+   type OrganizationAccess,
+ } from "../contracts/organization.ts";
+@@ -120,17 +121,37 @@ export const hostedAppUi = <R = never>(
+   const target = Effect.gen(function* () {
+     const { request, host } = yield* requestOrigin;
+     const sessions = yield* HostedAppSessions;
+-    const organization = yield* sessions.organization({ slug: host.slug });
+     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+-    const matches = yield* executor.apps
+-      .list({ owner: organizationOwner(organization.id), ...host.find })
+-      .pipe(Effect.mapError(unavailable));
+-    const app = matches[0];
+-    if (app === undefined) return yield* new UiForbidden();
++    const resolved = yield* Effect.gen(function* () {
++      if (host.kind === "opaque") {
++        const app = yield* executor.apps
++          .get({ app: host.app })
++          .pipe(Effect.mapError(() => new UiForbidden()));
++        if (!app.owner.startsWith("organization:")) return yield* new UiForbidden();
++        const id = yield* Schema.decodeUnknownEffect(OrganizationId)(
++          app.owner.slice("organization:".length),
++        ).pipe(Effect.mapError(() => new UiForbidden()));
++        const organization = yield* sessions.organization({ id });
++        return { app, organization };
++      }
++      const organization = yield* sessions.organization({ slug: host.slug });
++      const matches = yield* executor.apps
++        .list({ owner: organizationOwner(organization.id), ...host.find })
++        .pipe(Effect.mapError(unavailable));
++      const app = matches[0];
++      if (app === undefined) return yield* new UiForbidden();
++      return { app, organization };
++    });
++    const { app, organization } = resolved;
+     return {
+       request,
+       app,
+-      target: { app: app.id, slug: host.slug, origin: host.origin, organization: organization.id },
++      target: {
++        app: app.id,
++        slug: organization.slug,
++        origin: host.origin,
++        organization: organization.id,
++      },
+     };
+   });
+   const readVersion = (app: App, requested?: VersionId) =>
+@@ -289,6 +310,31 @@ export const hostedAppUi = <R = never>(
+         ),
+       );
+     });
++  const signInPage = <E, R>(page: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
++    signIn(page).pipe(
++      Effect.map((response) =>
++        addresses.embedded
++          ? HttpServerResponse.setHeaders(response, {
++              "content-security-policy": "frame-ancestors 'self'",
++              "x-frame-options": "SAMEORIGIN",
++            })
++          : response,
++      ),
++    );
++  const frameResponse = <E, R>(
++    response: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
++  ) =>
++    response.pipe(
++      Effect.map((value) =>
++        addresses.embedded
++          ? HttpServerResponse.setHeader(
++              value,
++              "content-security-policy",
++              `frame-ancestors ${addresses.dashboardOrigin}`,
++            )
++          : value,
++      ),
++    );
+   const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
+     handlers.handle("location", ({ params }) =>
+       Effect.gen(function* () {
+@@ -309,9 +355,19 @@ export const hostedAppUi = <R = never>(
+           Effect.mapError(() => new AppUiUnavailable()),
+         );
+         if (page === undefined)
+-          return { status: "unavailable" as const, url: null, reason: "no_ui" as const };
++          return {
++            status: "unavailable" as const,
++            ...(addresses.embedded ? { embedded: true } : {}),
++            url: null,
++            reason: "no_ui" as const,
++          };
+         if (!addresses.enabled)
+-          return { status: "unavailable" as const, url: null, reason: "no_app_domain" as const };
++          return {
++            status: "unavailable" as const,
++            ...(addresses.embedded ? { embedded: true } : {}),
++            url: null,
++            reason: "no_app_domain" as const,
++          };
+         const sessions = yield* HostedAppSessions;
+         const organization = yield* sessions
+           .organization({ id: access.organization })
+@@ -322,7 +378,9 @@ export const hostedAppUi = <R = never>(
+         const status = yield* domainStatus(organization).pipe(
+           Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
+         );
+-        return status === "ready" ? { status, url } : { status, url: null };
++        return status === "ready"
++          ? { status, url, ...(addresses.embedded ? { embedded: true } : {}) }
++          : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
+       }),
+     ),
+   );
+@@ -598,6 +656,7 @@ export const hostedAppUi = <R = never>(
+       accountIds: accounts?.user,
+       accounts: yield* accountNotice,
+       origin: current.target.origin,
++      parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
+       version: version.id,
+       asset: (path) => assets(version, path),
+     });
+@@ -682,7 +741,8 @@ export const hostedAppUi = <R = never>(
+       htmlFailure,
+     );
+   return {
+-    signIn,
++    signIn: signInPage,
++    frameResponse,
+     callback,
+     dashboard,
+     calls,
+diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
+index a1bc3c7..6c662f2 100644
+--- a/apps/hosted/web/src/contracts/app-ui.ts
++++ b/apps/hosted/web/src/contracts/app-ui.ts
+@@ -38,16 +38,23 @@ class AppUiKey extends Data.Class<{
+   readonly slug: string;
+   readonly app: AppId;
+   readonly appSlug: AppSlug;
+-  readonly version: VersionId;
++  readonly version: VersionId | null;
+ }> {}
+ const location = Atom.family((key: AppUiKey) =>
+   // The open-app control polls version status; it loads after hydration.
+   browserOnly(
+     AppUiClient.runtime.atom(
+       Stream.fromEffectSchedule(
+-        Effect.flatMap(AppUiClient, (client) =>
+-          client.appUi.location({ params: { organization: key.organization, app: key.app } }),
+-        ),
++        key.version === null
++          ? Effect.succeed({
++              status: "unavailable" as const,
++              embedded: false,
++              reason: "no_ui" as const,
++              url: null,
++            })
++          : Effect.flatMap(AppUiClient, (client) =>
++              client.appUi.location({ params: { organization: key.organization, app: key.app } }),
++            ),
+         Schedule.spaced("3 seconds"),
+       ).pipe(Stream.takeUntil((location) => location.status !== "pending")),
+     ),
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index e29dddf..b36520c 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -49,6 +49,9 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
+ import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
+ import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
+ import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
++import { AppSlug } from "@executor-js/sdk";
++import { AppScreen } from "./app-screen.tsx";
++import { appUiLocationAtom } from "../../contracts/app-ui.ts";
+ import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
+ import {
+   AppOverview,
+@@ -86,7 +89,13 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params)
+   });
+ 
+ /** Views that read only the app. The others also read the inventory and the app's links. */
+-const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
++const appWideViews: ReadonlySet<AppView> = new Set([
++  "app",
++  "settings",
++  "versions",
++  "source",
++  "history",
++]);
+ 
+ /**
+  * Links with their sign-in state and checks by this app. Accounts the caller can use show the
+@@ -134,7 +143,20 @@ export function AppDetailPage({
+     : Option.isSome(inventory.data)
+       ? inventory.data.value.apps.find((item) => item.id === appId)
+       : undefined;
+-  const selectedView = view ?? (tool === undefined ? "overview" : "tools");
++  const screen = useAtomValue(
++    appUiLocationAtom({
++      organization,
++      slug: organizationSlug,
++      app: appId,
++      appSlug: app?.slug ?? AppSlug.make("loading"),
++      version: app?.activeVersion ?? null,
++    }),
++  );
++  const hasAppScreen =
++    AsyncResult.isSuccess(screen) &&
++    screen.value.embedded === true &&
++    !(screen.value.status === "unavailable" && screen.value.reason === "no_ui");
++  const selectedView = view ?? (tool === undefined ? (hasAppScreen ? "app" : "overview") : "tools");
+   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
+   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
+   const session = useAtomValue(sessionAtom);
+@@ -185,6 +207,7 @@ export function AppDetailPage({
+       app={app}
+       view={selectedView}
+       canInspectSource={canManage}
++      hasAppScreen={hasAppScreen}
+       sourceDisabledReason={sourceReason}
+       back={
+         <Link
+@@ -234,6 +257,12 @@ export function AppDetailPage({
+           pending={pending}
+         >
+           {({ current }) => {
++            if (selectedView === "app")
++              return canUse ? (
++                <AppScreen app={current} />
++              ) : (
++                <p className="p-5">You do not have access to this app.</p>
++              );
+             if (selectedView === "settings")
+               return (
+                 <AppSettings
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+new file mode 100644
+index 0000000..bde0386
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -0,0 +1,140 @@
++import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
++import type { App } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import { AsyncResult } from "effect/reactivity";
++import { useEffect, useRef, useState } from "react";
++import { appUiError, appUiLocationAtom } from "../../contracts/app-ui.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++
++/** Reuses URL discovery, including no-UI and domain readiness, instead of guessing from app names. */
++export function AppScreenBadge({ app }: { readonly app: App }) {
++  const { organization, slug } = useOrganizationRoute();
++  const result = useAtomValue(
++    appUiLocationAtom({
++      organization,
++      slug,
++      app: app.id,
++      appSlug: app.slug,
++      version: app.activeVersion,
++    }),
++  );
++  return AsyncResult.isSuccess(result) &&
++    result.value.embedded &&
++    !(result.value.status === "unavailable" && result.value.reason === "no_ui") ? (
++    <span className="text-xs text-muted-foreground">App screen</span>
++  ) : null;
++}
++
++export function AppScreen({ app }: { readonly app: App }) {
++  const { organization, slug } = useOrganizationRoute();
++  const location = appUiLocationAtom({
++    organization,
++    slug,
++    app: app.id,
++    appSlug: app.slug,
++    version: app.activeVersion,
++  });
++  const result = useAtomValue(location);
++  const refresh = useAtomRefresh(location);
++  if (AsyncResult.isFailure(result))
++    return <ScreenStatus message={appUiError(result.cause)} retry={refresh} />;
++  if (!AsyncResult.isSuccess(result)) return <ScreenStatus message="Loading app…" />;
++  if (result.value.status === "pending")
++    return <ScreenStatus message="Preparing app domain…" retry={refresh} />;
++  if (result.value.status === "failed")
++    return <ScreenStatus message="App domain setup needs attention." retry={refresh} />;
++  if (result.value.status === "unavailable")
++    return (
++      <ScreenStatus
++        message={
++          result.value.reason === "no_ui"
++            ? "This app has no screen."
++            : "App hosting is not configured."
++        }
++        retry={refresh}
++      />
++    );
++  if (result.value.url === null)
++    return <ScreenStatus message="App domain setup needs attention." retry={refresh} />;
++  if (!result.value.embedded)
++    return <ScreenStatus message="Embedded app screens are not enabled on this host." />;
++  return <AppFrame key={result.value.url} url={result.value.url} name={app.name} />;
++}
++
++function ScreenStatus({
++  message,
++  retry,
++}: {
++  readonly message: string;
++  readonly retry?: (() => void) | undefined;
++}) {
++  return (
++    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5">
++      <p role="status" className="text-sm text-muted-foreground">
++        {message}
++      </p>
++      {retry && (
++        <Button variant="outline" onClick={retry}>
++          Check again
++        </Button>
++      )}
++    </div>
++  );
++}
++
++/** A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError. */
++function AppFrame({ url, name }: { readonly url: string; readonly name: string }) {
++  const frame = useRef<HTMLIFrameElement>(null);
++  const [attempt, setAttempt] = useState(0);
++  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
++  useEffect(() => {
++    setState("loading");
++    const timer = window.setTimeout(() => setState("failed"), 30000);
++    const ready = (event: MessageEvent) => {
++      if (
++        event.origin !== new URL(url).origin ||
++        event.source !== frame.current?.contentWindow ||
++        event.data?.type !== "executor:app-ready"
++      )
++        return;
++      window.clearTimeout(timer);
++      setState("ready");
++    };
++    window.addEventListener("message", ready);
++    return () => {
++      window.clearTimeout(timer);
++      window.removeEventListener("message", ready);
++    };
++  }, [url, attempt]);
++  return (
++    <div className="relative flex min-h-0 flex-1 flex-col">
++      {state === "loading" && (
++        <div
++          role="status"
++          className="absolute inset-x-0 top-0 z-10 bg-background p-3 text-sm text-muted-foreground"
++        >
++          Loading app…
++        </div>
++      )}
++      {state === "failed" && (
++        <div role="alert" className="flex items-center gap-3 border-b p-3 text-sm">
++          <span>The app did not finish loading. Retry or open it in a new tab.</span>
++          <Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>
++            Retry
++          </Button>
++        </div>
++      )}
++      <iframe
++        key={attempt}
++        ref={frame}
++        src={url}
++        title={`${name} app`}
++        className="min-h-0 w-full flex-1 border-0"
++        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
++        allow="clipboard-write"
++        referrerPolicy="no-referrer"
++        onError={() => setState("failed")}
++      />
++    </div>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
+index 8f88b3a..64a7d3e 100644
+--- a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
+@@ -98,7 +98,7 @@ function DeployedOpenAppAction({
+   return (
+     <Button variant="outline" asChild>
+       <a href={result.value.url} target="_blank" rel="noopener noreferrer">
+-        Open app
++        {result.value.embedded ? "Open in new tab" : "Open app"}
+       </a>
+     </Button>
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/apps.tsx b/apps/hosted/web/src/implementation/pages/apps.tsx
+index 6011737..3446370 100644
+--- a/apps/hosted/web/src/implementation/pages/apps.tsx
++++ b/apps/hosted/web/src/implementation/pages/apps.tsx
+@@ -1,3 +1,4 @@
++import { AppScreenBadge } from "./app-screen.tsx";
+ import { useMemo } from "react";
+ import { useAtom } from "@effect/atom-react";
+ import { Option } from "effect";
+@@ -41,6 +42,7 @@ export function AppsPage() {
+   return (
+     <SharedPage
+       query={atoms.query}
++      screen={(app) => <AppScreenBadge app={app} />}
+       Failure={HostedFailure}
+       pending={
+         Option.isSome(data) && data.value.pendingApp ? (
+diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+index 18a14c9..79025cf 100644
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -317,6 +317,15 @@ export const startManagedServer = (
+               if (clock !== null) confirmedOffset = Number(clock[1]);
+               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
+                 origin = line.slice("Executor: ".length);
++                // A scenario may need a named same-site dashboard for embedded app cookies.
++                if (
++                  environment.BETTER_AUTH_URL?.endsWith(":0") &&
++                  new URL(environment.BETTER_AUTH_URL).hostname.endsWith(".localhost")
++                ) {
++                  const named = new URL(origin);
++                  named.hostname = new URL(environment.BETTER_AUTH_URL).hostname;
++                  origin = named.origin;
++                }
+                 env.PORT = new URL(origin).port;
+                 env.EXECUTOR_PORT = env.PORT;
+                 env.BETTER_AUTH_URL = origin;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index d506111..938d583 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -4859,6 +4859,26 @@ export const scenarios = plan({
+       local: na("The API document and catalog installation are hosted product surfaces."),
+     },
+   },
++  embeddedAppUi: {
++    fixtures: "actors",
++    file: "embedded-app-ui.spec.ts",
++    appOrigin: true,
++    title: "embedded app screens sign in on isolated opaque origins and refuse foreign frames",
++    serverEnvironment: {
++      EXECUTOR_PRODUCT_NAME: "Signalbox",
++      BETTER_AUTH_URL: "http://app.fixture.localhost:0",
++      EXECUTOR_APP_UI_BASE_URL: "http://fixture.localhost:0",
++      EXECUTOR_APP_UI_ADDRESS_SCHEME: "opaque",
++      EXECUTOR_APP_UI_EMBEDDED: "true",
++    },
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "This scenario owns a self-host process with opaque addressing and embedding enabled.",
++      ),
++      local: na("Local does not host app origins."),
++    },
++  },
+   appUiApiDocument: {
+     fixtures: "actors",
+     managementApps: ["owner"],
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+new file mode 100644
+index 0000000..020738b
+--- /dev/null
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -0,0 +1,335 @@
++/** Browser proof through a real self-host, including the existing browser-bound sign-in protocol. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { waitForAppUrl } from "../support/app-pages.ts";
++import { Target } from "../support/platform.ts";
++
++const files = [
++  {
++    path: "index.ts",
++    content: `import { defineApp } from "apps"; export default defineApp({}, {});`,
++  },
++  {
++    path: "ui/index.html",
++    content: `<!doctype html><html><head><title>Embedded fixture</title><style>body{font:14px system-ui;margin:28px;color:#18181b}h1{font-size:24px;letter-spacing:-.02em}label{display:grid;gap:8px;max-width:360px}input{font:inherit;border:1px solid #d4d4d8;border-radius:6px;padding:8px}</style></head><body><main><h1>Embedded fixture screen</h1><label>Draft<input name="draft"></label></main></body></html>`,
++  },
++  appsManifest,
++];
++
++layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) => {
++  it.effect(scenarios.embeddedAppUi.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          target = yield* Target;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deploy = (name: string, ancestor?: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files:
++                ancestor === undefined
++                  ? files
++                  : files.map((file) =>
++                      file.path === "ui/index.html"
++                        ? {
++                            ...file,
++                            content: file.content.replace(
++                              "</main>",
++                              `<iframe title="Foreign app frame" src="${ancestor}"></iframe></main>`,
++                            ),
++                          }
++                        : file,
++                    ),
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = yield* body(App, response);
++            yield* Effect.addFinalizer(() =>
++              api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++            );
++            const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
++            expect(new URL(url).hostname).toBe(`a-${app.id.slice(4)}.fixture.localhost`);
++            return { app, url };
++          });
++        const first = yield* deploy("Embedded fixture one");
++        const second = yield* deploy("Embedded fixture two", first.url);
++        yield* browser.login(actors.owner);
++        // Cookies never enter retained network traces or screenshots.
++        yield* browser.omitNetworkTrace;
++        const detail = `/org/${actors.organization.slug}/apps/${first.app.id}`;
++        yield* browser.use("Open the app cards", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps`),
++        );
++        yield* browser.use("App cards advertise screens", (page) =>
++          page
++            .getByRole("link", { name: `Open ${first.app.name}`, exact: true })
++            .getByText("App screen")
++            .waitFor(),
++        );
++        yield* browser.checkpoint("apps-list-with-screen");
++        yield* browser.use("The App tab completes sign-in inside its frame", (page) =>
++          Promise.all([
++            page.waitForResponse(
++              (response) =>
++                new URL(response.url()).origin === first.url &&
++                new URL(response.url()).pathname === "/_executor/auth/callback" &&
++                response.status() === 302 &&
++                response.request().frame() !== page.mainFrame(),
++            ),
++            page.goto(detail),
++          ]),
++        );
++        yield* browser.use("The isolated app renders its authored screen", (page) =>
++          page
++            .frameLocator(`iframe[title="${first.app.name} app"]`)
++            .getByRole("heading", { name: "Embedded fixture screen" })
++            .waitFor(),
++        );
++        yield* browser.use("The host receives app readiness", (page) =>
++          page.getByRole("status").filter({ hasText: "Loading app…" }).waitFor({ state: "hidden" }),
++        );
++        yield* browser.use("The default App tab has the approved sandbox", (page) =>
++          Promise.all([
++            page
++              .getByRole("navigation", { name: "App navigation" })
++              .getByRole("link", { name: "App", exact: true })
++              .getAttribute("aria-current"),
++            page.locator("iframe").getAttribute("sandbox"),
++            page.locator("iframe").getAttribute("allow"),
++            page.locator("iframe").getAttribute("referrerpolicy"),
++            page.getByRole("link", { name: "Open in new tab" }).getAttribute("href"),
++          ]).then(([selected, sandbox, allow, referrer, href]) => {
++            expect(page.url()).toBe(`${target.metadata.origin}${detail}`);
++            expect(selected).toBe("page");
++            expect(sandbox).toBe(
++              "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads",
++            );
++            expect(allow).toBe("clipboard-write");
++            expect(referrer).toBe("no-referrer");
++            expect(href).toBe(first.url);
++          }),
++        );
++        yield* browser.checkpoint("embedded-app-tab");
++        yield* browser.use("App origins cannot read the dashboard DOM or cookies", (page) => {
++          const frame = page.frames().find((frame) => frame.url().startsWith(first.url));
++          expect(frame).toBeDefined();
++          return Promise.all([
++            frame!.evaluate(() => {
++              try {
++                void parent.document.body;
++                return false;
++              } catch {
++                return true;
++              }
++            }),
++            frame!.evaluate(() => document.cookie),
++          ]).then(([blocked, cookies]) => {
++            expect(blocked).toBe(true);
++            expect(cookies).toBe("");
++          });
++        });
++        yield* browser.use("Host-only Lax cookies and app-scoped tokens isolate sessions", (page) =>
++          page
++            .context()
++            .cookies(first.url)
++            .then((cookies) => {
++              const session = cookies.find((cookie) => cookie.name === "executor_app");
++              expect(
++                session !== undefined &&
++                  session.httpOnly &&
++                  session.sameSite === "Lax" &&
++                  session.domain === new URL(first.url).hostname,
++              ).toBe(true);
++              return page
++                .context()
++                .request.get(`${second.url}/`, {
++                  headers: {
++                    Cookie: `${session!.name}=${session!.value}`,
++                    Accept: "application/json",
++                  },
++                })
++                .then((response) => expect(response.status()).toBe(401));
++            }),
++        );
++        yield* browser.use("The second app has no first-app cookie", (page) =>
++          page
++            .context()
++            .cookies(second.url)
++            .then((cookies) =>
++              expect(cookies.some((cookie) => cookie.name === "executor_app")).toBe(false),
++            ),
++        );
++        yield* browser.use("Only the dashboard may frame app documents", (page) =>
++          page
++            .context()
++            .request.get(first.url)
++            .then((response) =>
++              expect(response.headers()["content-security-policy"]).toBe(
++                `frame-ancestors ${target.metadata.origin}`,
++              ),
++            ),
++        );
++        yield* browser.use("Only app-auth allows same-origin framing", (page) =>
++          page
++            .context()
++            .request.get(`${target.metadata.origin}/app-auth`)
++            .then((response) => {
++              expect(response.headers()["content-security-policy"]).toBe("frame-ancestors 'self'");
++              expect(response.headers()["x-frame-options"]).toBe("SAMEORIGIN");
++            }),
++        );
++        yield* browser.use("Other dashboard pages refuse all ancestors", (page) =>
++          page
++            .context()
++            .request.get(`${target.metadata.origin}/`)
++            .then((response) =>
++              expect(response.headers()["content-security-policy"]).toBe("frame-ancestors 'none'"),
++            ),
++        );
++        yield* browser.use("Open the second app's own frame", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${second.app.id}?view=app`),
++        );
++        yield* browser.use("The second app has its own screen", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("heading", { name: "Embedded fixture screen" })
++            .waitFor(),
++        );
++        yield* browser.use("The second app cannot fetch the first app's session", (page) => {
++          const frame = page.frames().find((frame) => frame.url().startsWith(second.url));
++          expect(frame).toBeDefined();
++          return Promise.all([
++            page.waitForRequest((request) => request.url() === `${first.url}/`),
++            frame!
++              .evaluate(
++                (url) =>
++                  fetch(url, { credentials: "include" }).then(
++                    () => false,
++                    () => true,
++                  ),
++                first.url,
++              )
++              .then((blocked) => expect(blocked).toBe(true)),
++          ]);
++        });
++        yield* browser.use(
++          "The server refuses a second-app origin even with first-app cookies",
++          (page) =>
++            page
++              .context()
++              .request.get(first.url, { headers: { Origin: second.url } })
++              .then((response) => expect(response.status()).toBe(403)),
++        );
++        yield* browser.checkpoint("second-app-isolated");
++        const foreign = yield* browser.use("Open a foreign same-site origin", (page) =>
++          page.context().newPage(),
++        );
++        yield* Effect.addFinalizer(() =>
++          browser.use("Close the foreign page", () => foreign.close()).pipe(Effect.orDie),
++        );
++        const foreignOrigin = second.url;
++        const foreignResult = yield* browser.use("Browser CSP refuses the foreign ancestor", () => {
++          const refused = { csp: false, failures: [] as string[] };
++          foreign.on("console", (message) => {
++            if (message.text().includes("frame-ancestors")) refused.csp = true;
++          });
++          foreign.on("requestfailed", (request) => {
++            if (request.resourceType() === "document")
++              refused.failures.push(request.failure()?.errorText ?? "unknown");
++          });
++          return foreign.goto(foreignOrigin).then(() => ({
++            ...refused,
++            appCommitted: foreign.frames().some((frame) => frame.url().startsWith(first.url)),
++          }));
++        });
++        expect(foreignResult).toEqual({
++          csp: true,
++          failures: ["net::ERR_BLOCKED_BY_RESPONSE"],
++          appCommitted: false,
++        });
++        // Network failure and time are controlled at the browser boundary.
++        yield* browser.use("Refuse the next app document", (page) =>
++          page.route(`${first.url}/`, (route) => route.abort("failed")),
++        );
++        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
++        yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
++        yield* browser.use("The pending frame announces loading", (page) =>
++          page.getByRole("status").filter({ hasText: "Loading app…" }).waitFor(),
++        );
++        yield* browser.use("Reach the loading deadline", (page) => page.clock.fastForward(30001));
++        yield* browser.use("The failed frame offers recovery", (page) =>
++          page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
++        );
++        yield* browser.checkpoint("embedded-app-failed");
++        yield* browser.use("Restore app documents", (page) => page.unroute(`${first.url}/`));
++        yield* browser.use("Retry the app frame", (page) =>
++          page.getByRole("button", { name: "Retry", exact: true }).click(),
++        );
++        yield* browser.use("Retry renders the real screen", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("heading", { name: "Embedded fixture screen" })
++            .waitFor(),
++        );
++        yield* browser.checkpoint("embedded-app-recovered");
++        const renamed = yield* api.request(
++          actors.owner,
++          "PATCH",
++          `${prefix}/apps/${first.app.id}/name`,
++          { name: "Renamed embedded fixture" },
++        );
++        expect(renamed.status).toBe(200);
++        expect(yield* waitForAppUrl(actors.owner, `${prefix}/apps/${first.app.id}/ui`)).toBe(
++          first.url,
++        );
++        const toolResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Tool only fixture",
++          files: files.filter((file) => !file.path.startsWith("ui/")),
++        });
++        expect(toolResponse.status).toBe(200);
++        const toolOnly = yield* body(App, toolResponse);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${toolOnly.id}`).pipe(Effect.orDie),
++        );
++        const toolLocation = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/apps/${toolOnly.id}/ui`,
++        );
++        expect(toolLocation.body).toEqual({
++          status: "unavailable",
++          embedded: true,
++          reason: "no_ui",
++          url: null,
++        });
++        yield* browser.use("Open an app whose deployed version has no UI", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${toolOnly.id}`),
++        );
++        yield* browser.use("The tool-only app keeps its overview", (page) =>
++          page.getByRole("heading", { name: toolOnly.name }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Tool-only apps have no App tab or frame", (page) =>
++            Promise.all([
++              page
++                .getByRole("navigation", { name: "App navigation" })
++                .getByRole("link", { name: "App", exact: true })
++                .count(),
++              page.locator("iframe").count(),
++            ]),
++          ),
++        ).toEqual([0, 0]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts
+index ef2ad38..86de6db 100644
+--- a/packages/apps/src/implementation/ui-serving.ts
++++ b/packages/apps/src/implementation/ui-serving.ts
+@@ -29,6 +29,7 @@ export const appDocument = <E, R>(options: {
+   /** The account IDs the page runs with, by requirement. */
+   readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
+   readonly origin: string;
++  readonly parentOrigin?: string | undefined;
+   readonly accounts?: UiAccountNotice | undefined;
+   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
+ }) =>
+@@ -78,7 +79,11 @@ export const appDocument = <E, R>(options: {
+       telemetry === undefined
+         ? ""
+         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
+-    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
++    const ready =
++      options.parentOrigin === undefined
++        ? ""
++        : `<script>addEventListener("load",()=>parent.postMessage({type:"executor:app-ready"},${JSON.stringify(options.parentOrigin).replaceAll("<", "\\u003c")}))</script>`;
++    const boot = `${ready}${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
+     return HttpServerResponse.text(
+       versionDocument(new TextDecoder().decode(document.body), options.version).replace(
+         "<!--executor-ui-->",
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+index b801a57..ff52c9e 100644
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -97,6 +97,7 @@ export interface MutationProps<Input, A, E> {
+ }
+ /** App sections use one URL vocabulary across local and hosted dashboards. */
+ export const AppView = Schema.Literals([
++  "app",
+   "overview",
+   "schedules",
+   "skills",
+diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
+index 8fce008..b992545 100644
+--- a/packages/ui/src/implementation/dashboard/app-detail.tsx
++++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
+@@ -25,6 +25,7 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ const sections = [
++  { view: "app", label: "App" },
+   { view: "overview", label: "Overview" },
+   { view: "accounts", label: "Accounts" },
+   { view: "tools", label: "Tools" },
+@@ -42,6 +43,8 @@ const sections = [
+  */
+ const sectionIcon = (view: (typeof sections)[number]["view"]) => {
+   switch (view) {
++    case "app":
++      return GridViewIcon;
+     case "overview":
+       return GridViewIcon;
+     case "accounts":
+@@ -65,6 +68,7 @@ const sectionIcon = (view: (typeof sections)[number]["view"]) => {
+   }
+ };
+ const contentClasses = {
++  app: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+   skills: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
+   workflows: "min-h-0 min-w-0 flex-1 overflow-auto",
+   webhooks: "min-h-0 min-w-0 flex-1 overflow-auto",
+@@ -84,6 +88,7 @@ export function AppDetailLayout({
+   app,
+   view,
+   canInspectSource,
++  hasAppScreen = false,
+   sourceDisabledReason,
+   back,
+   actions,
+@@ -92,6 +97,7 @@ export function AppDetailLayout({
+   readonly app: App | undefined;
+   readonly view: AppView;
+   readonly canInspectSource: boolean;
++  readonly hasAppScreen?: boolean;
+   readonly sourceDisabledReason?: string | undefined;
+   readonly back: ReactNode;
+   readonly actions?: ReactNode;
+@@ -151,55 +157,57 @@ export function AppDetailLayout({
+           aria-label="App navigation"
+           className="-mb-px flex gap-1 overflow-x-auto px-7 max-[740px]:px-4"
+         >
+-          {sections.map((section) => {
+-            const classes = cn(
+-              "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
+-              (view === section.view || (view === "history" && section.view === "source")) &&
+-                "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
+-            );
+-            const content = (
+-              <>
+-                <HugeiconsIcon
+-                  icon={sectionIcon(section.view)}
+-                  size={16}
+-                  strokeWidth={1.7}
+-                  aria-hidden
+-                  className="max-[740px]:hidden"
+-                />
+-                {section.label}
+-              </>
+-            );
+-            if (!canInspectSource && (section.view === "source" || section.view === "versions"))
+-              return (
+-                <DisabledTooltip
++          {sections
++            .filter((section) => section.view !== "app" || hasAppScreen)
++            .map((section) => {
++              const classes = cn(
++                "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
++                (view === section.view || (view === "history" && section.view === "source")) &&
++                  "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
++              );
++              const content = (
++                <>
++                  <HugeiconsIcon
++                    icon={sectionIcon(section.view)}
++                    size={16}
++                    strokeWidth={1.7}
++                    aria-hidden
++                    className="max-[740px]:hidden"
++                  />
++                  {section.label}
++                </>
++              );
++              if (!canInspectSource && (section.view === "source" || section.view === "versions"))
++                return (
++                  <DisabledTooltip
++                    key={section.view}
++                    reason={sourceDisabledReason ?? "Checking app access…"}
++                  >
++                    <button type="button" disabled className={cn(classes, "opacity-50")}>
++                      {content}
++                    </button>
++                  </DisabledTooltip>
++                );
++              return app ? (
++                <BoundAppLink
+                   key={section.view}
+-                  reason={sourceDisabledReason ?? "Checking app access…"}
++                  app={app.id}
++                  view={section.view}
++                  className={classes}
++                  aria-current={
++                    view === section.view || (view === "history" && section.view === "source")
++                      ? "page"
++                      : undefined
++                  }
+                 >
+-                  <button type="button" disabled className={cn(classes, "opacity-50")}>
+-                    {content}
+-                  </button>
+-                </DisabledTooltip>
++                  {content}
++                </BoundAppLink>
++              ) : (
++                <span key={section.view} className={classes}>
++                  {content}
++                </span>
+               );
+-            return app ? (
+-              <BoundAppLink
+-                key={section.view}
+-                app={app.id}
+-                view={section.view}
+-                className={classes}
+-                aria-current={
+-                  view === section.view || (view === "history" && section.view === "source")
+-                    ? "page"
+-                    : undefined
+-                }
+-              >
+-                {content}
+-              </BoundAppLink>
+-            ) : (
+-              <span key={section.view} className={classes}>
+-                {content}
+-              </span>
+-            );
+-          })}
++            })}
+         </nav>
+       </div>
+       <div className={contentClasses[view]}>{children}</div>
+diff --git a/packages/ui/src/implementation/dashboard/app-loading.tsx b/packages/ui/src/implementation/dashboard/app-loading.tsx
+index e075817..e7e1678 100644
+--- a/packages/ui/src/implementation/dashboard/app-loading.tsx
++++ b/packages/ui/src/implementation/dashboard/app-loading.tsx
+@@ -296,6 +296,12 @@ export function AppDetailLoading({
+       );
+   }
+   switch (view) {
++    case "app":
++      return (
++        <p role="status" className="p-5 text-sm text-muted-foreground">
++          Loading app…
++        </p>
++      );
+     case "skills":
+       return <SkillBrowserLoading />;
+     case "workflows":
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+index 026079a..6ff45ba 100644
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -1,4 +1,5 @@
+ import { PageFrame, PageHeader } from "./page.tsx";
++import type { App } from "@executor-js/sdk";
+ import { Option } from "effect";
+ import { AppCardsSkeleton } from "./loading.tsx";
+ import { Card } from "@executor-js/ui/components/card";
+@@ -28,7 +29,9 @@ export function AppsPage<E>({
+   pending,
+   query,
+   Failure,
++  screen,
+ }: QueryProps<Inventory, E> & {
++  readonly screen?: ((app: App) => ReactNode) | undefined;
+   readonly action?: ReactNode;
+   readonly connect: ReactNode;
+   readonly filters?: ReactNode;
+@@ -65,6 +68,7 @@ export function AppsPage<E>({
+         {(data) => (
+           <AppsList
+             data={data}
++            screen={screen}
+             search={search}
+             clearSearch={() => setSearch("")}
+             pending={search.length === 0 ? pending : undefined}
+@@ -83,12 +87,14 @@ export function AppsPage<E>({
+ }
+ function AppsList({
+   data,
++  screen,
+   search,
+   clearSearch,
+   empty,
+   pending,
+ }: {
+   readonly data: Inventory;
++  readonly screen?: ((app: App) => ReactNode) | undefined;
+   readonly search: string;
+   readonly clearSearch: () => void;
+   readonly empty: ReactNode;
+@@ -198,6 +204,7 @@ function AppsList({
+                         </span>
+                       )}
+                     </div>
++                    {screen?.(app)}
+                     {(needsSignIn || unavailable) && (
+                       <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
+                         {needsSignIn ? "Needs sign-in" : "Account unavailable"}

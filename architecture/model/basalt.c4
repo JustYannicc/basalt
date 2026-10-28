@@ -4,7 +4,7 @@ model {
 
     router = module "Router" {
       #basalt #v1 #passthrough #port
-      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
+      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|APP_UI_SERVICE=basalt.toolsGateway|ASSETS=basalt.clientAssets|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
     }
 
     brandConfig = part "Brand configuration" {
@@ -67,7 +67,7 @@ model {
 
     pool = module "Pool app" {
       #basalt #v1 #deep
-      description "One private app instance per person per organization, run by the tools service. Accounts, Usage and Computers screens; Usage shows tokens and API-equivalent cost per model over 30 days, the whole pool for the owner and only the caller's own for anyone else. Computers requests a signed setup intent from the pool Worker and opens the root /setup page. App screen hosting is disabled; live acceptance is pending."
+      description "One private app instance per person per organization, run by the tools service. Accounts, Usage and Computers screens; Usage shows tokens and API-equivalent cost per model over 30 days, the whole pool for the owner and only the caller's own for anyone else. Computers requests a signed setup intent from the pool Worker and opens the root /setup page. App screens embed on isolated opaque same-site origins; live routing acceptance is pending."
       metadata { code "apps/pool"; libraries "apps|react|react-dom"; bindings "ctx=basalt.router" }
     }
 
@@ -151,11 +151,13 @@ model {
   }
 
   appHosting = external "App hosting" {
-    #external #planned
-    metadata { hosts "apps.signalbox.run"; status "disabled origin configuration" }
+    #external
+    description "Private per-app origins under the existing wildcard certificate; only exact a-UUID labels reach the app-page Worker. Same-site cookies and dashboard-only CSP ancestors support embedded screens."
+    metadata { hosts "a-*.signalbox.run"; status "source enabled; live routing unverified" }
   }
 
-  basalt.deployment -[sync]-> appHosting "configure origin" { #planned }
+  basalt.deployment -[sync]-> appHosting "configure opaque same-site origins and wildcard routing"
+  basalt.router -[sync]-> basalt.clientAssets "ASSETS: dashboard-host static files only"
   basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
   basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
   basalt.catalog -[sync]-> basalt.brandConfig "read connector copy brand"
@@ -223,9 +225,9 @@ model {
   localClient -[sync]-> basalt.setupInstaller "run installer or undo"
   basalt.setupInstaller -[sync]-> localClient "write backed-up marked client config; restart instructions"
 
-  poolOwner -[sync]-> appHosting "open pool screen" { #planned }
-  poolMember -[sync]-> appHosting "open shared pool screen" { #planned }
-  appHosting -[sync]-> basalt.pool "host pool screen" { #planned }
+  poolOwner -[sync]-> appHosting "open private app screen in dashboard App tab"
+  poolMember -[sync]-> appHosting "open authorized shared app screen in dashboard App tab"
+  appHosting -[sync]-> basalt.toolsGateway "authenticate and serve isolated app screen"
   poolOwner -[sync]-> basalt.toolsGateway "call pool tools from hosted screen" { #planned }
   basalt.toolsGateway -[sync]-> poolOwner "show pool tool result in hosted screen" { #planned }
   poolOwner -[sync]-> modelProviders "sign in on the provider's page in own browser"
@@ -242,7 +244,7 @@ model {
   poolOwner -[sync]-> localClient "uses"
   poolMember -[sync]-> localClient "uses"
   localClient -[sync]-> basalt.router "HTTP request"
-  basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE"
+  basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: dashboard and API; APP_UI_SERVICE: isolated app origins"
   basalt.toolsGateway -[sync]-> basalt.publicIdentity "sign in"
   basalt.toolsGateway -[tool]-> basalt.publicConnectors "connectors"
   basalt.toolsGateway -[sync]-> basalt.publicVault "secret custody"

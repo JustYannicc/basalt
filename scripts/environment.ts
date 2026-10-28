@@ -22,7 +22,7 @@ export const requiredSecrets = [
   "EXECUTOR_ENCRYPTION_KEY",
   "MCP_SESSION_KEY_CURRENT",
   "MCP_SESSION_KEY_PREVIOUS",
-  "APP_DOMAIN_CONTROL_SECRET",
+  ...(appHosting.enabled && appHosting.scheme === "nested" ? ["APP_DOMAIN_CONTROL_SECRET"] : []),
   "POOL_MANAGEMENT_KEY",
   "POOL_APP_SIGNING_KEY",
 ] as const;
@@ -148,7 +148,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must be 32 bytes of lowercase hex");
   if (previousSigningKey === source.POOL_APP_SIGNING_KEY)
     throw new Error("POOL_APP_SIGNING_KEY_PREVIOUS must differ from POOL_APP_SIGNING_KEY");
-  if (appHosting.enabled && !source.APP_DOMAIN_CONTROLLER_TOKEN?.trim()) {
+  if (appHosting.enabled && appHosting.scheme === "nested" && !source.APP_DOMAIN_CONTROLLER_TOKEN?.trim()) {
     throw new Error("Missing GitHub Actions secret: APP_DOMAIN_CONTROLLER_TOKEN");
   }
   zendeskMarketplaceMetadata(source.ZENDESK_MARKETPLACE_ORGANIZATION_ID, source.ZENDESK_MARKETPLACE_APP_ID);
@@ -173,6 +173,9 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     CLOUD_SOURCE_NAMESPACE: deployment.sourceNamespace,
     BETTER_AUTH_URL: `https://${brand.host}`,
     EXECUTOR_APP_UI_BASE_URL: appHosting.enabled ? appHosting.origin : undefined,
+    EXECUTOR_APP_UI_ADDRESS_SCHEME: appHosting.scheme,
+    EXECUTOR_APP_UI_EMBEDDED: String(appHosting.embedded),
+    EXECUTOR_APP_UI_MANAGED_ROUTE: "false",
     EXECUTOR_APP_DOMAIN_ZONE: appHosting.enabled ? appHosting.zone : undefined,
     AUTH_EMAIL_DOMAIN: brand.emailDomain,
     EXECUTOR_PRODUCT_NAME: brand.name,
@@ -241,6 +244,10 @@ export function previewEnvironment(
     CI: "true",
     DO_NOT_TRACK: "1",
     CLOUD_SOURCE_NAMESPACE: sourceNamespace,
+    EXECUTOR_APP_UI_BASE_URL: undefined,
+    EXECUTOR_APP_UI_ADDRESS_SCHEME: "opaque",
+    EXECUTOR_APP_UI_EMBEDDED: "true",
+    EXECUTOR_APP_UI_MANAGED_ROUTE: "false",
     TEST_STAGE_DOMAIN: domain,
     TEST_STAGE_DATABASE_PROVIDER: "planetscale",
     TEST_STAGE_DATABASE: databaseName,

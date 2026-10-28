@@ -256,6 +256,16 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-embedded-app-ui",
+      "file": "0028-embedded-app-ui.patch",
+      "content_sha256": "60214657dd9af82f0fbcd155eed61123dcd9b9d01849d49308e7d695d49cd46e",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "upstream_issue": 2419
+    },
+    {
       "identity": "basalt-catalog-app-auto-update",
       "file": "0029-catalog-app-auto-update.patch",
       "content_sha256": "bc4bb7a54cca0f6369dd0ef581ec24d8920c7e713fde85783da1d678d5149108",

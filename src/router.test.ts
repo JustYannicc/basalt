@@ -279,3 +279,42 @@ test("the catalog uses its own binding without forwarding to the tools API", asy
   assert.equal(await (await handleRequest(request, env)).text(), "catalog");
   assert.equal(received, request);
 });
+
+test("opaque app hosts reach app UI before path handlers or dashboard static assets", async () => {
+  const appHost = "a-01234567-89ab-4cde-8fab-0123456789ab.signalbox.run";
+  const seen: string[] = [];
+  const env: RouterEnv = {
+    ...envWithToolsService(async () => { throw new Error("dashboard service reached from app origin"); }),
+    ASSETS: { fetch: async () => { throw new Error("dashboard assets reached from app origin"); } },
+    APP_UI_SERVICE: { fetch: async (request) => { seen.push(request.url); return new Response("private app UI"); } },
+  };
+  for (const path of ["/", "/setup", "/mcp", "/pool/v1/status", "/catalog/index.json", "/ui.css"]) {
+    const request = new Request(`https://${appHost}${path}`);
+    const response = await handleRequest(request, env);
+    assert.equal(await response.text(), "private app UI");
+    assert.equal(seen.at(-1), request.url);
+  }
+});
+
+test("unknown app subdomains return empty 404s without reaching any service", async () => {
+  const refuse = async () => { throw new Error("unknown host reached a service"); };
+  const env: RouterEnv = { ...envWithToolsService(refuse), ASSETS: { fetch: refuse }, APP_UI_SERVICE: { fetch: refuse } };
+  for (const host of ["unknown.signalbox.run", "a-name.signalbox.run", "a-01234567-89ab-4cde-8fab-0123456789ab.nested.signalbox.run", "a-01234567-89ab-4cde-8fab-0123456789ab.other.run"]) {
+    const response = await handleRequest(new Request(`https://${host}/`), env);
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), "");
+  }
+});
+
+test("product hosts keep dashboard, pool and static asset routing", async () => {
+  const env: RouterEnv = {
+    ...envWithToolsService(async () => new Response("dashboard")),
+    ASSETS: { fetch: async (request) => new URL(request.url).pathname === "/setup" ? new Response("setup asset") : new Response(null, { status: 404 }) },
+    APP_UI_SERVICE: { fetch: async () => { throw new Error("product request reached app UI"); } },
+  };
+  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/settings"), env)).text(), "dashboard");
+  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/setup"), env)).text(), "setup asset");
+  assert.equal((await handleRequest(new Request("https://app.signalbox.run/v1/models"), env)).status, 202);
+  const stage = { ...env, DASHBOARD_HOST: "app.fixture.invalid" };
+  assert.equal(await (await handleRequest(new Request("https://app.fixture.invalid/settings"), stage)).text(), "dashboard");
+});

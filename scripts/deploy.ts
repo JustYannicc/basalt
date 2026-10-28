@@ -13,7 +13,7 @@ if (!environment.POSTHOG_PROJECT_KEY) console.warn("POSTHOG_PROJECT_KEY is unset
 if (environment.SENTRY_DSN && !environment.SENTRY_OTLP_ENDPOINT) console.warn("SENTRY_OTLP_ENDPOINT is unset; trace export is disabled.");
 for (const warning of connectorWarnings(environment)) console.warn(warning);
 const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.meta.url));
-if (appHosting.enabled) {
+if (appHosting.enabled && appHosting.scheme === "nested") {
   run(
     "bun",
     alchemyArgs("deploy", "alchemy.app-domains.ts", "--stage", "shared", "--yes"),
