@@ -6,6 +6,7 @@
     "prepare:upstream": "node scripts/prepare-upstream.ts",
     "check": "node --test src/catalog/*.test.ts src/*.test.ts src/pool/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts",
     "typecheck": "node scripts/typecheck.ts",
+    "typecheck:upstream": "bun run --cwd .upstream typecheck",
     "build": "node scripts/build.ts",
     "check:build": "node --test scripts/build-tests/*.test.ts",
     "check:startup": "node --test scripts/worker-startup-tests/*.test.ts && node scripts/worker-startup.ts",
