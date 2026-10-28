@@ -3,83 +3,75 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
 const read = (path: string) => readFileSync(resolve(upstream, path), "utf8");
-const { catalogEntryId, decideCatalogUpdate, reconnectCount } = await load(
-  "apps/hosted/server/src/implementation/catalog-app-updates.ts",
+const implementation = "apps/hosted/server/src/implementation/";
+const { breakingChanges, catalogEntryId, decideCatalogOffer, decideCatalogUpdate } = await load(
+  `${implementation}catalog-app-updates.ts`,
 );
-const { updateCatalogApp } = await load(
-  "apps/hosted/server/src/implementation/catalog-app-defaults.ts",
-);
+const { updateCatalogApp } = await load(`${implementation}catalog-app-defaults.ts`);
+const { applyCatalogUpdate } = await load(`${implementation}catalog-app-offers.ts`);
 
 type Files = { path: string; content: string }[];
-type Requirements = Record<string, { provider: string; scope: string; cardinality: string }>;
+type Offer = { source: string; active: string; reconnect: number; reasons: string[]; touched: boolean };
+type Outcome = { record: { version?: string; workspace?: string; offer: Offer }; active: string; deployed: boolean };
+type Slot = { provider: string; scope: string; cardinality: string };
+type Link = { requirement: string; scope: string; subject: string | null; account: string; provider: string };
 const files = (body: string): Files => [
   { path: "index.ts", content: body },
   { path: "package.json", content: '{"name":"@catalog/example","dependencies":{"apps":"1.0.0"}}\n' },
 ];
 const original = files("export default 1;\n");
 const current = files("export default 2;\n");
-const crm = { crm: { provider: "provider-crm", scope: "user", cardinality: "one" } };
+const crm: Record<string, Slot> = { crm: { provider: "provider-crm", scope: "user", cardinality: "one" } };
+const linked = (account: string, subject: string | null = "member-a"): Link => ({
+  requirement: "crm", scope: subject === null ? "app" : "user", subject, account, provider: "provider-crm",
+});
 
-/** An in-memory app with retained versions, an active pointer and a Git workspace. */
+/** An in-memory app with retained versions, an active pointer, a Git workspace and a compiler. */
 const fixture = (options: {
-  versions?: { id: string; files: Files; requirements?: Requirements }[];
+  versions?: { id: string; files: Files }[];
   active?: string;
   workspace?: { commit: string; files: Files };
-  deployRequirements?: Requirements;
+  built?: Record<string, Slot>;
+  /** A person's activation lands while the build runs, so the deploy is not promoted. */
+  promote?: boolean;
 }) => {
-  const versions = new Map(
-    (options.versions ?? [{ id: "v1", files: original }]).map((version) => [
-      version.id,
-      { files: version.files, requirements: version.requirements ?? crm },
-    ]),
-  );
-  const state = { active: options.active ?? "v1", deploys: 0, activations: [] as unknown[] };
+  const versions = new Map((options.versions ?? [{ id: "v1", files: original }]).map((v) => [v.id, v.files]));
+  const state = { active: options.active ?? "v1", builds: 0, deploys: 0 };
   const workspace = options.workspace ?? { commit: "c1", files: original };
   const app = () => ({
     id: "app_catalog",
+    name: "CRM",
     owner: "organization:team",
     activeVersion: state.active,
     copiedFrom: { reference: "https://basalt.example/catalog/apps/crm.json", name: "crm", commit: null },
-    requirements: { accounts: versions.get(state.active)!.requirements },
+    requirements: { accounts: crm },
   });
   const executor = {
     apps: {
-      source: ({ version }: { version?: string }) => {
-        const id = version ?? state.active;
-        const found = versions.get(id);
-        return found === undefined
-          ? Effect.fail({ _tag: "VersionNotFound" })
-          : Effect.succeed({ id, files: found.files });
-      },
+      source: () => Effect.succeed({ id: state.active, files: versions.get(state.active)! }),
       workspace: () => Effect.succeed({ revision: { code: "code", commit: workspace.commit }, files: workspace.files }),
       versions: () => Effect.succeed([...versions.keys()].map((id) => ({ id }))),
+      build: () =>
+        Effect.sync(() => {
+          state.builds++;
+          return { requirements: { accounts: options.built ?? crm } };
+        }),
       deploy: ({ files }: { files: Files }) =>
         Effect.sync(() => {
           const id = `v${versions.size + 1}`;
-          versions.set(id, { files, requirements: options.deployRequirements ?? crm });
-          state.active = id;
+          versions.set(id, files);
           state.deploys++;
-          return { app: app() };
-        }),
-      activate: (input: { version: string; expectedVersion: string | null }) =>
-        Effect.suspend(() => {
-          state.activations.push(input);
-          if (input.expectedVersion !== state.active)
-            return Effect.fail({ _tag: "AppVersionChanged" });
-          state.active = input.version;
-          return Effect.succeed(app());
+          if (options.promote !== false) state.active = id;
+          return { app: app(), version: { id } };
         }),
     },
   };
-  const run = (
-    recorded?: Record<string, unknown>,
-    links: { requirement: string; scope: string; account: string; provider: string }[] = [],
-  ) =>
+  const sweep = (recorded?: Record<string, unknown>, links: Link[] = []): Promise<Outcome> =>
     Effect.runPromise(
       updateCatalogApp(executor, {
         owner: "organization:team",
@@ -89,7 +81,11 @@ const fixture = (options: {
         links: Effect.succeed(links),
       }),
     );
-  return { state, run };
+  const apply = (recorded?: Record<string, unknown>) =>
+    Effect.runPromiseExit(
+      applyCatalogUpdate(executor, { owner: "organization:team", app: app(), files: current, recorded }),
+    );
+  return { state, sweep, apply };
 };
 
 test("only exact references into this deployment's feed are catalog copies", () => {
@@ -103,104 +99,149 @@ test("only exact references into this deployment's feed are catalog copies", () 
 });
 
 test("the decision follows the product rules", () => {
-  const base = { versions: 1, active: "v1", recorded: undefined, unchanged: false, clean: true, offered: false };
-  assert.equal(decideCatalogUpdate(base), "apply");
-  assert.equal(decideCatalogUpdate({ ...base, unchanged: true, clean: false }), "record");
-  assert.equal(decideCatalogUpdate({ ...base, clean: false }), "skip");
-  assert.equal(decideCatalogUpdate({ ...base, offered: true }), "skip");
-  assert.equal(decideCatalogUpdate({ ...base, versions: 2 }), "offer");
-  assert.equal(decideCatalogUpdate({ ...base, versions: 2, recorded: { version: "v1" } }), "apply");
-  assert.equal(decideCatalogUpdate({ ...base, versions: 3, active: "v3", recorded: { version: "v1", update: "v3" } }), "apply");
-  assert.equal(reconnectCount(
-    [
-      { requirement: "crm", scope: "user", account: "a1", provider: "provider-old" },
-      { requirement: "crm", scope: "user", account: "a1", provider: "provider-old" },
-      { requirement: "gone", scope: "user", account: "a2", provider: "provider-crm" },
-      { requirement: "crm", scope: "app", account: "a4", provider: "provider-crm" },
-      { requirement: "crm", scope: "user", account: "a3", provider: "provider-crm" },
-    ],
-    crm,
-  ), 3);
+  assert.equal(decideCatalogUpdate({ unchanged: true, clean: false }), "record");
+  assert.equal(decideCatalogUpdate({ unchanged: false, clean: false }), "skip");
+  assert.equal(decideCatalogUpdate({ unchanged: false, clean: true }), "evaluate");
+  const base = { versions: 1, active: "v1", recorded: undefined, breaking: false };
+  assert.equal(decideCatalogOffer(base).decision, "apply");
+  assert.equal(decideCatalogOffer({ ...base, breaking: true }).decision, "offer");
+  assert.deepEqual(decideCatalogOffer({ ...base, versions: 2 }), { untouched: false, decision: "offer" });
+  assert.equal(decideCatalogOffer({ ...base, versions: 2, recorded: { version: "v1" } }).decision, "apply");
 });
 
-test("an untouched copy with no linked accounts moves to the catalog's current source", async () => {
-  const app = fixture({});
-  assert.deepEqual(await app.run(), { version: "v2", workspace: "c1" });
-  assert.equal(app.state.active, "v2");
-  assert.deepEqual(app.state.activations, []);
-});
-
-test("an update that would break linked accounts waits and keeps the previous version active", async () => {
-  const app = fixture({
-    deployRequirements: { crm: { provider: "provider-crm-v2", scope: "user", cardinality: "one" } },
-  });
-  const links = [
-    { requirement: "crm", scope: "user", account: "a1", provider: "provider-crm" },
-    { requirement: "crm", scope: "user", account: "a2", provider: "provider-crm" },
-  ];
-  assert.deepEqual(await app.run(undefined, links), {
-    version: "v1",
-    workspace: "c1",
-    update: "v2",
+test("breaking changes count accounts that stop working and name why", () => {
+  const changed = { crm: { provider: "provider-crm-v2", scope: "user", cardinality: "one" } };
+  assert.deepEqual(breakingChanges([linked("a1"), linked("a1", "member-b"), linked("a2")], crm, changed), {
     reconnect: 2,
+    reasons: ["provider"],
   });
-  assert.equal(app.state.active, "v1");
-  assert.deepEqual(app.state.activations, [{ owner: "organization:team", app: "app_catalog", version: "v1", expectedVersion: "v2" }]);
-  // The next release does not deploy the same waiting source again.
-  assert.equal(await app.run({ version: "v1", workspace: "c1", update: "v2", reconnect: 2 }, links), undefined);
-  assert.equal(app.state.deploys, 1);
+  assert.deepEqual(breakingChanges([linked("a1", null)], crm, crm), { reconnect: 1, reasons: ["scope"] });
+  assert.deepEqual(breakingChanges([linked("a1")], crm, {}), { reconnect: 1, reasons: ["removed"] });
+  // A new slot nobody linked holds the update back, though no linked account breaks.
+  const added = { ...crm, ticket: { provider: "provider-ticket", scope: "app", cardinality: "one" } };
+  assert.deepEqual(breakingChanges([linked("a1")], crm, added), { reconnect: 0, reasons: ["added"] });
+  // A slot that becomes single keeps one account per linker.
+  const many = { crm: { ...crm.crm, cardinality: "many" } };
+  assert.deepEqual(breakingChanges([linked("a1"), linked("a2"), linked("a3"), linked("b1", "member-b")], many, crm), {
+    reconnect: 2,
+    reasons: ["cardinality"],
+  });
+  assert.deepEqual(breakingChanges([linked("a1"), linked("b1", "member-b")], many, crm), { reconnect: 0, reasons: [] });
 });
 
-test("a touched copy is never left on the catalog's version", async () => {
+test("an untouched copy no linked account breaks on moves to the catalog's current source", async () => {
+  const app = fixture({});
+  assert.deepEqual(await app.sweep(undefined, [linked("a1")]), {
+    record: { version: "v2", workspace: "c1" },
+    active: "v2",
+    deployed: true,
+  });
+  assert.equal(app.state.active, "v2");
+});
+
+test("a deploy that is not promoted is never recorded", async () => {
+  const app = fixture({ promote: false });
+  assert.equal(await app.sweep(), undefined);
+  assert.equal(app.state.deploys, 1);
+  assert.equal(app.state.active, "v1");
+});
+
+test("breaking updates are offered and never deployed", async () => {
+  const app = fixture({ built: { crm: { provider: "provider-crm-v2", scope: "user", cardinality: "one" } } });
+  const outcome = await app.sweep({ version: "v1", workspace: "c1" }, [linked("a1"), linked("a2", "member-b")]);
+  assert.equal(app.state.deploys, 0);
+  assert.equal(app.state.builds, 1);
+  assert.equal(outcome.deployed, false);
+  assert.equal(outcome.active, "v1");
+  assert.deepEqual({ ...outcome.record.offer, source: "digest" }, {
+    reconnect: 2, reasons: ["provider"], source: "digest", active: "v1", touched: false,
+  });
+  assert.match(outcome.record.offer.source, /^[a-f0-9]{64}$/);
+  assert.equal(outcome.record.version, "v1");
+});
+
+test("new required slots and many-to-one slots hold the update back", async () => {
+  const added = fixture({ built: { ...crm, ticket: { provider: "provider-ticket", scope: "app", cardinality: "one" } } });
+  assert.deepEqual((await added.sweep()).record.offer.reasons, ["added"]);
+  assert.equal(added.state.deploys, 0);
+});
+
+test("a touched copy is offered, never deployed", async () => {
   const edited = files("export default 'mine';\n");
   const app = fixture({
     versions: [{ id: "v1", files: original }, { id: "v2", files: edited }],
     active: "v2",
     workspace: { commit: "c2", files: edited },
   });
-  assert.deepEqual(await app.run({ version: "v1", workspace: "c1" }), {
-    version: "v1",
-    workspace: "c2",
-    update: "v3",
-    reconnect: 0,
-  });
+  const outcome = await app.sweep({ version: "v1", workspace: "c1" });
+  assert.equal(app.state.deploys, 0);
   assert.equal(app.state.active, "v2");
+  assert.equal(outcome.record.offer.touched, true);
+  assert.equal(outcome.record.version, "v1");
 });
 
 test("unchanged catalog files only record the active version", async () => {
   const app = fixture({ versions: [{ id: "v1", files: current }], workspace: { commit: "c1", files: current } });
-  assert.deepEqual(await app.run({ version: "v0", update: "v9", reconnect: 1 }), { version: "v1", workspace: "c1" });
+  const stale = { version: "v0", offer: { source: "x", active: "v1", reconnect: 1, reasons: ["provider"], touched: false } };
+  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1" });
+  assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
 });
 
 test("unsaved workspace edits are skipped without a record", async () => {
   const app = fixture({ workspace: { commit: "c9", files: files("export default 'draft';\n") } });
-  assert.equal(await app.run({ version: "v1", workspace: "c1" }), undefined);
+  assert.equal(await app.sweep({ version: "v1", workspace: "c1" }), undefined);
+  assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
-  assert.equal(app.state.active, "v1");
-  // The commit the sweep last saw clean stays clean after its own deploys leave Git as it was.
-  const deployed = fixture({
-    versions: [{ id: "v1", files: original }, { id: "v2", files: files("export default 1.5;\n") }],
-    active: "v2",
-  });
-  assert.deepEqual(await deployed.run({ version: "v2", workspace: "c1" }), { version: "v3", workspace: "c1" });
+  // The commit last seen clean stays clean after the sweep's own deploys leave Git as it was.
+  const deployed = fixture({ versions: [{ id: "v1", files: original }, { id: "v2", files: files("1.5") }], active: "v2" });
+  assert.equal((await deployed.sweep({ version: "v2", workspace: "c1" })).record.version, "v3");
+});
+
+test("a manager applies an offer only while it is current and the workspace is clean", async () => {
+  const offer = { source: "x", active: "v1", reconnect: 1, reasons: ["provider"], touched: false };
+  const failure = (exit: Exit.Exit<unknown, unknown>) =>
+    Exit.isFailure(exit) ? (Cause.squash(exit.cause) as { _tag: string; reason: string }) : undefined;
+  const refused = async (exit: Promise<Exit.Exit<unknown, unknown>>) => {
+    const error = failure(await exit);
+    assert.equal(error?._tag, "CatalogUpdateUnavailable");
+    return error.reason;
+  };
+  assert.equal(await refused(fixture({}).apply({ version: "v1" })), "none");
+  assert.equal(await refused(fixture({}).apply({ offer: { ...offer, active: "v0" } })), "changed");
+  const edited = fixture({ workspace: { commit: "c9", files: files("draft") } });
+  assert.equal(await refused(edited.apply({ offer })), "edited");
+  assert.equal(edited.state.deploys, 0);
+  assert.equal(await refused(fixture({ promote: false }).apply({ offer, workspace: "c1" })), "changed");
+  const app = fixture({});
+  const exit = await app.apply({ version: "v1", workspace: "c1", offer });
+  assert.ok(Exit.isSuccess(exit));
+  assert.deepEqual(exit.value, { record: { version: "v2", workspace: "c1" }, active: "v2", deployed: true });
 });
 
 test("each release queues one catalog sweep per organization, run by its member jobs", () => {
   const steps = read("apps/hosted/cloud/src/infrastructure/data-steps.ts");
   assert.match(steps, /Config\.String\("EXECUTOR_CATALOG_URL"\)/);
   assert.match(steps, /queueCatalogAppUpdates\(feed\)/);
-  const defaults = read("apps/hosted/server/src/implementation/catalog-app-defaults.ts");
-  assert.match(defaults, /`\$\{catalogAppJobPrefix\}\$\{release\}`/);
+  const queue = read(`${implementation}catalog-app-upgrades.ts`);
+  assert.match(queue, /`\$\{catalogAppJobPrefix\}\$\{release\}`/);
+  assert.match(queue, /select distinct on \(organization\.id\)/);
+  assert.match(queue, /member\.role in \('owner', 'admin'\)/);
+  assert.match(queue, /now\(\) \+ interval '15 minutes'/);
   assert.match(read("apps/hosted/server/src/contracts/catalog-app-updates.ts"), /catalogAppJobPrefix = "basalt-catalog-apps:"/);
-  assert.match(defaults, /select distinct on \(organization\.id\)/);
-  assert.match(defaults, /member\.role in \('owner', 'admin'\)/);
-  assert.match(defaults, /now\(\) \+ interval '15 minutes'/);
-  assert.match(read("apps/hosted/server/src/implementation/catalog-app-release.ts"), /catalogAppRelease = "[a-f0-9]{40}"/);
-  const provisioning = read("apps/hosted/server/src/implementation/provisioning.ts");
+  assert.match(read(`${implementation}catalog-app-release.ts`), /catalogAppRelease = "[a-f0-9]{40}"/);
+  const provisioning = read(`${implementation}provisioning.ts`);
   assert.match(provisioning, /job\.id\.startsWith\(catalogAppJobPrefix\)/);
   assert.match(provisioning, /Effect\.provideService\(CatalogAppSweep, catalogOnly\)/);
   assert.match(read("apps/hosted/cloud/src/implementation/default-app.ts"), /withCatalogAppDefaults\(executor, catalogFeed, pools\)/);
   assert.match(read("apps/hosted/cloud/src/infrastructure/product.ts"), /cachedFeedClient\(apiOrigin, feedUrl\.value, egress\.client\)/);
+  // Writes take the app's lock and recheck what they were decided from.
+  const records = read(`${implementation}catalog-app-records.ts`);
+  assert.match(records, /pg_advisory_xact_lock/);
+  assert.match(records, /is not distinct from/);
+  assert.match(records, /locked\.activeVersion !== outcome\.active/);
+  // The Update button posts to the manager-only endpoint.
+  assert.match(read("apps/hosted/server/src/contracts/apps.ts"), /HttpApiEndpoint\.post\("applyCatalogUpdate"[\s\S]*?\.annotate\(RequiredAction, "manage"\)/);
+  assert.match(read("apps/hosted/server/src/implementation/apps.ts"), /\.handle\("applyCatalogUpdate", \(\{ params \}\) =>\s*Effect\.andThen\(appManagerOwner\(params\.app\)/);
   assert.match(read("apps/hosted/web/src/implementation/pages/app-source.tsx"), /Update available/);
 });

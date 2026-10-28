@@ -23,13 +23,13 @@ index d3e7fcd8a..e41cb2414 100644
 +    return yield* withCatalogAppDefaults(executor, catalogFeed, pools);
    });
 diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
-index 6e7ae8736..6b71adb89 100644
+index 6e7ae8736..c01e82404 100644
 --- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
 +++ b/apps/hosted/cloud/src/infrastructure/data-steps.ts
 @@ -21,4 +21,5 @@ import {
  import { Clock, Config, Effect, Option } from "effect";
  import { queuePoolAppUpgrades } from "@executor-js/hosted-server/pool-app-upgrades";
-+import { queueCatalogAppUpdates } from "@executor-js/hosted-server/catalog-app-defaults";
++import { queueCatalogAppUpdates } from "@executor-js/hosted-server/catalog-app-upgrades";
  import { SqlClient } from "effect/sql";
  import { cloudBlobs } from "./blobs.ts";
 @@ -60,4 +61,7 @@ export const cloudDataSteps = (agentGrants: AgentGrantExpiry) =>
@@ -88,39 +88,80 @@ index 24dc295b6..ad103f25c 100644
          ).pipe(Effect.provideService(PoolAppSource, poolSource)),
        );
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 3d1bd3dc5..3fbba672a 100644
+index 3d1bd3dc5..057847cbc 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
-@@ -31,5 +31,6 @@
+@@ -31,5 +31,7 @@
      "./pool-access-hook": "./src/implementation/pool-access-hook.ts",
      "./pool-defaults": "./src/implementation/pool-defaults.ts",
 -    "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts"
 +    "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts",
-+    "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts"
++    "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts",
++    "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts"
    },
    "dependencies": {
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
-index b9e3a8354..c3a1ff62e 100644
+index b9e3a8354..25b17a536 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
-@@ -191,4 +191,21 @@ export const HostedApps = HttpApiGroup.make("apps")
+@@ -40,4 +40,5 @@ import {
+ import { Schema } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
++import { ApiError } from "@executor-js/utils/api-error";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import {
+@@ -68,4 +69,19 @@ const deployErrors = [
+ ] as const;
+ const prefix = "/api/organizations/:organization/apps";
++/** A catalog source held back for a manager to apply. */
++export const CatalogAppUpdate = Schema.Struct({
++  reconnect: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  reasons: Schema.Array(Schema.Literals(["removed", "provider", "scope", "added", "cardinality"])),
++  touched: Schema.Boolean,
++});
++/** No catalog update is offered, the workspace has changes, or the app changed meanwhile. */
++export const CatalogUpdateUnavailable = ApiError.define({
++  tag: "CatalogUpdateUnavailable",
++  status: 409,
++  fields: { reason: Schema.Literals(["none", "edited", "changed"]) },
++  message:
++    "This catalog update can't be applied now: none is offered, the app's workspace has changes that are not deployed, or the app changed meanwhile. Reload the app and try again.",
++});
++export type CatalogUpdateUnavailable = typeof CatalogUpdateUnavailable.Type;
+ // Versions were called deployments. The former paths and field names stay accepted, and responses
+ // repeat the former field names, so API callers written before the rename keep working.
+@@ -191,4 +207,35 @@ export const HostedApps = HttpApiGroup.make("apps")
        .annotate(OpenApi.Deprecated, true),
    )
 +  .add(
 +    HttpApiEndpoint.get("catalogUpdate", `${prefix}/:app/catalog-update`, {
 +      params: app,
-+      success: Schema.NullOr(
-+        Schema.Struct({
-+          version: VersionId,
-+          reconnect: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-+        }),
-+      ),
++      success: Schema.NullOr(CatalogAppUpdate),
 +      error: [StorageError, AppNotFound, OrganizationForbidden],
 +    })
 +      .annotate(RequiredAction, "read")
 +      .annotate(
 +        OpenApi.Description,
-+        "The newer catalog version waiting in this app's versions, or null. A catalog app keeps its active version when someone changed it or when the update would leave linked accounts unusable; reconnect counts those accounts. apps.activate with this version applies the update.",
++        "A newer catalog source held back for this app, or null. Catalog apps update by themselves unless someone changed them or the update would leave linked accounts or requirements unusable: reconnect counts the linked accounts that stop working, reasons says why, and touched means applying it replaces the app's current version. apps.applyCatalogUpdate applies it.",
++      ),
++  )
++  .add(
++    HttpApiEndpoint.post("applyCatalogUpdate", `${prefix}/:app/catalog-update`, {
++      params: app,
++      success: App,
++      error: [
++        ...deployErrors,
++        AppNotDeployed,
++        VersionNotFound,
++        CatalogImportFailed,
++        CatalogUnavailable,
++        CatalogUpdateUnavailable,
++      ],
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(
++        OpenApi.Description,
++        "Deploy the catalog source apps.catalogUpdate offers and make it this app's active version. The earlier version stays in the app's versions. Refused while the app's Git workspace has changes that are not deployed, or when no update is offered.",
 +      ),
 +  )
    .add(
@@ -139,7 +180,7 @@ index 000000000..830fdfb22
 +  defaultValue: () => false,
 +});
 diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
-index 2f6477c73..f19d51aac 100644
+index 2f6477c73..6ae1d48bd 100644
 --- a/apps/hosted/server/src/implementation/apps.ts
 +++ b/apps/hosted/server/src/implementation/apps.ts
 @@ -1,4 +1,4 @@
@@ -158,49 +199,61 @@ index 2f6477c73..f19d51aac 100644
 @@ -19,4 +19,6 @@ import { HostedExecutor } from "../contracts/executor.ts";
  import { recordUsage } from "../contracts/product-analytics.ts";
  import { appManagerOwner, currentOwner } from "./access.ts";
-+import { catalogAppUpdate } from "./catalog-app-defaults.ts";
++import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
 +import { SqlClient } from "effect/sql";
  
  /** Install a catalog entry as a new app without replacing an existing name. */
-@@ -117,4 +119,14 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
+@@ -117,4 +119,24 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
      });
    });
-+/** A newer catalog version that waits in Versions instead of replacing the active one. */
++/** A catalog update held back for this app, which a manager may apply. */
 +export const catalogUpdate = (owner: OwnerId, app: AppId) =>
 +  Effect.gen(function* () {
 +    const executor = yield* Effect.flatten(HostedExecutor);
 +    const { organization } = yield* CurrentOrganization;
 +    const current = yield* executor.apps.get({ owner, app });
-+    return yield* catalogAppUpdate(organization, current).pipe(
++    return yield* catalogAppOffer(organization, current).pipe(
++      Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
++    );
++  });
++/** Deploy the held-back catalog source as the app's active version. */
++export const applyCatalogUpdate = (app: AppId) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const catalog = yield* HostedCatalog;
++    const { organization } = yield* CurrentOrganization;
++    return yield* applyCatalogAppOffer(executor, catalog, organization, app).pipe(
 +      Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
 +    );
 +  });
  /** Activation moves a pointer; it never rewinds app data or upstream side effects. */
  export const activateApp = (
-@@ -192,4 +204,7 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
+@@ -192,4 +214,10 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
        versionDisplayFile(params, query.path),
      )
 +    .handle("catalogUpdate", ({ params }) =>
 +      Effect.flatMap(appManagerOwner(params.app), (owner) => catalogUpdate(owner, params.app)),
 +    )
++    .handle("applyCatalogUpdate", ({ params }) =>
++      Effect.andThen(appManagerOwner(params.app), applyCatalogUpdate(params.app)),
++    )
      .handle("activate", ({ params, payload }) =>
        Effect.flatMap(appManagerOwner(params.app), (owner) =>
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 new file mode 100644
-index 000000000..5c1e93099
+index 000000000..14c0fe790
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,224 @@
 +/**
-+ * Installed catalog apps roll forward to the feed's current source once per Basalt release. An
-+ * untouched copy is redeployed; a touched one, or one whose linked accounts would break, keeps its
-+ * active version and gets the newer one waiting in Versions. Results live in organization metadata.
++ * Installed catalog apps roll forward to the feed's current source once per Basalt release. The
++ * catalog source is built first, without saving anything. Only an untouched copy whose linked
++ * accounts all keep working is deployed; anything else becomes an offer a manager applies.
++ * Results live in organization metadata.
 + */
-+import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import { createCatalog } from "@executor-js/catalog";
 +import {
 +  StorageError,
-+  VersionId,
 +  sourceFilesEqual,
 +  type App,
 +  type Executor,
@@ -208,43 +261,37 @@ index 000000000..5c1e93099
 +  type SourceFiles,
 +} from "@executor-js/sdk/core";
 +import type { HostEgress } from "@executor-js/utils/url-policy";
-+import { Effect, Schedule, Schema } from "effect";
++import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
-+import { CatalogAppSweep, catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
++import { CatalogAppSweep } from "../contracts/catalog-app-updates.ts";
 +import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
 +import type { OrganizationDefaults } from "../contracts/organization-defaults.ts";
 +import { ScheduleWakeup } from "../contracts/schedules.ts";
-+import { catalogAppRelease } from "./catalog-app-release.ts";
-+import { catalogEntryId, decideCatalogUpdate, reconnectCount } from "./catalog-app-updates.ts";
++import {
++  breakingChanges,
++  catalogEntryId,
++  decideCatalogOffer,
++  decideCatalogUpdate,
++} from "./catalog-app-updates.ts";
++import {
++  activeSource,
++  recordOf,
++  saveCatalogRecord,
++  savedRecords,
++  type CatalogOutcome,
++  type Saved,
++} from "./catalog-app-records.ts";
 +
-+const basaltCatalogApps = "basaltCatalogApps";
-+const Saved = Schema.Struct({
-+  version: Schema.optionalKey(VersionId),
-+  workspace: Schema.optionalKey(Schema.String),
-+  update: Schema.optionalKey(VersionId),
-+  reconnect: Schema.optionalKey(Schema.Number),
-+});
-+const Records = Schema.Struct({ apps: Schema.Record(Schema.String, Saved) });
 +const Links = Schema.Array(
 +  Schema.Struct({
 +    requirement: Schema.String,
 +    scope: Schema.String,
++    subject: Schema.NullOr(Schema.String),
 +    account: Schema.String,
 +    provider: Schema.String,
 +  }),
 +);
 +type Links = typeof Links.Type;
-+
-+/** The sweep's records for every app of the organization, or undefined for a missing one. */
-+const savedRecords = (organization: OrganizationId) =>
-+  Effect.gen(function* () {
-+    const sql = yield* SqlClient.SqlClient;
-+    const rows =
-+      yield* sql`select coalesce(metadata::jsonb -> ${basaltCatalogApps}, '{}'::jsonb) as apps
-+      from organization where id = ${organization}`;
-+    if (rows.length !== 1) return undefined;
-+    return (yield* Schema.decodeUnknownEffect(Records)(rows[0])).apps;
-+  });
 +
 +/** The feed installs read, through the same egress. */
 +export interface CatalogAppFeed {
@@ -252,9 +299,22 @@ index 000000000..5c1e93099
 +  readonly url: string;
 +}
 +
++const sourceDigest = (files: SourceFiles) =>
++  Effect.tryPromise({
++    try: async () =>
++      Array.from(
++        new Uint8Array(
++          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++        ),
++        (byte) => byte.toString(16).padStart(2, "0"),
++      ).join(""),
++    catch: () => new StorageError(),
++  });
++
 +/**
-+ * Bring one catalog copy forward to `files`. Returns what to record, or undefined to keep the
-+ * earlier record. Deploys never edit the workspace, so the recorded commit still marks it clean.
++ * Decide one catalog copy against the catalog's `files`. Returns what to record, or undefined to
++ * keep the earlier record. Only an untouched copy no linked account breaks on is deployed, and
++ * only a deploy that became active is recorded as the catalog's own.
 + */
 +export const updateCatalogApp = (
 +  executor: { readonly apps: Executor["apps"] },
@@ -262,72 +322,65 @@ index 000000000..5c1e93099
 +    readonly owner: OwnerId;
 +    readonly app: App;
 +    readonly files: SourceFiles;
-+    readonly recorded: typeof Saved.Type | undefined;
++    readonly recorded: Saved | undefined;
 +    readonly links: Effect.Effect<Links, StorageError>;
 +  },
 +) =>
 +  Effect.gen(function* () {
 +    const { owner, app, files, recorded } = input;
-+    const previous = app.activeVersion;
-+    if (previous === null) return undefined;
-+    const source = yield* executor.apps.source({ owner, app: app.id });
-+    if (source.id !== previous) return undefined;
-+    const workspace = yield* executor.apps.workspace({ owner, app: app.id });
-+    const commit = workspace.revision.commit;
-+    const clean = pinnedOnly(workspace.files, source.files) || commit === recorded?.workspace;
-+    const unchanged = sourceFilesEqual(source.files, files);
-+    const offered =
-+      !unchanged && recorded?.update !== undefined && recorded.update !== previous
-+        ? yield* executor.apps.source({ owner, app: app.id, version: recorded.update }).pipe(
-+            Effect.map((waiting) => sourceFilesEqual(waiting.files, files)),
-+            Effect.catchTags({
-+              VersionNotFound: () => Effect.succeed(false),
-+              AppNotDeployed: () => Effect.succeed(false),
-+            }),
-+          )
-+        : false;
-+    const versions = unchanged
-+      ? 1
-+      : (yield* executor.apps.versions({ owner, app: app.id, versionOwner: owner })).length;
-+    const decision = decideCatalogUpdate({
++    const current = yield* activeSource(executor, owner, app, recorded);
++    if (current === undefined) return undefined;
++    const { active, commit, clean } = current;
++    const unchanged = sourceFilesEqual(current.files, files);
++    const step = decideCatalogUpdate({ unchanged, clean });
++    if (step === "skip") return undefined;
++    if (step === "record")
++      return {
++        record: {
++          version: active,
++          ...(clean
++            ? { workspace: commit }
++            : recorded?.workspace === undefined
++              ? {}
++              : { workspace: recorded.workspace }),
++        },
++        active,
++        deployed: false,
++      } satisfies CatalogOutcome;
++    // Compile without saving: requirements decide before anything, migrations included, runs.
++    const built = yield* executor.apps.build({ owner, name: app.name, files });
++    const breaks = breakingChanges(
++      yield* input.links,
++      app.requirements.accounts,
++      built.requirements.accounts,
++    );
++    const versions = (yield* executor.apps.versions({ owner, app: app.id, versionOwner: owner }))
++      .length;
++    const { untouched, decision } = decideCatalogOffer({
 +      versions,
-+      active: previous,
++      active,
 +      recorded,
-+      unchanged,
-+      clean,
-+      offered,
++      breaking: breaks.reconnect > 0 || breaks.reasons.length > 0,
 +    });
-+    if (decision === "skip") return undefined;
-+    if (decision === "record")
-+      return clean
-+        ? { version: previous, workspace: commit }
-+        : {
-+            version: previous,
-+            ...(recorded?.workspace === undefined ? {} : { workspace: recorded.workspace }),
-+          };
-+    // Read everything that can fail first: after the deploy, only reactivation may.
-+    const links = yield* input.links;
-+    const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
-+    const next = deployed.app.activeVersion;
-+    const reconnect = reconnectCount(links, deployed.app.requirements.accounts);
-+    if (decision === "apply" && reconnect === 0) return { version: next, workspace: commit };
-+    // Only an unchanged previous version is restored; a concurrent choice is someone else's.
-+    yield* executor.apps
-+      .activate({ owner, app: app.id, version: previous, expectedVersion: next })
-+      .pipe(
-+        Effect.retry({
-+          while: (error) => error._tag !== "AppVersionChanged",
-+          schedule: Schedule.exponential("200 millis"),
-+          times: 3,
-+        }),
-+      );
-+    const version = decision === "apply" ? previous : recorded?.version;
++    if (decision === "apply") {
++      const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
++      // A person's newer deploy or activation keeps the app; it now counts as touched.
++      if (deployed.app.activeVersion !== deployed.version.id) return undefined;
++      return {
++        record: { version: deployed.version.id, workspace: commit },
++        active: deployed.version.id,
++        deployed: true,
++      } satisfies CatalogOutcome;
++    }
 +    return {
-+      ...(version === undefined ? {} : { version }),
-+      workspace: commit,
-+      update: next,
-+      reconnect,
-+    };
++      record: {
++        ...(recorded?.version === undefined ? {} : { version: recorded.version }),
++        workspace: commit,
++        offer: { ...breaks, source: yield* sourceDigest(files), active, touched: !untouched },
++      },
++      active,
++      deployed: false,
++    } satisfies CatalogOutcome;
 +  });
 +
 +/** A build failure is the feed source's own; it stays until a later release. */
@@ -355,44 +408,40 @@ index 000000000..5c1e93099
 +      for (const app of yield* executor.apps.list({ owner })) {
 +        const entry = catalogEntryId(app.copiedFrom?.reference, feed.url);
 +        if (entry === undefined || app.activeVersion === null) continue;
-+        const result = yield* Effect.gen(function* () {
++        const recorded = recordOf(saved, app.id);
++        yield* Effect.gen(function* () {
 +          const prepared = yield* catalog.prepare({ entry });
-+          if (prepared.origin?.reference !== app.copiedFrom?.reference) return undefined;
-+          return yield* updateCatalogApp(executor, {
++          if (prepared.origin?.reference !== app.copiedFrom?.reference) return;
++          const outcome = yield* updateCatalogApp(executor, {
 +            owner,
 +            app,
 +            files: prepared.files,
-+            recorded: Object.hasOwn(saved, app.id) ? saved[app.id] : undefined,
-+            links: sql`select l.requirement, l.account, a.provider,
-+              case when l.subject is null then 'app' else 'user' end as scope
-+            from hosted_app_account_links l join executor_accounts a on a.id = l.account
-+            where l.app = ${app.id}`.pipe(
++            recorded,
++            links: sql`select l.requirement, l.subject, l.account, a.provider,
++                case when l.subject is null then 'app' else 'user' end as scope
++              from hosted_app_account_links l join executor_accounts a on a.id = l.account
++              where l.app = ${app.id}`.pipe(
 +              Effect.flatMap(Schema.decodeUnknownEffect(Links)),
 +              Effect.mapError(() => new StorageError()),
 +            ),
 +          });
++          if (outcome === undefined) return;
++          // A deploy leaves the app's webhook sources pending.
++          if (outcome.deployed) intent = true;
++          yield* saveCatalogRecord(executor, organization, app.id, recorded, outcome);
 +        }).pipe(
 +          Effect.catchTags({
-+            CatalogImportFailed: () => Effect.succeed(undefined),
-+            AppNotFound: () => Effect.succeed(undefined),
-+            AppVersionChanged: () => Effect.succeed(undefined),
++            CatalogImportFailed: () => Effect.void,
++            AppNotFound: () => Effect.void,
 +            VersionBuildFailed: () => unbuildable(entry),
 +            BuildMemoryExceeded: () => unbuildable(entry),
 +          }),
 +          Effect.catch(() =>
 +            Effect.logWarning("Catalog app update failed; the job will retry", { entry }).pipe(
 +              Effect.andThen(Effect.sync(() => (failed = true))),
-+              Effect.as(undefined),
 +            ),
 +          ),
 +        );
-+        if (result === undefined) continue;
-+        // Deploys and activations leave the app's webhook sources pending.
-+        if (result.version !== app.activeVersion || "update" in result) intent = true;
-+        yield* sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
-+        array[${basaltCatalogApps}], coalesce(metadata::jsonb -> ${basaltCatalogApps}, '{}'::jsonb)
-+          || jsonb_build_object(${app.id}::text, ${JSON.stringify(result)}::jsonb))::text
-+        where id = ${organization}`;
 +      }
 +      if (failed) return yield* new StorageError();
 +    }).pipe(
@@ -420,15 +469,349 @@ index 000000000..5c1e93099
 +          );
 +      });
 +  });
+diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
+new file mode 100644
+index 000000000..68721f06e
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
+@@ -0,0 +1,91 @@
++/** A catalog update held back for a manager, read for the Versions tab and applied on request. */
++import type { Catalog } from "@executor-js/catalog/contracts";
++import {
++  StorageError,
++  type App,
++  type AppId,
++  type Executor,
++  type OwnerId,
++  type SourceFiles,
++} from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { CatalogUpdateUnavailable } from "../contracts/apps.ts";
++import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
++import {
++  activeSource,
++  recordOf,
++  saveCatalogRecord,
++  savedRecords,
++  type CatalogOutcome,
++  type Saved,
++} from "./catalog-app-records.ts";
 +
-+/** The newer catalog version waiting for this app, unless it is already active. */
-+export const catalogAppUpdate = (organization: OrganizationId, app: App) =>
++/** Deploy an offered catalog source at a manager's request, under the same workspace guard. */
++export const applyCatalogUpdate = (
++  executor: { readonly apps: Executor["apps"] },
++  input: {
++    readonly owner: OwnerId;
++    readonly app: App;
++    readonly files: SourceFiles;
++    readonly recorded: Saved | undefined;
++  },
++) =>
 +  Effect.gen(function* () {
-+    const apps = yield* savedRecords(organization);
-+    const saved = apps !== undefined && Object.hasOwn(apps, app.id) ? apps[app.id] : undefined;
-+    if (saved?.update === undefined || saved.update === app.activeVersion) return null;
-+    return { version: saved.update, reconnect: saved.reconnect ?? 0 };
++    const { owner, app, files, recorded } = input;
++    if (recorded?.offer === undefined)
++      return yield* new CatalogUpdateUnavailable({ reason: "none" });
++    const current = yield* activeSource(executor, owner, app, recorded);
++    if (current === undefined || current.active !== recorded.offer.active)
++      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
++    if (!current.clean) return yield* new CatalogUpdateUnavailable({ reason: "edited" });
++    const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
++    if (deployed.app.activeVersion !== deployed.version.id)
++      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
++    return {
++      record: { version: deployed.version.id, workspace: current.commit },
++      active: deployed.version.id,
++      deployed: true,
++    } satisfies CatalogOutcome;
++  });
++
++/** The catalog update held back for this app, unless its active version changed since. */
++export const catalogAppOffer = (organization: OrganizationId, app: App) =>
++  Effect.gen(function* () {
++    const offer = recordOf(yield* savedRecords(organization), app.id)?.offer;
++    if (offer === undefined || offer.active !== app.activeVersion) return null;
++    return { reconnect: offer.reconnect, reasons: offer.reasons, touched: offer.touched };
 +  }).pipe(Effect.mapError(() => new StorageError()));
++
++/** Apply the held-back update: read the catalog's current source, deploy it and record it. */
++export const applyCatalogAppOffer = (
++  executor: Executor,
++  catalog: Catalog,
++  organization: OrganizationId,
++  id: AppId,
++) =>
++  Effect.gen(function* () {
++    const owner = organizationOwner(organization);
++    const app = yield* executor.apps.get({ owner, app: id });
++    const recorded = recordOf(yield* savedRecords(organization), app.id);
++    const reference = app.copiedFrom?.reference;
++    const encoded = reference?.match(/\/apps\/([^/]+)\.json$/)?.[1];
++    if (recorded?.offer === undefined || encoded === undefined)
++      return yield* new CatalogUpdateUnavailable({ reason: "none" });
++    const entry = yield* Effect.try({
++      try: () => decodeURIComponent(encoded),
++      catch: () => new CatalogUpdateUnavailable({ reason: "none" }),
++    });
++    const prepared = yield* catalog.prepare({ entry });
++    if (prepared.origin?.reference !== reference)
++      return yield* new CatalogUpdateUnavailable({ reason: "none" });
++    const outcome = yield* applyCatalogUpdate(executor, {
++      owner,
++      app,
++      files: prepared.files,
++      recorded,
++    });
++    yield* saveCatalogRecord(executor, organization, app.id, recorded, outcome);
++    return yield* executor.apps.get({ owner, app: app.id });
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
+diff --git a/apps/hosted/server/src/implementation/catalog-app-records.ts b/apps/hosted/server/src/implementation/catalog-app-records.ts
+new file mode 100644
+index 000000000..3eef877fa
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-app-records.ts
+@@ -0,0 +1,92 @@
++/** The sweep's per-app records in organization metadata, and the guarded write of one. */
++import { pinnedOnly } from "@executor-js/app-management/data-steps";
++import {
++  StorageHost,
++  VersionId,
++  type App,
++  type AppId,
++  type Executor,
++  type OwnerId,
++} from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { CatalogAppUpdate } from "../contracts/apps.ts";
++import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
++
++const basaltCatalogApps = "basaltCatalogApps";
++export const Saved = Schema.Struct({
++  version: Schema.optionalKey(VersionId),
++  workspace: Schema.optionalKey(Schema.String),
++  offer: Schema.optionalKey(
++    Schema.Struct({ ...CatalogAppUpdate.fields, source: Schema.String, active: VersionId }),
++  ),
++});
++export type Saved = typeof Saved.Type;
++const Records = Schema.Struct({ apps: Schema.Record(Schema.String, Saved) });
++/** What one app's sweep or update writes, and the active version it was decided against. */
++export interface CatalogOutcome {
++  readonly record: Saved;
++  readonly active: VersionId;
++  readonly deployed: boolean;
++}
++
++/** The sweep's records for every app of the organization, or undefined for a missing one. */
++export const savedRecords = (organization: OrganizationId) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows =
++      yield* sql`select coalesce(metadata::jsonb -> ${basaltCatalogApps}, '{}'::jsonb) as apps
++      from organization where id = ${organization}`;
++    if (rows.length !== 1) return undefined;
++    return (yield* Schema.decodeUnknownEffect(Records)(rows[0])).apps;
++  });
++export const recordOf = (records: Readonly<Record<string, Saved>> | undefined, app: AppId) =>
++  records !== undefined && Object.hasOwn(records, app) ? records[app] : undefined;
++
++/** The active source and whether the workspace holds unsaved edits; undefined while it moves. */
++export const activeSource = (
++  executor: { readonly apps: Executor["apps"] },
++  owner: OwnerId,
++  app: App,
++  recorded: Saved | undefined,
++) =>
++  Effect.gen(function* () {
++    const source = yield* executor.apps.source({ owner, app: app.id });
++    if (app.activeVersion === null || source.id !== app.activeVersion) return undefined;
++    const workspace = yield* executor.apps.workspace({ owner, app: app.id });
++    const commit = workspace.revision.commit;
++    // Deploying files never edits Git, so the commit last seen clean stays clean after them.
++    const clean = pinnedOnly(workspace.files, source.files) || commit === recorded?.workspace;
++    return { active: app.activeVersion, files: source.files, commit, clean };
++  });
++
++/**
++ * Write an outcome under the app's lock, only while its record is still the one it was decided
++ * from and the app's active version is the one it expects. Overlapping sweeps, retries and
++ * manager updates cannot record a stale read. Returns whether it wrote.
++ */
++export const saveCatalogRecord = (
++  executor: Executor,
++  organization: OrganizationId,
++  app: AppId,
++  read: Saved | undefined,
++  outcome: CatalogOutcome,
++) =>
++  executor[StorageHost].transaction(
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`basalt-catalog-app:${app}`}, 0))`;
++      const [row] = yield* sql<{ same: boolean }>`select
++        (metadata::jsonb -> ${basaltCatalogApps} -> ${app}) is not distinct from
++          ${read === undefined ? null : JSON.stringify(read)}::jsonb as same
++        from organization where id = ${organization} for no key update`;
++      if (row?.same !== true) return false;
++      const locked = yield* executor.apps.get({ owner: organizationOwner(organization), app });
++      if (locked.activeVersion !== outcome.active) return false;
++      yield* sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++        array[${basaltCatalogApps}], coalesce(metadata::jsonb -> ${basaltCatalogApps}, '{}'::jsonb)
++          || jsonb_build_object(${app}::text, ${JSON.stringify(outcome.record)}::jsonb))::text
++        where id = ${organization}`;
++      return true;
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/catalog-app-updates.ts b/apps/hosted/server/src/implementation/catalog-app-updates.ts
+new file mode 100644
+index 000000000..2858520c4
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-app-updates.ts
+@@ -0,0 +1,132 @@
++/** Whether an installed catalog app rolls forward to the feed's current source. No I/O. */
++
++/** Why the catalog's current source would leave a linked account or slot unusable. */
++export type CatalogBreak = "removed" | "provider" | "scope" | "added" | "cardinality";
++
++/** A catalog source the sweep held back, for a manager to apply from the app's Versions tab. */
++export interface CatalogOffer {
++  /** SHA-256 of the offered catalog files. */
++  readonly source: string;
++  /** The active version the offer was evaluated against; another one makes it stale. */
++  readonly active: string;
++  readonly reconnect: number;
++  readonly reasons: ReadonlyArray<CatalogBreak>;
++  /** Someone changed the app, so applying the offer replaces their version. */
++  readonly touched: boolean;
++}
++
++/** What the sweep last recorded for one app in organization metadata. */
++export interface CatalogAppRecord {
++  /** The catalog's own version: the original copy, or one the sweep or a manager deployed. */
++  readonly version?: string;
++  /** A workspace commit seen without unsaved edits; catalog deploys never change Git. */
++  readonly workspace?: string;
++  readonly offer?: CatalogOffer;
++}
++
++/** One account requirement, as a version declares it. */
++export interface CatalogSlot {
++  readonly provider: string;
++  readonly scope: string;
++  readonly cardinality: string;
++}
++
++/** One link to the app; `subject` is the linking member for a user requirement, else null. */
++export interface CatalogLink {
++  readonly requirement: string;
++  readonly scope: string;
++  readonly subject: string | null;
++  readonly account: string;
++  readonly provider: string;
++}
++
++/** The feed entry an app was copied from, or undefined when its origin is anything else. */
++export const catalogEntryId = (reference: string | undefined, feedUrl: string) => {
++  const apps = new URL("apps/", feedUrl).href;
++  if (reference === undefined || !reference.startsWith(apps) || !reference.endsWith(".json"))
++    return undefined;
++  const encoded = reference.slice(apps.length, -".json".length);
++  if (encoded.length === 0 || encoded.includes("/")) return undefined;
++  // The reference format is the catalog source's own: `apps/<encoded id>.json` beside the index.
++  try {
++    const id = decodeURIComponent(encoded);
++    return new URL(`apps/${encodeURIComponent(id)}.json`, feedUrl).href === reference
++      ? id
++      : undefined;
++  } catch {
++    return undefined;
++  }
++};
++
++/**
++ * Before building: `record` when the active source already is the catalog's, `skip` for unsaved
++ * workspace edits, otherwise `evaluate` the catalog source's requirements.
++ */
++export const decideCatalogUpdate = (input: {
++  readonly unchanged: boolean;
++  readonly clean: boolean;
++}) => (input.unchanged ? "record" : input.clean ? "evaluate" : "skip");
++
++/**
++ * After building: deploy only an untouched copy no linked account breaks on; anything else is an
++ * offer, and nothing is deployed, so no catalog migration runs on it.
++ */
++export const decideCatalogOffer = (input: {
++  /** How many versions the app has. */
++  readonly versions: number;
++  readonly active: string;
++  readonly recorded: CatalogAppRecord | undefined;
++  readonly breaking: boolean;
++}) => {
++  const untouched = input.versions === 1 || input.active === input.recorded?.version;
++  return { untouched, decision: untouched && !input.breaking ? "apply" : "offer" } as const;
++};
++
++const slotOf = (slots: Readonly<Record<string, CatalogSlot>>, name: string) =>
++  Object.hasOwn(slots, name) ? slots[name] : undefined;
++
++/**
++ * Linked accounts the catalog source can no longer use, and why. A slot that is gone, needs
++ * another provider or links in the other scope breaks its accounts. A new slot nobody linked
++ * breaks the app until someone does. A slot that becomes single keeps one account per linker.
++ */
++export const breakingChanges = (
++  links: ReadonlyArray<CatalogLink>,
++  before: Readonly<Record<string, CatalogSlot>>,
++  after: Readonly<Record<string, CatalogSlot>>,
++) => {
++  const reasons = new Set<CatalogBreak>();
++  const broken = new Set<string>();
++  const kept: CatalogLink[] = [];
++  for (const link of links) {
++    const slot = slotOf(after, link.requirement);
++    const reason =
++      slot === undefined
++        ? "removed"
++        : slot.provider !== link.provider
++          ? "provider"
++          : slot.scope !== link.scope
++            ? "scope"
++            : undefined;
++    if (reason === undefined) kept.push(link);
++    else {
++      reasons.add(reason);
++      broken.add(link.account);
++    }
++  }
++  let extra = 0;
++  for (const [name, slot] of Object.entries(after)) {
++    if (slotOf(before, name) === undefined && !links.some((link) => link.requirement === name))
++      reasons.add("added");
++    if (slot.cardinality !== "one" || slotOf(before, name)?.cardinality !== "many") continue;
++    const linkers = new Map<string | null, Set<string>>();
++    for (const link of kept.filter((link) => link.requirement === name))
++      linkers.set(link.subject, (linkers.get(link.subject) ?? new Set()).add(link.account));
++    for (const accounts of linkers.values())
++      if (accounts.size > 1) {
++        reasons.add("cardinality");
++        extra += accounts.size - 1;
++      }
++  }
++  return { reconnect: broken.size + extra, reasons: [...reasons].sort() };
++};
+diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+new file mode 100644
+index 000000000..55e3e34b6
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+@@ -0,0 +1,47 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
++import { catalogAppRelease } from "./catalog-app-release.ts";
 +
 +/**
 + * Once per Basalt release, queue one sweep per organization that holds a copy of the feed's apps,
@@ -472,97 +855,6 @@ index 000000000..5c1e93099
 +    completed = true;
 +  });
 +};
-diff --git a/apps/hosted/server/src/implementation/catalog-app-updates.ts b/apps/hosted/server/src/implementation/catalog-app-updates.ts
-new file mode 100644
-index 000000000..f692db3f0
---- /dev/null
-+++ b/apps/hosted/server/src/implementation/catalog-app-updates.ts
-@@ -0,0 +1,85 @@
-+/** Whether an installed catalog app rolls forward to the feed's current source. No I/O. */
-+
-+/** What the sweep last recorded for one app in organization metadata. */
-+export interface CatalogAppRecord {
-+  /** The catalog's own version: the original copy, or one the sweep deployed and kept. */
-+  readonly version?: string;
-+  /** A workspace commit the sweep saw without unsaved edits; its own deploys never change Git. */
-+  readonly workspace?: string;
-+  /** A newer catalog version that waits in Versions, and the linked accounts it would break. */
-+  readonly update?: string;
-+  readonly reconnect?: number;
-+}
-+
-+/**
-+ * - `record`: the active source is the catalog's current source; record it.
-+ * - `skip`: unsaved workspace edits, or the newer version already waits; record nothing.
-+ * - `apply`: untouched; deploy and keep it active unless linked accounts would break.
-+ * - `offer`: touched; deploy, then re-activate the previous version at once.
-+ */
-+export type CatalogUpdate = "record" | "skip" | "apply" | "offer";
-+
-+/** The feed entry an app was copied from, or undefined when its origin is anything else. */
-+export const catalogEntryId = (reference: string | undefined, feedUrl: string) => {
-+  const apps = new URL("apps/", feedUrl).href;
-+  if (reference === undefined || !reference.startsWith(apps) || !reference.endsWith(".json"))
-+    return undefined;
-+  const encoded = reference.slice(apps.length, -".json".length);
-+  if (encoded.length === 0 || encoded.includes("/")) return undefined;
-+  // The reference format is the catalog source's own: `apps/<encoded id>.json` beside the index.
-+  try {
-+    const id = decodeURIComponent(encoded);
-+    // Installs record exactly this reference, so anything else came from another source.
-+    return new URL(`apps/${encodeURIComponent(id)}.json`, feedUrl).href === reference
-+      ? id
-+      : undefined;
-+  } catch {
-+    return undefined;
-+  }
-+};
-+
-+export const decideCatalogUpdate = (input: {
-+  /** How many versions the app has. */
-+  readonly versions: number;
-+  readonly active: string;
-+  readonly recorded: CatalogAppRecord | undefined;
-+  /** The catalog's current files equal the active source. */
-+  readonly unchanged: boolean;
-+  /** The workspace holds no unsaved edits. */
-+  readonly clean: boolean;
-+  /** The recorded update already holds the catalog's current files. */
-+  readonly offered: boolean;
-+}): CatalogUpdate => {
-+  if (input.unchanged) return "record";
-+  if (!input.clean || input.offered) return "skip";
-+  // Activating a waiting update is accepting it, so that version stays the catalog's own.
-+  const untouched =
-+    input.versions === 1 ||
-+    input.active === input.recorded?.version ||
-+    input.active === input.recorded?.update;
-+  return untouched ? "apply" : "offer";
-+};
-+
-+/**
-+ * Distinct linked accounts the new version can no longer use: their slot is gone, or it now
-+ * requires another provider or links in the other scope.
-+ */
-+export const reconnectCount = (
-+  links: ReadonlyArray<{
-+    readonly requirement: string;
-+    readonly scope: string;
-+    readonly account: string;
-+    readonly provider: string;
-+  }>,
-+  requirements: Readonly<Record<string, { readonly provider: string; readonly scope: string }>>,
-+) =>
-+  new Set(
-+    links
-+      .filter((link) => {
-+        const slot = Object.hasOwn(requirements, link.requirement)
-+          ? requirements[link.requirement]
-+          : undefined;
-+        return slot?.provider !== link.provider || slot.scope !== link.scope;
-+      })
-+      .map((link) => link.account),
-+  ).size;
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
 index 16f6246d4..bb59522c2 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
@@ -588,7 +880,7 @@ index 16f6246d4..bb59522c2 100644
              );
            return;
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index e0b3cb06d..8b87add08 100644
+index e0b3cb06d..3f13fcd54 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
 @@ -93,4 +93,7 @@ const versionsQuery = Atom.family((key: AppKey) =>
@@ -605,7 +897,29 @@ index e0b3cb06d..8b87add08 100644
 +            get.refresh(catalogUpdateQuery(key));
            }),
          ),
-@@ -493,4 +497,9 @@ export const versionsAtom = (key: {
+@@ -176,4 +180,21 @@ const activateApp = Atom.family((key: AppKey) =>
+   ),
+ );
++/** Apply the catalog update the app's Versions tab offers. */
++const applyCatalogUpdate = Atom.family((key: AppKey) =>
++  HostedClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(HostedClient, (client) => client.apps.applyCatalogUpdate({ params: key })).pipe(
++      Effect.tap((saved) =>
++        Effect.sync(() => {
++          acknowledgeApp(get, key.organization, saved);
++          get.refresh(toolsAtom(key));
++          get.refresh(versionsAtom(key));
++          get.refresh(catalogUpdateQuery(key));
++        }),
++      ),
++    ),
++  ),
++);
++export const applyCatalogUpdateAtom = (key: { organization: OrganizationReference; app: AppId }) =>
++  applyCatalogUpdate(new AppKey(key));
+ const renameApp = Atom.family((key: AppKey) =>
+   HostedClient.runtime.fn((name: string, get) =>
+@@ -493,4 +514,9 @@ export const versionsAtom = (key: {
    readonly app: AppId;
  }) => versionsQuery(new AppKey(key));
 +/** A newer catalog version waiting in Versions, or null. */
@@ -615,135 +929,160 @@ index e0b3cb06d..8b87add08 100644
 +}) => catalogUpdateQuery(new AppKey(key));
  
  /** Apply a complete saved app to metadata readers; unknown tool results must be reloaded. */
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 3a2a70362..def986ed9 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -198,4 +198,11 @@ const errorMessage = Match.type<HostedError>().pipe(
+     AccountNotFound: () => "This account is no longer available in this organization.",
+     CatalogUnavailable: () => "The app catalog could not be reached. Try again.",
++    CatalogUpdateUnavailable: ({ reason }) =>
++      ({
++        none: "No catalog update is waiting for this app. Reload the page.",
++        edited:
++          "This app's workspace has changes that are not deployed. Deploy or discard them, then update.",
++        changed: "This app changed while updating. Reload the page and try again.",
++      })[reason],
+     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
+     FeedbackDisabled: ({ message }) => message,
 diff --git a/apps/hosted/web/src/implementation/pages/app-source.tsx b/apps/hosted/web/src/implementation/pages/app-source.tsx
-index 08aedc779..1cd9f7f98 100644
+index 08aedc779..26e2c3e5f 100644
 --- a/apps/hosted/web/src/implementation/pages/app-source.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-source.tsx
-@@ -22,4 +22,5 @@ import {
+@@ -22,4 +22,6 @@ import {
    activateAppAtom,
    appAtom,
++  applyCatalogUpdateAtom,
 +  catalogUpdateAtom,
    versionsAtom,
    sourceAtom,
-@@ -34,4 +35,6 @@ export function AppVersions({ app }: { readonly app: App }) {
+@@ -34,4 +36,6 @@ export function AppVersions({ app }: { readonly app: App }) {
    const { organization } = useOrganizationRoute();
    const [selected, setSelected] = useState<VersionId>();
 +  const update = useAtomValue(catalogUpdateAtom({ organization, app: app.id }));
 +  const waiting = AsyncResult.isSuccess(update) ? update.value : null;
    const version = selected ?? app.activeVersion;
    if (version === null)
-@@ -63,4 +66,29 @@ export function AppVersions({ app }: { readonly app: App }) {
+@@ -63,4 +67,5 @@ export function AppVersions({ app }: { readonly app: App }) {
                )
              }
-+            badge={(item) => (item === waiting?.version ? "Update" : undefined)}
-+            notice={
-+              waiting !== null &&
-+              versions.some((item) => item.id === waiting.version) && (
-+                <div
-+                  role="status"
-+                  className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-2 text-sm max-[740px]:px-4"
-+                >
-+                  <span>
-+                    Update available
-+                    {waiting.reconnect > 0 &&
-+                      ` · ${waiting.reconnect} ${waiting.reconnect === 1 ? "account needs" : "accounts need"} reconnecting`}
-+                  </span>
-+                  {version !== waiting.version && (
-+                    <Button
-+                      size="sm"
-+                      variant="outline"
-+                      onClick={() => setSelected(waiting.version)}
-+                    >
-+                      Review update
-+                    </Button>
-+                  )}
-+                </div>
-+              )
-+            }
++            notice={waiting !== null && <CatalogUpdate app={app} update={waiting} />}
            />
          )}
+@@ -70,4 +75,89 @@ export function AppVersions({ app }: { readonly app: App }) {
+ }
+ 
++/** A held-back catalog update; applying one that breaks accounts or replaces edits asks first. */
++function CatalogUpdate({
++  app,
++  update,
++}: {
++  readonly app: App;
++  readonly update: {
++    readonly reconnect: number;
++    readonly reasons: readonly string[];
++    readonly touched: boolean;
++  };
++}) {
++  const { organization } = useOrganizationRoute();
++  const apply = useAtomSet(applyCatalogUpdateAtom({ organization, app: app.id }), {
++    mode: "promiseExit",
++  });
++  const [confirming, setConfirming] = useState(false);
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<HostedError>>();
++  const newAccount = update.reasons.includes("added");
++  const risky = update.touched || update.reconnect > 0 || update.reasons.length > 0;
++  const run = async () => {
++    if (pending) return;
++    setPending(true);
++    setError(undefined);
++    const result = await apply();
++    setPending(false);
++    if (Exit.isFailure(result)) setError(result.cause);
++    else setConfirming(false);
++  };
++  return (
++    <div
++      role="status"
++      className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-2 text-sm max-[740px]:px-4"
++    >
++      <span>
++        Update available
++        {update.reconnect > 0 &&
++          ` · ${update.reconnect} ${update.reconnect === 1 ? "account needs" : "accounts need"} reconnecting`}
++        {newAccount && " · needs a new account"}
++      </span>
++      <Button
++        size="sm"
++        variant="outline"
++        loading={pending && !confirming}
++        onClick={() => (risky ? setConfirming(true) : void run())}
++      >
++        Update
++      </Button>
++      {error && !confirming && <HostedFailure cause={error} retry={() => setError(undefined)} />}
++      <Dialog
++        open={confirming}
++        onOpenChange={(open) => {
++          if (!open && !pending) {
++            setConfirming(false);
++            setError(undefined);
++          }
++        }}
++      >
++        <DialogContent>
++          <DialogTitle>Update this app?</DialogTitle>
++          <DialogDescription>
++            {update.touched && "This replaces the version someone changed; it stays in Versions. "}
++            {update.reconnect > 0 &&
++              `${update.reconnect} linked ${update.reconnect === 1 ? "account stops" : "accounts stop"} working until reconnected. `}
++            {newAccount && "The update needs an account nobody has linked yet. "}
++            {update.reasons.includes("cardinality") &&
++              "It uses one account where several are linked now. "}
++            New calls will use the catalog's current code.
++          </DialogDescription>
++          {error && <HostedFailure cause={error} retry={() => setError(undefined)} />}
++          <DialogFooter>
++            <Button variant="outline" disabled={pending} onClick={() => setConfirming(false)}>
++              Cancel
++            </Button>
++            <Button loading={pending} onClick={() => void run()}>
++              Update
++            </Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </div>
++  );
++}
++
+ /** The shown version is known from the app, so its source loads alongside the version list. */
+ function ReadSourceEarly({ app, version }: { readonly app: App; readonly version: VersionId }) {
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index b801a5727..8d579e691 100644
+index b801a5727..bee7faa84 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -86,4 +86,8 @@ export interface AppVersionsProps<E> {
+@@ -86,4 +86,6 @@ export interface AppVersionsProps<E> {
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
    readonly actions?: ReactNode;
-+  /** A host's short label for a listed version, such as a waiting update. */
-+  readonly badge?: (version: VersionId) => string | undefined;
 +  /** A host's status line above the versions, such as an available update. */
 +  readonly notice?: ReactNode;
  }
  /** Common command input; a host adapter supplies its own API route parameters. */
 diff --git a/packages/ui/src/implementation/dashboard/app-versions.tsx b/packages/ui/src/implementation/dashboard/app-versions.tsx
-index dddf24bb2..11677633d 100644
+index dddf24bb2..e9f12a986 100644
 --- a/packages/ui/src/implementation/dashboard/app-versions.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-versions.tsx
-@@ -16,4 +16,6 @@ export function AppVersions<E>({
+@@ -16,4 +16,5 @@ export function AppVersions<E>({
    Failure,
    actions,
-+  badge,
 +  notice,
  }: AppVersionsProps<E>) {
    const { result, refresh } = useQuery(query);
-@@ -21,4 +23,5 @@ export function AppVersions<E>({
+@@ -21,4 +22,5 @@ export function AppVersions<E>({
    return (
      <section aria-label="App versions" className="flex min-h-0 flex-1 flex-col">
 +      {notice}
        <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
          <nav
-@@ -26,28 +29,31 @@ export function AppVersions<E>({
-           className="min-h-0 overflow-auto border-r bg-muted/15 p-2 max-[900px]:max-h-48 max-[900px]:border-r-0 max-[900px]:border-b"
-         >
--          {versions.map((item, index) => (
--            <button
--              key={item.id}
--              type="button"
--              aria-pressed={item.id === version}
--              onClick={() => onVersionChange(item.id === app.activeVersion ? undefined : item.id)}
--              className={cn(
--                "block w-full rounded-md px-3 py-3 text-left transition-colors hover:bg-muted focus-visible:outline-ring",
--                item.id === version && "bg-muted",
--              )}
--            >
--              <span className="flex items-center justify-between gap-3 text-sm font-medium">
--                Version {versions.length - index}
--                {item.id === app.activeVersion && (
--                  <span className="rounded border px-1.5 py-0.5 text-[10px] font-normal">
--                    Active
--                  </span>
-+          {versions.map((item, index) => {
-+            const label = item.id === app.activeVersion ? "Active" : badge?.(item.id);
-+            return (
-+              <button
-+                key={item.id}
-+                type="button"
-+                aria-pressed={item.id === version}
-+                onClick={() => onVersionChange(item.id === app.activeVersion ? undefined : item.id)}
-+                className={cn(
-+                  "block w-full rounded-md px-3 py-3 text-left transition-colors hover:bg-muted focus-visible:outline-ring",
-+                  item.id === version && "bg-muted",
-                 )}
--              </span>
--              <span className="mt-1 block text-xs text-muted-foreground">
--                <LocalTime value={item.createdAt} options={shortMoment} />
--              </span>
--            </button>
--          ))}
-+              >
-+                <span className="flex items-center justify-between gap-3 text-sm font-medium">
-+                  Version {versions.length - index}
-+                  {label !== undefined && (
-+                    <span className="rounded border px-1.5 py-0.5 text-[10px] font-normal">
-+                      {label}
-+                    </span>
-+                  )}
-+                </span>
-+                <span className="mt-1 block text-xs text-muted-foreground">
-+                  <LocalTime value={item.createdAt} options={shortMoment} />
-+                </span>
-+              </button>
-+            );
-+          })}
-         </nav>
-         <div className="flex min-h-0 min-w-0 flex-col">
