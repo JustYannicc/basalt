@@ -4,7 +4,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { join } from "node:path";
 import { applyUpdatePlan, planUpdate } from "./update.ts";
-import { makeReleaseRoot, oauthSource, releases, sha } from "./fixtures.test-helpers.ts";
+import { makeReleaseRoot, oauthSource, patchManifest, releases, sha } from "./fixtures.test-helpers.ts";
 import type { GitHubApi } from "./github.ts";
 import { readPatchManifest } from "./patches.ts";
 import { sha256PatchContent } from "./patch-registry.ts";
@@ -155,10 +155,15 @@ test("requires an exact patch-manifest match with every carried patch file", asy
   assert.throws(() => readPatchManifest(root), /does not match the patches directory/);
 });
 
-test("stale content hashes reject a reused filename before release API calls", async (context) => {
+test("stale content hashes report every replacement digest before release API calls", async (context) => {
   const root = makeReleaseRoot();
   context.after(() => rmSync(root, { recursive: true, force: true }));
-  writeFileSync(join(root, "patches/0001-review.patch"), "different patch content under the old filename\n");
+  const manifestSource = readFileSync(join(root, "scripts/releases/patches.json"), "utf8");
+  const changed = [
+    { file: "0001-review.patch", content: "different patch content under the old filename\n" },
+    { file: "0004-workflow.patch", content: "changed workflow patch bytes\n" },
+  ];
+  for (const { file, content } of changed) writeFileSync(join(root, "patches", file), content);
   let apiCalls = 0;
   const api = {
     async get() {
@@ -170,8 +175,20 @@ test("stale content hashes reject a reused filename before release API calls", a
       throw new Error("release API must not be called");
     },
   } as unknown as GitHubApi;
-  await assert.rejects(planUpdate(root, "tools", api), /digest does not match registry identity/);
+  await assert.rejects(planUpdate(root, "tools", api), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /digest does not match registry identity/);
+    for (const { file, content } of changed) {
+      const registered = patchManifest.patches.find((patch) => patch.file === file)!;
+      assert.ok(error.message.includes(`${registered.identity} (patches/${file})`));
+      assert.ok(error.message.includes(`Registered content_sha256: ${registered.content_sha256}`));
+      assert.ok(error.message.includes(`Expected content_sha256 for current patch bytes: ${sha256PatchContent(content)}`));
+      assert.equal(readFileSync(join(root, "patches", file), "utf8"), content);
+    }
+    return true;
+  });
   assert.equal(apiCalls, 0);
+  assert.equal(readFileSync(join(root, "scripts/releases/patches.json"), "utf8"), manifestSource);
 });
 
 function spawnApplyCheck(root: string): number {
