@@ -78,6 +78,9 @@ jobs:
       - run: npm run check:upstream
       - run: npm run build
       - run: npm run check:build
+      - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
+      - name: Check every Worker's startup CPU and size against Cloudflare's limits
+        run: npm run check:startup
       - run: npm run typecheck
       - name: Capture the checked pull request merge result
         if: >-
