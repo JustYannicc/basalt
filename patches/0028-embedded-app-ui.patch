@@ -362,6 +362,27 @@ index b4f4f11..cda7ff0 100644
          HttpRouter.provideRequest(onboarding),
        ),
        apiRoutes,
+diff --git a/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts b/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts
+index d2e75f9..15982df 100644
+--- a/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts
++++ b/apps/hosted/cloud/web/src/contracts/passkey-enrollment.ts
+@@ -11,12 +11,14 @@ export const hasPasskeyEnrollment = (userId: string) =>
+   document.cookie
+     .split(";")
+     .some(
+-      (cookie) => cookie.trim() === `${passkeyEnrollmentCookie.name}=${encodeURIComponent(userId)}`,
++      (cookie) =>
++        cookie.trim() ===
++        `${passkeyEnrollmentCookie.name(window.location.origin)}=${encodeURIComponent(userId)}`,
+     );
+ const clearEnrollment = (userId: string) =>
+   Effect.sync(() => {
+     if (hasPasskeyEnrollment(userId))
+-      document.cookie = `${passkeyEnrollmentCookie.name}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
++      document.cookie = `${passkeyEnrollmentCookie.name(window.location.origin)}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${window.location.protocol === "https:" ? "; Secure" : ""}`;
+   });
+
+ /**
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
 index eee4f95..82895c0 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
@@ -1392,6 +1413,20 @@ index aac6a79..1d35d10 100644
            viewport: { width: 1440, height: 960 },
            ...visitorUserAgent(browser),
            recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index f8abe13..b0fa511 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -242,6 +242,9 @@ export const startCloudEnvironment = (input: {
+       BETTER_AUTH_URL: input.origin,
+       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
++      MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
++      MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
++      APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_BUILD_VERSION: input.commit,
+       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
+       SENTRY_LOCAL_TEST_PORT: String(analyticsPort),
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
 index 18a14c9..f49cac4 100644
 --- a/e2e/support/managed-server.ts
@@ -1468,7 +1503,7 @@ index d9e72b7..226c68b 100644
      readonly rows: number;
      readonly observeUI: boolean;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index d506111..1372851 100644
+index caf168d..02c6259 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -4859,6 +4859,43 @@ export const scenarios = plan({
@@ -1706,6 +1741,65 @@ index 0000000..a5b9b42
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/cloud-onboarding.spec.ts b/e2e/tests/cloud-onboarding.spec.ts
+index 1f60a28..2d79959 100644
+--- a/e2e/tests/cloud-onboarding.spec.ts
++++ b/e2e/tests/cloud-onboarding.spec.ts
+@@ -118,12 +118,38 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
+           browser = yield* Browser;
+         yield* onboarding.passkey;
+         const email = yield* onboarding.freshEmail;
+-        yield* onboarding.emailSignIn(email);
++        yield* Effect.all(
++          [
++            browser.use("Browser checks existing passkeys for enrollment", (page) =>
++              page
++                .waitForResponse(
++                  (response) =>
++                    new URL(response.url()).pathname === "/api/auth/passkey/list-user-passkeys",
++                )
++                .then((response) => expect(response.status()).toBe(200)),
++            ),
++            onboarding.emailSignIn(email),
++          ],
++          { concurrency: "unbounded" },
++        );
+         yield* browser.use("Passkey enrollment is offered", (page) =>
+           page
+             .getByRole("heading", { name: "Create a passkey", exact: true })
+             .waitFor({ state: "visible" }),
+         );
++        yield* browser.use("Email signup issues this browser's enrollment cookie", (page) =>
++          page
++            .context()
++            .cookies(page.url())
++            .then((cookies) => {
++              const secure = new URL(page.url()).protocol === "https:";
++              const name = `${secure ? "__Host-" : ""}executor_passkey_enrollment`;
++              const cookie = cookies.find((cookie) => cookie.name === name);
++              expect(cookie).toBeDefined();
++              expect(cookie?.path).toBe("/");
++              expect(cookie?.secure).toBe(secure);
++            }),
++        );
+         // The Worker reads this browser's enrollment cookie, so the sign-in page it sends already
+         // offers the passkey, rather than a placeholder the browser replaces.
+         const html = yield* browser.use("Request the sign-in page's document", (page) =>
+@@ -160,6 +186,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
+         yield* browser.use("Choose Not now", (page) =>
+           page.getByRole("button", { name: "Not now", exact: true }).click(),
+         );
++        yield* browser.use("Dismissing enrollment removes its cookie", (page) =>
++          page.waitForFunction(() => {
++            const name = `${window.location.protocol === "https:" ? "__Host-" : ""}executor_passkey_enrollment`;
++            return !document.cookie
++              .split(";")
++              .some((cookie) => cookie.trim().startsWith(`${name}=`));
++          }),
++        );
+         const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
+         yield* onboarding.signOut;
+         yield* onboarding.emailSignIn(email);
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 new file mode 100644
 index 0000000..020738b
