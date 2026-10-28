@@ -546,11 +546,17 @@ diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/h
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,77 @@
 +import { Effect, type Redacted } from "effect";
 +import { SqlClient } from "effect/sql";
 +import { PoolAppSource, poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
 +import { poolTokenKeyVersion } from "./pool-account.ts";
++
++/**
++ * Bump when what a reconcile does changes, such as a new repair or decision log, so every pool is
++ * reconciled once even though the pool app's own source is unchanged.
++ */
++export const poolReconcileRevision = 2;
 +
 +/** Delay both rollouts: the pool Worker can deploy after tools; previous-key tokens keep working. */
 +export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: string) => {
@@ -571,7 +577,7 @@ new file mode 100644
 +          where pool.value ->> 'tokenKeyVersion' is distinct from ${keyVersion}`,
 +      },
 +      {
-+        name: `basalt-pools:${poolAppVersion}`,
++        name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`,
 +        cursor: null,
 +        jobs: sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
 +          select 'member', member."organizationId", member."userId", now() + interval '15 minutes'
