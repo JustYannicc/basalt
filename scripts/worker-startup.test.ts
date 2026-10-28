@@ -72,7 +72,7 @@ test("a Worker fails when its median startup or its size crosses the budget", ()
   const fits = { name: "Api", bytes: 5_322_120, gzipBytes: 1_586_000, startupMs: [69, 70, 400] };
   assert.deepEqual(violations(fits), []);
   const slow = { ...fits, startupMs: [startupBudgetMs + 1, startupBudgetMs + 2, 10] };
-  assert.match(violations(slow).join("\n"), /Api starts in 301\.0 ms of CPU \(median\); the budget is 300 ms/);
+  assert.match(violations(slow).join("\n"), /Api starts in 401\.0 ms of CPU \(median\); the budget is 400 ms/);
   const large = { ...fits, bytes: sizeBudgetBytes + 1 };
   assert.match(violations(large).join("\n"), /Api uploads 33554433 bytes/);
 });

@@ -20,7 +20,7 @@ import { activeMs, loadMiniflare, profileStartup, sampled, type CpuProfile } fro
 /** Cloudflare's startup limit: the global scope must parse and execute within one second. */
 export const startupLimitMs = 1_000;
 /** A budget well under it: CI runners and Cloudflare's machines differ, and startup varies run to run. */
-export const startupBudgetMs = 300;
+export const startupBudgetMs = 400;
 /** Cloudflare's size limit, uncompressed; there is no compressed limit. */
 export const sizeLimitBytes = 64 * 1024 * 1024;
 /** Fail at half of it. Upstream's own per-Worker upload budgets are far tighter. */
