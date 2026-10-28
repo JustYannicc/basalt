@@ -279,3 +279,27 @@ test("a v1 backup name only counts when the ledger records it", async () => {
   await assert.rejects(rollbackSafety(branches).safety.assertBackupReady(report), /Expected exactly one/);
   assert.equal((await rollbackSafety(branches).safety.assertBackupReady(report, { name: v1, metadata })).backup.id, "v1-backup");
 });
+
+test("after a roll-forward, the rollback target is the failed release's backup from the same base", async () => {
+  // S (sha 1) succeeded, F (sha 2) took B1 and failed, C (sha 4) rolled forward and recorded B1.
+  const failed = recordedFor(report);
+  const rolledForward: ClassificationReport = { ...report, candidate: { ...report.candidate, gitCommit: sha("4") } };
+  const own = recordedFor(rolledForward);
+  const branches = { main: { cluster: "PS_5", replicas: true, backups: [{ id: "b1", name: failed.name }, { id: "b2", name: own.name }] } };
+
+  const target = await rollbackSafety(branches).safety.manualRollbackTarget(rolledForward, { ...failed, rolledForwardOver: sha("2") });
+  assert.equal(target.backupId, "b1");
+  assert.equal(target.candidate.gitCommit, sha("2"));
+  // Without the roll-forward, the failed release's backup isn't this transition's.
+  await assert.rejects(rollbackSafety(branches).safety.manualRollbackTarget(rolledForward, failed), /does not match the classified release transition/);
+  // A backup from another base, or for another release, is never the roll-forward point.
+  await assert.rejects(
+    rollbackSafety(branches).safety.manualRollbackTarget(rolledForward, { ...failed, rolledForwardOver: sha("5") }),
+    /not the rolled-forward release's backup from this base/,
+  );
+  const otherBase = recordedFor({ ...report, base: { ...report.base, gitCommit: sha("5") } });
+  await assert.rejects(
+    rollbackSafety(branches).safety.manualRollbackTarget(rolledForward, { ...otherBase, rolledForwardOver: sha("2") }),
+    /not the rolled-forward release's backup from this base/,
+  );
+});

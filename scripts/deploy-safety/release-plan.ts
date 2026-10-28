@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyRefs } from "../releases/classify.ts";
@@ -7,13 +7,15 @@ import type { ClassificationReport } from "../releases/types.ts";
 import {
   assertManualRollbackCandidate,
   assertReportUsesLatestDeploy,
+  keepRollForwardGates,
   readDeploymentLedger,
   readLedgerEnvironment,
   type DeploymentLedger,
+  type RollForward,
 } from "./github-ledger.ts";
 import { SafetyGateError, stableStringify, type PinSummary } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
-import { requirePlanetScaleEnvironment } from "./runtime.ts";
+import { assertNoReleaseHold, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleasePlan = {
   report: ClassificationReport;
@@ -22,6 +24,30 @@ export type ReleasePlan = {
 };
 
 const trustedRepositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
+/**
+ * Lets a release of `candidateGitCommit` roll forward over a failed release whose commit it
+ * contains, checked with `git merge-base --is-ancestor` in the trusted checkout. Git exits 0 when
+ * it is an ancestor and 1 when it is not; anything else, such as a commit missing from the
+ * checkout, throws, so the failure stays unresolved. Rollback paths read the ledger without it.
+ */
+export function rollForwardTo(candidateGitCommit: string, repositoryRoot = trustedRepositoryRoot): RollForward {
+  return {
+    candidateGitCommit,
+    contains: (ancestor, descendant) => {
+      if (![ancestor, descendant].every((commit) => /^[a-f0-9]{40}$/.test(commit)))
+        throw new SafetyGateError("Roll-forward ancestry needs exact commit SHAs");
+      const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      if (result.status === 0) return true;
+      if (result.status === 1) return false;
+      throw new SafetyGateError(`git could not compare ${ancestor} with ${descendant}`);
+    },
+  };
+}
 
 export async function latestProductionBase(): Promise<{
   state: "uninitialized" | "ready" | "unresolved";
@@ -48,8 +74,9 @@ export async function latestProductionBase(): Promise<{
 }
 
 export async function classifyCurrentRelease(candidateRef = currentCommit()): Promise<ReleasePlan> {
+  assertNoReleaseHold();
   const ledgerEnvironment = readLedgerEnvironment();
-  const ledger = await readDeploymentLedger(ledgerEnvironment);
+  const ledger = await readDeploymentLedger(ledgerEnvironment, fetch, rollForwardTo(candidateRef));
   let baseCommit: string;
   if (ledger.state === "ready") baseCommit = ledger.gitCommit;
   else if (ledger.state === "unresolved" && ledger.lastSuccessful) baseCommit = ledger.lastSuccessful.gitCommit;
@@ -64,7 +91,7 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, api);
   if (report.base.gitCommit !== baseCommit || report.candidate.gitCommit !== candidateRef)
     throw new SafetyGateError("Release classifier did not return the requested exact commits");
-  return { report, ledger, manualRequired: report.databaseChanged || report.workflowChanged };
+  return { report, ledger: keepRollForwardGates(ledger, report), manualRequired: report.databaseChanged || report.workflowChanged };
 }
 
 export async function classifyManualRollbackCandidate(candidateRef: string): Promise<ReleasePlan> {

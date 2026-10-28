@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
 import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
-import { releaseBackup } from "./github-ledger.ts";
+import { releaseBackup, type SupersededRelease } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { executeManualRollback, executeRelease, productionManualRollbackDependencies, productionReleaseDependencies, resolveCandidateSourceRoot, type ReleaseMode } from "./release-runner.ts";
 import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
@@ -36,7 +36,12 @@ async function main(args: string[]): Promise<void> {
       deployable,
       manualRequired: plan.manualRequired,
       latestDeploymentState: plan.ledger.state,
+      ...(plan.ledger.state === "ready" && plan.ledger.superseded ? { supersededDeployment: plan.ledger.superseded } : {}),
     };
+    noteRollForward(
+      plan.ledger.state === "ready" ? plan.ledger.superseded : undefined,
+      plan.ledger.state === "unresolved" ? plan.ledger.supersedeRefusal : undefined,
+    );
     writeActionOutputs({
       deployable: String(deployable),
       database_changed: String(plan.report.databaseChanged),
@@ -294,6 +299,13 @@ function writeActionOutputs(values: Record<string, string>): void {
   if (entries.some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || /[\r\n]/.test(value)))
     throw new SafetyGateError("Action outputs contain an invalid key or value");
   appendFileSync(path, entries.map(([key, value]) => `${key}=${value}`).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+}
+
+/** Says in the Actions log which failed release this run rolls forward over, or why it can't. */
+function noteRollForward(superseded: SupersededRelease | undefined, refusal: string | undefined): void {
+  if (superseded)
+    process.stderr.write(`::notice::Rolling forward over failed production deployment ${superseded.deploymentId} (${superseded.gitCommit}, ${superseded.deploymentStatus}): this release contains that commit, deploys from the last success and re-applies its migrations and data steps\n`);
+  if (refusal) process.stderr.write(`::warning::The failed production deployment is not rolled forward over: ${refusal}\n`);
 }
 
 function print(value: unknown): void {

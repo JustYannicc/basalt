@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClassificationReport } from "../releases/types.ts";
 import { SafetyGateError, type RecordedBackup } from "./contracts.ts";
-import { OutputTail, redactFailureOutput } from "./failure-output.ts";
+import { isScriptStartupCpuLimit, OutputTail, redactFailureOutput } from "./failure-output.ts";
 import {
   beginReleaseDeployment,
   beginRollbackDeployment,
@@ -15,12 +15,18 @@ import {
   type DeploymentLedger,
 } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
+import { rollForwardTo } from "./release-plan.ts";
 import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
-import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
+import { assertNoReleaseHold, requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleaseMode = "automatic" | "manual";
 
-export type CommandResult = { started: boolean; exitCode: number | null };
+/**
+ * `scriptStartupCpuLimit` is set when a failed command's output shows Cloudflare's startup CPU
+ * rejection. `outputHeld` is set when the command exited but something it started still held its
+ * output past the grace period, so part of it may still be running.
+ */
+export type CommandResult = { started: boolean; exitCode: number | null; scriptStartupCpuLimit?: true; outputHeld?: true };
 
 export type ReleaseDependencies = {
   validateCredentials(): void;
@@ -31,6 +37,8 @@ export type ReleaseDependencies = {
   deploy(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
   rollback(report: ClassificationReport): Promise<void>;
+  /** Where the runner notes a deploy retry; stderr by default. */
+  log?(text: string): void;
 };
 
 export type ManualRollbackDependencies = {
@@ -43,6 +51,7 @@ export type ManualRollbackDependencies = {
   mark(deploymentId: number, state: "success" | "failure"): Promise<void>;
   deploy(): Promise<CommandResult>;
   smoke(): Promise<CommandResult>;
+  log?(text: string): void;
 };
 
 export type ReleaseResult = {
@@ -63,7 +72,7 @@ export async function executeRelease(
   const backup = report.databaseChanged ? await dependencies.assertBackup(report) : undefined;
 
   const deploymentId = await dependencies.begin(report, backup);
-  const deploy = await dependencies.deploy();
+  const deploy = await deployWithStartupRetry(() => dependencies.deploy(), dependencies.log);
   if (!deploy.started) {
     await dependencies.mark(deploymentId, "failure");
     throw new SafetyGateError("Production deployment process did not start; no rollback was attempted");
@@ -102,7 +111,7 @@ export async function executeManualRollback(
   dependencies.validateCredentials();
 
   const deploymentId = await dependencies.begin(report, expectedDeploymentId);
-  const deploy = await dependencies.deploy();
+  const deploy = await deployWithStartupRetry(() => dependencies.deploy(), dependencies.log);
   if (!deploy.started || deploy.exitCode !== 0) {
     await dependencies.mark(deploymentId, "failure");
     throw new SafetyGateError("Previous production release deployment failed; rollback remains unresolved");
@@ -116,6 +125,26 @@ export async function executeManualRollback(
 
   await dependencies.mark(deploymentId, "success");
   return { state: "rolled-back", deploymentId };
+}
+
+/**
+ * Runs a production deploy, and runs it once more when Cloudflare rejected a Worker upload because
+ * its startup exceeded the CPU time limit. The retry runs the whole deploy again: steps that always
+ * run, such as migrations and the pool database setup, run a second time. No other failure is
+ * retried, and neither is one whose command left something running, which could overlap the retry.
+ */
+export async function deployWithStartupRetry(
+  deploy: () => Promise<CommandResult>,
+  log: (text: string) => void = (text) => { process.stderr.write(text); },
+): Promise<CommandResult> {
+  const first = await deploy();
+  if (!first.started || first.exitCode === 0 || !first.scriptStartupCpuLimit) return first;
+  if (first.outputHeld) {
+    log("::warning::Cloudflare rejected a Worker upload with ScriptStartupError (script startup exceeded CPU time limit), but part of the deploy was still running after it exited, so it was not retried\n");
+    return first;
+  }
+  log("::warning::Cloudflare rejected a Worker upload with ScriptStartupError (script startup exceeded CPU time limit); retrying the deploy once\n");
+  return deploy();
 }
 
 export function assertReleaseMode(
@@ -150,7 +179,10 @@ export function productionReleaseDependencies(sourceRoot = repositoryRoot, candi
         throw new SafetyGateError("PlanetScale rollback backup is not both complete and protected");
       return { name: backup.name, metadata };
     },
-    begin: (report, backup) => beginReleaseDeployment(report, github, fetch, backup),
+    begin: (report, backup) => {
+      assertNoReleaseHold();
+      return beginReleaseDeployment(report, github, fetch, backup, rollForwardTo(report.candidate.gitCommit));
+    },
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, github),
     deploy: () => runCommand("npm", ["run", "deploy"], sourceRoot),
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),
@@ -298,10 +330,10 @@ async function deployPreviousRelease(
     }
 
     rollbackId = await beginRollbackDeployment(report, github);
-    const deploy = await runCommand("npm", ["run", "deploy"], worktree, {
+    const deploy = await deployWithStartupRetry(() => runCommand("npm", ["run", "deploy"], worktree, {
       ...process.env,
       GITHUB_SHA: report.base.gitCommit,
-    });
+    }));
     if (!deploy.started) {
       await finishDeployment(rollbackId, "failure", github);
       throw new SafetyGateError("Previous release deployment process did not start");
@@ -351,25 +383,29 @@ export function runCommand(
       if (settled) return;
       settled = true;
       let finished = false;
-      const finish = () => {
+      const finish = (closed: boolean) => {
         if (finished) return;
         finished = true;
         child.stdout.destroy();
         child.stderr.destroy();
-        if (code !== 0) {
-          const commandLine = redactFailureOutput([command, ...args].join(" "), env);
-          const sections = [["stdout", stdout], ["stderr", stderr]] as const;
-          const output = sections
-            .map(([name, tail]) => `--- ${name}\n${redactFailureOutput(tail.text(), env)}`)
-            .join("\n");
-          report(`${commandLine} exited with ${code ?? signal}. Last output lines, credentials removed:\n${output}\n`);
+        const held = closed ? {} : { outputHeld: true as const };
+        if (code === 0) {
+          resolve({ started, exitCode: code, ...held });
+          return;
         }
-        resolve({ started, exitCode: code });
+        const commandLine = redactFailureOutput([command, ...args].join(" "), env);
+        const sections = [["stdout", stdout.text()], ["stderr", stderr.text()]] as const;
+        const output = sections
+          .map(([name, text]) => `--- ${name}\n${redactFailureOutput(text, env)}`)
+          .join("\n");
+        report(`${commandLine} exited with ${code ?? signal}. Last output lines, credentials removed:\n${output}\n`);
+        const startupCpuLimit = isScriptStartupCpuLimit(sections.map(([, text]) => text).join("\n"));
+        resolve({ started, exitCode: code, ...(startupCpuLimit ? { scriptStartupCpuLimit: true as const } : {}), ...held });
       };
-      const grace = setTimeout(finish, 2000);
+      const grace = setTimeout(() => finish(false), 2000);
       child.once("close", () => {
         clearTimeout(grace);
-        finish();
+        finish(true);
       });
     });
   });

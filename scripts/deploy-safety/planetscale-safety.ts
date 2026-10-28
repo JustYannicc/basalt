@@ -6,9 +6,12 @@ import {
   DATABASE_SCOPE,
   readBackupName,
   SafetyGateError,
+  stableStringify,
+  summarizePins,
   verifyBackupMetadata,
   type BackupMetadata,
   type RecordedBackup,
+  type RollbackBackup,
 } from "./contracts.ts";
 import { record, type Fetcher } from "./http.ts";
 import { PlanetScaleApi, type BackupRecord, type BranchRecord, type DatabaseRecord, type PlanetScaleCredentials } from "./planetscale-api.ts";
@@ -106,7 +109,7 @@ export class PlanetScaleSafety {
    * Without it, the production branch's expected name is recomputed from the report and its current
    * context, so a branch resized since the backup no longer matches and the gate fails closed.
    */
-  async assertBackupReady(report: ClassificationReport, recorded?: RecordedBackup): Promise<ReadyBackup> {
+  async assertBackupReady(report: ClassificationReport, recorded?: RollbackBackup): Promise<ReadyBackup> {
     if (!report.databaseChanged) throw new SafetyGateError("No database backup is required for this release");
     const matches = await this.findMatchingBackups(report, recorded);
     if (matches.length !== 1) throw new SafetyGateError("Expected exactly one recorded rollback backup for this release transition");
@@ -118,7 +121,7 @@ export class PlanetScaleSafety {
     return { backup: detail, metadata };
   }
 
-  async manualRollbackTarget(report: ClassificationReport, recorded?: RecordedBackup): Promise<ManualRollbackTarget> {
+  async manualRollbackTarget(report: ClassificationReport, recorded?: RollbackBackup): Promise<ManualRollbackTarget> {
     const { backup, metadata } = await this.assertBackupReady(report, recorded);
     return {
       backupId: backup.id,
@@ -157,8 +160,8 @@ export class PlanetScaleSafety {
     }
   }
 
-  private async findMatchingBackups(report: ClassificationReport, recorded?: RecordedBackup): Promise<ReadyBackup[]> {
-    if (recorded) assertBackupMatchesReport(verifyBackupMetadata(recorded.name, recorded.metadata), report);
+  private async findMatchingBackups(report: ClassificationReport, recorded?: RollbackBackup): Promise<ReadyBackup[]> {
+    if (recorded) assertRecordedBackupFitsReport(verifyBackupMetadata(recorded.name, recorded.metadata), report, recorded.rolledForwardOver);
     const databaseMatches = await this.api.listDatabases(DATABASE_SCOPE.database);
     if (!databaseMatches.some((database) => database.name === DATABASE_SCOPE.database && database.kind === "postgresql"))
       throw new SafetyGateError("PlanetScale production database is not available for rollback");
@@ -199,6 +202,15 @@ function assertProductionBranch(branch: BranchRecord): void {
 function assertBackupMatchesReport(metadata: BackupMetadata, report: ClassificationReport): void {
   if (!backupMatchesReport(metadata, report))
     throw new SafetyGateError("PlanetScale backup metadata does not match the classified release transition");
+}
+
+/** A recorded backup is this transition's, or the backup of the failed release it rolled forward over. */
+function assertRecordedBackupFitsReport(metadata: BackupMetadata, report: ClassificationReport, rolledForwardOver?: string): void {
+  if (rolledForwardOver === undefined) return assertBackupMatchesReport(metadata, report);
+  if (metadata.base.gitCommit !== report.base.gitCommit ||
+      stableStringify(metadata.base.pins) !== stableStringify(summarizePins(report.base.pins)) ||
+      metadata.candidate.gitCommit !== rolledForwardOver)
+    throw new SafetyGateError("PlanetScale rollback backup is not the rolled-forward release's backup from this base");
 }
 
 function assertBackupRecord(backup: BackupRecord, metadata: BackupMetadata): void {
