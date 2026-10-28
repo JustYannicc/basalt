@@ -7,6 +7,7 @@ import {
   mutation,
   number,
   object,
+  ProviderError,
   query,
   type ConnectContext,
   type InteractiveMethod,
@@ -27,6 +28,7 @@ import {
   type SignInStatus,
   type UsageSummary,
 } from "./contract.ts";
+import { accountStatus, checkFailure } from "./account-status.ts";
 import { poolOrigin, productName } from "./deployment.ts";
 import { providers } from "./providers.ts";
 import { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity } from "./sign-in.ts";
@@ -192,6 +194,14 @@ export default defineApp(requirements, {
       cancel: async (ctx, { method, session }) => {
         // A sign-in that already ended has nothing to cancel.
         if (method !== loginFileMethod) await control<null>(ctx, `/sign-ins${sessionPath(session)}`, { method: "DELETE" });
+      },
+      // The Accounts tab's plan, availability and usage windows, as the pool last read them.
+      check: async (ctx, { ref }) => {
+        const result = await control<PoolView>(ctx, "/pool");
+        if (!result.ok) throw new ProviderError({ reason: checkFailure(result.error) });
+        const account = result.value.accounts.find((candidate) => candidate.id === ref);
+        if (!account) throw new ProviderError({ reason: checkFailure("missing") });
+        return accountStatus(account, providers);
       },
       // Unlinking or deleting the account removes the subscription from the pool and its backend.
       remove: async (ctx, { ref }) => {
