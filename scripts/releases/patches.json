@@ -278,7 +278,7 @@
     {
       "identity": "executor-account-status",
       "file": "0030-account-status.patch",
-      "content_sha256": "d3cabd5e7becd5a3f1a24af9e9c5ea25624aeb9f254a6cd0a8e33688cd84c2ff",
+      "content_sha256": "bfab4af74f89fec7a9aa83f80e1e7dfa52c4c82bfac04d57e21dd0a789a27a3d",
       "kind": "overlay",
       "upstream_pull_request": null,
       "upstream_issue": 2418,

@@ -767,7 +767,7 @@ index 0000000..25d9689
 +    };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 02c6259..402c62c 100644
+index 02c6259..ba9af44 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -7329,6 +7329,128 @@ export const scenarios = plan({
@@ -844,7 +844,7 @@ index 02c6259..402c62c 100644
 +    legacyStorage: true,
 +    file: "account-status-privacy.spec.ts",
 +    title:
-+      "account status rejects credential and opaque reference strings before storage but keeps plain fields and lookalikes",
++      "account status rejects credential and opaque reference strings before storage and hides short-secret collisions",
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: na("Uses isolated loopback account fixtures."),
@@ -901,7 +901,7 @@ index 02c6259..402c62c 100644
      file: "interactive-accounts.spec.ts",
 diff --git a/e2e/tests/account-display-privacy.spec.ts b/e2e/tests/account-display-privacy.spec.ts
 new file mode 100644
-index 0000000..2df5504
+index 0000000..8052ddf
 --- /dev/null
 +++ b/e2e/tests/account-display-privacy.spec.ts
 @@ -0,0 +1,212 @@
@@ -943,7 +943,7 @@ index 0000000..2df5504
 +    withHostedCase(
 +      context,
 +      Effect.gen(function* () {
-+        const unicodeSecret = "p?Ω/++";
++        const unicodeSecret = "p?Ω/++ünï";
 +        const fixture = yield* statusAccount(
 +          (connect, check) =>
 +            accountStatusSource(connect, check).replace(
@@ -1190,10 +1190,10 @@ index 0000000..6635967
 +});
 diff --git a/e2e/tests/account-status-privacy.spec.ts b/e2e/tests/account-status-privacy.spec.ts
 new file mode 100644
-index 0000000..5caa45e
+index 0000000..aad8ff9
 --- /dev/null
 +++ b/e2e/tests/account-status-privacy.spec.ts
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,106 @@
 +/** Successful checks cannot publish credentials in display strings or plaintext storage. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1234,17 +1234,18 @@ index 0000000..5caa45e
 +              ),
 +          { contact },
 +        );
-+        for (const secret of ["opaque-1", interactiveBackendKey, "xy"]) {
-+          for (const status of [
-+            { ...displayedStatus, badges: [{ label: `plan ${secret}`, tone: "good" }] },
-+            { ...displayedStatus, meters: [{ label: `quota ${secret}`, remaining: 0.5 }] },
-+            {
-+              ...displayedStatus,
-+              meters: [{ label: "Quota", remaining: null, detail: `detail ${secret}` }],
-+            },
-+            { ...displayedStatus, stats: [{ label: `usage ${secret}`, value: "1" }] },
-+            { ...displayedStatus, stats: [{ label: "Usage", value: `value ${secret}` }] },
-+          ]) {
++        const leaks = (secret: string) => [
++          { ...displayedStatus, badges: [{ label: `plan ${secret}`, tone: "good" }] },
++          { ...displayedStatus, meters: [{ label: `quota ${secret}`, remaining: 0.5 }] },
++          {
++            ...displayedStatus,
++            meters: [{ label: "Quota", remaining: null, detail: `detail ${secret}` }],
++          },
++          { ...displayedStatus, stats: [{ label: `usage ${secret}`, value: "1" }] },
++          { ...displayedStatus, stats: [{ label: "Usage", value: `value ${secret}` }] },
++        ];
++        for (const secret of ["opaque-1", interactiveBackendKey]) {
++          for (const status of leaks(secret)) {
 +            yield* fixture.statusBackend.answer({ status: 200, body: { status } });
 +            const response = yield* fixture.check();
 +            expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -1255,21 +1256,37 @@ index 0000000..5caa45e
 +            expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(secret);
 +          }
 +        }
-+        // A plain() field is public, and a short secret inside a longer word or its hex is not a leak.
++        // A short secret may be chance, so only the item that contains it is hidden.
++        for (const status of leaks("xy")) {
++          yield* fixture.statusBackend.answer({ status: 200, body: { status } });
++          const response = yield* fixture.check();
++          expect((yield* body(Health, response)).apps[0]?.check?.status).toBe("healthy");
++          expect(JSON.stringify(response.body)).not.toContain("xy");
++          expect(JSON.stringify((yield* fixture.read()).body)).not.toContain("xy");
++        }
++        // Inside a longer word or as its hex, the item is hidden too; the rest and plain() fields show.
 +        yield* fixture.statusBackend.answer({
 +          status: 200,
 +          body: {
 +            accountInfo: { email: contact },
 +            status: {
 +              ...displayedStatus,
-+              badges: [{ label: "Proxy", tone: "good" }],
-+              stats: [{ label: "Hex", value: Buffer.from("xy").toString("hex") }],
++              badges: [
++                { label: "Proxy", tone: "good" },
++                { label: "Available", tone: "good" },
++              ],
++              stats: [
++                { label: "Hex", value: Buffer.from("xy").toString("hex") },
++                { label: "Requests", value: "42" },
++              ],
 +            },
 +          },
 +        });
 +        const healthy = yield* fixture.check();
 +        expect((yield* body(Health, healthy)).apps[0]?.check?.status).toBe("healthy");
-+        expect(JSON.stringify((yield* fixture.read()).body)).toContain(contact);
++        const shown = JSON.stringify((yield* fixture.read()).body);
++        for (const kept of [contact, "Available", "Requests"]) expect(shown).toContain(kept);
++        for (const hidden of ["Proxy", "7879"]) expect(shown).not.toContain(hidden);
 +        const stored = yield* legacyStorage([
 +          {
 +            sql: "SELECT account_info, message FROM executor_account_checks WHERE account = $1",
@@ -7586,34 +7603,24 @@ index 0000000..ce05453
 +}
 diff --git a/packages/apps/src/implementation/account-status-output.ts b/packages/apps/src/implementation/account-status-output.ts
 new file mode 100644
-index 0000000..3d04a0e
+index 0000000..48cfe4b
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-status-output.ts
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,17 @@
 +/** Refuse credential-bearing display data before it leaves a provider or app-owned check. */
 +import { Effect, Redacted, Schema } from "effect";
 +import { AccountCheckResult } from "../contracts/provider.ts";
 +import { HostOutputInvalid, type HostContext } from "../contracts/host.ts";
-+import { accountDisplayIsPrivate } from "@executor-js/utils/account-display-privacy";
++import { privateAccountDisplay } from "@executor-js/utils/account-display-privacy";
 +
 +export const accountCheckOutput = (value: unknown, context: HostContext, ref?: string) =>
 +  Effect.gen(function* () {
 +    const result = yield* Schema.decodeUnknownEffect(AccountCheckResult)(value).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
-+    const strings = [
-+      ...Object.values(result.accountInfo ?? {}),
-+      ...(result.status?.badges.flatMap((badge) => [badge.label, badge.tone]) ?? []),
-+      ...(result.status?.meters.flatMap((meter) => [
-+        meter.label,
-+        meter.detail ?? "",
-+        meter.resetsAt ?? "",
-+      ]) ?? []),
-+      ...(result.status?.stats.flatMap((stat) => [stat.label, stat.value]) ?? []),
-+    ];
-+    if (!accountDisplayIsPrivate(strings, Redacted.value(context.accounts), ref))
-+      return yield* new HostOutputInvalid();
-+    return yield* Schema.encodeEffect(AccountCheckResult)(result).pipe(
++    const shown = privateAccountDisplay(result, Redacted.value(context.accounts), ref);
++    if (shown === undefined) return yield* new HostOutputInvalid();
++    return yield* Schema.encodeEffect(AccountCheckResult)(shown).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
 +  });
@@ -8362,29 +8369,20 @@ index 3fa5390..16d4da9 100644
          return yield* Effect.fail(outcome.failure);
 diff --git a/packages/sdk/src/implementation/account-status-output.ts b/packages/sdk/src/implementation/account-status-output.ts
 new file mode 100644
-index 0000000..b3d0c1e
+index 0000000..69645ca
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-status-output.ts
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,13 @@
 +/** Validate display data against raw credentials before the SDK persists or returns it. */
 +import { Effect, Schema } from "effect";
 +import { AccountCheckResult, HostOutputInvalid } from "apps/contracts";
-+import { accountDisplayIsPrivate } from "@executor-js/utils/account-display-privacy";
++import { privateAccountDisplay } from "@executor-js/utils/account-display-privacy";
 +
 +export const privateAccountCheck = (value: AccountCheckResult, accounts: unknown, ref?: string) =>
 +  Effect.gen(function* () {
-+    const strings = [
-+      ...Object.values(value.accountInfo ?? {}),
-+      ...(value.status?.badges.flatMap((badge) => [badge.label, badge.tone]) ?? []),
-+      ...(value.status?.meters.flatMap((meter) => [
-+        meter.label,
-+        meter.detail ?? "",
-+        meter.resetsAt ?? "",
-+      ]) ?? []),
-+      ...(value.status?.stats.flatMap((stat) => [stat.label, stat.value]) ?? []),
-+    ];
-+    if (!accountDisplayIsPrivate(strings, accounts, ref)) return yield* new HostOutputInvalid();
-+    return yield* Schema.decodeUnknownEffect(AccountCheckResult)(value).pipe(
++    const shown = privateAccountDisplay(value, accounts, ref);
++    if (shown === undefined) return yield* new HostOutputInvalid();
++    return yield* Schema.decodeUnknownEffect(AccountCheckResult)(shown).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
 +  });
@@ -8875,10 +8873,10 @@ index 4bd3285..9f94e31 100644
      "./safe-fetch": "./src/safe-fetch.ts",
 diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
 new file mode 100644
-index 0000000..8e3d1b6
+index 0000000..56daa7d
 --- /dev/null
 +++ b/packages/utils/src/account-display-privacy.ts
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,212 @@
 +/** Fail closed when bounded public display text contains a credential or a standard encoding. */
 +import { Predicate } from "effect";
 +import { Base64, Base64Url, Hex } from "effect/encoding";
@@ -8888,9 +8886,8 @@ index 0000000..8e3d1b6
 +const maxCredentialNodes = 16_384;
 +const maxCredentialStrings = 1_024;
 +const maxDepth = 32;
-+/** Shorter raw values and encoded forms collide with ordinary text; raw ones count as whole words. */
-+const minSubstring = 8;
-+const wordCharacter = /[\p{L}\p{N}]/u;
++/** A match this long is a leak. Shorter ones may be chance, so only the colliding item is hidden. */
++const leakLength = 8;
 +
 +/** Field names the account's method declares with `plain()`; those are public, not secrets. */
 +const plainFields = (account: unknown): ReadonlySet<string> => {
@@ -8903,20 +8900,6 @@ index 0000000..8e3d1b6
 +  const declared = auth[method];
 +  const plain = Predicate.hasProperty(declared, "plain") ? declared.plain : undefined;
 +  return new Set(Array.isArray(plain) ? plain.filter(Predicate.isString) : []);
-+};
-+
-+/** Whether `secret` appears in `text` with no letter or digit touching either end. */
-+const containsWord = (text: string, secret: string) => {
-+  for (let at = text.indexOf(secret); at !== -1; at = text.indexOf(secret, at + 1)) {
-+    const before = Array.from(text.slice(Math.max(0, at - 2), at)).at(-1);
-+    const after = Array.from(text.slice(at + secret.length, at + secret.length + 2))[0];
-+    if (
-+      (before === undefined || !wordCharacter.test(before)) &&
-+      (after === undefined || !wordCharacter.test(after))
-+    )
-+      return true;
-+  }
-+  return false;
 +};
 +
 +/** Bound work independently of credential size. Oversized secrets cannot fit in these strings. */
@@ -8995,59 +8978,116 @@ index 0000000..8e3d1b6
 +    lenientUtf8.decode(Uint8Array.from(part.slice(1).split("%"), (byte) => parseInt(byte, 16))),
 +  );
 +
++type Exposure = "leak" | "collision" | undefined;
++
 +/** Checks UTF-8 base64/base64url, percent escapes and case-insensitive hex, plus raw values. */
-+export const accountDisplayIsPrivate = (
++const exposures = (
 +  strings: readonly string[],
 +  accounts: unknown,
 +  ref?: string,
-+): boolean => {
-+  if (strings.length === 0) return true;
-+  if (strings.length > maxDisplayStrings) return false;
++): readonly Exposure[] | undefined => {
++  if (strings.length > maxDisplayStrings) return undefined;
 +  let total = 0,
 +    maximum = 0;
 +  for (const text of strings) {
 +    total += text.length;
 +    maximum = Math.max(maximum, text.length);
-+    if (total > maxDisplayCharacters) return false;
++    if (total > maxDisplayCharacters) return undefined;
 +  }
 +  const secrets = displaySecrets(accounts, maximum, ref);
-+  if (secrets === undefined) return false;
++  if (secrets === undefined) return undefined;
++  const result: Exposure[] = strings.map(() => undefined);
 +  const decoded = strings.map(percentDecoded);
 +  const escaped = strings.map((text) =>
 +    text.replace(/%[0-9a-f]{2}/gi, (part) => part.toUpperCase()),
 +  );
 +  const lower = strings.map((text) => text.toLowerCase());
-+  const texts = [...strings, ...decoded];
-+  // Forms of eight or more characters match anywhere; shorter encoded forms are skipped.
-+  const found = (forms: readonly string[], texts: readonly string[]) =>
-+    forms.some((form) => form.length >= minSubstring && texts.some((text) => text.includes(form)));
++  const mark = (forms: readonly string[], texts: readonly (readonly string[])[]) => {
++    for (const form of forms)
++      for (const variant of texts)
++        variant.forEach((text, index) => {
++          if (result[index] === "leak" || !text.includes(form)) return;
++          result[index] = form.length >= leakLength ? "leak" : "collision";
++        });
++  };
 +  for (const secret of secrets) {
-+    if (secret.length < minSubstring) {
-+      if (texts.some((text) => containsWord(text, secret))) return false;
-+    } else if (found([secret], texts)) return false;
 +    const bytes = new TextEncoder().encode(secret);
 +    const base64 = Base64.encode(bytes);
 +    const url = Base64Url.encode(bytes);
-+    const hex = Hex.encode(bytes);
 +    let component: string, uri: string;
 +    try {
 +      component = encodeURIComponent(secret);
 +      uri = encodeURI(secret);
 +    } catch {
-+      return false;
++      return undefined;
 +    }
 +    const percent = Array.from(
 +      bytes,
 +      (byte) => "%" + byte.toString(16).padStart(2, "0").toUpperCase(),
 +    ).join("");
-+    if (
-+      found([component, uri, percent], escaped) ||
-+      found([base64, base64.replace(/=+$/, ""), url, url.replace(/=+$/, "")], strings) ||
-+      found([hex], lower)
-+    )
-+      return false;
++    mark([secret], [strings, decoded]);
++    mark([component, uri, percent], [escaped]);
++    mark([base64, base64.replace(/=+$/, ""), url, url.replace(/=+$/, "")], [strings]);
++    mark([Hex.encode(bytes)], [lower]);
 +  }
-+  return true;
++  return result;
++};
++
++/** Public account identity and status, as a provider or app-owned check returns it. */
++export interface AccountDisplay {
++  readonly accountInfo?: { readonly [field: string]: string | undefined };
++  readonly status?: {
++    readonly badges: readonly { readonly label: string }[];
++    readonly meters: readonly {
++      readonly label: string;
++      readonly detail?: string;
++      readonly resetsAt?: string;
++    }[];
++    readonly stats: readonly { readonly label: string; readonly value: string }[];
++  };
++}
++
++/**
++ * The display with every item that collides with a short credential removed, or undefined when
++ * any string carries a credential or the input exceeds the bounds. Removing a colliding item keeps
++ * the rest of the result, since "a" in "Available" or "61" for hex "a" is usually chance.
++ */
++export const privateAccountDisplay = <A extends AccountDisplay>(
++  value: A,
++  accounts: unknown,
++  ref?: string,
++): A | undefined => {
++  const info = Object.entries(value.accountInfo ?? {}).filter(
++    (entry): entry is [string, string] => entry[1] !== undefined,
++  );
++  const badges = value.status?.badges ?? [];
++  const meters = value.status?.meters ?? [];
++  const stats = value.status?.stats ?? [];
++  const items: (readonly string[])[] = [
++    ...info.map(([, text]) => [text]),
++    ...badges.map((badge) => [badge.label]),
++    ...meters.map((meter) => [meter.label, meter.detail ?? "", meter.resetsAt ?? ""]),
++    ...stats.map((stat) => [stat.label, stat.value]),
++  ];
++  const found = exposures(items.flat(), accounts, ref);
++  if (found === undefined || found.includes("leak")) return undefined;
++  let at = 0;
++  const shown = items.map((texts) => !found.slice(at, (at += texts.length)).includes("collision"));
++  // Items were listed info, badges, meters, stats; take them back in the same order.
++  let index = 0;
++  const keep = <T>(list: readonly T[]) => list.filter(() => shown[index++]);
++  const accountInfo = Object.fromEntries(keep(info));
++  const status = value.status && {
++    ...value.status,
++    badges: keep(badges),
++    meters: keep(meters),
++    stats: keep(stats),
++  };
++  return {
++    ...value,
++    ...(value.accountInfo === undefined ? {} : { accountInfo }),
++    ...(status === undefined ? {} : { status }),
++  };
 +};
 diff --git a/packages/utils/src/account-secrets.ts b/packages/utils/src/account-secrets.ts
 new file mode 100644
