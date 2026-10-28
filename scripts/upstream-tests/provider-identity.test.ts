@@ -198,8 +198,9 @@ test("a build for an app keeps the IDs of that app's active version", async () =
     findFirst: (table: string) => Effect.succeed(present ? (rows[table] ?? null) : null),
   });
   const input = { app: "app_example", owner: "organization:example" };
-  const previous = await Effect.runPromise(previousRequirements(db(true), input));
-  assert.equal(previous.slack.provider, "prv_stored");
+  const previous = (await Effect.runPromise(previousRequirements(db(true), input))) as
+    Record<string, { provider: string }>;
+  assert.equal(previous.slack!.provider, "prv_stored");
   // Those requirements are what keeps the ID through a reword.
   const reworded = await identify(slack({ label: "Paste a token" }));
   const chosen = await Effect.runPromise(
