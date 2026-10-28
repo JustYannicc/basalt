@@ -109,7 +109,7 @@ jobs:
       APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
       POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
     steps:
-      # No one approves this job. Whoever dispatches stops new work first, and quiesces writes for a database change; the drain step below fails closed.
+      # No one approves this job, and Deploy usually dispatches it. Nothing quiesces writes first; the backup and the fail-closed drain step below gate it.
       - uses: actions/checkout@v4
         with:
           ref: main

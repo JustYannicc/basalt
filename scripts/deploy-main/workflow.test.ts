@@ -54,3 +54,17 @@ test("production serialization, credentials, and release report gates remain", (
   assert.match(workflow, /release\.ts report --candidate "\$RELEASE_CANDIDATE_SHA" > \.local\/production-report\.json/);
   assert.match(workflow, /release\.ts deploy --candidate "\$RELEASE_CANDIDATE_SHA" --report \.local\/production-report\.json --mode automatic/);
 });
+
+test("database and Workflow-identity releases go to Manual release of main without anyone dispatching it", () => {
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("\njobs:")), /actions: write/);
+  assert.match(workflow, /- name: Compare the candidate with the last successful production deployment\n\s+id: report\n/);
+  assert.match(workflow, /- name: Deploy normal releases[^\n]*\n\s+if: steps\.report\.outputs\.manual_required == 'false'\n\s+run: env -u GITHUB_SHA node scripts\/deploy-safety\/release\.ts deploy [^\n]*--mode automatic/);
+  assert.match(workflow, /if: steps\.report\.outputs\.manual_required != 'false' && steps\.report\.outputs\.deployable != 'true'\n\s+run: \|\n[^\n]*unresolved[^\n]*\n\s+exit 1/);
+  const handoff = workflow.slice(workflow.indexOf("\n  handoff:\n"));
+  assert.match(handoff, /^    needs: deploy\n    if: needs\.deploy\.outputs\.manual_required != 'false'$/m);
+  assert.match(handoff, /^    permissions:\n      contents: read\n      actions: write$/m);
+  assert.doesNotMatch(handoff, /secrets\.|actions\/checkout|npm |node /);
+  assert.match(handoff, /"completed "\*\|"null null"\|""\) echo "::error::[^\n]*"; exit 1 ;;/);
+  assert.match(handoff, /release-updates\/[\s\S]*?exit 1[\s\S]*?gh workflow run release-main\.yml --repo "\$GITHUB_REPOSITORY" --ref main/);
+  assert.match(workflow, /^      manual_required: \$\{\{ steps\.report\.outputs\.manual_required \}\}$/m);
+});

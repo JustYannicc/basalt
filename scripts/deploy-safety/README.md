@@ -6,7 +6,7 @@ These scripts run inside the production GitHub Actions workflow. They read the l
 
 Run candidate preparation, checks and builds before the protected production deployment job. For a manual candidate, check out its exact PR commit into a separate directory under `RUNNER_TEMP`. Keep the workflow files and this safety runner on trusted `main`.
 
-The production job uses the `production-release` GitHub Environment, which restricts deployment to trusted `main` workflow dispatches. It has no required reviewer, so manual releases, rollbacks and credential export run straight through after their own checks (and, for a release, its backup). The runner does not wait for an approval. Whoever dispatches makes the release decision: stop new work, and quiesce writes for a database change. Code enforces what it can observe: the backup, the classification, and Workflow drain, which is described below. Nothing proves that writes were quiesced or that a database was restored.
+The production job uses the `production-release` GitHub Environment, which restricts deployment to trusted `main` workflow dispatches. It has no required reviewer, so manual releases, rollbacks and credential export run straight through after their own checks (and, for a release, its backup). The runner does not wait for an approval. On `main` no one dispatches a release: Deploy starts the manual path itself. Code enforces what it can observe: the backup, the classification, and Workflow drain, which is described below. Nothing quiesces writes, so a database-changing release migrates production while it serves. Nothing proves that a database was restored.
 
 Required GitHub permissions:
 
@@ -42,7 +42,7 @@ node scripts/deploy-safety/release.ts deploy \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports still require the separate protected manual release workflow. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
+Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports go through the separate manual release workflow. On `main`, the Deploy workflow starts `Manual release of main` itself when the report needs it, as long as its candidate is still the `main` head. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
 
 If deployment or smoke starts and fails for a safe release, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. Release subprocesses run quietly. Actions logs are public, so a failed command prints the last 60 lines of its stdout and stderr separately, starting at a whole line, after removing credential-named environment values, URL userinfo, bearer and basic credentials, key-value pairs whose key ends in password, secret, token or api key, and long runs mixing letters and digits. The runner settles when the command exits, so a leftover descendant holding its output cannot keep the release open. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
 
@@ -86,7 +86,7 @@ node scripts/deploy-safety/release.ts inspect-workflows \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-For a Workflow-identity release, the command fails if any listed instance is not `complete`, `terminated` or `errored` (for example queued, running, paused, waiting or unknown), so the deploy step never runs. An `errored` instance has stopped and re-runs only if someone restarts it, so it doesn't block. Don't restart one across an identity change. Drain or terminate those instances, then dispatch again. Cloudflare exposes no atomic control that prevents new Workflow instances or timer starts while deployment changes the journal identity, so an empty listing is only an observation. Whoever dispatches stops new work first. The deployment report and CLI never state that the listing made the window race free.
+For a Workflow-identity release, the command fails if any listed instance is not `complete`, `terminated` or `errored` (for example queued, running, paused, waiting or unknown), so the deploy step never runs. An `errored` instance has stopped and re-runs only if someone restarts it, so it doesn't block. Don't restart one across an identity change. Drain or terminate those instances, then dispatch again. Cloudflare exposes no atomic control that prevents new Workflow instances or timer starts while deployment changes the journal identity, so an empty listing is only an observation. Nothing stops new work first, so a Workflow can start between the listing and the deploy. The deployment report and CLI never state that the listing made the window race free.
 
 ### Manual rollback
 
