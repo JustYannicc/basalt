@@ -236,6 +236,15 @@
       "database_sensitive": true,
       "workflow_sensitive": true,
       "upstream_issue": 2414
+    },
+    {
+      "identity": "basalt-connect-method-labels",
+      "file": "0026-connect-method-labels.patch",
+      "content_sha256": "1f81a0dec3b3cac768a12dc1129d5d6580d66ab4d195f5afdcbdbfcbeb6cab0a",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }
