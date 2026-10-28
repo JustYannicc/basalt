@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Context, Deferred, Effect, Option, Redacted, Schema } from "effect";
+import { Context, Deferred, Effect, Logger, Option, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -345,6 +345,56 @@ test("two owners get distinct pools and names under concurrent setup", async () 
       );
       assert.equal(new Set(claims.map((claim) => claim!.pool)).size, 2);
       assert.deepEqual(claims.map((claim) => claim!.owner).sort(), ["person-a", "person-b"]);
+    }),
+  );
+});
+
+/** Run `work` and collect the "Pool reconcile" lines it logs. */
+const reconcileLines = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const lines: unknown[] = [];
+    const capture = Logger.make((options) => {
+      const [message, fields] = options.message as readonly unknown[];
+      if (message === "Pool reconcile") lines.push(fields);
+    });
+    yield* work.pipe(Effect.provide(Logger.layer([capture])));
+    return lines;
+  });
+
+test("every reconcile of a recorded pool logs one decision with counts only", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
+      const app = pool!.id;
+      const decisions = (work: Effect.Effect<unknown, unknown, never>) =>
+        reconcileLines(work).pipe(
+          Effect.map((lines) => lines.map((line) => (line as { decision: string }).decision)),
+        );
+      assert.deepEqual(yield* reconcileLines(setup()), [
+        { app, decision: "already-current", accessRepaired: 0, tokenRepaired: false },
+      ]);
+      const old = JSON.stringify([{ path: "index.ts", content: "old bundled source" }]);
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
+      assert.deepEqual(yield* decisions(setup()), ["upgraded"]);
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      yield* sql`update executor_apps set files = ${old}::jsonb, workspace = '[{"path":"index.ts","content":"editing"}]'::jsonb`;
+      assert.deepEqual(yield* decisions(setup()), ["source-edited"]);
+      yield* sql`update executor_apps set active_deployment = 'owner-deployment', workspace = ${old}::jsonb`;
+      assert.deepEqual(yield* decisions(setup()), ["version-mismatch"]);
+      yield* sql`delete from hosted_app_access where id = ${app}`;
+      const [repair] = yield* reconcileLines(setup());
+      assert.equal((repair as { accessRepaired: number }).accessRepaired, 1);
+      // Nothing but the app id, the decision and counts.
+      assert.deepEqual(Object.keys(repair as object).sort(), [
+        "accessRepaired",
+        "app",
+        "decision",
+        "tokenRepaired",
+      ]);
     }),
   );
 });
