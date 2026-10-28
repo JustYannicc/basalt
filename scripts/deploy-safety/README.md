@@ -80,15 +80,15 @@ When the failed release took a database backup, the release that rolls forward o
 
 A release job that is killed hard, by a lost runner, a timeout or a cancel, can't mark its deployment record failed, so the record stays `in_progress` (or `queued`, `pending`, or without a status) and blocks every release. Every record the runner creates names its run attempt in its payload as `run: { repository, id, attempt }`, and each status it posts links to that attempt (`https://github.com/<owner>/<repo>/actions/runs/<id>/attempts/<n>`). Parsing checks the identity's shape and fails the read when it's malformed.
 
-When the latest record is unfinished, comes after a successful deployment and names a run attempt, the ledger asks the Actions API for that attempt. If it has `completed`, with any conclusion, the record reads as failed, and roll-forward and manual rollback treat it like any other failed release. It stays unresolved when:
+When the latest record is unfinished, comes after a successful deployment and names a run attempt, the ledger asks the Actions API for that attempt. If it completed, with any conclusion, at least 15 minutes ago (`KILLED_RUN_GRACE_MS`), the record reads as failed, and roll-forward and manual rollback treat it like any other failed release. The grace period exists because killing a job doesn't stop the work it started on the database server: a running statement or migration transaction can still commit, and a lost runner's machine may still be connected. Fifteen minutes covers the longest server-side statement or migration expected, so the next release in the shared concurrency group can't re-run migrations and data steps on top of it. It stays unresolved when:
 
-- the attempt is still queued, waiting or running;
+- the attempt is still queued, waiting or running, or completed less than 15 minutes ago;
 - the API errors, or answers about another run, attempt or repository;
 - the identity names a repository other than this one;
 - the record has no run identity, as older records don't;
 - there is no previous successful deployment.
 
-The failure is read in memory only: nothing writes a status back to the stale record. Once the next release begins, its own record is the latest one, so the stale record no longer matters.
+The unresolved reason and the roll-forward refusal say which of these held, such as `run lookup failed (HTTP 403)` when the token lacks `actions: read`, or that the attempt is still within the grace period. They never include a response body. The failure is read in memory only: nothing writes a status back to the stale record. Once the next release begins, its own record is the latest one, so the stale record no longer matters.
 
 ### Release hold
 
