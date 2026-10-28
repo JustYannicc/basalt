@@ -183,7 +183,7 @@ new file mode 100644
 index 0000000..64b051e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,401 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -404,6 +404,25 @@ index 0000000..64b051e
 +              decision = "upgraded";
 +              intent = true;
 +            }
++          }
++        }
++      }
++      // A deploy can commit before the account-link transaction. On retry, adopt it only when
++      // the active source is exactly this pool bundle; an owner deployment with different files stays behind.
++      if (
++        !rotationOnly &&
++        members.length === 1 &&
++        version === saved.version &&
++        app.activeVersion !== null &&
++        app.activeVersion !== saved.version
++      ) {
++        const source = yield* executor.apps.source({ owner, app: app.id });
++        if (source.id === app.activeVersion) {
++          const poolAppFiles = yield* poolSeed.files;
++          if (sourceFilesEqual(source.files, poolAppFiles)) {
++            version = app.activeVersion;
++            bundle = poolAppVersion;
++            decision = "already-current";
 +          }
 +        }
 +      }
