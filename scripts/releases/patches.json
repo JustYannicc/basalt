@@ -240,7 +240,7 @@
     {
       "identity": "basalt-connect-method-labels",
       "file": "0026-connect-method-labels.patch",
-      "content_sha256": "1f81a0dec3b3cac768a12dc1129d5d6580d66ab4d195f5afdcbdbfcbeb6cab0a",
+      "content_sha256": "d9e3bb9c4defe545e218dcf83cf0085bcd72c6bac1d05a8f09c59ecbbbf17c9c",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
