@@ -144,9 +144,9 @@ views {
       planned while app hosting is disabled.
       The pool's token method is host-provisioned, so marking it `provisioned: true` changes provider
       identity; the member job relinks it through the trusted host path after the new bundle deploys.
-      If that job fails between deploy commit and link repair commit, its retry uses the deployed
-      requirement to mint and link the new identity, while pools left on edited source or a version
-      mismatch keep their old link.
+      If that job fails between deploy commit and link repair commit, its retry adopts the active bundle
+      only when its source matches the current pool files, then repairs the link and records the deployed
+      version and bundle; pools left on edited source or a version mismatch keep their old link.
     """
 
     include

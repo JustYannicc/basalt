@@ -481,8 +481,24 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
         { pool: app, owner: "person-a", organization },
         "a source-edited pool keeps a working link to its old provider identity",
       );
-      yield* sql`update executor_apps set active_deployment = 'owner-deployment', workspace = ${old}::jsonb`;
+      const [beforeOwnerDeployment] = yield* sql<{ version: string; bundle: string }>`select
+        metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
+        metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`;
+      const [currentApp] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+      const [currentDeployment] = yield* sql<{ requirements: unknown }>`select requirements
+        from executor_deployments where id = ${currentApp!.active_deployment}`;
+      yield* sql`insert into executor_deployments (id, requirements, app, files)
+        values ('owner-deployment', ${JSON.stringify(currentDeployment!.requirements)}::jsonb, ${app}, ${old}::jsonb)`;
+      yield* sql`update executor_apps set active_deployment = 'owner-deployment', files = ${old}::jsonb,
+        workspace = ${old}::jsonb`;
       assert.deepEqual(yield* decisions(setup()), ["version-mismatch"]);
+      assert.deepEqual(
+        yield* sql<{ version: string; bundle: string }>`select
+          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
+          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`,
+        [beforeOwnerDeployment!],
+        "an owner deployment with different files does not advance the recorded pool bundle",
+      );
       assert.deepEqual(
         yield* sql<{ account: string }>`select account from hosted_app_account_links`,
         [oldLink!],
@@ -1241,6 +1257,10 @@ test("a bundle upgrade re-mints and links the provisioned pool identity in the s
 
 test("a member-job retry repairs a provisioned link after the bundle deploy commits", async () => {
   let injectFailure = true;
+  let poolBundle = "previous-bundle";
+  let poolFiles: SourceFiles = Schema.decodeUnknownSync(sdk.SourceFiles)([
+    { path: "index.ts", content: "previous pool bundle" },
+  ]);
   await fixture(
     ({ sql, executor, setup, changeProvider }) =>
       Effect.gen(function* () {
@@ -1248,10 +1268,8 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
         const [before] = yield* sql<{ id: string; active_deployment: string }>`select id, active_deployment from executor_apps`;
         const [oldAccount] = yield* sql<{ id: string; provider: string }>`select id, provider from executor_accounts`;
         assert.equal(oldAccount!.provider, oldPoolProvider);
-        const oldFiles = JSON.stringify([{ path: "index.ts", content: "previous pool bundle" }]);
-        yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
-          '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
-        yield* sql`update executor_apps set files = ${oldFiles}::jsonb, workspace = ${oldFiles}::jsonb`;
+        poolBundle = "current-bundle";
+        poolFiles = poolAppFiles;
         changeProvider();
         yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
           values ('pool-post-deploy-retry', 'member', ${organization}, 'person-a')`;
@@ -1294,7 +1312,7 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
         const [line] = yield* reconcileLines(job());
         assert.deepEqual(line, {
           app: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id,
-          decision: "version-mismatch",
+          decision: "already-current",
           accessRepaired: 0,
           tokenRepaired: true,
         });
@@ -1307,11 +1325,49 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
           yield* Effect.promise(() => verifyPoolToken(Redacted.value(key), repaired!.token)),
           { pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id, owner: "person-a", organization },
         );
+        const [adopted] = yield* sql<{ version: string; bundle: string }>`select
+          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
+          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle
+          from organization`;
+        assert.equal(adopted!.version, deployed!.active_deployment);
+        assert.equal(adopted!.bundle, "current-bundle");
         const [retried] = yield* sql<{ status: string }>`select status from hosted_provisioning
           where id = 'pool-post-deploy-retry'`;
         assert.equal(retried!.status, "succeeded");
+
+        poolBundle = "next-pool-bundle";
+        poolFiles = Schema.decodeUnknownSync(sdk.SourceFiles)([
+          { path: "index.ts", content: "following pool bundle" },
+        ]);
+        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+          values ('pool-following-bundle', 'member', ${organization}, 'person-a')`;
+        const [followingLine] = yield* reconcileLines(
+          provision("pool-following-bundle", selfHostProvisioningServices).pipe(
+            Effect.provideService(OrganizationDefaults, initialize),
+          ),
+        );
+        assert.deepEqual(followingLine, {
+          app: before!.id,
+          decision: "upgraded",
+          accessRepaired: 0,
+          tokenRepaired: false,
+        });
+        const [following] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+        assert.notEqual(following!.active_deployment, adopted!.version);
+        const [followingRecord] = yield* sql<{ version: string; bundle: string }>`select
+          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
+          metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle
+          from organization`;
+        assert.equal(followingRecord!.version, following!.active_deployment);
+        assert.equal(followingRecord!.bundle, "next-pool-bundle");
       }),
     {
+      poolSource: {
+        get version() {
+          return poolBundle;
+        },
+        files: Effect.sync(() => poolFiles),
+      },
       afterDeployCommit: () => {
         if (!injectFailure) return Effect.void;
         injectFailure = false;
