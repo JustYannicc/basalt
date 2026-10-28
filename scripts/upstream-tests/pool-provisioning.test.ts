@@ -87,7 +87,7 @@ const fixture = <A>(
           'create table "user" (id text primary key, name text, email text, "emailVerified" boolean)',
           'create table member (id text, "organizationId" text, "userId" text, role text)',
           "create table executor_apps (id text primary key, owner text, name text unique, active_deployment text, files jsonb, workspace jsonb, copied_from jsonb)",
-          "create table executor_deployments (id text primary key, requirements jsonb)",
+          "create table executor_deployments (id text primary key, requirements jsonb, app text, files jsonb, created_at timestamptz default clock_timestamp())",
           "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text)",
           // Account deletion reads connection state to tell app-acquired accounts apart.
           "create table executor_account_connections (id text primary key, owner text, state jsonb, created_at timestamptz default now())",
@@ -163,7 +163,8 @@ const fixture = <A>(
                     yield* sql`insert into executor_apps values (${id}, ${input.owner}, ${input.name}, ${version},
                     ${JSON.stringify(input.from.files)}::jsonb, ${JSON.stringify(input.from.files)}::jsonb,
                     ${JSON.stringify(input.from.origin)}::jsonb)`;
-                    yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb)`;
+                    yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb,
+                    ${id}, ${JSON.stringify(input.from.files)}::jsonb)`;
                     const app = yield* get(id as AppIdentity);
                     yield* lifecycle.hooks.appCreated(app);
                     return app;
@@ -182,13 +183,36 @@ const fixture = <A>(
                 reads.get++;
                 return get(app);
               }),
-            source: ({ app }: { app: AppIdentity }) =>
+            source: ({ app, version }: { app: AppIdentity; version?: string }) =>
               Effect.gen(function* () {
                 reads.source++;
+                if (version !== undefined) {
+                  const [row] =
+                    yield* sql`select files, created_at from executor_deployments where id = ${version} and app = ${app}`;
+                  return {
+                    id: version,
+                    files: row!.files as SourceFiles,
+                    createdAt: new Date(row!.created_at as string),
+                  };
+                }
                 const [row] =
-                  yield* sql`select active_deployment, files from executor_apps where id = ${app}`;
-                return { id: row!.active_deployment, files: row!.files as SourceFiles };
+                  yield* sql`select a.active_deployment, a.files, d.created_at from executor_apps a
+                left join executor_deployments d on d.id = a.active_deployment where a.id = ${app}`;
+                return {
+                  id: row!.active_deployment,
+                  files: row!.files as SourceFiles,
+                  createdAt: new Date((row!.created_at as string | null) ?? 0),
+                };
               }),
+            versions: ({ app }: { app: AppIdentity }) =>
+              sql<{
+                id: string;
+                created_at: string;
+              }>`select id, created_at from executor_deployments where app = ${app}`.pipe(
+                Effect.map((rows) =>
+                  rows.map((row) => ({ id: row.id, createdAt: new Date(row.created_at) })),
+                ),
+              ),
             workspace: ({ app }: { app: AppIdentity }) =>
               Effect.gen(function* () {
                 const [row] = yield* sql`select workspace from executor_apps where id = ${app}`;
@@ -207,9 +231,11 @@ const fixture = <A>(
                     const current = yield* get(app);
                     yield* lifecycle.hooks.appDeploying?.(current.owner) ?? Effect.void;
                     const version = `dpl_upgrade_${++nextId}`;
-                    yield* sql`update executor_apps set active_deployment = ${version}, files = ${JSON.stringify(files)}::jsonb,
-                    workspace = ${JSON.stringify(files)}::jsonb where id = ${app}`;
-                    yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb)`;
+                    // Like the SDK, a file deploy never writes Git, so the workspace keeps main.
+                    yield* sql`update executor_apps set active_deployment = ${version}, files = ${JSON.stringify(files)}::jsonb
+                    where id = ${app}`;
+                    yield* sql`insert into executor_deployments values (${version}, ${JSON.stringify(requirements)}::jsonb,
+                    ${app}, ${JSON.stringify(files)}::jsonb)`;
                     return { app: yield* get(app) };
                   }),
                 );
@@ -399,6 +425,48 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
   );
 });
 
+test("a workspace left on an earlier pool bundle by a file deploy still upgrades", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const decisions = (work: Effect.Effect<unknown, unknown, never>) =>
+        reconcileLines(work).pipe(
+          Effect.map((lines) => lines.map((line) => (line as { decision: string }).decision)),
+        );
+      const stale = (bundle: string, files: string) =>
+        Effect.gen(function* () {
+          yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+            '{basaltPools,person-a,bundle}', ${JSON.stringify(bundle)})::text`;
+          const [app] = yield* sql<{
+            active_deployment: string;
+          }>`select active_deployment from executor_apps`;
+          yield* sql`update executor_deployments set files = ${files}::jsonb where id = ${app!.active_deployment}`;
+          yield* sql`update executor_apps set files = ${files}::jsonb`;
+        });
+      const first = JSON.stringify([{ path: "index.ts", content: "first bundled source" }]);
+      const second = JSON.stringify([{ path: "index.ts", content: "second bundled source" }]);
+      // The pool was installed with an older bundle, and main holds it.
+      yield* stale("first-bundle", first);
+      yield* sql`update executor_apps set workspace = ${first}::jsonb`;
+      assert.deepEqual(yield* decisions(setup()), ["upgraded"]);
+      // That upgrade deployed files only, so main still holds the first bundle while the next
+      // bundle ships. It's behind, not edited.
+      yield* stale("second-bundle", second);
+      assert.deepEqual(yield* decisions(setup()), ["upgraded"]);
+      const [upgraded] = yield* sql<{
+        files: unknown;
+        workspace: unknown;
+      }>`select * from executor_apps`;
+      assert.deepEqual(upgraded!.files, poolAppFiles);
+      assert.deepEqual(upgraded!.workspace, JSON.parse(first));
+      // Work saved to main that no version ran is still someone's edit.
+      yield* stale("third-bundle", second);
+      yield* sql`update executor_apps set workspace = '[{"path":"index.ts","content":"editing"}]'::jsonb`;
+      assert.deepEqual(yield* decisions(setup()), ["source-edited"]);
+    }),
+  );
+});
+
 test("upgrades an untouched recorded version and preserves owner deployments and workspace edits", async () => {
   await fixture(({ sql, setup }) =>
     Effect.gen(function* () {
@@ -456,7 +524,10 @@ test("bundle rollouts queue verified owners once while rotation has its own jour
           name: "basalt-pool-tokens",
           completed: true,
         },
-        { name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`, completed: true },
+        {
+          name: `basalt-pools:${poolAppVersion}:reconcile-${poolReconcileRevision}`,
+          completed: true,
+        },
       ]);
       yield* queuePoolAppUpgrades(key, "next-bundle");
       assert.equal((yield* sql`select * from hosted_provisioning`).length, 4);
@@ -757,11 +828,17 @@ for (const drift of ["missing", "wrong creator", "wrong organization"] as const)
         if (drift === "wrong organization")
           yield* sql`update hosted_app_access set organization_id = 'another-organization' where id = ${pool!.id}`;
         yield* setup();
-        const rows = yield* sql`select organization_id, creator_id, audience from hosted_app_access where id = ${pool!.id}`;
-        assert.deepEqual(rows, [{ organization_id: organization, creator_id: "person-a", audience: "private" }]);
+        const rows =
+          yield* sql`select organization_id, creator_id, audience from hosted_app_access where id = ${pool!.id}`;
+        assert.deepEqual(rows, [
+          { organization_id: organization, creator_id: "person-a", audience: "private" },
+        ]);
         // Repeating the reconcile changes nothing and creates no second app.
         yield* setup();
-        assert.equal((yield* sql`select * from hosted_app_access where id = ${pool!.id}`).length, 1);
+        assert.equal(
+          (yield* sql`select * from hosted_app_access where id = ${pool!.id}`).length,
+          1,
+        );
         assert.equal((yield* sql`select * from executor_apps`).length, 1);
       }),
     );
@@ -780,7 +857,9 @@ test("an access repair rotates the record's revision and tells the pool Worker o
       };
       yield* setup().pipe(Effect.provideService(AccessLifecycle, recording));
       yield* setup().pipe(Effect.provideService(AccessLifecycle, recording));
-      const [row] = yield* sql<{ revision: string }>`select revision from hosted_app_access where id = ${pool!.id}`;
+      const [row] = yield* sql<{
+        revision: string;
+      }>`select revision from hosted_app_access where id = ${pool!.id}`;
       assert.notEqual(row!.revision, "old");
       assert.deepEqual(changes, [{ organization, apps: [pool!.id] }]);
     }),
@@ -794,7 +873,8 @@ test("a pool the owner shared keeps its audience when its access record is repai
       const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
       yield* sql`update hosted_app_access set audience = 'everyone', creator_id = 'invited' where id = ${pool!.id}`;
       yield* setup();
-      const [row] = yield* sql`select creator_id, audience from hosted_app_access where id = ${pool!.id}`;
+      const [row] =
+        yield* sql`select creator_id, audience from hosted_app_access where id = ${pool!.id}`;
       assert.deepEqual(row, { creator_id: "person-a", audience: "everyone" });
     }),
   );
