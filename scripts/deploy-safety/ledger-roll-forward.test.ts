@@ -5,10 +5,14 @@ import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
 import { createRecordedBackup } from "./contracts.ts";
 import {
+  assertManualRollbackCandidate,
   assertReportUsesLatestDeploy,
   beginReleaseDeployment,
+  beginRollbackDeployment,
   deploymentPayloadFor,
+  keepRollForwardGates,
   readDeploymentLedger,
+  releaseBackup,
   type DeploymentPayload,
   type RollForward,
 } from "./github-ledger.ts";
@@ -35,24 +39,26 @@ const pins: ReleasePins = {
   },
 };
 
-function transition(base: string, candidate: string, databaseChanged = false): ClassificationReport {
+function transition(base: string, candidate: string, databaseChanged = false, workflowChanged = false): ClassificationReport {
   return {
     schemaVersion: 1,
     base: { gitCommit: base, pins },
     candidate: { gitCommit: candidate, pins },
     databaseChanged,
-    workflowChanged: false,
+    workflowChanged,
     evidence: {
       database: { state: databaseChanged ? "changed" : "unchanged", sources: [] },
-      workflow: { state: "unchanged", sources: [] },
+      workflow: { state: workflowChanged ? "changed" : "unchanged", sources: [] },
     },
   };
 }
 
+const backupOf = (value: ClassificationReport) => createRecordedBackup(value, "main", "PS_5", true);
+
 /** A release payload; a database-changing one carries its backup like a real manual release. */
-function releasePayload(base: string, candidate: string, databaseChanged = false): DeploymentPayload {
-  const value = transition(base, candidate, databaseChanged);
-  return deploymentPayloadFor(value, "release", databaseChanged ? createRecordedBackup(value, "main", "PS_5", true) : undefined);
+function releasePayload(base: string, candidate: string, databaseChanged = false, workflowChanged = false): DeploymentPayload {
+  const value = transition(base, candidate, databaseChanged, workflowChanged);
+  return deploymentPayloadFor(value, "release", databaseChanged ? backupOf(value) : undefined);
 }
 
 type Row = { id: number; sha: string; payload: unknown; history: string[] };
@@ -109,10 +115,12 @@ test("one failed release the next release contains is rolled forward over", asyn
     if (ledger.state !== "ready") continue;
     assert.equal(ledger.gitCommit, sha("1"));
     assert.equal(ledger.deploymentId, 7);
-    assert.deepEqual(ledger.superseded, { deploymentId: 8, gitCommit: sha("2"), deploymentStatus: status });
+    const { payload, ...superseded } = ledger.superseded!;
+    assert.deepEqual(superseded, { deploymentId: 8, gitCommit: sha("2"), deploymentStatus: status });
+    assert.equal(payload.candidateGitCommit, sha("2"));
     assert.deepEqual(next.calls, ["2<=3"]);
     // The next release is classified from the last success, so its report passes the guard.
-    assert.doesNotThrow(() => assertReportUsesLatestDeploy(transition(sha("1"), sha("3")), ledger));
+    assert.doesNotThrow(() => assertReportUsesLatestDeploy(transition(sha("1"), sha("3"), true), ledger));
   }
   // Re-releasing the failed commit itself also rolls forward.
   const again = await readDeploymentLedger(environment, fetcherFor([failed(), success()]), releasing([], sha("2")));
@@ -165,16 +173,68 @@ test("rollback records and releases from another base still block", async () => 
 });
 
 test("rolling forward is rechecked when the next release begins", async () => {
-  const next = transition(sha("1"), sha("3"));
-  await assert.rejects(beginReleaseDeployment(next, environment, fetcherFor([failed(), success()])), /unresolved/);
-  await assert.rejects(beginReleaseDeployment(next, environment, fetcherFor([failed(), success()]), undefined, releasing([])), /not superseded/);
+  const next = transition(sha("1"), sha("3"), true);
+  const backup = backupOf(next);
+  await assert.rejects(beginReleaseDeployment(next, environment, fetcherFor([failed(), success()]), backup), /unresolved/);
+  await assert.rejects(beginReleaseDeployment(next, environment, fetcherFor([failed(), success()]), backup, releasing([])), /not superseded/);
 
   const posted: Array<Record<string, unknown>> = [];
-  assert.equal(await beginReleaseDeployment(next, environment, fetcherFor([failed(), success()], posted), undefined, releasing()), 9);
+  assert.equal(await beginReleaseDeployment(next, environment, fetcherFor([failed(), success()], posted), backup, releasing()), 9);
   const payload = posted[0]!.payload as DeploymentPayload;
   assert.equal(posted[0]!.ref, sha("3"));
   assert.equal(payload.baseGitCommit, sha("1"));
   assert.equal(payload.candidateGitCommit, sha("3"));
+});
+
+test("a release that rolls forward records the failed release's backup as its rollback point", async () => {
+  // S is sha 1. F (sha 2) took B1 before its writes and failed. C (sha 3) took B2 after them.
+  const failedRelease = transition(sha("1"), sha("2"), true);
+  const next = transition(sha("1"), sha("3"), true);
+  const posted: Array<Record<string, unknown>> = [];
+  await beginReleaseDeployment(next, environment, fetcherFor([failed(), success()], posted), backupOf(next), releasing());
+  const recorded = posted[0]!.payload as DeploymentPayload;
+  assert.equal(recorded.rollForwardOf, sha("2"));
+  assert.deepEqual(recorded.rollbackBackup, backupOf(failedRelease));
+  assert.equal(recorded.backupName, backupOf(next).name);
+
+  // Once C succeeds, a manual rollback of C restores B1, not B2.
+  const succeeded: Row = { id: 9, sha: sha("3"), payload: recorded, history: ["in_progress", "success"] };
+  const ledger = await readDeploymentLedger(environment, fetcherFor([succeeded, failed(), success()]));
+  assert.equal(ledger.state, "ready");
+  assert.deepEqual(releaseBackup(ledger), { ...backupOf(failedRelease), rolledForwardOver: sha("2") });
+  assert.doesNotThrow(() => assertManualRollbackCandidate(next, ledger));
+  const rollbackPosts: Array<Record<string, unknown>> = [];
+  assert.equal(await beginRollbackDeployment(next, environment, fetcherFor([succeeded, failed(), success()], rollbackPosts), 9), 9);
+  assert.equal((rollbackPosts[0]!.payload as DeploymentPayload).backupName, backupOf(next).name);
+
+  // A recorded rollback point that isn't the rolled-forward release's backup from this base is refused.
+  for (const rollbackBackup of [backupOf(transition(sha("5"), sha("2"), true)), backupOf(transition(sha("1"), sha("6"), true))]) {
+    const tampered: Row = { ...succeeded, payload: { ...recorded, rollbackBackup } };
+    await assert.rejects(readDeploymentLedger(environment, fetcherFor([tampered, failed(), success()])), /rollback backup is not the rolled-forward release's backup/);
+  }
+  // A release that rolls forward over one without a backup records no rollback point.
+  const plainPosts: Array<Record<string, unknown>> = [];
+  const plainFailure = failed(undefined, sha("2"), sha("1"));
+  plainFailure.payload = releasePayload(sha("1"), sha("2"));
+  await beginReleaseDeployment(transition(sha("1"), sha("3")), environment, fetcherFor([plainFailure, success()], plainPosts), undefined, releasing());
+  assert.equal((plainPosts[0]!.payload as DeploymentPayload).rollbackBackup, undefined);
+});
+
+test("a revert that drops the failed release's database or Workflow gate stays unresolved", async () => {
+  for (const [failedFlags, label] of [[[true, false], "database"], [[false, true], "Workflow identity"]] as const) {
+    const failedPayload = releasePayload(sha("1"), sha("2"), failedFlags[0], failedFlags[1]);
+    const rows = [failed(undefined, sha("2"), sha("1")), success()];
+    rows[0]!.payload = failedPayload;
+    const revert = transition(sha("1"), sha("3"));
+    const ledger = keepRollForwardGates(await readDeploymentLedger(environment, fetcherFor(rows), releasing()), revert);
+    assert.equal(ledger.state, "unresolved", label);
+    assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", new RegExp(`changed the ${label}`));
+    assert.equal(ledger.state === "unresolved" ? ledger.lastSuccessful?.gitCommit : "", sha("1"));
+    await assert.rejects(beginReleaseDeployment(revert, environment, fetcherFor(rows), undefined, releasing()), /would skip its backup or drain check/);
+    // Keeping the gate lets it roll forward.
+    const kept = transition(sha("1"), sha("3"), failedFlags[0], failedFlags[1]);
+    assert.equal(keepRollForwardGates(await readDeploymentLedger(environment, fetcherFor(rows), releasing()), kept).state, "ready", label);
+  }
 });
 
 // The manual release of 2a2bc67 failed on 2 of 10 Worker uploads after b2b64e2 had succeeded.

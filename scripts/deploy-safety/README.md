@@ -55,6 +55,10 @@ A failed release can leave production mixed, with some Workers new and some old,
 - It is the only deployment record since the last success: a release record (not a rollback) whose latest status is `failure` or `error` and that never reported `success`. A pending, queued, in-progress, status-less or `inactive` record is never rolled forward over. If a second record lands after that success, which happens when the release rolling forward fails too, nothing is rolled forward and a person decides.
 - It recorded the last success as its base, with the same pins.
 - Its commit is the commit now being released, or an ancestor of it, by `git merge-base --is-ancestor` in the trusted checkout. A commit on another branch, a `main` rewritten since, or a commit Git can't find or compare leaves the failure unresolved.
+- The release keeps the failed release's gates. If the failed release changed the database or a Workflow identity and the new report doesn't, as after a revert, rolling forward would skip the backup or the drain check, so the failure stays unresolved. This is checked after classification and again when the deployment record is created.
+- No release hold is set (see [Release hold](#release-hold)).
+
+A failed release from `Manual release` of a pull request records that PR's head commit. A squash merge puts a different commit on `main`, so the next `main` release doesn't contain it and doesn't roll forward over it. Only a re-release of that PR's branch, whose head contains the failed commit, rolls forward.
 
 The ledger then reads as ready at the last success. The base stays the last success, so the release is classified against it, backed up when it changes the database, and recorded against it. It contains everything the failed release did, so its deploy re-applies the failed release's migrations and data steps and finishes whatever they left half done. `report` logs the failed record it rolls forward over, or why it can't. Rolling forward is checked again when the deployment record is created. `latest-base` has no candidate to compare, so it still reports the failure as unresolved.
 
@@ -68,6 +72,17 @@ Rolling forward keeps the failed release's database writes. It relies on migrati
 A carried patch that adds a migration or data step must keep that shape. Undoing a failed release's database writes is a deliberate rollback: dispatch `Manual production rollback` and restore the recorded backup. Rollback commands never roll forward over anything, so they still see the failure.
 
 A re-release of the same base and candidate after rolling forward reuses the failed attempt's backup, because the backup name is derived from the transition.
+
+When the failed release took a database backup, the release that rolls forward over it records that backup in its deployment payload as `rollbackBackup`, with the failed commit as `rollForwardOf`. The release's own backup was taken after the failed release's writes, so restoring it would pair the old code with the failed release's schema. `rollback-target`, `manual-rollback` and the rollback's backup check use `rollbackBackup` instead. It is verified to be the failed release's backup from the same base and pins, and `--restored-backup` must name it.
+
+### Release hold
+
+Set the `PRODUCTION_RELEASE_HOLD` repository variable to any non-empty value to stop every release, including a roll-forward, while someone restores a backup by hand. The Deploy, `Manual release of main` and `Manual release` jobs receive it, and their release commands (`report`, `backup-only`, `inspect-workflows`, `deploy`, and creating the deployment record) stop with a clear message. `Manual production rollback` doesn't receive it, so the rollback still runs. The order is:
+
+1. Set the hold.
+2. Restore the recorded backup.
+3. Dispatch `Manual production rollback`.
+4. Clear the hold once the rollback has succeeded.
 
 ### Database or Workflow identity changes
 

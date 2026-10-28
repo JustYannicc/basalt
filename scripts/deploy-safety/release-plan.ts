@@ -7,6 +7,7 @@ import type { ClassificationReport } from "../releases/types.ts";
 import {
   assertManualRollbackCandidate,
   assertReportUsesLatestDeploy,
+  keepRollForwardGates,
   readDeploymentLedger,
   readLedgerEnvironment,
   type DeploymentLedger,
@@ -14,7 +15,7 @@ import {
 } from "./github-ledger.ts";
 import { SafetyGateError, stableStringify, type PinSummary } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
-import { requirePlanetScaleEnvironment } from "./runtime.ts";
+import { assertNoReleaseHold, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleasePlan = {
   report: ClassificationReport;
@@ -73,6 +74,7 @@ export async function latestProductionBase(): Promise<{
 }
 
 export async function classifyCurrentRelease(candidateRef = currentCommit()): Promise<ReleasePlan> {
+  assertNoReleaseHold();
   const ledgerEnvironment = readLedgerEnvironment();
   const ledger = await readDeploymentLedger(ledgerEnvironment, fetch, rollForwardTo(candidateRef));
   let baseCommit: string;
@@ -89,7 +91,7 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, api);
   if (report.base.gitCommit !== baseCommit || report.candidate.gitCommit !== candidateRef)
     throw new SafetyGateError("Release classifier did not return the requested exact commits");
-  return { report, ledger, manualRequired: report.databaseChanged || report.workflowChanged };
+  return { report, ledger: keepRollForwardGates(ledger, report), manualRequired: report.databaseChanged || report.workflowChanged };
 }
 
 export async function classifyManualRollbackCandidate(candidateRef: string): Promise<ReleasePlan> {

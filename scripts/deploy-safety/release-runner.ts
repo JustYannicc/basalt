@@ -17,7 +17,7 @@ import {
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { rollForwardTo } from "./release-plan.ts";
 import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
-import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
+import { assertNoReleaseHold, requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleaseMode = "automatic" | "manual";
 
@@ -179,7 +179,10 @@ export function productionReleaseDependencies(sourceRoot = repositoryRoot, candi
         throw new SafetyGateError("PlanetScale rollback backup is not both complete and protected");
       return { name: backup.name, metadata };
     },
-    begin: (report, backup) => beginReleaseDeployment(report, github, fetch, backup, rollForwardTo(report.candidate.gitCommit)),
+    begin: (report, backup) => {
+      assertNoReleaseHold();
+      return beginReleaseDeployment(report, github, fetch, backup, rollForwardTo(report.candidate.gitCommit));
+    },
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, github),
     deploy: () => runCommand("npm", ["run", "deploy"], sourceRoot),
     smoke: () => runCommand("node", ["scripts/smoke.ts"], repositoryRoot),

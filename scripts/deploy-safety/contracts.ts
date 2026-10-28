@@ -55,6 +55,12 @@ export type BackupMetadata = {
 /** A backup name together with the metadata its name digest commits to. */
 export type RecordedBackup = { name: string; metadata: BackupMetadata };
 
+/**
+ * The backup a manual rollback restores. After a roll-forward it is the failed release's backup:
+ * same base, but taken for the failed release's commit, named by `rolledForwardOver`.
+ */
+export type RollbackBackup = RecordedBackup & { rolledForwardOver?: string };
+
 export type WorkflowStatus =
   | "queued"
   | "running"

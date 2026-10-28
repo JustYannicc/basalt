@@ -12,6 +12,7 @@ import {
   type BackupMetadata,
   type PinSummary,
   type RecordedBackup,
+  type RollbackBackup,
 } from "./contracts.ts";
 import { record, requestJson, stringField, withBearer, type Fetcher } from "./http.ts";
 
@@ -41,12 +42,20 @@ export type DeploymentPayload = {
   /** The full metadata behind `backupName`'s digest. Parsing verifies it and fills it in for a legacy v1 name. */
   backupMetadata?: BackupMetadata;
   rollbackOf?: string;
+  /** The failed release this release rolled forward over. */
+  rollForwardOf?: string;
+  /**
+   * The failed release's backup, taken before its database writes, when this release rolled
+   * forward over one. Its base is this release's base, so it, not `backupName`, is the point a
+   * manual rollback restores: this release's own backup was taken after the failed one's writes.
+   */
+  rollbackBackup?: RecordedBackup;
 };
 
 export type AttemptWindow = { startedAt: string; endedAt: string };
 
 /** A failed release attempt the ledger set aside because a later release may deploy over it. */
-export type SupersededRelease = { deploymentId: number; gitCommit: string; deploymentStatus: string };
+export type SupersededRelease = { deploymentId: number; gitCommit: string; deploymentStatus: string; payload: DeploymentPayload };
 
 /**
  * Lets a release roll forward over a failed release it contains. `contains` answers whether
@@ -209,14 +218,47 @@ export async function beginReleaseDeployment(
   backup?: RecordedBackup,
   rollForward?: RollForward,
 ): Promise<number> {
-  const ledger = await readDeploymentLedger(environment, fetcher, rollForward);
+  const ledger = keepRollForwardGates(await readDeploymentLedger(environment, fetcher, rollForward), report);
   assertReportUsesLatestDeploy(report, ledger);
   if (ledger.state === "unresolved") throw new SafetyGateError("Cannot begin while another production deployment is unresolved");
   if (report.databaseChanged && !backup)
     throw new SafetyGateError("Database-changing release requires the protected backup before deployment begins");
   if (backup) assertBackupMatchesReport(backup, report);
   const payload = makePayload(report, report.candidate.gitCommit, report.candidate.pins, "release", backup);
+  const superseded = ledger.state === "ready" ? ledger.superseded : undefined;
+  if (superseded) {
+    payload.rollForwardOf = superseded.gitCommit;
+    const failedBackup = ownBackup(superseded.payload);
+    if (failedBackup) payload.rollbackBackup = failedBackup;
+  }
   return createDeployment(environment, payload, fetcher);
+}
+
+/**
+ * A release that rolls forward over a failed one must keep the gates the failed one needed. When
+ * the failed release changed the database or a Workflow identity and the new report says it
+ * doesn't, such as a revert, rolling forward would skip the backup or the drain check, so the
+ * failure stays unresolved.
+ */
+export function keepRollForwardGates(ledger: DeploymentLedger, report: ClassificationReport): DeploymentLedger {
+  if (ledger.state !== "ready" || !ledger.superseded) return ledger;
+  const { payload } = ledger.superseded;
+  const dropped = [
+    ...payload.databaseChanged && !report.databaseChanged ? ["database"] : [],
+    ...payload.workflowChanged && !report.workflowChanged ? ["Workflow identity"] : [],
+  ];
+  if (!dropped.length) return ledger;
+  return {
+    state: "unresolved",
+    deploymentId: ledger.superseded.deploymentId,
+    gitCommit: ledger.superseded.gitCommit,
+    deploymentStatus: ledger.superseded.deploymentStatus,
+    reason: "latest production deployment did not finish successfully",
+    lastSuccessful: { deploymentId: ledger.deploymentId, gitCommit: ledger.gitCommit, pins: ledger.pins },
+    payload,
+    supersedeRefusal: `deployment ${ledger.superseded.deploymentId} changed the ${dropped.join(" and ")}, ` +
+      "but this release doesn't, so rolling forward would skip its backup or drain check",
+  };
 }
 
 export async function beginRollbackDeployment(
@@ -231,7 +273,10 @@ export async function beginRollbackDeployment(
     throw new SafetyGateError("Production deployment changed after the rollback plan was prepared");
   assertManualRollbackCandidate(report, ledger);
 
-  const backup = report.databaseChanged ? releaseBackup(ledger) : undefined;
+  // The rollback record names the release's own backup; the restore point is read from the release.
+  const own = ledger.payload ? ownBackup(ledger.payload) : undefined;
+  if (report.databaseChanged && !own) throw new SafetyGateError("Database rollback is missing its protected backup reference");
+  const backup = report.databaseChanged ? own : undefined;
   const rollbackPayload = makePayload(report, report.base.gitCommit, report.base.pins, "rollback", backup);
   rollbackPayload.rollbackOf = report.candidate.gitCommit;
   return createDeployment(environment, rollbackPayload, fetcher);
@@ -277,11 +322,18 @@ export function deploymentPayloadFor(
 }
 
 /** The protected backup the latest production release recorded, verified when its payload was parsed. */
-export function releaseBackup(ledger: DeploymentLedger): RecordedBackup {
+export function releaseBackup(ledger: DeploymentLedger): RollbackBackup {
   const payload = ledger.state === "uninitialized" ? undefined : ledger.payload;
-  if (!payload?.backupName || !payload.backupMetadata)
-    throw new SafetyGateError("Database rollback is missing its protected backup reference");
-  return { name: payload.backupName, metadata: payload.backupMetadata };
+  // After a roll-forward, the failed release's backup is the state before any of their writes.
+  if (payload?.rollbackBackup) return { ...payload.rollbackBackup, rolledForwardOver: payload.rollForwardOf! };
+  const backup = payload ? ownBackup(payload) : undefined;
+  if (!backup) throw new SafetyGateError("Database rollback is missing its protected backup reference");
+  return backup;
+}
+
+/** The backup a release took for its own transition. */
+function ownBackup(payload: DeploymentPayload): RecordedBackup | undefined {
+  return payload.backupName && payload.backupMetadata ? { name: payload.backupName, metadata: payload.backupMetadata } : undefined;
 }
 
 async function createDeployment(
@@ -378,6 +430,19 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
   }
   if (payload.rollbackOf !== undefined)
     parsed.rollbackOf = gitCommit(payload.rollbackOf, "deployment rollbackOf");
+  if (payload.rollForwardOf !== undefined)
+    parsed.rollForwardOf = gitCommit(payload.rollForwardOf, "deployment rollForwardOf");
+  if (payload.rollbackBackup !== undefined) {
+    const recorded = record(payload.rollbackBackup, "deployment rollback backup");
+    if (typeof recorded.name !== "string") throw new SafetyGateError("Deployment rollback backup name is invalid");
+    const metadata = verifyBackupMetadata(recorded.name, recorded.metadata);
+    if (parsed.kind !== "release" || parsed.rollForwardOf === undefined ||
+        metadata.candidate.gitCommit !== parsed.rollForwardOf ||
+        metadata.base.gitCommit !== parsed.baseGitCommit ||
+        stableStringify(metadata.base.pins) !== stableStringify(parsed.basePins))
+      throw new SafetyGateError("Deployment rollback backup is not the rolled-forward release's backup from the same base");
+    parsed.rollbackBackup = { name: recorded.name, metadata };
+  }
   return parsed;
 }
 
@@ -528,7 +593,7 @@ async function supersedeFailedRelease(
       pins: lastSuccessful.pins,
       payload: parseDeploymentPayload(success.payload),
     },
-    superseded: { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status },
+    superseded: { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status, payload },
   };
 }
 
