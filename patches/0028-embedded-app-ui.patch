@@ -51,7 +51,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 index 077cd51..e8eca07 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -1,7 +1,12 @@
+@@ -1,10 +1,15 @@
  import { requestServices } from "@executor-js/hosted-server";
  import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
  /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
@@ -65,6 +65,10 @@ index 077cd51..e8eca07 100644
  import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
  import { AppUiApi } from "apps/ui/contracts";
  import { AlchemyContext } from "alchemy/AlchemyContext";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Config, Effect, Layer, Option } from "effect";
++import { Cause, Config, Effect, Layer, Option } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
 @@ -55,6 +60,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          ...(yield* telemetryBindings),
          ...(yield* sentryBindings).env,
@@ -111,6 +115,24 @@ index 077cd51..e8eca07 100644
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
+@@ -128,7 +133,16 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         Effect.catch((error) =>
+           HttpServerError.isHttpServerError(error)
+             ? Effect.fail(error)
+             : Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders })),
+         ),
++        Effect.catchCause((cause) => {
++          const error = Option.getOrUndefined(Cause.findErrorOption(cause));
++          if (error !== undefined && HttpServerError.isHttpServerError(error))
++            return Effect.fail(error);
++          return Effect.sync(() => {
++            console.error(Cause.pretty(cause));
++            return HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders });
++          });
++        }),
+         requestTiming,
+         lifetime.http,
+       ),
 diff --git a/apps/hosted/cloud/src/contracts/browser.ts b/apps/hosted/cloud/src/contracts/browser.ts
 index 731088f..2aa5f2a 100644
 --- a/apps/hosted/cloud/src/contracts/browser.ts
@@ -681,7 +703,7 @@ index 372254f..b72b5a2 100644
    organizationOwner,
    type OrganizationAccess,
  } from "../contracts/organization.ts";
-@@ -120,17 +121,37 @@ export const hostedAppUi = <R = never>(
+@@ -120,17 +121,40 @@ export const hostedAppUi = <R = never>(
    const target = Effect.gen(function* () {
      const { request, host } = yield* requestOrigin;
      const sessions = yield* HostedAppSessions;
@@ -696,7 +718,10 @@ index 372254f..b72b5a2 100644
 +      if (host.kind === "opaque") {
 +        const app = yield* executor.apps
 +          .get({ app: host.app })
-+          .pipe(Effect.mapError(() => new UiForbidden()));
++          .pipe(
++            Effect.mapError(() => new UiForbidden()),
++            Effect.catchCause(() => Effect.fail(new UiForbidden())),
++          );
 +        if (!app.owner.startsWith("organization:")) return yield* new UiForbidden();
 +        const id = yield* Schema.decodeUnknownEffect(OrganizationId)(
 +          app.owner.slice("organization:".length),
@@ -1802,10 +1827,10 @@ index 1f60a28..2d79959 100644
          yield* onboarding.emailSignIn(email);
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 new file mode 100644
-index 0000000..020738b
+index 0000000..0000000
 --- /dev/null
 +++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,340 @@
 +/** Browser proof through a real self-host, including the existing browser-bound sign-in protocol. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
@@ -1871,6 +1896,11 @@ index 0000000..020738b
 +          });
 +        const first = yield* deploy("Embedded fixture one");
 +        const second = yield* deploy("Embedded fixture two", first.url);
++        const unknownHost = `a-${crypto.randomUUID()}.fixture.localhost`;
++        const unknownApp = yield* browser.use("Unknown opaque app hosts are refused", (page) =>
++          page.context().request.get(first.url, { headers: { Host: unknownHost } }),
++        );
++        expect([403, 404]).toContain(unknownApp.status());
 +        yield* browser.login(actors.owner);
 +        // Cookies never enter retained network traces or screenshots.
 +        yield* browser.omitNetworkTrace;
