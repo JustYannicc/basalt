@@ -1,10 +1,10 @@
 diff --git a/apps/docs/content/concepts/providers-and-accounts.md b/apps/docs/content/concepts/providers-and-accounts.md
-index 0774c41..cc22285 100644
+index 0774c41..f439695 100644
 --- a/apps/docs/content/concepts/providers-and-accounts.md
 +++ b/apps/docs/content/concepts/providers-and-accounts.md
-@@ -114,3 +114,66 @@ creates an account, and a tool never receives your login token.
+@@ -114,3 +114,84 @@ creates an account, and a tool never receives your login token.
  - Providers backed by a signed-in browser session.
- 
+
  See [Connect an account](/connect-an-account) for the steps.
 +
 +## Host-provisioned methods
@@ -69,6 +69,24 @@ index 0774c41..cc22285 100644
 +fails or returns no status. The last passing `accountInfo` remains available
 +when a later check fails. Opening the Accounts tab rechecks missing, outdated
 +or five-minute-old results once per view.
++
++Status is stored beside identity in the existing JSON health record. It adds no
++storage schema version. The previous server reads its known identity fields and
++ignores the display data. A status-only check keeps the last identity and its
++original check time; a failed check clears display status.
++
++A display string that contains an opaque account reference or a credential field
++value is refused before it leaves the app. This includes credentials in linked
++backend accounts. The check records a failure without the sensitive text.
++
++A function-form app may omit `connect.check`. The host then uses provider health
++when declared, or records no check when neither handler exists. An exception from
++a check that exists remains a check failure.
++
++A provider may mix host-provisioned and ordinary methods. A connection can save
++an ordinary account only when doing so preserves every host-provisioned link.
++This rule applies again at manual and OAuth completion under the app's link lock.
++Host provisioning uses its own path and can still manage those accounts.
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
 index 929eb84..0c66a60 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
@@ -103,6 +121,54 @@ index 0e75058..aeeb19e 100644
    InteractiveReconnectUnsupported,
    ...errors,
    ProviderNotFound,
+diff --git a/apps/hosted/server/src/implementation/provisioned-connection.ts b/apps/hosted/server/src/implementation/provisioned-connection.ts
+new file mode 100644
+index 0000000..4b28247
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/provisioned-connection.ts
+@@ -0,0 +1,25 @@
++/** Refuse a connection's plain-slot replacement under the same lock used by link mutations. */
++import { AccountProvisioned, StorageError, type ResourceLifecycle } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++import { lockAppLinks } from "./app-accounts.ts";
++
++export const protectProvisionedConnection = (
++  sql: SqlClient.SqlClient,
++  input: Parameters<ResourceLifecycle["appAccountConnected"]>[0],
++  subject: string | null,
++) =>
++  Effect.gen(function* () {
++    yield* lockAppLinks(sql, input.app);
++    const links = yield* sql`select l.account from hosted_app_account_links l
++    join executor_apps app on app.id = l.app
++    join executor_deployments d on d.id = app.active_deployment
++    join executor_accounts a on a.id = l.account
++    where l.app = ${input.app} and l.requirement = ${input.requirement}
++      and ${subject === null ? sql`l.subject is null` : sql`l.subject = ${subject}`}
++      and l.account <> ${input.account.id}
++      and coalesce(d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'cardinality', 'one') <> 'many'
++      and d.requirements::jsonb -> 'accounts' -> ${input.requirement} -> 'definition' -> 'auth' -> a.method ->> 'provisioned' = 'true'`;
++    if (links.length > 0)
++      return yield* new AccountProvisioned({ provider: input.account.provider });
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 5bc80e1..0a09706 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { protectProvisionedConnection } from "./provisioned-connection.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { GroupDatabase } from "../contracts/groups.ts";
+ import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
+@@ -727,6 +728,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+                   );
+             if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
+           }
++          yield* protectProvisionedConnection(sql, input, input.scope === "app" ? null : user);
+           const sources = yield* webhooks;
+           yield* asOwner(
+             input.account.owner,
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 index 3a2a703..69b4fce 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
@@ -120,7 +186,7 @@ index dfe80e5..593ad25 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -45,9 +45,9 @@ import { catalogAtom } from "../../contracts/api.ts";
- 
+
  /** A requirement's sign-in methods, OAuth first: connecting a new account starts with the first. */
  export const methodsOf = (requirement: AccountRequirement) =>
 -  Object.entries(requirement.definition.auth).sort(
@@ -129,7 +195,7 @@ index dfe80e5..593ad25 100644
 +  Object.entries(requirement.definition.auth)
 +    .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
 +    .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
- 
+
  /**
   * The app's accounts in two sections. App accounts are linked for everyone: people who can edit
 @@ -121,6 +121,10 @@ export function AppAccounts({
@@ -190,7 +256,7 @@ index 21dd03f..4621e01 100644
    InteractiveRetirementFailed,
 @@ -89,6 +90,7 @@ export const ConnectionOAuthStart = Schema.Struct({
  });
- 
+
  const errors = [
 +  AccountProvisioned,
    InteractiveRetirementBusy,
@@ -229,6 +295,49 @@ index 35b665a..64b5ba9 100644
            AccountConnectionTargetChanged,
            AccountConnectionRefused,
          ],
+diff --git a/apps/local/server/src/implementation/app-accounts.ts b/apps/local/server/src/implementation/app-accounts.ts
+index 0285989..977f4f2 100644
+--- a/apps/local/server/src/implementation/app-accounts.ts
++++ b/apps/local/server/src/implementation/app-accounts.ts
+@@ -8,6 +8,7 @@ import {
+   AccountChoiceUnsupported,
+   AccountId,
+   AccountNotFound,
++  AccountProvisioned,
+   AppId,
+   StorageError,
+   StorageHost,
+@@ -690,13 +691,29 @@ export const localResourceLifecycle = (
+     Effect.gen(function* () {
+       const sdk = yield* executor;
+       const app = yield* storage(sdk.apps.get({ app: input.app }));
++      yield* lockApp(sql, app.id);
++      const required = yield* scopedRequirement(app, input.scope, input.requirement);
++      if (required.cardinality !== "many") {
++        const linked = yield* linkRows(sql, sdk, app, scopeSubject(input.scope), input.requirement);
++        for (const link of linked) {
++          if (link.account === input.account.id) continue;
++          const previous = yield* storage(sdk.accounts.get({ account: link.account }));
++          const method = required.definition.auth[previous.method];
++          if (method?.type === "secrets" && method.provisioned === true)
++            return yield* new AccountProvisioned({ provider: previous.provider });
++        }
++      }
+       yield* addLink(sql, sdk, {
+         app,
+         requirement: input.requirement,
+         account: input.account,
+         subject: scopeSubject(input.scope),
+       }).pipe(Effect.mapError(() => new StorageError()));
+-    }),
++    }).pipe(
++      Effect.mapError((error) =>
++        Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
++      ),
++    ),
+   accountCreated: () => Effect.void,
+   // An app link is used by its app for every call; the route refuses with the apps that link it,
+   // and this refuses an app link made since. Its user links are removed with it.
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
 index c60366b..f023607 100644
 --- a/apps/local/web/src/contracts/errors.ts
@@ -247,10 +356,10 @@ index c60366b..f023607 100644
        description: "Reload the skill to read its current instructions and references.",
 diff --git a/e2e/support/account-status-fixture.ts b/e2e/support/account-status-fixture.ts
 new file mode 100644
-index 0000000..b6a5fcf
+index 0000000..8b1085c
 --- /dev/null
 +++ b/e2e/support/account-status-fixture.ts
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,96 @@
 +/** Synthetic status endpoint. The app reaches it with its own backend account. */
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Effect, Layer, Ref, Schema } from "effect";
@@ -322,7 +431,7 @@ index 0000000..b6a5fcf
 +  };
 +});
 +
-+export const accountStatusSource = (connectOrigin: string, checkOrigin: string) =>
++export const accountStatusSource = (connectOrigin: string, checkOrigin: string, withCheck = true) =>
 +  interactiveAccountSource(connectOrigin)
 +    .replace(
 +      "defineApp, defineProvider, interactive,",
@@ -334,7 +443,8 @@ index 0000000..b6a5fcf
 +    )
 +    .replace(
 +      "const handlers = {",
-+      `const handlers = {
++      withCheck
++        ? `const handlers = {
 +  check: async (ctx: ConnectContext<typeof requirements>, input: { method: string; ref: string }) => {
 +    const backend = ctx.app.accounts.backend;
 +    if (backend === undefined) throw new Error("The backend account is missing");
@@ -343,16 +453,167 @@ index 0000000..b6a5fcf
 +    });
 +    if (!response.ok) throw new ProviderError({ reason: response.status === 401 ? "unauthorized" : response.status === 403 ? "forbidden" : response.status === 429 ? "rate_limited" : "unavailable", status: response.status });
 +    return await response.json();
-+  },`,
++  },`
++        : "const handlers = {",
 +    );
+diff --git a/e2e/support/provisioned-source.ts b/e2e/support/provisioned-source.ts
+new file mode 100644
+index 0000000..717eb01
+--- /dev/null
++++ b/e2e/support/provisioned-source.ts
+@@ -0,0 +1,14 @@
++/** A provider whose host credential can coexist with ordinary connect methods. */
++export const provisionedSource = (
++  provisioned: boolean,
++  mixed = false,
++  oauthOrigin?: string,
++) => `import { defineApp, defineProvider, object, query, router, secrets, string, oauth2 } from "apps";
++const access = defineProvider({ name: "Host access", auth: {
++  key: secrets({ label: "Host access", ${provisioned ? "provisioned: true," : ""} fields: object({ token: string() }) }),
++  ${mixed ? 'manual: secrets({ label: "Manual key", fields: object({ token: string() }) }),' : ""}
++${oauthOrigin === undefined ? "" : `browser: oauth2({ discover: ${JSON.stringify(oauthOrigin + "/mcp")} }),`}
++} });
++export default defineApp({ user: { accounts: { service: access } } }, {
++  tools: router({ present: query({ input: object({}) }, async (ctx) => ({ valid: ctx.user.accounts.service.fields.token === "fixture-host-key" })) }),
++});`;
+diff --git a/e2e/support/status-account.ts b/e2e/support/status-account.ts
+new file mode 100644
+index 0000000..4cb4b69
+--- /dev/null
++++ b/e2e/support/status-account.ts
+@@ -0,0 +1,79 @@
++/** A real interactive account with a linked backend, shared by focused status regressions. */
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { serverControl } from "./server-control.ts";
++import { App, Resource } from "./contracts.ts";
++import { appsManifest } from "./apps-release.ts";
++import { interactiveAccountBackend, interactiveBackendKey } from "./interactive-account-backend.ts";
++import { accountStatusBackend } from "./account-status-fixture.ts";
++
++export const statusAccount = (source: (connect: string, check: string) => string) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors;
++    const backend = yield* interactiveAccountBackend,
++      statusBackend = yield* accountStatusBackend;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const files = (content: string) => [{ path: "index.ts", content }, appsManifest];
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Status regression fixture",
++      files: files(source(backend.origin, statusBackend.origin)),
++    });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(App, deployed),
++      path = `${prefix}/apps/${app.id}`;
++    const saved: string[] = [];
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* serverControl("start");
++        yield* api.request(actors.owner, "DELETE", path);
++        for (const id of saved)
++          yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
++      }).pipe(Effect.orDie),
++    );
++    const pending = (scope: string, slot: string) =>
++      api
++        .request(actors.owner, "POST", `${path}/accounts/${scope}/${slot}/connections`, {})
++        .pipe(Effect.flatMap((r) => body(Resource, r)));
++    const key = yield* pending("app", "backend");
++    const added = yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/connections/${key.id}/submit`,
++      {
++        method: "key",
++        fields: { token: interactiveBackendKey, short: "xy" },
++      },
++    );
++    expect(added.status, JSON.stringify(added.body)).toBe(200);
++    saved.push((yield* body(Resource, added)).id);
++    const connection = yield* pending("user", "identity"),
++      steps = `${prefix}/connections/${connection.id}/interactive`;
++    expect(
++      (yield* api.request(actors.owner, "POST", `${steps}/start`, { method: "device" })).status,
++    ).toBe(200);
++    yield* api.request(actors.owner, "GET", `${steps}/status`);
++    const result = yield* api.request(actors.owner, "GET", `${steps}/status`);
++    expect(result.status, JSON.stringify(result.body)).toBe(200);
++    const connected = yield* body(
++      Schema.Struct({ state: Schema.Literal("connected"), account: Resource }),
++      result,
++    );
++    saved.push(connected.account.id);
++    const account = connected.account.id,
++      accountPath = `${prefix}/accounts/${account}`;
++    const check = () => api.request(actors.owner, "POST", `${accountPath}/health`);
++    return {
++      account,
++      app: app.id,
++      statusBackend,
++      check,
++      read: () => api.request(actors.owner, "GET", accountPath),
++      deploy: (content: string) =>
++        api.request(actors.owner, "POST", `${path}/deploy`, { files: files(content) }),
++      connectOrigin: backend.origin,
++      checkOrigin: statusBackend.origin,
++    };
++  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index d506111..2e3700c 100644
+index d506111..275d945 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7292,6 +7292,29 @@ export const scenarios = plan({
+@@ -7292,6 +7292,74 @@ export const scenarios = plan({
        local: na("Uses hosted account links and authentication."),
      },
    },
++  accountStatusStorage: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-status-storage.spec.ts",
++    title:
++      "account status preserves the previous storage version and retained identity across restarts",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated PGlite metadata."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
++  accountStatusPrivacy: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-status-privacy.spec.ts",
++    title: "account status rejects credential and opaque reference strings before storage",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated loopback account fixtures."),
++      local: na("Uses hosted account HTTP endpoints."),
++    },
++  },
++  accountStatusFactory: {
++    fixtures: "actors",
++
++    file: "account-status-factory.spec.ts",
++    title: "dynamic interactive factories fall back when optional checks are absent",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated loopback account fixtures."),
++      local: na("Uses hosted account HTTP endpoints."),
++    },
++  },
++  provisionedMixed: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "provisioned-mixed.spec.ts",
++    title: "mixed providers cannot replace provisioned links through manual or OAuth completion",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated loopback account fixtures."),
++      local: na("Uses hosted account HTTP endpoints."),
++    },
++  },
 +  accountDisplayStatus: {
 +    fixtures: "actors",
 +    file: "account-status.spec.ts",
@@ -379,6 +640,232 @@ index d506111..2e3700c 100644
    interactiveAccounts: {
      fixtures: "actors",
      file: "interactive-accounts.spec.ts",
+diff --git a/e2e/tests/account-status-factory.spec.ts b/e2e/tests/account-status-factory.spec.ts
+new file mode 100644
+index 0000000..6635967
+--- /dev/null
++++ b/e2e/tests/account-status-factory.spec.ts
+@@ -0,0 +1,65 @@
++/** Dynamic factories retain provider health when their optional connect check is absent. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
++import { statusAccount } from "../support/status-account.ts";
++import { scenarios } from "../test-plan.ts";
++const dynamic = (source: string) =>
++  source
++    .replace("defineApp(requirements, {", "defineApp(requirements, async () => ({")
++    .replace(/\}\);\s*$/, "}));");
++const Health = Schema.Struct({
++  apps: Schema.Array(
++    Schema.Struct({
++      checkable: Schema.Boolean,
++      check: Schema.NullOr(
++        Schema.Struct({ status: Schema.String, displayStatus: Schema.optionalKey(Schema.Unknown) }),
++      ),
++    }),
++  ),
++  info: Schema.Unknown,
++});
++layer(HostedLive, { excludeTestServices: true })("Dynamic account checks", (it) => {
++  it.effect(scenarios.accountStatusFactory.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const source = (origin: string, check: string) =>
++          dynamic(
++            accountStatusSource(origin, check, false).replace(
++              'name: "Interactive account",',
++              'name: "Interactive account", health: async () => ({ accountInfo: { displayName: "Provider fallback" } }),',
++            ),
++          );
++        const fixture = yield* statusAccount(source);
++        const response = yield* fixture.check();
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const health = yield* body(Health, response);
++        expect(health.apps[0]?.check?.status).toBe("healthy");
++        expect(health.info).toMatchObject({ displayName: "Provider fallback" });
++        const updated = yield* fixture.deploy(
++          dynamic(accountStatusSource(fixture.connectOrigin, fixture.checkOrigin)),
++        );
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        const checked = yield* fixture.check();
++        expect(checked.status, JSON.stringify(checked.body)).toBe(200);
++        expect((yield* body(Health, checked)).apps[0]?.check).toMatchObject({
++          status: "healthy",
++          displayStatus: displayedStatus,
++        });
++        expect(yield* fixture.statusBackend.calls).toBe(1);
++        const noHandler = yield* fixture.deploy(
++          dynamic(accountStatusSource(fixture.connectOrigin, fixture.checkOrigin, false)),
++        );
++        expect(noHandler.status, JSON.stringify(noHandler.body)).toBe(200);
++        const absent = yield* fixture.check();
++        expect(absent.status, JSON.stringify(absent.body)).toBe(200);
++        // The old successful check may remain as stale history, but absence never writes a failure.
++        expect((yield* body(Health, absent)).apps[0]?.check?.status).toBe("healthy");
++        expect(yield* fixture.statusBackend.calls).toBe(1);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-status-privacy.spec.ts b/e2e/tests/account-status-privacy.spec.ts
+new file mode 100644
+index 0000000..997bf7c
+--- /dev/null
++++ b/e2e/tests/account-status-privacy.spec.ts
+@@ -0,0 +1,66 @@
++/** Successful checks cannot publish credentials in display strings or plaintext storage. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
++import { interactiveBackendKey } from "../support/interactive-account-backend.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { statusAccount } from "../support/status-account.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Health = Schema.Struct({
++  apps: Schema.Array(
++    Schema.Struct({
++      check: Schema.NullOr(
++        Schema.Struct({ status: Schema.String, displayStatus: Schema.optionalKey(Schema.Unknown) }),
++      ),
++    }),
++  ),
++});
++layer(HostedLive, { excludeTestServices: true })("Status confidentiality", (it) => {
++  it.effect(scenarios.accountStatusPrivacy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* statusAccount((connect, check) =>
++          accountStatusSource(connect, check).replace(
++            "token: string()",
++            "token: string(), short: string()",
++          ),
++        );
++        for (const secret of ["opaque-1", interactiveBackendKey, "xy"]) {
++          for (const status of [
++            { ...displayedStatus, badges: [{ label: `plan ${secret}`, tone: "good" }] },
++            { ...displayedStatus, meters: [{ label: `quota ${secret}`, remaining: 0.5 }] },
++            {
++              ...displayedStatus,
++              meters: [{ label: "Quota", remaining: null, detail: `detail ${secret}` }],
++            },
++            { ...displayedStatus, stats: [{ label: `usage ${secret}`, value: "1" }] },
++            { ...displayedStatus, stats: [{ label: "Usage", value: `value ${secret}` }] },
++          ]) {
++            yield* fixture.statusBackend.answer({ status: 200, body: { status } });
++            const response = yield* fixture.check();
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const health = yield* body(Health, response);
++            expect(health.apps[0]?.check?.status).toBe("check_failed");
++            expect(health.apps[0]?.check?.displayStatus).toBeUndefined();
++            expect(JSON.stringify(response.body)).not.toContain(secret);
++            expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(secret);
++          }
++        }
++        const stored = yield* legacyStorage([
++          {
++            sql: "SELECT account_info, message FROM executor_account_checks WHERE account = $1",
++            params: [fixture.account],
++          },
++        ]);
++        expect(JSON.stringify(stored)).not.toContain("opaque-1");
++        expect(JSON.stringify(stored)).not.toContain(interactiveBackendKey);
++        yield* serverControl("start");
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+new file mode 100644
+index 0000000..b824af7
+--- /dev/null
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -0,0 +1,77 @@
++/** Display status reuses health JSON without advancing the schema or losing checked identity. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { statusAccount } from "../support/status-account.ts";
++import { scenarios } from "../test-plan.ts";
++layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
++  it.effect(scenarios.accountStatusStorage.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* statusAccount(accountStatusSource);
++        expect((yield* fixture.check()).status).toBe(200);
++        const [version, columns, records] = yield* legacyStorage([
++          { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++          {
++            sql: "SELECT column_name FROM information_schema.columns WHERE table_name = 'executor_account_checks' AND column_name = 'display_status'",
++          },
++          {
++            sql: "SELECT account_info FROM executor_account_checks WHERE account = $1",
++            params: [fixture.account],
++          },
++        ]);
++        expect(version).toEqual([{ value: "4.0.16" }]);
++        expect(columns).toEqual([]);
++        expect(records).toEqual([
++          {
++            account_info: {
++              displayName: "Checked fixture identity",
++              displayStatus: displayedStatus,
++            },
++          },
++        ]);
++        yield* serverControl("start");
++        expect((yield* fixture.read()).body).toMatchObject({
++          health: {
++            info: { displayName: "Checked fixture identity" },
++            apps: [{ check: { displayStatus: displayedStatus } }],
++          },
++        });
++        yield* fixture.statusBackend.answer({
++          status: 200,
++          body: { status: { ...displayedStatus, stats: [{ label: "Requests", value: "43" }] } },
++        });
++        expect((yield* fixture.check()).status).toBe(200);
++        expect((yield* fixture.read()).body).toMatchObject({
++          health: {
++            info: { displayName: "Checked fixture identity" },
++            apps: [{ check: { displayStatus: { stats: [{ label: "Requests", value: "43" }] } } }],
++          },
++        });
++        yield* fixture.statusBackend.answer({ status: 503, body: {} });
++        expect((yield* fixture.check()).status).toBe(200);
++        yield* serverControl("restart");
++        expect((yield* fixture.read()).body).toMatchObject({
++          health: {
++            info: { displayName: "Checked fixture identity" },
++            apps: [{ check: { status: "upstream_unavailable" } }],
++          },
++        });
++        const persisted = yield* legacyStorage([
++          {
++            sql: "SELECT account_info FROM executor_account_checks WHERE account = $1",
++            params: [fixture.account],
++          },
++        ]);
++        expect(persisted).toEqual([
++          [{ account_info: { displayName: "Checked fixture identity" } }],
++        ]);
++        yield* serverControl("start");
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
 new file mode 100644
 index 0000000..b4df671
@@ -624,10 +1111,10 @@ index af398c7..2ca7e6e 100644
          expect(
 diff --git a/e2e/tests/provisioned-accounts.spec.ts b/e2e/tests/provisioned-accounts.spec.ts
 new file mode 100644
-index 0000000..d17ac96
+index 0000000..3311b91
 --- /dev/null
 +++ b/e2e/tests/provisioned-accounts.spec.ts
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,149 @@
 +/** Retained host credentials survive adopting a provisioned declaration; browser and HTTP cannot replace them. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -640,6 +1127,7 @@ index 0000000..d17ac96
 +import { Evidence } from "../support/evidence.ts";
 +import { legacyStorage } from "../support/legacy-storage.ts";
 +import { serverControl } from "../support/server-control.ts";
++import { provisionedSource as source } from "../support/provisioned-source.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +const App = Schema.Struct({
@@ -648,17 +1136,6 @@ index 0000000..d17ac96
 +    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
 +  }),
 +});
-+const source = (
-+  provisioned: boolean,
-+  mixed = false,
-+) => `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
-+const access = defineProvider({ name: "Host access", auth: {
-+  key: secrets({ label: "Host access", ${provisioned ? "provisioned: true," : ""} fields: object({ token: string() }) }),
-+  ${mixed ? 'manual: secrets({ label: "Manual key", fields: object({ token: string() }) }),' : ""}
-+} });
-+export default defineApp({ user: { accounts: { service: access } } }, {
-+  tools: router({ present: query({ input: object({}) }, async (ctx) => ({ valid: ctx.user.accounts.service.fields.token === "fixture-host-key" })) }),
-+});`;
 +
 +layer(HostedLive, { excludeTestServices: true })("Provisioned accounts", (it) => {
 +  it.effect(scenarios.provisionedAccounts.title, (context) =>
@@ -783,6 +1260,145 @@ index 0000000..d17ac96
 +            page.screenshot({ fullPage: true }),
 +          ),
 +        );
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/provisioned-mixed.spec.ts b/e2e/tests/provisioned-mixed.spec.ts
+new file mode 100644
+index 0000000..d4f071b
+--- /dev/null
++++ b/e2e/tests/provisioned-mixed.spec.ts
+@@ -0,0 +1,133 @@
++/** Completion cannot replace a provisioned plain-slot link through a mixed provider. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { provisionedSource } from "../support/provisioned-source.ts";
++import { scenarios } from "../test-plan.ts";
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
++  }),
++});
++layer(HostedLive, { excludeTestServices: true })("Mixed provisioned methods", (it) => {
++  it.effect(scenarios.provisionedMixed.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          http = yield* HttpClient.HttpClient;
++        const issuer = yield* oauthSetupIssuer;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const files = (provisioned: boolean) => [
++          { path: "index.ts", content: provisionedSource(provisioned, true, issuer.origin) },
++          appsManifest,
++        ];
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Mixed host credential fixture",
++          files: files(false),
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        let account: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          serverControl("start").pipe(
++            Effect.andThen(
++              Effect.gen(function* () {
++                yield* api.request(actors.owner, "DELETE", path);
++                if (account !== undefined)
++                  yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++              }),
++            ),
++            Effect.orDie,
++          ),
++        );
++        const pending = () =>
++          api
++            .request(actors.owner, "POST", `${path}/accounts/user/service/connections`, {})
++            .pipe(Effect.flatMap((r) => body(Resource, r)));
++        const connection = yield* pending();
++        const added = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          { method: "key", fields: { token: "fixture-host-key" } },
++        );
++        expect(added.status, JSON.stringify(added.body)).toBe(200);
++        account = (yield* body(Resource, added)).id;
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: files(true),
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        const current = yield* body(Schema.Struct({ app: App }), updated);
++        yield* legacyStorage([
++          {
++            sql: "UPDATE executor_accounts SET provider = $1 WHERE id = $2",
++            params: [current.app.requirements.accounts.service.provider, account],
++          },
++        ]);
++        yield* serverControl("start");
++        const manual = yield* pending();
++        const refused = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${manual.id}/submit`,
++          { method: "manual", fields: { token: "ordinary-key" } },
++        );
++        expect(refused.status, JSON.stringify(refused.body)).toBe(422);
++        expect(refused.body).toMatchObject({ _tag: "AccountProvisioned" });
++        const oauth = yield* pending();
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${oauth.id}/oauth/start`,
++          { method: "browser" },
++        );
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        const signIn = yield* body(Schema.Struct({ authorizationUrl: Schema.String }), started);
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const response = yield* HttpClient.withScope(http).get(signIn.authorizationUrl);
++            expect(response.status).toBe(302);
++            if (response.headers.location === undefined)
++              return yield* Effect.die("No fixture callback");
++            return response.headers.location;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${oauth.id}/oauth/complete`,
++          { callbackUrl },
++        );
++        expect(completed.status, JSON.stringify(completed.body)).toBe(422);
++        expect(completed.body).toMatchObject({ _tag: "AccountProvisioned" });
++        const used = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++          tool: "present",
++          kind: "query",
++          input: {},
++        });
++        expect(used.status, JSON.stringify(used.body)).toBe(200);
++        expect(used.body).toMatchObject({ valid: true });
++        const stored = yield* legacyStorage([
++          {
++            sql: "SELECT id FROM executor_accounts WHERE provider = $1",
++            params: [current.app.requirements.accounts.service.provider],
++          },
++        ]);
++        expect(stored).toEqual([[{ id: account }]]);
++        yield* serverControl("start");
 +      }),
 +    ),
 +  );
@@ -5392,7 +6008,7 @@ index e7aa405..5871e92 100644
  import { Schema, type Effect } from "effect";
 -import { AccountInfo } from "./provider.ts";
 +import { AccountInfo, AccountCheckResult } from "./provider.ts";
- 
+
  /** Instructions a person can follow while the app holds the sign-in session. */
  export const InteractiveInstructions = Schema.Struct({
 @@ -54,6 +54,11 @@ export interface ConnectHandlers<Context, Method extends string = string> {
@@ -6156,15 +6772,15 @@ index 70815db..539b3fd 100644
 +  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
  });
  export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
- 
+
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
 index 1a4b06c..5d643cc 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -20,6 +20,8 @@ import { protocol14 } from "./14.ts";
- 
+
  import { protocol15 } from "./15.ts";
- 
+
 +import { protocol16 } from "./16.ts";
 +
  export const releasedProtocols = [
@@ -6187,7 +6803,7 @@ index 3366d13..e55625b 100644
 +import { AccountStatus } from "./account-status.ts";
 +export { AccountStatus } from "./account-status.ts";
  import { ProviderSite as ProviderSiteSchema } from "@executor-js/utils/account-site";
- 
+
  export const ProviderSite = ProviderSiteSchema;
 @@ -19,6 +21,8 @@ export class SecretsMethod<Fields extends Schema.Decoder<unknown>> extends Data.
    "secrets",
@@ -6200,7 +6816,7 @@ index 3366d13..e55625b 100644
    readonly exposure?: Readonly<Record<string, FieldExposure>>;
 @@ -248,7 +252,10 @@ export const AccountInfo = Schema.Struct({
  export type AccountInfo = typeof AccountInfo.Type;
- 
+
  /** A passing account check. Failures are thrown, so there is no failing variant. */
 -export const AccountCheckResult = Schema.Struct({ accountInfo: Schema.optionalKey(AccountInfo) });
 +export const AccountCheckResult = Schema.Struct({
@@ -6208,7 +6824,7 @@ index 3366d13..e55625b 100644
 +  status: Schema.optionalKey(AccountStatus),
 +});
  export type AccountCheckResult = typeof AccountCheckResult.Type;
- 
+
  /** The account a provider's check verifies, with invocation-owned HTTP and cancellation. */
 diff --git a/packages/apps/src/implementation/account-check-errors.ts b/packages/apps/src/implementation/account-check-errors.ts
 new file mode 100644
@@ -6258,6 +6874,42 @@ index 0000000..ce05453
 +    );
 +  });
 +}
+diff --git a/packages/apps/src/implementation/account-status-output.ts b/packages/apps/src/implementation/account-status-output.ts
+new file mode 100644
+index 0000000..2e9b46f
+--- /dev/null
++++ b/packages/apps/src/implementation/account-status-output.ts
+@@ -0,0 +1,30 @@
++/** Refuse credential-bearing display data before it leaves a provider or app-owned check. */
++import { Effect, Redacted, Schema } from "effect";
++import { AccountCheckResult } from "../contracts/provider.ts";
++import { HostOutputInvalid, type HostContext } from "../contracts/host.ts";
++import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
++
++export const accountCheckOutput = (value: unknown, context: HostContext, ref?: string) =>
++  Effect.gen(function* () {
++    const result = yield* Schema.decodeUnknownEffect(AccountCheckResult)(value).pipe(
++      Effect.mapError(() => new HostOutputInvalid()),
++    );
++    if (result.status !== undefined) {
++      const secrets = accountFieldSecrets(Redacted.value(context.accounts), 1);
++      if (ref !== undefined && ref !== "") secrets.push(ref);
++      const strings = [
++        ...result.status.badges.flatMap((badge) => [badge.label, badge.tone]),
++        ...result.status.meters.flatMap((meter) => [
++          meter.label,
++          meter.detail ?? "",
++          meter.resetsAt ?? "",
++        ]),
++        ...result.status.stats.flatMap((stat) => [stat.label, stat.value]),
++      ];
++      if (strings.some((text) => secrets.some((secret) => text.includes(secret))))
++        return yield* new HostOutputInvalid();
++    }
++    return yield* Schema.encodeEffect(AccountCheckResult)(result).pipe(
++      Effect.mapError(() => new HostOutputInvalid()),
++    );
++  });
 diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/implementation/app.ts
 index fb5c0c7..7930ddd 100644
 --- a/packages/apps/src/implementation/app.ts
@@ -6283,7 +6935,7 @@ index fb5c0c7..7930ddd 100644
      ...(requirements.icons === undefined || requirements.icons.length === 0
        ? {}
 diff --git a/packages/apps/src/implementation/connect.ts b/packages/apps/src/implementation/connect.ts
-index 798de8f..465742c 100644
+index 798de8f..21fe559 100644
 --- a/packages/apps/src/implementation/connect.ts
 +++ b/packages/apps/src/implementation/connect.ts
 @@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
@@ -6304,12 +6956,22 @@ index 798de8f..465742c 100644
          ...(handler.remove === undefined
            ? {}
            : {
-@@ -138,18 +142,27 @@ export const dispatchConnect = <C>(
+@@ -122,7 +126,8 @@ export const dispatchConnect = <C>(
+       handlers !== undefined && Object.hasOwn(handlers, command.slot)
+         ? handlers[command.slot]
+         : undefined;
+-    if (handler === undefined) return yield* new HostOperationNotFound();
++    if (handler === undefined)
++      return command.step === "check" ? null : yield* new HostOperationNotFound();
+     let result: unknown;
+     switch (command.step) {
+       case "start":
+@@ -138,18 +143,27 @@ export const dispatchConnect = <C>(
        case "cancel":
          yield* handler.cancel?.(context, command.input) ?? Effect.void;
          return null;
 +      case "check":
-+        if (handler.check === undefined) return yield* new HostOperationNotFound();
++        if (handler.check === undefined) return null;
 +        result = yield* handler.check(context, command.input);
 +        break;
        case "remove":
@@ -6333,11 +6995,57 @@ index 798de8f..465742c 100644
        Schema.is(HostOperationNotFound)(error) ||
        Schema.is(HostInputInvalid)(error) ||
        Schema.is(HostOutputInvalid)(error)
+diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/src/implementation/failure-detail.ts
+index 4636bca..e56dc14 100644
+--- a/packages/apps/src/implementation/failure-detail.ts
++++ b/packages/apps/src/implementation/failure-detail.ts
+@@ -1,3 +1,5 @@
++import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
++export { accountFieldSecrets } from "@executor-js/utils/account-secrets";
+ import { Match, Option, Predicate, Redacted, Schema } from "effect";
+ import { CacheError, cacheLimits } from "@executor-js/app-cache/contracts";
+ import { OpenapiError } from "../contracts/openapi.ts";
+@@ -99,34 +101,6 @@ const unverifiedMessage = ({ anonymous }: McpCredentialsUnverified) =>
+             : `The MCP server answered HTTP ${anonymous.status}.`
+       }`;
+
+-/** Account field values of at least this length are replaced wherever a message contains them. */
+-const minimumSecretLength = 6;
+-
+-const secretValues = (value: unknown, found: Set<string>): Set<string> => {
+-  if (typeof value === "string") {
+-    if (value.length >= minimumSecretLength) found.add(value);
+-  } else if (Array.isArray(value)) for (const item of value) secretValues(item, found);
+-  else if (Predicate.isObject(value))
+-    for (const item of Object.values(value)) secretValues(item, found);
+-  return found;
+-};
+-
+-/**
+- * Every credential field value of an invocation's accounts by scope, longest first. The accounts
+- * may not have been checked yet, so each scope is read only when it is a slot-to-account record;
+- * each account keeps its credential values in `fields`.
+- */
+-export const accountFieldSecrets = (accounts: unknown) => {
+-  const found = new Set<string>();
+-  if (Predicate.isObject(accounts))
+-    for (const scope of [accounts["app"], accounts["user"]])
+-      if (Predicate.isObject(scope))
+-        for (const slot of Object.values(scope))
+-          for (const account of Array.isArray(slot) ? slot : [slot])
+-            if (Predicate.hasProperty(account, "fields")) secretValues(account.fields, found);
+-  return [...found].sort((a, b) => b.length - a.length);
+-};
+-
+ /** Every credential field value of an invocation's selected accounts. */
+ export const accountSecrets = (accounts: Redacted.Redacted<ResolvedAccounts>) =>
+   accountFieldSecrets(Redacted.value(accounts));
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 4703377..1485cf3 100644
+index 4703377..1c5e9fe 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
++import { accountCheckOutput } from "./account-status-output.ts";
  import { folderSkillsEffect } from "./skill-files.ts";
  import { AppSkills, SkillFile } from "../contracts/skills.ts";
 -import { accountProviderError, httpProviderError, parseProviderError } from "./provider-error.ts";
@@ -6347,7 +7055,7 @@ index 4703377..1485cf3 100644
  import { OpenapiResponseError } from "../contracts/api-response-error.ts";
  import { toPromise } from "./authoring.ts";
  import type { WorkflowControls, WorkflowReads } from "../contracts/workflows.ts";
-@@ -179,6 +179,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
+@@ -179,6 +180,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
              case "secrets":
                auth.set(name, {
                  type: "secrets",
@@ -6355,16 +7063,16 @@ index 4703377..1485cf3 100644
                  label: method.label,
                  fields: yield* jsonSchemaDocument(method.fields),
                  ...declaredExposure(method.exposure),
-@@ -208,7 +209,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
+@@ -208,7 +210,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
    );
  }
- 
+
 -function declaredSlots(slots: AccountSlots) {
 +function declaredSlots(slots: AccountSlots, checks: readonly string[] | undefined) {
    return Effect.gen(function* () {
      const accounts = new Map<string, DeclaredAccountSlots[string]>();
      for (const [slot, selection] of Object.entries(slots)) {
-@@ -217,6 +218,10 @@ function declaredSlots(slots: AccountSlots) {
+@@ -217,6 +219,10 @@ function declaredSlots(slots: AccountSlots) {
          cardinality: selection instanceof ManyAccounts ? "many" : "one",
          definition: yield* providerDeclaration(provider),
          ...(provider.health === undefined ? {} : { health: true }),
@@ -6375,7 +7083,7 @@ index 4703377..1485cf3 100644
        });
      }
      return Object.fromEntries(accounts);
-@@ -228,10 +233,14 @@ function requirements(
+@@ -228,10 +234,14 @@ function requirements(
    sql: boolean,
    events: Readonly<Record<string, AppEvent>> | undefined,
    icons: AppIcons | undefined,
@@ -6391,7 +7099,7 @@ index 4703377..1485cf3 100644
        capabilities: {
          skills: true,
          toolIndex: true,
-@@ -467,7 +476,13 @@ function dispatch(
+@@ -467,7 +477,13 @@ function dispatch(
        const secrets = accountSecrets(context.accounts);
        // The build's migrations, not a flag, decide whether the app has a database.
        const ownsSql = hasMigrations(context.files ?? []);
@@ -6406,16 +7114,23 @@ index 4703377..1485cf3 100644
        if (request.operation === "connect") {
          const selected = native.accounts.app[request.slot] ?? native.accounts.user[request.slot];
          const provider = selected instanceof ManyAccounts ? selected.provider : selected;
-@@ -695,7 +710,7 @@ function dispatch(
-         return yield* dispatchConnect(definition.connect, request, {
+@@ -692,10 +708,13 @@ function dispatch(
+       );
+       if (request.operation === "connect") {
+         const session = yield* sqlSession();
+-        return yield* dispatchConnect(definition.connect, request, {
++        const result = yield* dispatchConnect(definition.connect, request, {
            ...bound,
            sql: session.writer,
 -        }).pipe(withinDeadline);
 +        }).pipe(classifyAccountCheck(context), withinDeadline);
++        return request.step === "check" && result !== null
++          ? yield* accountCheckOutput(result, context, request.input.ref)
++          : result;
        }
        if (request.operation === "skills") {
          const declared =
-@@ -1106,23 +1121,7 @@ function checkAccount(
+@@ -1106,27 +1125,10 @@ function checkAccount(
            ...(deadline === undefined ? {} : { deadline }),
          });
        }),
@@ -6439,7 +7154,12 @@ index 4703377..1485cf3 100644
 +    ).pipe(classifyAccountCheck(context, account.id), Effect.withSpan("app.account.check"));
      return yield* safe(
        () =>
-         Schema.decodeUnknownEffect(AccountCheckResult)(result ?? {}).pipe(
+-        Schema.decodeUnknownEffect(AccountCheckResult)(result ?? {}).pipe(
+-          Effect.flatMap(Schema.encodeEffect(AccountCheckResult)),
++        accountCheckOutput(result ?? {}, context).pipe(
+           Effect.flatMap(Schema.decodeUnknownEffect(JsonValue)),
+         ),
+       new HostOutputInvalid(),
 diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
 index 4c4b83c..4f80690 100644
 --- a/packages/apps/src/implementation/provider.ts
@@ -6457,7 +7177,7 @@ index a2df74a..cf3e371 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
 @@ -79,6 +79,7 @@ export {
- 
+
  export {
    type AccountCheckContext,
 +  type AccountStatus,
@@ -6490,7 +7210,7 @@ index 114380d..e62aa30 100644
    InteractiveRetirementFailed,
 @@ -250,6 +251,7 @@ export const AccountConnectionClosed = UserFacingError.define({
  export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
- 
+
  const errors = [
 +  AccountProvisioned,
    StorageError,
@@ -6537,8 +7257,29 @@ index 894c039..0641bef 100644
 +  /** This slot can check app-acquired references through connect.check. */
 +  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
  });
- 
+
  export type AccountRequirement = typeof AccountRequirement.Type;
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index a026bcd..71a580f 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -28,6 +28,7 @@ import type {
+ import type { AccountScope, App, AppRequirements } from "./apps.ts";
+ import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
+ import type { Account } from "./account.ts";
++import type { AccountProvisioned } from "./provider.ts";
+ import type {
+   AccountConnectionRefused,
+   AccountConnectionTargetChanged,
+@@ -236,7 +237,7 @@ export interface ResourceLifecycle {
+     readonly account: Account;
+   }) => Effect.Effect<
+     void,
+-    StorageError | AccountConnectionTargetChanged | AccountConnectionRefused
++    StorageError | AccountConnectionTargetChanged | AccountConnectionRefused | AccountProvisioned
+   >;
+   /** Called once for a newly saved account, including secrets and OAuth completion. */
+   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
 index ead5982..226b677 100644
 --- a/packages/sdk/src/contracts/provider.ts
@@ -6570,6 +7311,50 @@ index ead5982..226b677 100644
 +  Object.entries(definition.auth).filter(
 +    ([, method]) => method.type !== "secrets" || method.provisioned !== true,
 +  );
+diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
+new file mode 100644
+index 0000000..63b3bb8
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-check-record.ts
+@@ -0,0 +1,38 @@
++/** Display data shares the existing health JSON; older servers decode its identity fields only. */
++import { Effect, Option, Schema } from "effect";
++import { AccountInfo, AccountStatus } from "apps/contracts";
++import { StorageError } from "../contracts/shared.ts";
++
++const Record = Schema.Struct({ displayStatus: Schema.optionalKey(AccountStatus) });
++export const recordedDisplayStatus = (info: unknown) =>
++  Schema.decodeUnknownOption(Record)(info).pipe(
++    Option.flatMap((record) => Option.fromNullishOr(record.displayStatus)),
++    Option.getOrUndefined,
++  );
++
++export const accountCheckRecord = (
++  previous: { readonly info: unknown; readonly infoCheckedAt: Date | null } | null,
++  info: AccountInfo | undefined,
++  status: AccountStatus | undefined,
++  checkedAt: Date,
++) =>
++  Effect.gen(function* () {
++    const retained =
++      previous?.info == null
++        ? undefined
++        : Option.getOrUndefined(Schema.decodeUnknownOption(AccountInfo)(previous.info));
++    const identity = info ?? retained;
++    const display =
++      status === undefined
++        ? undefined
++        : yield* Schema.encodeEffect(AccountStatus)(status).pipe(
++            Effect.mapError(() => new StorageError()),
++          );
++    return {
++      info:
++        identity === undefined && display === undefined
++          ? null
++          : { ...identity, ...(display === undefined ? {} : { displayStatus: display }) },
++      infoCheckedAt: info === undefined ? (previous?.infoCheckedAt ?? null) : checkedAt,
++    };
++  });
 diff --git a/packages/sdk/src/implementation/account-connections.ts b/packages/sdk/src/implementation/account-connections.ts
 index 6d0eee6..b701700 100644
 --- a/packages/sdk/src/implementation/account-connections.ts
@@ -6618,17 +7403,14 @@ index 6d0eee6..b701700 100644
              let account;
              if (row.reconnectAccount !== null) {
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 3fa5390..a48e380 100644
+index 3fa5390..99f5e41 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -6,6 +6,7 @@
- import { Clock, Effect, Match, Option, Redacted, Result, Schema } from "effect";
- import {
-   AccountInfo,
-+  AccountStatus,
-   HostOperationFailed,
-   ProviderError,
-   type HostAccount,
+@@ -1,3 +1,4 @@
++import { privateAccountCheck } from "./account-status-output.ts";
+ /**
+  * Account checks run by the apps that use an account, as the product names them. Each app's active
+  * version runs its provider's check with the account's current credentials; results are kept
 @@ -13,7 +14,7 @@ import {
  } from "apps/contracts";
  import { AccountCheckStatus, type AccountHealth } from "../contracts/account.ts";
@@ -6638,32 +7420,27 @@ index 3fa5390..a48e380 100644
  import { OAuthReconnectRequired, OAuthRenewalFailed } from "../contracts/oauth.ts";
  import type { Runtime } from "../contracts/runtime.ts";
  import {
-@@ -29,6 +30,7 @@ import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
+@@ -29,6 +30,8 @@ import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
  import { storedAccount } from "./accounts.ts";
  import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
  import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
++import { accountCheckRecord, recordedDisplayStatus } from "./account-check-record.ts";
 +import { checkInteractiveAccount } from "./interactive-check.ts";
  import { query, type Query } from "./database.ts";
  import type { makeOAuth } from "./oauth.ts";
  import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
-@@ -52,7 +54,7 @@ const checkMillis = 15_000;
+@@ -52,7 +55,7 @@ const checkMillis = 15_000;
   */
  const reportMillis = 1_000;
- 
+
 -type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "renewRejected">;
 +type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "resolveSelected" | "renewRejected">;
  type ListApps = (input: {
    readonly owner?: OwnerId;
    readonly ids?: readonly AppId[];
-@@ -67,14 +69,27 @@ type CheckRow = {
-   readonly status: string;
-   readonly checkedAt: Date;
-   readonly info: unknown;
-+  readonly displayStatus: unknown;
-   readonly infoCheckedAt: Date | null;
-   readonly message: string | null;
+@@ -72,9 +75,21 @@ type CheckRow = {
  };
- 
+
  /** The slot whose provider check covers this account in the app's active version. */
 -const checkedSlot = (app: App, account: Pick<HealthAccount, "provider">) =>
 +const checkedSlot = (
@@ -6684,7 +7461,7 @@ index 3fa5390..a48e380 100644
 +    )
      .map(([slot, required]) => ({ slot, required }))
      .sort((a, b) => (a.slot < b.slot ? -1 : a.slot > b.slot ? 1 : 0))[0];
- 
+
 @@ -128,6 +143,7 @@ export const makeAccountHealth = (
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
    sitePolicy: UrlPolicy,
@@ -6693,17 +7470,19 @@ index 3fa5390..a48e380 100644
  ) => {
    /** One account's health from the apps that use it and its recorded checks. */
    const project = (
-@@ -161,12 +177,23 @@ export const makeAccountHealth = (
+@@ -153,6 +169,7 @@ export const makeAccountHealth = (
+         apps: yield* Effect.forEach(apps, (app) =>
+           Effect.gen(function* () {
+             const row = rows.find((item) => item.app === app.id);
++            const displayStatus = row === undefined ? undefined : recordedDisplayStatus(row.info);
+             const check =
+               row === undefined
+                 ? null
+@@ -161,12 +178,17 @@ export const makeAccountHealth = (
                        Effect.mapError(() => new StorageError()),
                      ),
                      checkedAt: row.checkedAt,
-+                    ...(row.displayStatus == null
-+                      ? {}
-+                      : {
-+                          displayStatus: yield* Schema.decodeUnknownEffect(AccountStatus)(
-+                            row.displayStatus,
-+                          ).pipe(Effect.mapError(() => new StorageError())),
-+                        }),
++                    ...(displayStatus === undefined ? {} : { displayStatus }),
                      current:
                        row.deployment === app.activeVersion &&
                        row.credentialGeneration === account.credentialGeneration,
@@ -6718,7 +7497,7 @@ index 3fa5390..a48e380 100644
            }),
          ),
        } satisfies AccountHealth;
-@@ -228,7 +255,8 @@ export const makeAccountHealth = (
+@@ -228,7 +250,8 @@ export const makeAccountHealth = (
    /** Run one app's check and record it, unless a check that started later already finished. */
    const checkApp = (app: App, account: StoredAccount) =>
      Effect.gen(function* () {
@@ -6728,35 +7507,142 @@ index 3fa5390..a48e380 100644
        if (target === undefined || app.activeVersion === null) return;
        const versionId = app.activeVersion;
        const row = yield* query(() =>
-@@ -258,6 +286,15 @@ export const makeAccountHealth = (
-           ),
-         });
+@@ -244,20 +267,46 @@ export const makeAccountHealth = (
+       // Each attempt binds the credential as resolved, so whether it is managed is read with its
+       // values, even if a reconnect replaced it since this check read the account.
+       const attempt = (credential: AccountCredential) =>
+-        runtime.checkAccount({
+-          app: app.id,
+-          build: version.build,
+-          requirement: target.slot,
+-          deadline,
+-          accounts: Redacted.make(
+-            checkedAccounts(
+-              target.required.scope,
+-              target.slot,
+-              invocationAccount(account, definition, credential, clients, sitePolicy),
++        runtime
++          .checkAccount({
++            app: app.id,
++            build: version.build,
++            requirement: target.slot,
++            deadline,
++            accounts: Redacted.make(
++              checkedAccounts(
++                target.required.scope,
++                target.slot,
++                invocationAccount(account, definition, credential, clients, sitePolicy),
++              ),
+             ),
+-          ),
+-        });
++          })
++          .pipe(
++            Effect.flatMap((result) =>
++              privateAccountCheck(result, {
++                app: { checked: { fields: Redacted.value(credential.fields) } },
++              }),
++            ),
++          );
++
        const outcome = yield* Effect.gen(function* () {
 +        if (acquired !== undefined && target.required.interactiveHealth === true) {
-+          return yield* checkInteractiveAccount(db, runtime, oauth.resolveSelected, lifecycle, {
-+            app: app.id,
-+            version,
-+            acquired,
-+            method: account.method,
-+            deadline,
-+          });
++          const result = yield* checkInteractiveAccount(
++            db,
++            runtime,
++            oauth.resolveSelected,
++            lifecycle,
++            {
++              app: app.id,
++              version,
++              acquired,
++              method: account.method,
++              deadline,
++            },
++          );
++          if (result !== undefined) return result;
++          if (target.required.health !== true) return undefined;
 +        }
          const credential = yield* oauth.resolve(account, definition);
          const first = yield* attempt(credential).pipe(Effect.result);
          if (Result.isSuccess(first)) return first.success;
-@@ -289,6 +326,12 @@ export const makeAccountHealth = (
+@@ -275,29 +324,30 @@ export const makeAccountHealth = (
+       // Authorization and storage failures belong to the caller, not the account.
+       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
+         return yield* Effect.fail(outcome.failure);
++      if (Result.isSuccess(outcome) && outcome.success === undefined) return;
+       const status = Result.isSuccess(outcome) ? "healthy" : statusOf(outcome.failure);
+-      const reported = Result.isSuccess(outcome) ? outcome.success.accountInfo : undefined;
+-      const info =
+-        reported === undefined
+-          ? undefined
+-          : yield* Schema.encodeEffect(AccountInfo)(reported).pipe(
+-              Effect.mapError(() => new StorageError()),
+-            );
++      const existing = yield* query(() =>
++        db.findFirst("accountChecks", {
++          where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
++        }),
++      );
++      if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
+       const checkedAt = new Date(startedAt);
++      const success = Result.isSuccess(outcome) ? outcome.success : undefined;
++      const record = yield* accountCheckRecord(
++        existing,
++        success?.accountInfo,
++        success?.status,
++        checkedAt,
++      );
+       const state = {
+         deployment: version.id,
          credentialGeneration: account.credentialGeneration,
          status,
          checkedAt,
-+        displayStatus:
-+          Result.isSuccess(outcome) && outcome.success.status !== undefined
-+            ? yield* Schema.encodeEffect(AccountStatus)(outcome.success.status).pipe(
-+                Effect.mapError(() => new StorageError()),
-+              )
-+            : null,
++        ...record,
          message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
-         ...(info === undefined ? {} : { info, infoCheckedAt: checkedAt }),
+-        ...(info === undefined ? {} : { info, infoCheckedAt: checkedAt }),
        };
+-      const existing = yield* query(() =>
+-        db.findFirst("accountChecks", {
+-          where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
+-        }),
+-      );
+-      if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
+       yield* query(() =>
+         db.upsert("accountChecks", {
+           where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
+diff --git a/packages/sdk/src/implementation/account-status-output.ts b/packages/sdk/src/implementation/account-status-output.ts
+new file mode 100644
+index 0000000..60992ac
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-status-output.ts
+@@ -0,0 +1,26 @@
++/** Validate display data against raw credentials before the SDK persists or returns it. */
++import { Effect, Schema } from "effect";
++import { AccountCheckResult, HostOutputInvalid } from "apps/contracts";
++import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
++
++export const privateAccountCheck = (value: AccountCheckResult, accounts: unknown, ref?: string) =>
++  Effect.gen(function* () {
++    if (value.status !== undefined) {
++      const secrets = accountFieldSecrets(accounts, 1);
++      if (ref !== undefined && ref !== "") secrets.push(ref);
++      const strings = [
++        ...value.status.badges.flatMap((badge) => [badge.label, badge.tone]),
++        ...value.status.meters.flatMap((meter) => [
++          meter.label,
++          meter.detail ?? "",
++          meter.resetsAt ?? "",
++        ]),
++        ...value.status.stats.flatMap((stat) => [stat.label, stat.value]),
++      ];
++      if (strings.some((text) => secrets.some((secret) => text.includes(secret))))
++        return yield* new HostOutputInvalid();
++    }
++    return yield* Schema.decodeUnknownEffect(AccountCheckResult)(value).pipe(
++      Effect.mapError(() => new HostOutputInvalid()),
++    );
++  });
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
 index 1bc5bc2..b378e59 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
@@ -6764,7 +7650,7 @@ index 1bc5bc2..b378e59 100644
 @@ -59,16 +59,43 @@ export interface AppProtocol {
    readonly sealedCredentials: boolean;
  }
- 
+
 +/** Protocol 17 adds display status and app-owned account checks. */
 +const protocol17: AppProtocol = {
 +  version: 17,
@@ -6811,7 +7697,7 @@ index 1bc5bc2..b378e59 100644
 @@ -100,12 +127,43 @@ const protocol15: AppProtocol = {
    sealedCredentials: true,
  };
- 
+
 +const withoutProvisionedAccount = (account: HostAccount): HostAccount => ({
 +  ...account,
 +  provider: {
@@ -6860,10 +7746,10 @@ index 1bc5bc2..b378e59 100644
 +    protocol17,
    ].map((protocol) => [protocol.version, protocol]),
  );
- 
+
 @@ -419,6 +478,9 @@ export const interactiveProtocolAdditions = [
  ];
- 
+
  export const interactiveProtocolAdaptations = [
 +  { message: "request", protocols: [16], adapter: "protocol16.refuse rejects connect.check" },
 +  { message: "invocation", protocols: [16], adapter: "protocol16.invocation" },
@@ -6933,27 +7819,15 @@ index 135f853..08edc5c 100644
      );
      const schedules = makeSchedules(
        options.database,
-diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 9acfebb..c0dfd91 100644
---- a/packages/sdk/src/implementation/database.ts
-+++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
- /** Bound query handle sharing the host connection and reactive transaction context. */
- export type Query = ReturnType<typeof database>;
- /** Select the latest migrated storage schema. */
--export const database = (storage: ExecutorDatabase) => storage.orm("4.0.16");
-+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
- /**
-  * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/interactive-check.ts b/packages/sdk/src/implementation/interactive-check.ts
 new file mode 100644
-index 0000000..ed173d9
+index 0000000..ba089b3
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-check.ts
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,60 @@
++import { privateAccountCheck } from "./account-status-output.ts";
 +/** Check an app-owned reference with the caller's current linked accounts and normal app authority. */
-+import { Effect, Schema } from "effect";
++import { Effect, Redacted, Schema } from "effect";
 +import { AccountCheckResult } from "apps/contracts";
 +import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
 +import type { Runtime } from "../contracts/runtime.ts";
@@ -7007,79 +7881,10 @@ index 0000000..ed173d9
 +        input: { method, ref: acquired.ref },
 +      },
 +    });
-+    return yield* Schema.decodeUnknownEffect(AccountCheckResult)(result);
++    if (result === null) return undefined;
++    const checked = yield* Schema.decodeUnknownEffect(AccountCheckResult)(result);
++    return yield* privateAccountCheck(checked, Redacted.value(context.accounts), acquired.ref);
 +  });
-diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index b0b94bb..c086e46 100644
---- a/packages/sdk/src/implementation/storage-migrations.ts
-+++ b/packages/sdk/src/implementation/storage-migrations.ts
-@@ -16,6 +16,7 @@ import {
-   version4014Tables,
-   version4015Tables,
-   version4016Tables,
-+  version4017Tables,
-   appScheduleIndex,
-   scopedRunKeyIndex,
-   version402Tables,
-@@ -658,6 +659,18 @@ export const storageSchemas = [
-       }),
-     },
-   }),
-+  schema({
-+    version: "4.0.17",
-+    tables: version4017Tables,
-+    relations: {
-+      accounts: ({ one }) => ({
-+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
-+      }),
-+      apps: ({ one }) => ({
-+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
-+      }),
-+    },
-+  }),
- ] as const;
- 
- /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
-diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
-index e275627..6f6cc7b 100644
---- a/packages/sdk/src/implementation/storage-schema.ts
-+++ b/packages/sdk/src/implementation/storage-schema.ts
-@@ -852,6 +852,13 @@ const sitedAccounts = table("executor_accounts", {
- /** Tables of the 4.0.16 layout. Existing accounts have no selected site. */
- export const version4016Tables = { ...version4015Tables, accounts: sitedAccounts };
- 
-+/** 4.0.17 adds optional display data to each check. Old servers leave it null. */
-+const statusAccountChecks = table("executor_account_checks", {
-+  ...explainedAccountChecks.columns,
-+  displayStatus: column("display_status", Schema.NullOr(Schema.Json)).default(null),
-+}).unique("executor_account_checks_account_app", ["account", "app"]);
-+export const version4017Tables = { ...version4016Tables, accountChecks: statusAccountChecks };
-+
- /**
-  * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
-  * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
-diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index 025cc66..94f64ce 100644
---- a/packages/sdk/src/implementation/storage.ts
-+++ b/packages/sdk/src/implementation/storage.ts
-@@ -20,7 +20,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-     const sql = yield* SqlClient.SqlClient;
-     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
-     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
--    const db = bindOrm(client.orm("4.0.16"), sql, reactivity);
-+    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
-     const checkMigration = Effect.gen(function* () {
-       const migrator = yield* client.createMigrator;
-       const version = yield* migrator.version;
-@@ -71,7 +71,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-       Effect.mapError(() => new StorageError()),
-     );
-     return {
--      orm: (_version: "4.0.16") => db,
-+      orm: (_version: "4.0.17") => db,
-       reactivity,
-       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
-       toolSearch: makeToolSearchStore(sql),
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
 index 8c6ebe5..8d2ea30 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
@@ -7104,11 +7909,11 @@ index d6ce5bf..ebbadc7 100644
 @@ -11,6 +11,8 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
- 
+
 +import { AccountDisplayStatus } from "./account-status.tsx";
 +
  type AccountInfo = NonNullable<AccountHealth["info"]>;
- 
+
  /** What one app's latest check means for the reader; tone matches the other status pills. */
 @@ -219,6 +221,9 @@ export function AccountCheckResult({ health }: { readonly health: AccountAppHeal
          </span>
@@ -7218,14 +8023,14 @@ index ed27395..d54641b 100644
 @@ -46,6 +46,11 @@ import {
  import { cn } from "../lib/utils.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
- 
+
 +const provisionedOnly = (requirement: AccountRequirement) =>
 +  Object.values(requirement.definition.auth).every(
 +    (method) => method.type === "secrets" && method.provisioned === true,
 +  );
 +
  const accountName = (account: AccountSummary) => account.label || "Unnamed account";
- 
+
  /**
 @@ -275,9 +280,16 @@ function useRevalidateChecks(
      if (revalidate === undefined) return;
@@ -7293,16 +8098,55 @@ index ed27395..d54641b 100644
        {replacingWithNew && bound !== undefined && (
          <RemoveAppBoundAccount
            name={accountName(bound.account)}
-diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
-index fbb182d..591f09e 100644
---- a/playground/sdk/storage.ts
-+++ b/playground/sdk/storage.ts
-@@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
-       Effect.gen(function* () {
-         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-         yield* storage.migrate;
--        const orm = storage.orm("4.0.16");
-+        const orm = storage.orm("4.0.17");
-         const createdAt = new Date("2026-01-01T00:00:00.000Z");
-         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
-           id: "dpl_example",
+diff --git a/packages/utils/package.json b/packages/utils/package.json
+index 4bd3285..58ee73e 100644
+--- a/packages/utils/package.json
++++ b/packages/utils/package.json
+@@ -4,6 +4,7 @@
+   "type": "module",
+   "sideEffects": false,
+   "exports": {
++    "./account-secrets": "./src/account-secrets.ts",
+     "./url-policy": "./src/url-policy.ts",
+     "./account-site": "./src/account-site.ts",
+     "./safe-fetch": "./src/safe-fetch.ts",
+diff --git a/packages/utils/src/account-secrets.ts b/packages/utils/src/account-secrets.ts
+new file mode 100644
+index 0000000..1de5b1c
+--- /dev/null
++++ b/packages/utils/src/account-secrets.ts
+@@ -0,0 +1,34 @@
++import { Predicate } from "effect";
++
++/** Account field values of at least this length are replaced wherever a message contains them. */
++const minimumSecretLength = 6;
++
++const secretValues = (
++  value: unknown,
++  found: Set<string>,
++  minimum = minimumSecretLength,
++): Set<string> => {
++  if (typeof value === "string") {
++    if (value.length >= minimum) found.add(value);
++  } else if (Array.isArray(value)) for (const item of value) secretValues(item, found, minimum);
++  else if (Predicate.isObject(value))
++    for (const item of Object.values(value)) secretValues(item, found, minimum);
++  return found;
++};
++
++/**
++ * Every credential field value of an invocation's accounts by scope, longest first. The accounts
++ * may not have been checked yet, so each scope is read only when it is a slot-to-account record;
++ * each account keeps its credential values in `fields`.
++ */
++export const accountFieldSecrets = (accounts: unknown, minimum = minimumSecretLength) => {
++  const found = new Set<string>();
++  if (Predicate.isObject(accounts))
++    for (const scope of [accounts["app"], accounts["user"]])
++      if (Predicate.isObject(scope))
++        for (const slot of Object.values(scope))
++          for (const account of Array.isArray(slot) ? slot : [slot])
++            if (Predicate.hasProperty(account, "fields"))
++              secretValues(account.fields, found, minimum);
++  return [...found].sort((a, b) => b.length - a.length);
++};

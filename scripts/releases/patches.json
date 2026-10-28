@@ -258,11 +258,11 @@
       {
       "identity": "executor-account-status",
       "file": "0029-account-status.patch",
-      "content_sha256": "ef1272479eaa1f7e9a8e2b0863901bd80f7be00aa9bef800a77a79ef791f57cd",
+      "content_sha256": "6551f7c1a2a4c82f663eaf12497fb6624738e32676aa6ccfcc3325224ca78a80",
       "kind": "overlay",
       "upstream_pull_request": null,
       "upstream_issue": 2418,
-      "database_sensitive": true,
+      "database_sensitive": false,
       "workflow_sensitive": false
     },
     {
