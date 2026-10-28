@@ -748,7 +748,7 @@ index 0000000..7db2259
 +    return rows.length === 1;
 +  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index fb840e6..5bc80e1 100644
+index fb840e6..ff52a29 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -1,3 +1,7 @@
@@ -795,7 +795,7 @@ index fb840e6..5bc80e1 100644
      const lifecycle: ResourceLifecycle = {
        userLinks: (input) =>
          linkedAccounts(sql, { subject: input.subject, apps: [input.app] }).pipe(
-@@ -585,6 +618,33 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -585,6 +618,36 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
              where organization_id = ${organization} and client_id = ${survivor.id}`;
            return true;
          }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
@@ -806,9 +806,12 @@ index fb840e6..5bc80e1 100644
 +      connectionSaving: (connection, save) =>
 +        Effect.gen(function* () {
 +          const instance = yield* executor;
-+          const pending = yield* instance.accountConnections
-+            .get({ connection })
-+            .pipe(Effect.mapError(() => new StorageError()));
++          const pending = yield* instance.accountConnections.get({ connection }).pipe(
++            Effect.mapError((error) =>
++              // An edited requirement keeps the connection's existing conflict response.
++              Schema.is(AccountConnectionTargetChanged)(error) ? error : new StorageError(),
++            ),
++          );
 +          if (pending.state.status === "completed") return yield* save;
 +          const access = yield* asOwner(pending.owner, checkConnection(pending)).pipe(
 +            Effect.mapError(() => new StorageError()),
@@ -829,7 +832,7 @@ index fb840e6..5bc80e1 100644
        accountRemoving: (account) =>
          Effect.gen(function* () {
            const organization = yield* organizationOf(account.owner);
-@@ -599,7 +659,11 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -599,7 +662,11 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
            // above makes a concurrent link wait: inserting a link takes a key share lock on the
            // account row, which deleting the account then holds exclusively.
            yield* sql`select id from executor_accounts where id = ${account.id} for update`;
@@ -842,7 +845,7 @@ index fb840e6..5bc80e1 100644
            // Unlink the account's user links now, before the SDK removes its webhook sources: link,
            // unlink and app removal all take links before sources, so leaving this to the account
            // row's cascade would take them in the opposite order and deadlock with removing an app
-@@ -664,13 +728,16 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -664,13 +731,16 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
              if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
            }
            const sources = yield* webhooks;
@@ -8567,7 +8570,7 @@ index 7959503..894c039 100644
        OpenApi.Description,
        "Delete one app, its schedules and its webhook sources. Saved accounts, retained versions and other copies are kept. Repeating removal is safe.",
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 23e1f90..a026bcd 100644
+index 23e1f90..3d3e5b7 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,3 +1,4 @@
@@ -8575,7 +8578,7 @@ index 23e1f90..a026bcd 100644
  import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
  import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
  /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-@@ -193,6 +194,20 @@ export interface ResourceLifecycle {
+@@ -193,6 +194,21 @@ export interface ResourceLifecycle {
    readonly connectionCompleting: (
      connection: AccountConnectionCompletion,
    ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
@@ -8587,6 +8590,7 @@ index 23e1f90..a026bcd 100644
 +    A,
 +    | E
 +    | StorageError
++    | AccountConnectionTargetChanged
 +    | import("./interactive-errors.ts").InteractiveRetirementBusy
 +    | import("./interactive-errors.ts").InteractiveRetirementFailed,
 +    R
@@ -8596,7 +8600,7 @@ index 23e1f90..a026bcd 100644
    /**
     * Host-only deployment guard, in each short reservation/persistence transaction. The final
     * check runs after compilation and before saving or promoting the app; no external I/O.
-@@ -453,6 +468,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -453,6 +469,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
    readonly [RepositoryHost]: RepositoryHost;
    readonly [StorageHost]: StorageHost;
@@ -8604,7 +8608,7 @@ index 23e1f90..a026bcd 100644
    readonly [PrefetchHost]: PrefetchHost;
    readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
    readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
-@@ -479,6 +495,7 @@ export type PromiseExecutor = Promisify<
+@@ -479,6 +496,7 @@ export type PromiseExecutor = Promisify<
      | typeof WorkflowHost
      | typeof WebhookSourceHost
      | typeof RepositoryHost
