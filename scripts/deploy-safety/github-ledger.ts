@@ -24,7 +24,12 @@ const systemName = "basalt-deploy-safety";
 export type LedgerEnvironment = {
   token: string;
   repository: string;
+  /** The Actions run attempt this process runs in; recorded on every deployment it creates. */
+  run?: RunIdentity;
 };
+
+/** One attempt of a GitHub Actions run, which a deployment record names as the run that owns it. */
+export type RunIdentity = { repository: string; id: number; attempt: number };
 
 export type DeploymentPayload = {
   system: typeof systemName;
@@ -50,6 +55,11 @@ export type DeploymentPayload = {
    * manual rollback restores: this release's own backup was taken after the failed one's writes.
    */
   rollbackBackup?: RecordedBackup;
+  /**
+   * The Actions run attempt that created this record and is the only one that finishes it. When
+   * that attempt has completed but the record is still unfinished, the job was killed.
+   */
+  run?: RunIdentity;
 };
 
 export type AttemptWindow = { startedAt: string; endedAt: string };
@@ -106,7 +116,13 @@ export function readLedgerEnvironment(source = process.env): LedgerEnvironment {
   if (!token?.trim()) throw new SafetyGateError("GITHUB_TOKEN is required for the production deploy ledger");
   if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
     throw new SafetyGateError("GITHUB_REPOSITORY must identify the current repository");
-  return { token, repository };
+  const id = source.GITHUB_RUN_ID?.trim();
+  const attempt = source.GITHUB_RUN_ATTEMPT?.trim();
+  if (!id && !attempt) return { token, repository };
+  if (!id || !attempt || !/^[1-9][0-9]*$/.test(id) || !/^[1-9][0-9]*$/.test(attempt) ||
+      !Number.isSafeInteger(Number(id)) || !Number.isSafeInteger(Number(attempt)))
+    throw new SafetyGateError("GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT must identify this Actions run attempt");
+  return { token, repository, run: { repository, id: Number(id), attempt: Number(attempt) } };
 }
 
 /**
@@ -119,12 +135,13 @@ export async function readDeploymentLedger(
   environment: LedgerEnvironment,
   fetcher: Fetcher = fetch,
   rollForward?: RollForward,
+  now: () => number = Date.now,
 ): Promise<DeploymentLedger> {
   const deployments = await listDeployments(environment, fetcher);
   deployments.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
-  const ledger = await readLatestDeployment(deployments, environment, fetcher);
+  const ledger = await readLatestDeployment(deployments, environment, fetcher, now);
   if (!rollForward || ledger.state !== "unresolved" || !ledger.lastSuccessful) return ledger;
-  const result = await supersedeFailedRelease(deployments, ledger.lastSuccessful, environment, fetcher, rollForward);
+  const result = await supersedeFailedRelease(deployments, ledger.lastSuccessful, environment, fetcher, rollForward, now);
   if ("refusal" in result) return { ...ledger, supersedeRefusal: result.refusal };
   return { ...result.ready, superseded: result.superseded };
 }
@@ -134,14 +151,16 @@ async function readLatestDeployment(
   deployments: Deployment[],
   environment: LedgerEnvironment,
   fetcher: Fetcher,
+  now: () => number,
 ): Promise<DeploymentLedger> {
   if (deployments.length === 0) return { state: "uninitialized" };
   const latest = deployments[0]!;
   if (latest.environment !== "production")
     throw new SafetyGateError("Latest GitHub deployment record is outside production; refusing to use it as a baseline");
   const commit = gitCommit(latest.sha, "latest deployment SHA");
-  const statuses = await listStatuses(environment, latest.id, fetcher);
   const latestPayload = parseDeploymentPayload(latest.payload);
+  const { statuses, why } = await statusesOfLatest(latest, latestPayload, deployments, environment, fetcher, now);
+  const unfinishedBecause = why ? `; it still counts as unfinished because ${why}` : "";
   if (latestPayload.gitCommit !== commit)
     throw new SafetyGateError("Latest production deployment payload does not match its SHA");
   if (statuses.length === 0)
@@ -150,7 +169,7 @@ async function readLatestDeployment(
       deploymentId: latest.id,
       gitCommit: commit,
       deploymentStatus: "missing",
-      reason: "latest deployment has no status",
+      reason: `latest deployment has no status${unfinishedBecause}`,
       lastSuccessful: await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher),
       payload: latestPayload,
     };
@@ -169,7 +188,10 @@ async function readLatestDeployment(
       deploymentId: latest.id,
       gitCommit: commit,
       deploymentStatus: status.state,
-      reason: "latest production deployment did not finish successfully",
+      // A status id of 0 is the in-memory failure of a record whose run finished without finishing it.
+      reason: status.id === 0
+        ? "the run that owned the latest production deployment finished without finishing it"
+        : `latest production deployment did not finish successfully${unfinishedBecause}`,
       lastSuccessful,
       payload: latestPayload,
     };
@@ -307,6 +329,7 @@ export async function finishDeployment(
     body: JSON.stringify({
       state,
       description: state === "success" ? "Production deployment verified" : "Production deployment did not complete",
+      ...runLink(environment),
     }),
   }, [201]);
 }
@@ -341,6 +364,7 @@ async function createDeployment(
   payload: DeploymentPayload,
   fetcher: Fetcher,
 ): Promise<number> {
+  if (environment.run) payload = { ...payload, run: environment.run };
   const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments`;
   const reply = await requestJson(fetcher, "GitHub", url, {
     method: "POST",
@@ -366,7 +390,7 @@ async function createDeployment(
   await requestJson(fetcher, "GitHub", `${url}/${id}/statuses`, {
     method: "POST",
     headers: headers(environment.token),
-    body: JSON.stringify({ state: "in_progress", description: "Production safety gates passed" }),
+    body: JSON.stringify({ state: "in_progress", description: "Production safety gates passed", ...runLink(environment) }),
   }, [201]);
   writeActionOutput("deployment_id", String(id));
   return id;
@@ -430,6 +454,7 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
   }
   if (payload.rollbackOf !== undefined)
     parsed.rollbackOf = gitCommit(payload.rollbackOf, "deployment rollbackOf");
+  if (payload.run !== undefined) parsed.run = parseRunIdentity(payload.run);
   if (payload.rollForwardOf !== undefined)
     parsed.rollForwardOf = gitCommit(payload.rollForwardOf, "deployment rollForwardOf");
   if (payload.rollbackBackup !== undefined) {
@@ -539,6 +564,80 @@ async function endedAttemptWindows(
   return windows;
 }
 
+/** Statuses a record that is still waiting or in progress may have before its run finishes. */
+const unfinished = new Set(["missing", "pending", "queued", "in_progress"]);
+
+/**
+ * How long after its run attempt completed an unfinished record keeps blocking. Killing a job
+ * doesn't stop work it started on the database server: a running statement or migration
+ * transaction can still commit, and a lost runner's machine may still be connected. This covers
+ * the longest such statement or migration expected, so the next release can't run on top of it.
+ */
+export const KILLED_RUN_GRACE_MS = 15 * 60 * 1000;
+
+type LatestStatuses = {
+  statuses: Array<{ id: number; state: string; created_at: string }>;
+  /** Why an unfinished record with a run identity still blocks, for the refusal text. */
+  why?: string;
+};
+
+/**
+ * The latest record's statuses, newest first. A record left unfinished by a run attempt that
+ * completed at least `KILLED_RUN_GRACE_MS` ago, after a successful deployment, reads as failed:
+ * the job was killed before it could say so. Only the run the record names counts, and only when
+ * the Actions API confirms it has completed. Nothing is written back to GitHub.
+ */
+async function statusesOfLatest(
+  latest: Deployment,
+  payload: DeploymentPayload,
+  deployments: Deployment[],
+  environment: LedgerEnvironment,
+  fetcher: Fetcher,
+  now: () => number,
+): Promise<LatestStatuses> {
+  const statuses = await listStatuses(environment, latest.id, fetcher);
+  if (!payload.run || !unfinished.has(statuses[0]?.state ?? "missing")) return { statuses };
+  if (!await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher))
+    return { statuses, why: "no successful deployment precedes it" };
+  const run = await runCompletedAt(payload.run, environment, fetcher, now);
+  if ("why" in run) return { statuses, why: run.why };
+  return { statuses: [{ id: 0, state: "failure", created_at: run.completedAt }, ...statuses] };
+}
+
+/**
+ * When the run attempt completed, with any conclusion, at least `KILLED_RUN_GRACE_MS` ago, or why
+ * it can't count yet. Every doubt is a `why`; it never carries a response body or a credential.
+ */
+async function runCompletedAt(
+  run: RunIdentity,
+  environment: LedgerEnvironment,
+  fetcher: Fetcher,
+  now: () => number,
+): Promise<{ completedAt: string } | { why: string }> {
+  if (run.repository.toLowerCase() !== environment.repository.toLowerCase())
+    return { why: "its run identity names another repository" };
+  const name = `run ${run.id} attempt ${run.attempt}`;
+  let body: Record<string, unknown>;
+  try {
+    const url = `${apiOrigin}/repos/${repositoryPath(run.repository)}/actions/runs/${run.id}/attempts/${run.attempt}`;
+    body = record((await requestJson(fetcher, "GitHub", url, { method: "GET", headers: headers(environment.token) })).body, "GitHub Actions run");
+  } catch (error) {
+    const status = error instanceof SafetyGateError ? /HTTP (\d{3})/.exec(error.message)?.[1] : undefined;
+    return { why: `${name} lookup failed (${status ? `HTTP ${status}` : "no usable response"})` };
+  }
+  const repository = body.repository && typeof body.repository === "object" ? (body.repository as Record<string, unknown>).full_name : undefined;
+  if (body.id !== run.id || body.run_attempt !== run.attempt ||
+      typeof repository !== "string" || repository.toLowerCase() !== run.repository.toLowerCase())
+    return { why: `${name} lookup answered about another run` };
+  if (body.status !== "completed")
+    return { why: `${name} is still ${typeof body.status === "string" && /^[a-z_]{1,32}$/.test(body.status) ? body.status : "unfinished"}` };
+  const completedAt = typeof body.updated_at === "string" ? Date.parse(body.updated_at) : Number.NaN;
+  if (!Number.isFinite(completedAt)) return { why: `${name} completed without a usable completion time` };
+  if (now() - completedAt < KILLED_RUN_GRACE_MS)
+    return { why: `${name} completed but is still within the ${KILLED_RUN_GRACE_MS / 60_000}-minute grace period` };
+  return { completedAt: body.updated_at as string };
+}
+
 /**
  * Sets aside the one failed release since the last success when the release now running contains
  * it, or says why it can't. Exactly one record may follow that success: a release whose latest
@@ -554,6 +653,7 @@ async function supersedeFailedRelease(
   environment: LedgerEnvironment,
   fetcher: Fetcher,
   rollForward: RollForward,
+  now: () => number,
 ): Promise<{ ready: Extract<DeploymentLedger, { state: "ready" }>; superseded: SupersededRelease } | { refusal: string }> {
   const index = deployments.findIndex(({ id }) => id === lastSuccessful.deploymentId);
   if (index < 0) return { refusal: "the last successful deployment is missing from the ledger" };
@@ -562,15 +662,16 @@ async function supersedeFailedRelease(
   const failed = deployments[0]!;
   const refuse = (why: string) => ({ refusal: `deployment ${failed.id} ${why}` });
   if (failed.environment !== "production") return refuse("is outside production");
-  const statuses = await listStatuses(environment, failed.id, fetcher);
-  const status = statuses[0]?.state ?? "missing";
-  if (!endedWithoutSuccess(statuses)) return refuse(`is ${status}, not a failed attempt that never succeeded`);
   let payload: DeploymentPayload;
   try {
     payload = parseDeploymentPayload(failed.payload);
   } catch {
     return refuse("has unreadable ledger metadata");
   }
+  const { statuses, why } = await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
+  const status = statuses[0]?.state ?? "missing";
+  if (!endedWithoutSuccess(statuses))
+    return refuse(`is ${status}, not a failed attempt that never succeeded${why ? `; it still counts as unfinished because ${why}` : ""}`);
   if (payload.kind !== "release") return refuse("is a rollback, not a release");
   if (payload.gitCommit !== failed.sha || payload.candidateGitCommit !== failed.sha)
     return refuse("metadata does not match its SHA");
@@ -612,6 +713,23 @@ async function findPreviousSuccessfulDeployment(
     return { deploymentId: deployment.id, gitCommit: sha, pins: payload.pins };
   }
   return undefined;
+}
+
+function parseRunIdentity(value: unknown): RunIdentity {
+  const run = record(value, "deployment run identity");
+  const { repository, id, attempt } = run;
+  if (typeof repository !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+      typeof id !== "number" || !Number.isSafeInteger(id) || id < 1 ||
+      typeof attempt !== "number" || !Number.isSafeInteger(attempt) || attempt < 1 ||
+      Object.keys(run).length !== 3)
+    throw new SafetyGateError("Deployment run identity is invalid");
+  return { repository, id, attempt };
+}
+
+/** A status link to the run attempt, so a person can open the run that owns the record. */
+function runLink(environment: LedgerEnvironment): { log_url?: string } {
+  const { run } = environment;
+  return run ? { log_url: `https://github.com/${repositoryPath(run.repository)}/actions/runs/${run.id}/attempts/${run.attempt}` } : {};
 }
 
 function headers(token: string): Record<string, string> {
