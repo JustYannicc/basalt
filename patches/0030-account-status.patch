@@ -767,10 +767,10 @@ index 0000000..25d9689
 +    };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index caf168d..63bd85e 100644
+index 02c6259..402c62c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7292,6 +7292,127 @@ export const scenarios = plan({
+@@ -7329,6 +7329,128 @@ export const scenarios = plan({
        local: na("Uses hosted account links and authentication."),
      },
    },
@@ -843,7 +843,8 @@ index caf168d..63bd85e 100644
 +    fixtures: "actors",
 +    legacyStorage: true,
 +    file: "account-status-privacy.spec.ts",
-+    title: "account status rejects credential and opaque reference strings before storage",
++    title:
++      "account status rejects credential and opaque reference strings before storage but keeps plain fields and lookalikes",
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: na("Uses isolated loopback account fixtures."),
@@ -1189,10 +1190,10 @@ index 0000000..6635967
 +});
 diff --git a/e2e/tests/account-status-privacy.spec.ts b/e2e/tests/account-status-privacy.spec.ts
 new file mode 100644
-index 0000000..997bf7c
+index 0000000..5caa45e
 --- /dev/null
 +++ b/e2e/tests/account-status-privacy.spec.ts
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,89 @@
 +/** Successful checks cannot publish credentials in display strings or plaintext storage. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1219,11 +1220,19 @@ index 0000000..997bf7c
 +    withHostedCase(
 +      context,
 +      Effect.gen(function* () {
-+        const fixture = yield* statusAccount((connect, check) =>
-+          accountStatusSource(connect, check).replace(
-+            "token: string()",
-+            "token: string(), short: string()",
-+          ),
++        const contact = "owner@example.test";
++        const fixture = yield* statusAccount(
++          (connect, check) =>
++            accountStatusSource(connect, check)
++              .replace(
++                "defineApp, defineProvider, interactive,",
++                "defineApp, defineProvider, interactive, plain,",
++              )
++              .replace(
++                "token: string()",
++                "token: string(), short: string(), contact: plain(string())",
++              ),
++          { contact },
 +        );
 +        for (const secret of ["opaque-1", interactiveBackendKey, "xy"]) {
 +          for (const status of [
@@ -1246,6 +1255,21 @@ index 0000000..997bf7c
 +            expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(secret);
 +          }
 +        }
++        // A plain() field is public, and a short secret inside a longer word or its hex is not a leak.
++        yield* fixture.statusBackend.answer({
++          status: 200,
++          body: {
++            accountInfo: { email: contact },
++            status: {
++              ...displayedStatus,
++              badges: [{ label: "Proxy", tone: "good" }],
++              stats: [{ label: "Hex", value: Buffer.from("xy").toString("hex") }],
++            },
++          },
++        });
++        const healthy = yield* fixture.check();
++        expect((yield* body(Health, healthy)).apps[0]?.check?.status).toBe("healthy");
++        expect(JSON.stringify((yield* fixture.read()).body)).toContain(contact);
 +        const stored = yield* legacyStorage([
 +          {
 +            sql: "SELECT account_info, message FROM executor_account_checks WHERE account = $1",
@@ -8103,7 +8127,7 @@ index 6d0eee6..b701700 100644
              let account;
              if (row.reconnectAccount !== null) {
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 3fa5390..d4a5874 100644
+index 3fa5390..16d4da9 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,4 @@
@@ -8132,7 +8156,7 @@ index 3fa5390..d4a5874 100644
 @@ -52,7 +55,7 @@ const checkMillis = 15_000;
   */
  const reportMillis = 1_000;
-
+ 
 -type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "renewRejected">;
 +type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolve" | "resolveSelected" | "renewRejected">;
  type ListApps = (input: {
@@ -8140,7 +8164,7 @@ index 3fa5390..d4a5874 100644
    readonly ids?: readonly AppId[];
 @@ -72,9 +75,21 @@ type CheckRow = {
  };
-
+ 
  /** The slot whose provider check covers this account in the app's active version. */
 -const checkedSlot = (app: App, account: Pick<HealthAccount, "provider">) =>
 +const checkedSlot = (
@@ -8161,7 +8185,7 @@ index 3fa5390..d4a5874 100644
 +    )
      .map(([slot, required]) => ({ slot, required }))
      .sort((a, b) => (a.slot < b.slot ? -1 : a.slot > b.slot ? 1 : 0))[0];
-
+ 
 @@ -128,6 +143,7 @@ export const makeAccountHealth = (
    clients: ReadonlyMap<string, FirstPartyOAuthClient>,
    sitePolicy: UrlPolicy,
@@ -8207,7 +8231,7 @@ index 3fa5390..d4a5874 100644
        if (target === undefined || app.activeVersion === null) return;
        const versionId = app.activeVersion;
        const row = yield* query(() =>
-@@ -244,20 +267,46 @@ export const makeAccountHealth = (
+@@ -244,20 +267,52 @@ export const makeAccountHealth = (
        // Each attempt binds the credential as resolved, so whether it is managed is read with its
        // values, even if a reconnect replaced it since this check read the account.
        const attempt = (credential: AccountCredential) =>
@@ -8240,7 +8264,13 @@ index 3fa5390..d4a5874 100644
 +          .pipe(
 +            Effect.flatMap((result) =>
 +              privateAccountCheck(result, {
-+                app: { checked: { fields: Redacted.value(credential.fields) } },
++                app: {
++                  checked: {
++                    provider: definition,
++                    method: account.method,
++                    fields: Redacted.value(credential.fields),
++                  },
++                },
 +              }),
 +            ),
 +          );
@@ -8266,7 +8296,7 @@ index 3fa5390..d4a5874 100644
          const credential = yield* oauth.resolve(account, definition);
          const first = yield* attempt(credential).pipe(Effect.result);
          if (Result.isSuccess(first)) return first.success;
-@@ -275,29 +324,30 @@ export const makeAccountHealth = (
+@@ -275,29 +330,30 @@ export const makeAccountHealth = (
        // Authorization and storage failures belong to the caller, not the account.
        if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
          return yield* Effect.fail(outcome.failure);
@@ -8311,13 +8341,19 @@ index 3fa5390..d4a5874 100644
        yield* query(() =>
          db.upsert("accountChecks", {
            where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
-@@ -358,7 +408,11 @@ export const makeAccountHealth = (
+@@ -358,7 +414,17 @@ export const makeAccountHealth = (
              }),
            ),
          })
 -        .pipe(Effect.timeout(checkMillis), Effect.result);
 +        .pipe(
-+          Effect.flatMap((result) => privateAccountCheck(result, { app: { checked: { fields } } })),
++          Effect.flatMap((result) =>
++            privateAccountCheck(result, {
++              app: {
++                checked: { provider: target.required.definition, method: input.method, fields },
++              },
++            }),
++          ),
 +          Effect.timeout(checkMillis),
 +          Effect.result,
 +        );
@@ -8839,10 +8875,10 @@ index 4bd3285..9f94e31 100644
      "./safe-fetch": "./src/safe-fetch.ts",
 diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
 new file mode 100644
-index 0000000..b7bb754
+index 0000000..8e3d1b6
 --- /dev/null
 +++ b/packages/utils/src/account-display-privacy.ts
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,170 @@
 +/** Fail closed when bounded public display text contains a credential or a standard encoding. */
 +import { Predicate } from "effect";
 +import { Base64, Base64Url, Hex } from "effect/encoding";
@@ -8852,6 +8888,36 @@ index 0000000..b7bb754
 +const maxCredentialNodes = 16_384;
 +const maxCredentialStrings = 1_024;
 +const maxDepth = 32;
++/** Shorter raw values and encoded forms collide with ordinary text; raw ones count as whole words. */
++const minSubstring = 8;
++const wordCharacter = /[\p{L}\p{N}]/u;
++
++/** Field names the account's method declares with `plain()`; those are public, not secrets. */
++const plainFields = (account: unknown): ReadonlySet<string> => {
++  if (!Predicate.hasProperty(account, "provider") || !Predicate.hasProperty(account, "method"))
++    return new Set();
++  const { provider, method } = account;
++  if (typeof method !== "string" || !Predicate.hasProperty(provider, "auth")) return new Set();
++  const auth = provider.auth;
++  if (!Predicate.isObject(auth) || !Object.hasOwn(auth, method)) return new Set();
++  const declared = auth[method];
++  const plain = Predicate.hasProperty(declared, "plain") ? declared.plain : undefined;
++  return new Set(Array.isArray(plain) ? plain.filter(Predicate.isString) : []);
++};
++
++/** Whether `secret` appears in `text` with no letter or digit touching either end. */
++const containsWord = (text: string, secret: string) => {
++  for (let at = text.indexOf(secret); at !== -1; at = text.indexOf(secret, at + 1)) {
++    const before = Array.from(text.slice(Math.max(0, at - 2), at)).at(-1);
++    const after = Array.from(text.slice(at + secret.length, at + secret.length + 2))[0];
++    if (
++      (before === undefined || !wordCharacter.test(before)) &&
++      (after === undefined || !wordCharacter.test(after))
++    )
++      return true;
++  }
++  return false;
++};
 +
 +/** Bound work independently of credential size. Oversized secrets cannot fit in these strings. */
 +const displaySecrets = (accounts: unknown, maximum: number, ref?: string) => {
@@ -8903,7 +8969,15 @@ index 0000000..b7bb754
 +            overflow = true;
 +            break;
 +          }
-+          if (Predicate.hasProperty(account, "fields")) visit(account.fields, 0);
++          const fields = Predicate.hasProperty(account, "fields") ? account.fields : undefined;
++          if (Predicate.isObject(fields)) {
++            const plain = plainFields(account);
++            for (const name in fields) {
++              if (!Object.hasOwn(fields, name) || plain.has(name)) continue;
++              visit(fields[name], 1);
++              if (overflow) break;
++            }
++          } else visit(fields, 0);
 +          if (overflow) break;
 +        }
 +        if (overflow) break;
@@ -8914,15 +8988,12 @@ index 0000000..b7bb754
 +  return overflow ? undefined : found;
 +};
 +
-+const percentDecoded = (text: string) => {
-+  return text.replace(/(?:%[0-9a-f]{2})+/gi, (part) => {
-+    try {
-+      return decodeURIComponent(part);
-+    } catch {
-+      return part;
-+    }
-+  });
-+};
++const lenientUtf8 = new TextDecoder();
++/** Invalid bytes become U+FFFD, so one bad escape can't hide the valid ones beside it. */
++const percentDecoded = (text: string) =>
++  text.replace(/(?:%[0-9a-f]{2})+/gi, (part) =>
++    lenientUtf8.decode(Uint8Array.from(part.slice(1).split("%"), (byte) => parseInt(byte, 16))),
++  );
 +
 +/** Checks UTF-8 base64/base64url, percent escapes and case-insensitive hex, plus raw values. */
 +export const accountDisplayIsPrivate = (
@@ -8946,12 +9017,14 @@ index 0000000..b7bb754
 +    text.replace(/%[0-9a-f]{2}/gi, (part) => part.toUpperCase()),
 +  );
 +  const lower = strings.map((text) => text.toLowerCase());
++  const texts = [...strings, ...decoded];
++  // Forms of eight or more characters match anywhere; shorter encoded forms are skipped.
++  const found = (forms: readonly string[], texts: readonly string[]) =>
++    forms.some((form) => form.length >= minSubstring && texts.some((text) => text.includes(form)));
 +  for (const secret of secrets) {
-+    if (
-+      strings.some((text) => text.includes(secret)) ||
-+      decoded.some((text) => text.includes(secret))
-+    )
-+      return false;
++    if (secret.length < minSubstring) {
++      if (texts.some((text) => containsWord(text, secret))) return false;
++    } else if (found([secret], texts)) return false;
 +    const bytes = new TextEncoder().encode(secret);
 +    const base64 = Base64.encode(bytes);
 +    const url = Base64Url.encode(bytes);
@@ -8967,12 +9040,10 @@ index 0000000..b7bb754
 +      bytes,
 +      (byte) => "%" + byte.toString(16).padStart(2, "0").toUpperCase(),
 +    ).join("");
-+    if (escaped.some((text) => [component, uri, percent].some((value) => text.includes(value))))
-+      return false;
-+    const encoded = [base64, base64.replace(/=+$/, ""), url, url.replace(/=+$/, "")];
 +    if (
-+      strings.some((text) => encoded.some((value) => text.includes(value))) ||
-+      lower.some((text) => text.includes(hex))
++      found([component, uri, percent], escaped) ||
++      found([base64, base64.replace(/=+$/, ""), url, url.replace(/=+$/, "")], strings) ||
++      found([hex], lower)
 +    )
 +      return false;
 +  }
