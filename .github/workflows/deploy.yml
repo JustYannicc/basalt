@@ -131,7 +131,8 @@ jobs:
             check="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$head&event=push&per_page=1" --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')"
             case "$check" in
               "completed success") echo "::notice::main has moved to $head; its own Deploy run releases it"; exit 0 ;;
-              "completed "*|"null null"|"") echo "::error::main has moved to $head, whose push Check is '${check:-missing}'; nothing releases this change until main has a passing head"; exit 1 ;;
+              # A Check that hasn't been created yet right after a push counts as pending.
+              "completed "*) echo "::error::main has moved to $head, whose push Check is '$check'; nothing releases this change until main has a passing head"; exit 1 ;;
               *) echo "::notice::main has moved to $head; its own Deploy run releases it"; exit 0 ;;
             esac
           fi

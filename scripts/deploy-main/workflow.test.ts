@@ -64,7 +64,8 @@ test("database and Workflow-identity releases go to Manual release of main witho
   assert.match(handoff, /^    needs: deploy\n    if: needs\.deploy\.outputs\.manual_required != 'false'$/m);
   assert.match(handoff, /^    permissions:\n      contents: read\n      actions: write$/m);
   assert.doesNotMatch(handoff, /secrets\.|actions\/checkout|npm |node /);
-  assert.match(handoff, /"completed "\*\|"null null"\|""\) echo "::error::[^\n]*"; exit 1 ;;/);
+  assert.match(handoff, /^\s+"completed "\*\) echo "::error::[^\n]*"; exit 1 ;;\n\s+\*\) echo "::notice::[^\n]*"; exit 0 ;;$/m);
+  assert.doesNotMatch(handoff, /"null null"/);
   assert.match(handoff, /release-updates\/[\s\S]*?exit 1[\s\S]*?gh workflow run release-main\.yml --repo "\$GITHUB_REPOSITORY" --ref main/);
   assert.match(workflow, /^      manual_required: \$\{\{ steps\.report\.outputs\.manual_required \}\}$/m);
 });
