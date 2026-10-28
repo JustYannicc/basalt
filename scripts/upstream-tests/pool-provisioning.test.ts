@@ -110,8 +110,18 @@ const fixture = <A>(
         const copies = { calls: 0, collisions: 0 };
         const reads = { get: 0, source: 0 };
         const copying = yield* Deferred.make<void>();
+        let poolProvisioned = false;
         const requirements = {
-          accounts: { pool: { provider: "provider-pool", scope: "app", cardinality: "one" } },
+          accounts: {
+            pool: {
+              provider: "provider-pool",
+              scope: "app",
+              cardinality: "one",
+              definition: {
+                auth: { token: { type: "secrets", provisioned: poolProvisioned } },
+              },
+            },
+          },
         };
         const get = (id: AppIdentity) =>
           Effect.gen(function* () {
@@ -282,6 +292,8 @@ const fixture = <A>(
           reads,
           changeProvider: (provider) => {
             requirements.accounts.pool.provider = provider;
+            poolProvisioned = true;
+            requirements.accounts.pool.definition.auth.token.provisioned = poolProvisioned;
           },
           setup: (user = "person-a", signingKey = key, team = organization) =>
             poolDefaults(executor, Option.some(signingKey), team, user),
@@ -393,6 +405,10 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
       yield* setup();
       const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
       const app = pool!.id;
+      const [oldLink] = yield* sql<{
+        account: string;
+      }>`select account from hosted_app_account_links`;
+      const [oldAccount] = yield* sql<{ provider: string }>`select provider from executor_accounts`;
       const decisions = (work: Effect.Effect<unknown, unknown, never>) =>
         reconcileLines(work).pipe(
           Effect.map((lines) => lines.map((line) => (line as { decision: string }).decision)),
@@ -411,6 +427,18 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
       assert.deepEqual(yield* decisions(setup()), ["source-edited"]);
       yield* sql`update executor_apps set active_deployment = 'owner-deployment', workspace = ${old}::jsonb`;
       assert.deepEqual(yield* decisions(setup()), ["version-mismatch"]);
+      assert.deepEqual(
+        yield* sql<{ account: string }>`select account from hosted_app_account_links`,
+        [oldLink!],
+        "older source decisions keep the existing account link",
+      );
+      assert.deepEqual(
+        yield* sql<{
+          provider: string;
+        }>`select provider from executor_accounts where id = ${oldLink!.account}`,
+        [oldAccount!],
+        "older source decisions keep the account's provider identity",
+      );
       yield* sql`delete from hosted_app_access where id = ${app}`;
       const [repair] = yield* reconcileLines(setup());
       assert.equal((repair as { accessRepaired: number }).accessRepaired, 1);
@@ -1076,6 +1104,84 @@ for (const legacyUnlinked of [false, true]) {
     );
   });
 }
+
+test("a bundle upgrade re-mints and links the provisioned pool identity in the same job", async () => {
+  await fixture(({ sql, executor, setup, changeProvider }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [appBefore] = yield* sql<{
+        active_deployment: string;
+      }>`select active_deployment from executor_apps`;
+      const [oldAccount] = yield* sql<{
+        id: string;
+        provider: string;
+        token: string;
+      }>`select * from executor_accounts`;
+      const oldFiles = JSON.stringify([{ path: "index.ts", content: "previous pool bundle" }]);
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,person-a,bundle}', '"previous-bundle"')::text`;
+      yield* sql`update executor_apps set files = ${oldFiles}::jsonb, workspace = ${oldFiles}::jsonb`;
+      changeProvider("provider-provisioned");
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+        values ('pool-bundle-upgrade', 'member', ${organization}, 'person-a')`;
+      const initialize = yield* withPoolDefaults(executor, Option.some(key), () => Effect.void);
+
+      const [line] = yield* reconcileLines(
+        provision("pool-bundle-upgrade", selfHostProvisioningServices).pipe(
+          Effect.provideService(OrganizationDefaults, initialize),
+        ),
+      );
+      assert.deepEqual(line, {
+        app: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id,
+        decision: "upgraded",
+        accessRepaired: 0,
+        tokenRepaired: true,
+      });
+      const [appAfter] = yield* sql<{
+        active_deployment: string;
+      }>`select active_deployment from executor_apps`;
+      assert.notEqual(appAfter!.active_deployment, appBefore!.active_deployment);
+      const [link] = yield* sql<{ account: string }>`select account from hosted_app_account_links`;
+      assert.notEqual(link!.account, oldAccount!.id);
+      const [current] = yield* sql<{
+        provider: string;
+        token: string;
+      }>`select provider, token from executor_accounts where id = ${link!.account}`;
+      assert.equal(current!.provider, "provider-provisioned");
+      assert.deepEqual(
+        yield* Effect.promise(() => verifyPoolToken(Redacted.value(key), current!.token)),
+        {
+          pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id,
+          owner: "person-a",
+          organization,
+        },
+      );
+
+      const rotated = Redacted.make("cd".repeat(32));
+      yield* queuePoolAppUpgrades(rotated);
+      const [rotation] = yield* sql<{
+        id: string;
+      }>`select id from hosted_provisioning where id like 'basalt-pool-token:%'`;
+      assert.ok(rotation);
+      yield* sql`update hosted_provisioning set available_at = now() where id = ${rotation!.id}`;
+      const rotationInitialize = yield* withPoolDefaults(executor, Option.some(rotated), () =>
+        Effect.die("token-only rotation must not run ordinary setup"),
+      );
+      yield* provision(rotation!.id, selfHostProvisioningServices).pipe(
+        Effect.provideService(OrganizationDefaults, rotationInitialize),
+      );
+      const [rotatedLink] = yield* sql<{
+        provider: string;
+        token: string;
+      }>`select a.provider, a.token
+        from hosted_app_account_links l join executor_accounts a on a.id = l.account`;
+      assert.equal(rotatedLink!.provider, "provider-provisioned");
+      assert.ok(
+        yield* Effect.promise(() => verifyPoolToken(Redacted.value(rotated), rotatedLink!.token)),
+      );
+    }),
+  );
+});
 
 test("rotation jobs wait 15 minutes for the pool Worker, including demoted and unverified holders", async () => {
   await fixture(({ sql, executor, setup }) =>

@@ -42,6 +42,7 @@ const pool = defineProvider({
   auth: {
     token: secrets({
       label: "Pool access",
+      provisioned: true,
       fields: object({ token: string({ minLength: 1 }) }),
       request: ({ token }) => bearer(token),
     }),
