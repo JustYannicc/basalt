@@ -25,6 +25,8 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.path == '.github/workflows/ci.yml'
     runs-on: ubuntu-latest
+    outputs:
+      manual_required: ${{ steps.report.outputs.manual_required }}
     env:
       RELEASE_CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
       GITHUB_TOKEN: ${{ github.token }}
@@ -94,10 +96,47 @@ jobs:
       - run: npm run architecture:model
       - run: npm run typecheck
       - name: Compare the candidate with the last successful production deployment
+        id: report
         run: |
           mkdir -p .local
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_CANDIDATE_SHA" > .local/production-report.json
       - name: Deploy normal releases and restore the previous pin after a failed attempt
+        if: steps.report.outputs.manual_required == 'false'
         run: env -u GITHUB_SHA node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_CANDIDATE_SHA" --report .local/production-report.json --mode automatic
         env:
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+      - name: Refuse to hand off while the latest production deployment is unresolved
+        if: steps.report.outputs.manual_required != 'false' && steps.report.outputs.deployable != 'true'
+        run: |
+          echo "::error::The latest production deployment is unresolved; reconcile it before another release"
+          exit 1
+
+  # No one approves releases, so a database or Workflow-identity release goes straight to the manual path, which takes
+  # the backup and runs the drain check before deploying. This job alone may start workflows; it runs no candidate code.
+  handoff:
+    needs: deploy
+    if: needs.deploy.outputs.manual_required != 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    env:
+      RELEASE_CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Hand database and Workflow-identity releases to Manual release of main
+        run: |
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$head" != "$RELEASE_CANDIDATE_SHA" ]]; then
+            check="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$head&event=push&per_page=1" --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')"
+            case "$check" in
+              "completed success") echo "::notice::main has moved to $head; its own Deploy run releases it"; exit 0 ;;
+              "completed "*|"null null"|"") echo "::error::main has moved to $head, whose push Check is '${check:-missing}'; nothing releases this change until main has a passing head"; exit 1 ;;
+              *) echo "::notice::main has moved to $head; its own Deploy run releases it"; exit 0 ;;
+            esac
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/commits/$head/pulls" --jq '.[].head.ref' | grep -q '^release-updates/'; then
+            echo "::error::main head $head is a release update; release it through Manual release with its pull request"
+            exit 1
+          fi
+          gh workflow run release-main.yml --repo "$GITHUB_REPOSITORY" --ref main

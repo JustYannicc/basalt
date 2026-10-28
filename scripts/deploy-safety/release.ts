@@ -30,13 +30,15 @@ async function main(args: string[]): Promise<void> {
   if (command === "report") {
     const checkout = candidateCheckout(options, true);
     const plan = await classifyCurrentRelease(checkout.commit);
+    const deployable = plan.ledger.state === "ready" || plan.ledger.state === "uninitialized";
     const value = {
       ...plan.report,
-      deployable: plan.ledger.state === "ready" || plan.ledger.state === "uninitialized",
+      deployable,
       manualRequired: plan.manualRequired,
       latestDeploymentState: plan.ledger.state,
     };
     writeActionOutputs({
+      deployable: String(deployable),
       database_changed: String(plan.report.databaseChanged),
       workflow_changed: String(plan.report.workflowChanged),
       manual_required: String(plan.manualRequired),
