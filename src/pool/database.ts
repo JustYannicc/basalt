@@ -90,7 +90,9 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
       POOL_DATABASE_RUNTIME_ROLE: runtime.username,
     },
     memo: false,
-    timeout: "1 minute",
+    // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
+    // exits with the step it failed at. This outer limit only catches a script that cannot exit.
+    timeout: "3 minutes",
   });
   return Output.all(runtime.connectionUrl, ready.hash).pipe(
     Output.map(([url]) => Redacted.make(poolDatabaseUrl(Redacted.value(url)))),
