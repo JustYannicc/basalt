@@ -137,7 +137,7 @@ views {
       Status: Implemented in source, live acceptance pending. The dependency signs people in and installs
       one private pool app per verified person per organization. Later member jobs reconcile each pool and
       log one line naming its decision (upgraded, already current, source edited, version mismatch,
-      superseded) with the app id and repair counts only. A new pool app bundle, or a bumped reconcile
+      superseded, not owner, or rotation current when a token-only job finds nothing to rotate) with the app id and repair counts only. A new pool app bundle, or a bumped reconcile
       revision when the reconcile logic changes, queues one such job per verified owner. Upgrades
       deploy files without writing Git, so a workspace that still holds an earlier version's source
       counts as behind, not edited. Displaying the empty pool screen remains
