@@ -24,6 +24,7 @@ test("bundled router injects every HTML response and routes web and agent feedba
     // The pinned Miniflare binary supports this date. Live deployment uses the stack's date.
     compatibilityDate: "2026-08-06",
     bindings: {
+      DASHBOARD_HOST: "example.invalid",
       POOL_APP_SIGNING_KEY: "b".repeat(64), TELEMETRY_RELAY_KEY: key,
       SENTRY_DSN: "https://synthetic@o0.ingest.de.sentry.io/1", POSTHOG_PROJECT_KEY: "synthetic_project_key",
     },

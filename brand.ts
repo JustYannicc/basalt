@@ -42,7 +42,11 @@ export const deployment = {
 } as const;
 
 export const appHosting = {
-  enabled: false,
-  origin: "https://apps.signalbox.run",
+  enabled: true,
+  scheme: "opaque" as "nested" | "opaque",
+  embedded: true,
+  /** Custom-domain product hosts need a route bypass ahead of the wildcard app route. */
+  bypassHosts: ["app.signalbox.run"],
+  origin: "https://signalbox.run",
   zone: "signalbox.run",
 } as const;

@@ -91,7 +91,7 @@
     {
       "identity": "basalt-member-pools",
       "file": "0010-member-pools.patch",
-      "content_sha256": "584e2e0d1e505868e58c6e000bb6dc17cdc6f02b59cef6403efc52c687a164c2",
+      "content_sha256": "b7ef55caefa8a40f8926885c8965c9a345de443465b30c0cfeb02554bcab188e",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -230,7 +230,7 @@
     {
       "identity": "basalt-interactive-accounts",
       "file": "0025-interactive-accounts.patch",
-      "content_sha256": "037a9c6018f4ae9b7b0b7e083efdb7bf69e962501765b0113399c6b5ebd67c91",
+      "content_sha256": "d1e539df491f4de8e0959fc3ad5ac718f2d01ef77670df11bd647861989fee3f",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -256,6 +256,16 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-embedded-app-ui",
+      "file": "0028-embedded-app-ui.patch",
+      "content_sha256": "cfad587d53c471a249f0e9b9da01b767c9c4f7215cf1ab4b8eae4292750c876a",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false,
+      "upstream_issue": 2419
+    },
+    {
       "identity": "basalt-catalog-app-auto-update",
       "file": "0029-catalog-app-auto-update.patch",
       "content_sha256": "bc4bb7a54cca0f6369dd0ef581ec24d8920c7e713fde85783da1d678d5149108",
@@ -266,8 +276,18 @@
       "upstream_issue": 2417
     },
     {
+      "identity": "executor-account-status",
+      "file": "0030-account-status.patch",
+      "content_sha256": "0788a619918df084d0dd8c462604842b8e5d2390a7a1ec79ba4eda1f18c3fb16",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "upstream_issue": 2418,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-provider-identity-display-fields",
-      "file": "0030-provider-identity-display-fields.patch",
+      "file": "0031-provider-identity-display-fields.patch",
       "content_sha256": "7e5c5d7c8de5816741126fa582bbbeb24358a55808ad8e653dff8ddd59cb96da",
       "kind": "overlay",
       "upstream_pull_request": null,

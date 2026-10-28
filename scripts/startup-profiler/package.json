@@ -1,0 +1,8 @@
+{
+  "name": "basalt-startup-profiler",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "wrangler": "4.153.0"
+  }
+}

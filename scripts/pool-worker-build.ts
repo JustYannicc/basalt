@@ -19,10 +19,11 @@ const { WorkerBundle }: {
 } = await import(module.href);
 const program = Effect.gen(function* () {
   const bundler = yield* WorkerBundle;
-  // Both owned Workers use the same provider bundler as deployment.
+  // Every owned Worker uses the same provider bundler as deployment.
   for (const [id, entrypoint] of [
     ["PoolWorker", "../src/pool/worker.ts"],
     ["Catalog", "../src/catalog/worker.ts"],
+    ["Router", "../src/router.ts"],
   ]) {
     yield* bundler.build({
       id,
