@@ -1,3 +1,56 @@
+diff --git a/apps/hosted/cloud/src/contracts/workflow-instance-id.ts b/apps/hosted/cloud/src/contracts/workflow-instance-id.ts
+new file mode 100644
+index 000000000..7831ba375
+--- /dev/null
++++ b/apps/hosted/cloud/src/contracts/workflow-instance-id.ts
+@@ -0,0 +1,47 @@
++/** Cloudflare accepts at most 100 letters, digits, hyphens and underscores, with no leading hyphen. */
++const instanceIdPattern = /^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,99}$/;
++const digestIdPattern = /^job_[a-f0-9]{64}$/;
++
++export const isWorkflowInstanceId = (id: string) =>
++  instanceIdPattern.test(id) && !/[\r\n]/.test(id);
++
++/**
++ * Keep existing valid IDs stable, reserving the digest namespace so a literal job ID cannot
++ * alias another job's digest. Rows and workflow params always retain the original job ID.
++ */
++export const workflowInstanceId = async (job: string) => {
++  if (isWorkflowInstanceId(job) && !digestIdPattern.test(job)) return job;
++  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(job));
++  return `job_${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
++};
++
++const errorNames = new Set([
++  "Error",
++  "TypeError",
++  "RangeError",
++  "AbortError",
++  "TimeoutError",
++  "NetworkError",
++]);
++const safeMessages = new Set([
++  "Provisioning instance unavailable",
++  "Network connection lost.",
++  "The operation was aborted.",
++  "The operation timed out.",
++  "Too many API requests by single worker invocation.",
++  "Internal error",
++]);
++
++/** Only closed platform diagnostics may reach logs. Unknown errors can contain credentials or SQL. */
++export const dispatchFailureReason = (cause: unknown) => {
++  if (typeof cause === "object" && cause !== null && "_tag" in cause && cause._tag === "SqlError")
++    return { name: "SqlError", message: "Database operation failed" };
++  if (!(cause instanceof Error)) return { name: "UnknownError", message: "Dispatch failed" };
++  const name = errorNames.has(cause.name) ? cause.name : "Error";
++  const message = safeMessages.has(cause.message)
++    ? cause.message
++    : /invalid.*instance.*id|instance.*id.*invalid|instance.*id.*[Cc]haracter/i.test(cause.message)
++      ? "Invalid Workflow instance ID"
++      : "Unrecognized dispatch error (redacted)";
++  return { name, message };
++};
 diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/cloud/src/implementation/default-app.ts
 index d3e7fcd8a..e41cb2414 100644
 --- a/apps/hosted/cloud/src/implementation/default-app.ts
@@ -87,6 +140,62 @@ index 24dc295b6..ad103f25c 100644
 +              },
          ).pipe(Effect.provideService(PoolAppSource, poolSource)),
        );
+diff --git a/apps/hosted/cloud/src/infrastructure/provisioning.ts b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+index f68511e9e..d2d9eecb0 100644
+--- a/apps/hosted/cloud/src/infrastructure/provisioning.ts
++++ b/apps/hosted/cloud/src/infrastructure/provisioning.ts
+@@ -35,4 +35,5 @@ import {
+   workflowResultInput,
+ } from "./workflow-results.ts";
++import { dispatchFailureReason, workflowInstanceId } from "../contracts/workflow-instance-id.ts";
+-
++
+ /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
+@@ -243,18 +244,25 @@ export const dispatchProvisioning = <R>(
+           const status = yield* Effect.tryPromise({
+             try: async () => {
++              // Jobs keep their own IDs; the instance ID is one Cloudflare accepts for any of them.
++              const instance = await workflowInstanceId(job.id);
+               try {
+                 await binding.create({
+-                  id: job.id,
++                  id: instance,
+                   params: encryptedWorkflowParams({ id: job.id }, encrypted),
+                 });
+                 return "running" as const;
+-              } catch {
+-                const instance = await (await binding.get(job.id)).status();
+-                if (instance.status === "unknown")
+-                  throw new Error("Provisioning instance unavailable");
+-                return instance.status;
++              } catch (created) {
++                // An existing instance explains a failed create; anything else reports the create.
++                const existing = await binding
++                  .get(instance)
++                  .then((found) => found.status())
++                  .catch(() => {
++                    throw created;
++                  });
++                if (existing.status === "unknown") throw created;
++                return existing.status;
+               }
+             },
+-            catch: () => new ProvisioningFailed(),
++            catch: (cause) => cause,
+           });
+           const persisted =
+@@ -270,5 +278,10 @@ export const dispatchProvisioning = <R>(
+           if (job.kind === "team" && persisted === "running") yield* installTeam(job.id);
+         }).pipe(
+-          Effect.catch(() => Effect.logWarning("Provisioning dispatch failed", { job: job.id })),
++          Effect.catch((cause) =>
++            Effect.logWarning("Provisioning dispatch failed", {
++              kind: job.kind,
++              reason: dispatchFailureReason(cause),
++            }),
++          ),
+         ),
+       { concurrency: 4, discard: true },
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 index 3d1bd3dc5..057847cbc 100644
 --- a/apps/hosted/server/package.json

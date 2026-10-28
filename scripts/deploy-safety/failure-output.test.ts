@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OutputTail, redactFailureOutput } from "./failure-output.ts";
+import { isScriptStartupCpuLimit, OutputTail, redactFailureOutput } from "./failure-output.ts";
 import { runCommand } from "./release-runner.ts";
+
+test("only Cloudflare's startup CPU-limit rejection counts as a ScriptStartupError worth retrying", () => {
+  assert.equal(isScriptStartupCpuLimit("✗ ApiWorker\nScriptStartupError: Script startup exceeded CPU time limit.\n"), true);
+  assert.equal(isScriptStartupCpuLimit("\u001b[31mScriptStartupError\u001b[0m { code: 10021, message: \"Script startup exceeded CPU time limit.\" }"), true);
+  assert.equal(isScriptStartupCpuLimit("ScriptStartupError: Uncaught Error: missing binding at worker.js:1"), false);
+  assert.equal(isScriptStartupCpuLimit("Script startup exceeded CPU time limit."), false);
+  assert.equal(isScriptStartupCpuLimit("InvalidWorkerScript: bad module"), false);
+});
+
+test("a failed command flags the startup CPU-limit rejection; a passing one never does", async () => {
+  const print = "console.error('ScriptStartupError: Script startup exceeded CPU time limit.')";
+  const reports: string[] = [];
+  const failed = await runCommand(process.execPath, ["-e", `${print}; process.exit(1)`], process.cwd(), process.env, (text) => reports.push(text));
+  assert.deepEqual(failed, { started: true, exitCode: 1, scriptStartupCpuLimit: true });
+  const passed = await runCommand(process.execPath, ["-e", print], process.cwd(), process.env, (text) => reports.push(text));
+  assert.deepEqual(passed, { started: true, exitCode: 0 });
+});
 
 test("failure output removes credentials but keeps the error readable", () => {
   const environment = {
@@ -93,6 +110,9 @@ test("a signal exit names the signal and a descendant holding the pipes cannot h
   const started = Date.now();
   const orphaned = await runCommand("sh", ["-c", "(sleep 10 &) ; echo parent; exit 1"], process.cwd(), process.env, (text) => reports.push(text));
   assert.equal(orphaned.exitCode, 1);
+  // The descendant still holds the output, so a retry could overlap it.
+  assert.equal(orphaned.outputHeld, true);
+  assert.equal(killed.outputHeld, undefined);
   assert.ok(Date.now() - started < 5000, "release waited for a descendant");
   assert.match(reports[1]!, /parent/);
 });

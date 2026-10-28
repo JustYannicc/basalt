@@ -42,3 +42,13 @@ export function requireDeploySafetyEnvironment(source = process.env): DeploySafe
     planetscale: requirePlanetScaleEnvironment(source),
   };
 }
+
+/**
+ * Stops every release while someone restores a backup and rolls back. Set the `PRODUCTION_RELEASE_HOLD`
+ * repository variable to any value first, restore, dispatch the rollback, then clear it. Release
+ * jobs receive it; rollback jobs don't, so a rollback still runs. Its value isn't printed.
+ */
+export function assertNoReleaseHold(source = process.env): void {
+  if (source.PRODUCTION_RELEASE_HOLD?.trim())
+    throw new SafetyGateError("Production releases are on hold: PRODUCTION_RELEASE_HOLD is set. Clear it once the manual restore and rollback have finished");
+}
