@@ -45,6 +45,20 @@ export type DeploymentPayload = {
 
 export type AttemptWindow = { startedAt: string; endedAt: string };
 
+/** A failed release attempt the ledger set aside because a later release may deploy over it. */
+export type SupersededRelease = { deploymentId: number; gitCommit: string; deploymentStatus: string };
+
+/**
+ * Lets a release roll forward over a failed release it contains. `contains` answers whether
+ * `ancestor` is `descendant` or one of its ancestors from real Git history, and throws when Git
+ * can't answer.
+ */
+export type RollForward = {
+  /** The commit being released now. */
+  candidateGitCommit: string;
+  contains(ancestor: string, descendant: string): boolean;
+};
+
 export type DeploymentLedger =
   /** `attempts` is set when only failed initial attempts exist: each one's start and final status time. */
   | { state: "uninitialized"; attempts?: AttemptWindow[] }
@@ -54,6 +68,8 @@ export type DeploymentLedger =
       gitCommit: string;
       pins: PinSummary;
       payload: DeploymentPayload;
+      /** The failed release after this success that the release now running rolls forward over. */
+      superseded?: SupersededRelease;
     }
   | {
       state: "unresolved";
@@ -63,6 +79,8 @@ export type DeploymentLedger =
       reason: string;
       lastSuccessful?: { deploymentId: number; gitCommit: string; pins: PinSummary };
       payload?: DeploymentPayload;
+      /** Why the failed release could not be rolled forward over, when a release asked. */
+      supersedeRefusal?: string;
     };
 
 type Deployment = {
@@ -82,13 +100,33 @@ export function readLedgerEnvironment(source = process.env): LedgerEnvironment {
   return { token, repository };
 }
 
+/**
+ * The production ledger. With `rollForward`, the single release that failed after the last success
+ * is set aside when the release now running contains its commit: the ledger is then ready at the
+ * last success, and that release deploys forward from it, re-applying everything the failed one
+ * did. Anything else stays unresolved. Rollback paths read the ledger without it.
+ */
 export async function readDeploymentLedger(
   environment: LedgerEnvironment,
   fetcher: Fetcher = fetch,
+  rollForward?: RollForward,
 ): Promise<DeploymentLedger> {
   const deployments = await listDeployments(environment, fetcher);
-  if (deployments.length === 0) return { state: "uninitialized" };
   deployments.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
+  const ledger = await readLatestDeployment(deployments, environment, fetcher);
+  if (!rollForward || ledger.state !== "unresolved" || !ledger.lastSuccessful) return ledger;
+  const result = await supersedeFailedRelease(deployments, ledger.lastSuccessful, environment, fetcher, rollForward);
+  if ("refusal" in result) return { ...ledger, supersedeRefusal: result.refusal };
+  return { ...result.ready, superseded: result.superseded };
+}
+
+/** The ledger from the latest deployment; `deployments` is sorted newest first. */
+async function readLatestDeployment(
+  deployments: Deployment[],
+  environment: LedgerEnvironment,
+  fetcher: Fetcher,
+): Promise<DeploymentLedger> {
+  if (deployments.length === 0) return { state: "uninitialized" };
   const latest = deployments[0]!;
   if (latest.environment !== "production")
     throw new SafetyGateError("Latest GitHub deployment record is outside production; refusing to use it as a baseline");
@@ -107,7 +145,6 @@ export async function readDeploymentLedger(
       lastSuccessful: await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher),
       payload: latestPayload,
     };
-  statuses.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
   const status = statuses[0]!;
   if (status.state !== "success") {
     const lastSuccessful = await findPreviousSuccessfulDeployment(deployments.slice(1), environment, fetcher);
@@ -136,7 +173,8 @@ export function assertReportUsesLatestDeploy(report: ClassificationReport, ledge
   if (ledger.state === "uninitialized") return;
   if (ledger.state === "unresolved") {
     if (ledger.lastSuccessful) verifyReportBase(report, ledger.lastSuccessful);
-    throw new SafetyGateError(`Latest production deployment is unresolved (${ledger.deploymentStatus}); reconcile it before another release`);
+    throw new SafetyGateError(`Latest production deployment is unresolved (${ledger.deploymentStatus}); reconcile it before another release` +
+      (ledger.supersedeRefusal ? `. It was not superseded: ${ledger.supersedeRefusal}` : ""));
   }
   verifyReportBase(report, { gitCommit: ledger.gitCommit, pins: ledger.pins });
 }
@@ -169,8 +207,9 @@ export async function beginReleaseDeployment(
   environment: LedgerEnvironment,
   fetcher: Fetcher = fetch,
   backup?: RecordedBackup,
+  rollForward?: RollForward,
 ): Promise<number> {
-  const ledger = await readDeploymentLedger(environment, fetcher);
+  const ledger = await readDeploymentLedger(environment, fetcher, rollForward);
   assertReportUsesLatestDeploy(report, ledger);
   if (ledger.state === "unresolved") throw new SafetyGateError("Cannot begin while another production deployment is unresolved");
   if (report.databaseChanged && !backup)
@@ -384,6 +423,7 @@ async function listDeployments(environment: LedgerEnvironment, fetcher: Fetcher)
   throw new SafetyGateError("GitHub deployment history exceeded the pagination limit");
 }
 
+/** A deployment's statuses, newest first. */
 async function listStatuses(
   environment: LedgerEnvironment,
   deploymentId: number,
@@ -405,7 +445,8 @@ async function listStatuses(
       seen.add(id);
       all.push({ id, state: stringField(status.state, "GitHub deployment status state"), created_at: createdAt });
     }
-    if (reply.body.length < pageSize) return all;
+    if (reply.body.length < pageSize)
+      return all.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
   }
   throw new SafetyGateError("GitHub deployment status history exceeded the pagination limit");
 }
@@ -427,11 +468,68 @@ async function endedAttemptWindows(
   for (const deployment of deployments) {
     if (deployment.environment !== "production") return undefined;
     const statuses = await listStatuses(environment, deployment.id, fetcher);
-    statuses.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
     if (!endedWithoutSuccess(statuses)) return undefined;
     windows.push({ startedAt: deployment.created_at, endedAt: statuses[0]!.created_at });
   }
   return windows;
+}
+
+/**
+ * Sets aside the one failed release since the last success when the release now running contains
+ * it, or says why it can't. Exactly one record may follow that success: a release whose latest
+ * status is `failure` or `error`, that never reported success, and whose recorded base is that
+ * success with the same pins. Its commit must be the commit being released or one of its
+ * ancestors. A second record since the success, which is the superseding release failing too, a
+ * pending, in-progress, status-less or inactive record, a rollback record, or a commit git can't
+ * show is contained keeps the ledger unresolved.
+ */
+async function supersedeFailedRelease(
+  deployments: Deployment[],
+  lastSuccessful: { deploymentId: number; gitCommit: string; pins: PinSummary },
+  environment: LedgerEnvironment,
+  fetcher: Fetcher,
+  rollForward: RollForward,
+): Promise<{ ready: Extract<DeploymentLedger, { state: "ready" }>; superseded: SupersededRelease } | { refusal: string }> {
+  const index = deployments.findIndex(({ id }) => id === lastSuccessful.deploymentId);
+  if (index < 0) return { refusal: "the last successful deployment is missing from the ledger" };
+  if (index !== 1)
+    return { refusal: `${index} deployment records follow the last success; only a single failed release is rolled forward, so a person decides` };
+  const failed = deployments[0]!;
+  const refuse = (why: string) => ({ refusal: `deployment ${failed.id} ${why}` });
+  if (failed.environment !== "production") return refuse("is outside production");
+  const statuses = await listStatuses(environment, failed.id, fetcher);
+  const status = statuses[0]?.state ?? "missing";
+  if (!endedWithoutSuccess(statuses)) return refuse(`is ${status}, not a failed attempt that never succeeded`);
+  let payload: DeploymentPayload;
+  try {
+    payload = parseDeploymentPayload(failed.payload);
+  } catch {
+    return refuse("has unreadable ledger metadata");
+  }
+  if (payload.kind !== "release") return refuse("is a rollback, not a release");
+  if (payload.gitCommit !== failed.sha || payload.candidateGitCommit !== failed.sha)
+    return refuse("metadata does not match its SHA");
+  if (payload.baseGitCommit !== lastSuccessful.gitCommit ||
+      stableStringify(payload.basePins) !== stableStringify(lastSuccessful.pins))
+    return refuse("was not based on the last successful deployment");
+  let contained: boolean;
+  try {
+    contained = rollForward.contains(failed.sha, rollForward.candidateGitCommit);
+  } catch (error) {
+    return refuse(`could not be checked against ${rollForward.candidateGitCommit}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}`);
+  }
+  if (!contained) return refuse(`is not contained in ${rollForward.candidateGitCommit}, so that release would not re-apply it`);
+  const success = deployments[1]!;
+  return {
+    ready: {
+      state: "ready",
+      deploymentId: success.id,
+      gitCommit: lastSuccessful.gitCommit,
+      pins: lastSuccessful.pins,
+      payload: parseDeploymentPayload(success.payload),
+    },
+    superseded: { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status },
+  };
 }
 
 async function findPreviousSuccessfulDeployment(
@@ -442,7 +540,6 @@ async function findPreviousSuccessfulDeployment(
   for (const deployment of deployments) {
     if (deployment.environment !== "production") continue;
     const statuses = await listStatuses(environment, deployment.id, fetcher);
-    statuses.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || right.id - left.id);
     if (statuses[0]?.state !== "success") continue;
     const payload = parseDeploymentPayload(deployment.payload);
     const sha = gitCommit(deployment.sha, "successful deployment SHA");
