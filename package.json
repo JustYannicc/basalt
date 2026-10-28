@@ -8,6 +8,7 @@
     "typecheck": "node scripts/typecheck.ts",
     "build": "node scripts/build.ts",
     "check:build": "node --test scripts/build-tests/*.test.ts",
+    "check:startup": "node --test scripts/worker-startup-tests/*.test.ts && node scripts/worker-startup.ts",
     "deploy": "node scripts/deploy.ts",
     "check:providers": "node scripts/pool-providers.ts --check",
     "check:upstream": "node --test scripts/upstream-tests/*.test.ts",
