@@ -35,7 +35,7 @@ index 93cdce4..8502e4e 100644
  import { AppDomainZoneSettings } from "./contracts/app-domains.ts";
  import { appDomainCertificates } from "./implementation/app-domain-inventory.ts";
 @@ -47,7 +48,11 @@ const observeDomainFailure = (phase: string, cause: Cause.Cause<unknown>) =>
- 
+
  const makeAppDomainCoordinator = Effect.gen(function* () {
    const base = yield* cloudAppUiBase.pipe(Effect.orDie);
 -  if (base === undefined || new URL(base).protocol !== "https:") {
@@ -111,6 +111,155 @@ index 077cd51..e8eca07 100644
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
+diff --git a/apps/hosted/cloud/src/contracts/browser.ts b/apps/hosted/cloud/src/contracts/browser.ts
+index 731088f..2aa5f2a 100644
+--- a/apps/hosted/cloud/src/contracts/browser.ts
++++ b/apps/hosted/cloud/src/contracts/browser.ts
+@@ -1,4 +1,5 @@
+-import { getSessionCookie } from "better-auth/cookies";
++import { parseCookies } from "better-auth/cookies";
++import { hostCookieName } from "@executor-js/hosted-server/browser/contracts";
+ import { cloudDevelopmentOrigin } from "./development.ts";
+ import { LoopbackOrigin } from "@executor-js/utils/url-policy";
+ import { Schema } from "effect";
+@@ -6,12 +7,12 @@ import { Schema } from "effect";
+ /** Browsers share cookies across ports, so local cloud and self-host use different names. */
+ export const cloudSessionCookiePrefix = (origin: string): string => {
+   if (origin === cloudDevelopmentOrigin) return "executor-cloud-dev";
+-  if (!Schema.is(LoopbackOrigin)(origin)) return "executor-hosted";
++  if (!Schema.is(LoopbackOrigin)(origin)) return hostCookieName(origin, "executor-hosted");
+   const url = new URL(origin);
+   const port = url.port === "" ? (url.protocol === "https:" ? "443" : "80") : url.port;
+-  return `executor-cloud-dev-${port}`;
++  return hostCookieName(origin, `executor-cloud-dev-${port}`);
+ };
+
+ /** A routing hint only: product pages and APIs still verify the live session. */
+ export const hasSessionCookie = (headers: Headers, cookiePrefix: string): boolean =>
+-  Boolean(getSessionCookie(headers, { cookiePrefix }));
++  Boolean(parseCookies(headers.get("cookie") ?? "").get(`${cookiePrefix}.session_token`));
+diff --git a/apps/hosted/cloud/src/contracts/passkey-enrollment.ts b/apps/hosted/cloud/src/contracts/passkey-enrollment.ts
+index 53490fd..b0809eb 100644
+--- a/apps/hosted/cloud/src/contracts/passkey-enrollment.ts
++++ b/apps/hosted/cloud/src/contracts/passkey-enrollment.ts
+@@ -1,5 +1,7 @@
++import { hostCookieName } from "@executor-js/hosted-server/browser/contracts";
++
+ /** A non-secret, browser-only onboarding hint. It never grants account access. */
+ export const passkeyEnrollmentCookie = {
+-  name: "executor_passkey_enrollment",
++  name: (origin: string) => hostCookieName(origin, "executor_passkey_enrollment"),
+   attributes: { path: "/", sameSite: "lax", httpOnly: false, maxAge: 60 * 60 * 24 * 365 },
+ } as const;
+diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
+index 63a7757..8c4453b 100644
+--- a/apps/hosted/cloud/src/implementation/auth-options.ts
++++ b/apps/hosted/cloud/src/implementation/auth-options.ts
+@@ -236,7 +236,7 @@ export const cloudAuthOptions = (
+                 // already have a fast path, and existing-user sign-ins never
+                 // recreate a dismissed prompt.
+                 if (context?.path !== emailCodeSignInPath) return;
+-                context.setCookie(passkeyEnrollmentCookie.name, user.id, {
++                context.setCookie(passkeyEnrollmentCookie.name(settings.url), user.id, {
+                   ...passkeyEnrollmentCookie.attributes,
+                   secure: new URL(settings.url).protocol === "https:",
+                 });
+@@ -252,15 +252,11 @@ export const cloudAuthOptions = (
+           after: async (session, context) => {
+             if (onLogin !== undefined) await onLogin(session.userId);
+             if (!context) return;
+-            context.setCookie(siteVisitorCookie, "", {
++            context.setCookie(siteVisitorCookie(settings.url), "", {
+               path: "/",
+               maxAge: 0,
+               sameSite: "lax",
+               secure: new URL(settings.url).protocol === "https:",
+-              ...Option.match(settings.hosts.sharedCookieDomain, {
+-                onNone: () => ({}),
+-                onSome: (domain) => ({ domain }),
+-              }),
+             });
+           },
+           before: async (session, context) => {
+diff --git a/apps/hosted/cloud/src/implementation/entry.ts b/apps/hosted/cloud/src/implementation/entry.ts
+index 6872a4c..41af181 100644
+--- a/apps/hosted/cloud/src/implementation/entry.ts
++++ b/apps/hosted/cloud/src/implementation/entry.ts
+@@ -22,6 +22,7 @@ export const resolveCloudEntry = (
+   page: "login" | "login/sso" | "create",
+   redirect: string,
+   headers: Headers,
++  origin: string,
+ ) =>
+   Effect.gen(function* () {
+     const current = yield* session(headers);
+@@ -41,7 +42,7 @@ export const resolveCloudEntry = (
+       .some(
+         (cookie) =>
+           cookie.trim() ===
+-          `${passkeyEnrollmentCookie.name}=${encodeURIComponent(current.user.id)}`,
++          `${passkeyEnrollmentCookie.name(origin)}=${encodeURIComponent(current.user.id)}`,
+       );
+     if (page !== "create") {
+       if (enrollment)
+@@ -125,7 +126,7 @@ export const cloudEntryDocument = <E, R, E2, R2>(
+   );
+
+ /** The development document adapter shares the Worker's resolver through this private HTTP response. */
+-export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0]) =>
++export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0], origin: string) =>
+   Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+     const url = new URL(request.url, "https://entry.invalid");
+@@ -137,6 +138,7 @@ export const cloudEntryApi = (session: Parameters<typeof resolveCloudEntry>[0])
+       page,
+       browserReturnTo(url.searchParams.get("redirect")),
+       new Headers(request.headers),
++      origin,
+     );
+     return yield* HttpServerResponse.json(result, { headers: privateHeaders });
+   });
+diff --git a/apps/hosted/cloud/src/implementation/product-analytics.ts b/apps/hosted/cloud/src/implementation/product-analytics.ts
+index daa9db8..4b81e81 100644
+--- a/apps/hosted/cloud/src/implementation/product-analytics.ts
++++ b/apps/hosted/cloud/src/implementation/product-analytics.ts
+@@ -66,12 +66,12 @@ const Analytics = Context.Reference<{
+ });
+
+ /** Called only after Better Auth creates a new verified user, never on returning sign-in. */
+-export const recordCloudSignup = (userId: string) =>
++export const recordCloudSignup = (userId: string, origin: string) =>
+   Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+-    const visitor = readSiteVisitor(request.headers.cookie ?? "");
++    const visitor = readSiteVisitor(request.headers.cookie ?? "", origin);
+     const analytics = yield* Analytics;
+-    // Link the site visit that led here, so marketing attribution reaches the new account.
++    // Attribute only a visit on this same host, never an identity supplied by a sibling app.
+     if (visitor !== undefined)
+       analytics.add({
+         event: "$identify",
+@@ -89,7 +89,7 @@ export const recordCloudSignup = (userId: string) =>
+
+ /** Prevent a later user on a shared browser from inheriting an identified site visitor. */
+ export const clearSiteVisitorOnSignOut =
+-  (cookieDomain?: string) => (response: HttpServerResponse.HttpServerResponse) =>
++  (origin: string) => (response: HttpServerResponse.HttpServerResponse) =>
+     Effect.gen(function* () {
+       const request = yield* HttpServerRequest.HttpServerRequest;
+       if (
+@@ -100,9 +100,9 @@ export const clearSiteVisitorOnSignOut =
+       )
+         return response;
+       return yield* response.pipe(
+-        HttpServerResponse.expireCookie(siteVisitorCookie, {
++        HttpServerResponse.expireCookie(siteVisitorCookie(origin), {
+           path: "/",
+-          ...(cookieDomain === undefined ? {} : { domain: cookieDomain }),
++          secure: new URL(origin).protocol === "https:",
+         }),
+         Effect.orDie,
+       );
 diff --git a/apps/hosted/cloud/src/infrastructure/app-domains.ts b/apps/hosted/cloud/src/infrastructure/app-domains.ts
 index 58a010e..d6f82d6 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-domains.ts
@@ -141,8 +290,32 @@ index 58a010e..d6f82d6 100644
    const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
    const base = yield* cloudAppUiBase.pipe(Effect.orDie);
    // Local development serves apps over HTTP and provisions no domains.
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index 879bcb2..e3b5647 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -109,7 +109,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+             ),
+           ),
+       },
+-      (userId) => runCallback(recordCloudSignup(userId)),
++      (userId) => runCallback(recordCloudSignup(userId, settings.url)),
+       (userId) => {
+         observation.sessionCreated();
+         return runCallback(recordCloudLogin(userId));
+@@ -344,9 +344,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+     const handler = observation
+       .observe(requestHandler)
+       .pipe(
+-        Effect.flatMap(
+-          clearSiteVisitorOnSignOut(Option.getOrUndefined(settings.hosts.sharedCookieDomain)),
+-        ),
++        Effect.flatMap(clearSiteVisitorOnSignOut(settings.url)),
+         Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
+       );
+     return {
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index b4f4f11..308a7e0 100644
+index b4f4f11..cda7ff0 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -6,7 +6,12 @@ import {
@@ -173,6 +346,22 @@ index b4f4f11..308a7e0 100644
        appDomains.status,
      );
      // Session objects run in the MCP server Worker; this isolate authenticates and forwards.
+@@ -571,13 +581,14 @@ export default Api.make(
+                 page,
+                 browserReturnTo(new URL(request.url, auth.origin).searchParams.get("redirect")),
+                 new Headers(request.headers),
++                auth.origin,
+               ),
+             ),
+             dashboard,
+           ),
+         ).pipe(HttpRouter.provideRequest(onboarding)),
+       ),
+-      HttpRouter.add("GET", "/api/entry", cloudEntryApi(auth.browserSession)).pipe(
++      HttpRouter.add("GET", "/api/entry", cloudEntryApi(auth.browserSession, auth.origin)).pipe(
+         HttpRouter.provideRequest(onboarding),
+       ),
+       apiRoutes,
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
 index eee4f95..82895c0 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
@@ -238,6 +427,24 @@ index 4e49914..58aa9e2 100644
          }
        }
      }
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 2d2586d..6b26522 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -1,3 +1,4 @@
++import { hostCookieName } from "./browser.ts";
+ import { HostedAppAccounts } from "./app-accounts.ts";
+ import { HostedResourceAccess } from "./resource-access.ts";
+ import { HostedOAuthClients } from "./oauth-clients.ts";
+@@ -141,7 +142,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
+         browserSession: {
+           type: "apiKey",
+           in: "cookie",
+-          name: `${new URL(origin).protocol === "https:" ? "__Secure-" : ""}${cookiePrefix}.session_token`,
++          name: `${hostCookieName(origin, cookiePrefix)}.session_token`,
+           description:
+             "Browser-managed session. Sign in through this deployment; bearer credentials cannot call session-only endpoints.",
+         },
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
 index 677230b..0c64605 100644
 --- a/apps/hosted/server/src/contracts/app-ui.ts
@@ -254,7 +461,7 @@ index 677230b..0c64605 100644
 @@ -25,6 +25,15 @@ import {
  } from "./organization.ts";
  export { AppSignInFailure, AppSignInId } from "apps/ui/auth/contracts";
- 
+
 +/** Nested remains the default. Opaque uses the reserved a-<UUID> label, independent of names. */
 +export const appUiAddressScheme = Config.Literals(
 +  ["nested", "opaque"],
@@ -296,10 +503,10 @@ index 677230b..0c64605 100644
  /** A browser started this attempt on an app origin; only a digest of its HttpOnly proof is retained. */
  export const AppUiAttempt = Schema.Struct({
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
-index b9e3a83..8df17a2 100644
+index 25b17a5..30b2ae5 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
-@@ -220,7 +220,7 @@ export const HostedApps = HttpApiGroup.make("apps")
+@@ -267,7 +267,7 @@ export const HostedApps = HttpApiGroup.make("apps")
        .annotate(RequiredAction, "manage")
        .annotate(
          OpenApi.Description,
@@ -308,6 +515,33 @@ index b9e3a83..8df17a2 100644
        ),
    )
    .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/contracts/browser.ts b/apps/hosted/server/src/contracts/browser.ts
+index eab67ff..ce14038 100644
+--- a/apps/hosted/server/src/contracts/browser.ts
++++ b/apps/hosted/server/src/contracts/browser.ts
+@@ -3,6 +3,10 @@ import { OrganizationId } from "./organization.ts";
+ import type { ResourceOrigins } from "@executor-js/mcp-auth";
+ import type { ProductBrand } from "@executor-js/utils/product-brand";
+
++/** HTTPS cookies are host-only by browser enforcement; never read the old shadowable names. */
++export const hostCookieName = (origin: string, name: string): string =>
++  new URL(origin).protocol === "https:" && !name.startsWith("__Host-") ? `__Host-${name}` : name;
++
+ /** Display identity only; session tokens and organization preferences never cross this boundary. */
+ export const BrowserSession = Schema.NullOr(
+   Schema.Struct({
+@@ -77,9 +81,9 @@ export const LastOrganization = Schema.Struct({
+ export type LastOrganization = typeof LastOrganization.Type;
+
+ /** Cookies do not distinguish ports, so local cloud and self-host keep separate memories. */
+-export const lastOrganizationCookie = (host: string) => {
++export const lastOrganizationCookie = (host: string, secure = false) => {
+   const port = new URL(`http://${host}`).port;
+-  return `executor-org${port === "" ? "" : `-${port}`}`;
++  return `${secure ? "__Host-" : ""}executor-org${port === "" ? "" : `-${port}`}`;
+ };
+
+ /** Parse the saved memory for this signed-in person; anything else is ignored. */
 diff --git a/apps/hosted/server/src/implementation/app-addresses.ts b/apps/hosted/server/src/implementation/app-addresses.ts
 index 225328f..54d4bdf 100644
 --- a/apps/hosted/server/src/implementation/app-addresses.ts
@@ -320,7 +554,7 @@ index 225328f..54d4bdf 100644
  import { Effect, Option, Schema } from "effect";
  import { AppUiAddressInvalid, AppUiHostnameLabel, type AppUiBaseUrl } from "../contracts/app-ui.ts";
  import { OrganizationSlug } from "../contracts/organization.ts";
- 
+
  /** Hosted app.organization addresses resolve current names before authorizing immutable identities. */
 -export const appAddresses = (dashboardOrigin: string, baseUrl: AppUiBaseUrl | undefined) => {
 +export const appAddresses = (
@@ -554,6 +788,79 @@ index 372254f..b72b5a2 100644
      callback,
      dashboard,
      calls,
+diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+index d6be048..3391705 100644
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -1,3 +1,4 @@
++import { hostCookieName } from "../contracts/browser.ts";
+ import { apiKeys, apiKeyManagement } from "./api-keys.ts";
+ import {
+   CurrentUsage,
+@@ -118,7 +119,16 @@ export const authOptions = (
+       customRules: { "/get-session": false, "/organization/list": false },
+     },
+     advanced: {
+-      cookiePrefix: "executor-hosted",
++      cookiePrefix: hostCookieName(settings.url, "executor-hosted"),
++      // Better Auth's automatic prefix is __Secure-. Supply __Host- ourselves, while
++      // keeping the actual Secure attribute on every core and plugin cookie.
++      useSecureCookies: false,
++      crossSubDomainCookies: { enabled: false },
++      defaultCookieAttributes: {
++        secure: new URL(settings.url).protocol === "https:",
++        path: "/",
++        httpOnly: true,
++      },
+       ipAddress: { ipAddressHeaders },
+       // Read a session and its user in one statement instead of one query each.
+       database: { joins: true },
+diff --git a/apps/hosted/server/src/implementation/document.ts b/apps/hosted/server/src/implementation/document.ts
+index bc65325..c0f0e9c 100644
+--- a/apps/hosted/server/src/implementation/document.ts
++++ b/apps/hosted/server/src/implementation/document.ts
+@@ -1,6 +1,6 @@
+ /** Resolve a hosted page's session before rendering, with the same request the browser would make. */
+ import type { DocumentApi } from "@executor-js/dashboard-start/document-api";
+-import { Effect, Schema } from "effect";
++import { Config, Effect, Schema } from "effect";
+ import { AuthenticationUnavailable } from "../contracts/auth.ts";
+ import {
+   BrowserSession,
+@@ -32,7 +32,10 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
+       Effect.mapError(() => new AuthenticationUnavailable()),
+     );
+     const saved = Cookies.parseHeader(request.headers.cookie ?? "")[
+-      lastOrganizationCookie(request.headers.host ?? "")
++      lastOrganizationCookie(
++        request.headers.host ?? "",
++        new URL(yield* Config.String("BETTER_AUTH_URL")).protocol === "https:",
++      )
+     ];
+     return {
+       session,
+diff --git a/apps/hosted/testing/accounts.ts b/apps/hosted/testing/accounts.ts
+index c0fb721..1797a53 100644
+--- a/apps/hosted/testing/accounts.ts
++++ b/apps/hosted/testing/accounts.ts
+@@ -1,4 +1,5 @@
+ /** Privileged fixture helpers. Imported only by local test tooling, never a host entry point. */
++import { hostCookieName } from "@executor-js/hosted-server/browser/contracts";
+ import { betterAuth, type BetterAuthOptions } from "better-auth";
+ import { testUtils } from "better-auth/plugins";
+ import { organization } from "better-auth/plugins/organization";
+@@ -49,7 +50,10 @@ export const testAccountAuth = (settings: {
+     ...base,
+     database: settings.database,
+     secret: Redacted.value(settings.secret),
+-    advanced: { ...base.advanced, cookiePrefix: settings.cookiePrefix },
++    advanced: {
++      ...base.advanced,
++      cookiePrefix: hostCookieName(settings.origin, settings.cookiePrefix),
++    },
+     session: { ...base.session, expiresIn: 3600 },
+     plugins: [
+       ...base.plugins,
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
 index a1bc3c7..6c662f2 100644
 --- a/apps/hosted/web/src/contracts/app-ui.ts
@@ -586,6 +893,20 @@ index a1bc3c7..6c662f2 100644
          Schedule.spaced("3 seconds"),
        ).pipe(Stream.takeUntil((location) => location.status !== "pending")),
      ),
+diff --git a/apps/hosted/web/src/implementation/last-organization.ts b/apps/hosted/web/src/implementation/last-organization.ts
+index c1dff4a..66bc9a3 100644
+--- a/apps/hosted/web/src/implementation/last-organization.ts
++++ b/apps/hosted/web/src/implementation/last-organization.ts
+@@ -9,7 +9,8 @@ import { Cookies } from "effect/http";
+ import { LastOrganization as LastOrganizationSchema } from "@executor-js/hosted-server/browser/contracts";
+
+ const lifetime = 365 * 24 * 60 * 60;
+-const name = () => lastOrganizationCookie(window.location.host);
++const name = () =>
++  lastOrganizationCookie(window.location.host, window.location.protocol === "https:");
+ const attributes = () =>
+   `Path=/; SameSite=Lax${window.location.protocol === "https:" ? "; Secure" : ""}`;
+
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 index e29dddf..b36520c 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
@@ -602,7 +923,7 @@ index e29dddf..b36520c 100644
    AppOverview,
 @@ -86,7 +89,13 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params)
    });
- 
+
  /** Views that read only the app. The others also read the inventory and the app's links. */
 -const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 +const appWideViews: ReadonlySet<AppView> = new Set([
@@ -612,7 +933,7 @@ index e29dddf..b36520c 100644
 +  "source",
 +  "history",
 +]);
- 
+
  /**
   * Links with their sign-in state and checks by this app. Accounts the caller can use show the
 @@ -134,7 +143,20 @@ export function AppDetailPage({
@@ -834,11 +1155,273 @@ index 6011737..3446370 100644
        Failure={HostedFailure}
        pending={
          Option.isSome(data) && data.value.pendingApp ? (
+diff --git a/apps/marketing/src/content/site-visitor.ts b/apps/marketing/src/content/site-visitor.ts
+index 96f4c95..e3817fd 100644
+--- a/apps/marketing/src/content/site-visitor.ts
++++ b/apps/marketing/src/content/site-visitor.ts
+@@ -1,9 +1,9 @@
+ /**
+- * The site's anonymous PostHog identity, shared with sign-up on the browser origin so a new account
+- * can be linked to the visit that led to it. No visitor cookie grants authentication or
+- * authorization.
++ * Same-origin anonymous attribution only. A hosted dashboard never consumes an identity supplied
++ * by another subdomain, including an untrusted app. This cookie grants no account access.
+  */
+-export const siteVisitorCookie = "executor_visitor";
++export const siteVisitorCookie = (origin: string) =>
++  `${new URL(origin).protocol === "https:" ? "__Host-" : ""}executor_visitor`;
+
+ /** How long a visit stays attributable to a later sign-up. */
+ export const siteVisitorDays = 90;
+@@ -11,11 +11,12 @@ export const siteVisitorDays = 90;
+ const anonymousId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+ /** Parse only a well-formed anonymous ID; anything else is ignored. */
+-export const readSiteVisitor = (cookies: string) => {
++export const readSiteVisitor = (cookies: string, origin: string) => {
++  const name = siteVisitorCookie(origin);
+   const raw = cookies
+     .split(";")
+     .map((part) => part.trim())
+-    .find((part) => part.startsWith(`${siteVisitorCookie}=`));
+-  const value = raw?.slice(siteVisitorCookie.length + 1);
++    .find((part) => part.startsWith(`${name}=`));
++  const value = raw?.slice(name.length + 1);
+   return value !== undefined && anonymousId.test(value) ? value : undefined;
+ };
+diff --git a/apps/marketing/src/layouts/Layout.astro b/apps/marketing/src/layouts/Layout.astro
+index b3113f8..2b2560e 100644
+--- a/apps/marketing/src/layouts/Layout.astro
++++ b/apps/marketing/src/layouts/Layout.astro
+@@ -103,9 +103,8 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
+               client.register({ product_version: "v2", surface: "marketing",
+                 environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE,
+                 executor_test: String(import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT).startsWith("test-") });
+-              // Sign-up on the browser origin reads this to link the new account to this visit.
+-              const domain = import.meta.env.PUBLIC_EXECUTOR_COOKIE_DOMAIN;
+-              document.cookie = `${siteVisitorCookie}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${domain ? `; Domain=${domain}` : ""}${location.protocol === "https:" ? "; Secure" : ""}`;
++              // Only sign-up on this same host may consume this anonymous visitor identity.
++              document.cookie = `${siteVisitorCookie(location.origin)}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
+             },
+           });
+           return posthog;
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+index 52d5ffc..edadb54 100644
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -76,8 +76,20 @@ const check = Effect.gen(function* () {
+           // This adapter observes the real OS store, never an application implementation.
+           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
+             return;
+-          // This external MCP fixture needs a real TLS listener, not a product implementation.
+-          if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
++          // This TLS transport observes the real host with a scenario-owned certificate.
++          if (
++            label === `support${path.sep}app-origin-tls.ts` &&
++            specifier === "@effect/platform-node/NodeHttpClient"
++          )
++            return;
++          // These transport fixtures need real TLS listeners, not product implementations.
++          if (
++            [
++              `support${path.sep}mcp-auth-patterns.ts`,
++              `support${path.sep}app-origin-tls.ts`,
++            ].includes(label) &&
++            specifier === "node:https"
++          )
+             return;
+           // This external upstream fixture generates its contract with Effect, not product code.
+           if (
+diff --git a/e2e/sdk/scenario.ts b/e2e/sdk/scenario.ts
+index 55ca22b..be62006 100644
+--- a/e2e/sdk/scenario.ts
++++ b/e2e/sdk/scenario.ts
+@@ -59,6 +59,7 @@ export const startScenario = (
+     return Target.of({
+       ...target,
+       controlOrigin: server.controlOrigin,
++      ...(server.tlsCertificate === undefined ? {} : { tlsCertificate: server.tlsCertificate }),
+       metadata: { ...target.metadata, origin: server.origin },
+     });
+   });
+diff --git a/e2e/support/api.ts b/e2e/support/api.ts
+index 114b29d..7f91ed1 100644
+--- a/e2e/support/api.ts
++++ b/e2e/support/api.ts
+@@ -1,3 +1,4 @@
++import { appOriginHttpClient } from "./app-origin-tls.ts";
+ /** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
+ import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
+ import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
+@@ -67,7 +68,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
+     SessionClients,
+     Effect.gen(function* () {
+       const target = yield* Target,
+-        client = yield* HttpClient.HttpClient;
++        client =
++          target.tlsCertificate === undefined
++            ? yield* HttpClient.HttpClient
++            : yield* appOriginHttpClient(target.tlsCertificate);
+       // Sessions belong to the browser origin, Cloud's `app.` host: its cookies are host-only
+       // there, wherever the fixture that issued them ran.
+       const origin = targetHosts(target).browser;
+diff --git a/e2e/support/app-origin-tls.ts b/e2e/support/app-origin-tls.ts
+new file mode 100644
+index 0000000..9547eb4
+--- /dev/null
++++ b/e2e/support/app-origin-tls.ts
+@@ -0,0 +1,109 @@
++/** TLS terminates at this fixture; every HTTP handler still runs in the real self-host process. */
++import { createServer } from "node:https";
++import { request } from "node:http";
++import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
++import { Effect, FileSystem } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++
++export const appOriginTls = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem;
++  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "app-origin-tls-" });
++  const certificate = `${directory}/cert.pem`,
++    key = `${directory}/key.pem`;
++  yield* processes.string(
++    ChildProcess.make(
++      "openssl",
++      [
++        "req",
++        "-x509",
++        "-newkey",
++        "rsa:2048",
++        "-nodes",
++        "-keyout",
++        key,
++        "-out",
++        certificate,
++        "-days",
++        "1",
++        "-subj",
++        "/CN=fixture.localhost",
++        "-addext",
++        "subjectAltName=DNS:fixture.localhost,DNS:*.fixture.localhost",
++      ],
++      { stderr: "pipe" },
++    ),
++  );
++  const keyBytes = yield* fs.readFileString(key);
++  const certBytes = yield* fs.readFileString(certificate);
++  let upstream: URL | undefined;
++  const server = yield* Effect.acquireRelease(
++    Effect.promise(() => {
++      const server = createServer({ key: keyBytes, cert: certBytes }, (incoming, outgoing) => {
++        if (upstream === undefined) {
++          outgoing.writeHead(503).end();
++          return;
++        }
++        const forwarded = request(
++          {
++            hostname: "127.0.0.1",
++            port: upstream.port,
++            path: incoming.url,
++            method: incoming.method,
++            headers: incoming.headers,
++          },
++          (response) => {
++            outgoing.writeHead(response.statusCode ?? 502, response.headers);
++            response.pipe(outgoing);
++          },
++        );
++        forwarded.on("error", () => outgoing.writeHead(502).end());
++        incoming.pipe(forwarded);
++      });
++      return new Promise<typeof server>((resolve, reject) => {
++        server.once("error", reject);
++        server.listen(0, "127.0.0.1", () => resolve(server));
++      });
++    }),
++    (server) =>
++      Effect.promise(
++        () =>
++          new Promise<void>((resolve) => {
++            server.closeAllConnections();
++            server.close(() => resolve());
++          }),
++      ),
++  );
++  const address = server.address();
++  if (address === null || typeof address === "string")
++    return yield* Effect.die("TLS fixture requires TCP");
++  return {
++    certificate,
++    origin: `https://app.fixture.localhost:${address.port}`,
++    base: `https://fixture.localhost:${address.port}`,
++    forward: (origin: string) => {
++      upstream = new URL(origin);
++    },
++  };
++});
++
++/** Trust just this scenario's certificate and resolve only its loopback fixture hosts. */
++export const appOriginHttpClient = (certificate: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const ca = yield* fs.readFileString(certificate);
++    const agent = yield* NodeHttpClient.makeAgent({
++      ca,
++      lookup: (hostname, options, callback) => {
++        if (!hostname.endsWith(".fixture.localhost")) {
++          callback(new Error("Non-fixture TLS host refused"), "", 4);
++          return;
++        }
++        if (options.all) callback(null, [{ address: "127.0.0.1", family: 4 }]);
++        else callback(null, "127.0.0.1", 4);
++      },
++    });
++    return yield* NodeHttpClient.makeNodeHttp.pipe(
++      Effect.provideService(NodeHttpClient.HttpAgent, agent),
++    );
++  });
+diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
+index aac6a79..1d35d10 100644
+--- a/e2e/support/browser.ts
++++ b/e2e/support/browser.ts
+@@ -115,6 +115,7 @@ export class Browser extends Context.Service<
+       const context = yield* driver("create browser context", () =>
+         browser.newContext({
+           baseURL: targetHosts(target).browser,
++          ...(target.tlsCertificate === undefined ? {} : { ignoreHTTPSErrors: true }),
+           viewport: { width: 1440, height: 960 },
+           ...visitorUserAgent(browser),
+           recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 18a14c9..79025cf 100644
+index 18a14c9..f49cac4 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
-@@ -317,6 +317,15 @@ export const startManagedServer = (
+@@ -1,5 +1,6 @@
+ /** A complete product process, with private lifecycle control for persistence/restart scenarios. */
+ import { createServer } from "node:http";
++import { appOriginTls } from "./app-origin-tls.ts";
+ import { randomBytes } from "node:crypto";
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import {
+@@ -85,6 +86,7 @@ export const startManagedServer = (
+       processes = yield* ChildProcessSpawner.ChildProcessSpawner,
+       path = yield* Path.Path,
+       http = yield* HttpClient.HttpClient;
++    const tls = environment.E2E_HTTPS_APP_ORIGINS === "true" ? yield* appOriginTls : undefined;
+     const port = new URL(target.metadata.origin).port;
+     let origin = target.metadata.origin;
+     const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
+@@ -172,6 +174,9 @@ export const startManagedServer = (
+       EXECUTOR_TEST_CLOCK_CONTROL: "stdin",
+       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
+       ...environment,
++      ...(tls === undefined
++        ? {}
++        : { BETTER_AUTH_URL: tls.origin, EXECUTOR_APP_UI_BASE_URL: tls.base }),
+     };
+     // Ask the product alone to stop, as the self-host image's supervisor does, so its own shutdown
+     // flushes its telemetry before it stops the collector it started. A signal to its whole
+@@ -317,7 +322,20 @@ export const startManagedServer = (
                if (clock !== null) confirmedOffset = Number(clock[1]);
                if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
                  origin = line.slice("Executor: ".length);
@@ -852,16 +1435,63 @@ index 18a14c9..79025cf 100644
 +                  origin = named.origin;
 +                }
                  env.PORT = new URL(origin).port;
++                if (tls !== undefined) {
++                  tls.forward(origin);
++                  origin = tls.origin;
++                }
                  env.EXECUTOR_PORT = env.PORT;
                  env.BETTER_AUTH_URL = origin;
+                 if (target.metadata.target === "self-host")
+@@ -544,7 +562,11 @@ export const startManagedServer = (
+     if (!("port" in server.address))
+       return yield* new ServerFailed({ message: "Control listener must use TCP" });
+     yield* start;
+-    return { controlOrigin: `http://127.0.0.1:${server.address.port}`, origin };
++    return {
++      controlOrigin: `http://127.0.0.1:${server.address.port}`,
++      origin,
++      ...(tls === undefined ? {} : { tlsCertificate: tls.certificate }),
++    };
+   });
+
+ const startIsolatedSelfHost = (
+diff --git a/e2e/support/platform.ts b/e2e/support/platform.ts
+index d9e72b7..226c68b 100644
+--- a/e2e/support/platform.ts
++++ b/e2e/support/platform.ts
+@@ -14,6 +14,7 @@ export class Target extends Context.Service<
+   {
+     readonly metadata: typeof RunMetadata.Type;
+     readonly directory: string;
++    readonly tlsCertificate?: string;
+     readonly apiKey: Redacted.Redacted<string>;
+     readonly rows: number;
+     readonly observeUI: boolean;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index d506111..938d583 100644
+index d506111..1372851 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4859,6 +4859,26 @@ export const scenarios = plan({
+@@ -4859,6 +4859,43 @@ export const scenarios = plan({
        local: na("The API document and catalog installation are hosted product surfaces."),
      },
    },
++  appUiCookieIsolation: {
++    fixtures: "actors",
++    file: "app-ui-cookie-isolation.spec.ts",
++    appOrigin: true,
++    title: "app-set parent-domain cookies cannot shadow the HTTPS dashboard session",
++    serverEnvironment: {
++      E2E_HTTPS_APP_ORIGINS: "true",
++      EXECUTOR_PRODUCT_NAME: "Signalbox",
++      EXECUTOR_APP_UI_ADDRESS_SCHEME: "opaque",
++      EXECUTOR_APP_UI_EMBEDDED: "true",
++    },
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Owns a self-host behind a local HTTPS termination fixture."),
++      local: na("Local does not serve same-site hosted app origins."),
++    },
++  },
 +  embeddedAppUi: {
 +    fixtures: "actors",
 +    file: "embedded-app-ui.spec.ts",
@@ -885,6 +1515,197 @@ index d506111..938d583 100644
    appUiApiDocument: {
      fixtures: "actors",
      managementApps: ["owner"],
+diff --git a/e2e/tests/app-ui-cookie-isolation.spec.ts b/e2e/tests/app-ui-cookie-isolation.spec.ts
+new file mode 100644
+index 0000000..a5b9b42
+--- /dev/null
++++ b/e2e/tests/app-ui-cookie-isolation.spec.ts
+@@ -0,0 +1,185 @@
++/** An authored app may set site cookies, but cannot choose the dashboard's signed-in user. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { Actors, password } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Target } from "../support/platform.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Dashboard cookie isolation", (it) => {
++  it.effect(scenarios.appUiCookieIsolation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          target = yield* Target;
++        const owner = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        );
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Cookie isolation fixture",
++          files: [
++            {
++              path: "index.ts",
++              content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
++            },
++            {
++              path: "ui/index.html",
++              content: "<!doctype html><html><body><h1>Untrusted app</h1></body></html>",
++            },
++            appsManifest,
++          ],
++        });
++        expect(response.status).toBe(200);
++        const app = yield* body(App, response);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        yield* browser.login(actors.owner);
++        yield* browser.omitNetworkTrace;
++        yield* browser.use("Open the app inside the HTTPS dashboard", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${app.id}`),
++        );
++        yield* browser.use("The authenticated app renders", (page) =>
++          page
++            .frameLocator(`iframe[title="${app.name} app"]`)
++            .getByRole("heading", { name: "Untrusted app" })
++            .waitFor(),
++        );
++        yield* browser.use(
++          "Every issued Better Auth cookie uses host-only HTTPS semantics",
++          (page) =>
++            page
++              .context()
++              .request.post(`${target.metadata.origin}/api/auth/sign-in/email`, {
++                data: { email: "owner@example.test", password, rememberMe: false },
++                headers: { origin: target.metadata.origin },
++              })
++              .then((login) => {
++                expect(login.status()).toBe(200);
++                const cookies = login
++                  .headersArray()
++                  .filter((header) => header.name.toLowerCase() === "set-cookie");
++                expect(cookies.length).toBeGreaterThan(1);
++                for (const { value } of cookies) {
++                  expect(value.split("=", 1)[0]).toMatch(/^__Host-executor-hosted\./);
++                  expect(/;\s*Path=\/(?:;|$)/i.test(value)).toBe(true);
++                  expect(/;\s*Secure(?:;|$)/i.test(value)).toBe(true);
++                  expect(/;\s*HttpOnly(?:;|$)/i.test(value)).toBe(true);
++                  expect(/;\s*Domain=/i.test(value)).toBe(false);
++                }
++              }),
++        );
++        yield* browser.use(
++          "The app injects old names and tries to inject the protected name",
++          (page) => {
++            const frame = page
++              .frames()
++              .find(
++                (frame) =>
++                  new URL(frame.url()).hostname === `a-${app.id.slice(4)}.fixture.localhost`,
++              );
++            expect(frame).toBeDefined();
++            return frame!.evaluate(() => {
++              for (const name of [
++                "__Secure-executor-hosted.session_token",
++                "executor-hosted.session_token",
++                "__Host-executor-hosted.session_token",
++                "__Secure-__Host-executor-hosted.session_token",
++              ])
++                document.cookie = `${name}=app-injected; Domain=fixture.localhost; Path=/api; Secure; SameSite=Lax`;
++            });
++          },
++        );
++        yield* browser.use(
++          "Chromium keeps the injected legacy cookie and refuses the protected one",
++          (page) =>
++            page
++              .context()
++              .cookies(`${target.metadata.origin}/api/auth/get-session`)
++              .then((cookies) => {
++                expect(
++                  cookies.some(
++                    (cookie) =>
++                      cookie.name === "__Secure-executor-hosted.session_token" &&
++                      cookie.path === "/api" &&
++                      cookie.domain === ".fixture.localhost",
++                  ),
++                ).toBe(true);
++                const protectedCookies = cookies.filter(
++                  (cookie) => cookie.name === "__Host-executor-hosted.session_token",
++                );
++                expect(protectedCookies).toHaveLength(1);
++                expect(protectedCookies[0]?.domain).toBe("app.fixture.localhost");
++                expect(protectedCookies[0]?.path).toBe("/");
++              }),
++        );
++        const sessionSurvived = yield* browser.use(
++          "Injected cookies are sent first but do not affect the dashboard session",
++          (page) =>
++            Promise.all([
++              page
++                .waitForRequest(
++                  (request) => new URL(request.url()).pathname === "/api/auth/get-session",
++                )
++                .then((request) => request.allHeaders()),
++              page.evaluate(() =>
++                fetch("/api/auth/get-session", { credentials: "include" })
++                  .then((response) => response.json())
++                  .then((session) => session?.user?.id),
++              ),
++            ]).then(([headers, user]) => {
++              const cookie = headers.cookie ?? "";
++              expect(
++                cookie.indexOf("__Secure-executor-hosted.session_token=app-injected"),
++              ).toBeGreaterThanOrEqual(0);
++              expect(
++                cookie.indexOf("__Secure-executor-hosted.session_token=app-injected"),
++              ).toBeLessThan(cookie.indexOf("__Host-executor-hosted.session_token="));
++              return user === owner.user.id;
++            }),
++        );
++        expect(sessionSurvived).toBe(true);
++        yield* browser.use(
++          "Legacy cookie names cannot restore even a valid signed session",
++          (page) =>
++            page
++              .context()
++              .cookies(target.metadata.origin)
++              .then((cookies) => {
++                const current = cookies.find(
++                  (cookie) => cookie.name === "__Host-executor-hosted.session_token",
++                );
++                expect(current).toBeDefined();
++                return page
++                  .context()
++                  .request.get(`${target.metadata.origin}/api/auth/get-session`, {
++                    headers: {
++                      cookie: `__Secure-executor-hosted.session_token=${current!.value}; executor-hosted.session_token=${current!.value}`,
++                    },
++                  });
++              })
++              .then((response) => {
++                expect(response.status()).toBe(200);
++                return response.json();
++              })
++              .then((session) => expect(session).toBeNull()),
++        );
++        yield* browser.use("The signed-in dashboard remains usable after injection", (page) =>
++          page.reload(),
++        );
++        yield* browser.use("Reload keeps the app page", (page) =>
++          page.getByRole("navigation", { name: "App navigation" }).waitFor(),
++        );
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 new file mode 100644
 index 0000000..020738b
@@ -1251,11 +2072,46 @@ index ef2ad38..86de6db 100644
      return HttpServerResponse.text(
        versionDocument(new TextDecoder().decode(document.body), options.version).replace(
          "<!--executor-ui-->",
+diff --git a/packages/dashboard-start/src/implementation/in-process.ts b/packages/dashboard-start/src/implementation/in-process.ts
+index b16d38a..d42d331 100644
+--- a/packages/dashboard-start/src/implementation/in-process.ts
++++ b/packages/dashboard-start/src/implementation/in-process.ts
+@@ -3,7 +3,7 @@
+  * complete request pipeline, so authentication, authorization, request telemetry and error
+  * reporting are the same as for the browser's HTTP request.
+  */
+-import { Context, Effect, Option } from "effect";
++import { Config, Context, Effect, Option } from "effect";
+ import { inProcessOrigin } from "../contracts/api.ts";
+ import type { DocumentApi } from "../contracts/document.ts";
+ import { requestDisplayFormat, timeZoneCookie } from "@executor-js/ui/contracts/display";
+@@ -94,6 +94,10 @@ export const inProcessApi = Effect.gen(function* () {
+   const url = HttpServerRequest.toURL(document);
+   if (Option.isNone(url)) return yield* Effect.die("Document request has no URL");
+   const origin = url.value.origin;
++  const cookieOrigin = yield* Config.String("BETTER_AUTH_URL").pipe(
++    Config.withDefault(origin),
++    Effect.orDie,
++  );
+   const identity = new Headers();
+   for (const name of forwarded) {
+     const value = document.headers[name];
+@@ -137,7 +141,9 @@ export const inProcessApi = Effect.gen(function* () {
+       path: url.value.pathname + url.value.search,
+       display: requestDisplayFormat({
+         acceptLanguage: document.headers["accept-language"],
+-        timeZone: Cookies.parseHeader(document.headers.cookie ?? "")[timeZoneCookie],
++        timeZone: Cookies.parseHeader(document.headers.cookie ?? "")[
++          timeZoneCookie(new URL(cookieOrigin).protocol === "https:")
++        ],
+       }),
+     } satisfies DocumentApi,
+     seal: () => {
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index b801a57..ff52c9e 100644
+index bee7faa..731c694 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -97,6 +97,7 @@ export interface MutationProps<Input, A, E> {
+@@ -99,6 +99,7 @@ export interface MutationProps<Input, A, E> {
  }
  /** App sections use one URL vocabulary across local and hosted dashboards. */
  export const AppView = Schema.Literals([
@@ -1263,13 +2119,26 @@ index b801a57..ff52c9e 100644
    "overview",
    "schedules",
    "skills",
+diff --git a/packages/ui/src/contracts/display.ts b/packages/ui/src/contracts/display.ts
+index 5b1087e..af872fa 100644
+--- a/packages/ui/src/contracts/display.ts
++++ b/packages/ui/src/contracts/display.ts
+@@ -10,7 +10,7 @@ export const DisplayFormat = Schema.Struct({ locale: Schema.String, timeZone: Sc
+ export type DisplayFormat = typeof DisplayFormat.Type;
+
+ /** Saved by the browser so later documents render its local time on the server. */
+-export const timeZoneCookie = "executor-tz";
++export const timeZoneCookie = (secure = false) => `${secure ? "__Host-" : ""}executor-tz`;
+
+ const supported = (format: DisplayFormat): boolean => {
+   try {
 diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
 index 8fce008..b992545 100644
 --- a/packages/ui/src/implementation/dashboard/app-detail.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
 @@ -25,6 +25,7 @@ import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
- 
+
  const sections = [
 +  { view: "app", label: "App" },
    { view: "overview", label: "Overview" },
@@ -1480,3 +2349,16 @@ index 026079a..6ff45ba 100644
                      {(needsSignIn || unavailable) && (
                        <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
                          {needsSignIn ? "Needs sign-in" : "Account unavailable"}
+diff --git a/packages/ui/src/implementation/hooks/display-format.ts b/packages/ui/src/implementation/hooks/display-format.ts
+index 185b526..a063346 100644
+--- a/packages/ui/src/implementation/hooks/display-format.ts
++++ b/packages/ui/src/implementation/hooks/display-format.ts
+@@ -38,7 +38,7 @@ export function DisplayFormatSync() {
+     // The page now responds to input; automation waits for this before interacting.
+     document.documentElement.dataset.hydrated = "";
+     const secure = window.location.protocol === "https:" ? "; Secure" : "";
+-    document.cookie = `${timeZoneCookie}=${encodeURIComponent(currentBrowserFormat().timeZone)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
++    document.cookie = `${timeZoneCookie(window.location.protocol === "https:")}=${encodeURIComponent(currentBrowserFormat().timeZone)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+   }, []);
+   return null;
+ }

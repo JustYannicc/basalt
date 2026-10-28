@@ -96,9 +96,9 @@ function isToolsServiceSitePage(pathname: string): boolean {
 }
 
 /** The tools service's Better Auth cookie prefix; its sign-in still checks the session. */
-export const sessionCookiePrefix = "executor-hosted";
+export const sessionCookiePrefix = "__Host-executor-hosted";
 const sessionCookie = new RegExp(
-  `(?:^|;\\s*)(?:__Secure-)?${sessionCookiePrefix}\\.session_token=[^;\\s]`,
+  `(?:^|;\\s*)${sessionCookiePrefix}\\.session_token=[^;\\s]`,
 );
 
 function hasSessionCookie(request: Request): boolean {
@@ -126,6 +126,18 @@ async function withBrandNotFound(response: Response): Promise<Response> {
     return response;
   const html = await response.text();
   return html.includes("data-dashboard") ? new Response(html, response) : notFoundPage();
+}
+
+/** Router-owned HTML is never embeddable, including assets and local error pages. */
+function denyFraming(response: Response): Response {
+  if (!/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.headers.get("content-type") ?? ""))
+    return response;
+  const protectedResponse = new Response(response.body, response);
+  const policy = (response.headers.get("content-security-policy") ?? "")
+    .split(";").map((directive) => directive.trim()).filter((directive) => directive && !/^frame-ancestors\b/i.test(directive));
+  protectedResponse.headers.set("Content-Security-Policy", [...policy, "frame-ancestors 'none'"].join("; "));
+  protectedResponse.headers.set("X-Frame-Options", "DENY");
+  return protectedResponse;
 }
 
 /** Where the brand's own docs and legal pages live, when it has them. */
@@ -164,7 +176,7 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   // Run before static assets on all hosts, then serve assets only on this router's dashboard host.
   if (env.ASSETS && (request.method === "GET" || request.method === "HEAD")) {
     const asset = await env.ASSETS.fetch(request);
-    if (asset.status !== 404) return asset;
+    if (asset.status !== 404) return denyFraming(asset);
   }
   const { search } = url;
   const pathname = servicePath(url.pathname);
@@ -218,9 +230,17 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
 
 export async function handleRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
   // Relays contain explicit feedback and must not recursively instrument their own exports.
-  if (!validSentryDsn(env.SENTRY_DSN)) return routeRequest(request, env, context);
-  const response = await traceRequest(env, request, (forwarded) => routeRequest(forwarded, env, context), context);
-  return new URL(request.url).hostname === (env.DASHBOARD_HOST ?? brand.host) ? injectFeedback(response) : response;
+  const tracing = validSentryDsn(env.SENTRY_DSN);
+  const response = tracing
+    ? await traceRequest(env, request, (forwarded) => routeRequest(forwarded, env, context), context)
+    : await routeRequest(request, env, context);
+  const url = new URL(request.url);
+  if (url.hostname !== (env.DASHBOARD_HOST ?? brand.host)) return response;
+  const rendered = tracing ? injectFeedback(response) : response;
+  // Only the tools service's auth route may retain its explicit same-origin exception.
+  if (url.pathname === "/app-auth" && response.headers.get("content-security-policy") === "frame-ancestors 'self'" && response.headers.get("x-frame-options") === "SAMEORIGIN")
+    return rendered;
+  return denyFraming(rendered);
 }
 
 export default { fetch: handleRequest };
