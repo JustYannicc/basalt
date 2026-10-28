@@ -37,7 +37,10 @@ const files = (body: string): Files => [
 const original = files("export default 1;\n");
 const current = files("export default 2;\n");
 /** A source's digest, as the sweep records it. */
-const sha = (source: Files) => createHash("sha256").update(JSON.stringify(source)).digest("hex");
+const sha = (source: unknown) => createHash("sha256").update(JSON.stringify(source)).digest("hex");
+/** A workspace commit's marker: its files sorted by path, each with its keys sorted. */
+const marker = (source: Files) =>
+  sha(source.toSorted((a, b) => (a.path < b.path ? -1 : 1)).map(({ path, content }) => ({ content, path })));
 /** The feed's source digest. */
 const digest = sha(current);
 const crm: Record<string, Slot> = { crm: { provider: "provider-crm", scope: "user", cardinality: "one" } };
@@ -65,6 +68,8 @@ const fixture = (options: {
   commitFails?: boolean;
   /** The record write fails. */
   saveFails?: boolean;
+  /** Git returns the workspace's files in reverse order. */
+  reverseWorkspace?: boolean;
 }) => {
   const versions = new Map((options.versions ?? [{ id: "v1", files: original }]).map((v) => [v.id, v.files]));
   const state = { active: options.active ?? "v1", builds: 0, deploys: 0, commits: [] as Commit[], saves: [] as Outcome[] };
@@ -82,7 +87,11 @@ const fixture = (options: {
       get: () => Effect.sync(app),
       source: ({ version }: { version?: string }) =>
         Effect.sync(() => ({ id: version ?? state.active, files: versions.get(version ?? state.active)! })),
-      workspace: () => Effect.succeed({ revision: { code: "code", commit: workspace.commit }, files: workspace.files }),
+      workspace: () =>
+        Effect.sync(() => ({
+          revision: { code: "code", commit: workspace.commit },
+          files: options.reverseWorkspace ? workspace.files.toReversed() : workspace.files,
+        })),
       // Versions are created in insertion order.
       versions: () => Effect.succeed([...versions.keys()].map((id, index) => ({ id, createdAt: new Date(index) }))),
       build: () =>
@@ -189,7 +198,7 @@ test("breaking changes count accounts that stop working and name why", () => {
 test("an untouched copy no linked account breaks on moves to the catalog's current source", async () => {
   const app = fixture({});
   assert.deepEqual(await app.sweep(undefined, [linked("a1")]), {
-    record: { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest },
+    record: { version: "v2", workspace: "c2", workspaceSource: marker(current), applied: digest },
     active: "v2",
     deployed: true,
   });
@@ -202,7 +211,7 @@ test("an untouched copy no linked account breaks on moves to the catalog's curre
   assert.ok(app.state.commits[0]!.message.length > 0);
   assert.deepEqual(app.workspace, { commit: "c2", files: current });
   // The recorded commit is clean: the next sweep of the same source records without deploying.
-  const recorded = { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest };
+  const recorded = { version: "v2", workspace: "c2", workspaceSource: marker(current), applied: digest };
   const again = await app.sweep(recorded);
   assert.deepEqual(again.record, recorded);
   assert.equal(app.state.saves.length, 1);
@@ -239,7 +248,7 @@ test("a failed commit records the commit read, and the next sweep heals it", asy
   // The deploy stands; the commit read still holds the replaced catalog source.
   const outcome = await app.sweep({ version: "v1", workspace: "c1" });
   assert.deepEqual(outcome, {
-    record: { version: "v2", applied: digest, workspace: "c1", workspaceSource: sha(original) },
+    record: { version: "v2", applied: digest, workspace: "c1", workspaceSource: marker(original) },
     active: "v2",
     deployed: true,
   });
@@ -251,6 +260,46 @@ test("a failed commit records the commit read, and the next sweep heals it", asy
   assert.equal(healed.value?.record.workspace, "c2");
   assert.equal(app.state.deploys, 1);
   assert.deepEqual(healed.lines.map((line) => line.healed), [true]);
+});
+
+test("the workspace marker matches the same files read back in another order", async () => {
+  const options = { commitFails: true, reverseWorkspace: true };
+  const app = fixture(options);
+  // The deploy's commit fails; the commit read is recorded with a marker of its files as read.
+  const outcome = await app.sweep({ version: "v1", workspace: "c1" });
+  assert.equal(outcome.record.workspace, "c1");
+  assert.ok(outcome.record.workspaceSource);
+  // Git now returns them in another order: the marker still proves the commit, so it heals.
+  options.commitFails = false;
+  options.reverseWorkspace = false;
+  await app.sweep(outcome.record);
+  assert.deepEqual(app.state.commits.map(({ expected, files }) => ({ expected, files })), [{ expected: "c1", files: current }]);
+});
+
+test("a manager's Update over a person's version never records their commit for a heal", async () => {
+  const mine = files("export default 'mine';\n");
+  const app = fixture({
+    commitFails: true,
+    versions: [{ id: "v1", files: original }, { id: "v2", files: mine }],
+    active: "v2",
+    workspace: { commit: "cp", files: mine },
+  });
+  const offer = { source: digest, active: "v2", reconnect: 0, reasons: [], touched: true };
+  const exit = await app.apply({ version: "v1", workspace: "c1", offer });
+  assert.ok(Exit.isSuccess(exit));
+  // The commit fails, and the commit read holds the person's source: no workspace is recorded.
+  assert.deepEqual(exit.value.record, { version: "v3", applied: digest });
+  assert.equal(app.state.active, "v3");
+  // Git recovers; the next sweep leaves their commit alone.
+  const later = fixture({
+    versions: [{ id: "v1", files: original }, { id: "v2", files: mine }, { id: "v3", files: current }],
+    active: "v3",
+    workspace: { commit: "cp", files: mine },
+  });
+  await later.sweep(exit.value.record);
+  assert.equal(later.state.commits.length, 0);
+  assert.equal(later.state.deploys, 0);
+  assert.deepEqual(later.workspace, { commit: "cp", files: mine });
 });
 
 test("a workspace clean only for its framework pin keeps the pin in its commit", async () => {
@@ -288,8 +337,8 @@ test("a workspace that already holds the deployed files is not committed again",
   // A clean recorded commit can already hold the catalog's source. With no recorded version the
   // sweep never heals it back to the active source first.
   const app = fixture({ workspace: { commit: "c1", files: current } });
-  const outcome = await app.sweep({ workspace: "c1", workspaceSource: digest });
-  assert.deepEqual(outcome.record, { version: "v2", workspace: "c1", workspaceSource: digest, applied: digest });
+  const outcome = await app.sweep({ workspace: "c1", workspaceSource: marker(current) });
+  assert.deepEqual(outcome.record, { version: "v2", workspace: "c1", workspaceSource: marker(current), applied: digest });
   assert.equal(app.state.commits.length, 0);
 });
 
@@ -306,7 +355,7 @@ test("an untouched copy whose recorded digest matches the feed is never redeploy
   // Binary public files make stored and served files differ; the recorded digest decides.
   const app = fixture({});
   const outcome = await app.sweep({ version: "v1", workspace: "c1", applied: digest });
-  assert.deepEqual(outcome.record, { version: "v1", workspace: "c1", workspaceSource: sha(original), applied: digest });
+  assert.deepEqual(outcome.record, { version: "v1", workspace: "c1", workspaceSource: marker(original), applied: digest });
   assert.equal(outcome.deployed, false);
   assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
@@ -366,7 +415,7 @@ test("a touched copy is offered, never deployed", async () => {
 test("unchanged catalog files only record the active version", async () => {
   const app = fixture({ versions: [{ id: "v1", files: current }], workspace: { commit: "c1", files: current } });
   const stale = { version: "v0", offer: { source: "x", active: "v1", reconnect: 1, reasons: ["provider"], touched: false } };
-  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1", workspaceSource: digest, applied: digest });
+  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1", workspaceSource: marker(current), applied: digest });
   assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
 });
@@ -410,7 +459,7 @@ test("a manager applies an offer only while it is current and the workspace is c
   const exit = await app.apply({ version: "v1", workspace: "c1", offer });
   assert.ok(Exit.isSuccess(exit));
   assert.deepEqual(exit.value, {
-    record: { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest },
+    record: { version: "v2", workspace: "c2", workspaceSource: marker(current), applied: digest },
     active: "v2",
     deployed: true,
   });
@@ -465,7 +514,7 @@ test("a drifted untouched install gets the active source committed once, and log
     { app: "app_catalog", organization: "org_team", decision: "recorded", version: "v2", healed: true },
   ]);
   // The healed commit is recorded clean; nothing was deployed.
-  assert.deepEqual(value?.record, { version: "v2", workspace: "c2", workspaceSource: digest, applied: digest });
+  assert.deepEqual(value?.record, { version: "v2", workspace: "c2", workspaceSource: marker(current), applied: digest });
   assert.equal(app.state.deploys, 0);
   // Healed once: the next sweep finds main holding the active source.
   assert.deepEqual((await logged(app.sweeping(value!.record))).lines.map((line) => [line.decision, line.healed]), [
@@ -507,7 +556,7 @@ test("a person's committed source is never healed over after they roll back", as
   const versions = [{ id: "v1", files: original }, { id: "v2", files: mine }];
   const person = { versions, active: "v2", workspace: { commit: "cp", files: mine } };
   // v1 holds the catalog's earlier source, which the feed has since replaced.
-  const ours = { version: "v1", workspace: "c1", workspaceSource: sha(original), applied: sha(original) };
+  const ours = { version: "v1", workspace: "c1", workspaceSource: marker(original), applied: sha(original) };
   const app = fixture(person);
   const offered = await app.sweep(ours);
   assert.equal(offered.record.offer.touched, true);
@@ -539,7 +588,7 @@ test("every sweep decision logs one line with IDs only", async () => {
   const held = { version: "v1", workspace: "c1" };
   assert.deepEqual(await run(fixture(breaking), held, [linked("a1")]), line("offered", "v1", { reasons: ["provider"], reconnect: 1 }));
   const same = { versions: [{ id: "v1", files: current }], workspace: { commit: "c1", files: current } };
-  const settled = { version: "v1", workspace: "c1", workspaceSource: digest, applied: digest };
+  const settled = { version: "v1", workspace: "c1", workspaceSource: marker(current), applied: digest };
   assert.deepEqual(await run(fixture(same), settled), line("unchanged", "v1"));
   assert.deepEqual(await run(fixture(same)), line("recorded", "v1"));
   assert.deepEqual(await run(fixture({ workspace: { commit: "c9", files: files("draft") } }), held), line("skipped", "v1"));

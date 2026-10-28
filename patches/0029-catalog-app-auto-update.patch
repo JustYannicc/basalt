@@ -761,10 +761,10 @@ index 000000000..436d6ae19
 +  );
 diff --git a/apps/hosted/server/src/implementation/catalog-app-records.ts b/apps/hosted/server/src/implementation/catalog-app-records.ts
 new file mode 100644
-index 000000000..db24cac6c
+index 000000000..67b2f8e40
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-records.ts
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,135 @@
 +/** The sweep's per-app records in organization metadata, and the guarded write of one. */
 +import {
 +  StorageError,
@@ -852,21 +852,23 @@ index 000000000..db24cac6c
 +export const recordOf = (records: Readonly<Record<string, Saved>> | undefined, app: AppId) =>
 +  records !== undefined && Object.hasOwn(records, app) ? records[app] : undefined;
 +
-+/**
-+ * SHA-256 of catalog source as the feed serves it. Retained versions store binary public files
-+ * by reference, so comparing files alone would never match a catalog source that has any.
-+ */
-+export const sourceDigest = (files: SourceFiles) =>
++/** SHA-256 of a JSON value as `JSON.stringify` writes it. */
++export const jsonDigest = (value: unknown) =>
 +  Effect.tryPromise({
 +    try: async () =>
 +      Array.from(
 +        new Uint8Array(
-+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value))),
 +        ),
 +        (byte) => byte.toString(16).padStart(2, "0"),
 +      ).join(""),
 +    catch: () => new StorageError(),
 +  });
++/**
++ * SHA-256 of catalog source as the feed serves it. Retained versions store binary public files
++ * by reference, so comparing files alone would never match a catalog source that has any.
++ */
++export const sourceDigest = (files: SourceFiles) => jsonDigest(files);
 +
 +/**
 + * Write an outcome under the app's lock, only while its record is still the one it was decided
@@ -1091,10 +1093,10 @@ index 000000000..55e3e34b6
 +};
 diff --git a/apps/hosted/server/src/implementation/catalog-app-workspace.ts b/apps/hosted/server/src/implementation/catalog-app-workspace.ts
 new file mode 100644
-index 000000000..30e751fc8
+index 000000000..e28d32d89
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-workspace.ts
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,289 @@
 +/**
 + * A catalog copy's Git workspace beside its active version: whether it is clean, committing the
 + * catalog's source after a deploy, and healing workspaces earlier sweeps left behind.
@@ -1110,9 +1112,28 @@ index 000000000..30e751fc8
 +  type VersionId,
 +} from "@executor-js/sdk/core";
 +import { Effect } from "effect";
-+import { sourceDigest, type CatalogOutcome, type Saved } from "./catalog-app-records.ts";
++import { jsonDigest, type CatalogOutcome, type Saved } from "./catalog-app-records.ts";
 +
 +type Apps = { readonly apps: Executor["apps"] };
++
++/** A JSON value with object keys sorted, so equal values serialize alike. */
++const canonical = (value: unknown): unknown =>
++  Array.isArray(value)
++    ? value.map(canonical)
++    : typeof value === "object" && value !== null
++      ? Object.fromEntries(
++          Object.entries(value)
++            .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
++            .map(([key, entry]) => [key, canonical(entry)]),
++        )
++      : value;
++
++/**
++ * SHA-256 of workspace files in a canonical form, sorted by path with keys sorted, so the files a
++ * commit was written with and the same files read back from Git in another order match.
++ */
++const workspaceDigest = (files: SourceFiles) =>
++  jsonDigest(canonical(files.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))));
 +
 +/**
 + * Whether the recorded workspace commit holds source this feature recorded. Records it wrote
@@ -1137,7 +1158,7 @@ index 000000000..30e751fc8
 +          (yield* executor.apps.source({ owner, app, version: first.id })).files,
 +        );
 +      })
-+    : Effect.map(sourceDigest(workspace), (digest) => digest === recorded.workspaceSource);
++    : Effect.map(workspaceDigest(workspace), (digest) => digest === recorded.workspaceSource);
 +
 +/**
 + * The active source and the workspace read beside it; undefined while the app moves. `holds`: the
@@ -1203,7 +1224,10 @@ index 000000000..30e751fc8
 +) =>
 +  Effect.gen(function* () {
 +    if (version !== undefined && version === current.active && current.holds)
-+      return { workspace: current.commit, workspaceSource: yield* sourceDigest(current.workspace) };
++      return {
++        workspace: current.commit,
++        workspaceSource: yield* workspaceDigest(current.workspace),
++      };
 +    if (version === undefined || version !== recorded?.version || recorded.workspace === undefined)
 +      return {};
 +    return {
@@ -1269,8 +1293,8 @@ index 000000000..30e751fc8
 + * workspace's main on the revision read, as upstream's built-in app upgrade does, so a manager's
 + * "Deploy latest" does not bring the replaced source back. Undefined when a person's deploy or
 + * activation landed first. A workspace that moved keeps its commit and is left out of the record,
-+ * so the next sweep counts the app as touched. Any other commit failure records the commit read,
-+ * which the next sweep heals.
++ * so the next sweep counts the app as touched. After any other commit failure, the commit read is
++ * recorded for the next sweep to heal only when the replaced version was the catalog's own.
 + */
 +export const deployCatalogSource = (
 +  executor: Apps,
@@ -1288,6 +1312,15 @@ index 000000000..30e751fc8
 +    // A person's newer deploy or activation keeps the app; it now counts as touched.
 +    if (deployed === undefined || deployed.app.activeVersion !== deployed.version.id)
 +      return undefined;
++    const outcome = (workspace: {
++      readonly workspace?: string;
++      readonly workspaceSource?: string;
++    }) =>
++      ({
++        record: { version: deployed.version.id, applied: digest, ...workspace },
++        active: deployed.version.id,
++        deployed: true,
++      }) satisfies CatalogOutcome;
 +    const saved = yield* commitSource(
 +      executor,
 +      owner,
@@ -1296,27 +1329,24 @@ index 000000000..30e751fc8
 +      files,
 +      "Update to the catalog's current source",
 +    );
-+    // A failed commit leaves the commit read, which held the replaced source this feature
-+    // recorded, so the next sweep heals it.
++    if (saved !== "moved" && saved !== "failed")
++      return outcome({
++        workspace: saved.commit,
++        workspaceSource: yield* workspaceDigest(saved.files),
++      });
++    // A moved workspace is someone's. After any other failure the commit read is left, and it is
++    // recorded for the next sweep to heal only when the version it replaced was the catalog's
++    // own: a manager's Update over a person's version leaves their commit, which stays theirs.
++    if (saved === "moved" || current.active !== recorded?.version) return outcome({});
 +    const marker = current.holds
-+      ? yield* sourceDigest(current.workspace)
-+      : recorded?.workspace === current.commit
++      ? yield* workspaceDigest(current.workspace)
++      : recorded.workspace === current.commit
 +        ? recorded.workspaceSource
 +        : undefined;
-+    const workspace =
-+      saved === "moved"
-+        ? {}
-+        : saved === "failed"
-+          ? {
-+              workspace: current.commit,
-+              ...(marker === undefined ? {} : { workspaceSource: marker }),
-+            }
-+          : { workspace: saved.commit, workspaceSource: yield* sourceDigest(saved.files) };
-+    return {
-+      record: { version: deployed.version.id, applied: digest, ...workspace },
-+      active: deployed.version.id,
-+      deployed: true,
-+    } satisfies CatalogOutcome;
++    return outcome({
++      workspace: current.commit,
++      ...(marker === undefined ? {} : { workspaceSource: marker }),
++    });
 +  });
 +
 +/**
