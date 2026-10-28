@@ -264,6 +264,16 @@
       "database_sensitive": true,
       "workflow_sensitive": true,
       "upstream_issue": 2417
+    },
+    {
+      "identity": "executor-provider-identity-display-fields",
+      "file": "0030-provider-identity-display-fields.patch",
+      "content_sha256": "d4137624f66953b7ec7d598a384bfbfb196cde9d542c8b33e1265f42bc8421b2",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false,
+      "upstream_issue": 2416
     }
   ]
 }
