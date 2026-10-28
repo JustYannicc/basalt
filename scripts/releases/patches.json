@@ -268,7 +268,7 @@
     {
       "identity": "basalt-catalog-app-auto-update",
       "file": "0029-catalog-app-auto-update.patch",
-      "content_sha256": "9124eaeb5f744c36fbdfbd5116ccb81b774218dad101b9acc145d79085836262",
+      "content_sha256": "6a154c32d023baf51326168dd5a0a3fff796bf03045fdbc044f4d1c756251a1b",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

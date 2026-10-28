@@ -148,8 +148,7 @@ index f68511e9e..d2d9eecb0 100644
    workflowResultInput,
  } from "./workflow-results.ts";
 +import { dispatchFailureReason, workflowInstanceId } from "../contracts/workflow-instance-id.ts";
--
-+
+ 
  /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
 @@ -243,18 +244,25 @@ export const dispatchProvisioning = <R>(
            const status = yield* Effect.tryPromise({
@@ -210,7 +209,7 @@ index 3d1bd3dc5..057847cbc 100644
    },
    "dependencies": {
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
-index b9e3a8354..25b17a536 100644
+index 8df17a2c9..30b2ae57b 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
 @@ -40,4 +40,5 @@ import {
@@ -350,10 +349,10 @@ index 2f6477c73..6ae1d48bd 100644
        Effect.flatMap(appManagerOwner(params.app), (owner) =>
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 new file mode 100644
-index 000000000..42410dced
+index 000000000..f95e26491
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,285 @@
 +/**
 + * Installed catalog apps roll forward to the feed's current source once per Basalt release. The
 + * catalog source is built first, without saving anything. Only an untouched copy whose linked
@@ -361,6 +360,7 @@ index 000000000..42410dced
 + * Results live in organization metadata.
 + */
 +import { createCatalog } from "@executor-js/catalog";
++import type { Catalog } from "@executor-js/catalog/contracts";
 +import {
 +  StorageError,
 +  sourceFilesEqual,
@@ -383,15 +383,23 @@ index 000000000..42410dced
 +  decideCatalogUpdate,
 +} from "./catalog-app-updates.ts";
 +import {
-+  activeSource,
++  catalogDecision,
 +  recordOf,
++  reportCatalogApp,
 +  saveCatalogRecord,
 +  savedRecords,
 +  sourceDigest,
-+  stillCurrent,
 +  type CatalogOutcome,
 +  type Saved,
 +} from "./catalog-app-records.ts";
++import {
++  activeSource,
++  deployCatalogSource,
++  healCatalogWorkspace,
++  recordedWorkspace,
++  stillCurrent,
++  type ActiveSource,
++} from "./catalog-app-workspace.ts";
 +
 +const Links = Schema.Array(
 +  Schema.Struct({
@@ -411,25 +419,25 @@ index 000000000..42410dced
 +}
 +
 +/**
-+ * Decide one catalog copy against the catalog's `files`. Returns what to record, or undefined to
-+ * keep the earlier record. Only an untouched copy no linked account breaks on is deployed, and
-+ * only a deploy that became active is recorded as the catalog's own.
++ * Decide one catalog copy from `current` against the catalog's `files`. Returns what to record,
++ * or undefined to keep the earlier record. Only an untouched copy no linked account breaks on is
++ * deployed, and only a deploy that became active over the version it was decided against is
++ * recorded as the catalog's own.
 + */
-+export const updateCatalogApp = (
++const decideCatalogApp = (
 +  executor: { readonly apps: Executor["apps"] },
 +  input: {
 +    readonly owner: OwnerId;
 +    readonly app: App;
++    readonly current: ActiveSource;
 +    readonly files: SourceFiles;
 +    readonly recorded: Saved | undefined;
 +    readonly links: Effect.Effect<Links, StorageError>;
 +  },
 +) =>
 +  Effect.gen(function* () {
-+    const { owner, app, files, recorded } = input;
-+    const current = yield* activeSource(executor, owner, app, recorded);
-+    if (current === undefined) return undefined;
-+    const { active, commit, clean } = current;
++    const { owner, app, current, files, recorded } = input;
++    const { active, clean } = current;
 +    const digest = yield* sourceDigest(files);
 +    // The digest recorded at apply stands in for the files, which retain binary ones by
 +    // reference; without one, comparing files can only miss, costing one redeploy.
@@ -443,11 +451,7 @@ index 000000000..42410dced
 +        record: {
 +          version: active,
 +          applied: digest,
-+          ...(clean
-+            ? { workspace: commit }
-+            : recorded?.workspace === undefined
-+              ? {}
-+              : { workspace: recorded.workspace }),
++          ...(yield* recordedWorkspace(current, recorded, active)),
 +        },
 +        active,
 +        deployed: false,
@@ -469,21 +473,16 @@ index 000000000..42410dced
 +    });
 +    if (decision === "apply") {
 +      // The build took a while; a person's deploy, activation or edit since then wins.
-+      if (!(yield* stillCurrent(executor, owner, app.id, active, recorded))) return undefined;
-+      const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
-+      // A person's newer deploy or activation keeps the app; it now counts as touched.
-+      if (deployed.app.activeVersion !== deployed.version.id) return undefined;
-+      return {
-+        record: { version: deployed.version.id, workspace: commit, applied: digest },
-+        active: deployed.version.id,
-+        deployed: true,
-+      } satisfies CatalogOutcome;
++      const fresh = yield* stillCurrent(executor, owner, app.id, active, recorded);
++      if (fresh === undefined) return undefined;
++      return yield* deployCatalogSource(executor, owner, app.id, fresh, recorded, files, digest);
 +    }
++    // The offer keeps the recorded version, so the workspace recorded beside it is that version's.
 +    return {
 +      record: {
 +        ...(recorded?.version === undefined ? {} : { version: recorded.version }),
 +        ...(recorded?.applied === undefined ? {} : { applied: recorded.applied }),
-+        workspace: commit,
++        ...(yield* recordedWorkspace(current, recorded, recorded?.version)),
 +        offer: { ...breaks, source: digest, active, touched: !untouched },
 +      },
 +      active,
@@ -496,8 +495,77 @@ index 000000000..42410dced
 +  Effect.logWarning("Catalog app update does not build", { entry }).pipe(Effect.as(undefined));
 +
 +/**
++ * Sweep one catalog copy: heal its workspace when an earlier sweep left it behind, decide, save
++ * the outcome through `save` and log the app's one `Catalog app update` line. Failures a retry
++ * can fix are left to the caller; a delisted entry or a build the feed's source fails is left as
++ * is.
++ */
++export const sweepCatalogApp = <E, R>(
++  executor: { readonly apps: Executor["apps"] },
++  input: {
++    readonly organization: OrganizationId;
++    readonly owner: OwnerId;
++    readonly app: App;
++    readonly entry: string;
++    readonly catalog: { readonly prepare: Catalog["prepare"] };
++    readonly recorded: Saved | undefined;
++    readonly links: Effect.Effect<Links, StorageError>;
++    readonly save: (outcome: CatalogOutcome) => Effect.Effect<boolean, E, R>;
++  },
++) =>
++  Effect.suspend(() => {
++    const { organization, owner, app, entry, recorded } = input;
++    let healed = false;
++    const report = (outcome: CatalogOutcome | undefined) =>
++      reportCatalogApp(
++        organization,
++        app.id,
++        catalogDecision(recorded, outcome),
++        outcome?.active ?? app.activeVersion,
++        { offer: outcome?.record.offer, healed },
++      );
++    return Effect.gen(function* () {
++      if (app.activeVersion === null) return undefined;
++      const prepared = yield* input.catalog.prepare({ entry });
++      if (prepared.origin?.reference !== app.copiedFrom?.reference) return undefined;
++      const read = yield* activeSource(executor, owner, app, recorded);
++      if (read === undefined) return undefined;
++      const heal = yield* healCatalogWorkspace(executor, owner, app.id, read, recorded);
++      if (heal === undefined) return undefined;
++      healed = heal.healed;
++      return yield* decideCatalogApp(executor, {
++        owner,
++        app,
++        current: heal.current,
++        files: prepared.files,
++        recorded,
++        links: input.links,
++      });
++    }).pipe(
++      Effect.catchTags({
++        CatalogImportFailed: () => Effect.succeed(undefined),
++        AppNotFound: () => Effect.succeed(undefined),
++        VersionBuildFailed: () => unbuildable(entry),
++        BuildMemoryExceeded: () => unbuildable(entry),
++      }),
++      Effect.flatMap((outcome: CatalogOutcome | undefined) =>
++        // An unchanged record needs no locked write.
++        outcome === undefined || catalogDecision(recorded, outcome) === "unchanged"
++          ? Effect.succeed(outcome)
++          : input.save(outcome).pipe(
++              // A deploy stands even when its record write fails; its line still says so.
++              Effect.tapError(() => (outcome.deployed ? report(outcome) : Effect.void)),
++              // A refused write keeps the earlier record; a deploy it refused still runs.
++              Effect.map((wrote) => (wrote || outcome.deployed ? outcome : undefined)),
++            ),
++      ),
++      Effect.tap((outcome) => report(outcome)),
++    );
++  });
++
++/**
 + * Sweep one organization's copies of `feed`'s apps. Failures that a retry can fix fail the job
-+ * after every app was tried; a delisted entry or a build the feed's source fails is left as is.
++ * after every app was tried.
 + */
 +export const catalogAppDefaults = (
 +  executor: Executor,
@@ -515,35 +583,28 @@ index 000000000..42410dced
 +      let failed = false;
 +      for (const app of yield* executor.apps.list({ owner })) {
 +        const entry = catalogEntryId(app.copiedFrom?.reference, feed.url);
-+        if (entry === undefined || app.activeVersion === null) continue;
++        if (entry === undefined) continue;
 +        const recorded = recordOf(saved, app.id);
-+        yield* Effect.gen(function* () {
-+          const prepared = yield* catalog.prepare({ entry });
-+          if (prepared.origin?.reference !== app.copiedFrom?.reference) return;
-+          const outcome = yield* updateCatalogApp(executor, {
-+            owner,
-+            app,
-+            files: prepared.files,
-+            recorded,
-+            links: sql`select l.requirement, l.subject, l.account, a.provider,
-+                case when l.subject is null then 'app' else 'user' end as scope
-+              from hosted_app_account_links l join executor_accounts a on a.id = l.account
-+              where l.app = ${app.id}`.pipe(
-+              Effect.flatMap(Schema.decodeUnknownEffect(Links)),
-+              Effect.mapError(() => new StorageError()),
-+            ),
-+          });
-+          if (outcome === undefined) return;
-+          // A deploy leaves the app's webhook sources pending.
-+          if (outcome.deployed) intent = true;
-+          yield* saveCatalogRecord(executor, organization, app.id, recorded, outcome);
++        yield* sweepCatalogApp(executor, {
++          organization,
++          owner,
++          app,
++          entry,
++          catalog,
++          recorded,
++          links: sql`select l.requirement, l.subject, l.account, a.provider,
++              case when l.subject is null then 'app' else 'user' end as scope
++            from hosted_app_account_links l join executor_accounts a on a.id = l.account
++            where l.app = ${app.id}`.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Links)),
++            Effect.mapError(() => new StorageError()),
++          ),
++          save: (outcome) => {
++            // A deploy leaves the app's webhook sources pending.
++            if (outcome.deployed) intent = true;
++            return saveCatalogRecord(executor, organization, app.id, recorded, outcome);
++          },
 +        }).pipe(
-+          Effect.catchTags({
-+            CatalogImportFailed: () => Effect.void,
-+            AppNotFound: () => Effect.void,
-+            VersionBuildFailed: () => unbuildable(entry),
-+            BuildMemoryExceeded: () => unbuildable(entry),
-+          }),
 +          Effect.catch(() =>
 +            Effect.logWarning("Catalog app update failed; the job will retry", { entry }).pipe(
 +              Effect.andThen(Effect.sync(() => (failed = true))),
@@ -579,10 +640,10 @@ index 000000000..42410dced
 +  });
 diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
 new file mode 100644
-index 000000000..f3fd7ad97
+index 000000000..436d6ae19
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,115 @@
 +/** A catalog update held back for a manager, read for the Versions tab and applied on request. */
 +import type { Catalog } from "@executor-js/catalog/contracts";
 +import {
@@ -596,18 +657,20 @@ index 000000000..f3fd7ad97
 +import { Effect } from "effect";
 +import { CatalogUpdateUnavailable } from "../contracts/apps.ts";
 +import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
++import { activeSource, deployCatalogSource } from "./catalog-app-workspace.ts";
 +import {
-+  activeSource,
 +  recordOf,
++  reportCatalogApp,
 +  saveCatalogRecord,
 +  savedRecords,
 +  sourceDigest,
-+  stillCurrent,
-+  type CatalogOutcome,
 +  type Saved,
 +} from "./catalog-app-records.ts";
 +
-+/** Deploy an offered catalog source at a manager's request, under the same workspace guard. */
++/**
++ * Deploy an offered catalog source at a manager's request, under the same workspace guard and
++ * over only the active version the offer was made for.
++ */
 +export const applyCatalogUpdate = (
 +  executor: { readonly apps: Executor["apps"] },
 +  input: {
@@ -629,16 +692,19 @@ index 000000000..f3fd7ad97
 +    const digest = yield* sourceDigest(files);
 +    if (digest !== recorded.offer.source)
 +      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
-+    if (!(yield* stillCurrent(executor, owner, app.id, current.active, recorded)))
-+      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
-+    const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
-+    if (deployed.app.activeVersion !== deployed.version.id)
-+      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
-+    return {
-+      record: { version: deployed.version.id, workspace: current.commit, applied: digest },
-+      active: deployed.version.id,
-+      deployed: true,
-+    } satisfies CatalogOutcome;
++    // The deploy's expected version and the commit's expected revision cover what moves next.
++    // A workspace left behind first keeps its framework pin, as a heal would.
++    const outcome = yield* deployCatalogSource(
++      executor,
++      owner,
++      app.id,
++      current,
++      recorded,
++      files,
++      digest,
++    );
++    if (outcome === undefined) return yield* new CatalogUpdateUnavailable({ reason: "changed" });
++    return outcome;
 +  });
 +
 +/** The catalog update held back for this app, unless its active version changed since. */
@@ -660,44 +726,52 @@ index 000000000..f3fd7ad97
 +    const owner = organizationOwner(organization);
 +    const app = yield* executor.apps.get({ owner, app: id });
 +    const recorded = recordOf(yield* savedRecords(organization), app.id);
-+    const reference = app.copiedFrom?.reference;
-+    const encoded = reference?.match(/\/apps\/([^/]+)\.json$/)?.[1];
-+    if (recorded?.offer === undefined || encoded === undefined)
-+      return yield* new CatalogUpdateUnavailable({ reason: "none" });
-+    const entry = yield* Effect.try({
-+      try: () => decodeURIComponent(encoded),
-+      catch: () => new CatalogUpdateUnavailable({ reason: "none" }),
-+    });
-+    const prepared = yield* catalog.prepare({ entry });
-+    if (prepared.origin?.reference !== reference)
-+      return yield* new CatalogUpdateUnavailable({ reason: "none" });
-+    const outcome = yield* applyCatalogUpdate(executor, {
-+      owner,
-+      app,
-+      files: prepared.files,
-+      recorded,
-+    });
-+    yield* saveCatalogRecord(executor, organization, app.id, recorded, outcome);
++    yield* Effect.gen(function* () {
++      const reference = app.copiedFrom?.reference;
++      const encoded = reference?.match(/\/apps\/([^/]+)\.json$/)?.[1];
++      if (recorded?.offer === undefined || encoded === undefined)
++        return yield* new CatalogUpdateUnavailable({ reason: "none" });
++      const entry = yield* Effect.try({
++        try: () => decodeURIComponent(encoded),
++        catch: () => new CatalogUpdateUnavailable({ reason: "none" }),
++      });
++      const prepared = yield* catalog.prepare({ entry });
++      if (prepared.origin?.reference !== reference)
++        return yield* new CatalogUpdateUnavailable({ reason: "none" });
++      const outcome = yield* applyCatalogUpdate(executor, {
++        owner,
++        app,
++        files: prepared.files,
++        recorded,
++      });
++      // The deploy stands even when its record write fails; its line still says so.
++      yield* saveCatalogRecord(executor, organization, app.id, recorded, outcome).pipe(
++        Effect.ensuring(reportCatalogApp(organization, app.id, "upgraded", outcome.active)),
++      );
++    }).pipe(
++      Effect.tapError((error) =>
++        error._tag === "CatalogUpdateUnavailable"
++          ? reportCatalogApp(organization, app.id, "skipped", app.activeVersion)
++          : Effect.void,
++      ),
++    );
 +    return yield* executor.apps.get({ owner, app: app.id });
 +  }).pipe(
 +    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
 +  );
 diff --git a/apps/hosted/server/src/implementation/catalog-app-records.ts b/apps/hosted/server/src/implementation/catalog-app-records.ts
 new file mode 100644
-index 000000000..89085ffc4
+index 000000000..67b2f8e40
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-records.ts
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,135 @@
 +/** The sweep's per-app records in organization metadata, and the guarded write of one. */
-+import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
 +  StorageError,
 +  StorageHost,
 +  VersionId,
-+  type App,
 +  type AppId,
 +  type Executor,
-+  type OwnerId,
 +  type SourceFiles,
 +} from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
@@ -709,6 +783,8 @@ index 000000000..89085ffc4
 +export const Saved = Schema.Struct({
 +  version: Schema.optionalKey(VersionId),
 +  workspace: Schema.optionalKey(Schema.String),
++  /** SHA-256 of the files `workspace` held when this feature recorded it holding catalog source. */
++  workspaceSource: Schema.optionalKey(Schema.String),
 +  /** SHA-256 of the catalog source `version` holds, as the feed serves it. */
 +  applied: Schema.optionalKey(Schema.String),
 +  offer: Schema.optionalKey(
@@ -724,6 +800,45 @@ index 000000000..89085ffc4
 +  readonly deployed: boolean;
 +}
 +
++const sameRecord = Schema.toEquivalence(Saved);
++/** What happened to one catalog copy, as its one log line says. */
++export type CatalogDecision = "upgraded" | "offered" | "unchanged" | "recorded" | "skipped";
++/**
++ * The decision an outcome stands for: deployed, held back, or the active version already holding
++ * the catalog's source, `recorded` when that changed the record. Undefined means skipped.
++ */
++export const catalogDecision = (
++  recorded: Saved | undefined,
++  outcome: CatalogOutcome | undefined,
++): CatalogDecision => {
++  if (outcome === undefined) return "skipped";
++  if (outcome.deployed) return "upgraded";
++  if (outcome.record.offer !== undefined) return "offered";
++  return recorded !== undefined && sameRecord(recorded, outcome.record) ? "unchanged" : "recorded";
++};
++/** One line per catalog copy and outcome, with IDs only: never source, files, names or accounts. */
++export const reportCatalogApp = (
++  organization: OrganizationId,
++  app: AppId,
++  decision: CatalogDecision,
++  version: VersionId | null,
++  details: {
++    readonly offer?: Pick<typeof CatalogAppUpdate.Type, "reasons" | "reconnect"> | undefined;
++    /** The sweep committed the active source to a workspace left behind first. */
++    readonly healed?: boolean;
++  } = {},
++) =>
++  Effect.logInfo("Catalog app update", {
++    app,
++    organization,
++    decision,
++    version,
++    ...(details.healed === true ? { healed: true } : {}),
++    ...(details.offer === undefined
++      ? {}
++      : { reasons: details.offer.reasons, reconnect: details.offer.reconnect }),
++  });
++
 +/** The sweep's records for every app of the organization, or undefined for a missing one. */
 +export const savedRecords = (organization: OrganizationId) =>
 +  Effect.gen(function* () {
@@ -737,56 +852,23 @@ index 000000000..89085ffc4
 +export const recordOf = (records: Readonly<Record<string, Saved>> | undefined, app: AppId) =>
 +  records !== undefined && Object.hasOwn(records, app) ? records[app] : undefined;
 +
-+/**
-+ * SHA-256 of catalog source as the feed serves it. Retained versions store binary public files
-+ * by reference, so comparing files alone would never match a catalog source that has any.
-+ */
-+export const sourceDigest = (files: SourceFiles) =>
++/** SHA-256 of a JSON value as `JSON.stringify` writes it. */
++export const jsonDigest = (value: unknown) =>
 +  Effect.tryPromise({
 +    try: async () =>
 +      Array.from(
 +        new Uint8Array(
-+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value))),
 +        ),
 +        (byte) => byte.toString(16).padStart(2, "0"),
 +      ).join(""),
 +    catch: () => new StorageError(),
 +  });
-+
-+/** The active source and whether the workspace holds unsaved edits; undefined while it moves. */
-+export const activeSource = (
-+  executor: { readonly apps: Executor["apps"] },
-+  owner: OwnerId,
-+  app: App,
-+  recorded: Saved | undefined,
-+) =>
-+  Effect.gen(function* () {
-+    const source = yield* executor.apps.source({ owner, app: app.id });
-+    if (app.activeVersion === null || source.id !== app.activeVersion) return undefined;
-+    const workspace = yield* executor.apps.workspace({ owner, app: app.id });
-+    const commit = workspace.revision.commit;
-+    // Deploying files never edits Git, so the commit last seen clean stays clean after them.
-+    const clean = pinnedOnly(workspace.files, source.files) || commit === recorded?.workspace;
-+    return { active: app.activeVersion, files: source.files, commit, clean };
-+  });
-+
 +/**
-+ * Read the app again right before a deploy: the SDK's deploy has no expected version, so a
-+ * person's deploy, activation or workspace edit since the decision must stop it here.
++ * SHA-256 of catalog source as the feed serves it. Retained versions store binary public files
++ * by reference, so comparing files alone would never match a catalog source that has any.
 + */
-+export const stillCurrent = (
-+  executor: { readonly apps: Executor["apps"] },
-+  owner: OwnerId,
-+  app: AppId,
-+  active: VersionId,
-+  recorded: Saved | undefined,
-+) =>
-+  Effect.gen(function* () {
-+    const fresh = yield* executor.apps.get({ owner, app });
-+    if (fresh.activeVersion !== active) return false;
-+    const current = yield* activeSource(executor, owner, fresh, recorded);
-+    return current?.active === active && current.clean;
-+  });
++export const sourceDigest = (files: SourceFiles) => jsonDigest(files);
 +
 +/**
 + * Write an outcome under the app's lock, only while its record is still the one it was decided
@@ -1009,6 +1091,301 @@ index 000000000..55e3e34b6
 +    completed = true;
 +  });
 +};
+diff --git a/apps/hosted/server/src/implementation/catalog-app-workspace.ts b/apps/hosted/server/src/implementation/catalog-app-workspace.ts
+new file mode 100644
+index 000000000..e28d32d89
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/catalog-app-workspace.ts
+@@ -0,0 +1,289 @@
++/**
++ * A catalog copy's Git workspace beside its active version: whether it is clean, committing the
++ * catalog's source after a deploy, and healing workspaces earlier sweeps left behind.
++ */
++import { pinnedOnly, withFrameworkPin } from "@executor-js/app-management/data-steps";
++import {
++  sourceFilesEqual,
++  type App,
++  type AppId,
++  type Executor,
++  type OwnerId,
++  type SourceFiles,
++  type VersionId,
++} from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { jsonDigest, type CatalogOutcome, type Saved } from "./catalog-app-records.ts";
++
++type Apps = { readonly apps: Executor["apps"] };
++
++/** A JSON value with object keys sorted, so equal values serialize alike. */
++const canonical = (value: unknown): unknown =>
++  Array.isArray(value)
++    ? value.map(canonical)
++    : typeof value === "object" && value !== null
++      ? Object.fromEntries(
++          Object.entries(value)
++            .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
++            .map(([key, entry]) => [key, canonical(entry)]),
++        )
++      : value;
++
++/**
++ * SHA-256 of workspace files in a canonical form, sorted by path with keys sorted, so the files a
++ * commit was written with and the same files read back from Git in another order match.
++ */
++const workspaceDigest = (files: SourceFiles) =>
++  jsonDigest(canonical(files.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))));
++
++/**
++ * Whether the recorded workspace commit holds source this feature recorded. Records it wrote
++ * carry the digest of those files. The first sweeps wrote none; their commit counts only while it
++ * holds the app's first version, the catalog copy it was installed from, as it did before they
++ * deployed over it without committing.
++ */
++const recordedSource = (
++  executor: Apps,
++  owner: OwnerId,
++  app: AppId,
++  workspace: SourceFiles,
++  recorded: Saved,
++) =>
++  recorded.workspaceSource === undefined
++    ? Effect.gen(function* () {
++        const versions = yield* executor.apps.versions({ owner, app, versionOwner: owner });
++        const first = versions.toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
++        if (first === undefined) return false;
++        return pinnedOnly(
++          workspace,
++          (yield* executor.apps.source({ owner, app, version: first.id })).files,
++        );
++      })
++    : Effect.map(workspaceDigest(workspace), (digest) => digest === recorded.workspaceSource);
++
++/**
++ * The active source and the workspace read beside it; undefined while the app moves. `holds`: the
++ * workspace holds the active source, give or take a framework pin. `clean`: it holds no one's
++ * edits, either holding the active source or still on a commit this feature recorded.
++ */
++export const activeSource = (
++  executor: Apps,
++  owner: OwnerId,
++  app: App,
++  recorded: Saved | undefined,
++) =>
++  Effect.gen(function* () {
++    const source = yield* executor.apps.source({ owner, app: app.id });
++    if (app.activeVersion === null || source.id !== app.activeVersion) return undefined;
++    const workspace = yield* executor.apps.workspace({ owner, app: app.id });
++    const commit = workspace.revision.commit;
++    const holds = pinnedOnly(workspace.files, source.files);
++    const clean =
++      holds ||
++      (recorded !== undefined &&
++        commit === recorded.workspace &&
++        (yield* recordedSource(executor, owner, app.id, workspace.files, recorded)));
++    return {
++      active: app.activeVersion,
++      files: source.files,
++      workspace: workspace.files,
++      commit,
++      holds,
++      clean,
++    };
++  });
++export type ActiveSource = NonNullable<Effect.Success<ReturnType<typeof activeSource>>>;
++
++/**
++ * Read the app again right before a deploy: a workspace edit since the decision must stop it, and
++ * the deploy and the commit after it start from this read. Undefined when anything moved.
++ */
++export const stillCurrent = (
++  executor: Apps,
++  owner: OwnerId,
++  app: AppId,
++  active: VersionId,
++  recorded: Saved | undefined,
++) =>
++  Effect.gen(function* () {
++    const fresh = yield* executor.apps.get({ owner, app });
++    if (fresh.activeVersion !== active) return undefined;
++    const current = yield* activeSource(executor, owner, fresh, recorded);
++    return current?.active === active && current.clean ? current : undefined;
++  });
++
++/**
++ * The workspace fields to record beside `version`: the commit read, with the digest of its files,
++ * when it holds the active source `version` names; the recorded ones while `version` is still the
++ * recorded version; otherwise none. After a person's own deploy the commit read holds their
++ * source, which is never recorded beside a catalog version.
++ */
++export const recordedWorkspace = (
++  current: ActiveSource,
++  recorded: Saved | undefined,
++  version: VersionId | undefined,
++) =>
++  Effect.gen(function* () {
++    if (version !== undefined && version === current.active && current.holds)
++      return {
++        workspace: current.commit,
++        workspaceSource: yield* workspaceDigest(current.workspace),
++      };
++    if (version === undefined || version !== recorded?.version || recorded.workspace === undefined)
++      return {};
++    return {
++      workspace: recorded.workspace,
++      ...(recorded.workspaceSource === undefined
++        ? {}
++        : { workspaceSource: recorded.workspaceSource }),
++    };
++  });
++
++/** The source the workspace holds plus only a framework pin: the active one, or an earlier one. */
++const pinnedSource = (executor: Apps, owner: OwnerId, app: AppId, current: ActiveSource) =>
++  current.holds
++    ? Effect.succeed(current.files)
++    : Effect.gen(function* () {
++        for (const version of yield* executor.apps.versions({ owner, app, versionOwner: owner })) {
++          if (version.id === current.active) continue;
++          const source = yield* executor.apps.source({ owner, app, version: version.id });
++          if (pinnedOnly(current.workspace, source.files)) return source.files;
++        }
++        return current.files;
++      });
++
++/**
++ * Commit `files` to the workspace's main on the revision `current` read, keeping a framework pin
++ * it holds. `moved` when a commit landed meanwhile, `failed` on any other failure.
++ */
++const commitSource = (
++  executor: Apps,
++  owner: OwnerId,
++  app: AppId,
++  current: ActiveSource,
++  files: SourceFiles,
++  message: string,
++) =>
++  pinnedSource(executor, owner, app, current).pipe(
++    Effect.flatMap((running) => withFrameworkPin(current.workspace, running, files)),
++    Effect.flatMap((pinned) =>
++      sourceFilesEqual(current.workspace, pinned)
++        ? Effect.succeed({ commit: current.commit, files: pinned })
++        : executor.apps
++            .commit({ owner, app, expected: current.commit, files: pinned, message })
++            .pipe(Effect.map((saved) => ({ commit: saved.revision.commit, files: pinned }))),
++    ),
++    Effect.map(
++      (saved): { readonly commit: string; readonly files: SourceFiles } | "moved" | "failed" =>
++        saved,
++    ),
++    Effect.catch((error) =>
++      error._tag === "SourceError" && error.reason === "conflict"
++        ? Effect.logInfo("Catalog app workspace changed meanwhile", { app }).pipe(
++            Effect.as("moved" as const),
++          )
++        : Effect.logWarning("Catalog app could not commit its source", {
++            app,
++            failure: error._tag,
++          }).pipe(Effect.as("failed" as const)),
++    ),
++  );
++
++/**
++ * Deploy catalog `files` over the active version `current` read, then commit them to the
++ * workspace's main on the revision read, as upstream's built-in app upgrade does, so a manager's
++ * "Deploy latest" does not bring the replaced source back. Undefined when a person's deploy or
++ * activation landed first. A workspace that moved keeps its commit and is left out of the record,
++ * so the next sweep counts the app as touched. After any other commit failure, the commit read is
++ * recorded for the next sweep to heal only when the replaced version was the catalog's own.
++ */
++export const deployCatalogSource = (
++  executor: Apps,
++  owner: OwnerId,
++  app: AppId,
++  current: ActiveSource,
++  recorded: Saved | undefined,
++  files: SourceFiles,
++  digest: string,
++) =>
++  Effect.gen(function* () {
++    const deployed = yield* executor.apps
++      .deploy({ owner, app, files, expectedVersion: current.active })
++      .pipe(Effect.catchTag("AppVersionChanged", () => Effect.succeed(undefined)));
++    // A person's newer deploy or activation keeps the app; it now counts as touched.
++    if (deployed === undefined || deployed.app.activeVersion !== deployed.version.id)
++      return undefined;
++    const outcome = (workspace: {
++      readonly workspace?: string;
++      readonly workspaceSource?: string;
++    }) =>
++      ({
++        record: { version: deployed.version.id, applied: digest, ...workspace },
++        active: deployed.version.id,
++        deployed: true,
++      }) satisfies CatalogOutcome;
++    const saved = yield* commitSource(
++      executor,
++      owner,
++      app,
++      current,
++      files,
++      "Update to the catalog's current source",
++    );
++    if (saved !== "moved" && saved !== "failed")
++      return outcome({
++        workspace: saved.commit,
++        workspaceSource: yield* workspaceDigest(saved.files),
++      });
++    // A moved workspace is someone's. After any other failure the commit read is left, and it is
++    // recorded for the next sweep to heal only when the version it replaced was the catalog's
++    // own: a manager's Update over a person's version leaves their commit, which stays theirs.
++    if (saved === "moved" || current.active !== recorded?.version) return outcome({});
++    const marker = current.holds
++      ? yield* workspaceDigest(current.workspace)
++      : recorded.workspace === current.commit
++        ? recorded.workspaceSource
++        : undefined;
++    return outcome({
++      workspace: current.commit,
++      ...(marker === undefined ? {} : { workspaceSource: marker }),
++    });
++  });
++
++/**
++ * Earlier sweeps deployed catalog source without committing it, and a commit can fail after a
++ * deploy, so the commit recorded clean can hold the source a catalog deploy replaced, and "Deploy
++ * latest" would bring it back. When the recorded version runs and the workspace is still on that
++ * commit, which holds source this feature recorded, commit the active source there. Returns the
++ * source to decide from and whether it healed; undefined when the commit failed, leaving the app
++ * alone until the next sweep. A version this feature did not record is never healed.
++ */
++export const healCatalogWorkspace = (
++  executor: Apps,
++  owner: OwnerId,
++  app: AppId,
++  current: ActiveSource,
++  recorded: Saved | undefined,
++) =>
++  Effect.gen(function* () {
++    if (
++      recorded?.version !== current.active ||
++      recorded.workspace !== current.commit ||
++      !current.clean ||
++      current.holds
++    )
++      return { current, healed: false };
++    const saved = yield* commitSource(
++      executor,
++      owner,
++      app,
++      current,
++      current.files,
++      "Commit the catalog source this app runs",
++    );
++    if (typeof saved === "string") return undefined;
++    return {
++      current: { ...current, workspace: saved.files, commit: saved.commit, holds: true },
++      healed: true,
++    };
++  });
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
 index 16f6246d4..bb59522c2 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
@@ -1213,8 +1590,152 @@ index 08aedc779..26e2c3e5f 100644
 +
  /** The shown version is known from the app, so its source loads alongside the version list. */
  function ReadSourceEarly({ app, version }: { readonly app: App; readonly version: VersionId }) {
+diff --git a/packages/app-management/src/data-steps.ts b/packages/app-management/src/data-steps.ts
+index 25b0eb568..54f7fdb58 100644
+--- a/packages/app-management/src/data-steps.ts
++++ b/packages/app-management/src/data-steps.ts
+@@ -6,5 +6,5 @@ export * from "./contracts/local-owners.ts";
+ export { createDataStepJournal, runDataSteps } from "./implementation/data-steps.ts";
+ export type { DataStepRunOptions } from "./implementation/data-steps.ts";
+-export { frameworkPinStep, pinnedOnly } from "./implementation/framework-pin.ts";
++export { frameworkPinStep, pinnedOnly, withFrameworkPin } from "./implementation/framework-pin.ts";
+ export type { FrameworkPinHost } from "./implementation/framework-pin.ts";
+ export { buildFrameworkOnceStep } from "./implementation/build-framework-once.ts";
+diff --git a/packages/app-management/src/implementation/framework-pin.ts b/packages/app-management/src/implementation/framework-pin.ts
+index f4c1fa268..b525629d9 100644
+--- a/packages/app-management/src/implementation/framework-pin.ts
++++ b/packages/app-management/src/implementation/framework-pin.ts
+@@ -119,4 +119,25 @@ export const pinnedOnly = (workspace: SourceFiles, running: SourceFiles): boolea
+ };
+ 
++/**
++ * `files` carrying the framework pin `workspace` holds on top of `running`, so committing new
++ * source over a pinned workspace keeps the pin. Unchanged when `workspace` is not `running` plus
++ * only a pin, or when `files` declares its own `apps`.
++ */
++export const withFrameworkPin = (
++  workspace: SourceFiles,
++  running: SourceFiles,
++  files: SourceFiles,
++) =>
++  Effect.gen(function* () {
++    if (sourceFilesEqual(workspace, running) || !pinnedOnly(workspace, running)) return files;
++    const release = [frameworkPinRelease, frameworkPinCatchUpRelease].find((candidate) => {
++      const manifest = pinManifest(manifestOf(running), candidate);
++      return manifest.kind === "pin" && manifest.content === manifestOf(workspace);
++    });
++    if (release === undefined) return files;
++    const manifest = pinManifest(manifestOf(files), release);
++    return manifest.kind === "pin" ? yield* withManifest(files, manifest.content) : files;
++  });
++
+ /** A JSON value with object keys sorted, so equal documents compare equal whatever their key order. */
+ const canonical = (value: unknown): unknown =>
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+index 894c039ce..8ec41e6cc 100644
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -203,4 +203,9 @@ export const DeployedApp = DeployedAppFields.pipe(
+ export type DeployedApp = typeof DeployedApp.Type;
+ 
++/**
++ * The active version a deploy to an existing app expects; another one fails it with
++ * AppVersionChanged before it activates. Omitted, a deploy does not check.
++ */
++const ExpectedVersion = Schema.optional(Schema.NullOr(VersionId));
+ /** Deploy complete files or read an existing commit; deploying never edits Git. */
+ export const DeployAppInput = Schema.Union([
+@@ -211,4 +216,5 @@ export const DeployAppInput = Schema.Union([
+     app: Schema.optional(Schema.Never),
+     commit: Schema.optional(Schema.Never),
++    expectedVersion: Schema.optional(Schema.Never),
+   }),
+   Schema.Struct({
+@@ -218,4 +224,5 @@ export const DeployAppInput = Schema.Union([
+     commit: Schema.optional(Schema.Never),
+     name: Schema.optional(Schema.Never),
++    expectedVersion: ExpectedVersion,
+   }),
+   Schema.Struct({
+@@ -225,4 +232,5 @@ export const DeployAppInput = Schema.Union([
+     files: Schema.optional(Schema.Never),
+     name: Schema.optional(Schema.Never),
++    expectedVersion: ExpectedVersion,
+   }),
+ ]);
+@@ -629,8 +637,9 @@ export const AppsGroup = HttpApiGroup.make("apps")
+         AccountNotFound,
+         AccountSelectionInvalid,
++        AppVersionChanged,
+       ],
+     }).annotate(
+       OpenApi.Description,
+-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
++      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. With expectedVersion, a deploy to an existing app fails with AppVersionChanged unless that version is still active when it would activate. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
+     ),
+   )
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 6cdd555eb..0da257224 100644
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -443,4 +443,21 @@ export const makeApps = (
+   ) =>
+     Effect.gen(function* () {
++      // Checked before building, before migrations and under the final app lock before activating.
++      // Only the active version is compared: another deploy still building has not activated, so
++      // this one can activate first and leave it inactive, as any two overlapping deploys do.
++      // Checking reservations instead would let an abandoned deploy block every later one.
++      const expectActive = (app: {
++        readonly id: AppId;
++        readonly activeVersion: VersionId | null;
++      }) =>
++        input.expectedVersion === undefined || app.activeVersion === input.expectedVersion
++          ? Effect.void
++          : Effect.fail(
++              new AppVersionChanged({
++                app: app.id,
++                expected: input.expectedVersion,
++                current: app.activeVersion,
++              }),
++            );
+       // Reserve an order before building. Only successful promotions advance the other counter.
+       const before =
+@@ -451,4 +468,5 @@ export const makeApps = (
+                 if (lifecycle?.appDeploying) yield* lifecycle.appDeploying(input.owner);
+                 const current = yield* lockApp(tx, { app: input.app, owner: input.owner });
++                yield* expectActive(current);
+                 const deploySequence = current.deploySequence + 1;
+                 yield* query(() =>
+@@ -547,4 +565,11 @@ export const makeApps = (
+       const retainedFiles: SourceFiles = [...codeFiles, ...publicFiles.retained];
+       if (before !== null) yield* droppedMigrations(db, before.code);
++      // Migrations change the app's database even when the deploy fails later, so a deploy that
++      // expects a version checks it again before running them. The lock is released before they
++      // run, so an activation in between is caught only under the final lock, after them.
++      if (before !== null && input.expectedVersion !== undefined && requirements.sql === true)
++        yield* transaction(db, (tx) =>
++          lockApp(tx, { app: before.id, owner: input.owner }).pipe(Effect.flatMap(expectActive)),
++        );
+       if (requirements.sql === true)
+         yield* runtime.migrate({ app: appId, build: built.build }).pipe(
+@@ -596,4 +621,5 @@ export const makeApps = (
+           if (existing !== undefined && input.app === undefined)
+             return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
++          if (existing !== undefined) yield* expectActive(existing);
+           if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
+           const createdAt = new Date(yield* Clock.currentTimeMillis);
+@@ -720,5 +746,8 @@ export const makeApps = (
+       const create = { owner: input.owner, name: input.name, files: snapshot.files };
+       return snapshot.activation === "deploy" && reserved?.save !== true
+-        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id)).app
++        ? (yield* deploy(create, snapshot.origin, snapshot.stored, reserved?.id).pipe(
++            // A new app expects no version.
++            Effect.catchTag("AppVersionChanged", Effect.die),
++          )).app
+         : yield* authoring.create(create, snapshot.origin, snapshot.stored, reserved?.id);
+     }).pipe(Effect.withSpan("sdk.apps.copy"));
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index b801a5727..bee7faa84 100644
+index ff52c9e57..731c694e2 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
 @@ -86,4 +86,6 @@ export interface AppVersionsProps<E> {
