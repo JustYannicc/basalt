@@ -51,11 +51,13 @@ function cluster(overrides: { connect?: (database: Database, attempt: number) =>
 }
 
 const instant = { sleep: async () => {}, log: () => {} };
+const sessionLimits = ["SET lock_timeout = '10s'", "SET statement_timeout = '20s'"];
 
 test("provisioning on an existing cluster runs the same idempotent statements in order", async () => {
   const fake = cluster();
   await provisionPoolDatabase({ runtimeLogin: "pool_runtime.branch", connect: fake.connect, ...instant });
   assert.deepEqual(fake.statements, [
+    ...sessionLimits,
     "SELECT pg_advisory_lock(1409, 1)",
     "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = $1",
     'GRANT "basalt_pool_owner" TO postgres',
@@ -63,10 +65,28 @@ test("provisioning on an existing cluster runs the same idempotent statements in
     'REVOKE ALL ON DATABASE "basalt_pool" FROM PUBLIC',
     "SELECT 1 FROM pg_roles WHERE rolname = $1",
     'GRANT "basalt_pool_owner" TO "pool_runtime"',
+    ...sessionLimits,
     "REVOKE ALL ON SCHEMA public FROM PUBLIC",
     'GRANT ALL ON SCHEMA public TO "basalt_pool_owner"',
   ]);
   assert.deepEqual(fake.events, ["connect cluster", "connect pool", "end cluster", "end pool"]);
+});
+
+test("every attempt's sessions set their lock and statement limits before anything else", async () => {
+  const perSession: string[][] = [];
+  const fake = cluster({ answer: (sql, attempt) => (sql.includes("advisory") && attempt < 3 ? postgresError("55P03") : undefined) });
+  await provisionPoolDatabase({
+    runtimeLogin: "pool_runtime",
+    connect: async (database) => {
+      const session = await fake.connect(database);
+      const statements: string[] = [];
+      perSession.push(statements);
+      return { query: (sql, values) => (statements.push(sql), session.query(sql, values)), end: () => session.end() };
+    },
+    ...instant,
+  });
+  assert.equal(perSession.length, 4, "three cluster sessions and one pool session");
+  for (const statements of perSession) assert.deepEqual(statements.slice(0, 2), sessionLimits);
 });
 
 test("a fresh cluster gets the owner role and the pool database", async () => {
@@ -142,14 +162,21 @@ test("only connection, lock and timeout failures are retryable", () => {
   assert.deepEqual(classify(new Error(secretUrl)), { reason: "unexpected error", retryable: false });
 });
 
-test("every client wait is bounded and the server limits ride the existing startup options", () => {
+test("startup options stay byte-identical to the routing PlanetScale already accepts; client waits are bounded", () => {
+  // The pre-timeout script built these URLs exactly like this.
+  const before = new URL(secretUrl);
+  before.searchParams.set("options", "-c role=postgres");
+  const beforePool = new URL(before);
+  beforePool.pathname = "/basalt_pool";
+  assert.equal(clientConfig(secretUrl, "cluster").connectionString, before.toString());
+  assert.equal(clientConfig(secretUrl, "pool").connectionString, beforePool.toString());
   for (const database of ["cluster", "pool"] as const) {
     const config = clientConfig(secretUrl, database);
     const url = new URL(config.connectionString);
     assert.equal(url.pathname, database === "pool" ? "/basalt_pool" : "/postgres");
     assert.equal(url.username, "admin");
     assert.equal(url.searchParams.get("sslmode"), "verify-full");
-    assert.equal(url.searchParams.get("options"), "-c role=postgres -c lock_timeout=10000ms -c statement_timeout=20000ms");
+    assert.equal(url.searchParams.get("options"), "-c role=postgres");
     assert.equal(config.connectionTimeoutMillis, 10_000);
     assert.equal(config.query_timeout, 25_000);
     assert.equal(config.keepAlive, true);

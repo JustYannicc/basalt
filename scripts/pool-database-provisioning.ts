@@ -2,8 +2,8 @@ import { poolDatabase, postgresRoleName } from "../src/pool/database-settings.ts
 
 /**
  * Every wait in provisioning is bounded, so a stuck connect or lock becomes a specific failure
- * instead of the deploy's command timeout. Server-side limits travel in the startup `options`,
- * the same path that already carries `role=postgres`.
+ * instead of the deploy's command timeout. The startup `options` stay exactly `-c role=postgres`,
+ * which PlanetScale's routing already accepts; server-side limits are plain session `SET`s.
  */
 export const limits = {
   connectMs: 10_000,
@@ -33,10 +33,7 @@ export interface Session {
 export function clientConfig(adminUrl: string, database: Database) {
   const url = new URL(adminUrl);
   if (database === "pool") url.pathname = `/${poolDatabase.name}`;
-  url.searchParams.set(
-    "options",
-    `-c role=postgres -c lock_timeout=${limits.lockMs}ms -c statement_timeout=${limits.statementMs}ms`,
-  );
+  url.searchParams.set("options", "-c role=postgres");
   return {
     connectionString: url.toString(),
     connectionTimeoutMillis: limits.connectMs,
@@ -183,6 +180,9 @@ export async function provisionPoolDatabase(options: ProvisionOptions): Promise<
         throw new AttemptExpired();
       }
       sessions.push(session);
+      // First statements on every fresh session, before any lock or catalog write.
+      await session.query(`SET lock_timeout = '${limits.lockMs / 1000}s'`);
+      await session.query(`SET statement_timeout = '${limits.statementMs / 1000}s'`);
       return session;
     };
     const step = (label: string) => {
