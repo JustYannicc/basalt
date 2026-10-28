@@ -253,16 +253,6 @@
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
-        "workflow_sensitive": false
-      },
-      {
-      "identity": "executor-account-status",
-      "file": "0030-account-status.patch",
-      "content_sha256": "19d43e4b35de0dce655b75a83b6e0f9de2883d1e713463627e6f0c6f2e9de594",
-      "kind": "overlay",
-      "upstream_pull_request": null,
-      "upstream_issue": 2418,
-      "database_sensitive": false,
       "workflow_sensitive": false
     },
     {
@@ -284,6 +274,16 @@
       "database_sensitive": true,
       "workflow_sensitive": true,
       "upstream_issue": 2417
+    },
+    {
+      "identity": "executor-account-status",
+      "file": "0030-account-status.patch",
+      "content_sha256": "19d43e4b35de0dce655b75a83b6e0f9de2883d1e713463627e6f0c6f2e9de594",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "upstream_issue": 2418,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }
