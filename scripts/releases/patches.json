@@ -245,6 +245,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-computer-connections",
+      "file": "0027-computer-connections.patch",
+      "content_sha256": "2b37681d05fffe0fdc2ccd2a21b91c60ce0b9446257f4d8b876e0bc72100ac63",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }

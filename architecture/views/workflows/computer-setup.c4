@@ -5,7 +5,11 @@ views {
     title "Workflows/Basalt/Set up a computer"
     description """
       Source implementation; live setup acceptance is pending deployment and real-client proof.
-      The app-hosted pool entry remains blocked while its origin is disabled. The pool app requests a signed, expiring user-and-pool intent and opens the
+      Connections opens the root /setup page directly. Without an intent, the screen requests
+      /setup/v1/context; the host verifies the native cookie session, finds the caller's own pool,
+      checks its creator and queries its existing computerContext operation. The host verifies that
+      returned intent's signature, caller and pool before returning it. This read creates no keys.
+      The pool app also requests a signed, expiring user-and-pool intent and opens the
       root /setup page with it. The router serves the React screen as static assets; the screen reuses
       apps/pool UI components. The HTTP host checks the native cookie session and creates a personal
       tools PAT pinned to the organization holding the caller's own pool, also on a shared pool.
@@ -20,6 +24,10 @@ views {
     """
 
     include poolOwner, localClient, basalt.pool, basalt.router, basalt.setupHost, basalt.setupInstaller, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    poolOwner -> localClient "Connections: Set up this computer opens /setup"
+    localClient -> basalt.router "GET /setup/v1/context when no intent was supplied"
+    basalt.router -> basalt.setupHost "resolve setup entry without credentials"
+    basalt.setupHost -> basalt.toolsGateway "native session, organization list and pool creator; query computerContext"
     basalt.toolsGateway -> basalt.pool "run computerContext with the caller"
     basalt.pool -> basalt.router "GET /pool/v1/setup-context with pool token and caller"
     basalt.router -> basalt.modelGateway "POOL_SERVICE: request signed setup intent"
@@ -27,6 +35,7 @@ views {
     basalt.modelGateway <- basalt.poolController "signed intent and root /setup URL"
     basalt.router <- basalt.modelGateway "signed setup context"
     basalt.pool <- basalt.router "setup context"
+    basalt.setupHost <- basalt.toolsGateway "verify signed intent for caller and own pool; return intent only"
     poolOwner -> localClient "open root /setup with intent"
     localClient -> basalt.router "GET /setup; load static React screen"
     localClient <- basalt.router "setup screen and static assets"

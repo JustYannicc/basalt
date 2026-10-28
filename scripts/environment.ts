@@ -176,6 +176,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     EXECUTOR_APP_DOMAIN_ZONE: appHosting.enabled ? appHosting.zone : undefined,
     AUTH_EMAIL_DOMAIN: brand.emailDomain,
     EXECUTOR_PRODUCT_NAME: brand.name,
+    EXECUTOR_COMPUTER_SETUP_URL: "/setup",
     EXECUTOR_CATALOG_URL: `https://${brand.host}${catalog.path}index.json`,
     EXECUTOR_PRODUCT_LOGO_URL: brand.logo,
     EXECUTOR_PRODUCT_DOCS_URL: brand.links.docs ?? undefined,
