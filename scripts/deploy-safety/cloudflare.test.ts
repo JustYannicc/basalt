@@ -82,7 +82,7 @@ test("active instances are reported without termination and block the release", 
   assert.deepEqual(snapshot.unresolved, [{ id: "run-1", workflowName: "AppWorkflows", status: "running" }]);
   assert.equal(snapshot.manualQuiescenceRequired, true);
   assert.equal(fixture.requested.length, 2);
-  assert.throws(() => assertWorkflowsDrained(snapshot), /1 Workflow instance\(s\) are still queued, running, paused or waiting/);
+  assert.throws(() => assertWorkflowsDrained(snapshot), /1 Workflow instance\(s\) are not complete, terminated or errored/);
 });
 
 test("a drained listing lets the release continue, and an errored instance does not block it", async () => {

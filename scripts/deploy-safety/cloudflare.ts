@@ -179,6 +179,6 @@ export async function inspectWorkflowChange(
 export function assertWorkflowsDrained(snapshot: WorkflowDrainSnapshot): void {
   if (snapshot.unresolved.length > 0)
     throw new SafetyGateError(
-      `${snapshot.unresolved.length} Workflow instance(s) are still queued, running, paused or waiting; drain or terminate them before releasing a Workflow identity change`,
+      `${snapshot.unresolved.length} Workflow instance(s) are not complete, terminated or errored; drain or terminate them before releasing a Workflow identity change`,
     );
 }

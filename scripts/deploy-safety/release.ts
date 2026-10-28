@@ -128,7 +128,8 @@ async function main(args: string[]): Promise<void> {
     const plan = await verifyFreshManualRollbackReport(
       parseReportFile(required(options, "--report")), candidate, expectedDeploymentId,
     );
-    assertRestoredBackup(required(options, "--restored-backup"), releaseBackup(plan.ledger).name);
+    if (plan.report.databaseChanged)
+      assertRestoredBackup(required(options, "--restored-backup"), releaseBackup(plan.ledger).name);
     const rollbackRoot = resolveManualRollbackSourceRoot(
       plan.report.base.gitCommit,
       options["--rollback-root"],

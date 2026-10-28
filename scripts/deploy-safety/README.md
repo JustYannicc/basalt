@@ -86,7 +86,7 @@ node scripts/deploy-safety/release.ts inspect-workflows \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-For a Workflow-identity release, the command fails if any listed instance is still queued, running, paused or waiting, so the deploy step never runs. An `errored` instance has stopped and re-runs only if someone restarts it, so it doesn't block. Don't restart one across an identity change. Drain or terminate those instances, then dispatch again. Cloudflare exposes no atomic control that prevents new Workflow instances or timer starts while deployment changes the journal identity, so an empty listing is only an observation. Whoever dispatches stops new work first. The deployment report and CLI never state that the listing made the window race free.
+For a Workflow-identity release, the command fails if any listed instance is not `complete`, `terminated` or `errored` (for example queued, running, paused, waiting or unknown), so the deploy step never runs. An `errored` instance has stopped and re-runs only if someone restarts it, so it doesn't block. Don't restart one across an identity change. Drain or terminate those instances, then dispatch again. Cloudflare exposes no atomic control that prevents new Workflow instances or timer starts while deployment changes the journal identity, so an empty listing is only an observation. Whoever dispatches stops new work first. The deployment report and CLI never state that the listing made the window race free.
 
 ### Manual rollback
 
@@ -101,7 +101,7 @@ node scripts/deploy-safety/release.ts rollback-target \
 
 Database restore stays manual in v1, done by whoever dispatches. PlanetScale restores a backup to a new branch. The current Alchemy `PostgresRole` resources resolve an omitted branch name to `main`, so selecting a newly restored branch as the provider default does not prove those existing role resources will follow it. Do not let the runner issue a restore or describe that rollback as complete.
 
-After whoever dispatches has restored the recorded backup, verified the intended production branch and prepared the old pins, run `manual-rollback` inside the `workflow_dispatch` job to create the rollback deployment record. For a non-database rollback, no database restore step is required. The parent workflow deploys the recorded base pins, runs smoke and completes that record.
+After whoever dispatches has restored the recorded backup, verified the intended production branch and prepared the old pins, run `manual-rollback` inside the `workflow_dispatch` job to create the rollback deployment record. For a non-database rollback, no database restore step or `--restored-backup` is required. A rollback that crosses a Workflow identity change runs the same drain check as a release and stops while instances remain. The parent workflow deploys the recorded base pins, runs smoke and completes that record.
 
 Pass the same immutable candidate worktree and SHA to the ledger command:
 
@@ -113,7 +113,7 @@ node scripts/deploy-safety/release.ts manual-rollback \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-The `manual-rollback` command reclassifies the exact report against the failed release and its last successful base. It records the rollback transition after the restore, which the dispatcher has already done. No one approves the rollback job. Instead, `--restored-backup` must equal the backup name the release recorded, or the command fails before deploying. `rollback-target` checks the same value when it's given, and the rollback workflow passes it to both. The name is the dispatcher's statement of what they restored, not a receipt: nothing reads the restore back.
+The `manual-rollback` command reclassifies the exact report against the failed release and its last successful base. It records the rollback transition after the restore, which the dispatcher has already done. No one approves the rollback job. Instead, for a database rollback `--restored-backup` must equal the backup name the release recorded, or the command fails before deploying. `rollback-target` checks the same value when it's given, and the rollback workflow passes it to both. The name is the dispatcher's statement of what they restored, not a receipt: nothing reads the restore back.
 
 ### Backup name and metadata
 
