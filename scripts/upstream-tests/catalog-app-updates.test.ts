@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
@@ -17,7 +18,7 @@ const { applyCatalogUpdate } = await load(`${implementation}catalog-app-offers.t
 
 type Files = { path: string; content: string }[];
 type Offer = { source: string; active: string; reconnect: number; reasons: string[]; touched: boolean };
-type Outcome = { record: { version?: string; workspace?: string; offer: Offer }; active: string; deployed: boolean };
+type Outcome = { record: { version?: string; workspace?: string; applied?: string; offer: Offer }; active: string; deployed: boolean };
 type Slot = { provider: string; scope: string; cardinality: string };
 type Link = { requirement: string; scope: string; subject: string | null; account: string; provider: string };
 const files = (body: string): Files => [
@@ -26,6 +27,8 @@ const files = (body: string): Files => [
 ];
 const original = files("export default 1;\n");
 const current = files("export default 2;\n");
+/** The feed's source digest, as the sweep records it. */
+const digest = createHash("sha256").update(JSON.stringify(current)).digest("hex");
 const crm: Record<string, Slot> = { crm: { provider: "provider-crm", scope: "user", cardinality: "one" } };
 const linked = (account: string, subject: string | null = "member-a"): Link => ({
   requirement: "crm", scope: subject === null ? "app" : "user", subject, account, provider: "provider-crm",
@@ -36,9 +39,13 @@ const fixture = (options: {
   versions?: { id: string; files: Files }[];
   active?: string;
   workspace?: { commit: string; files: Files };
+  /** The active version's account slots. */
+  accounts?: Record<string, Slot>;
   built?: Record<string, Slot>;
   /** A person's activation lands while the build runs, so the deploy is not promoted. */
   promote?: boolean;
+  /** A person deploys their own edit while the build runs. */
+  deployDuringBuild?: boolean;
 }) => {
   const versions = new Map((options.versions ?? [{ id: "v1", files: original }]).map((v) => [v.id, v.files]));
   const state = { active: options.active ?? "v1", builds: 0, deploys: 0 };
@@ -49,16 +56,21 @@ const fixture = (options: {
     owner: "organization:team",
     activeVersion: state.active,
     copiedFrom: { reference: "https://basalt.example/catalog/apps/crm.json", name: "crm", commit: null },
-    requirements: { accounts: crm },
+    requirements: { accounts: options.accounts ?? crm },
   });
   const executor = {
     apps: {
+      get: () => Effect.sync(app),
       source: () => Effect.succeed({ id: state.active, files: versions.get(state.active)! }),
       workspace: () => Effect.succeed({ revision: { code: "code", commit: workspace.commit }, files: workspace.files }),
       versions: () => Effect.succeed([...versions.keys()].map((id) => ({ id }))),
       build: () =>
         Effect.sync(() => {
           state.builds++;
+          if (options.deployDuringBuild) {
+            versions.set("v9", files("export default 'theirs';\n"));
+            state.active = "v9";
+          }
           return { requirements: { accounts: options.built ?? crm } };
         }),
       deploy: ({ files }: { files: Files }) =>
@@ -132,11 +144,34 @@ test("breaking changes count accounts that stop working and name why", () => {
 test("an untouched copy no linked account breaks on moves to the catalog's current source", async () => {
   const app = fixture({});
   assert.deepEqual(await app.sweep(undefined, [linked("a1")]), {
-    record: { version: "v2", workspace: "c1" },
+    record: { version: "v2", workspace: "c1", applied: digest },
     active: "v2",
     deployed: true,
   });
   assert.equal(app.state.active, "v2");
+});
+
+test("a person's deploy during the build is never deployed over", async () => {
+  const app = fixture({ deployDuringBuild: true });
+  // Recorded as the catalog's own, so the sweep decides to apply before rechecking.
+  assert.equal(await app.sweep({ version: "v1", workspace: "c1" }), undefined);
+  assert.equal(app.state.builds, 1);
+  assert.equal(app.state.deploys, 0);
+  assert.equal(app.state.active, "v9");
+});
+
+test("an untouched copy whose recorded digest matches the feed is never redeployed", async () => {
+  // Binary public files make stored and served files differ; the recorded digest decides.
+  const app = fixture({});
+  const outcome = await app.sweep({ version: "v1", workspace: "c1", applied: digest });
+  assert.deepEqual(outcome.record, { version: "v1", workspace: "c1", applied: digest });
+  assert.equal(outcome.deployed, false);
+  assert.equal(app.state.builds, 0);
+  assert.equal(app.state.deploys, 0);
+  // A digest recorded for another version proves nothing about the active one.
+  const touched = fixture({ versions: [{ id: "v1", files: original }, { id: "v2", files: original }], active: "v2" });
+  assert.ok((await touched.sweep({ version: "v1", workspace: "c1", applied: digest })).record.offer);
+  assert.equal(touched.state.deploys, 0);
 });
 
 test("a deploy that is not promoted is never recorded", async () => {
@@ -164,6 +199,12 @@ test("new required slots and many-to-one slots hold the update back", async () =
   const added = fixture({ built: { ...crm, ticket: { provider: "provider-ticket", scope: "app", cardinality: "one" } } });
   assert.deepEqual((await added.sweep()).record.offer.reasons, ["added"]);
   assert.equal(added.state.deploys, 0);
+  // The active version takes many CRM accounts; the catalog's takes one, and a member linked two.
+  const narrowed = fixture({ accounts: { crm: { ...crm.crm, cardinality: "many" } } });
+  const held = await narrowed.sweep(undefined, [linked("a1"), linked("a2"), linked("b1", "member-b")]);
+  assert.equal(narrowed.state.deploys, 0);
+  assert.deepEqual(held.record.offer.reasons, ["cardinality"]);
+  assert.equal(held.record.offer.reconnect, 1);
 });
 
 test("a touched copy is offered, never deployed", async () => {
@@ -183,7 +224,7 @@ test("a touched copy is offered, never deployed", async () => {
 test("unchanged catalog files only record the active version", async () => {
   const app = fixture({ versions: [{ id: "v1", files: current }], workspace: { commit: "c1", files: current } });
   const stale = { version: "v0", offer: { source: "x", active: "v1", reconnect: 1, reasons: ["provider"], touched: false } };
-  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1" });
+  assert.deepEqual((await app.sweep(stale)).record, { version: "v1", workspace: "c1", applied: digest });
   assert.equal(app.state.builds, 0);
   assert.equal(app.state.deploys, 0);
 });
@@ -199,7 +240,7 @@ test("unsaved workspace edits are skipped without a record", async () => {
 });
 
 test("a manager applies an offer only while it is current and the workspace is clean", async () => {
-  const offer = { source: "x", active: "v1", reconnect: 1, reasons: ["provider"], touched: false };
+  const offer = { source: digest, active: "v1", reconnect: 1, reasons: ["provider"], touched: false };
   const failure = (exit: Exit.Exit<unknown, unknown>) =>
     Exit.isFailure(exit) ? (Cause.squash(exit.cause) as { _tag: string; reason: string }) : undefined;
   const refused = async (exit: Promise<Exit.Exit<unknown, unknown>>) => {
@@ -213,10 +254,14 @@ test("a manager applies an offer only while it is current and the workspace is c
   assert.equal(await refused(edited.apply({ offer })), "edited");
   assert.equal(edited.state.deploys, 0);
   assert.equal(await refused(fixture({ promote: false }).apply({ offer, workspace: "c1" })), "changed");
+  // The feed moved on since the offer was evaluated: its newer source waits for the next sweep.
+  const moved = fixture({});
+  assert.equal(await refused(moved.apply({ offer: { ...offer, source: "0".repeat(64) } })), "changed");
+  assert.equal(moved.state.deploys, 0);
   const app = fixture({});
   const exit = await app.apply({ version: "v1", workspace: "c1", offer });
   assert.ok(Exit.isSuccess(exit));
-  assert.deepEqual(exit.value, { record: { version: "v2", workspace: "c1" }, active: "v2", deployed: true });
+  assert.deepEqual(exit.value, { record: { version: "v2", workspace: "c1", applied: digest }, active: "v2", deployed: true });
 });
 
 test("each release queues one catalog sweep per organization, run by its member jobs", () => {

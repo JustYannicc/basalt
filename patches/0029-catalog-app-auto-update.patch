@@ -241,10 +241,10 @@ index 2f6477c73..6ae1d48bd 100644
        Effect.flatMap(appManagerOwner(params.app), (owner) =>
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 new file mode 100644
-index 000000000..14c0fe790
+index 000000000..42410dced
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,223 @@
 +/**
 + * Installed catalog apps roll forward to the feed's current source once per Basalt release. The
 + * catalog source is built first, without saving anything. Only an untouched copy whose linked
@@ -278,6 +278,8 @@ index 000000000..14c0fe790
 +  recordOf,
 +  saveCatalogRecord,
 +  savedRecords,
++  sourceDigest,
++  stillCurrent,
 +  type CatalogOutcome,
 +  type Saved,
 +} from "./catalog-app-records.ts";
@@ -299,18 +301,6 @@ index 000000000..14c0fe790
 +  readonly url: string;
 +}
 +
-+const sourceDigest = (files: SourceFiles) =>
-+  Effect.tryPromise({
-+    try: async () =>
-+      Array.from(
-+        new Uint8Array(
-+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
-+        ),
-+        (byte) => byte.toString(16).padStart(2, "0"),
-+      ).join(""),
-+    catch: () => new StorageError(),
-+  });
-+
 +/**
 + * Decide one catalog copy against the catalog's `files`. Returns what to record, or undefined to
 + * keep the earlier record. Only an untouched copy no linked account breaks on is deployed, and
@@ -331,13 +321,19 @@ index 000000000..14c0fe790
 +    const current = yield* activeSource(executor, owner, app, recorded);
 +    if (current === undefined) return undefined;
 +    const { active, commit, clean } = current;
-+    const unchanged = sourceFilesEqual(current.files, files);
++    const digest = yield* sourceDigest(files);
++    // The digest recorded at apply stands in for the files, which retain binary ones by
++    // reference; without one, comparing files can only miss, costing one redeploy.
++    const unchanged =
++      (recorded?.applied === digest && recorded.version === active) ||
++      sourceFilesEqual(current.files, files);
 +    const step = decideCatalogUpdate({ unchanged, clean });
 +    if (step === "skip") return undefined;
 +    if (step === "record")
 +      return {
 +        record: {
 +          version: active,
++          applied: digest,
 +          ...(clean
 +            ? { workspace: commit }
 +            : recorded?.workspace === undefined
@@ -363,11 +359,13 @@ index 000000000..14c0fe790
 +      breaking: breaks.reconnect > 0 || breaks.reasons.length > 0,
 +    });
 +    if (decision === "apply") {
++      // The build took a while; a person's deploy, activation or edit since then wins.
++      if (!(yield* stillCurrent(executor, owner, app.id, active, recorded))) return undefined;
 +      const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
 +      // A person's newer deploy or activation keeps the app; it now counts as touched.
 +      if (deployed.app.activeVersion !== deployed.version.id) return undefined;
 +      return {
-+        record: { version: deployed.version.id, workspace: commit },
++        record: { version: deployed.version.id, workspace: commit, applied: digest },
 +        active: deployed.version.id,
 +        deployed: true,
 +      } satisfies CatalogOutcome;
@@ -375,8 +373,9 @@ index 000000000..14c0fe790
 +    return {
 +      record: {
 +        ...(recorded?.version === undefined ? {} : { version: recorded.version }),
++        ...(recorded?.applied === undefined ? {} : { applied: recorded.applied }),
 +        workspace: commit,
-+        offer: { ...breaks, source: yield* sourceDigest(files), active, touched: !untouched },
++        offer: { ...breaks, source: digest, active, touched: !untouched },
 +      },
 +      active,
 +      deployed: false,
@@ -471,10 +470,10 @@ index 000000000..14c0fe790
 +  });
 diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
 new file mode 100644
-index 000000000..68721f06e
+index 000000000..f3fd7ad97
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,99 @@
 +/** A catalog update held back for a manager, read for the Versions tab and applied on request. */
 +import type { Catalog } from "@executor-js/catalog/contracts";
 +import {
@@ -493,6 +492,8 @@ index 000000000..68721f06e
 +  recordOf,
 +  saveCatalogRecord,
 +  savedRecords,
++  sourceDigest,
++  stillCurrent,
 +  type CatalogOutcome,
 +  type Saved,
 +} from "./catalog-app-records.ts";
@@ -515,11 +516,17 @@ index 000000000..68721f06e
 +    if (current === undefined || current.active !== recorded.offer.active)
 +      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
 +    if (!current.clean) return yield* new CatalogUpdateUnavailable({ reason: "edited" });
++    // Apply only the source the offer was evaluated against; a newer one waits for the sweep.
++    const digest = yield* sourceDigest(files);
++    if (digest !== recorded.offer.source)
++      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
++    if (!(yield* stillCurrent(executor, owner, app.id, current.active, recorded)))
++      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
 +    const deployed = yield* executor.apps.deploy({ owner, app: app.id, files });
 +    if (deployed.app.activeVersion !== deployed.version.id)
 +      return yield* new CatalogUpdateUnavailable({ reason: "changed" });
 +    return {
-+      record: { version: deployed.version.id, workspace: current.commit },
++      record: { version: deployed.version.id, workspace: current.commit, applied: digest },
 +      active: deployed.version.id,
 +      deployed: true,
 +    } satisfies CatalogOutcome;
@@ -568,19 +575,21 @@ index 000000000..68721f06e
 +  );
 diff --git a/apps/hosted/server/src/implementation/catalog-app-records.ts b/apps/hosted/server/src/implementation/catalog-app-records.ts
 new file mode 100644
-index 000000000..3eef877fa
+index 000000000..89085ffc4
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-records.ts
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,130 @@
 +/** The sweep's per-app records in organization metadata, and the guarded write of one. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
++  StorageError,
 +  StorageHost,
 +  VersionId,
 +  type App,
 +  type AppId,
 +  type Executor,
 +  type OwnerId,
++  type SourceFiles,
 +} from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -591,6 +600,8 @@ index 000000000..3eef877fa
 +export const Saved = Schema.Struct({
 +  version: Schema.optionalKey(VersionId),
 +  workspace: Schema.optionalKey(Schema.String),
++  /** SHA-256 of the catalog source `version` holds, as the feed serves it. */
++  applied: Schema.optionalKey(Schema.String),
 +  offer: Schema.optionalKey(
 +    Schema.Struct({ ...CatalogAppUpdate.fields, source: Schema.String, active: VersionId }),
 +  ),
@@ -617,6 +628,22 @@ index 000000000..3eef877fa
 +export const recordOf = (records: Readonly<Record<string, Saved>> | undefined, app: AppId) =>
 +  records !== undefined && Object.hasOwn(records, app) ? records[app] : undefined;
 +
++/**
++ * SHA-256 of catalog source as the feed serves it. Retained versions store binary public files
++ * by reference, so comparing files alone would never match a catalog source that has any.
++ */
++export const sourceDigest = (files: SourceFiles) =>
++  Effect.tryPromise({
++    try: async () =>
++      Array.from(
++        new Uint8Array(
++          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(files))),
++        ),
++        (byte) => byte.toString(16).padStart(2, "0"),
++      ).join(""),
++    catch: () => new StorageError(),
++  });
++
 +/** The active source and whether the workspace holds unsaved edits; undefined while it moves. */
 +export const activeSource = (
 +  executor: { readonly apps: Executor["apps"] },
@@ -632,6 +659,24 @@ index 000000000..3eef877fa
 +    // Deploying files never edits Git, so the commit last seen clean stays clean after them.
 +    const clean = pinnedOnly(workspace.files, source.files) || commit === recorded?.workspace;
 +    return { active: app.activeVersion, files: source.files, commit, clean };
++  });
++
++/**
++ * Read the app again right before a deploy: the SDK's deploy has no expected version, so a
++ * person's deploy, activation or workspace edit since the decision must stop it here.
++ */
++export const stillCurrent = (
++  executor: { readonly apps: Executor["apps"] },
++  owner: OwnerId,
++  app: AppId,
++  active: VersionId,
++  recorded: Saved | undefined,
++) =>
++  Effect.gen(function* () {
++    const fresh = yield* executor.apps.get({ owner, app });
++    if (fresh.activeVersion !== active) return false;
++    const current = yield* activeSource(executor, owner, fresh, recorded);
++    return current?.active === active && current.clean;
 +  });
 +
 +/**
