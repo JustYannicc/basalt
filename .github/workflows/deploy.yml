@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
   deployments: write
+  # Reads whether the run that owns an unfinished deployment record has completed.
+  actions: read
 
 concurrency:
   group: deploy-production
@@ -28,6 +30,8 @@ jobs:
     outputs:
       manual_required: ${{ steps.report.outputs.manual_required }}
     env:
+      # Set this repository variable to stop every release while a manual restore and rollback run.
+      PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
       RELEASE_CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
       GITHUB_TOKEN: ${{ github.token }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

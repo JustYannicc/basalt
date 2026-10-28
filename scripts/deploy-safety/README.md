@@ -12,8 +12,9 @@ Required GitHub permissions:
 
 - `contents: read`
 - `deployments: write`
+- `actions: read`, to see whether the run that owns an unfinished deployment record has completed
 
-Pass the built-in `GITHUB_TOKEN` and `GITHUB_REPOSITORY`. PlanetScale calls use the existing `PLANETSCALE_ORGANIZATION`, `PLANETSCALE_API_TOKEN_ID`, and `PLANETSCALE_API_TOKEN` secrets. The request header is PlanetScale's service-token format, `<ID>:<TOKEN>`.
+Pass the built-in `GITHUB_TOKEN` and `GITHUB_REPOSITORY`; Actions also sets `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`, which the runner records. PlanetScale calls use the existing `PLANETSCALE_ORGANIZATION`, `PLANETSCALE_API_TOKEN_ID`, and `PLANETSCALE_API_TOKEN` secrets. The request header is PlanetScale's service-token format, `<ID>:<TOKEN>`.
 
 ### Candidate report
 
@@ -25,7 +26,7 @@ node scripts/deploy-safety/release.ts report \
   > "$RUNNER_TEMP/release-report.json"
 ```
 
-`latest-base` reports the last successful production commit. If the latest deployment is unresolved, it reports the prior successful baseline with an unresolved state; every release guard still blocks until that deployment is reconciled. With no deployment record, or when every record ended as a failed or errored attempt that never reported success, the runner checks PlanetScale and accepts an initial baseline only when the production database is absent. A pending, in-progress, status-less or hand-set inactive record, or any failure after a successful release, stays unresolved. Each of those attempts checked absence before it deployed and recorded its start before it could create the database, so a retry also continues when the production database was created inside a failed attempt's window, between its start and its final status. A database created at any other time, or without a creation time, still stops the release. A retry against such a database is still classified as an initial release, so if a failed first attempt had already gone live before failing its smoke check, a later database change would not take a backup; that case needs a manual check.
+`latest-base` reports the last successful production commit. If the latest deployment is unresolved, it reports the prior successful baseline with an unresolved state; every release guard still blocks until that deployment is reconciled, unless the release is rolling forward over it (see [Rolling forward over a failed release](#rolling-forward-over-a-failed-release)). With no deployment record, or when every record ended as a failed or errored attempt that never reported success, the runner checks PlanetScale and accepts an initial baseline only when the production database is absent. A pending, in-progress, status-less or hand-set inactive record, or any failure after a successful release, stays unresolved. Each of those attempts checked absence before it deployed and recorded its start before it could create the database, so a retry also continues when the production database was created inside a failed attempt's window, between its start and its final status. A database created at any other time, or without a creation time, still stops the release. A retry against such a database is still classified as an initial release, so if a failed first attempt had already gone live before failing its smoke check, a later database change would not take a backup; that case needs a manual check.
 
 `report` runs the classifier bundled with the trusted workflow checkout, reads candidate files by exact Git commit, and emits schema version 1 JSON. Manual runs pass `--candidate-root "$RUNNER_TEMP/candidate"`; automatic reports use the trusted checkout and need no candidate root. A bootstrap `workflow_dispatch` from `main` may classify that trusted checkout by passing the exact `GITHUB_SHA`. `unknown` database or Workflow evidence is a change. The report is safe to retain as an Actions artifact because it contains source paths, public pins and hashes, without database URLs, credentials or application data.
 
@@ -44,7 +45,59 @@ node scripts/deploy-safety/release.ts deploy \
 
 Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports go through the separate manual release workflow. On `main`, the Deploy workflow starts `Manual release of main` itself when the report needs it, as long as its candidate is still the `main` head. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
 
+The deploy step retries one failure, in both modes: when Cloudflare rejects a Worker upload with `ScriptStartupError` because script startup exceeded the CPU time limit, the runner logs a warning and runs the deploy command once more under the same deployment record. Startup CPU time varies between uploads. The retry runs the whole deploy again, so the steps that always run, such as Migrations, PoolDatabase and AppSourceNamespace, run a second time. It needs both the error name and that message in the failed command's output, and it needs the first attempt to have finished: when something the deploy started still holds its output two seconds after it exits, the runner logs why and doesn't retry, so the two can't overlap. No other failure, including another `ScriptStartupError`, is retried, and a second rejection fails the step. Rollback deploys retry the same way.
+
 If deployment or smoke starts and fails for a safe release, the runner marks that attempt failed, fetches the recorded base commit into an isolated temporary worktree, prepares and builds its pins, deploys them, runs smoke, then records a successful rollback. Preparation or guard failures do not start a rollback. Release subprocesses run quietly. Actions logs are public, so a failed command prints the last 60 lines of its stdout and stderr separately, starting at a whole line, after removing credential-named environment values, URL userinfo, bearer and basic credentials, key-value pairs whose key ends in password, secret, token or api key, and long runs mixing letters and digits. The runner settles when the command exits, so a leftover descendant holding its output cannot keep the release open. If the rollback build or deploy fails, the failure remains visible in GitHub Deployments and the next release is blocked until recovery.
+
+### Rolling forward over a failed release
+
+A failed release can leave production mixed, with some Workers new and some old, and its migrations and data steps partly or fully applied. The next release on `main` rolls forward over it instead of waiting for someone to reconcile the record, when all of these hold:
+
+- It is the only deployment record since the last success: a release record (not a rollback) whose latest status is `failure` or `error` and that never reported `success`. A pending, queued, in-progress, status-less or `inactive` record is never rolled forward over. If a second record lands after that success, which happens when the release rolling forward fails too, nothing is rolled forward and a person decides.
+- It recorded the last success as its base, with the same pins.
+- Its commit is the commit now being released, or an ancestor of it, by `git merge-base --is-ancestor` in the trusted checkout. A commit on another branch, a `main` rewritten since, or a commit Git can't find or compare leaves the failure unresolved.
+- The release keeps the failed release's gates. If the failed release changed the database or a Workflow identity and the new report doesn't, as after a revert, rolling forward would skip the backup or the drain check, so the failure stays unresolved. This is checked after classification and again when the deployment record is created.
+- No release hold is set (see [Release hold](#release-hold)).
+
+A failed release from `Manual release` of a pull request records that PR's head commit. A squash merge puts a different commit on `main`, so the next `main` release doesn't contain it and doesn't roll forward over it. Only a re-release of that PR's branch, whose head contains the failed commit, rolls forward.
+
+The ledger then reads as ready at the last success. The base stays the last success, so the release is classified against it, backed up when it changes the database, and recorded against it. It contains everything the failed release did, so its deploy re-applies the failed release's migrations and data steps and finishes whatever they left half done. `report` logs the failed record it rolls forward over, or why it can't. Rolling forward is checked again when the deployment record is created. `latest-base` has no candidate to compare, so it still reports the failure as unresolved.
+
+Rolling forward keeps the failed release's database writes. It relies on migrations and data steps being forward-only, which the pinned upstream follows by convention; nothing here checks it per release:
+
+- The hosted product migrations are an append-only list run once each, journaled in `private_hosted_migrations` and `private_cloud_migrations` in the same transaction as their changes, with no down step.
+- Better Auth's migrator only adds what its options require. FumaDB migrates its tables forward to the current schema; its API also has `down`, but deploys never call it.
+- Data steps are journaled in `private_hosted_data_steps`, keyed by an immutable name, and run once to completion; their contract says to append new steps and never rename or change one that has applied. `CLOUD_DATA_STEPS` keeps new steps in report mode until a deploy approves them.
+- Basalt's pool database setup (`scripts/ensure-pool-database.ts`) creates only what is missing and runs on every deploy.
+
+A carried patch that adds a migration or data step must keep that shape. Undoing a failed release's database writes is a deliberate rollback: dispatch `Manual production rollback` and restore the recorded backup. Rollback commands never roll forward over anything, so they still see the failure.
+
+A re-release of the same base and candidate after rolling forward reuses the failed attempt's backup, because the backup name is derived from the transition.
+
+When the failed release took a database backup, the release that rolls forward over it records that backup in its deployment payload as `rollbackBackup`, with the failed commit as `rollForwardOf`. The release's own backup was taken after the failed release's writes, so restoring it would pair the old code with the failed release's schema. `rollback-target`, `manual-rollback` and the rollback's backup check use `rollbackBackup` instead. It is verified to be the failed release's backup from the same base and pins, and `--restored-backup` must name it.
+
+### Killed release jobs
+
+A release job that is killed hard, by a lost runner, a timeout or a cancel, can't mark its deployment record failed, so the record stays `in_progress` (or `queued`, `pending`, or without a status) and blocks every release. Every record the runner creates names its run attempt in its payload as `run: { repository, id, attempt }`, and each status it posts links to that attempt (`https://github.com/<owner>/<repo>/actions/runs/<id>/attempts/<n>`). Parsing checks the identity's shape and fails the read when it's malformed.
+
+When the latest record is unfinished, comes after a successful deployment and names a run attempt, the ledger asks the Actions API for that attempt. If it completed, with any conclusion, at least 15 minutes ago (`KILLED_RUN_GRACE_MS`), the record reads as failed, and roll-forward and manual rollback treat it like any other failed release. The grace period exists because killing a job doesn't stop the work it started on the database server: a running statement or migration transaction can still commit, and a lost runner's machine may still be connected. Fifteen minutes covers the longest server-side statement or migration expected, so the next release in the shared concurrency group can't re-run migrations and data steps on top of it. It stays unresolved when:
+
+- the attempt is still queued, waiting or running, or completed less than 15 minutes ago;
+- the API errors, or answers about another run, attempt or repository;
+- the identity names a repository other than this one;
+- the record has no run identity, as older records don't;
+- there is no previous successful deployment.
+
+The unresolved reason and the roll-forward refusal say which of these held, such as `run lookup failed (HTTP 403)` when the token lacks `actions: read`, or that the attempt is still within the grace period. They never include a response body. The failure is read in memory only: nothing writes a status back to the stale record. Once the next release begins, its own record is the latest one, so the stale record no longer matters.
+
+### Release hold
+
+Set the `PRODUCTION_RELEASE_HOLD` repository variable to any non-empty value to stop every release, including a roll-forward, while someone restores a backup by hand. The Deploy, `Manual release of main` and `Manual release` jobs receive it, and their release commands (`report`, `backup-only`, `inspect-workflows`, `deploy`, and creating the deployment record) stop with a clear message. `Manual production rollback` doesn't receive it, so the rollback still runs. The order is:
+
+1. Set the hold.
+2. Restore the recorded backup.
+3. Dispatch `Manual production rollback`.
+4. Clear the hold once the rollback has succeeded.
 
 ### Database or Workflow identity changes
 
@@ -71,7 +124,7 @@ node scripts/deploy-safety/release.ts deploy \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-The source directory must be under `RUNNER_TEMP` and its Git `HEAD` must exactly match the report candidate. The runner checks that the current baseline and classification still match and verifies the protected backup before starting a database-changing deployment. A manual release failure is recorded but never automatically rolled back.
+The source directory must be under `RUNNER_TEMP` and its Git `HEAD` must exactly match the report candidate. The runner checks that the current baseline and classification still match and verifies the protected backup before starting a database-changing deployment. A manual release failure is recorded but never automatically rolled back. The next release that contains it rolls forward over it; until then, or when that fails too, it stays unresolved until someone acts.
 
 Workflow updates require the exact step name:
 

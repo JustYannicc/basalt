@@ -17,6 +17,8 @@ on:
 permissions:
   contents: read
   deployments: write
+  # Reads whether the run that owns an unfinished deployment record has completed.
+  actions: read
 
 concurrency:
   group: deploy-production

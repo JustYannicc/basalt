@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
 import { createRecordedBackup, type RecordedBackup } from "./contracts.ts";
-import { assertReleaseMode, executeManualRollback, executeRelease, type ManualRollbackDependencies, type ReleaseDependencies } from "./release-runner.ts";
+import { assertReleaseMode, executeManualRollback, executeRelease, type CommandResult, type ManualRollbackDependencies, type ReleaseDependencies } from "./release-runner.ts";
 
 const sha = (character: string) => character.repeat(40);
 
@@ -263,4 +263,102 @@ test("manual rollback of a Workflow-identity release checks drain before buildin
   calls.length = 0;
   await assert.rejects(run(async () => { throw new Error("1 Workflow instance(s) are still running"); }), /still running/);
   assert.deepEqual(calls, ["backup", "drained"]);
+});
+
+const startupCpu = { started: true, exitCode: 1, scriptStartupCpuLimit: true } as const;
+
+/** Deploy results in order; the last one repeats. */
+function deploys(holder: { calls: string[] }, ...results: CommandResult[]) {
+  let index = 0;
+  return async () => {
+    holder.calls.push("deploy");
+    return results[Math.min(index++, results.length - 1)]!;
+  };
+}
+
+test("a ScriptStartupError CPU-limit rejection is retried once, in both release modes, and logged", async () => {
+  const oldEvent = process.env.GITHUB_EVENT_NAME;
+  const oldRef = process.env.GITHUB_REF;
+  process.env.GITHUB_EVENT_NAME = "workflow_dispatch";
+  process.env.GITHUB_REF = "refs/heads/main";
+  try {
+    for (const [mode, value] of [["automatic", report()], ["manual", report({ databaseChanged: true })]] as const) {
+      const logs: string[] = [];
+      const deps = dependencies({ log: (text) => { logs.push(text); } });
+      deps.deploy = deploys(deps, startupCpu, { started: true, exitCode: 0 });
+      const result = await executeRelease(value, mode, deps);
+      assert.equal(result.state, "deployed", mode);
+      assert.deepEqual(deps.calls.filter((call) => call !== "backup"), ["validate", "begin", "deploy", "deploy", "smoke", "mark:success"], mode);
+      assert.equal(logs.length, 1);
+      assert.match(logs[0]!, /ScriptStartupError.*retrying the deploy once/);
+    }
+  } finally {
+    restore("GITHUB_EVENT_NAME", oldEvent);
+    restore("GITHUB_REF", oldRef);
+  }
+});
+
+test("the startup retry happens only once and only for that rejection", async () => {
+  const oldEvent = process.env.GITHUB_EVENT_NAME;
+  const oldRef = process.env.GITHUB_REF;
+  process.env.GITHUB_EVENT_NAME = "workflow_dispatch";
+  process.env.GITHUB_REF = "refs/heads/main";
+  try {
+    const twice = dependencies({ log: () => {} });
+    twice.deploy = deploys(twice, startupCpu);
+    await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", twice), /manual rollback path/);
+    assert.deepEqual(twice.calls, ["validate", "backup", "begin", "deploy", "deploy", "mark:failure"]);
+
+    const other = dependencies({ log: () => { throw new Error("must not retry"); } });
+    other.deploy = deploys(other, { started: true, exitCode: 1 });
+    await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", other), /manual rollback path/);
+    assert.deepEqual(other.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+
+    const unstarted = dependencies({ log: () => { throw new Error("must not retry"); } });
+    unstarted.deploy = deploys(unstarted, { started: false, exitCode: null, scriptStartupCpuLimit: true });
+    await assert.rejects(executeRelease(report(), "automatic", unstarted), /did not start/);
+    assert.deepEqual(unstarted.calls, ["validate", "begin", "deploy", "mark:failure"]);
+  } finally {
+    restore("GITHUB_EVENT_NAME", oldEvent);
+    restore("GITHUB_REF", oldRef);
+  }
+});
+
+test("a startup rejection whose deploy left something running is not retried, and says why", async () => {
+  const oldEvent = process.env.GITHUB_EVENT_NAME;
+  const oldRef = process.env.GITHUB_REF;
+  process.env.GITHUB_EVENT_NAME = "workflow_dispatch";
+  process.env.GITHUB_REF = "refs/heads/main";
+  try {
+    const logs: string[] = [];
+    const deps = dependencies({ log: (text) => { logs.push(text); } });
+    deps.deploy = deploys(deps, { ...startupCpu, outputHeld: true }, { started: true, exitCode: 0 });
+    await assert.rejects(executeRelease(report({ databaseChanged: true }), "manual", deps), /manual rollback path/);
+    assert.deepEqual(deps.calls, ["validate", "backup", "begin", "deploy", "mark:failure"]);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0]!, /still running after it exited, so it was not retried/);
+  } finally {
+    restore("GITHUB_EVENT_NAME", oldEvent);
+    restore("GITHUB_REF", oldRef);
+  }
+});
+
+test("manual rollback retries the same startup rejection once", async () => {
+  const calls: string[] = [];
+  const deps: ManualRollbackDependencies = {
+    assertBackup: async () => { calls.push("backup"); },
+    assertDrained: async () => { calls.push("drained"); },
+    prepare: async () => { calls.push("prepare"); },
+    validateCredentials: () => { calls.push("validate"); },
+    begin: async () => { calls.push("begin"); return 99; },
+    mark: async (_id, state) => { calls.push(`mark:${state}`); },
+    deploy: deploys({ calls }, startupCpu, { started: true, exitCode: 0 }),
+    smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
+    log: () => {},
+  };
+  await executeManualRollback(
+    report({ databaseChanged: true }), 42, deps, "workflow_dispatch", "refs/heads/main",
+    "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+  );
+  assert.deepEqual(calls, ["backup", "prepare", "validate", "begin", "deploy", "deploy", "smoke", "mark:success"]);
 });
