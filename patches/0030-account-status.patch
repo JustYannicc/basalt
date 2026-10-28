@@ -1,8 +1,8 @@
 diff --git a/apps/docs/content/concepts/providers-and-accounts.md b/apps/docs/content/concepts/providers-and-accounts.md
-index 0774c41..f439695 100644
+index 0774c41..46db5be 100644
 --- a/apps/docs/content/concepts/providers-and-accounts.md
 +++ b/apps/docs/content/concepts/providers-and-accounts.md
-@@ -114,3 +114,84 @@ creates an account, and a tool never receives your login token.
+@@ -114,3 +114,95 @@ creates an account, and a tool never receives your login token.
  - Providers backed by a signed-in browser session.
 
  See [Connect an account](/connect-an-account) for the steps.
@@ -75,9 +75,18 @@ index 0774c41..f439695 100644
 +ignores the display data. A status-only check keeps the last identity and its
 +original check time; a failed check clears display status.
 +
-+A display string that contains an opaque account reference or a credential field
-+value is refused before it leaves the app. This includes credentials in linked
-+backend accounts. The check records a failure without the sensitive text.
++Every identity and status string returned by a check is checked before it leaves
++the app and again against raw credentials before the host stores or exposes it.
++Checks reject the account reference, credential values and their UTF-8 base64,
++base64url, percent-encoded and hexadecimal forms. Identity-only results are checked
++too. A refused result records a check failure without the sensitive text. The
++matcher does not attempt arbitrary transformations or nested encodings.
++
++The matcher accepts at most 128 display strings containing 32,768 characters in
++total. It visits at most 16,384 credential nodes to depth 32, retaining at most
++1,024 candidate strings and examining at most 262,144 candidate characters. A
++secret longer than every display string cannot fit and is skipped. Exceeding a
++budget rejects the check. Empty secrets are skipped.
 +
 +A function-form app may omit `connect.check`. The host then uses provider health
 +when declared, or records no check when neither handler exists. An exception from
@@ -85,8 +94,10 @@ index 0774c41..f439695 100644
 +
 +A provider may mix host-provisioned and ordinary methods. A connection can save
 +an ordinary account only when doing so preserves every host-provisioned link.
-+This rule applies again at manual and OAuth completion under the app's link lock.
-+Host provisioning uses its own path and can still manage those accounts.
++The shared link boundary enforces this under the app's lock for account radio
++selection, agent connection creation or update, and every connection completion.
++Local direct linking uses the same rule. Host provisioning uses a separate trusted
++link path and can still repair or replace its own accounts.
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
 index 929eb84..0c66a60 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
@@ -105,7 +116,7 @@ index 929eb84..0c66a60 100644
    AccountConnectionClosed,
    StorageError,
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
-index 0e75058..aeeb19e 100644
+index 0e75058..768d22a 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
 @@ -1,3 +1,4 @@
@@ -113,64 +124,239 @@ index 0e75058..aeeb19e 100644
  import {
    InteractiveRetirementBusy,
    InteractiveRetirementFailed,
-@@ -153,6 +154,7 @@ const errors = [
-   OrganizationForbidden,
- ] as const;
- const connectErrors = [
+@@ -142,6 +143,7 @@ const requirement = { ...app, requirement: Schema.NonEmptyString };
+ const link = { ...requirement, account: AccountId };
+ const prefix = "/api/organizations/:organization/apps/:app/accounts";
+ const errors = [
 +  AccountProvisioned,
-   InteractiveReconnectUnsupported,
+   InteractiveRetirementBusy,
+   InteractiveRetirementFailed,
+   StorageError,
+diff --git a/apps/hosted/server/src/contracts/mcp-connections.ts b/apps/hosted/server/src/contracts/mcp-connections.ts
+index 8fe5170..f68f09b 100644
+--- a/apps/hosted/server/src/contracts/mcp-connections.ts
++++ b/apps/hosted/server/src/contracts/mcp-connections.ts
+@@ -1,6 +1,7 @@
+ /** A member's own scoped MCP connections and connected agents in one organization. Browser sessions only. */
+ import {
+   AccountNotFound,
++  AccountProvisioned,
+   AccountSelectionInvalid,
+   AppNotFound,
+   StorageError,
+@@ -33,6 +34,7 @@ const agentsPath = "/api/organizations/:organization/mcp-agents";
+ const errors = [AuthenticationUnavailable, OrganizationForbidden] as const;
+ /** Saving may link accounts to apps, so it reports account failures. */
+ const saveErrors = [
++  AccountProvisioned,
    ...errors,
-   ProviderNotFound,
-diff --git a/apps/hosted/server/src/implementation/provisioned-connection.ts b/apps/hosted/server/src/implementation/provisioned-connection.ts
+   ConnectionAccessInvalid,
+   StorageError,
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+index c951ba9..ae2d077 100644
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -1,3 +1,4 @@
++import { protectProvisionedLinks } from "./provisioned-links.ts";
+ import { InteractiveRemovalDone } from "@executor-js/sdk/core";
+ import { canDeleteAccountWithSql } from "./interactive-retirement.ts";
+ /**
+@@ -10,6 +11,7 @@ import { canDeleteAccountWithSql } from "./interactive-retirement.ts";
+ import {
+   AccountId,
+   AccountNotFound,
++  ProviderId,
+   AppId,
+   StorageError,
+   StorageHost,
+@@ -381,13 +383,14 @@ export const removeLink = (sql: SqlClient.SqlClient, webhooks: WebhookSources, i
+  * the subject may make the link, under this lock (see {@link lockAppLinks}) when the check reads
+  * access that can change meanwhile.
+  */
+-export const addLink = (
++const writeLink = (
+   sql: SqlClient.SqlClient,
+   webhooks: WebhookSources,
+   input: LinkKey & {
+     readonly linkedBy: string;
+     readonly config?: typeof WebhookSourceConfig.Type | undefined;
+   },
++  provisioning: boolean,
+ ) =>
+   Effect.gen(function* () {
+     yield* lockLinks(sql, input.app);
+@@ -432,6 +435,11 @@ export const addLink = (
+                 and ${sameSubject(sql, input.subject)} and account <> ${input.account}
+               order by created_at, account`,
+           );
++    if (!provisioning)
++      yield* protectProvisionedLinks(sql, {
++        ...input,
++        provider: ProviderId.make(required.provider),
++      });
+     const retired = yield* InteractiveRemovalDone;
+     for (const { account } of replaced) {
+       const bindings =
+@@ -461,6 +469,20 @@ export const addLink = (
+     return true;
+   }).pipe(Effect.catchTags(sqlFailures));
+
++/** Every user-driven link mutation, including agent policies and connect completion. */
++export const addLink = (
++  sql: SqlClient.SqlClient,
++  webhooks: WebhookSources,
++  input: Parameters<typeof writeLink>[2],
++) => writeLink(sql, webhooks, input, false);
++
++/** Trusted host provisioning only. Never select this path from an HTTP or app-author input. */
++export const provisionAccountLink = (
++  sql: SqlClient.SqlClient,
++  webhooks: WebhookSources,
++  input: Parameters<typeof writeLink>[2],
++) => writeLink(sql, webhooks, input, true).pipe(Effect.mapError(() => new StorageError()));
++
+ /**
+  * Link a member's account to a user requirement in its own transaction, as `appAccounts.userLink`
+  * does once it has checked access. For product code that has already decided the member may use
+@@ -499,6 +521,16 @@ export const linkAppAccount = (
+ ) =>
+   executor[StorageHost].transaction(addLink(sql, executor.webhooks, { ...input, subject: null }));
+
++/** Host-owned pool repair can deliberately replace its provisioned link in the same transaction. */
++export const linkProvisionedAppAccount = (
++  executor: Executor,
++  sql: SqlClient.SqlClient,
++  input: Parameters<typeof linkAppAccount>[2],
++) =>
++  executor[StorageHost].transaction(
++    provisionAccountLink(sql, executor.webhooks, { ...input, subject: null }),
++  );
++
+ /**
+  * A webhook source's actor can no longer use its account, such as after leaving the organization
+  * or a group, without unlinking it. Hand the source over, unless it already moved on or its actor
+diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/apps/hosted/server/src/implementation/organization-defaults.ts
+index ddec51e..f5839b7 100644
+--- a/apps/hosted/server/src/implementation/organization-defaults.ts
++++ b/apps/hosted/server/src/implementation/organization-defaults.ts
+@@ -19,7 +19,7 @@ import {
+ } from "../contracts/organization-defaults.ts";
+ import { organizationOwner } from "../contracts/organization.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
+-import { addLink } from "./app-accounts.ts";
++import { provisionAccountLink } from "./app-accounts.ts";
+ import { executorCopyOrigin } from "./executor-catalog-entry.ts";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
+
+@@ -253,18 +253,13 @@ export const organizationDefaults = (
+                   // A new managed key is linked to the common Executor app once, when it is
+                   // created. A member who unlinks it later keeps that choice.
+                   if (
+-                    yield* addLink(sql, executor.webhooks, {
++                    yield* provisionAccountLink(sql, executor.webhooks, {
+                       app: app.id,
+                       requirement: "service",
+                       account: created.id,
+                       subject: user.userId,
+                       linkedBy: user.userId,
+-                    }).pipe(
+-                      Effect.catchTags({
+-                        RequirementMismatch: () => new StorageError(),
+-                        AccountNotFound: () => new StorageError(),
+-                      }),
+-                    )
++                    })
+                   )
+                     intent = true;
+                   return created;
+diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted/server/src/implementation/pool-account.ts
+index 4621a20..66298c8 100644
+--- a/apps/hosted/server/src/implementation/pool-account.ts
++++ b/apps/hosted/server/src/implementation/pool-account.ts
+@@ -3,7 +3,7 @@ import { AccountId, StorageError, type App, type Executor } from "@executor-js/s
+ import { Effect, Redacted, Schema } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
+-import { linkAppAccount } from "./app-accounts.ts";
++import { linkProvisionedAppAccount } from "./app-accounts.ts";
+ import { usableAppLinks } from "./resource-policy.ts";
+ import { personalAccountCreation } from "./resource-lifecycle.ts";
+ import { signPoolToken, verifyPoolToken } from "./pool-token.ts";
+@@ -101,7 +101,7 @@ export const repairPoolAccount = (
+         label: "Pool access",
+       })
+       .pipe(personalAccountCreation(user));
+-    yield* linkAppAccount(executor, sql, {
++    yield* linkProvisionedAppAccount(executor, sql, {
+       app: app.id,
+       requirement: "pool",
+       account: account.id,
+diff --git a/apps/hosted/server/src/implementation/provisioned-links.ts b/apps/hosted/server/src/implementation/provisioned-links.ts
 new file mode 100644
-index 0000000..4b28247
+index 0000000..b0d9e4c
 --- /dev/null
-+++ b/apps/hosted/server/src/implementation/provisioned-connection.ts
-@@ -0,0 +1,25 @@
-+/** Refuse a connection's plain-slot replacement under the same lock used by link mutations. */
-+import { AccountProvisioned, StorageError, type ResourceLifecycle } from "@executor-js/sdk/core";
++++ b/apps/hosted/server/src/implementation/provisioned-links.ts
+@@ -0,0 +1,33 @@
++/** Called by the shared link boundary while its app lock is held. */
++import {
++  AccountProvisioned,
++  StorageError,
++  type AppId,
++  type AccountId,
++  type ProviderId,
++} from "@executor-js/sdk/core";
 +import { Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
-+import { lockAppLinks } from "./app-accounts.ts";
 +
-+export const protectProvisionedConnection = (
++export const protectProvisionedLinks = (
 +  sql: SqlClient.SqlClient,
-+  input: Parameters<ResourceLifecycle["appAccountConnected"]>[0],
-+  subject: string | null,
++  input: {
++    readonly app: AppId;
++    readonly requirement: string;
++    readonly account: AccountId;
++    readonly subject: string | null;
++    readonly provider: ProviderId;
++  },
 +) =>
 +  Effect.gen(function* () {
-+    yield* lockAppLinks(sql, input.app);
 +    const links = yield* sql`select l.account from hosted_app_account_links l
 +    join executor_apps app on app.id = l.app
 +    join executor_deployments d on d.id = app.active_deployment
 +    join executor_accounts a on a.id = l.account
 +    where l.app = ${input.app} and l.requirement = ${input.requirement}
-+      and ${subject === null ? sql`l.subject is null` : sql`l.subject = ${subject}`}
-+      and l.account <> ${input.account.id}
++      and ${input.subject === null ? sql`l.subject is null` : sql`l.subject = ${input.subject}`}
++      and l.account <> ${input.account}
 +      and coalesce(d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'cardinality', 'one') <> 'many'
 +      and d.requirements::jsonb -> 'accounts' -> ${input.requirement} -> 'definition' -> 'auth' -> a.method ->> 'provisioned' = 'true'`;
-+    if (links.length > 0)
-+      return yield* new AccountProvisioned({ provider: input.account.provider });
++    if (links.length > 0) return yield* new AccountProvisioned({ provider: input.provider });
 +  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 5bc80e1..0a09706 100644
+index 5bc80e1..cf3c04d 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -1,3 +1,4 @@
-+import { protectProvisionedConnection } from "./provisioned-connection.ts";
- import { CurrentOrganization } from "../contracts/organization.ts";
- import { GroupDatabase } from "../contracts/groups.ts";
- import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
-@@ -727,6 +728,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
-                   );
-             if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
-           }
-+          yield* protectProvisionedConnection(sql, input, input.scope === "app" ? null : user);
-           const sources = yield* webhooks;
-           yield* asOwner(
-             input.account.owner,
+@@ -6,6 +6,7 @@ import { checkConnection } from "./connection-policy.ts";
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import {
+   AccountConnectionRefused,
++  AccountProvisioned,
+   AccountConnectionTargetChanged,
+   AccountId,
+   AccountScope,
+@@ -737,7 +738,11 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+               subject: input.scope === "app" ? null : user,
+               linkedBy: user,
+             }),
+-          ).pipe(Effect.mapError(() => new StorageError()));
++          ).pipe(
++            Effect.mapError((error) =>
++              Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
++            ),
++          );
+         }).pipe(
+           Effect.catchTags({
+             SqlError: () => new StorageError(),
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 3a2a703..69b4fce 100644
+index def986e..9608f08 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -14,6 +14,7 @@ export type HostedError =
@@ -263,7 +449,7 @@ index 21dd03f..4621e01 100644
    InteractiveRetirementFailed,
    InteractiveReconnectUnsupported,
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 35b665a..64b5ba9 100644
+index 35b665a..693ff4c 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -271,7 +457,22 @@ index 35b665a..64b5ba9 100644
  import {
    InteractiveRetirementBusy,
    InteractiveRetirementFailed,
-@@ -266,6 +267,7 @@ export const AppAccountTarget = Schema.Struct({
+@@ -253,7 +254,13 @@ export const AppAccountRequirement = Schema.Struct({
+   accounts: Schema.Array(RequirementAccount),
+ });
+ export type AppAccountRequirement = typeof AppAccountRequirement.Type;
+-const linkErrors = [StorageError, AppNotFound, AccountNotFound, RequirementMismatch] as const;
++const linkErrors = [
++  AccountProvisioned,
++  StorageError,
++  AppNotFound,
++  AccountNotFound,
++  RequirementMismatch,
++] as const;
+ const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
+
+ /**
+@@ -266,6 +273,7 @@ export const AppAccountTarget = Schema.Struct({
    site: Schema.optional(Schema.NonEmptyString),
  });
  const appConnectionErrors = [
@@ -279,7 +480,7 @@ index 35b665a..64b5ba9 100644
    InteractiveRetirementBusy,
    InteractiveRetirementFailed,
    InteractiveReconnectUnsupported,
-@@ -841,6 +843,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -841,6 +849,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
            AccountNotFound,
            AccountConnectionNotFound,
            AccountConnectionClosed,
@@ -287,7 +488,7 @@ index 35b665a..64b5ba9 100644
            AccountConnectionTargetChanged,
            StorageError,
            CredentialsError,
-@@ -866,6 +869,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -866,6 +875,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
            OAuthCompletionFailed,
            AccountConnectionNotFound,
            AccountConnectionClosed,
@@ -296,7 +497,7 @@ index 35b665a..64b5ba9 100644
            AccountConnectionRefused,
          ],
 diff --git a/apps/local/server/src/implementation/app-accounts.ts b/apps/local/server/src/implementation/app-accounts.ts
-index 0285989..977f4f2 100644
+index 0285989..2a0ac63 100644
 --- a/apps/local/server/src/implementation/app-accounts.ts
 +++ b/apps/local/server/src/implementation/app-accounts.ts
 @@ -8,6 +8,7 @@ import {
@@ -307,29 +508,30 @@ index 0285989..977f4f2 100644
    AppId,
    StorageError,
    StorageHost,
-@@ -690,13 +691,29 @@ export const localResourceLifecycle = (
-     Effect.gen(function* () {
-       const sdk = yield* executor;
-       const app = yield* storage(sdk.apps.get({ app: input.app }));
-+      yield* lockApp(sql, app.id);
-+      const required = yield* scopedRequirement(app, input.scope, input.requirement);
-+      if (required.cardinality !== "many") {
-+        const linked = yield* linkRows(sql, sdk, app, scopeSubject(input.scope), input.requirement);
-+        for (const link of linked) {
-+          if (link.account === input.account.id) continue;
-+          const previous = yield* storage(sdk.accounts.get({ account: link.account }));
-+          const method = required.definition.auth[previous.method];
-+          if (method?.type === "secrets" && method.provisioned === true)
-+            return yield* new AccountProvisioned({ provider: previous.provider });
-+        }
-+      }
-       yield* addLink(sql, sdk, {
-         app,
+@@ -452,6 +453,12 @@ const addLink = (
+                 order by l.created_at, l.account`,
+             ),
+           );
++    for (const previous of replaced) {
++      const saved = yield* storage(executor.accounts.get({ account: previous.account }));
++      const method = required.definition.auth[saved.method];
++      if (method?.type === "secrets" && method.provisioned === true)
++        return yield* new AccountProvisioned({ provider: saved.provider });
++    }
+     for (const previous of replaced)
+       yield* removeLink(sql, executor, {
+         app: app.id,
+@@ -695,8 +702,16 @@ export const localResourceLifecycle = (
          requirement: input.requirement,
          account: input.account,
          subject: scopeSubject(input.scope),
-       }).pipe(Effect.mapError(() => new StorageError()));
+-      }).pipe(Effect.mapError(() => new StorageError()));
 -    }),
++      }).pipe(
++        Effect.mapError((error) =>
++          Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
++        ),
++      );
 +    }).pipe(
 +      Effect.mapError((error) =>
 +        Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
@@ -478,10 +680,10 @@ index 0000000..717eb01
 +});`;
 diff --git a/e2e/support/status-account.ts b/e2e/support/status-account.ts
 new file mode 100644
-index 0000000..4cb4b69
+index 0000000..25d9689
 --- /dev/null
 +++ b/e2e/support/status-account.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,82 @@
 +/** A real interactive account with a linked backend, shared by focused status regressions. */
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -493,7 +695,10 @@ index 0000000..4cb4b69
 +import { interactiveAccountBackend, interactiveBackendKey } from "./interactive-account-backend.ts";
 +import { accountStatusBackend } from "./account-status-fixture.ts";
 +
-+export const statusAccount = (source: (connect: string, check: string) => string) =>
++export const statusAccount = (
++  source: (connect: string, check: string) => string,
++  fields: Readonly<Record<string, string>> = {},
++) =>
 +  Effect.gen(function* () {
 +    const api = yield* Api,
 +      actors = yield* Actors;
@@ -528,7 +733,7 @@ index 0000000..4cb4b69
 +      `${prefix}/connections/${key.id}/submit`,
 +      {
 +        method: "key",
-+        fields: { token: interactiveBackendKey, short: "xy" },
++        fields: { token: interactiveBackendKey, short: "xy", ...fields },
 +      },
 +    );
 +    expect(added.status, JSON.stringify(added.body)).toBe(200);
@@ -562,13 +767,66 @@ index 0000000..4cb4b69
 +    };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index d506111..275d945 100644
+index d506111..9d0ed0e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7292,6 +7292,74 @@ export const scenarios = plan({
+@@ -7292,6 +7292,127 @@ export const scenarios = plan({
        local: na("Uses hosted account links and authentication."),
      },
    },
++  provisionedRadio: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "provisioned-link-boundary.spec.ts",
++    title: "account radio linking cannot replace a provisioned plain-slot account",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated account fixtures."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
++  provisionedAgent: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "provisioned-link-boundary.spec.ts",
++    title: "agent connection creation and updates cannot replace provisioned account links",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated account fixtures."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
++  accountDisplayProviderPrivacy: {
++    fixtures: "actors",
++    file: "account-display-privacy.spec.ts",
++    title: "provider health and unsaved credential checks reject encoded identity secrets",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses loopback provider health."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
++  accountDisplayEncodedPrivacy: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-display-privacy.spec.ts",
++    title: "encoded credentials and references cannot enter account display status",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated account fixtures."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
++  accountDisplayIdentityPrivacy: {
++    fixtures: "actors",
++    file: "account-display-privacy.spec.ts",
++    title: "account identity strings reject raw and encoded credentials with or without status",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated account fixtures."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
 +  accountStatusStorage: {
 +    fixtures: "actors",
 +    legacyStorage: true,
@@ -640,6 +898,224 @@ index d506111..275d945 100644
    interactiveAccounts: {
      fixtures: "actors",
      file: "interactive-accounts.spec.ts",
+diff --git a/e2e/tests/account-display-privacy.spec.ts b/e2e/tests/account-display-privacy.spec.ts
+new file mode 100644
+index 0000000..2df5504
+--- /dev/null
++++ b/e2e/tests/account-display-privacy.spec.ts
+@@ -0,0 +1,212 @@
++import { Actors } from "../support/actors.ts";
++import { Api } from "../support/api.ts";
++import { Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { accountStatusBackend } from "../support/account-status-fixture.ts";
++/** Encodings and identity-only results cannot bypass the public display confidentiality check. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
++import { interactiveBackendKey } from "../support/interactive-account-backend.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { statusAccount } from "../support/status-account.ts";
++import { scenarios } from "../test-plan.ts";
++const Health = Schema.Struct({
++  apps: Schema.Array(
++    Schema.Struct({ check: Schema.NullOr(Schema.Struct({ status: Schema.String })) }),
++  ),
++});
++const forms = (secret: string) => {
++  const bytes = Buffer.from(secret, "utf8");
++  return [
++    secret,
++    bytes.toString("base64"),
++    bytes.toString("base64url"),
++    encodeURIComponent(secret),
++    [...bytes].map((v) => "%" + v.toString(16).padStart(2, "0")).join(""),
++    bytes.toString("hex"),
++    bytes.toString("hex").toUpperCase(),
++  ];
++};
++layer(HostedLive, { excludeTestServices: true })("Display confidentiality", (it) => {
++  it.effect(scenarios.accountDisplayEncodedPrivacy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const unicodeSecret = "p?Ω/++";
++        const fixture = yield* statusAccount(
++          (connect, check) =>
++            accountStatusSource(connect, check).replace(
++              "token: string()",
++              "token: string(), encoded: string()",
++            ),
++          { encoded: unicodeSecret },
++        );
++        for (const secret of ["opaque-1", interactiveBackendKey, unicodeSecret]) {
++          for (const encoded of forms(secret)) {
++            yield* fixture.statusBackend.answer({
++              status: 200,
++              body: {
++                status: {
++                  ...displayedStatus,
++                  stats: [{ label: "Value", value: `public:${encoded}` }],
++                },
++              },
++            });
++            const response = yield* fixture.check();
++            expect(response.status).toBe(200);
++            expect((yield* body(Health, response)).apps[0]?.check?.status).toBe("check_failed");
++            expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(encoded);
++          }
++        }
++        const stored = yield* legacyStorage([
++          {
++            sql: "SELECT account_info FROM executor_account_checks WHERE account = $1",
++            params: [fixture.account],
++          },
++        ]);
++        expect(stored).toEqual([[{ account_info: null }]]);
++        yield* serverControl("start");
++        yield* fixture.statusBackend.answer({
++          status: 200,
++          body: { accountInfo: { profileUrl: "https://example.test/" + "x".repeat(32_768) } },
++        });
++        expect((yield* body(Health, yield* fixture.check())).apps[0]?.check?.status).toBe(
++          "check_failed",
++        );
++        yield* fixture.statusBackend.answer({
++          status: 200,
++          body: { accountInfo: { displayName: "Public identity" }, status: displayedStatus },
++        });
++        expect((yield* body(Health, yield* fixture.check())).apps[0]?.check?.status).toBe(
++          "healthy",
++        );
++      }),
++    ),
++  );
++  it.effect(scenarios.accountDisplayIdentityPrivacy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* statusAccount(accountStatusSource);
++        for (const secret of ["opaque-1", interactiveBackendKey]) {
++          for (const field of [
++            "externalId",
++            "displayName",
++            "username",
++            "email",
++            "avatarUrl",
++            "profileUrl",
++          ]) {
++            for (const status of [undefined, displayedStatus]) {
++              const value = field.endsWith("Url")
++                ? `https://example.test/${secret}`
++                : `public:${secret}`;
++              yield* fixture.statusBackend.answer({
++                status: 200,
++                body: {
++                  accountInfo: { [field]: value },
++                  ...(status === undefined ? {} : { status }),
++                },
++              });
++              const response = yield* fixture.check();
++              expect(response.status).toBe(200);
++              expect((yield* body(Health, response)).apps[0]?.check?.status).toBe("check_failed");
++              expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(secret);
++            }
++          }
++        }
++        // Identity strings need the same encoding protection even without status.
++        for (const encoded of forms(interactiveBackendKey)) {
++          yield* fixture.statusBackend.answer({
++            status: 200,
++            body: { accountInfo: { displayName: encoded } },
++          });
++          expect((yield* body(Health, yield* fixture.check())).apps[0]?.check?.status).toBe(
++            "check_failed",
++          );
++        }
++      }),
++    ),
++  );
++  it.effect(scenarios.accountDisplayProviderPrivacy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* accountStatusBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Provider privacy fixture",
++          files: [
++            {
++              path: "index.ts",
++              content: `import { defineApp, defineProvider, object, secrets, string, router } from "apps";
++const service = defineProvider({ name: "Private provider check", hosts: [${JSON.stringify(new URL(backend.origin).host)}], auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
++  health: async ({ account, fetch, signal }) => await (await fetch(${JSON.stringify(backend.origin + "/check?ref=opaque-fixture")}, { signal, headers: { authorization: "Bearer " + account.fields.token } })).json() });
++export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(
++          Schema.Struct({
++            id: Schema.String,
++            requirements: Schema.Struct({
++              accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
++            }),
++          }),
++          deployed,
++        );
++        const path = `${prefix}/apps/${app.id}`;
++        let account: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", path);
++            if (account !== undefined)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        for (const encoded of forms(interactiveBackendKey)) {
++          yield* backend.answer({ status: 200, body: { accountInfo: { displayName: encoded } } });
++          const response = yield* api.request(actors.owner, "POST", `${path}/credential-checks`, {
++            provider: app.requirements.accounts.service.provider,
++            method: "key",
++            fields: { token: interactiveBackendKey },
++          });
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          expect(response.body).toMatchObject({ status: "check_failed", info: null });
++          expect(JSON.stringify(response.body)).not.toContain(encoded);
++        }
++        const pending = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${path}/accounts/user/service/connections`, {}),
++        );
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${pending.id}/submit`,
++          { method: "key", fields: { token: interactiveBackendKey } },
++        );
++        expect(saved.status).toBe(200);
++        account = (yield* body(Resource, saved)).id;
++        for (const encoded of forms(interactiveBackendKey)) {
++          yield* backend.answer({ status: 200, body: { accountInfo: { displayName: encoded } } });
++          const response = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/accounts/${account}/health`,
++          );
++          expect(response.status).toBe(200);
++          expect((yield* body(Health, response)).apps[0]?.check?.status).toBe("check_failed");
++          expect(JSON.stringify(response.body)).not.toContain(encoded);
++        }
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/account-status-factory.spec.ts b/e2e/tests/account-status-factory.spec.ts
 new file mode 100644
 index 0000000..6635967
@@ -1264,12 +1740,205 @@ index 0000000..3311b91
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
+new file mode 100644
+index 0000000..405937a
+--- /dev/null
++++ b/e2e/tests/provisioned-link-boundary.spec.ts
+@@ -0,0 +1,187 @@
++import { Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { provisionedSource } from "../support/provisioned-source.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++/** Radio linking and agent connection policies share the same provisioned replacement boundary. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
++  }),
++});
++const provisionedLinkFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const files = (flag: boolean) => [
++    {
++      path: "index.ts",
++      content: provisionedSource(flag, true).replace(
++        "service: access",
++        "service: access, saved: access.many()",
++      ),
++    },
++    appsManifest,
++  ];
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: "Protected link fixture",
++    files: files(false),
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const app = yield* body(App, deployed),
++    path = `${prefix}/apps/${app.id}`;
++  const ids: string[] = [];
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* serverControl("start");
++      yield* api.request(actors.owner, "DELETE", path);
++      for (const id of ids) yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
++    }).pipe(Effect.orDie),
++  );
++  const add = (slot: string, method: string, label: string, token: string) =>
++    Effect.gen(function* () {
++      const pending = yield* body(
++        Resource,
++        yield* api.request(actors.owner, "POST", `${path}/accounts/user/${slot}/connections`, {}),
++      );
++      const response = yield* api.request(
++        actors.owner,
++        "POST",
++        `${prefix}/connections/${pending.id}/submit`,
++        { method, label, fields: { token } },
++      );
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const account = (yield* body(Resource, response)).id;
++      ids.push(account);
++      return account;
++    });
++  const provisioned = yield* add("service", "key", "Host account", "fixture-host-key");
++  const ordinary = yield* add("saved", "manual", "Ordinary account", "ordinary-fixture-key");
++  expect(
++    (yield* api.request(actors.owner, "DELETE", `${path}/accounts/user/saved/${ordinary}`)).status,
++  ).toBe(200);
++  const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++    files: files(true),
++  });
++  expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++  const current = yield* body(Schema.Struct({ app: App }), updated);
++  const assertRetained = Effect.gen(function* () {
++    const used = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
++      tool: "present",
++      kind: "query",
++      input: {},
++    });
++    expect(used.status, JSON.stringify(used.body)).toBe(200);
++    expect(used.body).toMatchObject({ valid: true });
++  });
++  return {
++    prefix,
++    path,
++    app: app.id,
++    provisioned,
++    ordinary,
++    provider: current.app.requirements.accounts.service.provider,
++    assertRetained,
++  };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (it) => {
++  it.effect(scenarios.provisionedRadio.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* provisionedLinkFixture,
++          actors = yield* Actors,
++          browser = yield* Browser;
++        yield* legacyStorage([
++          {
++            sql: "UPDATE executor_accounts SET provider = $1 WHERE id IN ($2, $3)",
++            params: [fixture.provider, fixture.provisioned, fixture.ordinary],
++          },
++        ]);
++        yield* serverControl("start");
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open the provisioned account choices", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/${fixture.app}?view=accounts`),
++        );
++        const status = yield* browser.use("Try the ordinary account radio", (page) =>
++          Promise.all([
++            page.waitForResponse(
++              (response) =>
++                response.request().method() === "PUT" &&
++                new URL(response.url()).pathname.endsWith(
++                  `/accounts/user/service/${fixture.ordinary}`,
++                ),
++            ),
++            page
++              .getByRole("region", { name: "Host access (service)", exact: true })
++              .getByRole("radio", { name: "Ordinary account", exact: true })
++              .click(),
++          ]).then(([response]) => response.status()),
++        );
++        expect(status).toBe(422);
++        yield* fixture.assertRetained;
++      }),
++    ),
++  );
++  it.effect(scenarios.provisionedAgent.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* provisionedLinkFixture,
++          actors = yield* Actors,
++          api = yield* Api;
++        yield* legacyStorage([
++          {
++            sql: "UPDATE executor_accounts SET provider = $1 WHERE id IN ($2, $3)",
++            params: [fixture.provider, fixture.provisioned, fixture.ordinary],
++          },
++        ]);
++        yield* serverControl("start");
++        const path = `${fixture.prefix}/mcp-connections`,
++          id = randomUUID();
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "POST", `${path}/${id}/revoke`).pipe(Effect.orDie),
++        );
++        const apps = [
++          {
++            app: fixture.app,
++            runsAs: [{ kind: "account", id: fixture.ordinary }],
++            tools: { kind: "readOnly" },
++          },
++        ];
++        const response = yield* api.request(actors.owner, "POST", path, {
++          id,
++          name: "Protected agent",
++          apps,
++        });
++        expect(response.status, JSON.stringify(response.body)).toBe(422);
++        expect(response.body).toMatchObject({ _tag: "AccountProvisioned" });
++        yield* fixture.assertRetained;
++        const created = yield* api.request(actors.owner, "POST", path, {
++          id,
++          name: "Protected agent",
++          apps: [],
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const updated = yield* api.request(actors.owner, "PUT", `${path}/${id}`, {
++          name: "Protected agent",
++          apps,
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(422);
++        expect(updated.body).toMatchObject({ _tag: "AccountProvisioned" });
++        yield* fixture.assertRetained;
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/provisioned-mixed.spec.ts b/e2e/tests/provisioned-mixed.spec.ts
 new file mode 100644
-index 0000000..d4f071b
+index 0000000..680fe1f
 --- /dev/null
 +++ b/e2e/tests/provisioned-mixed.spec.ts
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,150 @@
 +/** Completion cannot replace a provisioned plain-slot link through a mixed provider. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1301,7 +1970,16 @@ index 0000000..d4f071b
 +        const issuer = yield* oauthSetupIssuer;
 +        const prefix = `/api/organizations/${actors.organization.id}`;
 +        const files = (provisioned: boolean) => [
-+          { path: "index.ts", content: provisionedSource(provisioned, true, issuer.origin) },
++          {
++            path: "index.ts",
++            content: provisionedSource(provisioned, true, issuer.origin)
++              .replace("string, oauth2", "string, oauth2, interactive")
++              .replace("auth: {", 'auth: { device: interactive({ label: "Device" }),')
++              .replace(
++                "tools: router(",
++                'connect: { service: { start: async () => ({ session: "fixture-session", message: "Fixture sign-in" }), status: async () => ({ state: "connected" as const, ref: "fixture-acquired-reference" }), remove: async () => {} } }, tools: router(',
++              ),
++          },
 +          appsManifest,
 +        ];
 +        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -1384,6 +2062,14 @@ index 0000000..d4f071b
 +        );
 +        expect(completed.status, JSON.stringify(completed.body)).toBe(422);
 +        expect(completed.body).toMatchObject({ _tag: "AccountProvisioned" });
++        const interactive = yield* pending();
++        const steps = `${prefix}/connections/${interactive.id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${steps}/start`, { method: "device" })).status,
++        ).toBe(200);
++        const finished = yield* api.request(actors.owner, "GET", `${steps}/status`);
++        expect(finished.status, JSON.stringify(finished.body)).toBe(422);
++        expect(finished.body).toMatchObject({ _tag: "AccountProvisioned" });
 +        const used = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
 +          tool: "present",
 +          kind: "query",
@@ -6876,36 +7562,33 @@ index 0000000..ce05453
 +}
 diff --git a/packages/apps/src/implementation/account-status-output.ts b/packages/apps/src/implementation/account-status-output.ts
 new file mode 100644
-index 0000000..2e9b46f
+index 0000000..3d04a0e
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-status-output.ts
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,27 @@
 +/** Refuse credential-bearing display data before it leaves a provider or app-owned check. */
 +import { Effect, Redacted, Schema } from "effect";
 +import { AccountCheckResult } from "../contracts/provider.ts";
 +import { HostOutputInvalid, type HostContext } from "../contracts/host.ts";
-+import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
++import { accountDisplayIsPrivate } from "@executor-js/utils/account-display-privacy";
 +
 +export const accountCheckOutput = (value: unknown, context: HostContext, ref?: string) =>
 +  Effect.gen(function* () {
 +    const result = yield* Schema.decodeUnknownEffect(AccountCheckResult)(value).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
-+    if (result.status !== undefined) {
-+      const secrets = accountFieldSecrets(Redacted.value(context.accounts), 1);
-+      if (ref !== undefined && ref !== "") secrets.push(ref);
-+      const strings = [
-+        ...result.status.badges.flatMap((badge) => [badge.label, badge.tone]),
-+        ...result.status.meters.flatMap((meter) => [
-+          meter.label,
-+          meter.detail ?? "",
-+          meter.resetsAt ?? "",
-+        ]),
-+        ...result.status.stats.flatMap((stat) => [stat.label, stat.value]),
-+      ];
-+      if (strings.some((text) => secrets.some((secret) => text.includes(secret))))
-+        return yield* new HostOutputInvalid();
-+    }
++    const strings = [
++      ...Object.values(result.accountInfo ?? {}),
++      ...(result.status?.badges.flatMap((badge) => [badge.label, badge.tone]) ?? []),
++      ...(result.status?.meters.flatMap((meter) => [
++        meter.label,
++        meter.detail ?? "",
++        meter.resetsAt ?? "",
++      ]) ?? []),
++      ...(result.status?.stats.flatMap((stat) => [stat.label, stat.value]) ?? []),
++    ];
++    if (!accountDisplayIsPrivate(strings, Redacted.value(context.accounts), ref))
++      return yield* new HostOutputInvalid();
 +    return yield* Schema.encodeEffect(AccountCheckResult)(result).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
@@ -7280,6 +7963,23 @@ index a026bcd..71a580f 100644
    >;
    /** Called once for a newly saved account, including secrets and OAuth completion. */
    readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
+diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
+index a1858c8..3b82608 100644
+--- a/packages/sdk/src/contracts/interactive-accounts.ts
++++ b/packages/sdk/src/contracts/interactive-accounts.ts
+@@ -1,3 +1,4 @@
++import type { AccountProvisioned } from "./provider.ts";
+ /** Host-only interactive connection state and operations. No session enters a public response. */
+ import { Context, Schema, type Effect } from "effect";
+ import { InteractiveInstructions, AccountInfo } from "apps/contracts";
+@@ -72,6 +73,7 @@ type Input = {
+   readonly accounts: AppAccounts;
+ };
+ type Failure =
++  | AccountProvisioned
+   | StorageError
+   | InteractiveConnectionFailed
+   | import("./interactive-errors.ts").InteractiveRetirementBusy
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
 index ead5982..226b677 100644
 --- a/packages/sdk/src/contracts/provider.ts
@@ -7403,7 +8103,7 @@ index 6d0eee6..b701700 100644
              let account;
              if (row.reconnectAccount !== null) {
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 3fa5390..99f5e41 100644
+index 3fa5390..d4a5874 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,4 @@
@@ -7611,34 +8311,43 @@ index 3fa5390..99f5e41 100644
        yield* query(() =>
          db.upsert("accountChecks", {
            where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
+@@ -358,7 +408,11 @@ export const makeAccountHealth = (
+             }),
+           ),
+         })
+-        .pipe(Effect.timeout(checkMillis), Effect.result);
++        .pipe(
++          Effect.flatMap((result) => privateAccountCheck(result, { app: { checked: { fields } } })),
++          Effect.timeout(checkMillis),
++          Effect.result,
++        );
+       const late = (yield* Clock.currentTimeMillis) >= deadline;
+       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
+         return yield* Effect.fail(outcome.failure);
 diff --git a/packages/sdk/src/implementation/account-status-output.ts b/packages/sdk/src/implementation/account-status-output.ts
 new file mode 100644
-index 0000000..60992ac
+index 0000000..b3d0c1e
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-status-output.ts
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,22 @@
 +/** Validate display data against raw credentials before the SDK persists or returns it. */
 +import { Effect, Schema } from "effect";
 +import { AccountCheckResult, HostOutputInvalid } from "apps/contracts";
-+import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
++import { accountDisplayIsPrivate } from "@executor-js/utils/account-display-privacy";
 +
 +export const privateAccountCheck = (value: AccountCheckResult, accounts: unknown, ref?: string) =>
 +  Effect.gen(function* () {
-+    if (value.status !== undefined) {
-+      const secrets = accountFieldSecrets(accounts, 1);
-+      if (ref !== undefined && ref !== "") secrets.push(ref);
-+      const strings = [
-+        ...value.status.badges.flatMap((badge) => [badge.label, badge.tone]),
-+        ...value.status.meters.flatMap((meter) => [
-+          meter.label,
-+          meter.detail ?? "",
-+          meter.resetsAt ?? "",
-+        ]),
-+        ...value.status.stats.flatMap((stat) => [stat.label, stat.value]),
-+      ];
-+      if (strings.some((text) => secrets.some((secret) => text.includes(secret))))
-+        return yield* new HostOutputInvalid();
-+    }
++    const strings = [
++      ...Object.values(value.accountInfo ?? {}),
++      ...(value.status?.badges.flatMap((badge) => [badge.label, badge.tone]) ?? []),
++      ...(value.status?.meters.flatMap((meter) => [
++        meter.label,
++        meter.detail ?? "",
++        meter.resetsAt ?? "",
++      ]) ?? []),
++      ...(value.status?.stats.flatMap((stat) => [stat.label, stat.value]) ?? []),
++    ];
++    if (!accountDisplayIsPrivate(strings, accounts, ref)) return yield* new HostOutputInvalid();
 +    return yield* Schema.decodeUnknownEffect(AccountCheckResult)(value).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
@@ -7819,6 +8528,23 @@ index 135f853..08edc5c 100644
      );
      const schedules = makeSchedules(
        options.database,
+diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
+index c37992f..545af12 100644
+--- a/packages/sdk/src/implementation/interactive-accounts.ts
++++ b/packages/sdk/src/implementation/interactive-accounts.ts
+@@ -1,3 +1,4 @@
++import { AccountProvisioned } from "../contracts/provider.ts";
+ /** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
+ import { Clock, type Crypto, Effect, Schema } from "effect";
+ import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
+@@ -48,6 +49,7 @@ const failure = () => new InteractiveConnectionFailed({ reason: "step" });
+ const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+   effect.pipe(
+     Effect.mapError((error) =>
++      Schema.is(AccountProvisioned)(error) ||
+       Schema.is(StorageError)(error) ||
+       Schema.is(InteractiveRetirementBusy)(error) ||
+       Schema.is(InteractiveRetirementFailed)(error)
 diff --git a/packages/sdk/src/implementation/interactive-check.ts b/packages/sdk/src/implementation/interactive-check.ts
 new file mode 100644
 index 0000000..ba089b3
@@ -8099,17 +8825,159 @@ index ed27395..d54641b 100644
          <RemoveAppBoundAccount
            name={accountName(bound.account)}
 diff --git a/packages/utils/package.json b/packages/utils/package.json
-index 4bd3285..58ee73e 100644
+index 4bd3285..9f94e31 100644
 --- a/packages/utils/package.json
 +++ b/packages/utils/package.json
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,8 @@
    "type": "module",
    "sideEffects": false,
    "exports": {
++    "./account-display-privacy": "./src/account-display-privacy.ts",
 +    "./account-secrets": "./src/account-secrets.ts",
      "./url-policy": "./src/url-policy.ts",
      "./account-site": "./src/account-site.ts",
      "./safe-fetch": "./src/safe-fetch.ts",
+diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
+new file mode 100644
+index 0000000..b7bb754
+--- /dev/null
++++ b/packages/utils/src/account-display-privacy.ts
+@@ -0,0 +1,135 @@
++/** Fail closed when bounded public display text contains a credential or a standard encoding. */
++import { Predicate } from "effect";
++import { Base64, Base64Url, Hex } from "effect/encoding";
++
++const maxDisplayCharacters = 32_768;
++const maxDisplayStrings = 128;
++const maxCredentialNodes = 16_384;
++const maxCredentialStrings = 1_024;
++const maxDepth = 32;
++
++/** Bound work independently of credential size. Oversized secrets cannot fit in these strings. */
++const displaySecrets = (accounts: unknown, maximum: number, ref?: string) => {
++  const found = new Set<string>();
++  let visited = 0,
++    characters = 0,
++    overflow = false;
++  const visit = (value: unknown, depth: number): void => {
++    if (overflow) return;
++    if (++visited > maxCredentialNodes || depth > maxDepth) {
++      overflow = true;
++      return;
++    }
++    if (typeof value === "string") {
++      if (value.length > 0 && value.length <= maximum) {
++        characters += value.length;
++        if (characters > 262_144) {
++          overflow = true;
++          return;
++        }
++        found.add(value);
++      }
++      if (found.size > maxCredentialStrings) overflow = true;
++    } else if (Array.isArray(value)) {
++      for (const item of value) {
++        visit(item, depth + 1);
++        if (overflow) break;
++      }
++    } else if (Predicate.isObject(value)) {
++      for (const key in value) {
++        if (!Object.hasOwn(value, key)) continue;
++        visit(value[key], depth + 1);
++        if (overflow) break;
++      }
++    }
++  };
++  if (Predicate.isObject(accounts)) {
++    for (const scope of [accounts["app"], accounts["user"]]) {
++      if (!Predicate.isObject(scope)) continue;
++      for (const key in scope) {
++        if (!Object.hasOwn(scope, key)) continue;
++        if (++visited > maxCredentialNodes) {
++          overflow = true;
++          break;
++        }
++        const slot = scope[key];
++        for (const account of Array.isArray(slot) ? slot : [slot]) {
++          if (++visited > maxCredentialNodes) {
++            overflow = true;
++            break;
++          }
++          if (Predicate.hasProperty(account, "fields")) visit(account.fields, 0);
++          if (overflow) break;
++        }
++        if (overflow) break;
++      }
++    }
++  }
++  if (ref !== undefined) visit(ref, 0);
++  return overflow ? undefined : found;
++};
++
++const percentDecoded = (text: string) => {
++  return text.replace(/(?:%[0-9a-f]{2})+/gi, (part) => {
++    try {
++      return decodeURIComponent(part);
++    } catch {
++      return part;
++    }
++  });
++};
++
++/** Checks UTF-8 base64/base64url, percent escapes and case-insensitive hex, plus raw values. */
++export const accountDisplayIsPrivate = (
++  strings: readonly string[],
++  accounts: unknown,
++  ref?: string,
++): boolean => {
++  if (strings.length === 0) return true;
++  if (strings.length > maxDisplayStrings) return false;
++  let total = 0,
++    maximum = 0;
++  for (const text of strings) {
++    total += text.length;
++    maximum = Math.max(maximum, text.length);
++    if (total > maxDisplayCharacters) return false;
++  }
++  const secrets = displaySecrets(accounts, maximum, ref);
++  if (secrets === undefined) return false;
++  const decoded = strings.map(percentDecoded);
++  const escaped = strings.map((text) =>
++    text.replace(/%[0-9a-f]{2}/gi, (part) => part.toUpperCase()),
++  );
++  const lower = strings.map((text) => text.toLowerCase());
++  for (const secret of secrets) {
++    if (
++      strings.some((text) => text.includes(secret)) ||
++      decoded.some((text) => text.includes(secret))
++    )
++      return false;
++    const bytes = new TextEncoder().encode(secret);
++    const base64 = Base64.encode(bytes);
++    const url = Base64Url.encode(bytes);
++    const hex = Hex.encode(bytes);
++    let component: string, uri: string;
++    try {
++      component = encodeURIComponent(secret);
++      uri = encodeURI(secret);
++    } catch {
++      return false;
++    }
++    const percent = Array.from(
++      bytes,
++      (byte) => "%" + byte.toString(16).padStart(2, "0").toUpperCase(),
++    ).join("");
++    if (escaped.some((text) => [component, uri, percent].some((value) => text.includes(value))))
++      return false;
++    const encoded = [base64, base64.replace(/=+$/, ""), url, url.replace(/=+$/, "")];
++    if (
++      strings.some((text) => encoded.some((value) => text.includes(value))) ||
++      lower.some((text) => text.includes(hex))
++    )
++      return false;
++  }
++  return true;
++};
 diff --git a/packages/utils/src/account-secrets.ts b/packages/utils/src/account-secrets.ts
 new file mode 100644
 index 0000000..1de5b1c
