@@ -101,7 +101,7 @@ test("GitLab keeps official source while Miro serves board-only OAuth", async ()
     const entry = feed.apps.find(item => item.id === expected.id)!;
     assert.ok(entry);
     if (entry.id === "miro")
-      assert.deepEqual(entry.auth.map(method => method.method), ["oauth", "token"]);
+      assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
     else assert.deepEqual(entry.auth, expected.auth);
     assert.equal(entry.source, `apps/${entry.id}.json`);
     const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
