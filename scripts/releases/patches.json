@@ -183,7 +183,7 @@
     {
       "identity": "executor-gitlab-miro-oauth",
       "file": "0020-gitlab-miro-oauth.patch",
-      "content_sha256": "a5c6c604260b70283dd98a4b862f4218c2360c3a913a575233f606e9ac8481a7",
+      "content_sha256": "5325a16ebe36ac29e9e37c7b86bc151aa7ce8f24267c0dac995268542cc96c59",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

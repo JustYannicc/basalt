@@ -1,0 +1,16 @@
+{
+  "package": "@executor.sh/miro",
+  "publishedUrl": "https://catalog.executor.sh/apps/miro.json",
+  "snapshotCaptured": "2026-10-24",
+  "publishedSha256": "4db3376502ab094f9e9cd90b92a8bf97ffa74e70b5520fe03de3520781fa4ed2",
+  "carriedSha256": "751777a5e4e109c6792bf2e5f75cd7a05824a79fc559303f672af92717b6eb55",
+  "patchSha256": "cfc6088da6cece785a8c24bfeee1bedc092e5fb73f33afec086228fe3eb2b86e",
+  "specCommit": "39161f97cee3f887f5f67cf4a003ce93b3a6903b",
+  "specSha256": "f0e17b5b43c92ff2d85c7fbe9a84301e39df1d3c14e6738cd939a6d7142f44dd",
+  "appsVersion": "0.0.1-beta.104-basalt.1",
+  "excludedPaths": 61,
+  "license": "Not declared in the published package",
+  "contribution": {
+    "state": "Board-only source candidate; publication not claimed"
+  }
+}
