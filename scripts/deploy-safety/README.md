@@ -12,8 +12,9 @@ Required GitHub permissions:
 
 - `contents: read`
 - `deployments: write`
+- `actions: read`, to see whether the run that owns an unfinished deployment record has completed
 
-Pass the built-in `GITHUB_TOKEN` and `GITHUB_REPOSITORY`. PlanetScale calls use the existing `PLANETSCALE_ORGANIZATION`, `PLANETSCALE_API_TOKEN_ID`, and `PLANETSCALE_API_TOKEN` secrets. The request header is PlanetScale's service-token format, `<ID>:<TOKEN>`.
+Pass the built-in `GITHUB_TOKEN` and `GITHUB_REPOSITORY`; Actions also sets `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`, which the runner records. PlanetScale calls use the existing `PLANETSCALE_ORGANIZATION`, `PLANETSCALE_API_TOKEN_ID`, and `PLANETSCALE_API_TOKEN` secrets. The request header is PlanetScale's service-token format, `<ID>:<TOKEN>`.
 
 ### Candidate report
 
@@ -74,6 +75,20 @@ A carried patch that adds a migration or data step must keep that shape. Undoing
 A re-release of the same base and candidate after rolling forward reuses the failed attempt's backup, because the backup name is derived from the transition.
 
 When the failed release took a database backup, the release that rolls forward over it records that backup in its deployment payload as `rollbackBackup`, with the failed commit as `rollForwardOf`. The release's own backup was taken after the failed release's writes, so restoring it would pair the old code with the failed release's schema. `rollback-target`, `manual-rollback` and the rollback's backup check use `rollbackBackup` instead. It is verified to be the failed release's backup from the same base and pins, and `--restored-backup` must name it.
+
+### Killed release jobs
+
+A release job that is killed hard, by a lost runner, a timeout or a cancel, can't mark its deployment record failed, so the record stays `in_progress` (or `queued`, `pending`, or without a status) and blocks every release. Every record the runner creates names its run attempt in its payload as `run: { repository, id, attempt }`, and each status it posts links to that attempt (`https://github.com/<owner>/<repo>/actions/runs/<id>/attempts/<n>`). Parsing checks the identity's shape and fails the read when it's malformed.
+
+When the latest record is unfinished, comes after a successful deployment and names a run attempt, the ledger asks the Actions API for that attempt. If it has `completed`, with any conclusion, the record reads as failed, and roll-forward and manual rollback treat it like any other failed release. It stays unresolved when:
+
+- the attempt is still queued, waiting or running;
+- the API errors, or answers about another run, attempt or repository;
+- the identity names a repository other than this one;
+- the record has no run identity, as older records don't;
+- there is no previous successful deployment.
+
+The failure is read in memory only: nothing writes a status back to the stale record. Once the next release begins, its own record is the latest one, so the stale record no longer matters.
 
 ### Release hold
 
