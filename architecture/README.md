@@ -5,7 +5,6 @@ This directory holds the hand-written model. It shows Basalt's modules, outside-
 - `spec.c4` defines the model vocabulary and styles.
 - `model/` defines Basalt and the relationships between its modules.
 - `views/` contains sparse current and planned overviews plus v1 workflows. Computer setup, observation and revocation live together in `views/workflows/computer-setup.c4`.
-- `pool-access-account.md` records the pool credential identity and its upgrade path.
 - `gen/*.gen.c4` is generated from the stack declaration inventory and must not be edited by hand.
 - `CONTEXT.md` is the machine-readable vocabulary used by architecture checks.
 
