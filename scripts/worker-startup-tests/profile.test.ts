@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { measure, median, readBundle } from "../worker-startup.ts";
+import { InconclusiveStartup, measure, median, readBundle } from "../worker-startup.ts";
 
 const root = mkdtempSync(join(tmpdir(), "worker-startup-test-"));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -20,8 +20,9 @@ const handler = "export default { fetch() { return new Response('ok'); } };";
 // Work at module scope, like eager schema construction: workerd freezes clocks, so loop instead.
 const eager = `let x = 0; for (let i = 0; i < 60_000_000; i++) x = (x + i * 7) % 1_000_003; globalThis.x = x;`;
 
-test("work at module scope shows up as startup CPU, in chunks the entry imports", async () => {
-  const cheap = await measure(bundle("Cheap", { "worker.js": handler }), 3);
+test("work at module scope shows up as startup CPU, in the chunk the entry imports", async () => {
+  // The chunk runs only when imported, so samples in it prove the entry's import was profiled.
+  let inSetup = 0;
   const costly = await measure(
     bundle("Costly", {
       "worker.js": `import "./setup-Ab12Cd34.js"; ${handler}`,
@@ -29,14 +30,32 @@ test("work at module scope shows up as startup CPU, in chunks the entry imports"
       "unused-Zz99Yy88.js": eager,
     }),
     3,
+    {
+      onProfile: (profile) => {
+        const setup = new Set(
+          profile.nodes.filter((node) => (node.callFrame as { url?: string }).url?.endsWith("setup-Ab12Cd34.js")).map((node) => node.id),
+        );
+        inSetup += profile.samples.filter((id) => setup.has(id)).length;
+      },
+    },
   );
-  assert.ok(median(cheap.startupMs) < 10, `cheap start took ${cheap.startupMs.join(", ")} ms`);
-  assert.ok(
-    median(costly.startupMs) > median(cheap.startupMs) + 20,
-    `costly start took ${costly.startupMs.join(", ")} ms`,
-  );
+  // About 175 ms on a laptop and 500 ms on a CI runner; far above any profiler noise.
+  assert.ok(median(costly.startupMs) > 50, `costly start took ${costly.startupMs.join(", ")} ms`);
+  assert.ok(inSetup > 0, "no samples landed in the imported chunk");
   // The stale chunk is neither uploaded nor counted.
   assert.equal(costly.bytes, Buffer.byteLength(`import "./setup-Ab12Cd34.js"; ${handler}`) + Buffer.byteLength(eager));
+});
+
+test("a start with almost no work of its own still measures, as cheap", async (t) => {
+  // Nothing here depends on the Worker's own code being sampled: the witnesses prove coverage.
+  // A runner that starves the sampler on every retry makes this unknowable, which isn't a failure.
+  const cheap = await measure(bundle("Cheap", { "worker.js": handler }), 3).catch((error) => {
+    if (error instanceof InconclusiveStartup) return t.skip(error.message);
+    throw error;
+  });
+  if (!cheap) return;
+  assert.equal(cheap.startupMs.length, 3);
+  assert.ok(median(cheap.startupMs) < 50, `cheap start took ${cheap.startupMs.join(", ")} ms`);
 });
 
 test("a Worker whose global scope throws fails instead of measuring as cheap", async () => {

@@ -15,7 +15,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { activeMs, loadMiniflare, profileStartup, sampled, type CpuProfile } from "./startup-profiler/profile.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { loadMiniflare, profileStartup, read, type CpuProfile } from "./startup-profiler/profile.ts";
 
 /** Cloudflare's startup limit: the global scope must parse and execute within one second. */
 export const startupLimitMs = 1_000;
@@ -43,6 +44,8 @@ export interface Measurement {
   readonly bytes: number;
   readonly gzipBytes: number;
   readonly startupMs: ReadonlyArray<number>;
+  /** Starts the profiler didn't demonstrably cover, retried and left out. */
+  readonly inconclusive: number;
 }
 
 const listFiles = (directory: string, prefix = ""): string[] =>
@@ -132,25 +135,46 @@ export const violations = (measurement: Measurement) => {
   ];
 };
 
-/** Measure a Worker over several cold starts; `onProfile` receives each run's CPU profile. */
-export const measure = async (
-  bundle: WorkerBundle,
-  runs: number,
-  onProfile: (profile: CpuProfile, run: number) => void = () => undefined,
-): Promise<Measurement> => {
+/** Every start the profiler tried was inconclusive: the Worker's cost is unknown, not low. */
+export class InconclusiveStartup extends Error {}
+
+export interface MeasureOptions {
+  /** Receives each conclusive start's CPU profile. */
+  readonly onProfile?: (profile: CpuProfile, run: number) => void;
+  /** Profiles one start; tests replace the workerd run. */
+  readonly start?: () => Promise<CpuProfile>;
+  /** The first wait before retrying an inconclusive start; it doubles, to at most eight times the first. */
+  readonly backoffMs?: number;
+}
+
+/** Attempts per counted start before a Worker's measurement is inconclusive. */
+const attemptsPerRun = 4;
+
+/** Measure a Worker over several conclusive cold starts, retrying the ones the profiler missed. */
+export const measure = async (bundle: WorkerBundle, runs: number, options: MeasureOptions = {}): Promise<Measurement> => {
   if (!Number.isInteger(runs) || runs < 1) throw new Error("Measure at least one start");
   const contents = new Map(bundle.modules.map((module) => [join(bundle.directory, module), readFileSync(join(bundle.directory, module))]));
+  const start =
+    options.start ?? (() => profileStartup(bundle.name, join(bundle.directory, bundle.entry), contents, compatibility));
   const startupMs: number[] = [];
-  let stalls = 0;
+  let inconclusive = 0;
   while (startupMs.length < runs) {
-    const profile = await profileStartup(bundle.name, join(bundle.directory, bundle.entry), contents, compatibility);
-    // A stalled sampler measured nothing; start again, but not forever.
-    if (!sampled(profile)) {
-      if (++stalls > runs) throw new Error(`V8's sampler stalled on ${stalls} starts of ${bundle.name}`);
+    // Stop as soon as the remaining attempts can't complete the runs.
+    if (runs * attemptsPerRun - inconclusive < runs)
+      throw new InconclusiveStartup(
+        `${bundle.name}: the profiler couldn't confirm ${inconclusive} of ${startupMs.length + inconclusive} starts, so its startup CPU is unknown`,
+      );
+    const profile = await start();
+    const reading = read(profile);
+    if (!reading.conclusive) {
+      // Back off so a busy runner can settle before the next start.
+      inconclusive++;
+      if (runs * attemptsPerRun - inconclusive >= runs)
+        await sleep((options.backoffMs ?? 250) * 2 ** Math.min(inconclusive - 1, 3));
       continue;
     }
-    onProfile(profile, startupMs.length);
-    startupMs.push(activeMs(profile));
+    options.onProfile?.(profile, startupMs.length);
+    startupMs.push(reading.activeMs);
   }
   const files = [...contents.values()];
   return {
@@ -158,6 +182,7 @@ export const measure = async (
     bytes: files.reduce((total, file) => total + file.length, 0),
     gzipBytes: files.reduce((total, file) => total + gzipSync(file, { level: 9 }).length, 0),
     startupMs,
+    inconclusive,
   };
 };
 
@@ -167,11 +192,11 @@ export const report = (measurements: ReadonlyArray<Measurement>) =>
   [
     `Startup CPU budget ${startupBudgetMs} ms (Cloudflare limit ${startupLimitMs} ms); size budget ${kib(sizeBudgetBytes)} (limit ${kib(sizeLimitBytes)}).`,
     "",
-    "| Worker | Uncompressed | Gzip | Startup CPU, median | Runs (ms) |",
-    "|---|---:|---:|---:|---|",
+    "| Worker | Uncompressed | Gzip | Startup CPU, median | Runs (ms) | Inconclusive starts retried |",
+    "|---|---:|---:|---:|---|---:|",
     ...measurements.map(
       (m) =>
-        `| ${m.name} | ${kib(m.bytes)} | ${kib(m.gzipBytes)} | ${median(m.startupMs).toFixed(1)} ms | ${m.startupMs.map((ms) => ms.toFixed(1)).join(", ")} |`,
+        `| ${m.name} | ${kib(m.bytes)} | ${kib(m.gzipBytes)} | ${median(m.startupMs).toFixed(1)} ms | ${m.startupMs.map((ms) => ms.toFixed(1)).join(", ")} | ${m.inconclusive} |`,
     ),
   ].join("\n");
 
@@ -193,13 +218,21 @@ if (import.meta.main) {
   const missing = requiredWorkers.filter((name) => !bundles.some((bundle) => bundle.name === name));
   if (missing.length) throw new Error(`Run npm run build first; missing Worker bundles: ${missing.join(", ")}`);
   const measurements: Measurement[] = [];
+  const unknown: string[] = [];
   for (const bundle of bundles) {
     console.log(`Profiling ${bundle.name} (${relative(root, join(bundle.directory, bundle.entry))})`);
-    measurements.push(
-      await measure(bundle, runs, (profile, run) => {
-        if (profiles) writeFileSync(join(profiles, `${bundle.name}-${run + 1}.cpuprofile`), JSON.stringify(profile));
-      }),
-    );
+    try {
+      measurements.push(
+        await measure(bundle, runs, {
+          onProfile: (profile, run) => {
+            if (profiles) writeFileSync(join(profiles, `${bundle.name}-${run + 1}.cpuprofile`), JSON.stringify(profile));
+          },
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof InconclusiveStartup)) throw error;
+      unknown.push(error.message);
+    }
   }
   const table = report(measurements);
   console.log(`\n${table}`);
@@ -207,5 +240,7 @@ if (import.meta.main) {
     writeFileSync(process.env.GITHUB_STEP_SUMMARY, `### Worker startup and size\n\n${table}\n`, { flag: "a" });
   const failures = measurements.flatMap(violations);
   for (const failure of failures) console.error(`::error title=Worker startup budget::${failure}`);
-  if (failures.length) process.exitCode = 1;
+  // Unmeasured is not within budget; it fails too, under its own title, so a rerun can tell them apart.
+  for (const message of unknown) console.error(`::error title=Worker startup inconclusive::${message}`);
+  if (failures.length || unknown.length) process.exitCode = 1;
 }
