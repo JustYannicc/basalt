@@ -122,16 +122,8 @@ export default Alchemy.Stack(
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
       env: {
-        GITLAB_CONNECTOR_READY: yield* Config.String("GITLAB_CONNECTOR_READY").pipe(Config.withDefault("false")),
-        MIRO_CONNECTOR_READY: yield* Config.String("MIRO_CONNECTOR_READY").pipe(Config.withDefault("false")),
-        ZOHO_CONNECTOR_READY: yield* Config.String("ZOHO_CONNECTOR_READY").pipe(Config.withDefault("false")),
-        GOOGLE_CONNECTOR_READY: yield* Config.String("GOOGLE_CONNECTOR_READY").pipe(Config.withDefault("false")),
-        GITHUB_CONNECTOR_READY: yield* Config.String("GITHUB_CONNECTOR_READY").pipe(Config.withDefault("false")),
-        ATLASSIAN_CONNECTOR_READY: yield* Config.String("ATLASSIAN_CONNECTOR_READY").pipe(Config.withDefault("false")),
-        SLACK_CONNECTOR_READY: yield* Config.String("SLACK_CONNECTOR_READY").pipe(Config.withDefault("false")),
         ZENDESK_MARKETPLACE_ORGANIZATION_ID: yield* Config.String("ZENDESK_MARKETPLACE_ORGANIZATION_ID").pipe(Config.withDefault("")),
         ZENDESK_MARKETPLACE_APP_ID: yield* Config.String("ZENDESK_MARKETPLACE_APP_ID").pipe(Config.withDefault("")),
-        ZENDESK_CONNECTOR_READY: yield* Config.String("ZENDESK_CONNECTOR_READY").pipe(Config.withDefault("false")),
       },
       workersDev: false,
       compatibility: { date: "2026-09-08" },
