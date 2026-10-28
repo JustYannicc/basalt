@@ -153,7 +153,7 @@ model {
 
   appHosting = external "App hosting" {
     #external
-    description "Private per-app origins under the existing wildcard certificate; only exact a-UUID labels reach the app-page Worker. The app-page Worker logs every startup or request failure as telemetry records failures, by tag and fixed sentence only, plus the key paths and issue kinds of a config error, never its values. Request errors keep their HTTP status; anything else answers with a private 500. Same-site cookies and dashboard-only CSP ancestors support embedded screens."
+    description "Private per-app origins under the existing wildcard certificate; only exact a-UUID labels reach the app-page Worker. The app-page Worker gets its address scheme and embedding flags the way the API Worker does, as values its runtime reads bind at deploy, never as explicit plain-text bindings, which the runtime would parse as JSON. It logs every startup or request failure through Effect's logger, as telemetry records failures, by tag and fixed sentence only, plus the key paths and issue kinds of a config error, never its values. Request errors keep their HTTP status; anything else answers with a private 500. Same-site cookies and dashboard-only CSP ancestors support embedded screens."
     metadata { hosts "a-*.signalbox.run"; status "source enabled; live routing unverified" }
   }
 

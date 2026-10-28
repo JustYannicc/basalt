@@ -48,7 +48,7 @@ index 93cdce4..8502e4e 100644
        wake: () => Effect.void,
        heartbeat: () => Effect.void,
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
-index 077cd51..092e779 100644
+index 077cd51..88071e1 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
 @@ -1,16 +1,23 @@
@@ -77,7 +77,7 @@ index 077cd51..092e779 100644
  import { cloudSentry } from "./implementation/error-reporting.ts";
  import { cloudAnalytics } from "./implementation/product-analytics.ts";
  import { postHogBindings } from "./infrastructure/posthog.ts";
-@@ -30,6 +37,56 @@ import {
+@@ -30,6 +37,55 @@ import {
  import { workerBuild } from "./infrastructure/worker-build.ts";
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
@@ -117,33 +117,23 @@ index 077cd51..092e779 100644
 +};
 +
 +/** Log a failure as telemetry records it, plus the config keys a ConfigError names. */
-+const logFailure = (cause: Cause.Cause<unknown>) =>
-+  Effect.sync(() => {
-+    const keys = cause.reasons.flatMap((reason) =>
-+      Cause.isFailReason(reason)
-+        ? configIssues(reason.error)
-+        : Cause.isDieReason(reason)
-+          ? configIssues(reason.defect)
-+          : [],
-+    );
-+    console.error(
-+      Cause.pretty(recordedCause(cause)) + (keys.length ? `\nconfig: ${keys.join("; ")}` : ""),
-+    );
-+  });
++const logFailure = (cause: Cause.Cause<unknown>) => {
++  const keys = cause.reasons.flatMap((reason) =>
++    Cause.isFailReason(reason)
++      ? configIssues(reason.error)
++      : Cause.isDieReason(reason)
++        ? configIssues(reason.defect)
++        : [],
++  );
++  return Effect.logError(
++    Cause.pretty(recordedCause(cause)) + (keys.length ? `\nconfig: ${keys.join("; ")}` : ""),
++  );
++};
 +
  /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
  export default class AppPages extends Cloudflare.Worker<AppPages>()(
    "AppPages",
-@@ -55,6 +112,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
-         ...(yield* telemetryBindings),
-         ...(yield* sentryBindings).env,
-         ...(yield* productBrandBindings),
-+        EXECUTOR_APP_UI_ADDRESS_SCHEME: yield* appUiAddressScheme,
-+        EXECUTOR_APP_UI_EMBEDDED: String(yield* appUiEmbedded),
-       },
-       compatibility: {
-         date: "2026-09-08",
-@@ -66,10 +125,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -66,10 +122,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
              onNone: () => ({}),
              onSome: (region) => ({ placement: { region } }),
            })),
@@ -159,7 +149,7 @@ index 077cd51..092e779 100644
    Effect.gen(function* () {
      const reportErrors = yield* cloudSentry;
      const analytics = yield* cloudAnalytics;
-@@ -77,7 +139,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -77,7 +136,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      const executor = yield* cloudServingProduct(yield* appDataSupervisors);
      const base = yield* cloudAppUiBase.pipe(Effect.orDie);
      // App pages send sign-in to the dashboard, on the browser origin.
@@ -175,7 +165,7 @@ index 077cd51..092e779 100644
      const services = requestServices(Layer.mergeAll(appSessions, executor));
      const notFound = HttpServerResponse.empty({ status: 404 });
      const protectedRoutes = Layer.mergeAll(
-@@ -107,7 +176,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -107,7 +173,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      );
      const lifetime = yield* previewLifetime;
      return {
@@ -184,7 +174,7 @@ index 077cd51..092e779 100644
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
-@@ -119,16 +188,21 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -119,16 +185,21 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          analytics.wrap,
          recordRequestRejections,
          reportErrors,
