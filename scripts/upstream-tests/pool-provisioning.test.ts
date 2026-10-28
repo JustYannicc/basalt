@@ -1242,6 +1242,34 @@ test("returning to a previous signing key queues a fresh token-only rotation", a
   );
 });
 
+test("a recorded pool's job with nothing to do still logs its decision", async () => {
+  await fixture(({ sql, executor, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [app] = yield* sql<{ id: string }>`select id from executor_apps`;
+      const initialize = yield* withPoolDefaults(executor, Option.some(key), () =>
+        Effect.die("ordinary setup must not run"),
+      );
+      // The token is already on the current key, so a token-only job has nothing to rotate.
+      yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
+      values ('basalt-pool-token:current', 'member', ${organization}, 'person-a')`;
+      assert.deepEqual(
+        yield* reconcileLines(
+          provision("basalt-pool-token:current", selfHostProvisioningServices).pipe(
+            Effect.provideService(OrganizationDefaults, initialize),
+          ),
+        ),
+        [{ app: app!.id, decision: "rotation-current", accessRepaired: 0, tokenRepaired: false }],
+      );
+      // A demoted holder's member job leaves the pool alone, and says so.
+      yield* sql`update member set role = 'member' where "userId" = 'person-a'`;
+      assert.deepEqual(yield* reconcileLines(setup()), [
+        { app: app!.id, decision: "not-owner", accessRepaired: 0, tokenRepaired: false },
+      ]);
+    }),
+  );
+});
+
 test("token-only jobs cannot create a pool for an unrecorded owner", async () => {
   await fixture(({ sql, executor }) =>
     Effect.gen(function* () {
