@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "c40a7ca796b1c4d483b9c0371ffcee88ca2263ceece5744d6ae926000ac4e56e" }
+    metadata { bindings "2b15558c1129dae3739f4607ae75df28bcdc20dd1d6a27a09f9639feb2fc3997" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -70,6 +70,16 @@ deployment {
           metadata { resource "resource-721600e34818bb7949a6d3811ab6eee08b82af12a6106e9cf9c54960371e1838" }
         }
       }
+      storage resource-c8523f56ad69ebaf1dd20b2aa35f30c6570ca954bef6f0bceafb37adcbb8d78f "Router" {
+        app = instanceOf basalt.router {
+          metadata { resource "resource-c8523f56ad69ebaf1dd20b2aa35f30c6570ca954bef6f0bceafb37adcbb8d78f" }
+        }
+      }
+      storage resource-d8b9aa1b37df9f99e19fa98b53b1e21dc6a3b3a21bda98460e9bea4a96edcd9e "App Origin Wildcard" {
+        app = instanceOf basalt.router {
+          metadata { resource "resource-d8b9aa1b37df9f99e19fa98b53b1e21dc6a3b3a21bda98460e9bea4a96edcd9e" }
+        }
+      }
     }
     zone group-e3fd948365456088 "Tool credentials" {
       storage resource-4d6a87a50c6d9bbb841864427ebbc546acc14d3bfd0ac0be3d049b0fc010436c "Background Job Secret" {
@@ -87,6 +97,11 @@ deployment {
       worker resource-01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da "Formatter" {
         app = instanceOf basalt.toolsGateway {
           metadata { resource "resource-01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da" }
+        }
+      }
+      worker resource-1b52e11fd87e7b0ef692296140dac09ee2d35c51f4e619d01cbb0da1c3a318bb "App Pages" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-1b52e11fd87e7b0ef692296140dac09ee2d35c51f4e619d01cbb0da1c3a318bb" }
         }
       }
       worker resource-1ec69d58ea8259e16b55a4794bc1d09e0401d95120426f195b2f0f85f61bc6b7 "App Data" {
@@ -319,6 +334,11 @@ views {
   deployment view worker_resource_01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da {
     title "Basalt/Deployment/Tools gateway/Formatter"
     include deployed.group-b4510e9c00e2f70d.resource-01237ade149ba7dd8b948903eac37659e9229171733cb8e8f84dba298f2a37da.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_1b52e11fd87e7b0ef692296140dac09ee2d35c51f4e619d01cbb0da1c3a318bb {
+    title "Basalt/Deployment/Tools gateway/App Pages"
+    include deployed.group-b4510e9c00e2f70d.resource-1b52e11fd87e7b0ef692296140dac09ee2d35c51f4e619d01cbb0da1c3a318bb.**
     autoLayout TopBottom
   }
   deployment view worker_resource_1ec69d58ea8259e16b55a4794bc1d09e0401d95120426f195b2f0f85f61bc6b7 {

@@ -176,8 +176,8 @@ test("sends signed-out visitors from the homepage to sign-in, keeping the query"
 
 test("forwards the homepage of a signed-in browser to the tools service", async () => {
   for (const cookie of [
-    "__Secure-executor-hosted.session_token=abc",
-    "theme=dark; executor-hosted.session_token=abc",
+    "__Host-executor-hosted.session_token=abc",
+    "theme=dark; __Host-executor-hosted.session_token=abc",
   ]) {
     const request = new Request("https://app.signalbox.run/", { headers: { cookie } });
     const dashboard = new Response("dashboard");
@@ -228,7 +228,10 @@ test("never forwards the tools service's marketing, docs or legal pages", async 
 
 test("sends a homepage visit to sign-in without the tools service's own session cookie", async () => {
   for (const cookie of [
-    "executor-hosted.session_token=",
+    "__Host-executor-hosted.session_token=",
+    "executor-hosted.session_token=abc",
+    "__Secure-executor-hosted.session_token=abc",
+    "__Secure-__Host-executor-hosted.session_token=abc",
     "better-auth.session_token=abc",
     "other-app.session_token=abc",
   ]) {
@@ -278,4 +281,65 @@ test("the catalog uses its own binding without forwarding to the tools API", asy
   env.CATALOG_SERVICE = { fetch: async value => { received = value; return new Response("catalog"); } };
   assert.equal(await (await handleRequest(request, env)).text(), "catalog");
   assert.equal(received, request);
+});
+
+test("opaque app hosts reach app UI before path handlers or dashboard static assets", async () => {
+  const appHost = "a-01234567-89ab-4cde-8fab-0123456789ab.signalbox.run";
+  const seen: string[] = [];
+  const env: RouterEnv = {
+    ...envWithToolsService(async () => { throw new Error("dashboard service reached from app origin"); }),
+    ASSETS: { fetch: async () => { throw new Error("dashboard assets reached from app origin"); } },
+    APP_UI_SERVICE: { fetch: async (request) => { seen.push(request.url); return new Response("private app UI"); } },
+  };
+  for (const path of ["/", "/setup", "/mcp", "/pool/v1/status", "/catalog/index.json", "/ui.css"]) {
+    const request = new Request(`https://${appHost}${path}`);
+    const response = await handleRequest(request, env);
+    assert.equal(await response.text(), "private app UI");
+    assert.equal(seen.at(-1), request.url);
+  }
+});
+
+test("unknown app subdomains return empty 404s without reaching any service", async () => {
+  const refuse = async () => { throw new Error("unknown host reached a service"); };
+  const env: RouterEnv = { ...envWithToolsService(refuse), ASSETS: { fetch: refuse }, APP_UI_SERVICE: { fetch: refuse } };
+  for (const host of ["unknown.signalbox.run", "a-name.signalbox.run", "a-01234567-89ab-4cde-8fab-0123456789ab.nested.signalbox.run", "a-01234567-89ab-4cde-8fab-0123456789ab.other.run"]) {
+    const response = await handleRequest(new Request(`https://${host}/`), env);
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), "");
+  }
+});
+
+test("product hosts keep dashboard, pool and static asset routing", async () => {
+  const env: RouterEnv = {
+    ...envWithToolsService(async () => new Response("dashboard")),
+    ASSETS: { fetch: async (request) => new URL(request.url).pathname === "/setup" ? new Response("setup asset") : new Response(null, { status: 404 }) },
+    APP_UI_SERVICE: { fetch: async () => { throw new Error("product request reached app UI"); } },
+  };
+  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/settings"), env)).text(), "dashboard");
+  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/setup"), env)).text(), "setup asset");
+  assert.equal((await handleRequest(new Request("https://app.signalbox.run/v1/models"), env)).status, 202);
+  const stage = { ...env, DASHBOARD_HOST: "app.fixture.invalid" };
+  assert.equal(await (await handleRequest(new Request("https://app.fixture.invalid/settings"), stage)).text(), "dashboard");
+});
+
+test("router HTML refuses framing, including static setup/share pages and branded failures", async () => {
+  const html = () => new Response("<html>private dashboard</html>", {
+    headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'self'; frame-ancestors *" },
+  });
+  const env: RouterEnv = { ...envWithToolsService(async () => html()), ASSETS: { fetch: async (request) =>
+    ["/setup", "/share", "/index.html", "/app-auth"].includes(new URL(request.url).pathname) ? html() : new Response(null, { status: 404 }) } };
+  for (const path of ["/setup", "/share", "/index.html", "/app-auth", "/settings", "/home"]) {
+    const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
+    assert.match(response.headers.get("content-security-policy") ?? "", /(?:^|;)\s*frame-ancestors 'none'(?:;|$)/);
+    assert.equal(response.headers.get("x-frame-options"), "DENY");
+    if (path !== "/home") assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+  }
+  const auth = await handleRequest(new Request("https://app.signalbox.run/app-auth"), envWithToolsService(async () => new Response("auth", { headers: {
+    "content-type": "text/html", "content-security-policy": "frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN",
+  } })));
+  assert.equal(auth.headers.get("content-security-policy"), "frame-ancestors 'self'");
+  assert.equal(auth.headers.get("x-frame-options"), "SAMEORIGIN");
+  const appEnv = { ...env, APP_UI_SERVICE: { fetch: async () => new Response("app", { headers: { "content-type": "text/html", "content-security-policy": "frame-ancestors https://app.signalbox.run" } }) } };
+  const app = await handleRequest(new Request("https://a-01234567-89ab-4cde-8fab-0123456789ab.signalbox.run/"), appEnv);
+  assert.equal(app.headers.get("content-security-policy"), "frame-ancestors https://app.signalbox.run");
 });

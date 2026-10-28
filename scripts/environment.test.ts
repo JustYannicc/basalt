@@ -56,7 +56,11 @@ test("production rejects emulator and foreign hosting overrides", () => {
       /Unsupported production override/,
     );
   }
-  assert.equal(deployEnvironment(credentials).EXECUTOR_APP_UI_BASE_URL, undefined);
+  const env = deployEnvironment(credentials);
+  assert.equal(env.EXECUTOR_APP_UI_BASE_URL, "https://signalbox.run");
+  assert.equal(env.EXECUTOR_APP_UI_ADDRESS_SCHEME, "opaque");
+  assert.equal(env.EXECUTOR_APP_UI_EMBEDDED, "true");
+  assert.equal(env.EXECUTOR_APP_UI_MANAGED_ROUTE, "false");
 });
 
 test("deploys hand the brand's name and logo to the tools service", () => {

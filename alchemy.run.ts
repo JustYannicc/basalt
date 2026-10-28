@@ -10,7 +10,7 @@ import { apiPathsExpression } from "./src/browser-check.ts";
 import { telemetryBindings } from "./src/telemetry/deployment.ts";
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
-import { brand, deployment } from "./brand.ts";
+import { appHosting, brand, deployment } from "./brand.ts";
 import { poolWorker } from "./src/pool/deployment.ts";
 import { previewStageOrigin } from "./scripts/environment.ts";
 import {
@@ -18,6 +18,7 @@ import {
   cloudProviders,
   cloudWorkers,
 } from "./.upstream/apps/hosted/cloud/alchemy.run.ts";
+import AppPages from "./.upstream/apps/hosted/cloud/src/app-ui.ts";
 import { Api } from "./.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { stackState } from "./.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
 import { previewDatabase } from "./.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
@@ -65,6 +66,19 @@ export default Alchemy.Stack(
           enabled: true,
         }],
       });
+    }
+    if (preview === undefined && appHosting.enabled) {
+      yield* Cloudflare.DNS.Record("AppOriginWildcard", {
+        zoneId: zone.id, zoneName: zoneName, name: `*.${appHosting.zone}`,
+        type: "AAAA", content: "100::", proxied: true, ttl: "1",
+        comment: "Routes private app origins through the app host dispatcher",
+      }).pipe(adopt(false));
+      // A route runs before a Custom Domain origin. Exclude only configured product hosts.
+      for (const productHost of appHosting.bypassHosts) {
+        yield* Cloudflare.Workers.WorkerRoute(`AppHostBypass-${productHost}`, {
+          zoneId: zone.id, pattern: `${productHost}/*`,
+        }).pipe(adopt(false));
+      }
     }
     const emailReady = preview === undefined
       ? (yield* Cloudflare.Email.SendingSubdomain("AuthEmailDomain", {
@@ -131,12 +145,16 @@ export default Alchemy.Stack(
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
       // The brand's logo and favicon; every other path reaches the router code.
-      assets: fileURLToPath(new URL("./public/", import.meta.url)),
+      assets: { directory: fileURLToPath(new URL("./public/", import.meta.url)), runWorkerFirst: true },
       domain: host,
+      // Cloudflare rejects infix host wildcards. More specific product-host bypasses protect their existing origins.
+      ...(preview === undefined && appHosting.enabled ? { routes: [{ pattern: `*.${appHosting.zone}/*` }] } : {}),
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       env: {
+        DASHBOARD_HOST: host,
         TOOLS_SERVICE: api,
+        ...(preview === undefined && appHosting.enabled ? { APP_UI_SERVICE: yield* AppPages } : {}),
         CATALOG_SERVICE: catalog,
         POOL_SERVICE: pool,
         POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),

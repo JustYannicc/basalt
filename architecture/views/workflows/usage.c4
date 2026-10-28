@@ -4,15 +4,16 @@ views {
     variant sequence
     title "Workflows/Basalt/See a pool's usage"
     description """
-      Source implementation; the pool screen waits on app hosting and live acceptance is pending deployment.
+      Source implementation; the pool screen embeds in its App tab and live routing acceptance is pending deployment.
       The pool app asks for the summary with its pool token and the caller. The controller reads Home's new
       usage records, then answers from its own per-day totals: the whole pool for the owner, only the
       caller's own requests and cap for anyone else.
     """
 
-    include poolMember, appHosting, basalt.pool, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
+    include poolMember, appHosting, basalt.toolsGateway, basalt.pool, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
     poolMember -> appHosting "open shared pool screen"
-    appHosting -> basalt.pool "host pool screen"
+    appHosting -> basalt.toolsGateway "authenticate the isolated app origin"
+    basalt.toolsGateway -> basalt.pool "run the private pool UI with its caller"
     basalt.pool -> basalt.router "GET /pool/v1/usage/summary with pool token and caller"
     basalt.router -> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
     basalt.modelGateway -> basalt.poolController "singleton EU control-plane"
