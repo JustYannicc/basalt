@@ -91,7 +91,7 @@
     {
       "identity": "basalt-member-pools",
       "file": "0010-member-pools.patch",
-      "content_sha256": "b84d71bfea1dc0c797b229c2d96a7630b323725baabbd2bbc468a49360ec80ce",
+      "content_sha256": "b7ef55caefa8a40f8926885c8965c9a345de443465b30c0cfeb02554bcab188e",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

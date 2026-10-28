@@ -180,9 +180,10 @@ new file mode 100644
 +>()("cloud/PoolAppSigningKey") {}
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
 new file mode 100644
+index 0000000..46281d6
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,372 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -366,7 +367,20 @@ new file mode 100644
 +          } else {
 +            const workspace = yield* executor.apps.workspace({ owner, app: app.id });
 +            decision = "source-edited";
-+            if (pinnedOnly(workspace.files, source.files)) {
++            // File deploys never write Git, so after an earlier pool upgrade main still holds that
++            // older bundle, maybe with a framework pin. That is behind, not edited.
++            const untouched = (files: typeof source.files) => pinnedOnly(workspace.files, files);
++            const behind = Effect.gen(function* () {
++              const target = { owner, app: app.id };
++              for (const earlier of yield* executor.apps.versions(target)) {
++                if (earlier.createdAt.getTime() >= source.createdAt.getTime()) continue;
++                const files = (yield* executor.apps.source({ ...target, version: earlier.id }))
++                  .files;
++                if (untouched(files)) return true;
++              }
++              return false;
++            });
++            if (untouched(source.files) || (yield* behind)) {
 +              const deployed = yield* executor.apps
 +                .deploy({
 +                  owner,
@@ -544,6 +558,7 @@ new file mode 100644
 +  });
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 new file mode 100644
+index 0000000..4496047
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 @@ -0,0 +1,77 @@
@@ -556,7 +571,7 @@ new file mode 100644
 + * Bump when what a reconcile does changes, such as a new repair or decision log, so every pool is
 + * reconciled once even though the pool app's own source is unchanged.
 + */
-+export const poolReconcileRevision = 2;
++export const poolReconcileRevision = 3;
 +
 +/** Delay both rollouts: the pool Worker can deploy after tools; previous-key tokens keep working. */
 +export const queuePoolAppUpgrades = (key: Redacted.Redacted<string>, version?: string) => {
