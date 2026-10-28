@@ -49,56 +49,87 @@ index 6145ba2a8..80c05fc9c 100644
          yield* capture("Manual-client-details");
          yield* browser.use("Show the form on mobile", (page) =>
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 21e2f5bd4..1a03a7fce 100644
+index 21e2f5bd4..8c6ebe5e8 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -31,4 +31,23 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+@@ -30,4 +30,5 @@ import {
+ import { useProductBrand } from "../hooks/product-brand.ts";
  import { siteCredentialHosts } from "@executor-js/utils/account-site";
++import { methodLabels } from "./method-labels.ts";
  
+ /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
+@@ -79,4 +80,5 @@ export function AccountForm<A, E>({
+     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
+   );
++  const labels = methodLabels(provider.definition.name, methods);
+   const [method, setMethod] = useState(account?.method ?? initialMethod ?? methods[0]?.[0] ?? "");
+   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+@@ -159,5 +161,5 @@ export function AccountForm<A, E>({
+               {methods.map(([name, auth]) => (
+                 <SelectItem key={name} value={name}>
+-                  {auth.type === "oauth2" ? `Sign in with ${provider.definition.name}` : auth.label}
++                  {labels.get(name)}
+                 </SelectItem>
+               ))}
+diff --git a/packages/ui/src/implementation/dashboard/method-labels.ts b/packages/ui/src/implementation/dashboard/method-labels.ts
+new file mode 100644
+index 000000000..df2cbf861
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/method-labels.ts
+@@ -0,0 +1,51 @@
 +/**
-+ * What tells one OAuth method of a service from its others, such as a region: the method's name
-+ * without its OAuth prefix, with two-letter codes such as regions in capitals.
++ * The label each sign-in method shows in a connect form. A lone OAuth method signs in with the
++ * service; key and token methods keep their app's label. Methods that would share a label each
++ * add what tells them apart, such as a region, so no two methods ever read the same.
 + */
-+const methodVariant = (name: string) => {
++
++/** What tells a method from its others: its name without an OAuth prefix, in words. */
++export const methodVariant = (name: string) => {
 +  const words = name
 +    .replace(/^oauth2?/i, "")
 +    .replace(/[_-]+/g, " ")
 +    .replace(/([a-z])([A-Z])/g, "$1 $2")
-+    .trim();
-+  if (words === "") return "OAuth";
-+  return words
++    .trim()
 +    .split(/\s+/)
-+    .map((word) =>
-+      word.length === 2 ? word.toUpperCase() : word[0]!.toUpperCase() + word.slice(1),
-+    )
++    .filter((word) => word !== "");
++  if (words.length === 0) return "OAuth";
++  // A lone short code such as a region (`oauthEu`, `us1`) reads in capitals.
++  if (words.length === 1 && /^[a-z]{2}\d*$/i.test(words[0]!)) return words[0]!.toUpperCase();
++  return words
++    .map((word) => (/^oauth$/i.test(word) ? "OAuth" : word[0]!.toUpperCase() + word.slice(1)))
 +    .join(" ");
 +};
 +
- /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
- export function AccountForm<A, E>({
-@@ -79,4 +98,13 @@ export function AccountForm<A, E>({
-     ([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"),
-   );
-+  // Each method's label in the picker. Several OAuth methods, such as regional ones, each say
-+  // which one they are, so no two share a label.
-+  const oauthMethods = methods.filter(([, auth]) => auth.type === "oauth2").length;
-+  const methodLabel = (name: string, auth: (typeof methods)[number][1]) =>
-+    auth.type !== "oauth2"
-+      ? auth.label
-+      : oauthMethods > 1
-+        ? `Sign in with ${provider.definition.name} (${methodVariant(name)})`
-+        : `Sign in with ${provider.definition.name}`;
-   const [method, setMethod] = useState(account?.method ?? initialMethod ?? methods[0]?.[0] ?? "");
-   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
-@@ -159,5 +187,5 @@ export function AccountForm<A, E>({
-               {methods.map(([name, auth]) => (
-                 <SelectItem key={name} value={name}>
--                  {auth.type === "oauth2" ? `Sign in with ${provider.definition.name}` : auth.label}
-+                  {methodLabel(name, auth)}
-                 </SelectItem>
-               ))}
++/** Labels by method name, in the order given; every label is distinct. */
++export const methodLabels = (
++  provider: string,
++  methods: ReadonlyArray<readonly [string, { readonly type: string; readonly label?: string }]>,
++): ReadonlyMap<string, string> => {
++  const base = methods.map(
++    ([name, auth]) =>
++      [
++        name,
++        auth.type === "oauth2" || auth.label === undefined
++          ? `Sign in with ${provider}`
++          : auth.label,
++      ] as const,
++  );
++  const count = (labels: ReadonlyArray<readonly [string, string]>, label: string) =>
++    labels.filter(([, other]) => other === label).length;
++  const qualified = base.map(
++    ([name, label]) =>
++      [name, count(base, label) > 1 ? `${label} (${methodVariant(name)})` : label] as const,
++  );
++  // Names that read alike, such as `oauth` and `oauth2`, fall back to the method's own name.
++  return new Map(
++    qualified.map(([name, label]) => [
++      name,
++      count(qualified, label) > 1 ? `${label} [${name}]` : label,
++    ]),
++  );
++};
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-index 1e5b036e0..f00c8f5e9 100644
+index 1e5b036e0..e97dca4ea 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 @@ -228,7 +228,7 @@ export function OAuthFields<A, E>({
@@ -111,3 +142,10 @@ index 1e5b036e0..f00c8f5e9 100644
 +        return machine ? "New client credentials" : `Your own ${providerName} app (OAuth)`;
      }
    };
+@@ -317,5 +317,5 @@ export function OAuthFields<A, E>({
+         }}
+       />
+-      Enter client details for this account
++      Use your own {providerName} app for this account
+     </label>
+   );

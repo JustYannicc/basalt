@@ -21,8 +21,10 @@ export function mergeFeed(official: Feed, additions: readonly FeedAddition[] = [
   const apps = new Map<string, FeedEntry>();
   for (const entry of official.apps) {
     if (!entry.id || !entry.package || !Array.isArray(entry.icons)) throw new Error("Invalid app");
+    // Every app lists with its description alone, so notices from the publisher are dropped too.
+    const { connectionNotices: _notices, ...listing } = entry;
     apps.set(entry.id, {
-      ...entry,
+      ...listing,
       source: `apps/${encodeURIComponent(entry.id)}.json`,
       icons: entry.icons.map(icon => ({ ...icon, src: new URL(icon.src, catalog.official).href })),
     });

@@ -1,15 +1,16 @@
 diff --git a/README.md b/README.md
-index e18e6c5..033ef0b 100644
+index e18e6c5..22bf421 100644
 --- a/README.md
 +++ b/README.md
-@@ -19,7 +19,6 @@ Channels, messages, threads, users, files, reactions, pins, reminders, user grou
+@@ -19,8 +19,6 @@ Channels, messages, threads, users, files, reactions, pins, reminders, user grou
    - Calls and presence: `calls:read`, `calls:write`, `dnd:read`, `dnd:write`, `users:write`.
    - Pins, reminders and workspace data: `emoji:read`, `pins:read`, `pins:write`, `reminders:read`, `reminders:write`, `team:read`, `usergroups:read`, `usergroups:write`, `users.profile:read`, `users.profile:write`, `users:read`, `users:read.email`.
  
 -- Bot OAuth (`oauth`): use the existing bot-token flow with the redirect URI shown on the host's connect page, then enter the Slack app's client ID and secret. It requests the existing bot scopes and continues to use the top-level bot access token.
- 
+-
  **Known gaps**
  
+ - No operations are skipped after the patches (171 of the 174 spec operations are exposed; the 3 removed are the oauth.* methods above).
 diff --git a/index.ts b/index.ts
 index e9ad9f5..87463aa 100644
 --- a/index.ts

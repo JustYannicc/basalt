@@ -50,16 +50,8 @@ export async function startZendeskCatalogWorker({ root, upstream, directory, mar
     compatibilityDate: "2026-08-06",
     compatibilityFlags: ["nodejs_compat"],
     bindings: {
-      GOOGLE_CONNECTOR_READY: "false",
-      GITHUB_CONNECTOR_READY: "false",
-      ATLASSIAN_CONNECTOR_READY: "false",
-      ZOHO_CONNECTOR_READY: "false",
-      SLACK_CONNECTOR_READY: "false",
-      ZENDESK_CONNECTOR_READY: "true",
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: marketplace.organizationId,
       ZENDESK_MARKETPLACE_APP_ID: marketplace.appId,
-      GITLAB_CONNECTOR_READY: "false",
-      MIRO_CONNECTOR_READY: "false",
     },
   });
   let address;

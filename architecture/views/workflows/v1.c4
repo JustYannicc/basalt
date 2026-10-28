@@ -5,7 +5,7 @@ views {
     title "Workflows/Basalt/Hosted connector catalog"
     description """
       Status: Implemented in source. A separate read-only feed Worker serves the official app index
-      with provider notices, published additions and a pinned messaging package carrying a personal
+      with published additions and a pinned messaging package carrying a personal
       OAuth method. Other official app documents pass through unchanged. The tools API Worker
       receives only the catalog URL and hosted client settings. Live acceptance is pending.
     """
@@ -14,7 +14,7 @@ views {
     basalt.toolsGateway -> basalt.catalog "read /catalog/index.json"
     basalt.catalog -> catalogSource "read official index"
     basalt.catalog <- catalogSource "entries and relative icon URLs"
-    basalt.toolsGateway <- basalt.catalog "entries with absolute icons and provider notices"
+    basalt.toolsGateway <- basalt.catalog "entries with absolute icons"
     basalt.toolsGateway -> basalt.catalog "read selected messaging app source"
     basalt.toolsGateway <- basalt.catalog "install the pinned user-token package through the ordinary catalog path"
   }

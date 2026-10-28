@@ -86,6 +86,12 @@ test("our connectors list like every other app, with no notice beside their desc
   }
 });
 
+test("notices from the official feed are dropped", () => {
+  const feed = mergeFeed({ version: 1, apps: [{ ...official.apps[0]!,
+    connectionNotices: [{ providerName: "Gmail", message: "A long notice." }] }] });
+  assert.equal(feed.apps[0]!.connectionNotices, undefined);
+});
+
 test("GitLab and Miro keep their official source and auth", async () => {
   const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
     package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
