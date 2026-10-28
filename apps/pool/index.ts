@@ -156,11 +156,20 @@ type ConnectState =
   | ReturnType<typeof signedIn>
   | { state: "connected"; ref: string; accountInfo: ReturnType<typeof identityOf> };
 
+/** Identity is optional, so its lookup gets a short slice of the connect step and never fails it. */
+const identityLookupMs = 3_000;
+
 /** Name a new subscription after the pool's own label for it, with its provider's logo. */
 async function identified(ctx: Caller, state: ConnectState): Promise<ConnectState> {
   if (state.state !== "connected") return state;
-  const view = await control<PoolView>(ctx, "/pool");
-  const account = view.ok ? view.value.accounts.find((candidate) => candidate.id === state.ref) : undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), identityLookupMs);
+  });
+  const view = await Promise.race([control<PoolView>(ctx, "/pool").catch(() => undefined), late]).finally(() =>
+    clearTimeout(timer),
+  );
+  const account = view?.ok ? view.value.accounts.find((candidate) => candidate.id === state.ref) : undefined;
   return account === undefined ? state : { ...state, accountInfo: identityOf(account, providers) };
 }
 
