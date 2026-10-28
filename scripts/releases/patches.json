@@ -258,7 +258,7 @@
     {
       "identity": "executor-embedded-app-ui",
       "file": "0028-embedded-app-ui.patch",
-      "content_sha256": "a7b3ab898b51b32823e516d2fe51710e6220f0447d55377dfb97d9b0dc8104b2",
+      "content_sha256": "13d97b27d15a4531e5e0f4c83604e17fcbe56f03fae100ca3f0cc48b49d56740",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
