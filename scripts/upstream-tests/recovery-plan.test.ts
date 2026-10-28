@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import {
@@ -78,10 +79,18 @@ test("empty-state Alchemy plan adopts basalt and schedules both PlanetScale role
     cluster_architecture: "aarch64",
   };
 
+  // Any local process can connect to a loopback port (dev tools probe new ports
+  // with `GET /`), so only requests under this run's base path are the plan's.
+  const base = `/${randomUUID()}/v1`;
   const api = createServer((request, response) => {
     const path = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
-    calls.push({ method: request.method ?? "", path });
     response.setHeader("content-type", "application/json");
+    if (!path.startsWith(`${base}/`)) {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not the fixture API" }));
+      return;
+    }
+    calls.push({ method: request.method ?? "", path });
     if (
       request.method === "GET" &&
       /\/organizations\/fixture\/databases\/basalt$/.test(path)
@@ -170,7 +179,7 @@ export default Alchemy.Stack(
             PLANETSCALE_ORGANIZATION: "fixture",
             PLANETSCALE_API_TOKEN_ID: "fixture-id",
             PLANETSCALE_API_TOKEN: "fixture-token",
-            PLANETSCALE_API_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+            PLANETSCALE_API_BASE_URL: `http://127.0.0.1:${address.port}${base}`,
             PLANETSCALE_DATABASE_NAME: "basalt",
             PLANETSCALE_CLUSTER_SIZE: "PS_5",
             PLANETSCALE_REGION: "eu-central",
