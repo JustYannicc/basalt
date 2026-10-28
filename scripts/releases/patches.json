@@ -245,6 +245,16 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-catalog-app-auto-update",
+      "file": "0029-catalog-app-auto-update.patch",
+      "content_sha256": "20e767de71f84cb2e8eed21d40255c37d4b61836f3af0554ce6d56d7686c3210",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": true,
+      "upstream_issue": 2417
     }
   ]
 }
