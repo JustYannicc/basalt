@@ -511,7 +511,7 @@ test("a drifted untouched install gets the active source committed once, and log
   assert.deepEqual(app.workspace, { commit: "c2", files: current });
   // One line for the app: its decision, marked healed.
   assert.deepEqual(lines, [
-    { app: "app_catalog", organization: "org_team", decision: "recorded", version: "v2", healed: true },
+    { app: "app_catalog", entry: "crm", organization: "org_team", decision: "recorded", version: "v2", healed: true },
   ]);
   // The healed commit is recorded clean; nothing was deployed.
   assert.deepEqual(value?.record, { version: "v2", workspace: "c2", workspaceSource: marker(current), applied: digest });
@@ -577,11 +577,11 @@ test("a person's committed source is never healed over after they roll back", as
   assert.equal(earlier.state.commits.length + earlier.state.deploys, 0);
 });
 
-test("every sweep decision logs one line with IDs only", async () => {
+test("every sweep decision logs one line with IDs and its feed entry only", async () => {
   const run = async (app: ReturnType<typeof fixture>, recorded?: Record<string, unknown>, links: Link[] = []) =>
     (await logged(Effect.exit(app.sweeping(recorded, links)))).lines;
   const line = (decision: string, version: string, extra = {}) => [
-    { app: "app_catalog", organization: "org_team", decision, version, ...extra },
+    { app: "app_catalog", entry: "crm", organization: "org_team", decision, version, ...extra },
   ];
   assert.deepEqual(await run(fixture({})), line("upgraded", "v2"));
   const breaking = { built: { crm: { provider: "provider-crm-v2", scope: "user", cardinality: "one" } } };
@@ -601,7 +601,10 @@ test("every sweep decision logs one line with IDs only", async () => {
   // Update logs once whether its record write succeeds or not.
   const update = read(`${implementation}catalog-app-offers.ts`);
   assert.equal(update.match(/reportCatalogApp\(/g)?.length, 2);
-  assert.match(update, /saveCatalogRecord\(executor, organization, app\.id, recorded, outcome\)\.pipe\(\s*Effect\.ensuring\(reportCatalogApp\(organization, app\.id, "upgraded", outcome\.active\)\),/);
+  assert.match(update, /saveCatalogRecord\(executor, organization, app\.id, recorded, outcome\)\.pipe\(\s*Effect\.ensuring\(\s*reportCatalogApp\(organization, app\.id, "upgraded", outcome\.active, \{ entry \}\),\s*\),/);
+  // Its skipped line names the entry too, read once from the app's catalog reference.
+  assert.match(update, /reportCatalogApp\(organization, app\.id, "skipped", app\.activeVersion, \{ entry \}\)/);
+  assert.match(update, /const entry = feedEntry\(reference\);/);
 });
 
 test("each release queues one catalog sweep per organization, run by its member jobs", () => {
