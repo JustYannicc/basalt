@@ -1190,10 +1190,10 @@ index 0000000..6635967
 +});
 diff --git a/e2e/tests/account-status-privacy.spec.ts b/e2e/tests/account-status-privacy.spec.ts
 new file mode 100644
-index 0000000..aad8ff9
+index 0000000..f965ea9
 --- /dev/null
 +++ b/e2e/tests/account-status-privacy.spec.ts
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,108 @@
 +/** Successful checks cannot publish credentials in display strings or plaintext storage. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1230,9 +1230,9 @@ index 0000000..aad8ff9
 +              )
 +              .replace(
 +                "token: string()",
-+                "token: string(), short: string(), contact: plain(string())",
++                "token: string(), short: string(), tone: string(), contact: plain(string())",
 +              ),
-+          { contact },
++          { contact, tone: "warning" },
 +        );
 +        const leaks = (secret: string) => [
 +          { ...displayedStatus, badges: [{ label: `plan ${secret}`, tone: "good" }] },
@@ -1257,12 +1257,14 @@ index 0000000..aad8ff9
 +          }
 +        }
 +        // A short secret may be chance, so only the item that contains it is hidden.
-+        for (const status of leaks("xy")) {
++        const hiddenTone = { ...displayedStatus, badges: [{ label: "Plan", tone: "warning" }] };
++        for (const status of [...leaks("xy"), hiddenTone]) {
 +          yield* fixture.statusBackend.answer({ status: 200, body: { status } });
 +          const response = yield* fixture.check();
 +          expect((yield* body(Health, response)).apps[0]?.check?.status).toBe("healthy");
-+          expect(JSON.stringify(response.body)).not.toContain("xy");
-+          expect(JSON.stringify((yield* fixture.read()).body)).not.toContain("xy");
++          const hidden = status === hiddenTone ? "warning" : "xy";
++          expect(JSON.stringify(response.body)).not.toContain(hidden);
++          expect(JSON.stringify((yield* fixture.read()).body)).not.toContain(hidden);
 +        }
 +        // Inside a longer word or as its hex, the item is hidden too; the rest and plain() fields show.
 +        yield* fixture.statusBackend.answer({
@@ -8873,7 +8875,7 @@ index 4bd3285..9f94e31 100644
      "./safe-fetch": "./src/safe-fetch.ts",
 diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
 new file mode 100644
-index 0000000..56daa7d
+index 0000000..b026675
 --- /dev/null
 +++ b/packages/utils/src/account-display-privacy.ts
 @@ -0,0 +1,212 @@
@@ -9037,7 +9039,7 @@ index 0000000..56daa7d
 +export interface AccountDisplay {
 +  readonly accountInfo?: { readonly [field: string]: string | undefined };
 +  readonly status?: {
-+    readonly badges: readonly { readonly label: string }[];
++    readonly badges: readonly { readonly label: string; readonly tone: string }[];
 +    readonly meters: readonly {
 +      readonly label: string;
 +      readonly detail?: string;
@@ -9065,7 +9067,7 @@ index 0000000..56daa7d
 +  const stats = value.status?.stats ?? [];
 +  const items: (readonly string[])[] = [
 +    ...info.map(([, text]) => [text]),
-+    ...badges.map((badge) => [badge.label]),
++    ...badges.map((badge) => [badge.label, badge.tone]),
 +    ...meters.map((meter) => [meter.label, meter.detail ?? "", meter.resetsAt ?? ""]),
 +    ...stats.map((stat) => [stat.label, stat.value]),
 +  ];
