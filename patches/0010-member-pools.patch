@@ -182,7 +182,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hoste
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,327 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -203,12 +203,48 @@ new file mode 100644
 +import { ScheduleWakeup } from "../contracts/schedules.ts";
 +import { lockAppLinks } from "./app-accounts.ts";
 +import { poolAppSetup } from "./resource-lifecycle.ts";
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
 +export { PoolAppSource } from "../contracts/pool-defaults.ts";
 +export { poolAppVersion, poolAppAssetPath } from "./pool-app-source.ts";
 +import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
 +import { defaultProductBrand, productBrandSettings } from "@executor-js/utils/product-brand";
 +
 +const basaltPools = "basaltPools";
++
++/**
++ * The app's access record names its organization and its owner as creator, so it lists and
++ * opens like any app the owner made. A missing record becomes private again; an audience the
++ * owner chose by sharing is kept. A repair rotates the record's revision, so a sharing change
++ * authorized against the old record can't commit, and tells the pool Worker the audience changed
++ * before this transaction commits, so it revokes the model keys of anyone who lost the pool.
++ * Returns whether anything changed.
++ */
++const repairPoolAccess = (
++  sql: SqlClient.SqlClient,
++  app: string,
++  organization: OrganizationId,
++  user: string,
++) =>
++  Effect.gen(function* () {
++    const rows = yield* sql<{
++      organization_id: string;
++      creator_id: string | null;
++    }>`select organization_id, creator_id from hosted_app_access where id = ${app} for update`;
++    const [row] = rows;
++    if (row !== undefined && row.organization_id === organization && row.creator_id === user)
++      return false;
++    if (row === undefined)
++      yield* sql`insert into hosted_app_access (id, organization_id, creator_id, audience, revision)
++        values (${app}, ${organization}, ${user}, 'private', gen_random_uuid()::text)`;
++    else
++      yield* sql`update hosted_app_access set organization_id = ${organization}, creator_id = ${user},
++        revision = gen_random_uuid()::text where id = ${app}`;
++    const lifecycle = yield* AccessLifecycle;
++    yield* (lifecycle.appAccessChanged?.({ organization, apps: [app] }) ?? Effect.void).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++    return true;
++  });
 +const Pools = Schema.Struct({
 +  pools: Schema.Record(
 +    Schema.String,
@@ -336,6 +372,8 @@ new file mode 100644
 +          )
 +            return;
 +          yield* lockAppLinks(sql, app.id);
++          if (yield* repairPoolAccess(sql, app.id, organization, user))
++            yield* Effect.logInfo("Pool access record repaired", { repaired: 1 });
 +          const locked = yield* executor.apps
 +            .get({ owner, app: app.id })
 +            .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));

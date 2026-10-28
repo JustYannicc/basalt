@@ -1886,10 +1886,10 @@ index 0000000..c7239e5
 +});
 diff --git a/e2e/tests/interactive-account-dialog.spec.ts b/e2e/tests/interactive-account-dialog.spec.ts
 new file mode 100644
-index 0000000..d1b4e89
+index 0000000..15fad61
 --- /dev/null
 +++ b/e2e/tests/interactive-account-dialog.spec.ts
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,298 @@
 +/**
 + * The Accounts tab's Connect dialog runs an app-owned sign-in: it shows the app's code and link
 + * while it waits, takes a pasted address, saves the account the app returns, and confirms before
@@ -2040,7 +2040,7 @@ index 0000000..d1b4e89
 +        yield* keepName;
 +        yield* browser.use("The device account is linked for everyone", (page) =>
 +          acquiredSection(page)
-+            .getByRole("checkbox", { name: "Default", checked: true, exact: true })
++            .getByRole("checkbox", { name: "Synthetic device account", checked: true, exact: true })
 +            .waitFor(signedIn),
 +        );
 +
@@ -2062,7 +2062,7 @@ index 0000000..d1b4e89
 +        yield* keepName;
 +        yield* browser.use("The pasted account is linked too", (page) =>
 +          acquiredSection(page)
-+            .getByRole("checkbox", { name: "Default 2", checked: true, exact: true })
++            .getByRole("checkbox", { name: "Synthetic pasted account", checked: true, exact: true })
 +            .waitFor(signedIn),
 +        );
 +        yield* evidence.attach(
@@ -2075,27 +2075,31 @@ index 0000000..d1b4e89
 +
 +        // Clearing an app-bound account asks first, since it deletes the account.
 +        yield* browser.use("Clear the device account", (page) =>
-+          acquiredSection(page).getByRole("checkbox", { name: "Default", exact: true }).click(),
++          acquiredSection(page)
++            .getByRole("checkbox", { name: "Synthetic device account", exact: true })
++            .click(),
 +        );
 +        yield* evidence.attach(
 +          "interactive-remove-confirm.png",
 +          "image/png",
 +          yield* browser.use("Capture the removal confirmation", (page) =>
-+            page.getByRole("dialog", { name: "Remove Default?" }).screenshot(),
++            page.getByRole("dialog", { name: "Remove Synthetic device account?" }).screenshot(),
 +          ),
 +        );
 +        yield* browser.use("Confirm removing it", (page) =>
 +          page
-+            .getByRole("dialog", { name: "Remove Default?" })
++            .getByRole("dialog", { name: "Remove Synthetic device account?" })
 +            .getByRole("button", { name: "Remove account", exact: true })
 +            .click(),
 +        );
 +        yield* browser.use("The confirmation closes once the unlink finished", (page) =>
-+          page.getByRole("dialog", { name: "Remove Default?" }).waitFor({ state: "detached" }),
++          page
++            .getByRole("dialog", { name: "Remove Synthetic device account?" })
++            .waitFor({ state: "detached" }),
 +        );
 +        yield* browser.use("The device account is gone", (page) =>
 +          acquiredSection(page)
-+            .getByRole("checkbox", { name: "Default", exact: true })
++            .getByRole("checkbox", { name: "Synthetic device account", exact: true })
 +            .waitFor({ state: "detached" }),
 +        );
 +        // Unlinking deleted it: the account no longer exists for its owner.
@@ -2107,11 +2111,11 @@ index 0000000..d1b4e89
 +          links
 +            .filter((link) => link.requirement === "sharedIdentity")
 +            .map((link) => link.account.label),
-+        ).toEqual(["Default 2"]);
++        ).toEqual(["Synthetic pasted account"]);
 +        // An app-bound account takes no new credentials; its menu removes it behind the same question.
 +        yield* browser.use("Open the pasted account's menu", (page) =>
 +          acquiredSection(page)
-+            .getByRole("button", { name: "Manage Default 2", exact: true })
++            .getByRole("button", { name: "Manage Synthetic pasted account", exact: true })
 +            .click(),
 +        );
 +        expect(
@@ -2127,16 +2131,18 @@ index 0000000..d1b4e89
 +        );
 +        yield* browser.use("Confirm removing the pasted account", (page) =>
 +          page
-+            .getByRole("dialog", { name: "Remove Default 2?" })
++            .getByRole("dialog", { name: "Remove Synthetic pasted account?" })
 +            .getByRole("button", { name: "Remove account", exact: true })
 +            .click(),
 +        );
 +        yield* browser.use("The pasted account is gone", (page) =>
-+          page.getByRole("dialog", { name: "Remove Default 2?" }).waitFor({ state: "detached" }),
++          page
++            .getByRole("dialog", { name: "Remove Synthetic pasted account?" })
++            .waitFor({ state: "detached" }),
 +        );
 +        yield* browser.use("Only the backend account is left", (page) =>
 +          acquiredSection(page)
-+            .getByRole("checkbox", { name: "Default 2", exact: true })
++            .getByRole("checkbox", { name: "Synthetic pasted account", exact: true })
 +            .waitFor({ state: "detached" }),
 +        );
 +
@@ -2166,7 +2172,7 @@ index 0000000..d1b4e89
 +        yield* keepName;
 +        yield* browser.use("The new device account is linked", (page) =>
 +          acquiredSection(page)
-+            .getByRole("checkbox", { name: "Default", checked: true, exact: true })
++            .getByRole("checkbox", { name: "Synthetic device account", checked: true, exact: true })
 +            .waitFor(signedIn),
 +        );
 +        const calls = yield* backend.calls;
@@ -2693,10 +2699,10 @@ index 0000000..450a235
 +});
 diff --git a/e2e/tests/interactive-accounts.spec.ts b/e2e/tests/interactive-accounts.spec.ts
 new file mode 100644
-index 0000000..e13a785
+index 0000000..db13504
 --- /dev/null
 +++ b/e2e/tests/interactive-accounts.spec.ts
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,354 @@
 +/** Public HTTP drives app-owned sign-ins; the app talks to a real synthetic backend. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -2842,7 +2848,11 @@ index 0000000..e13a785
 +          actors.member,
 +          yield* status(actors.member, device.id),
 +        );
-+        expect(deviceAccount).toMatchObject({ method: "device", label: "Default" });
++        // The app reported an identity, so it names the account.
++        expect(deviceAccount).toMatchObject({
++          method: "device",
++          label: "Synthetic device account",
++        });
 +        expect((yield* status(actors.member, device.id)).body).toMatchObject({
 +          state: "connected",
 +          account: { id: deviceAccount.id },
@@ -2900,7 +2910,7 @@ index 0000000..e13a785
 +            value: "http://localhost:48765/done?code=synthetic",
 +          }),
 +        );
-+        expect(pasteAccount).toMatchObject({ method: "paste", label: "Default 2" });
++        expect(pasteAccount).toMatchObject({ method: "paste", label: "Synthetic pasted account" });
 +
 +        const failed = yield* pending(actors.member);
 +        expect((yield* start(actors.member, failed.id, "failure")).status).toBe(200);
@@ -10466,13 +10476,13 @@ index 0000000..70c8aeb
 +};
 diff --git a/packages/sdk/src/implementation/interactive-runner.ts b/packages/sdk/src/implementation/interactive-runner.ts
 new file mode 100644
-index 0000000..085e742
+index 0000000..18d730c
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-runner.ts
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,182 @@
 +/** Run acquisition handlers through the ordinary app host, with current linked credentials. */
 +import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
-+import type { ConnectCommand, InteractiveStatus } from "apps/contracts";
++import type { AccountInfo, ConnectCommand, InteractiveStatus } from "apps/contracts";
 +import { AccountId, StorageError, type OwnerId } from "../contracts/shared.ts";
 +import {
 +  InteractiveConnectionFailed,
@@ -10584,6 +10594,12 @@ index 0000000..085e742
 +};
 +
 +/** Save the opaque reference with the same name and product lifecycle used by other connects. */
++/** The most specific name in reported identity, bounded like a label the person types. */
++const identityLabel = (info: AccountInfo | undefined) => {
++  const name = (info?.displayName ?? info?.username ?? info?.email)?.trim();
++  return name ? name.slice(0, 120) : undefined;
++};
++
 +export const saveInteractiveAccount = (
 +  db: Query,
 +  credentials: Credentials,
@@ -10612,7 +10628,11 @@ index 0000000..085e742
 +            owner: row.owner,
 +            provider: row.provider,
 +            method: binding.method,
-+            label: yield* defaultLabel(db, row.owner, row.provider),
++            // The identity the app reported names the account, as a connected Gmail shows its
++            // address; without one it gets the owner's next free default name.
++            label:
++              identityLabel(connected.accountInfo) ??
++              (yield* defaultLabel(db, row.owner, row.provider)),
 +            description: null,
 +            createdAt: new Date(yield* Clock.currentTimeMillis),
 +            ...(row.target.site === undefined ? {} : { site: row.target.site }),

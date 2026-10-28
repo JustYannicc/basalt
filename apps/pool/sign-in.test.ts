@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { callbackOrigin, isLoopbackUrl, prompt, signedIn } from "./sign-in.ts";
+import { callbackOrigin, identityOf, isLoopbackUrl, prompt, signedIn, withIdentity } from "./sign-in.ts";
 
 test("only local addresses count as the pasted callback", () => {
   assert.ok(isLoopbackUrl("http://localhost:5000/callback?code=c&state=s"));
@@ -48,4 +48,31 @@ test("the pool account becomes the account's reference; an unattributed one fail
   assert.deepEqual(signedIn({ status: "connected", accountId: "a1" }), { state: "connected", ref: "a1" });
   assert.deepEqual(signedIn({ status: "failed", message: "no" }), { state: "failed", message: "no" });
   assert.equal(signedIn({ status: "connected", accountId: null }).state, "failed");
+});
+
+test("a connected subscription reports its email or label, and its provider's logo", () => {
+  const sites = [{ id: "codex", site: "chatgpt.com" }, { id: "kimi" }];
+  assert.deepEqual(identityOf({ label: "someone@example.com", provider: "codex" }, sites), {
+    displayName: "someone@example.com",
+    email: "someone@example.com",
+    avatarUrl: "https://integrations.sh/logo/chatgpt.com?sz=64",
+  });
+  assert.deepEqual(identityOf({ label: "Team login", provider: "kimi" }, sites), { displayName: "Team login" });
+  assert.deepEqual(identityOf({ label: "  ", provider: "other" }, sites), {});
+});
+
+test("identity never undoes a connected sign-in", async () => {
+  const connected = { state: "connected" as const, ref: "a1" };
+  const sites = [{ id: "codex", site: "chatgpt.com" }];
+  const account = { id: "a1", provider: "codex", label: "someone@example.com" };
+  assert.equal(
+    (await withIdentity(connected, async () => ({ ok: true, value: { accounts: [account as never] } }), sites)).accountInfo?.email,
+    "someone@example.com",
+  );
+  // Malformed, refused, rejected and late answers all keep the connected result.
+  assert.deepEqual(await withIdentity(connected, async () => ({ ok: true }), sites), connected);
+  assert.deepEqual(await withIdentity(connected, async () => ({ ok: false }), sites), connected);
+  assert.deepEqual(await withIdentity(connected, () => Promise.reject(new Error("network")), sites), connected);
+  assert.deepEqual(await withIdentity(connected, () => new Promise(() => {}), sites, 10), connected);
+  assert.deepEqual(await withIdentity({ state: "waiting" as const }, async () => ({ ok: true }), sites), { state: "waiting" });
 });
