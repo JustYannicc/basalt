@@ -307,7 +307,7 @@ views {
     description """
       Status: Hosted OAuth clients and catalog configuration are implemented. The official messaging app carries a contributed user-only OAuth method. Each connection is personal;
       real-provider acceptance awaits client registration. Messaging requests only user scopes and stores
-      the nested user token. Missing hosted credentials show that the connection is not set up yet.
+      the nested user token.
       Zendesk source is added only when its trusted tenant and OAuth client are configured.
       Zendesk uses PKCE S256 and JSON token requests through a tenant-specific OAuth client.
     """

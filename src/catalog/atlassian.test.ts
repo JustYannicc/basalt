@@ -11,23 +11,17 @@ import type { Feed } from "./feed.ts";
 
 const official: Feed = { version: 1, apps: [] };
 
-test("the feed offers the personal Atlassian app with setup and consent notices", async () => {
-  for (const configured of [false, true]) {
-    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
-      async () => Response.json(official), { google: false, github: false, atlassian: configured });
-    assert.equal(response.status, 200);
-    const body = await response.json() as Feed;
-    const entry = body.apps.find(app => app.id === "atlassian")!;
-    assert.equal(entry.package, "atlassian");
-    assert.equal(entry.source, "apps/atlassian.json");
-    assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
-    const notice = entry.connectionNotices![0]!;
-    assert.equal(notice.providerName, "Atlassian");
-    assert.equal(notice.message.includes("not set up yet"), !configured);
-    assert.match(notice.message, /unreviewed-app warning/);
-    assert.match(notice.message, /your own account/);
-    assert.doesNotMatch(notice.message, /executor/i);
-  }
+test("the feed offers the personal Atlassian app with its one-sentence description", async () => {
+  const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
+    async () => Response.json(official));
+  assert.equal(response.status, 200);
+  const body = await response.json() as Feed;
+  const entry = body.apps.find(app => app.id === "atlassian")!;
+  assert.equal(entry.package, "atlassian");
+  assert.equal(entry.source, "apps/atlassian.json");
+  assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
+  assert.equal(entry.connectionNotices, undefined);
+  assert.doesNotMatch(entry.description, /executor/i);
 });
 
 test("the app source is served locally without contacting the official publisher", async () => {

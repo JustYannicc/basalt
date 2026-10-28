@@ -72,83 +72,46 @@ test("HEAD has GET headers with no body", async () => {
   assert.equal(await response.text(), "");
 });
 
-
-test("provider restrictions follow the actual official app names and never change auth", () => {
-  const apps = [
-    ["gmail", "Gmail"], ["google-calendar", "Google Calendar"], ["google-drive", "Google Drive"],
-    ["google-docs", "Google Docs"], ["google-sheets", "Google Sheets"], ["google-slides", "Google Slides"],
-    ["github", "GitHub"], ["slack", "Slack"],
-  ].map(([id, name]) => ({ ...official.apps[0]!, id: id!, name: name!, package: `@executor.sh/${id}`, auth: [{ method: "oauth", kind: "oauth2" }] }));
-  const feed = mergeFeed({ version: 1, apps });
-  for (const [index, entry] of feed.apps.entries()) {
-    assert.equal(entry.connectionNotices?.[0]?.providerName, apps[index]!.name);
-    assert.deepEqual(entry.auth, apps[index]!.auth);
-  }
-  assert.match(feed.apps[0]!.connectionNotices![0]!.message, /Only listed test users can connect/);
-  assert.match(feed.apps[7]!.connectionNotices![0]!.message, /Messages post as you/);
-  assert.match(feed.apps[7]!.connectionNotices![0]!.message, /not set up yet/);
-  assert.equal(apps[0]!.connectionNotices, undefined);
-});
-
-test("the public feed marks only unconfigured hosted connectors as not set up yet", async () => {
-  const feed: Feed = { version: 1, apps: ["google", "gmail", "google-calendar", "google-drive", "google-docs", "google-sheets", "google-slides", "github"].map(id => ({ ...official.apps[0]!, id,
-    name: id, package: `@executor.sh/${id}` })) };
-  for (const ready of [{ google: false, github: false }, { google: true, github: false }, { google: false, github: true }, { google: true, github: true }]) {
-    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(feed), ready);
-    assert.equal(response.status, 200);
-    const result = await response.json() as Feed;
-    for (const source of feed.apps) {
-      const entry = result.apps.find(item => item.id === source.id)!;
-      const configured = entry.id === "github" ? ready.github : ready.google;
-      assert.equal(entry.connectionNotices?.some(notice => notice.message.includes("not set up yet")), !configured);
-      assert.deepEqual(entry.auth, source.auth);
-      if (entry.id !== "github") {
-        const notice = entry.connectionNotices![0]!.message;
-        assert.match(notice, /in Testing/);
-        assert.match(notice, /Only listed test users can connect/);
-        assert.match(notice, /authorizations and refresh tokens expire after seven days/);
-        assert.match(notice, /must reconnect/);
-        assert.doesNotMatch(notice, /published|100 users|lifetime/);
-      }
-    }
+test("our connectors list like every other app, with no notice beside their description", async () => {
+  const feed: Feed = { version: 1, apps: [
+    "google", "gmail", "google-calendar", "google-drive", "google-docs", "google-sheets", "google-slides",
+    "github", "gitlab", "miro", "zoho", "elevenlabs", "slack",
+  ].map(id => ({ ...official.apps[0]!, id, name: id, package: `@executor.sh/${id}`, auth: [{ method: "oauth", kind: "oauth2" }] })) };
+  const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(feed));
+  const result = await response.json() as Feed;
+  for (const entry of result.apps) {
+    assert.equal(entry.connectionNotices, undefined, entry.id);
+    const source = feed.apps.find(app => app.id === entry.id);
+    if (source && entry.id !== "slack") assert.deepEqual(entry.auth, source.auth);
   }
 });
 
-
-test("GitLab and Miro keep official source and auth while reporting each client's availability", async () => {
+test("GitLab and Miro keep their official source and auth", async () => {
   const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
     package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
-  for (const [gitlab, miro] of [[false, false], [true, false], [false, true], [true, true]]) {
-    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps),
-      { google: false, github: false, gitlab, miro });
-    const feed = await response.json() as Feed;
-    for (const expected of apps.apps) {
-      const entry = feed.apps.find(item => item.id === expected.id)!;
-      assert.ok(entry);
-      const ready = entry.id === "gitlab" ? gitlab : miro;
-      assert.equal(entry.connectionNotices?.some(notice => notice.message.includes("not set up yet")), !ready);
-      assert.deepEqual(entry.auth, expected.auth);
-      assert.equal(entry.source, `apps/${entry.id}.json`);
-      const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
-      const source = await handleCatalog(new Request(`https://app.signalbox.run/catalog/${entry.source}`), async input => {
-        assert.equal(String(input), `https://catalog.executor.sh/${entry.source}`);
-        return new Response(document);
-      });
-      assert.equal(await source.text(), document);
-    }
+  const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps));
+  const feed = await response.json() as Feed;
+  for (const expected of apps.apps) {
+    const entry = feed.apps.find(item => item.id === expected.id)!;
+    assert.ok(entry);
+    assert.deepEqual(entry.auth, expected.auth);
+    assert.equal(entry.source, `apps/${entry.id}.json`);
+    const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
+    const source = await handleCatalog(new Request(`https://app.signalbox.run/catalog/${entry.source}`), async input => {
+      assert.equal(String(input), `https://catalog.executor.sh/${entry.source}`);
+      return new Response(document);
+    });
+    assert.equal(await source.text(), document);
   }
 });
 
-test("ElevenLabs uses its official personal API-key app without hosted-client readiness", async () => {
+test("ElevenLabs uses its official personal API-key app", async () => {
   const entry = { ...official.apps[0]!, id: "elevenlabs", package: "@executor.sh/elevenlabs", name: "ElevenLabs",
     auth: [{ method: "apiKey", kind: "secrets", label: "API key" }] };
   const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json({ version: 1, apps: [entry] }));
   const result = (await response.json() as Feed).apps[0]!;
   assert.deepEqual(result.auth, entry.auth);
   assert.equal(result.source, "apps/elevenlabs.json");
-  assert.match(result.connectionNotices![0]!.message, /your own ElevenLabs account/);
-  assert.match(result.connectionNotices![0]!.message, /secure connection form/);
-  assert.doesNotMatch(result.connectionNotices![0]!.message, /not set up yet/);
   const source = '{"package":"@executor.sh/elevenlabs","files":[]}';
   assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/elevenlabs.json"), async () => new Response(source))).text(), source);
 });
@@ -173,57 +136,43 @@ test("Zendesk source snapshot matches its provenance digests", () => {
   assert.equal(sourceProvenance.siteConfiguration.subdomainOf, "zendesk.com");
 });
 
-test("Zendesk source is available without hosted credentials and catalog requests cannot choose its tenant", async () => {
-  for (const hostedReady of [false, true]) {
-    const ready = { google: false, github: false, zendesk: hostedReady };
-    const response = await handleCatalog(
-      new Request("https://app.signalbox.run/catalog/index.json?tenant=untrusted-tenant"),
-      async input => {
-        assert.equal(String(input), "https://catalog.executor.sh/index.json");
-        return Response.json(official);
-      },
-      ready,
-    );
-    assert.equal(response.status, 200);
-    const entry = ((await response.json()) as Feed).apps.find(app => app.id === "zendesk");
-    assert.ok(entry);
-    assert.equal(entry.package, "zendesk");
-    assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
-    const notice = entry.connectionNotices?.[0]?.message ?? "";
-    assert.match(notice, /Enter your Zendesk site/);
-    assert.doesNotMatch(notice, /not set up yet|untrusted-tenant|CLIENT_ID|CLIENT_SECRET/);
-    assert.equal(notice.includes("compatible OAuth client"), !hostedReady);
+test("Zendesk source is served locally and catalog requests cannot choose its tenant", async () => {
+  const response = await handleCatalog(
+    new Request("https://app.signalbox.run/catalog/index.json?tenant=untrusted-tenant"),
+    async input => {
+      assert.equal(String(input), "https://catalog.executor.sh/index.json");
+      return Response.json(official);
+    },
+  );
+  assert.equal(response.status, 200);
+  const entry = ((await response.json()) as Feed).apps.find(app => app.id === "zendesk");
+  assert.ok(entry);
+  assert.equal(entry.package, "zendesk");
+  assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
+  assert.equal(entry.connectionNotices, undefined);
+  assert.doesNotMatch(JSON.stringify(entry), /untrusted-tenant/);
 
-    for (const tenant of ["unrelated-one", "unrelated-two", "two.labels", "https://attacker.invalid"]) {
-      for (const method of ["GET", "HEAD"]) {
-        const source = await handleCatalog(
-          new Request("https://app.signalbox.run/catalog/apps/zendesk.json?tenant=" + encodeURIComponent(tenant), { method }),
-          async () => { throw new Error("Zendesk source is served locally"); },
-          ready,
-        );
-        assert.equal(source.status, 200);
-        assert.equal(source.headers.get("cache-control"), "public, max-age=300");
-        if (method === "HEAD") assert.equal(await source.text(), "");
-        else assert.deepEqual(await source.json(), sourceSnapshot);
-      }
+  for (const tenant of ["unrelated-one", "unrelated-two", "two.labels", "https://attacker.invalid"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const source = await handleCatalog(
+        new Request("https://app.signalbox.run/catalog/apps/zendesk.json?tenant=" + encodeURIComponent(tenant), { method }),
+        async () => { throw new Error("Zendesk source is served locally"); },
+      );
+      assert.equal(source.status, 200);
+      assert.equal(source.headers.get("cache-control"), "public, max-age=300");
+      if (method === "HEAD") assert.equal(await source.text(), "");
+      else assert.deepEqual(await source.json(), sourceSnapshot);
     }
-    assert.deepEqual(zendeskAddition(hostedReady).source, sourceSnapshot);
   }
+  assert.deepEqual(zendeskAddition().source, sourceSnapshot);
 });
 
-test("Zoho CRM readiness stays independent and keeps the official regional auth and source", async () => {
+test("Zoho CRM keeps the official regional auth and source", async () => {
   const entry = { ...official.apps[0]!, id: "zoho", package: "@executor.sh/zoho", name: "Zoho",
     auth: ["Us", "Eu", "In", "Au", "Jp", "Ca", "Sa", "Cn"].map(region => ({ method: `oauth${region}`, kind: "oauth2" })) };
-  for (const zoho of [false, true]) {
-    const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
-      async () => Response.json({ version: 1, apps: [entry] }), { google: !zoho, github: !zoho, zoho });
-    const result = (await response.json() as Feed).apps[0]!;
-    assert.deepEqual(result.auth, entry.auth);
-    assert.equal(result.connectionNotices!.some(notice => notice.message.includes("not set up yet")), !zoho);
-    assert.match(result.connectionNotices![0]!.message, /own Zoho CRM account/);
-    assert.match(result.connectionNotices![0]!.message, /including writes/);
-    assert.match(result.connectionNotices![0]!.message, /data center/);
-  }
+  const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
+    async () => Response.json({ version: 1, apps: [entry] }));
+  assert.deepEqual((await response.json() as Feed).apps[0]!.auth, entry.auth);
   const source = '{"package":"@executor.sh/zoho","files":[]}';
   assert.equal(await (await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/zoho.json"),
     async () => new Response(source))).text(), source);
@@ -233,13 +182,14 @@ test("Slack's carried app and feed select personal OAuth while other sources sta
   const slack = { ...official.apps[0]!, id: "slack", package: "@executor.sh/slack", name: "Slack",
     auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] };
   const index = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"),
-    async () => Response.json({ version: 1, apps: [slack] }), { google: true, github: true, slack: true });
+    async () => Response.json({ version: 1, apps: [slack] }));
   const entry = (await index.json()).apps[0];
   assert.equal(entry.id, slack.id);
   assert.equal(entry.package, slack.package);
   assert.equal(entry.auth[0].kind, "oauth2");
   assert.equal(entry.auth[0].method, "user");
-  assert.equal(entry.connectionNotices.length, 1);
+  assert.ok(!entry.auth.some((method: { method: string }) => method.method === "oauth"), "The bot install is not offered");
+  assert.equal(entry.connectionNotices, undefined);
   const noFetch: typeof fetch = async () => { throw new Error("Slack carry must not fetch a moving package"); };
   const source = await handleCatalog(new Request("https://app.signalbox.run/catalog/apps/slack.json"), noFetch);
   assert.equal(source.status, 200);

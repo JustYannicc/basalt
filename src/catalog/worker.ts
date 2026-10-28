@@ -1,5 +1,4 @@
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
-import type { ConnectorAvailability } from "./notices.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
@@ -19,12 +18,9 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
   status: 502, headers: { ...headers, "Cache-Control": "no-store" },
 });
 
-function configuredAdditions(
-  ready: ConnectorAvailability,
-  metadata?: ZendeskMarketplaceMetadata,
-): readonly FeedAddition[] {
-  const additions = [atlassianAddition(ready.atlassian === true)];
-  const zendesk = zendeskAddition(ready.zendesk === true, metadata);
+function configuredAdditions(metadata?: ZendeskMarketplaceMetadata): readonly FeedAddition[] {
+  const additions = [atlassianAddition()];
+  const zendesk = zendeskAddition(metadata);
   return [...additions, ...sourceAdditions, zendesk];
 }
 
@@ -32,12 +28,11 @@ function configuredAdditions(
 export async function handleCatalog(
   request: Request,
   fetcher: typeof fetch = fetch,
-  ready: ConnectorAvailability = { google: false, github: false },
   metadata?: ZendeskMarketplaceMetadata,
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-  const additions = configuredAdditions(ready, metadata);
+  const additions = configuredAdditions(metadata);
   const path = new URL(request.url).pathname;
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))
@@ -60,7 +55,7 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(withSlackUserAuth(await response.json() as Feed), additions, ready))
+      ? JSON.stringify(mergeFeed(withSlackUserAuth(await response.json() as Feed), additions))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
@@ -71,32 +66,11 @@ export async function handleCatalog(
 export default {
   fetch: (
     request: Request,
-    env: {
-      GOOGLE_CONNECTOR_READY?: string;
-      GITHUB_CONNECTOR_READY?: string;
-      ATLASSIAN_CONNECTOR_READY?: string;
-      ZOHO_CONNECTOR_READY?: string;
-      SLACK_CONNECTOR_READY?: string;
-      ZENDESK_CONNECTOR_READY?: string;
-      ZENDESK_MARKETPLACE_ORGANIZATION_ID?: string;
-      ZENDESK_MARKETPLACE_APP_ID?: string;
-      GITLAB_CONNECTOR_READY?: string;
-      MIRO_CONNECTOR_READY?: string;
-    },
+    env: { ZENDESK_MARKETPLACE_ORGANIZATION_ID?: string; ZENDESK_MARKETPLACE_APP_ID?: string },
   ) =>
     handleCatalog(
       request,
       fetch,
-      {
-        google: env.GOOGLE_CONNECTOR_READY === "true",
-        github: env.GITHUB_CONNECTOR_READY === "true",
-        atlassian: env.ATLASSIAN_CONNECTOR_READY === "true",
-        zoho: env.ZOHO_CONNECTOR_READY === "true",
-        slack: env.SLACK_CONNECTOR_READY === "true",
-        zendesk: env.ZENDESK_CONNECTOR_READY === "true",
-        gitlab: env.GITLAB_CONNECTOR_READY === "true",
-        miro: env.MIRO_CONNECTOR_READY === "true",
-      },
       zendeskMarketplaceMetadata(env.ZENDESK_MARKETPLACE_ORGANIZATION_ID, env.ZENDESK_MARKETPLACE_APP_ID),
     ),
 };

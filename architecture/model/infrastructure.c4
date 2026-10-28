@@ -52,7 +52,7 @@ model {
   }
   basalt.catalog -[sync]-> catalogSource "read official index and app sources"
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
-  basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries with provider notices and unmodified sources"
+  basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries and unmodified sources"
   basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"
   basalt.toolsGateway -[sync]-> zendeskTenant "authorize, renew JSON tokens and call each account's selected site"
   basalt.toolsGateway -[sync]-> workspaceApi "call with the person's grant"

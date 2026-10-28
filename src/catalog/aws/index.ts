@@ -11,10 +11,6 @@ export const aws: Addition = {
     auth: [{ method: "credentials", kind: "secrets", label: "AWS access keys" }],
     icons: [],
     source: "apps/aws.json",
-    connectionNotices: [{
-      providerName: "AWS",
-      message: "Connect with your AWS access key ID, secret access key, optional session token, and commercial region. One-click OAuth is unavailable for this Signalbox connection. Temporary credentials expire and must be replaced through the secure connection form. This app reads caller identity and lists regional general-purpose S3 buckets; bucket listing needs s3:ListAllMyBuckets permission.",
-    }],
   },
   source,
 };
