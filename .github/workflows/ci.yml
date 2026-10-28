@@ -82,6 +82,10 @@ jobs:
       - name: Check every Worker's startup CPU and size against Cloudflare's limits
         run: npm run check:startup
       - run: npm run typecheck
+      # Upstream's own typecheck over the patched tree, so carried patches meet upstream's rules
+      # (including its Effect diagnostics), not just the slice Basalt's typecheck covers.
+      - name: Typecheck the patched upstream the way upstream checks itself
+        run: npm run typecheck:upstream
       - name: Capture the checked pull request merge result
         if: >-
           github.event_name == 'pull_request' &&
