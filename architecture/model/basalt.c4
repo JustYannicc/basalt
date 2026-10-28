@@ -153,7 +153,7 @@ model {
 
   appHosting = external "App hosting" {
     #external
-    description "Private per-app origins under the existing wildcard certificate; only exact a-UUID labels reach the app-page Worker. The hosted runtime adapter requires enable_request_signal because it reads Request.signal before routing. Same-site cookies and dashboard-only CSP ancestors support embedded screens."
+    description "Private per-app origins under the existing wildcard certificate; only exact a-UUID labels reach the app-page Worker. The app-page Worker logs every startup or request failure in full before answering with a private 500. Same-site cookies and dashboard-only CSP ancestors support embedded screens."
     metadata { hosts "a-*.signalbox.run"; status "source enabled; live routing unverified" }
   }
 

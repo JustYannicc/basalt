@@ -48,10 +48,10 @@ index 93cdce4..8502e4e 100644
        wake: () => Effect.void,
        heartbeat: () => Effect.void,
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
-index 077cd51..e8eca07 100644
+index 077cd51..423f6f6 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -1,10 +1,15 @@
+@@ -1,12 +1,17 @@
  import { requestServices } from "@executor-js/hosted-server";
  import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
  /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
@@ -69,7 +69,9 @@ index 077cd51..e8eca07 100644
 -import { Config, Effect, Layer, Option } from "effect";
 +import { Cause, Config, Effect, Layer, Option } from "effect";
  import { HttpApiBuilder } from "effect/http-api";
-@@ -55,8 +60,10 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+ import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
+ import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
+@@ -55,6 +60,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          ...(yield* telemetryBindings),
          ...(yield* sentryBindings).env,
          ...(yield* productBrandBindings),
@@ -78,10 +80,7 @@ index 077cd51..e8eca07 100644
        },
        compatibility: {
          date: "2026-09-08",
--        flags: ["nodejs_compat", "global_fetch_strictly_public"],
-+        flags: ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
-       },
-@@ -66,8 +73,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -66,10 +73,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
              onNone: () => ({}),
              onSome: (region) => ({ placement: { region } }),
            })),
@@ -95,6 +94,8 @@ index 077cd51..e8eca07 100644
 -  }),
 +  }).pipe(Effect.tapCause((cause) => Effect.sync(() => console.error(Cause.pretty(cause))))),
    Effect.gen(function* () {
+     const reportErrors = yield* cloudSentry;
+     const analytics = yield* cloudAnalytics;
 @@ -77,7 +87,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      const executor = yield* cloudServingProduct(yield* appDataSupervisors);
      const base = yield* cloudAppUiBase.pipe(Effect.orDie);
@@ -120,7 +121,7 @@ index 077cd51..e8eca07 100644
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
-@@ -121,11 +128,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -119,16 +136,19 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          analytics.wrap,
          recordRequestRejections,
          reportErrors,
@@ -139,7 +140,8 @@ index 077cd51..e8eca07 100644
 +          return Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders }));
 +        }),
          requestTiming,
-@@ -148,3 +159,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         lifetime.http,
+       ),
      };
 -  }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),
 +  }).pipe(
@@ -717,7 +719,7 @@ index 372254f..b72b5a2 100644
    organizationOwner,
    type OrganizationAccess,
  } from "../contracts/organization.ts";
-@@ -120,17 +121,40 @@ export const hostedAppUi = <R = never>(
+@@ -120,17 +121,37 @@ export const hostedAppUi = <R = never>(
    const target = Effect.gen(function* () {
      const { request, host } = yield* requestOrigin;
      const sessions = yield* HostedAppSessions;
@@ -732,10 +734,7 @@ index 372254f..b72b5a2 100644
 +      if (host.kind === "opaque") {
 +        const app = yield* executor.apps
 +          .get({ app: host.app })
-+          .pipe(
-+            Effect.mapError(() => new UiForbidden()),
-+            Effect.catchCause(() => Effect.fail(new UiForbidden())),
-+          );
++          .pipe(Effect.mapError(() => new UiForbidden()));
 +        if (!app.owner.startsWith("organization:")) return yield* new UiForbidden();
 +        const id = yield* Schema.decodeUnknownEffect(OrganizationId)(
 +          app.owner.slice("organization:".length),
