@@ -349,7 +349,7 @@ index 2f6477c73..6ae1d48bd 100644
        Effect.flatMap(appManagerOwner(params.app), (owner) =>
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 new file mode 100644
-index 000000000..f95e26491
+index 000000000..af49ce368
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
 @@ -0,0 +1,285 @@
@@ -522,7 +522,7 @@ index 000000000..f95e26491
 +        app.id,
 +        catalogDecision(recorded, outcome),
 +        outcome?.active ?? app.activeVersion,
-+        { offer: outcome?.record.offer, healed },
++        { entry, offer: outcome?.record.offer, healed },
 +      );
 +    return Effect.gen(function* () {
 +      if (app.activeVersion === null) return undefined;
@@ -640,10 +640,10 @@ index 000000000..f95e26491
 +  });
 diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
 new file mode 100644
-index 000000000..436d6ae19
+index 000000000..0c37ab049
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,124 @@
 +/** A catalog update held back for a manager, read for the Versions tab and applied on request. */
 +import type { Catalog } from "@executor-js/catalog/contracts";
 +import {
@@ -707,6 +707,17 @@ index 000000000..436d6ae19
 +    return outcome;
 +  });
 +
++/** The feed entry named by a catalog reference's `apps/<encoded id>.json`, when it decodes. */
++const feedEntry = (reference: string | undefined) => {
++  const encoded = reference?.match(/\/apps\/([^/]+)\.json$/)?.[1];
++  if (encoded === undefined) return undefined;
++  try {
++    return decodeURIComponent(encoded);
++  } catch {
++    return undefined;
++  }
++};
++
 +/** The catalog update held back for this app, unless its active version changed since. */
 +export const catalogAppOffer = (organization: OrganizationId, app: App) =>
 +  Effect.gen(function* () {
@@ -726,15 +737,11 @@ index 000000000..436d6ae19
 +    const owner = organizationOwner(organization);
 +    const app = yield* executor.apps.get({ owner, app: id });
 +    const recorded = recordOf(yield* savedRecords(organization), app.id);
++    const reference = app.copiedFrom?.reference;
++    const entry = feedEntry(reference);
 +    yield* Effect.gen(function* () {
-+      const reference = app.copiedFrom?.reference;
-+      const encoded = reference?.match(/\/apps\/([^/]+)\.json$/)?.[1];
-+      if (recorded?.offer === undefined || encoded === undefined)
++      if (recorded?.offer === undefined || entry === undefined)
 +        return yield* new CatalogUpdateUnavailable({ reason: "none" });
-+      const entry = yield* Effect.try({
-+        try: () => decodeURIComponent(encoded),
-+        catch: () => new CatalogUpdateUnavailable({ reason: "none" }),
-+      });
 +      const prepared = yield* catalog.prepare({ entry });
 +      if (prepared.origin?.reference !== reference)
 +        return yield* new CatalogUpdateUnavailable({ reason: "none" });
@@ -746,12 +753,14 @@ index 000000000..436d6ae19
 +      });
 +      // The deploy stands even when its record write fails; its line still says so.
 +      yield* saveCatalogRecord(executor, organization, app.id, recorded, outcome).pipe(
-+        Effect.ensuring(reportCatalogApp(organization, app.id, "upgraded", outcome.active)),
++        Effect.ensuring(
++          reportCatalogApp(organization, app.id, "upgraded", outcome.active, { entry }),
++        ),
 +      );
 +    }).pipe(
 +      Effect.tapError((error) =>
 +        error._tag === "CatalogUpdateUnavailable"
-+          ? reportCatalogApp(organization, app.id, "skipped", app.activeVersion)
++          ? reportCatalogApp(organization, app.id, "skipped", app.activeVersion, { entry })
 +          : Effect.void,
 +      ),
 +    );
@@ -761,10 +770,10 @@ index 000000000..436d6ae19
 +  );
 diff --git a/apps/hosted/server/src/implementation/catalog-app-records.ts b/apps/hosted/server/src/implementation/catalog-app-records.ts
 new file mode 100644
-index 000000000..67b2f8e40
+index 000000000..bd19fcc4f
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/catalog-app-records.ts
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,141 @@
 +/** The sweep's per-app records in organization metadata, and the guarded write of one. */
 +import {
 +  StorageError,
@@ -816,13 +825,18 @@ index 000000000..67b2f8e40
 +  if (outcome.record.offer !== undefined) return "offered";
 +  return recorded !== undefined && sameRecord(recorded, outcome.record) ? "unchanged" : "recorded";
 +};
-+/** One line per catalog copy and outcome, with IDs only: never source, files, names or accounts. */
++/**
++ * One line per catalog copy and outcome, with IDs and the feed entry only: never source, files,
++ * names or accounts.
++ */
 +export const reportCatalogApp = (
 +  organization: OrganizationId,
 +  app: AppId,
 +  decision: CatalogDecision,
 +  version: VersionId | null,
 +  details: {
++    /** The feed entry the copy came from, when its reference names one. */
++    readonly entry?: string | undefined;
 +    readonly offer?: Pick<typeof CatalogAppUpdate.Type, "reasons" | "reconnect"> | undefined;
 +    /** The sweep committed the active source to a workspace left behind first. */
 +    readonly healed?: boolean;
@@ -830,6 +844,7 @@ index 000000000..67b2f8e40
 +) =>
 +  Effect.logInfo("Catalog app update", {
 +    app,
++    ...(details.entry === undefined ? {} : { entry: details.entry }),
 +    organization,
 +    decision,
 +    version,
