@@ -15,7 +15,8 @@ import {
   type DeploymentLedger,
 } from "./github-ledger.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
-import { requirePlanetScaleEnvironment } from "./runtime.ts";
+import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
+import { requireCloudflareEnvironment, requirePlanetScaleEnvironment } from "./runtime.ts";
 
 export type ReleaseMode = "automatic" | "manual";
 
@@ -34,6 +35,8 @@ export type ReleaseDependencies = {
 
 export type ManualRollbackDependencies = {
   assertBackup(report: ClassificationReport): Promise<void>;
+  /** Rolling back also crosses the Workflow identity boundary, so the same drain gate applies. */
+  assertDrained(report: ClassificationReport): Promise<void>;
   prepare(): Promise<void>;
   validateCredentials(): void;
   begin(report: ClassificationReport, expectedDeploymentId: number): Promise<number>;
@@ -94,6 +97,7 @@ export async function executeManualRollback(
     throw new SafetyGateError("Manual rollback is reserved for database or Workflow-identity releases");
 
   if (report.databaseChanged) await dependencies.assertBackup(report);
+  if (report.workflowChanged) await dependencies.assertDrained(report);
   await dependencies.prepare();
   dependencies.validateCredentials();
 
@@ -221,6 +225,7 @@ export function productionManualRollbackDependencies(
       if (!target.manualRestoreRequired)
         throw new SafetyGateError("Database rollback backup is not available for the classified release");
     },
+    assertDrained: async (report) => assertWorkflowsDrained(await inspectWorkflowChange(report, requireCloudflareEnvironment())),
     prepare: () => prepareRollbackSource(sourceRoot),
     validateCredentials: release.validateCredentials,
     begin: (report, expectedDeploymentId) => beginRollbackDeployment(report, environment, fetch, expectedDeploymentId),

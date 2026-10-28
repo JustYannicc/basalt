@@ -15,6 +15,6 @@ views {
     basalt.deployment -> basalt.releaseUpdates "classify database and encrypted workflow changes"
     basalt.releaseUpdates -> basalt.router "protected export of exact dedicated pool accounts"
     basalt.deployment -> databaseProvider "complete backup before database migration"
-    basalt.deployment -> deploymentProvider "operator drains workflows before journal identity changes"
+    basalt.deployment -> deploymentProvider "refuses journal identity changes while workflow instances are unfinished"
   }
 }

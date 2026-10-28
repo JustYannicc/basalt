@@ -254,7 +254,7 @@ test("manual candidate validation requires the current exact Check receipt", asy
   await assert.rejects(validateManualCandidate(api, repository, 19), /no merge-result receipt/);
 });
 
-test("manual candidate rejects a head or base changed after backup approval", async () => {
+test("manual candidate rejects a head or base changed after the backup", async () => {
   const changedHead = makeApi();
   await assert.rejects(validateManualCandidate(changedHead, repository, 19, nextHeadSha, mainSha), /head changed/);
 

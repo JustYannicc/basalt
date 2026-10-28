@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { candidateCheckout, resolveManualRollbackSourceRoot } from "./release.ts";
+import { assertRestoredBackup, candidateCheckout, resolveManualRollbackSourceRoot } from "./release.ts";
 import { gitRepositoryRoot } from "./release-plan.ts";
 
 test("rollback workflow selects a release and defers deployment status eligibility to the guarded CLI", () => {
@@ -16,6 +16,24 @@ test("rollback workflow selects a release and defers deployment status eligibili
   assert.match(workflow, /--deployment-id "\$DEPLOYMENT_ID"/);
   assert.doesNotMatch(workflow, /DEPLOYMENT_STATUS"\s*!=\s*"(?:failure|error)"/);
   assert.match(workflow, /environment: production-release/);
+});
+
+test("rollback runs only for the backup the dispatcher says they restored", () => {
+  const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows/release-rollback.yml"), "utf8");
+  assert.match(workflow, /\n\s+restored_backup:\n\s+description: [^\n]+\n\s+required: true/);
+  for (const command of ["rollback-target", "manual-rollback"])
+    assert.match(workflow, new RegExp(`release\\.ts ${command} \\\\\\n(?:\\s+--[^\\n]+\\n)*?\\s+--restored-backup "\\$RESTORED_BACKUP"`), command);
+  assert.equal(workflow.match(/RESTORED_BACKUP: \$\{\{ inputs\.restored_backup \}\}/g)?.length, 2);
+  assertRestoredBackup(" basalt-release-v2-recorded\n", "basalt-release-v2-recorded");
+  assert.throws(() => assertRestoredBackup("basalt-release-v2-other", "basalt-release-v2-recorded"), /recorded backup, basalt-release-v2-recorded; restore that exact backup first/);
+});
+
+test("Workflow-identity releases fail closed in the drain step", () => {
+  for (const name of ["release-main.yml", "release-manual.yml"]) {
+    const workflow = readFileSync(join(gitRepositoryRoot(), ".github/workflows", name), "utf8");
+    assert.match(workflow, /- name: Journal changes require all existing workflow runs drained before deployment\n\s+run: node scripts\/deploy-safety\/release\.ts inspect-workflows /, name);
+    assert.ok(workflow.indexOf("inspect-workflows") < workflow.indexOf("release.ts deploy "), name);
+  }
 });
 
 test("bootstrap report accepts trusted main on workflow_dispatch without candidate-root", () => {

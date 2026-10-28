@@ -156,6 +156,7 @@ test("manual database rollback builds the exact old source, deploys it, smokes p
   const calls: string[] = [];
   const deps: ManualRollbackDependencies = {
     assertBackup: async () => { calls.push("backup"); },
+    assertDrained: async () => { calls.push("drained"); },
     prepare: async () => { calls.push("prepare-and-build-old-source"); },
     validateCredentials: () => { calls.push("validate-old-source-and-credentials"); },
     begin: async (_value, expectedDeploymentId) => { calls.push(`begin:${expectedDeploymentId}`); return 99; },
@@ -178,6 +179,7 @@ test("manual rollback does not create a ledger record when prior-source preparat
   const calls: string[] = [];
   const deps: ManualRollbackDependencies = {
     assertBackup: async () => { calls.push("backup"); },
+    assertDrained: async () => { calls.push("drained"); },
     prepare: async () => { calls.push("prepare"); throw new Error("build failed"); },
     validateCredentials: () => { calls.push("validate"); },
     begin: async () => { calls.push("begin"); return 99; },
@@ -199,6 +201,7 @@ test("manual rollback records deployment or smoke failure and requires trusted m
   const calls: string[] = [];
   const deps: ManualRollbackDependencies = {
     assertBackup: async () => { calls.push("backup"); },
+    assertDrained: async () => { calls.push("drained"); },
     prepare: async () => { calls.push("prepare"); },
     validateCredentials: () => { calls.push("validate"); },
     begin: async () => { calls.push("begin"); return 99; },
@@ -238,3 +241,26 @@ function restore(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
 }
+
+test("manual rollback of a Workflow-identity release checks drain before building, and stops if instances remain", async () => {
+  const calls: string[] = [];
+  const deps = (drained: () => Promise<void>): ManualRollbackDependencies => ({
+    assertBackup: async () => { calls.push("backup"); },
+    assertDrained: async () => { calls.push("drained"); await drained(); },
+    prepare: async () => { calls.push("prepare"); },
+    validateCredentials: () => { calls.push("validate"); },
+    begin: async () => { calls.push("begin"); return 99; },
+    mark: async (_id, state) => { calls.push(`mark:${state}`); },
+    deploy: async () => { calls.push("deploy"); return { started: true, exitCode: 0 }; },
+    smoke: async () => { calls.push("smoke"); return { started: true, exitCode: 0 }; },
+  });
+  const run = (drained: () => Promise<void>) => executeManualRollback(
+    report({ databaseChanged: true, workflowChanged: true }), 42, deps(drained), "workflow_dispatch", "refs/heads/main",
+    "owner/repo/.github/workflows/release-rollback.yml@refs/heads/main", "owner/repo",
+  );
+  await run(async () => {});
+  assert.deepEqual(calls.slice(0, 3), ["backup", "drained", "prepare"]);
+  calls.length = 0;
+  await assert.rejects(run(async () => { throw new Error("1 Workflow instance(s) are still running"); }), /still running/);
+  assert.deepEqual(calls, ["backup", "drained"]);
+});

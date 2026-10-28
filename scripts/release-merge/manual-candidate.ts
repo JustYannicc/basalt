@@ -22,7 +22,7 @@ export async function validateManualCandidate(
   const candidate = await validateReleaseCandidate(api, repository, pullRequest, expectedHead);
   requireAllowed(candidate);
   if (expectedBase && candidate.currentMainSha !== expectedBase)
-    throw new Error("current main changed since the manual release candidate was approved");
+    throw new Error("current main changed since the manual release candidate was backed up");
   const proofs = await validateReleaseProofs(api, repository, candidate);
   if (!proofs.allowed) throw new Error(proofs.reason);
 
@@ -31,7 +31,7 @@ export async function validateManualCandidate(
   if (fresh.currentMainSha !== candidate.currentMainSha || fresh.headSha !== candidate.headSha)
     throw new Error("pull request head or main changed during manual validation");
   if (expectedBase && fresh.currentMainSha !== expectedBase)
-    throw new Error("current main changed since the manual release candidate was approved");
+    throw new Error("current main changed since the manual release candidate was backed up");
   const freshProofs = await validateReleaseProofs(api, repository, fresh);
   if (!freshProofs.allowed) throw new Error(freshProofs.reason);
 

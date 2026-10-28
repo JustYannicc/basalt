@@ -6,7 +6,7 @@ These scripts run inside the production GitHub Actions workflow. They read the l
 
 Run candidate preparation, checks and builds before the protected production deployment job. For a manual candidate, check out its exact PR commit into a separate directory under `RUNNER_TEMP`. Keep the workflow files and this safety runner on trusted `main`.
 
-The production job uses the protected `production-release` GitHub Environment. The Environment must restrict deployment to trusted `main` workflow dispatches and require the configured reviewer. This provides the human release decision. The runner does not claim the Environment approval proves Workflow drain or database restoration.
+The production job uses the `production-release` GitHub Environment, which restricts deployment to trusted `main` workflow dispatches. It has no required reviewer, so manual releases, rollbacks and credential export run straight through after their own checks (and, for a release, its backup). The runner does not wait for an approval. Whoever dispatches makes the release decision: stop new work, and quiesce writes for a database change. Code enforces what it can observe: the backup, the classification, and Workflow drain, which is described below. Nothing proves that writes were quiesced or that a database was restored.
 
 Required GitHub permissions:
 
@@ -61,7 +61,7 @@ node scripts/deploy-safety/release.ts backup-only \
 
 For a database change, the command takes a PlanetScale Postgres branch backup, waits until its state is `success`, protects it from deletion and reads it back. The backup name identifies the exact release transition; see [Backup name and metadata](#backup-name-and-metadata). The PlanetScale backup API is branch scoped, so the backup covers the production branch containing both logical databases, `postgres` and `basalt_pool`. The protected backup remains at PlanetScale, independent of the Actions run.
 
-After the protected Environment approves the manual deploy job, use:
+Once the backup job has finished, the manual deploy job runs:
 
 ```sh
 node scripts/deploy-safety/release.ts deploy \
@@ -86,7 +86,7 @@ node scripts/deploy-safety/release.ts inspect-workflows \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-Cloudflare exposes no atomic control that prevents new Workflow instances or timer starts while deployment changes the journal identity. An empty listing is only an observation. For v1, the approved operator drains or quarantines starts manually after the inspection. The deployment report and CLI never state that the listing made the window race free.
+For a Workflow-identity release, the command fails if any listed instance is not `complete`, `terminated` or `errored` (for example queued, running, paused, waiting or unknown), so the deploy step never runs. An `errored` instance has stopped and re-runs only if someone restarts it, so it doesn't block. Don't restart one across an identity change. Drain or terminate those instances, then dispatch again. Cloudflare exposes no atomic control that prevents new Workflow instances or timer starts while deployment changes the journal identity, so an empty listing is only an observation. Whoever dispatches stops new work first. The deployment report and CLI never state that the listing made the window race free.
 
 ### Manual rollback
 
@@ -99,9 +99,9 @@ node scripts/deploy-safety/release.ts rollback-target \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-Database restore stays operator owned in v1. PlanetScale restores a backup to a new branch. The current Alchemy `PostgresRole` resources resolve an omitted branch name to `main`, so selecting a newly restored branch as the provider default does not prove those existing role resources will follow it. Do not let the runner issue a restore or describe that rollback as complete.
+Database restore stays manual in v1, done by whoever dispatches. PlanetScale restores a backup to a new branch. The current Alchemy `PostgresRole` resources resolve an omitted branch name to `main`, so selecting a newly restored branch as the provider default does not prove those existing role resources will follow it. Do not let the runner issue a restore or describe that rollback as complete.
 
-After the operator has restored the recorded backup, verified the intended production branch and prepared the old pins, run `manual-rollback` inside the protected `workflow_dispatch` job to create the rollback deployment record. For a non-database rollback, no database restore step is required. The parent workflow deploys the recorded base pins, runs smoke and completes that record.
+After whoever dispatches has restored the recorded backup, verified the intended production branch and prepared the old pins, run `manual-rollback` inside the `workflow_dispatch` job to create the rollback deployment record. For a non-database rollback, no database restore step or `--restored-backup` is required. A rollback that crosses a Workflow identity change runs the same drain check as a release and stops while instances remain. The parent workflow deploys the recorded base pins, runs smoke and completes that record.
 
 Pass the same immutable candidate worktree and SHA to the ledger command:
 
@@ -109,10 +109,11 @@ Pass the same immutable candidate worktree and SHA to the ledger command:
 node scripts/deploy-safety/release.ts manual-rollback \
   --candidate "$CANDIDATE_SHA" \
   --candidate-root "$RUNNER_TEMP/candidate" \
+  --restored-backup "$RESTORED_BACKUP" \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-The `manual-rollback` command reclassifies the exact report against the failed release and its last successful base. It records the rollback transition after the parent workflow's operator-owned restore step. It has no environment variable, shell hook or caller-supplied “restore succeeded” receipt.
+The `manual-rollback` command reclassifies the exact report against the failed release and its last successful base. It records the rollback transition after the restore, which the dispatcher has already done. No one approves the rollback job. Instead, for a database rollback `--restored-backup` must equal the backup name the release recorded, or the command fails before deploying. `rollback-target` checks the same value when it's given, and the rollback workflow passes it to both. The name is the dispatcher's statement of what they restored, not a receipt: nothing reads the restore back.
 
 ### Backup name and metadata
 
