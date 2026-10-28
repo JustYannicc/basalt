@@ -57,7 +57,6 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
       if (request.method === "GET" && path === "/catalog/index.json") {
         const result = await handleCatalog(new Request(url.href), async () =>
           new Response(JSON.stringify(official), { status: 200, headers: { "content-type": "application/json" } }),
-          { google: false, github: false, slack: true },
         );
         const payload = await result.arrayBuffer();
         response.writeHead(result.status, Object.fromEntries(result.headers));

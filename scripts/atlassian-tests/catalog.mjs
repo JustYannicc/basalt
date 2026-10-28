@@ -122,8 +122,7 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
     status: 200,
     headers: { "content-type": "application/json" },
   });
-  const ready = { google: false, github: false, atlassian: true };
-  const index = await handleCatalog(new Request(`${origin}/catalog/index.json`), fetcher, ready);
+  const index = await handleCatalog(new Request(`${origin}/catalog/index.json`), fetcher);
   assert.equal(index.status, 200, "Local catalog feed is unavailable");
   const feed = await index.json();
   const entry = feed.apps.find((app) => app.id === "atlassian");
@@ -131,7 +130,7 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
   assert.equal(entry.package, capture.packageName);
   assert.equal(entry.source, "apps/atlassian.json");
 
-  const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), fetcher, ready);
+  const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), fetcher);
   assert.equal(response.status, 200, "Atlassian source is not served by the local catalog");
   const source = await response.json();
   assert.deepEqual(source, sourceSnapshot, "Feed source differs from the reviewed catalog snapshot");

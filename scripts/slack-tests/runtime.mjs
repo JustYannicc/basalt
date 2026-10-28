@@ -183,7 +183,7 @@ const program = Effect.gen(function* () {
   check(entry, "The local Slack catalog entry is missing");
   equal(entry.package, source.package, "The catalog did not serve the maintained Slack package");
   equal(entry.auth.find((item) => item.kind === "oauth2")?.method, "user", "The catalog did not list user OAuth first");
-  check(entry.connectionNotices?.some((notice) => notice.providerName === "Slack"), "The local Slack notice is missing");
+  check(!entry.connectionNotices?.length, "The Slack catalog entry must not carry a notice");
 
   const ownerCookies = Redacted.value(yield* actors.owner.cookies);
   const ui = yield* Effect.promise(() => connectOwnerFromCatalog({
@@ -198,7 +198,7 @@ const program = Effect.gen(function* () {
       outcome: ui.installed ? "installed" : "install_failed",
       installResponse: ui.installResponse,
       appPackage: appsReleaseReport(manifest, publishedApps, frameworkManifest, frameworkProtocol),
-      screenshot: ui.installed ? "slack-connect-notice.png" : "slack-connect-failure.png",
+      screenshot: ui.installed ? "slack-connect.png" : "slack-connect-failure.png",
     };
     yield* Effect.promise(() => writeFile(join(directory, "install-diagnostic.json"),
       JSON.stringify(report, null, 2), { mode: 0o600 }));

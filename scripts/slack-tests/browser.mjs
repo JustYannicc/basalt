@@ -178,15 +178,13 @@ export async function connectOwnerFromCatalog({
         return { installed: false, installResponse };
       throw error;
     }
-    const notice = dialog.getByRole("note", { name: "Slack connection notices" });
-    await notice.waitFor();
-    const noticeText = await notice.innerText();
-    check(noticeText.includes("Connect your own Slack account"), "The real Slack connection notice did not render");
-    check(!noticeText.includes("connection is not set up yet"), "The ready local client was shown as missing");
-    await page.screenshot({ path: join(directory, "slack-connect-notice.png") });
+    await dialog.getByRole("button", { name: "Connect Slack", exact: true }).waitFor({ state: "visible" });
+    equal(await dialog.getByRole("note", { name: "Slack connection notices" }).count(), 0,
+      "The Slack connect dialog must not show a notice");
+    await page.screenshot({ path: join(directory, "slack-connect.png") });
     equal(await dialog.getByRole("textbox", { name: "Client ID", exact: true }).count(), 0,
       "The one-click Slack flow must not ask for a client ID");
-    if (diagnosticOnly) return { installed: true, noticeText, external };
+    if (diagnosticOnly) return { installed: true, external };
 
     const connect = dialog.getByRole("button", { name: "Connect Slack", exact: true });
     await connect.waitFor({ state: "visible" });

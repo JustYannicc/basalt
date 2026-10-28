@@ -8,9 +8,10 @@ export function withSlackUserAuth(feed: Feed): Feed {
   return { ...feed, apps: feed.apps.map((entry): FeedEntry => {
     if (entry.id !== "slack") return entry;
     if (entry.package !== slackSource.package) throw new Error("Slack catalog package changed");
+    // The carried app drops the bot install, which needs a person's own Slack app and a workspace install.
     return { ...entry, auth: [
       { method: "user", kind: "oauth2", label: "Connect as yourself" },
-      ...entry.auth,
+      ...(entry.auth as { method?: string }[]).filter(method => method.method !== "oauth"),
     ] };
   }) };
 }

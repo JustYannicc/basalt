@@ -9,7 +9,6 @@ test("Zendesk publisher metadata comes from operator configuration and cannot se
   const response = await handleCatalog(
     new Request("https://catalog.example.test/catalog/apps/zendesk.json?organizationId=attacker&site=other"),
     async () => { throw new Error("The carried source is local"); },
-    { google: false, github: false },
     metadata,
   );
   assert.equal(response.status, 200);

@@ -52,10 +52,7 @@ test("AWS appears in the public catalog with credential fields and bounded read 
   assert.ok(entry);
   assert.equal(entry.package, "aws");
   assert.deepEqual(entry.auth, [{ method: "credentials", kind: "secrets", label: "AWS access keys" }]);
-  const notice = entry.connectionNotices?.[0]?.message ?? "";
-  assert.match(notice, /access key ID, secret access key, optional session token/);
-  assert.match(notice, /One-click OAuth is unavailable/);
-  assert.match(notice, /s3:ListAllMyBuckets/);
+  assert.equal(entry.connectionNotices, undefined);
 });
 
 test("the AWS source route serves the pinned source and the index includes its catalog entry", async () => {
