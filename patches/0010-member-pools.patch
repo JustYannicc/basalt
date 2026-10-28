@@ -180,10 +180,10 @@ new file mode 100644
 +>()("cloud/PoolAppSigningKey") {}
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
 new file mode 100644
-index 0000000..46281d6
+index 0000000..64b051e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
-@@ -0,0 +1,372 @@
+@@ -0,0 +1,382 @@
 +/** One private pool app per verified organization owner. Compile before locking setup metadata. */
 +import { pinnedOnly } from "@executor-js/app-management/data-steps";
 +import {
@@ -298,8 +298,18 @@ index 0000000..46281d6
 +      where member."organizationId" = ${organization} and member."userId" = ${user}
 +        and member.role = 'owner' and "user"."emailVerified" = true`;
 +    const rotating = saved !== undefined && saved.tokenKeyVersion !== tokenKeyVersion;
-+    if (rotationOnly && !rotating) return;
-+    if (members.length !== 1 && !rotating) return;
++    // A recorded pool's job never ends silently, even when there's nothing to do.
++    const skipped = (decision: "rotation-current" | "not-owner") =>
++      saved === undefined
++        ? Effect.void
++        : Effect.logInfo("Pool reconcile", {
++            app: saved.app,
++            decision,
++            accessRepaired: 0,
++            tokenRepaired: false,
++          });
++    if (rotationOnly && !rotating) return yield* skipped("rotation-current");
++    if (members.length !== 1 && !rotating) return yield* skipped("not-owner");
 +    // Only metadata and credentials need the provisioning transaction. Copy/deploy own their
 +    // short SDK transactions and release their connections before compilation.
 +    const lockedState = (requireOwner = true) =>
