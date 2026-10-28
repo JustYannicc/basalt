@@ -1,26 +1,37 @@
 diff --git a/CONTEXT.md b/CONTEXT.md
-index 0de995751..ffb856154 100644
+index 0de995751..f3954cbfd 100644
 --- a/CONTEXT.md
 +++ b/CONTEXT.md
-@@ -9,5 +9,6 @@ access those resources.
+@@ -9,5 +9,11 @@ access those resources.
  A service/auth definition authored in app code, with named authentication
  methods. Matching normalized definitions have the same provider reference and
 -can reuse accounts. It has no separately registered owner or slug.
-+can reuse accounts. Display text, such as method labels and field descriptions,
-+is not part of the definition that matches. It has no separately registered owner or slug.
++can reuse accounts. A secrets method's label and its fields' titles and
++descriptions are display text, not part of the definition that matches; other
++labels, such as an interactive method's, still count. A provider stored before
++display text left the reference keeps its own: its app keeps it when reworded,
++and a new app shares it only with the exact earlier definition. Other wordings
++of it get a new reference and do not share its accounts. It has no separately
++registered owner or slug.
  
  **Authentication method**:
 diff --git a/apps/docs/content/concepts/providers-and-accounts.md b/apps/docs/content/concepts/providers-and-accounts.md
-index 0774c4172..7be8b376e 100644
+index 0774c4172..5012333e9 100644
 --- a/apps/docs/content/concepts/providers-and-accounts.md
 +++ b/apps/docs/content/concepts/providers-and-accounts.md
-@@ -29,5 +29,7 @@ A provider is not registered anywhere and has no owner and no slug. Two apps
+@@ -29,5 +29,13 @@ A provider is not registered anywhere and has no owner and no slug. Two apps
  that declare the same provider resolve to the same provider reference, so an
  account saved for one can be used by the other. You do not coordinate an
 -identifier between apps; matching definitions are enough.
-+identifier between apps; matching definitions are enough. Display text, such as
-+a method's label or a field's description, doesn't count: each app's connect
++identifier between apps; matching definitions are enough. A secrets method's
++label and its fields' titles and descriptions don't count: each app's connect
 +form shows its own.
++
++A provider saved before labels stopped counting keeps its earlier reference. Its
++app keeps that reference when you reword it, and its accounts keep working. A
++new app shares it only when it declares exactly the earlier definition, label
++included. One that words it differently, even like the reworded app, gets a new
++reference, and accounts saved for the earlier one don't fit it.
  
  A provider reference is also not permission. Knowing it does not let an app read
 diff --git a/apps/hosted/server/src/implementation/catalog-app-defaults.ts b/apps/hosted/server/src/implementation/catalog-app-defaults.ts
@@ -67,7 +78,7 @@ index 611f774c7..804846458 100644
    "app-authoring/deploy.md": "dab905832c653eb6a22d6bfd64e4ec3b8cb994288972f61f29fe23c945d75822",
    "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 049b181c5..b013ce3f3 100644
+index 049b181c5..6bf86191b 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -432,4 +432,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
@@ -76,18 +87,18 @@ index 049b181c5..b013ce3f3 100644
 -    }).annotate(OpenApi.Description, "Provider definitions of an owner's saved accounts."),
 +    }).annotate(
 +      OpenApi.Description,
-+      "Provider definitions of an owner's saved accounts. Apps whose provider differs only in display text, such as a secrets method's label or its fields' titles, share one definition, which holds the text the last app deployed with it. An app's own wording is in its requirements.",
++      "Provider definitions of an owner's saved accounts. A provider's ID leaves out a secrets method's `label` and its fields' `title` and `description`. Apps sharing an ID share one definition, which holds the text the last app deployed with it; an app's own wording is in its requirements. A provider stored before keeps its earlier ID, which an app keeps across rewording and a new app shares only with the exact earlier wording.",
 +    ),
    );
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 894c039ce..c16653dae 100644
+index 894c039ce..45ea7a6ce 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -342,5 +342,5 @@ export const AccountSelectionInvalid = UserFacingError.define({
          provider_mismatch: {
            title: "Account belongs to another provider",
 -          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, labels, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it.`,
-+          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, methods, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it. Changing only display text, such as a method’s label, doesn’t.`,
++          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, methods, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it. Changing only a secrets method’s label, or its fields’ titles and descriptions, doesn’t.`,
            recovery: {
              action: "Open Accounts and connect a new account for this requirement.",
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
@@ -109,7 +120,7 @@ index a026bcd31..3231dba6b 100644
      }) => Effect.Effect<
        { readonly requirements: typeof AppRequirements.Type },
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
-index ead5982cc..9e6513efc 100644
+index ead5982cc..e87ba8a8e 100644
 --- a/packages/sdk/src/contracts/provider.ts
 +++ b/packages/sdk/src/contracts/provider.ts
 @@ -29,5 +29,9 @@ export const ProviderDefinition = Schema.Struct({
@@ -118,13 +129,13 @@ index ead5982cc..9e6513efc 100644
 -/** A provider reference with its definition, as exposed in app requirements. */
 +/**
 + * A provider reference with its definition. In app requirements it is that app version's own
-+ * definition. A stored provider's definition holds the display text, such as method labels, of the
++ * definition. A stored provider's definition holds the display text, such as secrets method labels, of the
 + * last app deployed with it, so show an app's wording from its requirements.
 + */
  export const Provider = Schema.Struct({
    id: ProviderId,
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 6cdd555eb..dbd20ff2c 100644
+index 6cdd555eb..a87b17fb3 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -43,4 +43,5 @@ import {
@@ -133,7 +144,7 @@ index 6cdd555eb..dbd20ff2c 100644
 +  type ProviderId,
  } from "../contracts/shared.ts";
  import { StoredApp, StoredVersion } from "../contracts/storage.ts";
-@@ -238,4 +239,55 @@ export const gotApp = (row: { readonly deployment: unknown }) => {
+@@ -238,4 +239,69 @@ export const gotApp = (row: { readonly deployment: unknown }) => {
  };
  
 +/**
@@ -187,9 +198,23 @@ index 6cdd555eb..dbd20ff2c 100644
 +    });
 +  });
 +
++/**
++ * The account requirements whose provider IDs a deploy to `app` keeps: its active version's. An
++ * app that is gone keeps none, as a new app's deploy would.
++ */
++export const previousRequirements = (
++  db: Query,
++  input: { readonly app: AppId; readonly owner: OwnerId },
++) =>
++  storedApp(db, input).pipe(
++    Effect.flatMap((app) => project(db, app)),
++    Effect.map((app): AppRequirements["accounts"] | undefined => app.requirements.accounts),
++    Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)),
++  );
++
  /** Project an app without reading or decoding its retained source files. */
  function project(db: Query, app: StoredApp) {
-@@ -316,7 +368,12 @@ export const makeApps = (
+@@ -316,7 +382,12 @@ export const makeApps = (
      name: string,
      suppliedFiles: unknown,
 -    check?: { readonly unanswered: () => E },
@@ -203,20 +228,20 @@ index 6cdd555eb..dbd20ff2c 100644
 +      const { check } = options;
        const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
          Effect.mapError(
-@@ -396,5 +453,5 @@ export const makeApps = (
+@@ -396,5 +467,5 @@ export const makeApps = (
          });
        }
 -      const entries = yield* Effect.forEach(declared, ([slot, scope, value]) =>
 +      const identified = yield* Effect.forEach(declared, ([slot, scope, value]) =>
          identifyProvider(value.definition, crypto).pipe(
            Effect.map((provider) => ({
-@@ -407,4 +464,5 @@ export const makeApps = (
+@@ -407,4 +478,5 @@ export const makeApps = (
          ),
        );
 +      const entries = yield* chooseProviderIds(db, crypto, identified, options.previous);
        const requirements: AppRequirements = {
          ...(built.requirements.capabilities === undefined
-@@ -483,6 +541,12 @@ export const makeApps = (
+@@ -483,6 +555,12 @@ export const makeApps = (
            ? input.files
            : yield* sources.read({ code, commit: input.commit });
 +      const previous = before === null ? undefined : (yield* project(db, before)).requirements;
@@ -230,13 +255,13 @@ index 6cdd555eb..dbd20ff2c 100644
 +        );
        // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
        // before its migrations run. A failed migration fails the deploy before anything activates.
-@@ -601,4 +665,5 @@ export const makeApps = (
+@@ -601,4 +679,5 @@ export const makeApps = (
            for (const { provider } of entries) {
              // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
 +            // Its display text is the last deploy's; forms read the version's own definition.
              const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
                Effect.mapError(() => new StorageError()),
-@@ -727,10 +792,25 @@ export const makeApps = (
+@@ -727,10 +806,20 @@ export const makeApps = (
      deploy: (input: DeployInput) => deploy(input),
      build: (input: Parameters<Executor["apps"]["build"]>[0]) =>
 -      buildSource(input.owner, input.name, input.files, {
@@ -249,15 +274,10 @@ index 6cdd555eb..dbd20ff2c 100644
 +        const check = {
 +          unanswered: () => new BuildUnanswered({ owner: input.owner, name: input.name }),
 +        };
-+        // An app that is gone keeps no IDs, as a new app's deploy would.
-+        const app =
++        const previous =
 +          input.app === undefined
 +            ? undefined
-+            : yield* storedApp(db, { app: input.app, owner: input.owner }).pipe(
-+                Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)),
-+              );
-+        const previous =
-+          app === undefined ? undefined : (yield* project(db, app)).requirements.accounts;
++            : yield* previousRequirements(db, { app: input.app, owner: input.owner });
 +        const { requirements } = yield* buildSource(
 +          input.owner,
 +          input.name,
