@@ -1624,10 +1624,10 @@ index 0000000..5b5f8f0
 +  ${withWorkflow ? "workflows: { hold }, schedules: { tick: appInterval({ minutes: 1 }, tick, {}) }," : ""}
 +  connect: { identity: handlers, sharedIdentity: handlers } });`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ab997d0..d506111 100644
+index ab997d0..caf168d 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7259,6 +7259,76 @@ export const scenarios = plan({
+@@ -7259,6 +7259,87 @@ export const scenarios = plan({
        local: na("This scenario uses hosted memberships, API keys and MCP."),
      },
    },
@@ -1686,6 +1686,17 @@ index ab997d0..d506111 100644
 +      "self-host": scheduled,
 +      cloud: na("Uses loopback sign-in and OAuth backends through the shared hosted server."),
 +      local: na("Uses hosted pending connection HTTP routes."),
++    },
++  },
++  interactiveAccountTarget: {
++    fixtures: "actors",
++    file: "interactive-account-target.spec.ts",
++    title:
++      "an app-owned sign-in whose requirement's provider changes before it finishes answers with the connection conflict and saves nothing",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("This scenario uses a loopback credential backend through self-host."),
++      local: na("This scenario exercises hosted connections."),
 +    },
 +  },
 +  interactiveAccountDialog: {
@@ -8631,10 +8642,10 @@ index 63307d0..36fe1bb 100644
  export * from "./oauth-clients.ts";
 diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
 new file mode 100644
-index 0000000..a1858c8
+index 0000000..03d2e41
 --- /dev/null
 +++ b/packages/sdk/src/contracts/interactive-accounts.ts
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,122 @@
 +/** Host-only interactive connection state and operations. No session enters a public response. */
 +import { Context, Schema, type Effect } from "effect";
 +import { InteractiveInstructions, AccountInfo } from "apps/contracts";
@@ -8711,6 +8722,7 @@ index 0000000..a1858c8
 +type Failure =
 +  | StorageError
 +  | InteractiveConnectionFailed
++  | import("./account-connection.ts").AccountConnectionTargetChanged
 +  | import("./interactive-errors.ts").InteractiveRetirementBusy
 +  | import("./interactive-errors.ts").InteractiveRetirementFailed;
 +/** Accounts whose local deletion this retirement owns, including its rolled-back validation. */
@@ -9649,10 +9661,10 @@ index d2e8115..135f853 100644
        skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
 diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
 new file mode 100644
-index 0000000..c37992f
+index 0000000..2d6ded2
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-accounts.ts
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,358 @@
 +/** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
 +import { Clock, type Crypto, Effect, Schema } from "effect";
 +import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
@@ -9666,6 +9678,7 @@ index 0000000..c37992f
 +import { backgroundAccounts } from "./background-accounts.ts";
 +import { makeInteractiveAttempts, interactiveCancelMillis } from "./interactive-attempts.ts";
 +import { StorageError } from "../contracts/shared.ts";
++import { AccountConnectionTargetChanged } from "../contracts/account-connection.ts";
 +import type { Credentials } from "../contracts/storage.ts";
 +import type { ResourceLifecycle } from "../contracts/executor.ts";
 +import type { Runtime } from "../contracts/runtime.ts";
@@ -9704,6 +9717,8 @@ index 0000000..c37992f
 +  effect.pipe(
 +    Effect.mapError((error) =>
 +      Schema.is(StorageError)(error) ||
++      // An edited requirement keeps the connection's conflict answer instead of a step failure.
++      Schema.is(AccountConnectionTargetChanged)(error) ||
 +      Schema.is(InteractiveRetirementBusy)(error) ||
 +      Schema.is(InteractiveRetirementFailed)(error)
 +        ? error
@@ -12071,3 +12086,128 @@ index a25fc57..ba20ce4 100644
  };
  
  /**
+diff --git a/e2e/tests/interactive-account-target.spec.ts b/e2e/tests/interactive-account-target.spec.ts
+new file mode 100644
+index 0000000..96612fe
+--- /dev/null
++++ b/e2e/tests/interactive-account-target.spec.ts
+@@ -0,0 +1,119 @@
++/** An app-owned sign-in whose requirement changes mid-way answers with the connection conflict. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { Access } from "../support/hosted-app-accounts.ts";
++import {
++  interactiveAccountBackend,
++  interactiveAccountSource,
++  interactiveBackendKey,
++} from "../support/interactive-account-backend.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Links = Schema.Array(Schema.Struct({ requirement: Schema.String }));
++
++layer(HostedLive, { excludeTestServices: true })("Interactive account target", (it) => {
++  it.effect(scenarios.interactiveAccountTarget.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const backend = yield* interactiveAccountBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const source = interactiveAccountSource(backend.origin);
++        const files = [{ path: "index.ts", content: source }, appsManifest];
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Interactive target ${randomUUID().slice(0, 8)}`,
++          files,
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", path);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const access = yield* body(
++          Access,
++          yield* api.request(actors.owner, "GET", `${path}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        const backendConnection = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${path}/accounts/app/backend/connections`, {}),
++        );
++        const key = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${backendConnection.id}/submit`,
++          { method: "key", fields: { token: interactiveBackendKey } },
++        );
++        expect(key.status, JSON.stringify(key.body)).toBe(200);
++        accounts.push((yield* body(Resource, key)).id);
++
++        // Start a device sign-in for the app's own interactive requirement.
++        const pending = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${path}/accounts/app/sharedIdentity/connections`,
++            {},
++          ),
++        );
++        const interactive = `${prefix}/connections/${pending.id}/interactive`;
++        const started = yield* api.request(actors.owner, "POST", `${interactive}/start`, {
++          method: "device",
++        });
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++
++        // The first poll waits; the backend connects on the second, which it holds mid-call.
++        const first = yield* api.request(actors.owner, "GET", `${interactive}/status`);
++        expect(first.body).toEqual({ state: "waiting" });
++        const hold = yield* backend.holdStatus;
++        const finishing = yield* api
++          .request(actors.owner, "GET", `${interactive}/status`)
++          .pipe(Effect.forkChild);
++        yield* hold.started;
++        // The app changes the requirement's provider while the app's step is in flight.
++        const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [
++            {
++              path: "index.ts",
++              content: source.replace(
++                'name: "Interactive account"',
++                'name: "Interactive account renamed"',
++              ),
++            },
++            appsManifest,
++          ],
++        });
++        expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
++        yield* hold.release;
++        const last = yield* Fiber.join(finishing);
++        expect(last.status, JSON.stringify(last.body)).toBe(409);
++        expect(last.body).toMatchObject({ _tag: "AccountConnectionTargetChanged" });
++        const links = yield* body(
++          Links,
++          yield* api.request(actors.owner, "GET", `${path}/accounts/app`),
++        );
++        expect(links.filter((link) => link.requirement === "sharedIdentity")).toEqual([]);
++      }),
++    ),
++  );
++});
