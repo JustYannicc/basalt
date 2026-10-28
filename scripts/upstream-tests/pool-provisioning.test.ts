@@ -673,6 +673,42 @@ test("a rotated signing key re-mints and re-links once, retires the old account 
   );
 });
 
+for (const drift of ["missing", "wrong creator", "wrong organization"] as const) {
+  test(`a pool whose access record is ${drift} is listed again on the next reconcile`, async () => {
+    await fixture(({ sql, setup }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
+        if (drift === "missing") yield* sql`delete from hosted_app_access where id = ${pool!.id}`;
+        if (drift === "wrong creator")
+          yield* sql`update hosted_app_access set creator_id = 'invited' where id = ${pool!.id}`;
+        if (drift === "wrong organization")
+          yield* sql`update hosted_app_access set organization_id = 'another-organization' where id = ${pool!.id}`;
+        yield* setup();
+        const rows = yield* sql`select organization_id, creator_id, audience from hosted_app_access where id = ${pool!.id}`;
+        assert.deepEqual(rows, [{ organization_id: organization, creator_id: "person-a", audience: "private" }]);
+        // Repeating the reconcile changes nothing and creates no second app.
+        yield* setup();
+        assert.equal((yield* sql`select * from hosted_app_access where id = ${pool!.id}`).length, 1);
+        assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      }),
+    );
+  });
+}
+
+test("a pool the owner shared keeps its audience when its access record is repaired", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
+      yield* sql`update hosted_app_access set audience = 'everyone', creator_id = 'invited' where id = ${pool!.id}`;
+      yield* setup();
+      const [row] = yield* sql`select creator_id, audience from hosted_app_access where id = ${pool!.id}`;
+      assert.deepEqual(row, { creator_id: "person-a", audience: "everyone" });
+    }),
+  );
+});
+
 for (const failure of ["unlinked", "deleted", "invalid token", "wrong pool token"] as const) {
   test(`a current pool's ${failure} account is repaired without creating another app`, async () => {
     await fixture(({ sql, setup }) =>

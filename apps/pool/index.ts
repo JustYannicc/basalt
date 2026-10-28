@@ -29,7 +29,7 @@ import {
 } from "./contract.ts";
 import { poolOrigin, productName } from "./deployment.ts";
 import { providers } from "./providers.ts";
-import { loginFileMethod, prompt, signedIn } from "./sign-in.ts";
+import { identityOf, loginFileMethod, prompt, signedIn } from "./sign-in.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
 // The tools service links this account for everyone when it installs a pool.
@@ -152,7 +152,17 @@ function unwrap<T>(result: Result<T>): T {
 function step<T>(result: Result<T>, read: (value: T) => ConnectState): ConnectState {
   return result.ok ? read(result.value) : { state: "failed", message: result.message };
 }
-type ConnectState = ReturnType<typeof signedIn>;
+type ConnectState =
+  | ReturnType<typeof signedIn>
+  | { state: "connected"; ref: string; accountInfo: ReturnType<typeof identityOf> };
+
+/** Name a new subscription after the pool's own label for it, with its provider's logo. */
+async function identified(ctx: Caller, state: ConnectState): Promise<ConnectState> {
+  if (state.state !== "connected") return state;
+  const view = await control<PoolView>(ctx, "/pool");
+  const account = view.ok ? view.value.accounts.find((candidate) => candidate.id === state.ref) : undefined;
+  return account === undefined ? state : { ...state, accountInfo: identityOf(account, providers) };
+}
 
 const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
 
@@ -168,20 +178,20 @@ export default defineApp(requirements, {
       status: async (ctx, { method, session }) =>
         method === loginFileMethod
           ? { state: "waiting" as const }
-          : step(await control<SignInStatus>(ctx, `/sign-ins/status${sessionPath(session)}`), signedIn),
+          : identified(ctx, step(await control<SignInStatus>(ctx, `/sign-ins/status${sessionPath(session)}`), signedIn)),
       submit: async (ctx, { method, session, value: pasted }) => {
         if (method !== loginFileMethod)
-          return step(await control<SignInStatus>(ctx, "/sign-ins/callback", { method: "POST", body: { session, redirectUrl: pasted } }), signedIn);
+          return identified(ctx, step(await control<SignInStatus>(ctx, "/sign-ins/callback", { method: "POST", body: { session, redirectUrl: pasted } }), signedIn));
         let file: unknown;
         try {
           file = JSON.parse(pasted);
         } catch {
           return { state: "failed" as const, message: "That isn't a login file. Paste the whole file's contents." };
         }
-        return step(await control<LoginFileAdded>(ctx, "/login-files", { method: "POST", body: file }), ({ accountId }) => ({
+        return identified(ctx, step(await control<LoginFileAdded>(ctx, "/login-files", { method: "POST", body: file }), ({ accountId }) => ({
           state: "connected",
           ref: accountId,
-        }));
+        })));
       },
       cancel: async (ctx, { method, session }) => {
         // A sign-in that already ended has nothing to cancel.

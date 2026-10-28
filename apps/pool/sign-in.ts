@@ -1,4 +1,4 @@
-import type { SignInStarted, SignInStatus } from "./contract.ts";
+import type { Account, SignInStarted, SignInStatus } from "./contract.ts";
 
 const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -62,4 +62,19 @@ export function signedIn(status: SignInStatus) {
       message: "The subscription connected, but the pool couldn't tell which account it was. It shows on the pool's page; remove it there and connect it again.",
     };
   return { state: "connected" as const, ref: status.accountId };
+}
+
+/** The identity a connected subscription reports, the way a connected Gmail shows its address. */
+export function identityOf(
+  account: Pick<Account, "label" | "provider">,
+  sites: readonly { readonly id: string; readonly site?: string }[],
+) {
+  const label = account.label.trim().slice(0, 255);
+  const site = sites.find((provider) => provider.id === account.provider)?.site;
+  return {
+    ...(label ? { displayName: label } : {}),
+    ...(/^[^\s@]+@[^\s@]+$/.test(label) ? { email: label } : {}),
+    // The same logo service the dashboard uses for provider icons.
+    ...(site ? { avatarUrl: `https://integrations.sh/logo/${site}?sz=64` } : {}),
+  };
 }

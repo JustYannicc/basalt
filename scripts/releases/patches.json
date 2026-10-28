@@ -91,7 +91,7 @@
     {
       "identity": "basalt-member-pools",
       "file": "0010-member-pools.patch",
-      "content_sha256": "8910fac6fbf2ab82d97f3c6d539e3614eb0ceed6399799de6d5a8d37879791e4",
+      "content_sha256": "a391d9c2ede7cc7f009ca50636e68611732d1b3abae99da6ac582478f262a3b4",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -230,7 +230,7 @@
     {
       "identity": "basalt-interactive-accounts",
       "file": "0025-interactive-accounts.patch",
-      "content_sha256": "4888666ada45337585955abe30279194505bf803a377ad9f258e90fc14f7b1b8",
+      "content_sha256": "037a9c6018f4ae9b7b0b7e083efdb7bf69e962501765b0113399c6b5ebd67c91",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
