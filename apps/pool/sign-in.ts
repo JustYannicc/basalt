@@ -1,4 +1,4 @@
-import type { SignInStarted, SignInStatus } from "./contract.ts";
+import type { Account, SignInStarted, SignInStatus } from "./contract.ts";
 
 const loopback = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -62,4 +62,48 @@ export function signedIn(status: SignInStatus) {
       message: "The subscription connected, but the pool couldn't tell which account it was. It shows on the pool's page; remove it there and connect it again.",
     };
   return { state: "connected" as const, ref: status.accountId };
+}
+
+/** The identity a connected subscription reports, the way a connected Gmail shows its address. */
+export function identityOf(
+  account: Pick<Account, "label" | "provider">,
+  sites: readonly { readonly id: string; readonly site?: string }[],
+) {
+  const label = account.label.trim().slice(0, 255);
+  const site = sites.find((provider) => provider.id === account.provider)?.site;
+  return {
+    ...(label ? { displayName: label } : {}),
+    ...(/^[^\s@]+@[^\s@]+$/.test(label) ? { email: label } : {}),
+    // The same logo service the dashboard uses for provider icons.
+    ...(site ? { avatarUrl: `https://integrations.sh/logo/${site}?sz=64` } : {}),
+  };
+}
+
+export type AccountIdentity = ReturnType<typeof identityOf>;
+
+/** Identity is optional, so its lookup gets a short slice of the connect step and never fails it. */
+export const identityLookupMs = 3_000;
+
+/**
+ * Add the account's identity to a connected sign-in. Any failure of the lookup, including a
+ * malformed or late answer, keeps the connected result as it was.
+ */
+export async function withIdentity<S extends { readonly state: string; readonly ref?: string }>(
+  state: S,
+  lookup: () => Promise<{ readonly ok: boolean; readonly value?: { readonly accounts?: readonly Account[] } }>,
+  sites: readonly { readonly id: string; readonly site?: string }[],
+  timeoutMs = identityLookupMs,
+): Promise<S | (S & { accountInfo: AccountIdentity })> {
+  if (state.state !== "connected") return state;
+  const late = new Promise<S>((resolve) =>
+    AbortSignal.timeout(timeoutMs).addEventListener("abort", () => resolve(state), { once: true }),
+  );
+  const found = Promise.resolve()
+    .then(lookup)
+    .then((view) => {
+      const account = view.ok ? view.value?.accounts?.find((candidate) => candidate.id === state.ref) : undefined;
+      return account === undefined ? state : { ...state, accountInfo: identityOf(account, sites) };
+    })
+    .catch(() => state);
+  return await Promise.race([found, late]);
 }

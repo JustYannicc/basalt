@@ -48,6 +48,7 @@ const { provision, selfHostProvisioningServices } = await load(
 const { OrganizationDefaults } = await load(
   "apps/hosted/server/src/contracts/organization-defaults.ts",
 );
+const { AccessLifecycle } = await load("apps/hosted/server/src/contracts/access-lifecycle.ts");
 import { signPoolToken, verifyPoolToken } from "../../src/pool/token.ts";
 
 const organization = Schema.decodeUnknownSync(OrganizationId)("organization-fixture");
@@ -90,7 +91,7 @@ const fixture = <A>(
           "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text)",
           // Account deletion reads connection state to tell app-acquired accounts apart.
           "create table executor_account_connections (id text primary key, owner text, state jsonb, created_at timestamptz default now())",
-          "create table hosted_app_access (id text, organization_id text, creator_id text, audience text)",
+          "create table hosted_app_access (id text, organization_id text, creator_id text, audience text, revision text default gen_random_uuid()::text)",
           "create table hosted_account_access (account_id text, organization_id text, creator_id text, kind text, personal_user_id text)",
           "create table hosted_app_account_links (app text, requirement text, subject text, account text, linked_by text, created_at timestamptz)",
           "create table hosted_provisioning (id text primary key default gen_random_uuid()::text, kind text, organization_id text, user_id text, available_at timestamptz default now(), status text default 'queued', attempts integer default 0, updated_at timestamptz default now())",
@@ -669,6 +670,61 @@ test("a rotated signing key re-mints and re-links once, retires the old account 
       }>`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
       assert.equal(state!.pool.tokenKeyVersion, yield* poolTokenKeyVersion(rotated));
       assert.equal(state!.pool.account, link!.account);
+    }),
+  );
+});
+
+for (const drift of ["missing", "wrong creator", "wrong organization"] as const) {
+  test(`a pool whose access record is ${drift} is listed again on the next reconcile`, async () => {
+    await fixture(({ sql, setup }) =>
+      Effect.gen(function* () {
+        yield* setup();
+        const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
+        if (drift === "missing") yield* sql`delete from hosted_app_access where id = ${pool!.id}`;
+        if (drift === "wrong creator")
+          yield* sql`update hosted_app_access set creator_id = 'invited' where id = ${pool!.id}`;
+        if (drift === "wrong organization")
+          yield* sql`update hosted_app_access set organization_id = 'another-organization' where id = ${pool!.id}`;
+        yield* setup();
+        const rows = yield* sql`select organization_id, creator_id, audience from hosted_app_access where id = ${pool!.id}`;
+        assert.deepEqual(rows, [{ organization_id: organization, creator_id: "person-a", audience: "private" }]);
+        // Repeating the reconcile changes nothing and creates no second app.
+        yield* setup();
+        assert.equal((yield* sql`select * from hosted_app_access where id = ${pool!.id}`).length, 1);
+        assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      }),
+    );
+  });
+}
+
+test("an access repair rotates the record's revision and tells the pool Worker once", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
+      yield* sql`update hosted_app_access set creator_id = 'invited', revision = 'old' where id = ${pool!.id}`;
+      const changes: unknown[] = [];
+      const recording = {
+        appAccessChanged: (input: unknown) => Effect.sync(() => void changes.push(input)),
+      };
+      yield* setup().pipe(Effect.provideService(AccessLifecycle, recording));
+      yield* setup().pipe(Effect.provideService(AccessLifecycle, recording));
+      const [row] = yield* sql<{ revision: string }>`select revision from hosted_app_access where id = ${pool!.id}`;
+      assert.notEqual(row!.revision, "old");
+      assert.deepEqual(changes, [{ organization, apps: [pool!.id] }]);
+    }),
+  );
+});
+
+test("a pool the owner shared keeps its audience when its access record is repaired", async () => {
+  await fixture(({ sql, setup }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [pool] = yield* sql<{ id: string }>`select id from executor_apps`;
+      yield* sql`update hosted_app_access set audience = 'everyone', creator_id = 'invited' where id = ${pool!.id}`;
+      yield* setup();
+      const [row] = yield* sql`select creator_id, audience from hosted_app_access where id = ${pool!.id}`;
+      assert.deepEqual(row, { creator_id: "person-a", audience: "everyone" });
     }),
   );
 });

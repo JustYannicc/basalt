@@ -25,6 +25,11 @@ model {
     technology "Official integrations feed"
     metadata { hosts "catalog.executor.sh" }
   }
+  providerLogos = adapter "Provider logos" {
+    #external
+    technology "Logo service the dashboard already uses for provider icons"
+    metadata { hosts "integrations.sh" }
+  }
   connectorIdentity = adapter "Connector identity" {
     #external
     technology "Google OAuth"
@@ -51,6 +56,7 @@ model {
     metadata { hosts "slack.com|mcp.slack.com" }
   }
   basalt.catalog -[sync]-> catalogSource "read official index and app sources"
+  basalt.pool -[sync]-> providerLogos "provider logo URL in a subscription's identity, loaded by the browser"
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
   basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries and unmodified sources"
   basalt.toolsGateway -[sync]-> connectorIdentity "authorize each person's connection; exchange and refresh tokens"

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openEnvelope } from "../pool/token.ts";
+import { signIntent, setupTtl } from "../pool/setup-links.ts";
 import { handleSetup, type SetupEnv } from "./host.ts";
 
 const origin = "https://setup.example";
@@ -81,6 +82,64 @@ function secured(response: Response) {
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("access-control-allow-origin"), null);
 }
+
+test("Connections resolves the caller's own signed setup without issuing credentials", async () => {
+  const intent = await signIntent(secret, {
+    pool: "pool-1", organization: "organization-1", owner: "user-1", user: "user-1", expiresAt: Date.now() + setupTtl,
+  });
+  const f = fixture({ tools: ({ path }) => path.endsWith("/data/query")
+    ? json({ ok: true, value: { href: `${origin}/setup#intent=${encodeURIComponent(intent)}`, private: "never-return-this" } })
+    : undefined });
+  const response = await f.request("/setup/v1/context");
+  assert.equal(response.status, 200);
+  secured(response);
+  assert.deepEqual(await response.json(), { intent });
+  assert.deepEqual(f.calls.map(c => c.path), [
+    "/api/auth/get-session", "/api/auth/organization/list",
+    "/api/organizations/organization-1/apps/pool-1/access",
+    "/api/organizations/organization-1/apps/pool-1/data/query",
+  ]);
+  const query = f.calls.at(-1)!;
+  assert.deepEqual(query.input, { name: "computerContext", input: {} });
+  assert.equal(query.request.headers.get("cookie"), "executor-hosted.session_token=fake-cookie");
+  assert.equal(query.request.headers.get("authorization"), null);
+});
+
+test("Connections rejects untrusted setup targets and mismatched signed pool identities", async () => {
+  const claims = { pool: "pool-1", organization: "organization-1", owner: "user-1", user: "user-1", expiresAt: Date.now() + setupTtl };
+  const valid = await signIntent(secret, claims);
+  const targets = ["https://elsewhere.example/setup#intent=x", `${origin}/other#intent=${valid}`, `${origin}/setup#intent=forged`];
+  for (const replacement of [{ user: "other-user" }, { owner: "other-owner" }, { pool: "other-pool" }, { organization: "other-organization" }, { expiresAt: Date.now() - 1 }]) {
+    targets.push(`${origin}/setup#intent=${await signIntent(secret, { ...claims, ...replacement })}`);
+  }
+  for (const href of targets) {
+    const f = fixture({ tools: ({ path }) => path.endsWith("/data/query") ? json({ ok: true, value: { href } }) : undefined });
+    const response = await f.request("/setup/v1/context");
+    assert.equal(response.status, 502);
+    secured(response);
+    assert.doesNotMatch(await response.text(), /forged|other-user|other-owner|other-pool|other-organization/);
+    assert.ok(!f.calls.some(c => c.path.endsWith("/create")));
+  }
+});
+
+test("Connections setup requires a verified cookie session and a confirmed own pool", async () => {
+  const anonymous = fixture();
+  assert.equal((await handleSetup(new Request(`${origin}/setup/v1/context`), anonymous.env)).status, 401);
+  assert.equal(anonymous.calls.length, 0);
+  assert.equal((await anonymous.request("/setup/v1/context", { headers: { authorization: "Bearer unsupported" } })).status, 403);
+  assert.equal((await anonymous.request("/setup/v1/context", { method: "POST" })).status, 405);
+  for (const tools of [
+    ({ path }: Call) => path.endsWith("/get-session") ? json({ user: { id: "user-1", emailVerified: false } }) : undefined,
+    ({ path }: Call) => path.endsWith("/access") ? json({ creator: "another-user" }) : undefined,
+    ({ path }: Call) => path.endsWith("/data/query") ? new Response("private-diagnostic", { status: 503 }) : undefined,
+  ]) {
+    const f = fixture({ tools });
+    const response = await f.request("/setup/v1/context");
+    assert.ok([403, 409, 502].includes(response.status));
+    assert.doesNotMatch(await response.text(), /private-diagnostic/);
+    assert.ok(!f.calls.some(c => c.path.endsWith("/create")));
+  }
+});
 
 test("native browser identity and signed pool intent precede token mint; the paste has no credentials", async () => {
   const f = fixture();

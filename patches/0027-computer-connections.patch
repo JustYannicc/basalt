@@ -1,0 +1,271 @@
+diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect.tsx
+@@ -5,6 +5,8 @@
+ import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
+ import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
+ import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productServerName } from "@executor-js/utils/product-brand";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+@@ -28,10 +30,11 @@
+   readonly mcpOrigin: string;
+ }) {
+   const { organization, slug, id } = useOrganizationRoute();
++  const brand = useProductBrand();
+   const mcp = JSON.stringify(
+     {
+       mcpServers: {
+-        executor: {
++        [brand.computerSetup ? productServerName(brand) : "executor"]: {
+           type: "http",
+           url: `${mcpOrigin}/org/${encodeURIComponent(slug)}/mcp`,
+           headers: { Authorization: "Bearer <YOUR_PAT>" },
+@@ -45,8 +48,9 @@
+   return (
+     <>
+       <p className="text-[13px] leading-5 text-muted-foreground">
+-        For scripts and agents that cannot sign in. The token is yours and has your permissions
+-        here; this URL names the organization, so no organization header is needed.
++        {brand.computerSetup && "Tools only. "}For scripts and agents that cannot sign in. The token
++        is yours and has your permissions here; this URL names the organization, so no organization
++        header is needed.
+       </p>
+       <div className="mt-3 overflow-hidden rounded-lg border">
+         <Code code={mcp} path="mcp.json" lineNumbers={false} copyable />
+@@ -65,12 +69,34 @@
+   );
+ }
+ 
++/** Sets up agents on this computer through the deployment's own page, with its models and tools. */
++function ComputerSetup({ href }: { readonly href: string }) {
++  return (
++    <>
++      <p className="text-[13px] leading-5 text-muted-foreground">
++        One setup prompt points both at your pool's models and adds your tools. Each computer gets
++        its own keys, and you can revoke any of them.
++      </p>
++      <p className="mt-2 text-[13px] leading-5 text-muted-foreground">
++        Models run on the pool you pick for each computer. Tools always run as you, even on a shared
++        pool.
++      </p>
++      <div className="mt-3">
++        <Button asChild>
++          <a href={href}>Set up this computer</a>
++        </Button>
++      </div>
++    </>
++  );
++}
++
+ /** The member's full-access URL, scoped connections and connected agents for this organization. */
+ export function ConnectPage() {
+   const origins = useResourceOrigins();
+   const mcpOrigin = origins.mcp[0];
+   const { organization } = useOrganizationRoute();
+   const docs = useDocumentationUrl() ?? null;
++  const { computerSetup } = useProductBrand();
+   return (
+     <ScopedConnectionsPage
+       key={organization}
+@@ -80,6 +106,7 @@
+       revoke={revokeMcpConnectionAtom(organization)}
+       Failure={HostedFailure}
+       docs={docs}
++      computerSetup={computerSetup && <ComputerSetup href={computerSetup} />}
+       agents={
+         <ConnectedAgents
+           query={mcpAgentsAtom(organization)}
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -288,13 +288,35 @@
+ 
+ /** Executor's plugins and screenshots apply only while the deployment presents Executor. */
+ const assistantGuides = (endpoint: string, brand: ProductBrand) =>
+-  guides(endpoint, brand.name, productServerName(brand), isDefaultProductBrand(brand));
++  guides(
++    endpoint,
++    brand.name,
++    productServerName(brand),
++    isDefaultProductBrand(brand),
++    brand.computerSetup,
++  );
++
++/** Points Claude Code and Codex at the deployment's computer setup, which adds its models too. */
++const computerSetupNote = (name: string, computerSetup: string | undefined) =>
++  computerSetup === undefined ? undefined : (
++    <>
++      These steps add tools only. To use your models in {name} too,{" "}
++      <a
++        href={computerSetup}
++        className="text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
++      >
++        set up this computer
++      </a>{" "}
++      instead.
++    </>
++  );
+ 
+ const guides = (
+   endpoint: string,
+   product: string,
+   server: string,
+   executor: boolean,
++  computerSetup: string | undefined,
+ ): Record<AssistantId, AssistantGuide> => ({
+   claude: {
+     name: "Claude",
+@@ -386,6 +408,7 @@
+       </>,
+       signIn("Claude Code", product),
+     ],
++    note: computerSetupNote("Claude Code", computerSetup),
+   },
+   codex:
+     endpoint === "https://mcp.executor.sh/mcp"
+@@ -413,6 +436,7 @@
+             </>,
+             signIn("Codex", product),
+           ],
++          note: computerSetupNote("Codex", computerSetup),
+         },
+   devin: {
+     name: "Devin",
+diff --git a/packages/ui/src/implementation/dashboard/connected-agents.tsx b/packages/ui/src/implementation/dashboard/connected-agents.tsx
+--- a/packages/ui/src/implementation/dashboard/connected-agents.tsx
++++ b/packages/ui/src/implementation/dashboard/connected-agents.tsx
+@@ -66,7 +66,9 @@
+         {(agents) =>
+           agents.length === 0 ? (
+             <p className="text-[13px] text-muted-foreground">
+-              No agent is connected. Agents that sign in with the MCP URL appear here.
++              {brand.computerSetup !== undefined
++                ? "No agent has signed in with the MCP URL yet. Computers you set up for Claude Code and Codex use their own keys, so they're listed with your computers, not here."
++                : "No agent is connected. Agents that sign in with the MCP URL appear here."}
+             </p>
+           ) : (
+             <ul className="divide-y border-y">
+diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+--- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
++++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+@@ -125,6 +125,7 @@
+   revoke,
+   Failure,
+   installation,
++  computerSetup,
+   agents,
+   docs = publicDocsBaseUrl,
+   renderTools,
+@@ -133,6 +134,11 @@
+   /** Renders every failure: inventory, connection reads, saves and revocation. */
+   readonly Failure: ComponentType<FailureProps<E>>;
+   readonly installation: ReactNode;
++  /**
++   * Sets up agents on this computer with the product's models and tools, when the host offers it.
++   * It leads the setup card and the MCP `installation` follows as the tools-only option.
++   */
++  readonly computerSetup?: ReactNode;
+   /** The agents connected through these URLs, when the host lists them. */
+   readonly agents?: ReactNode;
+   /** Documentation the setup prompt points agents to. */
+@@ -165,19 +171,50 @@
+           <div className="max-w-190">
+             <PageHeader
+               title="Connect your agent"
+-              description="Works with Claude Code, Cursor, Codex, or any MCP client."
++              description={
++                computerSetup
++                  ? "Set up Claude Code or Codex on this computer, or add tools to any MCP client."
++                  : "Works with Claude Code, Cursor, Codex, or any MCP client."
++              }
+             />
+             <section
+               aria-label="Agent setup"
+               className="mt-2 rounded-xl border bg-muted/20 px-6 pt-5 pb-6 shadow-xs"
+             >
+-              <div className="mb-4 flex flex-wrap items-center gap-2">
+-                <h2 className="text-sm font-medium">{brand.name} MCP server</h2>
+-                <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
+-                  Every app you can use
+-                </span>
+-              </div>
+-              {installation}
++              {computerSetup ? (
++                <>
++                  <div className="mb-3 flex flex-wrap items-center gap-2">
++                    <h2 className="text-sm font-medium">This computer</h2>
++                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
++                      Models and tools
++                    </span>
++                  </div>
++                  {computerSetup}
++                  <div className="mt-6 border-t pt-5">
++                    <div className="mb-1 flex flex-wrap items-center gap-2">
++                      <h2 className="text-sm font-medium">Tools only</h2>
++                      <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
++                        Every app you can use
++                      </span>
++                    </div>
++                    <p className="mb-4 text-[13px] leading-5 text-muted-foreground">
++                      Add the {brand.name} MCP server to any MCP client, including ones that
++                      can&rsquo;t use custom models. Your agent keeps its own model.
++                    </p>
++                    {installation}
++                  </div>
++                </>
++              ) : (
++                <>
++                  <div className="mb-4 flex flex-wrap items-center gap-2">
++                    <h2 className="text-sm font-medium">{brand.name} MCP server</h2>
++                    <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
++                      Every app you can use
++                    </span>
++                  </div>
++                  {installation}
++                </>
++              )}
+             </section>
+             <QueryView<readonly ConnectionView[], E>
+               query={connections}
+diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
+--- a/packages/utils/src/product-brand.ts
++++ b/packages/utils/src/product-brand.ts
+@@ -5,6 +5,8 @@
+  * What a deployment calls itself in its pages, emails, OAuth client metadata and MCP server
+  * description. `logo` is a square image URL, absolute or a path on the deployment's own origin.
+  * `docs`, `privacy` and `terms` are the deployment's own pages behind those links.
++ * `computerSetup` is the deployment's own page that sets up agents on a person's computer; the
++ * Connect page offers it ahead of the MCP setup only when it is set.
+  */
+ export const ProductBrand = Schema.Struct({
+   name: Schema.NonEmptyString,
+@@ -12,6 +14,7 @@
+   docs: Schema.optional(Schema.NonEmptyString),
+   privacy: Schema.optional(Schema.NonEmptyString),
+   terms: Schema.optional(Schema.NonEmptyString),
++  computerSetup: Schema.optional(Schema.NonEmptyString),
+ });
+ export type ProductBrand = typeof ProductBrand.Type;
+ 
+@@ -72,6 +75,7 @@
+   docs: "EXECUTOR_PRODUCT_DOCS_URL",
+   privacy: "EXECUTOR_PRODUCT_PRIVACY_URL",
+   terms: "EXECUTOR_PRODUCT_TERMS_URL",
++  computerSetup: "EXECUTOR_COMPUTER_SETUP_URL",
+ } as const;
+ 
+ /**
+@@ -84,8 +88,8 @@
+     productBrandSettings.logo,
+     (yield* setting(productBrandSettings.logo)) ?? defaultProductBrand.logo,
+   );
+-  const links: { docs?: string; privacy?: string; terms?: string } = {};
+-  for (const link of ["docs", "privacy", "terms"] as const) {
++  const links: { docs?: string; privacy?: string; terms?: string; computerSetup?: string } = {};
++  for (const link of ["docs", "privacy", "terms", "computerSetup"] as const) {
+     const value = yield* urlOrPath(
+       productBrandSettings[link],
+       yield* setting(productBrandSettings[link]),

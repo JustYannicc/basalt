@@ -1,9 +1,11 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-export type PoolProvider = { id: string; name: string };
+/** `site` is the provider's public web address, used only to show its logo. */
+export type PoolProvider = { id: string; name: string; site?: string };
 
 const PROVIDER_ID = /^[a-z0-9][a-z0-9_-]*$/;
+const SITE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const RELEASES_URL = new URL("../containers/pool/releases.json", import.meta.url);
 const PROVIDERS_URL = new URL("../src/pool/providers.json", import.meta.url);
 const OAUTH_SOURCE_PATH = "internal/cluster/management/oauth_v8.go";
@@ -201,11 +203,11 @@ export function buildProviderTable(
   ids: readonly string[],
   existing: readonly PoolProvider[] = [],
 ): PoolProvider[] {
-  const existingNames = new Map(existing.map(({ id, name }) => [id, name]));
-  return ids.map((id) => ({
-    id,
-    name: existingNames.get(id) ?? titleCaseProviderId(id),
-  }));
+  const known = new Map(existing.map((provider) => [provider.id, provider]));
+  return ids.map((id) => {
+    const site = known.get(id)?.site;
+    return { id, name: known.get(id)?.name ?? titleCaseProviderId(id), ...(site ? { site } : {}) };
+  });
 }
 
 function parseProviderTable(text: string): PoolProvider[] {
@@ -227,7 +229,10 @@ function parseProviderTable(text: string): PoolProvider[] {
     }
     if (ids.has(row.id)) throw new Error(`Duplicate provider id in provider table: ${row.id}`);
     ids.add(row.id);
-    return { id: row.id, name: row.name };
+    const site = "site" in row ? row.site : undefined;
+    if (site !== undefined && (typeof site !== "string" || !SITE.test(site)))
+      throw new Error(`Provider site must be a bare domain: ${row.id}`);
+    return { id: row.id, name: row.name, ...(site ? { site } : {}) };
   });
 }
 

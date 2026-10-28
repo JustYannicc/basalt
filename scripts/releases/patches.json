@@ -91,7 +91,7 @@
     {
       "identity": "basalt-member-pools",
       "file": "0010-member-pools.patch",
-      "content_sha256": "8910fac6fbf2ab82d97f3c6d539e3614eb0ceed6399799de6d5a8d37879791e4",
+      "content_sha256": "584e2e0d1e505868e58c6e000bb6dc17cdc6f02b59cef6403efc52c687a164c2",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -230,7 +230,7 @@
     {
       "identity": "basalt-interactive-accounts",
       "file": "0025-interactive-accounts.patch",
-      "content_sha256": "4888666ada45337585955abe30279194505bf803a377ad9f258e90fc14f7b1b8",
+      "content_sha256": "037a9c6018f4ae9b7b0b7e083efdb7bf69e962501765b0113399c6b5ebd67c91",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -241,6 +241,15 @@
       "identity": "basalt-connect-method-labels",
       "file": "0026-connect-method-labels.patch",
       "content_sha256": "d9e3bb9c4defe545e218dcf83cf0085bcd72c6bac1d05a8f09c59ecbbbf17c9c",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-computer-connections",
+      "file": "0027-computer-connections.patch",
+      "content_sha256": "bd1e01d93737a069b6b0b5d29364be81afc4f6d9c95a683fca95eaaf7267213f",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
