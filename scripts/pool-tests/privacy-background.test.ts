@@ -33,15 +33,18 @@ test("large historical cleanup serves through failed batches and resumes after S
       select string_agg(format('%I',attname),','), string_agg(format('u.%I',attname),',') into columns,selected
       from pg_attribute where attrelid='usage'::regclass and attnum>0 and not attisdropped and attname<>'id' and attgenerated='';
       execute format('insert into usage (%s) select %s from usage u cross join generate_series(1,20000) where u.id=%s',columns,selected,${source});
-    end $$;
-    create function fixture_privacy_visible(row_id bigint) returns boolean language plpgsql volatile as $$ begin
+    end $$;`);
+    console.log("PASS: historical usage rows seeded");
+    fixture.diagnostics.sql(`create function fixture_privacy_visible(row_id bigint) returns boolean language plpgsql volatile as $$ begin
       if current_setting('application_name')='home-privacy-maintenance' then perform pg_sleep(0.002); end if;
       return true;
     end $$;
     alter table usage enable row level security;
     alter table usage force row level security;
-    create policy fixture_privacy_latency on usage using (fixture_privacy_visible(id));
-    alter role fixture_admin nosuperuser;`);
+    create policy fixture_privacy_latency on usage using (fixture_privacy_visible(id));`);
+    console.log("PASS: historical read latency policy installed");
+    fixture.diagnostics.sql("alter role fixture_admin nosuperuser");
+    console.log("PASS: fixture role now enforces the latency policy");
     // A database-side latency bound makes this independent of runner speed. The
     // same row policy applies to real cleanup transactions tagged by Home.
     assert.ok(fixture.diagnostics.statementTimesOut("select count(*) from usage;"), "A whole-table audit cannot fit its former 30-second transaction");

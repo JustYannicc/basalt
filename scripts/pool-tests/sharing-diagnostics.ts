@@ -5,7 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 function output(args: string[], input?: string): string {
   const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 30_000 });
   // Driver text can contain the very diagnostic content this test is checking.
-  assert.equal(result.status, 0, "Disposable diagnostic inspection failed");
+  const state = /(?:ERROR|FATAL):\s+([0-9A-Z]{5})\b/.exec(result.stderr ?? "")?.[1] ?? "unavailable";
+  assert.equal(result.status, 0, `Disposable diagnostic inspection failed (SQLSTATE ${state})`);
   return result.stdout;
 }
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
@@ -21,7 +22,7 @@ export class FixtureDiagnostics {
 
   sql(query: string): string {
     return output(["exec", "-i", `${this.name}-postgres`, "psql", "-X", "-v", "ON_ERROR_STOP=1",
-      "-U", "fixture_admin", "-d", "basalt_pool", "-At"], query).trim();
+      "-v", "VERBOSITY=sqlstate", "-U", "fixture_admin", "-d", "basalt_pool", "-At"], query).trim();
   }
 
   statementTimesOut(query: string): boolean {
