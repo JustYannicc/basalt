@@ -1,10 +1,10 @@
 diff --git a/apps/docs/content/concepts/providers-and-accounts.md b/apps/docs/content/concepts/providers-and-accounts.md
-index 0774c41..46db5be 100644
+index 0774c417..46db5bea 100644
 --- a/apps/docs/content/concepts/providers-and-accounts.md
 +++ b/apps/docs/content/concepts/providers-and-accounts.md
 @@ -114,3 +114,95 @@ creates an account, and a tool never receives your login token.
  - Providers backed by a signed-in browser session.
-
+ 
  See [Connect an account](/connect-an-account) for the steps.
 +
 +## Host-provisioned methods
@@ -99,7 +99,7 @@ index 0774c41..46db5be 100644
 +Local direct linking uses the same rule. Host provisioning uses a separate trusted
 +link path and can still repair or replace its own accounts.
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
-index 929eb84..0c66a60 100644
+index 929eb84f..0c66a607 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
 @@ -1,3 +1,4 @@
@@ -116,7 +116,7 @@ index 929eb84..0c66a60 100644
    AccountConnectionClosed,
    StorageError,
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
-index 0e75058..768d22a 100644
+index 0e750581..768d22a6 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
 @@ -1,3 +1,4 @@
@@ -133,7 +133,7 @@ index 0e75058..768d22a 100644
    InteractiveRetirementFailed,
    StorageError,
 diff --git a/apps/hosted/server/src/contracts/mcp-connections.ts b/apps/hosted/server/src/contracts/mcp-connections.ts
-index 8fe5170..f68f09b 100644
+index 8fe5170e..f68f09bb 100644
 --- a/apps/hosted/server/src/contracts/mcp-connections.ts
 +++ b/apps/hosted/server/src/contracts/mcp-connections.ts
 @@ -1,6 +1,7 @@
@@ -153,7 +153,7 @@ index 8fe5170..f68f09b 100644
    ConnectionAccessInvalid,
    StorageError,
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index c951ba9..ae2d077 100644
+index c951ba9f..ae2d077c 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -1,3 +1,4 @@
@@ -200,7 +200,7 @@ index c951ba9..ae2d077 100644
 @@ -461,6 +469,20 @@ export const addLink = (
      return true;
    }).pipe(Effect.catchTags(sqlFailures));
-
+ 
 +/** Every user-driven link mutation, including agent policies and connect completion. */
 +export const addLink = (
 +  sql: SqlClient.SqlClient,
@@ -221,7 +221,7 @@ index c951ba9..ae2d077 100644
 @@ -499,6 +521,16 @@ export const linkAppAccount = (
  ) =>
    executor[StorageHost].transaction(addLink(sql, executor.webhooks, { ...input, subject: null }));
-
+ 
 +/** Host-owned pool repair can deliberately replace its provisioned link in the same transaction. */
 +export const linkProvisionedAppAccount = (
 +  executor: Executor,
@@ -236,7 +236,7 @@ index c951ba9..ae2d077 100644
   * A webhook source's actor can no longer use its account, such as after leaving the organization
   * or a group, without unlinking it. Hand the source over, unless it already moved on or its actor
 diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/apps/hosted/server/src/implementation/organization-defaults.ts
-index ddec51e..f5839b7 100644
+index ddec51e1..f5839b7a 100644
 --- a/apps/hosted/server/src/implementation/organization-defaults.ts
 +++ b/apps/hosted/server/src/implementation/organization-defaults.ts
 @@ -19,7 +19,7 @@ import {
@@ -247,7 +247,7 @@ index ddec51e..f5839b7 100644
 +import { provisionAccountLink } from "./app-accounts.ts";
  import { executorCopyOrigin } from "./executor-catalog-entry.ts";
  import { productBrandConfig } from "@executor-js/utils/product-brand";
-
+ 
 @@ -253,18 +253,13 @@ export const organizationDefaults = (
                    // A new managed key is linked to the common Executor app once, when it is
                    // created. A member who unlinks it later keeps that choice.
@@ -270,7 +270,7 @@ index ddec51e..f5839b7 100644
                      intent = true;
                    return created;
 diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted/server/src/implementation/pool-account.ts
-index 4621a20..66298c8 100644
+index 4621a206..66298c8e 100644
 --- a/apps/hosted/server/src/implementation/pool-account.ts
 +++ b/apps/hosted/server/src/implementation/pool-account.ts
 @@ -3,7 +3,7 @@ import { AccountId, StorageError, type App, type Executor } from "@executor-js/s
@@ -293,7 +293,7 @@ index 4621a20..66298c8 100644
        account: account.id,
 diff --git a/apps/hosted/server/src/implementation/provisioned-links.ts b/apps/hosted/server/src/implementation/provisioned-links.ts
 new file mode 100644
-index 0000000..b0d9e4c
+index 00000000..b0d9e4c8
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/provisioned-links.ts
 @@ -0,0 +1,33 @@
@@ -331,7 +331,7 @@ index 0000000..b0d9e4c
 +    if (links.length > 0) return yield* new AccountProvisioned({ provider: input.provider });
 +  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index ff52a29..445fb3d 100644
+index ff52a290..445fb3db 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -6,6 +6,7 @@ import { checkConnection } from "./connection-policy.ts";
@@ -356,7 +356,7 @@ index ff52a29..445fb3d 100644
            Effect.catchTags({
              SqlError: () => new StorageError(),
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index def986e..9608f08 100644
+index def986ed..9608f088 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -14,6 +14,7 @@ export type HostedError =
@@ -368,11 +368,11 @@ index def986e..9608f08 100644
        ({
          changed:
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index dfe80e5..593ad25 100644
+index dfe80e56..593ad253 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -45,9 +45,9 @@ import { catalogAtom } from "../../contracts/api.ts";
-
+ 
  /** A requirement's sign-in methods, OAuth first: connecting a new account starts with the first. */
  export const methodsOf = (requirement: AccountRequirement) =>
 -  Object.entries(requirement.definition.auth).sort(
@@ -381,7 +381,7 @@ index dfe80e5..593ad25 100644
 +  Object.entries(requirement.definition.auth)
 +    .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
 +    .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
-
+ 
  /**
   * The app's accounts in two sections. App accounts are linked for everyone: people who can edit
 @@ -121,6 +121,10 @@ export function AppAccounts({
@@ -432,7 +432,7 @@ index dfe80e5..593ad25 100644
                  variant="outline"
                  size="sm"
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
-index 21dd03f..4621e01 100644
+index 21dd03f3..4621e017 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
 +++ b/apps/local/server/src/contracts/account-connections.ts
 @@ -1,3 +1,4 @@
@@ -442,14 +442,14 @@ index 21dd03f..4621e01 100644
    InteractiveRetirementFailed,
 @@ -89,6 +90,7 @@ export const ConnectionOAuthStart = Schema.Struct({
  });
-
+ 
  const errors = [
 +  AccountProvisioned,
    InteractiveRetirementBusy,
    InteractiveRetirementFailed,
    InteractiveReconnectUnsupported,
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 35b665a..693ff4c 100644
+index 35b665aa..693ff4c2 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -470,7 +470,7 @@ index 35b665a..693ff4c 100644
 +  RequirementMismatch,
 +] as const;
  const linkChangeErrors = [...linkErrors, AppAccountLinksBlocked] as const;
-
+ 
  /**
 @@ -266,6 +273,7 @@ export const AppAccountTarget = Schema.Struct({
    site: Schema.optional(Schema.NonEmptyString),
@@ -497,7 +497,7 @@ index 35b665a..693ff4c 100644
            AccountConnectionRefused,
          ],
 diff --git a/apps/local/server/src/implementation/app-accounts.ts b/apps/local/server/src/implementation/app-accounts.ts
-index 0285989..2a0ac63 100644
+index 0285989e..2a0ac635 100644
 --- a/apps/local/server/src/implementation/app-accounts.ts
 +++ b/apps/local/server/src/implementation/app-accounts.ts
 @@ -8,6 +8,7 @@ import {
@@ -541,7 +541,7 @@ index 0285989..2a0ac63 100644
    // An app link is used by its app for every call; the route refuses with the apps that link it,
    // and this refuses an app link made since. Its user links are removed with it.
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
-index c60366b..f023607 100644
+index c60366b7..f0236071 100644
 --- a/apps/local/web/src/contracts/errors.ts
 +++ b/apps/local/web/src/contracts/errors.ts
 @@ -40,6 +40,11 @@ const unavailable = () =>
@@ -558,10 +558,10 @@ index c60366b..f023607 100644
        description: "Reload the skill to read its current instructions and references.",
 diff --git a/e2e/support/account-status-fixture.ts b/e2e/support/account-status-fixture.ts
 new file mode 100644
-index 0000000..8b1085c
+index 00000000..87dee2d3
 --- /dev/null
 +++ b/e2e/support/account-status-fixture.ts
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,112 @@
 +/** Synthetic status endpoint. The app reaches it with its own backend account. */
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Effect, Layer, Ref, Schema } from "effect";
@@ -577,11 +577,17 @@ index 0000000..8b1085c
 +  meters: [
 +    {
 +      label: "5h",
-+      remaining: 0.75,
-+      resetsAt: "2030-01-02T03:04:05Z",
-+      detail: "Shared request window",
++      remaining: 0.7,
++      resetsAt: new Date(Date.now() + 6 * 86_400_000).toISOString(),
++      detail: "↻ 2 banked · next expires in 3 days",
 +    },
 +    { label: "Weekly", remaining: null, detail: "No weekly estimate" },
++    {
++      label: "Daily",
++      remaining: 0.2,
++      resetsAt: new Date(Date.now() + 2 * 86_400_000).toISOString(),
++    },
++    { label: "Monthly", remaining: 0, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
 +  ],
 +  stats: [
 +    { label: "Requests", value: "42" },
@@ -603,21 +609,31 @@ index 0000000..8b1085c
 +    },
 +  });
 +  const calls = yield* Ref.make(0);
-+  const routes = HttpRouter.add(
-+    "GET",
-+    "/check",
-+    Effect.gen(function* () {
-+      const request = yield* HttpServerRequest.HttpServerRequest;
-+      if (
-+        request.headers.authorization !== `Bearer ${interactiveBackendKey}` ||
-+        !request.url.includes("ref=opaque-")
-+      )
-+        return HttpServerResponse.empty({ status: 401 });
-+      yield* Ref.update(calls, (value) => value + 1);
-+      const current = yield* Ref.get(answer);
-+      if (current.status === "timeout") return yield* Effect.never;
-+      return yield* HttpServerResponse.json(current.body, { status: current.status });
-+    }),
++  const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "GET",
++      "/logo.svg",
++      HttpServerResponse.text(
++        `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="260" viewBox="0 0 256 260"><path d="M239.184 106.203a64.716 64.716 0 0 0-5.576-53.103C219.452 28.459 191 15.784 163.213 21.74A65.586 65.586 0 0 0 52.096 45.22a64.716 64.716 0 0 0-43.23 31.36c-14.31 24.602-11.061 55.634 8.033 76.74a64.665 64.665 0 0 0 5.525 53.102c14.174 24.65 42.644 37.324 70.446 31.36a64.72 64.72 0 0 0 48.754 21.744c28.481.025 53.714-18.361 62.414-45.481a64.767 64.767 0 0 0 43.229-31.36c14.137-24.558 10.875-55.423-8.083-76.483Zm-97.56 136.338a48.397 48.397 0 0 1-31.105-11.255l1.535-.87 51.67-29.825a8.595 8.595 0 0 0 4.247-7.367v-72.85l21.845 12.636c.218.111.37.32.409.563v60.367c-.056 26.818-21.783 48.545-48.601 48.601Zm-104.466-44.61a48.345 48.345 0 0 1-5.781-32.589l1.534.921 51.722 29.826a8.339 8.339 0 0 0 8.441 0l63.181-36.425v25.221a.87.87 0 0 1-.358.665l-52.335 30.184c-23.257 13.398-52.97 5.431-66.404-17.803ZM23.549 85.38a48.499 48.499 0 0 1 25.58-21.333v61.39a8.288 8.288 0 0 0 4.195 7.316l62.874 36.272-21.845 12.636a.819.819 0 0 1-.767 0L41.353 151.53c-23.211-13.454-31.171-43.144-17.804-66.405v.256Zm179.466 41.695-63.08-36.63L161.73 77.86a.819.819 0 0 1 .768 0l52.233 30.184a48.6 48.6 0 0 1-7.316 87.635v-61.391a8.544 8.544 0 0 0-4.4-7.213Zm21.742-32.69-1.535-.922-51.619-30.081a8.39 8.39 0 0 0-8.492 0L99.98 99.808V74.587a.716.716 0 0 1 .307-.665l52.233-30.133a48.652 48.652 0 0 1 72.236 50.391v.205ZM88.061 139.097l-21.845-12.585a.87.87 0 0 1-.41-.614V65.685a48.652 48.652 0 0 1 79.757-37.346l-1.535.87-51.67 29.825a8.595 8.595 0 0 0-4.246 7.367l-.051 72.697Zm11.868-25.58 28.138-16.217 28.188 16.218v32.434l-28.086 16.218-28.188-16.218-.052-32.434Z"/></svg>`,
++        { contentType: "image/svg+xml" },
++      ),
++    ),
++    HttpRouter.add(
++      "GET",
++      "/check",
++      Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        if (
++          request.headers.authorization !== `Bearer ${interactiveBackendKey}` ||
++          !request.url.includes("ref=opaque-")
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        yield* Ref.update(calls, (value) => value + 1);
++        const current = yield* Ref.get(answer);
++        if (current.status === "timeout") return yield* Effect.never;
++        return yield* HttpServerResponse.json(current.body, { status: current.status });
++      }),
++    ),
 +  );
 +  const services = yield* Layer.build(
 +    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
@@ -658,9 +674,62 @@ index 0000000..8b1085c
 +  },`
 +        : "const handlers = {",
 +    );
+diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
+index 5b5f8f08..4f3ae7af 100644
+--- a/e2e/support/interactive-account-backend.ts
++++ b/e2e/support/interactive-account-backend.ts
+@@ -20,11 +20,13 @@ interface Session {
+   readonly ref: string;
+   readonly polls: number;
+ }
++type FixtureAccountInfo = Readonly<Record<string, string>>;
+ 
+ export const interactiveAccountBackend = Effect.gen(function* () {
+   const sessions = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
+   const calls = yield* Ref.make<readonly Input[]>([]);
+   const next = yield* Ref.make(0);
++  const accountInfo = yield* Ref.make<FixtureAccountInfo | undefined>(undefined);
+   const refuseRemoval = yield* Ref.make(false);
+   const refuseCancellation = yield* Ref.make(false);
+   const removeRemaining = yield* Ref.make<number | undefined>(undefined);
+@@ -116,7 +118,9 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+             ? {
+                 state: "connected",
+                 ref: session.ref,
+-                accountInfo: { displayName: "Synthetic pasted account" },
++                accountInfo: (yield* Ref.get(accountInfo)) ?? {
++                  displayName: "Synthetic pasted account",
++                },
+               }
+             : { state: "failed", message: "Synthetic paste refused" },
+         );
+@@ -124,13 +128,14 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+       yield* Ref.update(sessions, (current) =>
+         new Map(current).set(input.session ?? "", { ...session, polls }),
+       );
++      const configuredInfo = yield* Ref.get(accountInfo);
+       return yield* HttpServerResponse.json(
+         polls < 2
+           ? { state: "waiting" }
+           : {
+               state: "connected",
+               ref: session.ref,
+-              accountInfo: { displayName: "Synthetic device account" },
++              accountInfo: configuredInfo ?? { displayName: "Synthetic device account" },
+             },
+       );
+     }),
+@@ -145,6 +150,7 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+   return {
+     origin: `http://127.0.0.1:${server.address.port}`,
+     calls: Ref.get(calls),
++    setAccountInfo: (value: FixtureAccountInfo) => Ref.set(accountInfo, value),
+     refuseCancellation: (refuse: boolean) => Ref.set(refuseCancellation, refuse),
+     refuseRemoval: (refuse: boolean) =>
+       Ref.set(refuseRemoval, refuse).pipe(Effect.andThen(Ref.set(removeRemaining, undefined))),
 diff --git a/e2e/support/provisioned-source.ts b/e2e/support/provisioned-source.ts
 new file mode 100644
-index 0000000..717eb01
+index 00000000..717eb013
 --- /dev/null
 +++ b/e2e/support/provisioned-source.ts
 @@ -0,0 +1,14 @@
@@ -680,7 +749,7 @@ index 0000000..717eb01
 +});`;
 diff --git a/e2e/support/status-account.ts b/e2e/support/status-account.ts
 new file mode 100644
-index 0000000..25d9689
+index 00000000..25d96892
 --- /dev/null
 +++ b/e2e/support/status-account.ts
 @@ -0,0 +1,82 @@
@@ -767,7 +836,7 @@ index 0000000..25d9689
 +    };
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 02c6259..ba9af44 100644
+index 02c62595..ba9af449 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -7329,6 +7329,128 @@ export const scenarios = plan({
@@ -901,7 +970,7 @@ index 02c6259..ba9af44 100644
      file: "interactive-accounts.spec.ts",
 diff --git a/e2e/tests/account-display-privacy.spec.ts b/e2e/tests/account-display-privacy.spec.ts
 new file mode 100644
-index 0000000..8052ddf
+index 00000000..8052ddf5
 --- /dev/null
 +++ b/e2e/tests/account-display-privacy.spec.ts
 @@ -0,0 +1,212 @@
@@ -1119,7 +1188,7 @@ index 0000000..8052ddf
 +});
 diff --git a/e2e/tests/account-status-factory.spec.ts b/e2e/tests/account-status-factory.spec.ts
 new file mode 100644
-index 0000000..6635967
+index 00000000..66359676
 --- /dev/null
 +++ b/e2e/tests/account-status-factory.spec.ts
 @@ -0,0 +1,65 @@
@@ -1190,7 +1259,7 @@ index 0000000..6635967
 +});
 diff --git a/e2e/tests/account-status-privacy.spec.ts b/e2e/tests/account-status-privacy.spec.ts
 new file mode 100644
-index 0000000..f965ea9
+index 00000000..f965ea95
 --- /dev/null
 +++ b/e2e/tests/account-status-privacy.spec.ts
 @@ -0,0 +1,108 @@
@@ -1304,7 +1373,7 @@ index 0000000..f965ea9
 +});
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
 new file mode 100644
-index 0000000..b824af7
+index 00000000..b824af74
 --- /dev/null
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -0,0 +1,77 @@
@@ -1387,10 +1456,10 @@ index 0000000..b824af7
 +});
 diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
 new file mode 100644
-index 0000000..b4df671
+index 00000000..6dd11109f31db590cdc7da52f9e04863112bd6bf
 --- /dev/null
 +++ b/e2e/tests/account-status.spec.ts
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,459 @@
 +/** App checks use real linked backend credentials and expose bounded display data through HTTP and the row. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1410,7 +1479,6 @@ index 0000000..b4df671
 +  interactiveAccountBackend,
 +  interactiveBackendKey,
 +} from "../support/interactive-account-backend.ts";
-+import { serverControl } from "../support/server-control.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +const Detail = Schema.Struct({
@@ -1442,11 +1510,27 @@ index 0000000..b4df671
 +          actors = yield* Actors,
 +          browser = yield* Browser,
 +          evidence = yield* Evidence;
-+        yield* serverControl("stop");
-+        yield* serverControl("environment", 200, { EXECUTOR_PRODUCT_NAME: "Signalbox" });
-+        yield* serverControl("start");
 +        const backend = yield* interactiveAccountBackend;
 +        const statusBackend = yield* accountStatusBackend;
++        const longName = "Synthetic subscription account with a very long display name";
++        const longEmail = `fixture-${"unbreakable-".repeat(7)}account@example.test`;
++        yield* backend.setAccountInfo({
++          displayName: longName,
++          email: longEmail,
++          avatarUrl: `${statusBackend.origin}/logo.svg`,
++        });
++        yield* statusBackend.answer({
++          status: 200,
++          body: {
++            accountInfo: {
++              displayName: longName,
++              email: longEmail,
++              avatarUrl: `${statusBackend.origin}/logo.svg`,
++            },
++            status: displayedStatus,
++            privateCredential: "must-not-cross-the-check-boundary",
++          },
++        });
 +        const prefix = `/api/organizations/${actors.organization.id}`;
 +        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
 +          name: "Account status fixture",
@@ -1513,7 +1597,7 @@ index 0000000..b4df671
 +            return yield* body(Health, response);
 +          });
 +        const health = yield* check();
-+        expect(health.info).toMatchObject({ displayName: "Checked fixture identity" });
++        expect(health.info).toMatchObject({ displayName: longName, email: longEmail });
 +        expect(health.apps[0]).toMatchObject({
 +          checkable: true,
 +          check: { status: "healthy", current: true, displayStatus: displayedStatus },
@@ -1529,29 +1613,199 @@ index 0000000..b4df671
 +        yield* browser.use("Wait for the account status", (page) =>
 +          page
 +            .getByRole("region", { name: "Your accounts", exact: true })
-+            .getByRole("group", { name: "Account status", exact: true })
++            .getByRole("group", { name: "Account status badges", exact: true })
 +            .getByText("Available", { exact: true })
 +            .waitFor(),
 +        );
 +        const visible = yield* browser.use("Read the status row and accessible meter", (page) => {
 +          const status = page
 +            .getByRole("region", { name: "Your accounts", exact: true })
-+            .getByRole("group", { name: "Account status", exact: true });
++            .getByRole("group", { name: "Account status details", exact: true });
++          const row = status.locator("xpath=ancestor::li[1]");
++          const header = row.locator("[data-account-row-header]");
++          const menu = row.locator("[data-account-row-menu]");
++          const badges = header.getByRole("group", { name: "Account status badges", exact: true });
++          const good = status.getByRole("meter", { name: "5h", exact: true });
++          const unknown = status.getByRole("meter", { name: "Weekly", exact: true });
++          const exhausted = status.getByRole("meter", { name: "Monthly", exact: true });
 +          return Promise.all([
-+            status.getByText("Pro", { exact: true }).count(),
-+            status.getByRole("meter", { name: "5h", exact: true }).getAttribute("aria-valuenow"),
-+            status.getByText("Unknown", { exact: true }).count(),
++            header.getByText("Pro", { exact: true }).count(),
++            good.getAttribute("aria-valuenow"),
++            good.getAttribute("data-meter-state"),
++            good.locator(".account-meter-fill").getAttribute("class"),
++            unknown.getAttribute("data-meter-state"),
++            unknown.getAttribute("class"),
++            status
++              .getByRole("meter", { name: "Daily", exact: true })
++              .getAttribute("data-meter-state"),
++            exhausted.getAttribute("data-meter-state"),
++            exhausted.getAttribute("class"),
++            exhausted
++              .locator("xpath=preceding-sibling::span[1]")
++              .locator("[data-meter-remaining]")
++              .locator("[data-meter-label]")
++              .getAttribute("class"),
++            status.getByText("Rem unknown", { exact: true }).count(),
 +            status.innerText(),
-+            status.locator("..").getByText("Working", { exact: true }).count(),
++            header.getByText("Working", { exact: true }).count(),
++            row.locator("[data-account-name]").getAttribute("title"),
++            row
++              .locator("[data-account-name]")
++              .evaluate((element) => getComputedStyle(element).textOverflow),
++            row.locator("[data-account-identity]").getAttribute("title"),
++            row
++              .locator("[data-account-identity]")
++              .evaluate((element) => getComputedStyle(element).textOverflow),
++            row.locator('img[src$="/logo.svg"]').getAttribute("src"),
++            row.locator("[data-added-by-slot]").count(),
++            status.getByRole("meter", { name: "Daily", exact: true }).getAttribute("class"),
++            status
++              .getByRole("meter", { name: "Daily", exact: true })
++              .locator(".account-meter-fill")
++              .getAttribute("class"),
++            header.getByRole("group", { name: "Account status badges", exact: true }).innerText(),
++            menu.boundingBox(),
++            badges.boundingBox(),
++            row.boundingBox(),
 +          ]);
 +        });
 +        expect(visible[0]).toBe(1);
-+        expect(visible[1]).toBe("75");
-+        expect(visible[2]).toBe(1);
-+        expect(visible[3]).toContain("Requests: 42");
-+        expect(visible[3]).toContain("Tokens: 12,345");
-+        expect(visible[3]).toContain("Cost: $1.23");
-+        expect(visible[4]).toBe(1);
++        expect(visible[1]).toBe("70");
++        expect(visible[2]).toBe("good");
++        expect(visible[3]).toContain("bg-emerald-500");
++        expect(visible[4]).toBe("unknown");
++        expect(visible[5]).toContain("repeating-linear-gradient");
++        expect(visible[6]).toBe("bad");
++        expect(visible[7]).toBe("exhausted");
++        expect(visible[8]).toContain("bg-destructive/20");
++        expect(visible[9]).toContain("text-destructive");
++        expect(visible[10]).toBe(1);
++        expect(visible[11]).toContain("Rem 70%");
++        expect(visible[11]).toContain("in 6 days");
++        expect(visible[11]).toContain("Rem unknown");
++        expect(visible[11]).toContain("Reset unknown");
++        expect(visible[11]).toContain("Rem 20% · Low");
++        expect(visible[11]).toContain("Rem 0% · Exhausted");
++        expect(visible[11]).toContain("in 2 days");
++        expect(visible[11]).toContain("↻ 2 banked · next expires in 3 days");
++        expect(visible[11]).toContain("Requests: 42");
++        expect(visible[11]).toContain("Tokens: 12,345");
++        expect(visible[11]).toContain("Cost: $1.23");
++        expect(visible[12]).toBe(1);
++        expect(visible[13]).toBe(longName);
++        expect(visible[14]).toBe("ellipsis");
++        expect(visible[15]).toBe(longEmail);
++        expect(visible[16]).toBe("ellipsis");
++        expect(visible[17]).toContain(statusBackend.origin);
++        expect(visible[18]).toBe(1);
++        expect(visible[22]).not.toBeNull();
++        expect(visible[23]).not.toBeNull();
++        expect(visible[24]).not.toBeNull();
++        if (visible[22] && visible[23] && visible[24]) {
++          expect(visible[22].x + visible[22].width).toBeGreaterThan(
++            visible[24].x + visible[24].width - 80,
++          );
++          expect(visible[23].y).toBeGreaterThan(visible[22].y + visible[22].height);
++        }
++        const logo = yield* browser.use("Verify the local lab logo rendered", (page) =>
++          page
++            .getByRole("region", { name: "Your accounts", exact: true })
++            .locator('img[src$="/logo.svg"]')
++            .evaluate((image) => ({
++              source: (image as HTMLImageElement).src,
++              width: (image as HTMLImageElement).naturalWidth,
++              complete: (image as HTMLImageElement).complete,
++              background: getComputedStyle(image.parentElement!).backgroundColor,
++            })),
++        );
++        expect(logo.source).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/logo\.svg$/);
++        expect([logo.complete, logo.background]).toEqual([true, "rgb(255, 255, 255)"]);
++        expect(logo.width).toBeGreaterThan(0);
++        yield* evidence.attach(
++          "account-status-lab-logo.png",
++          "image/png",
++          yield* browser.use("Capture the real local lab logo", (page) =>
++            page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .locator('img[src$="/logo.svg"]')
++              .screenshot(),
++          ),
++        );
++        yield* browser.use("Switch the provider logo tile to dark mode", (page) =>
++          page.emulateMedia({ colorScheme: "dark" }),
++        );
++        const darkLogoBackground = yield* browser.use("Check logo contrast in dark mode", (page) =>
++          page
++            .getByRole("region", { name: "Your accounts", exact: true })
++            .locator('img[src$="/logo.svg"]')
++            .evaluate((image) => getComputedStyle(image.parentElement!).backgroundColor),
++        );
++        expect(darkLogoBackground).toBe("rgb(255, 255, 255)");
++        yield* browser.use("Restore light mode for account row screenshots", (page) =>
++          page.emulateMedia({ colorScheme: "light" }),
++        );
++        yield* evidence.attach(
++          "account-status-long-email-row.png",
++          "image/png",
++          yield* browser.use("Capture the long-email row", (page) =>
++            page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByRole("group", { name: "Account status details", exact: true })
++              .locator("xpath=ancestor::li[1]")
++              .screenshot(),
++          ),
++        );
++        yield* evidence.attach(
++          "account-status-exhausted-meter.png",
++          "image/png",
++          yield* browser.use("Capture the exhausted meter", (page) =>
++            page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByRole("group", { name: "Account status details", exact: true })
++              .getByRole("meter", { name: "Monthly", exact: true })
++              .locator("xpath=ancestor::span[1]")
++              .screenshot(),
++          ),
++        );
++        expect(visible[19]).toContain("meter-bad");
++        expect(visible[20]).toContain("bg-destructive");
++        expect(visible[21]).toContain("Pro");
++        expect(visible[21]).toContain("Available");
++        expect(visible[21]).toContain("Resets in 6 days");
++        yield* statusBackend.answer({
++          status: 200,
++          body: {
++            status: {
++              ...displayedStatus,
++              meters: displayedStatus.meters.map((meter) =>
++                meter.label === "Daily" ? { ...meter, remaining: 0.3 } : meter,
++              ),
++            },
++          },
++        });
++        const threshold = yield* check();
++        expect(threshold.apps[0]?.check?.displayStatus).toMatchObject({
++          meters: expect.arrayContaining([
++            expect.objectContaining({ label: "Daily", remaining: 0.3 }),
++          ]),
++        });
++        yield* browser.use("Refresh the account status at the warning threshold", (page) =>
++          page.reload(),
++        );
++        yield* browser.use("Render exactly 30 percent as warning", (page) => {
++          const status = page
++            .getByRole("region", { name: "Your accounts", exact: true })
++            .getByRole("group", { name: "Account status details", exact: true });
++          return status
++            .getByRole("meter", { name: "Daily", exact: true })
++            .waitFor()
++            .then(() =>
++              status
++                .getByRole("meter", { name: "Daily", exact: true })
++                .getAttribute("data-meter-state"),
++            )
++            .then((state) => expect(state).toBe("warn"));
++        });
 +        yield* evidence.attach(
 +          "account-status-row.png",
 +          "image/png",
@@ -1562,17 +1816,67 @@ index 0000000..b4df671
 +        yield* browser.use("Check the narrow account row", (page) =>
 +          page.setViewportSize({ width: 390, height: 844 }),
 +        );
++        yield* browser.use("Show the selected account at phone width", (page) =>
++          page.getByRole("region", { name: "Your accounts", exact: true }).scrollIntoViewIfNeeded(),
++        );
++        const phoneRow = yield* browser.use(
++          "Read phone identity, badge group, and menu alignment",
++          (page) => {
++            const row = page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByRole("group", { name: "Account status details", exact: true })
++              .locator("xpath=ancestor::li[1]");
++            const name = row.locator("[data-account-name]");
++            const email = row.locator("[data-account-identity]");
++            const menu = row.locator("[data-account-row-menu]");
++            return Promise.all([
++              name.boundingBox(),
++              menu.boundingBox(),
++              menu.getByRole("button").count(),
++              name.getAttribute("title"),
++              name.evaluate((element) => getComputedStyle(element).textOverflow),
++              email.getAttribute("title"),
++              email.evaluate((element) => getComputedStyle(element).textOverflow),
++              row.getByRole("group", { name: "Account status badges", exact: true }).innerText(),
++              row.getByRole("group", { name: "Account status badges", exact: true }).boundingBox(),
++              row.boundingBox(),
++            ]);
++          },
++        );
++        expect(phoneRow[0]).not.toBeNull();
++        expect(phoneRow[1]).not.toBeNull();
++        expect(phoneRow[2]).toBe(1);
++        expect(phoneRow[3]).toBe(longName);
++        expect(phoneRow[4]).toBe("ellipsis");
++        expect(phoneRow[5]).toBe(longEmail);
++        expect(phoneRow[6]).toBe("ellipsis");
++        expect(phoneRow[7]).toContain("Pro");
++        expect(phoneRow[7]).toContain("Available");
++        expect(phoneRow[7]).toContain("Resets in 6 days");
++        expect(phoneRow[8]).not.toBeNull();
++        expect(phoneRow[9]).not.toBeNull();
++        if (phoneRow[1] !== null && phoneRow[8] !== null && phoneRow[9] !== null) {
++          expect(phoneRow[1].x + phoneRow[1].width).toBeGreaterThan(
++            phoneRow[9].x + phoneRow[9].width - 80,
++          );
++          expect(phoneRow[8].y).toBeGreaterThan(phoneRow[0]!.y + phoneRow[0]!.height);
++        }
++        const nameBox = phoneRow[0];
++        const menuBox = phoneRow[1];
++        // The menu target is 44px tall; its center aligns with the account name at phone width.
++        if (nameBox !== null && menuBox !== null)
++          expect(
++            Math.abs(menuBox.y + menuBox.height / 2 - (nameBox.y + nameBox.height / 2)),
++            JSON.stringify({ menuBox, nameBox }),
++          ).toBeLessThanOrEqual(2);
 +        const box = yield* browser.use("Read the narrow status bounds", (page) =>
 +          page
 +            .getByRole("region", { name: "Your accounts", exact: true })
-+            .getByRole("group", { name: "Account status", exact: true })
++            .getByRole("group", { name: "Account status details", exact: true })
 +            .boundingBox(),
 +        );
 +        expect(box).not.toBeNull();
 +        if (box !== null) expect(box.x + box.width).toBeLessThanOrEqual(390);
-+        yield* browser.use("Show the selected account at phone width", (page) =>
-+          page.getByRole("region", { name: "Your accounts", exact: true }).scrollIntoViewIfNeeded(),
-+        );
 +        yield* evidence.attach(
 +          "account-status-mobile.png",
 +          "image/png",
@@ -1583,8 +1887,8 @@ index 0000000..b4df671
 +        yield* browser.use("Restore the dashboard viewport", (page) =>
 +          page.setViewportSize({ width: 1280, height: 800 }),
 +        );
-+        // The existing check remains fresh on opening and revisiting the tab.
-+        expect(yield* statusBackend.calls).toBe(1);
++        // Opening checks once; the explicitly refreshed threshold result remains current on revisit.
++        expect(yield* statusBackend.calls).toBe(2);
 +        for (const [status, classified] of [
 +          [401, "credentials_rejected"],
 +          [403, "forbidden"],
@@ -1594,7 +1898,7 @@ index 0000000..b4df671
 +          const failed = yield* check();
 +          expect(failed.apps[0]?.check).toMatchObject({ status: classified, current: true });
 +          expect(failed.apps[0]?.check?.displayStatus).toBeUndefined();
-+          expect(failed.info).toMatchObject({ displayName: "Checked fixture identity" });
++          expect(failed.info).toMatchObject({ displayName: longName });
 +        }
 +        // Bounds fail the check rather than publishing oversized or invalid display data.
 +        for (const status of [
@@ -1615,8 +1919,126 @@ index 0000000..b4df671
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/app-account-links.spec.ts b/e2e/tests/app-account-links.spec.ts
+index 441cc1b9..10053e71 100644
+--- a/e2e/tests/app-account-links.spec.ts
++++ b/e2e/tests/app-account-links.spec.ts
+@@ -241,13 +241,17 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+               .click(),
+           );
+         const region = (slot: "service" | "extra") =>
+-          browser.use(`Find Inbox (${slot})`, (page) =>
+-            Promise.resolve(page.getByRole("region", { name: `Inbox (${slot})`, exact: true })),
++          browser.use(`Find the ${slot === "service" ? "plain" : "many"} Inbox account`, (page) =>
++            Promise.resolve(
++              page
++                .getByRole("region", { name: "Inbox", exact: true })
++                .nth(slot === "service" ? 0 : 1),
++            ),
+           );
+         const connect = (slot: "service" | "extra", label: string) =>
+           Effect.gen(function* () {
+             const requirement = yield* region(slot);
+-            yield* browser.use(`Connect a new account for Inbox (${slot})`, () =>
++            yield* browser.use("Connect a new account for Inbox", () =>
+               requirement.getByRole("button", { name: "Connect new account", exact: true }).click(),
+             );
+             yield* browser.use("Enter the synthetic credential", (page) =>
+@@ -330,9 +334,11 @@ layer(HostedLive, { excludeTestServices: true })("App account links", (it) => {
+           ["extra", "Work inbox"],
+         ] as const)
+           expect(
+-            yield* browser.use(`Inbox (${slot}) lists its own linked account`, (page) =>
++            yield* browser.use("Inbox lists its own linked account", (page) =>
+               linkedRows(
+-                page.getByRole("region", { name: `Inbox (${slot})`, exact: true }),
++                page
++                  .getByRole("region", { name: "Inbox", exact: true })
++                  .nth(slot === "service" ? 0 : 1),
+                 "Inbox",
+                 [label],
+               ),
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index ca733793..ab550682 100644
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -96,10 +96,13 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+         expect(
+           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${third}`)).status,
+         ).toBe(200);
++        // Both account fixtures have the same display name, so use their stable requirement order.
+         const region = (slot: "primary" | "mailboxes") =>
+           browser.use(`Find the ${slot} accounts`, (page) =>
+             Promise.resolve(
+-              page.getByRole("region", { name: `Account fixture (${slot})`, exact: true }),
++              page
++                .getByRole("region", { name: "Account fixture", exact: true })
++                .nth(slot === "primary" ? 0 : 1),
+             ),
+           );
+         const primary = yield* region("primary"),
+@@ -111,9 +114,9 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           expected: ReadonlyArray<readonly [string, boolean]>,
+         ) =>
+           browser.use(step, (page) => {
+-            const name =
+-              slot === "calendar" ? "Calendar fixture (calendar)" : `Account fixture (${slot})`;
+-            const selector = `section[aria-label="${name}"] :is([role="radio"], [role="checkbox"])`;
++            const name = slot === "calendar" ? "Calendar fixture" : "Account fixture";
++            const role = slot === "mailboxes" ? "checkbox" : "radio";
++            const selector = `section[aria-label="${name}"] [role="${role}"]`;
+             const read = (args: {
+               readonly selector: string;
+               readonly expected: ReadonlyArray<readonly [string, boolean]>;
+@@ -258,13 +261,11 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           yield* browser.use("Each requirement explains how calls use its accounts", (page) =>
+             Promise.all([
+               primary
+-                .getByText("primary · The app uses this account when you use it.", {
++                .getByText("The app uses this account when you use it.", {
+                   exact: true,
+                 })
+                 .count(),
+-              mailboxes
+-                .getByText("mailboxes · The app uses every account you link.", { exact: true })
+-                .count(),
++              mailboxes.getByText("The app uses every account you link.", { exact: true }).count(),
+               primary.getByRole("radio").count(),
+               mailboxes.getByRole("checkbox").count(),
+               page.getByRole("button", { name: "Replace", exact: true }).count(),
+@@ -540,9 +541,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
+           ),
+         );
+         const calendar = yield* browser.use("Find the calendar accounts", (page) =>
+-          Promise.resolve(
+-            page.getByRole("region", { name: "Calendar fixture (calendar)", exact: true }),
+-          ),
++          Promise.resolve(page.getByRole("region", { name: "Calendar fixture", exact: true })),
+         );
+         yield* browser.use("Reload the Accounts tab for the calendar link", (page) =>
+           page.goto(url),
+diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spec.ts
+index 7e5f8743..7271238f 100644
+--- a/e2e/tests/app-accounts-tab.spec.ts
++++ b/e2e/tests/app-accounts-tab.spec.ts
+@@ -147,12 +147,12 @@ const appSection = (page: Page) => page.getByRole("region", { name: "App account
+ /** The caller's own requirements in the Accounts tab. */
+ const yourSection = (page: Page) =>
+   page.getByRole("region", { name: "Your accounts", exact: true });
+-/** Datadog's requirement in the App accounts section; the app has two requirements. */
++/** Datadog's requirement in the App accounts section. */
+ const datadogSection = (page: Page) =>
+-  appSection(page).getByRole("region", { name: "Datadog (datadog)", exact: true });
++  appSection(page).getByRole("region", { name: "Datadog", exact: true });
+ /** Mail's requirement in the Your accounts section. */
+ const mailSection = (page: Page) =>
+-  yourSection(page).getByRole("region", { name: "Mail (mail)", exact: true });
++  yourSection(page).getByRole("region", { name: "Mail", exact: true });
+ /** The schedule row of the app's `report` schedule. */
+ const reportRow = (page: Page) => page.locator('[aria-label="report"]');
+ 
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index af398c7..2ca7e6e 100644
+index af398c7d..2ca7e6e2 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -1628,12 +2050,43 @@ index af398c7..2ca7e6e 100644
          });
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
+diff --git a/e2e/tests/interactive-account-dialog.spec.ts b/e2e/tests/interactive-account-dialog.spec.ts
+index 15fad612..a6c8e88d 100644
+--- a/e2e/tests/interactive-account-dialog.spec.ts
++++ b/e2e/tests/interactive-account-dialog.spec.ts
+@@ -29,7 +29,7 @@ const Links = Schema.Array(
+ const acquiredSection = (page: Page) =>
+   page
+     .getByRole("region", { name: "App accounts", exact: true })
+-    .getByRole("region", { name: "Interactive account (sharedIdentity)", exact: true });
++    .getByRole("region", { name: "Interactive account", exact: true });
+ const dialog = (page: Page) => page.getByRole("dialog");
+ /** Polling finishes the device sign-in on its second status read, a few seconds in. */
+ const signedIn = { timeout: 30_000 };
+diff --git a/e2e/tests/local-app-accounts-tab.spec.ts b/e2e/tests/local-app-accounts-tab.spec.ts
+index 53d9a532..80b2e2c4 100644
+--- a/e2e/tests/local-app-accounts-tab.spec.ts
++++ b/e2e/tests/local-app-accounts-tab.spec.ts
+@@ -44,11 +44,11 @@ const Settings = Schema.Array(
+ 
+ const appSection = (page: Page) => page.getByRole("region", { name: "App accounts", exact: true });
+ const datadogSection = (page: Page) =>
+-  appSection(page).getByRole("region", { name: "Datadog (datadog)", exact: true });
++  appSection(page).getByRole("region", { name: "Datadog", exact: true });
+ const mailSection = (page: Page) =>
+   page
+     .getByRole("region", { name: "Your accounts", exact: true })
+-    .getByRole("region", { name: "Mail (mail)", exact: true });
++    .getByRole("region", { name: "Mail", exact: true });
+ const reportRow = (page: Page) => page.locator('[aria-label="report"]');
+ 
+ layer(TestLive, { excludeTestServices: true })("Local Accounts tab", (it) => {
 diff --git a/e2e/tests/provisioned-accounts.spec.ts b/e2e/tests/provisioned-accounts.spec.ts
 new file mode 100644
-index 0000000..3311b91
+index 00000000..61a984af
 --- /dev/null
 +++ b/e2e/tests/provisioned-accounts.spec.ts
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,161 @@
 +/** Retained host credentials survive adopting a provisioned declaration; browser and HTTP cannot replace them. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1665,9 +2118,6 @@ index 0000000..3311b91
 +          actors = yield* Actors,
 +          browser = yield* Browser,
 +          evidence = yield* Evidence;
-+        yield* serverControl("stop");
-+        yield* serverControl("environment", 200, { EXECUTOR_PRODUCT_NAME: "Signalbox" });
-+        yield* serverControl("start");
 +        const prefix = `/api/organizations/${actors.organization.id}`;
 +        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
 +          name: "Host access fixture",
@@ -1751,27 +2201,25 @@ index 0000000..3311b91
 +        expect(used.status, JSON.stringify(used.body)).toBe(200);
 +        expect(used.body).toMatchObject({ valid: true });
 +        yield* browser.use("Reload the provisioned account row", (page) => page.reload());
-+        yield* browser.use("Wait for automatic setup", (page) =>
-+          page.getByText("Set up automatically", { exact: true }).waitFor(),
++        yield* browser.use("Wait for the provisioned account identity", (page) =>
++          page.getByText("Host account", { exact: true }).waitFor(),
 +        );
-+        const actions = yield* browser.use("Read provisioned row actions", (page) =>
-+          Promise.all([
-+            page.getByRole("button", { name: "Connect new account", exact: true }).count(),
-+            page.getByRole("button", { name: "Reconnect", exact: true }).count(),
-+          ]),
++        const provisionedText = yield* browser.use("Read the provisioned account section", (page) =>
++          page.getByRole("region", { name: "Your accounts", exact: true }).innerText(),
 +        );
-+        expect(actions).toEqual([0, 0]);
-+        yield* browser.use("Open the provisioned account menu", (page) =>
-+          page.getByRole("button", { name: "Manage Host account", exact: true }).click(),
++        const accountRow = yield* browser.use(
++          "Read the provisioned row label and attribution slot",
++          (page) => {
++            const row = page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByText("Host account", { exact: true })
++              .locator("xpath=ancestor::li[1]");
++            return Promise.all([
++              row.locator("[data-account-provisioned]").innerText(),
++              row.locator("[data-added-by-slot]").innerText(),
++            ]);
++          },
 +        );
-+        const menu = yield* browser.use("Read the provisioned account menu", (page) =>
-+          Promise.all([
-+            page.getByRole("menuitem", { name: "Update credentials", exact: true }).count(),
-+            page.getByRole("menuitem", { name: "Reconnect", exact: true }).count(),
-+          ]),
-+        );
-+        expect(menu).toEqual([0, 0]);
-+        yield* browser.use("Close the account menu", (page) => page.keyboard.press("Escape"));
 +        yield* evidence.attach(
 +          "provisioned-after.png",
 +          "image/png",
@@ -1779,13 +2227,30 @@ index 0000000..3311b91
 +            page.screenshot({ fullPage: true }),
 +          ),
 +        );
++        expect(provisionedText).toContain("Set up automatically");
++        expect(accountRow).toEqual(["Set up automatically", ""]);
++        yield* browser.use("Wait for automatic setup", (page) =>
++          page.locator("[data-account-provisioned]").waitFor(),
++        );
++        const actions = yield* browser.use("Read provisioned row actions", (page) =>
++          Promise.all([
++            page.getByRole("button", { name: "Connect new account", exact: true }).count(),
++            page.getByRole("button", { name: "Reconnect", exact: true }).count(),
++            page.getByRole("button", { name: "Manage Host account", exact: true }).count(),
++            page.getByRole("button", { name: "Update credentials", exact: true }).count(),
++            page
++              .getByRole("menuitem", { name: /Remove|Delete|Update credentials|Reconnect/ })
++              .count(),
++          ]),
++        );
++        expect(actions).toEqual([0, 0, 0, 0, 0]);
 +      }),
 +    ),
 +  );
 +});
 diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
 new file mode 100644
-index 0000000..405937a
+index 00000000..67f7d976
 --- /dev/null
 +++ b/e2e/tests/provisioned-link-boundary.spec.ts
 @@ -0,0 +1,187 @@
@@ -1915,7 +2380,7 @@ index 0000000..405937a
 +                ),
 +            ),
 +            page
-+              .getByRole("region", { name: "Host access (service)", exact: true })
++              .getByRole("region", { name: "Host access", exact: true })
 +              .getByRole("radio", { name: "Ordinary account", exact: true })
 +              .click(),
 +          ]).then(([response]) => response.status()),
@@ -1978,7 +2443,7 @@ index 0000000..405937a
 +});
 diff --git a/e2e/tests/provisioned-mixed.spec.ts b/e2e/tests/provisioned-mixed.spec.ts
 new file mode 100644
-index 0000000..680fe1f
+index 00000000..680fe1f8
 --- /dev/null
 +++ b/e2e/tests/provisioned-mixed.spec.ts
 @@ -0,0 +1,150 @@
@@ -2134,7 +2599,7 @@ index 0000000..680fe1f
 +});
 diff --git a/packages/apps/protocols/17.json b/packages/apps/protocols/17.json
 new file mode 100644
-index 0000000..2ac2647
+index 00000000..2ac26479
 --- /dev/null
 +++ b/packages/apps/protocols/17.json
 @@ -0,0 +1,4530 @@
@@ -6670,7 +7135,7 @@ index 0000000..2ac2647
 +}
 diff --git a/packages/apps/src/contracts/account-status.ts b/packages/apps/src/contracts/account-status.ts
 new file mode 100644
-index 0000000..7358683
+index 00000000..73586833
 --- /dev/null
 +++ b/packages/apps/src/contracts/account-status.ts
 @@ -0,0 +1,41 @@
@@ -6716,7 +7181,7 @@ index 0000000..7358683
 +});
 +export type AccountStatus = typeof AccountStatus.Type;
 diff --git a/packages/apps/src/contracts/app.ts b/packages/apps/src/contracts/app.ts
-index 6b9ab4c..4664413 100644
+index 6b9ab4cd..46644131 100644
 --- a/packages/apps/src/contracts/app.ts
 +++ b/packages/apps/src/contracts/app.ts
 @@ -125,6 +125,8 @@ export type EvaluationContext<Slots extends ScopedSlots> = BoundContext<Slots, "
@@ -6729,7 +7194,7 @@ index 6b9ab4c..4664413 100644
    readonly events?: Readonly<Record<string, import("./events.ts").AppEvent>>;
    /** Declared beside the accounts and checked when the module loads. */
 diff --git a/packages/apps/src/contracts/connect.ts b/packages/apps/src/contracts/connect.ts
-index e7aa405..5871e92 100644
+index e7aa4050..5871e923 100644
 --- a/packages/apps/src/contracts/connect.ts
 +++ b/packages/apps/src/contracts/connect.ts
 @@ -1,6 +1,6 @@
@@ -6737,7 +7202,7 @@ index e7aa405..5871e92 100644
  import { Schema, type Effect } from "effect";
 -import { AccountInfo } from "./provider.ts";
 +import { AccountInfo, AccountCheckResult } from "./provider.ts";
-
+ 
  /** Instructions a person can follow while the app holds the sign-in session. */
  export const InteractiveInstructions = Schema.Struct({
 @@ -54,6 +54,11 @@ export interface ConnectHandlers<Context, Method extends string = string> {
@@ -6762,7 +7227,7 @@ index e7aa405..5871e92 100644
    }),
  ]);
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index e367ac6..5014b3b 100644
+index e367ac63..5014b3b5 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -98,7 +98,7 @@ export {
@@ -6775,7 +7240,7 @@ index e367ac6..5014b3b 100644
    HostAccountsInvalid,
    HostDeclarationInvalid,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 8783bd2..97feddf 100644
+index 8783bd2e..97feddf7 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -6785,7 +7250,7 @@ index 8783bd2..97feddf 100644
 -export const frameworkProtocol = 16;
 +export const frameworkProtocol = 17;
 diff --git a/packages/apps/src/contracts/protocols/15.ts b/packages/apps/src/contracts/protocols/15.ts
-index 2ecf5ad..64e33fe 100644
+index 2ecf5ad7..64e33fe0 100644
 --- a/packages/apps/src/contracts/protocols/15.ts
 +++ b/packages/apps/src/contracts/protocols/15.ts
 @@ -30,7 +30,8 @@ import {
@@ -6800,7 +7265,7 @@ index 2ecf5ad..64e33fe 100644
  import { AppIcons } from "../icons.ts";
 diff --git a/packages/apps/src/contracts/protocols/16.ts b/packages/apps/src/contracts/protocols/16.ts
 new file mode 100644
-index 0000000..a3be267
+index 00000000..a3be2672
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/16.ts
 @@ -0,0 +1,677 @@
@@ -7482,7 +7947,7 @@ index 0000000..a3be267
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 70815db..539b3fd 100644
+index 70815dbc..539b3fd2 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -122,6 +122,7 @@ export const DeclaredAuthMethod = Schema.Union([
@@ -7501,15 +7966,15 @@ index 70815db..539b3fd 100644
 +  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
  });
  export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
-
+ 
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index 1a4b06c..5d643cc 100644
+index 1a4b06cb..5d643cc1 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -20,6 +20,8 @@ import { protocol14 } from "./14.ts";
-
+ 
  import { protocol15 } from "./15.ts";
-
+ 
 +import { protocol16 } from "./16.ts";
 +
  export const releasedProtocols = [
@@ -7522,7 +7987,7 @@ index 1a4b06c..5d643cc 100644
 +  protocol16,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index 3366d13..e55625b 100644
+index 3366d136..e55625b4 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -2,6 +2,8 @@
@@ -7532,7 +7997,7 @@ index 3366d13..e55625b 100644
 +import { AccountStatus } from "./account-status.ts";
 +export { AccountStatus } from "./account-status.ts";
  import { ProviderSite as ProviderSiteSchema } from "@executor-js/utils/account-site";
-
+ 
  export const ProviderSite = ProviderSiteSchema;
 @@ -19,6 +21,8 @@ export class SecretsMethod<Fields extends Schema.Decoder<unknown>> extends Data.
    "secrets",
@@ -7545,7 +8010,7 @@ index 3366d13..e55625b 100644
    readonly exposure?: Readonly<Record<string, FieldExposure>>;
 @@ -248,7 +252,10 @@ export const AccountInfo = Schema.Struct({
  export type AccountInfo = typeof AccountInfo.Type;
-
+ 
  /** A passing account check. Failures are thrown, so there is no failing variant. */
 -export const AccountCheckResult = Schema.Struct({ accountInfo: Schema.optionalKey(AccountInfo) });
 +export const AccountCheckResult = Schema.Struct({
@@ -7553,11 +8018,11 @@ index 3366d13..e55625b 100644
 +  status: Schema.optionalKey(AccountStatus),
 +});
  export type AccountCheckResult = typeof AccountCheckResult.Type;
-
+ 
  /** The account a provider's check verifies, with invocation-owned HTTP and cancellation. */
 diff --git a/packages/apps/src/implementation/account-check-errors.ts b/packages/apps/src/implementation/account-check-errors.ts
 new file mode 100644
-index 0000000..ce05453
+index 00000000..ce054535
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-check-errors.ts
 @@ -0,0 +1,42 @@
@@ -7605,7 +8070,7 @@ index 0000000..ce05453
 +}
 diff --git a/packages/apps/src/implementation/account-status-output.ts b/packages/apps/src/implementation/account-status-output.ts
 new file mode 100644
-index 0000000..48cfe4b
+index 00000000..48cfe4b0
 --- /dev/null
 +++ b/packages/apps/src/implementation/account-status-output.ts
 @@ -0,0 +1,17 @@
@@ -7627,7 +8092,7 @@ index 0000000..48cfe4b
 +    );
 +  });
 diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/implementation/app.ts
-index fb5c0c7..7930ddd 100644
+index fb5c0c7d..7930ddd5 100644
 --- a/packages/apps/src/implementation/app.ts
 +++ b/packages/apps/src/implementation/app.ts
 @@ -332,6 +332,19 @@ export const defineApp = <
@@ -7651,7 +8116,7 @@ index fb5c0c7..7930ddd 100644
      ...(requirements.icons === undefined || requirements.icons.length === 0
        ? {}
 diff --git a/packages/apps/src/implementation/connect.ts b/packages/apps/src/implementation/connect.ts
-index 798de8f..21fe559 100644
+index 798de8f3..21fe5599 100644
 --- a/packages/apps/src/implementation/connect.ts
 +++ b/packages/apps/src/implementation/connect.ts
 @@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
@@ -7712,7 +8177,7 @@ index 798de8f..21fe559 100644
        Schema.is(HostInputInvalid)(error) ||
        Schema.is(HostOutputInvalid)(error)
 diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/src/implementation/failure-detail.ts
-index 4636bca..e56dc14 100644
+index 4636bca1..e56dc146 100644
 --- a/packages/apps/src/implementation/failure-detail.ts
 +++ b/packages/apps/src/implementation/failure-detail.ts
 @@ -1,3 +1,5 @@
@@ -7724,7 +8189,7 @@ index 4636bca..e56dc14 100644
 @@ -99,34 +101,6 @@ const unverifiedMessage = ({ anonymous }: McpCredentialsUnverified) =>
              : `The MCP server answered HTTP ${anonymous.status}.`
        }`;
-
+ 
 -/** Account field values of at least this length are replaced wherever a message contains them. */
 -const minimumSecretLength = 6;
 -
@@ -7757,7 +8222,7 @@ index 4636bca..e56dc14 100644
  export const accountSecrets = (accounts: Redacted.Redacted<ResolvedAccounts>) =>
    accountFieldSecrets(Redacted.value(accounts));
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 4703377..1c5e9fe 100644
+index 47033773..1c5e9fea 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -1,7 +1,8 @@
@@ -7782,7 +8247,7 @@ index 4703377..1c5e9fe 100644
 @@ -208,7 +210,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
    );
  }
-
+ 
 -function declaredSlots(slots: AccountSlots) {
 +function declaredSlots(slots: AccountSlots, checks: readonly string[] | undefined) {
    return Effect.gen(function* () {
@@ -7877,7 +8342,7 @@ index 4703377..1c5e9fe 100644
          ),
        new HostOutputInvalid(),
 diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
-index 4c4b83c..4f80690 100644
+index 4c4b83c4..4f806906 100644
 --- a/packages/apps/src/implementation/provider.ts
 +++ b/packages/apps/src/implementation/provider.ts
 @@ -19,6 +19,7 @@ import { parseDeclaration } from "./schema.ts";
@@ -7889,11 +8354,11 @@ index 4c4b83c..4f80690 100644
    readonly exposure?: Readonly<Record<string, FieldExposure>>;
    readonly request?: readonly Placement[];
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
-index a2df74a..cf3e371 100644
+index a2df74af..cf3e3711 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
 @@ -79,6 +79,7 @@ export {
-
+ 
  export {
    type AccountCheckContext,
 +  type AccountStatus,
@@ -7916,7 +8381,7 @@ index a2df74a..cf3e371 100644
      ...exposureOf(options.fields),
      // SAFETY: the callback receives references named by the schema's own keys.
 diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src/contracts/account-connection.ts
-index 114380d..e62aa30 100644
+index 114380d0..e62aa308 100644
 --- a/packages/sdk/src/contracts/account-connection.ts
 +++ b/packages/sdk/src/contracts/account-connection.ts
 @@ -1,3 +1,4 @@
@@ -7926,7 +8391,7 @@ index 114380d..e62aa30 100644
    InteractiveRetirementFailed,
 @@ -250,6 +251,7 @@ export const AccountConnectionClosed = UserFacingError.define({
  export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
-
+ 
  const errors = [
 +  AccountProvisioned,
    StorageError,
@@ -7941,7 +8406,7 @@ index 114380d..e62aa30 100644
          AccountSiteInvalid,
          StorageError,
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 049b181..2ae2edf 100644
+index 049b181c..2ae2edfa 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -5,7 +5,7 @@ import { ApiError } from "@executor-js/utils/api-error";
@@ -7963,7 +8428,7 @@ index 049b181..2ae2edf 100644
        /** Why the check failed, as the app or host explained it. Absent when it gave no reason. */
        message: Schema.optionalKey(Schema.String),
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 894c039..0641bef 100644
+index 8ec41e6c..a9a514ce 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -56,6 +56,8 @@ export const AccountRequirement = Schema.Struct({
@@ -7973,10 +8438,10 @@ index 894c039..0641bef 100644
 +  /** This slot can check app-acquired references through connect.check. */
 +  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
  });
-
+ 
  export type AccountRequirement = typeof AccountRequirement.Type;
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 3d3e5b7..59bc685 100644
+index 3d3e5b7f..59bc685d 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -28,6 +28,7 @@ import type {
@@ -7997,7 +8462,7 @@ index 3d3e5b7..59bc685 100644
    /** Called once for a newly saved account, including secrets and OAuth completion. */
    readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
 diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
-index 03d2e41..c76ff77 100644
+index 03d2e413..c76ff77e 100644
 --- a/packages/sdk/src/contracts/interactive-accounts.ts
 +++ b/packages/sdk/src/contracts/interactive-accounts.ts
 @@ -1,3 +1,4 @@
@@ -8014,7 +8479,7 @@ index 03d2e41..c76ff77 100644
    | InteractiveConnectionFailed
    | import("./account-connection.ts").AccountConnectionTargetChanged
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
-index ead5982..226b677 100644
+index ead5982c..226b6774 100644
 --- a/packages/sdk/src/contracts/provider.ts
 +++ b/packages/sdk/src/contracts/provider.ts
 @@ -68,3 +68,26 @@ export const AuthMethodInvalid = UserFacingError.define({
@@ -8046,7 +8511,7 @@ index ead5982..226b677 100644
 +  );
 diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
 new file mode 100644
-index 0000000..63b3bb8
+index 00000000..63b3bb8d
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-check-record.ts
 @@ -0,0 +1,38 @@
@@ -8089,7 +8554,7 @@ index 0000000..63b3bb8
 +    };
 +  });
 diff --git a/packages/sdk/src/implementation/account-connections.ts b/packages/sdk/src/implementation/account-connections.ts
-index 6d0eee6..b701700 100644
+index 6d0eee65..b701700d 100644
 --- a/packages/sdk/src/implementation/account-connections.ts
 +++ b/packages/sdk/src/implementation/account-connections.ts
 @@ -1,3 +1,4 @@
@@ -8136,7 +8601,7 @@ index 6d0eee6..b701700 100644
              let account;
              if (row.reconnectAccount !== null) {
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 3fa5390..16d4da9 100644
+index 3fa5390d..16d4da92 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,4 @@
@@ -8371,7 +8836,7 @@ index 3fa5390..16d4da9 100644
          return yield* Effect.fail(outcome.failure);
 diff --git a/packages/sdk/src/implementation/account-status-output.ts b/packages/sdk/src/implementation/account-status-output.ts
 new file mode 100644
-index 0000000..69645ca
+index 00000000..69645ca3
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-status-output.ts
 @@ -0,0 +1,13 @@
@@ -8389,13 +8854,13 @@ index 0000000..69645ca
 +    );
 +  });
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index 1bc5bc2..b378e59 100644
+index 1bc5bc27..b378e591 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -59,16 +59,43 @@ export interface AppProtocol {
    readonly sealedCredentials: boolean;
  }
-
+ 
 +/** Protocol 17 adds display status and app-owned account checks. */
 +const protocol17: AppProtocol = {
 +  version: 17,
@@ -8442,7 +8907,7 @@ index 1bc5bc2..b378e59 100644
 @@ -100,12 +127,43 @@ const protocol15: AppProtocol = {
    sealedCredentials: true,
  };
-
+ 
 +const withoutProvisionedAccount = (account: HostAccount): HostAccount => ({
 +  ...account,
 +  provider: {
@@ -8491,10 +8956,10 @@ index 1bc5bc2..b378e59 100644
 +    protocol17,
    ].map((protocol) => [protocol.version, protocol]),
  );
-
+ 
 @@ -419,6 +478,9 @@ export const interactiveProtocolAdditions = [
  ];
-
+ 
  export const interactiveProtocolAdaptations = [
 +  { message: "request", protocols: [16], adapter: "protocol16.refuse rejects connect.check" },
 +  { message: "invocation", protocols: [16], adapter: "protocol16.invocation" },
@@ -8503,7 +8968,7 @@ index 1bc5bc2..b378e59 100644
      message: "invocation",
      protocols: [15],
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 6cdd555..b6d03e5 100644
+index 0da25722..aeacaaf1 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -403,6 +403,7 @@ export const makeApps = (
@@ -8532,7 +8997,7 @@ index 6cdd555..b6d03e5 100644
            ]),
          ),
 diff --git a/packages/sdk/src/implementation/connection-target.ts b/packages/sdk/src/implementation/connection-target.ts
-index 437885e..840a42d 100644
+index 437885e0..840a42d6 100644
 --- a/packages/sdk/src/implementation/connection-target.ts
 +++ b/packages/sdk/src/implementation/connection-target.ts
 @@ -7,6 +7,7 @@ import {
@@ -8553,7 +9018,7 @@ index 437885e..840a42d 100644
      if (requirement.definition.site !== undefined) {
        const selected = target.site ?? reconnectSite ?? undefined;
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 135f853..08edc5c 100644
+index 135f8531..08edc5c1 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -208,6 +208,7 @@ export const createExecutor = (
@@ -8565,7 +9030,7 @@ index 135f853..08edc5c 100644
      const schedules = makeSchedules(
        options.database,
 diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
-index 2d6ded2..847147d 100644
+index 2d6ded27..847147d7 100644
 --- a/packages/sdk/src/implementation/interactive-accounts.ts
 +++ b/packages/sdk/src/implementation/interactive-accounts.ts
 @@ -1,3 +1,4 @@
@@ -8583,7 +9048,7 @@ index 2d6ded2..847147d 100644
        Schema.is(AccountConnectionTargetChanged)(error) ||
 diff --git a/packages/sdk/src/implementation/interactive-check.ts b/packages/sdk/src/implementation/interactive-check.ts
 new file mode 100644
-index 0000000..ba089b3
+index 00000000..ba089b32
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-check.ts
 @@ -0,0 +1,60 @@
@@ -8648,7 +9113,7 @@ index 0000000..ba089b3
 +    return yield* privateAccountCheck(checked, Redacted.value(context.accounts), acquired.ref);
 +  });
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 8c6ebe5..8d2ea30 100644
+index 8c6ebe5e..8d2ea30f 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
 @@ -76,9 +76,9 @@ export function AccountForm<A, E>({
@@ -8665,36 +9130,108 @@ index 8c6ebe5..8d2ea30 100644
    const [method, setMethod] = useState(account?.method ?? initialMethod ?? methods[0]?.[0] ?? "");
    const [values, setValues] = useState<Readonly<Record<string, string>>>({});
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index d6ce5bf..ebbadc7 100644
+index d6ce5bf8..2fe6b482 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
 @@ -11,6 +11,8 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
-
+ 
 +import { AccountDisplayStatus } from "./account-status.tsx";
 +
  type AccountInfo = NonNullable<AccountHealth["info"]>;
-
+ 
  /** What one app's latest check means for the reader; tone matches the other status pills. */
-@@ -219,6 +221,9 @@ export function AccountCheckResult({ health }: { readonly health: AccountAppHeal
-         </span>
-         <LocalTime value={health.check.checkedAt} options={shortMoment} />
-       </span>
+@@ -201,29 +203,68 @@ export function AccountHealthPanel<E>({
+ }
+ 
+ /** One app's latest check, spelled out with its time and, when it failed, the reason given. */
+-export function AccountCheckResult({ health }: { readonly health: AccountAppHealth | undefined }) {
++export function AccountCheckResult({
++  health,
++  part = "all",
++}: {
++  readonly health: AccountAppHealth | undefined;
++  readonly part?: "all" | "header" | "details";
++}) {
++  if (part === "details" && (health === undefined || health.check === null)) return null;
+   if (health === undefined || (!health.checkable && health.check === null))
+     return <span className="text-[12px] text-muted-foreground">No check</span>;
++  if (health.check === null && part === "details") return null;
+   if (health.check === null)
+     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
+   const { label, tone } = describeAccountCheck(health.check.status);
+-  return (
+-    <span className="inline-flex min-w-0 flex-col items-end gap-1 text-[12px] text-muted-foreground">
+-      <span className="inline-flex items-center gap-2">
+-        <span
+-          className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
+-          data-check-status={health.check.status}
+-          data-check-current={health.check.current}
+-        >
+-          {health.check.current ? label : `${label} · outdated`}
+-        </span>
+-        <LocalTime value={health.check.checkedAt} options={shortMoment} />
+-      </span>
++  const badge = (
++    <span
++      className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
++      data-check-status={health.check.status}
++      data-check-current={health.check.current}
++    >
++      {health.check.current ? label : `${label} · outdated`}
++    </span>
++  );
++  const details = (
++    <>
 +      {health.check.displayStatus !== undefined && (
-+        <AccountDisplayStatus status={health.check.displayStatus} current={health.check.current} />
++        <AccountDisplayStatus
++          status={health.check.displayStatus}
++          current={health.check.current}
++          part="details"
++        />
 +      )}
        {health.check.message !== undefined && (
-         <span className="max-w-[28rem] text-right wrap-anywhere" data-check-message>
+-        <span className="max-w-[28rem] text-right wrap-anywhere" data-check-message>
++        <span className="w-full wrap-anywhere" data-check-message>
            {health.check.message}
+         </span>
+       )}
++    </>
++  );
++  if (part === "header")
++    return (
++      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
++        {badge}
++        <LocalTime value={health.check.checkedAt} options={shortMoment} />
++        {health.check.displayStatus !== undefined && (
++          <AccountDisplayStatus
++            status={health.check.displayStatus}
++            current={health.check.current}
++            part="badges"
++          />
++        )}
++      </span>
++    );
++  if (part === "details")
++    return <span className="flex w-full min-w-0 flex-col gap-1">{details}</span>;
++  return (
++    <span className="inline-flex w-full min-w-0 flex-col items-start gap-1 text-[12px] text-foreground/80">
++      <span className="inline-flex items-center gap-2">
++        {badge}
++        <LocalTime value={health.check.checkedAt} options={shortMoment} />
++      </span>
++      {details}
+     </span>
+   );
+ }
 diff --git a/packages/ui/src/implementation/dashboard/account-status.tsx b/packages/ui/src/implementation/dashboard/account-status.tsx
 new file mode 100644
-index 0000000..658ac88
+index 00000000..d34b38ac
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-status.tsx
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,159 @@
 +import type { AccountStatus } from "apps";
-+import { LocalTime, shortMoment } from "../components/local-time.tsx";
 +
 +const tones = {
 +  neutral: "bg-muted text-muted-foreground",
@@ -8703,71 +9240,146 @@ index 0000000..658ac88
 +  bad: "bg-destructive/10 text-destructive",
 +};
 +
++const meterState = (remaining: number | null) =>
++  remaining === null
++    ? "unknown"
++    : remaining === 0
++      ? "exhausted"
++      : remaining >= 0.7
++        ? "good"
++        : remaining >= 0.3
++          ? "warn"
++          : "bad";
++
++const meterFill = {
++  good: "bg-emerald-500",
++  warn: "bg-amber-500",
++  bad: "bg-destructive",
++  exhausted: "bg-destructive",
++  unknown: "",
++};
++
++const resetLabel = (value: string | undefined) => {
++  if (value === undefined) return "Reset unknown";
++  const seconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
++  if (!Number.isFinite(seconds)) return "Reset unknown";
++  const units = [
++    [31_536_000, "year"],
++    [2_592_000, "month"],
++    [604_800, "week"],
++    [86_400, "day"],
++    [3_600, "hour"],
++    [60, "minute"],
++  ] as const;
++  const unit = units.find(([size]) => Math.abs(seconds) >= size);
++  if (unit === undefined) return seconds >= 0 ? "in less than a minute" : "less than a minute ago";
++  const amount = Math.max(1, Math.ceil(Math.abs(seconds) / unit[0]));
++  const count = `${amount} ${unit[1]}${amount === 1 ? "" : "s"}`;
++  return seconds >= 0 ? `in ${count}` : `${count} ago`;
++};
++
 +/** Display only. Text never becomes HTML, links, credentials or an authorization decision. */
 +export function AccountDisplayStatus({
 +  status,
 +  current,
++  part = "all",
 +}: {
 +  readonly status: AccountStatus;
 +  readonly current: boolean;
++  readonly part?: "all" | "badges" | "details";
 +}) {
++  const headerReset =
++    part === "badges" ? status.meters.find((meter) => meter.resetsAt !== undefined) : undefined;
 +  return (
 +    <span
 +      role="group"
-+      aria-label={current ? "Account status" : "Account status, outdated"}
-+      className="flex max-w-[28rem] min-w-0 flex-col items-end gap-1.5 text-[11px] text-muted-foreground"
++      aria-label={
++        part === "all"
++          ? current
++            ? "Account status"
++            : "Account status, outdated"
++          : part === "badges"
++            ? current
++              ? "Account status badges"
++              : "Account status badges, outdated"
++            : current
++              ? "Account status details"
++              : "Account status details, outdated"
++      }
++      data-account-status-part={part}
++      className={`${part === "badges" ? "inline-flex min-w-0 items-center" : "flex w-full min-w-0 flex-col gap-2"} text-[11px] text-foreground/80`}
 +    >
-+      {status.badges.length > 0 && (
-+        <span className="flex flex-wrap justify-end gap-1">
-+          {status.badges.map((badge, index) => (
-+            <span
-+              key={index}
-+              className={`rounded-full px-2 py-0.5 font-medium wrap-anywhere ${current ? tones[badge.tone] : tones.neutral}`}
-+            >
-+              {badge.label}
-+            </span>
-+          ))}
++      {(part === "all" || part === "badges") &&
++        (status.badges.length > 0 || headerReset !== undefined) && (
++          <span className="flex flex-wrap items-center gap-1.5">
++            {status.badges.map((badge, index) => (
++              <span
++                key={index}
++                className={`rounded-full px-2 py-0.5 font-medium wrap-anywhere ${current ? tones[badge.tone] : tones.neutral}`}
++              >
++                {badge.label}
++              </span>
++            ))}
++            {headerReset !== undefined && (
++              <span data-status-reset className="whitespace-nowrap text-muted-foreground">
++                Resets {resetLabel(headerReset.resetsAt)}
++              </span>
++            )}
++          </span>
++        )}
++      {(part === "all" || part === "details") && status.meters.length > 0 && (
++        <span className="flex min-w-0 flex-col gap-2">
++          {status.meters.map((meter, index) => {
++            const state = meterState(meter.remaining);
++            const percent =
++              meter.remaining === null ? undefined : Math.round(meter.remaining * 100);
++            const reset = resetLabel(meter.resetsAt);
++            const stateLabel = state === "warn" || state === "bad" ? " · Low" : "";
++            const remainingLabel =
++              percent === undefined ? "Remaining amount unknown" : `Rem ${percent}%${stateLabel}`;
++            return (
++              <span key={index} className="flex min-w-0 flex-col gap-1">
++                <span className="flex min-w-0 items-baseline justify-between gap-2">
++                  <span className="truncate font-medium text-foreground">{meter.label}</span>
++                  <span className="shrink-0 tabular-nums" data-meter-remaining>
++                    {percent === undefined ? "Rem unknown" : `Rem ${percent}%${stateLabel}`}
++                    {state === "exhausted" && (
++                      <span className="font-medium text-destructive" data-meter-label>
++                        {" · Exhausted"}
++                      </span>
++                    )}
++                  </span>
++                </span>
++                <span
++                  role="meter"
++                  aria-label={meter.label}
++                  aria-valuemin={0}
++                  aria-valuemax={100}
++                  {...(percent === undefined ? {} : { "aria-valuenow": percent })}
++                  aria-valuetext={`${remainingLabel}${state === "exhausted" ? ", Exhausted" : ""}, ${reset}`}
++                  data-meter-state={state}
++                  className={`account-meter-track h-1.5 overflow-hidden rounded-full meter-${state} ${state === "unknown" ? "bg-[repeating-linear-gradient(135deg,var(--color-muted)_0_3px,var(--color-muted-foreground)_3px_4px)]" : state === "exhausted" ? "bg-destructive/20 ring-1 ring-inset ring-destructive/40" : "bg-muted"}`}
++                >
++                  {percent !== undefined && (
++                    <span
++                      className={`account-meter-fill meter-fill-${state} ${meterFill[state]} block h-full rounded-full`}
++                      style={{ width: `${percent}%` }}
++                    />
++                  )}
++                </span>
++                <span className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5">
++                  <span>{reset}</span>
++                  {meter.detail !== undefined && (
++                    <span className="wrap-anywhere">{meter.detail}</span>
++                  )}
++                </span>
++              </span>
++            );
++          })}
 +        </span>
 +      )}
-+      {status.meters.map((meter, index) => (
-+        <span
-+          key={index}
-+          className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-0.5"
-+        >
-+          <span className="wrap-anywhere">{meter.label}</span>
-+          {meter.remaining === null ? (
-+            <span>Unknown</span>
-+          ) : (
-+            <>
-+              <span
-+                role="meter"
-+                aria-label={meter.label}
-+                aria-valuemin={0}
-+                aria-valuemax={100}
-+                aria-valuenow={Math.round(meter.remaining * 100)}
-+                aria-valuetext={`${Math.round(meter.remaining * 100)}% remaining`}
-+                className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-muted"
-+              >
-+                <span
-+                  className={`block h-full ${current ? "bg-foreground/60" : "bg-muted-foreground/40"}`}
-+                  style={{ width: `${meter.remaining * 100}%` }}
-+                />
-+              </span>
-+              <span className="tabular-nums">{Math.round(meter.remaining * 100)}% remaining</span>
-+            </>
-+          )}
-+          {meter.resetsAt !== undefined && (
-+            <span>
-+              Resets <LocalTime value={new Date(meter.resetsAt)} options={shortMoment} />
-+            </span>
-+          )}
-+          {meter.detail !== undefined && (
-+            <span className="basis-full text-right wrap-anywhere">{meter.detail}</span>
-+          )}
-+        </span>
-+      ))}
-+      {status.stats.length > 0 && (
-+        <span className="flex flex-wrap justify-end gap-x-3 gap-y-0.5">
++      {(part === "all" || part === "details") && status.stats.length > 0 && (
++        <span className="flex flex-wrap gap-x-3 gap-y-0.5">
 +          {status.stats.map((stat, index) => (
 +            <span key={index} className="wrap-anywhere">
 +              {stat.label}: <span className="tabular-nums">{stat.value}</span>
@@ -8779,22 +9391,35 @@ index 0000000..658ac88
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index ed27395..d54641b 100644
+index ed273951..1ba231c1 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -46,6 +46,11 @@ import {
+@@ -46,7 +46,23 @@ import {
  import { cn } from "../lib/utils.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
-
+ 
+-const accountName = (account: AccountSummary) => account.label || "Unnamed account";
 +const provisionedOnly = (requirement: AccountRequirement) =>
 +  Object.values(requirement.definition.auth).every(
 +    (method) => method.type === "secrets" && method.provisioned === true,
 +  );
 +
- const accountName = (account: AccountSummary) => account.label || "Unnamed account";
-
++const provisionedMethod = (requirement: AccountRequirement, account: AccountSummary) => {
++  const method = requirement.definition.auth[account.method];
++  return method?.type === "secrets" && method.provisioned === true;
++};
++
++const accountName = (account: AccountSummary) =>
++  account.label ||
++  account.health?.info?.displayName ||
++  account.health?.info?.username ||
++  account.health?.info?.email ||
++  account.providerName ||
++  "Unnamed account";
+ 
  /**
-@@ -275,9 +280,16 @@ function useRevalidateChecks(
+  * An account's actions in this app: the host's items, then unlinking when the host offers it.
+@@ -275,9 +291,16 @@ function useRevalidateChecks(
      if (revalidate === undefined) return;
      const now = Date.now();
      for (const requirement of Object.values(app.requirements.accounts)) {
@@ -8812,20 +9437,253 @@ index ed27395..d54641b 100644
            account.provider !== requirement.provider ||
            account.health === undefined ||
            started.current.has(account.id) ||
-@@ -552,7 +564,11 @@ function ReadOnlyChoices<E>({
+@@ -430,7 +453,6 @@ function LinkScope<E>({
+     data.links.map((link) => link.account),
+     data.revalidate,
+   );
+-  const all = Object.values(app.requirements.accounts);
+   const readOnly = data.edit === undefined;
+   return (
+     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+@@ -449,15 +471,6 @@ function LinkScope<E>({
+             slot={slot}
+             requirement={requirement}
+             linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
+-            label={
+-              all.length > 1
+-                ? `${requirement.definition.name} (${slot})`
+-                : requirement.definition.name
+-            }
+-            showSlot={
+-              all.filter((other) => other.definition.name === requirement.definition.name).length >
+-              1
+-            }
+           />
+         ))}
+       </div>
+@@ -483,32 +496,32 @@ function RequirementView<E>({
+   slot,
+   requirement,
+   linked,
+-  label,
+-  showSlot,
+   ...props
+ }: ScopeProps<E> & {
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+   /** The requirement's linked accounts, oldest first. */
+   readonly linked: readonly AccountSummary[];
+-  readonly label: string;
+-  readonly showSlot: boolean;
+ }) {
+   const { data } = props;
++  const managed = provisionedOnly(requirement);
++  const label = requirement.definition.name.trim() || undefined;
+   return (
+-    <section aria-label={label} className="min-w-0 space-y-2.5">
++    <section
++      {...(label === undefined ? {} : { "aria-label": label })}
++      className="min-w-0 space-y-2.5"
++    >
+       <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+         <AppProviderIcon app={props.app} provider={requirement.definition} large />
+         <div className="min-w-0">
+-          <p className="truncate font-medium">{requirement.definition.name}</p>
++          {label !== undefined && <p className="truncate font-medium">{label}</p>}
+           <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
+-            {showSlot && `${slot} · `}
+-            {requirementNote(requirement, linked.length)}
++            {managed ? "Set up automatically" : requirementNote(requirement, linked.length)}
+           </p>
+         </div>
+       </div>
+       <div className="overflow-hidden rounded-lg border">
+-        {data.edit === undefined ? (
++        {data.edit === undefined || managed ? (
+           <ReadOnlyChoices {...props} slot={slot} requirement={requirement} linked={linked} />
+         ) : (
+           <EditableChoices
+@@ -524,12 +537,77 @@ function RequirementView<E>({
+   );
+ }
+ 
+-const rowClass =
+-  "group/account flex min-h-10 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 px-3.5 py-2 transition-colors";
++const rowClass = "group/account flex min-w-0 flex-col gap-2 px-3.5 py-2.5 transition-colors";
+ const radioClass =
+   "grid size-4 shrink-0 place-items-center rounded-full border border-input shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:border-primary";
+ const radioDot = "size-2 rounded-full bg-primary";
+ 
++/** One-line account identity; the empty second line is the insertion point for contributor credit. */
++function AccountRowIdentity({
++  account,
++  actions,
++  labelFor,
++}: {
++  readonly account: AccountSummary;
++  readonly actions?: ReactNode;
++  readonly labelFor?: string;
++}) {
++  const info = account.health?.info;
++  const name = accountName(account);
++  const secondary = [info?.email, info?.username]
++    .filter((value): value is string => value !== undefined && value !== name)
++    .filter((value, index, values) => values.indexOf(value) === index);
++  const identity = (
++    <>
++      {info?.avatarUrl ? (
++        <AccountAvatar info={info} fallback={false} className="size-6 rounded-md border bg-white" />
++      ) : (
++        <ProviderIcon
++          name={account.providerName ?? "Account"}
++          url={account.providerUrl}
++          medium
++          showFallback={false}
++        />
++      )}
++      <span className="min-w-0 truncate font-medium" title={name} data-account-name>
++        {name}
++      </span>
++      {secondary.map((value) => (
++        <span
++          key={value}
++          className="min-w-0 truncate text-muted-foreground"
++          title={value}
++          data-account-identity
++        >
++          {value}
++        </span>
++      ))}
++    </>
++  );
++  return (
++    <div className="flex min-w-0 flex-1 flex-col">
++      <div className="flex min-w-0 items-center gap-2">
++        {labelFor === undefined ? (
++          <span className="flex min-w-0 flex-1 items-center gap-2">{identity}</span>
++        ) : (
++          <label
++            htmlFor={labelFor}
++            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2"
++          >
++            {identity}
++          </label>
++        )}
++        {actions !== undefined && (
++          <span data-account-row-menu className="ml-auto flex shrink-0 self-center">
++            {actions}
++          </span>
++        )}
++      </div>
++      <div data-added-by-slot className="min-h-4 text-[11px] text-muted-foreground" />
++    </div>
++  );
++}
++
+ /** Account names sort the rows, so linking one does not move it. */
+ const byName = <C extends { readonly account: AccountSummary }>(choices: readonly C[]) =>
+   [...choices].sort(
+@@ -552,29 +630,59 @@ function ReadOnlyChoices<E>({
  }) {
    const plain = requirement.cardinality === "one";
    if (linked.length === 0)
 -    return <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">No account linked</p>;
+-  const rows = linked.map((account) => (
+-    <li key={account.id} className={rowClass}>
+-      {plain ? (
+-        <RadioGroup.Item
+-          value={account.id}
+-          aria-label={accountName(account)}
+-          className={radioClass}
 +    return (
 +      <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">
 +        {provisionedOnly(requirement) ? "Set up automatically" : "No account linked"}
 +      </p>
 +    );
-   const rows = linked.map((account) => (
-     <li key={account.id} className={rowClass}>
-       {plain ? (
-@@ -688,18 +704,22 @@ function EditableChoices<E>({
++  const rows = linked.map((account) => {
++    const provisioned = provisionedMethod(requirement, account);
++    return (
++      <li key={account.id} className={rowClass}>
++        <div
++          className="flex min-w-0 flex-col items-stretch gap-y-1 [&_.provider-icon]:size-5 [&_.provider-icon]:rounded-md"
++          data-account-row-header
+         >
+-          <RadioGroup.Indicator className={radioDot} />
+-        </RadioGroup.Item>
+-      ) : (
+-        <Checkbox checked disabled aria-label={accountName(account)} />
+-      )}
+-      <AccountAvatar info={account.health?.info} className="size-5" />
+-      <span className="min-w-0 flex-1 break-words">{accountName(account)}</span>
+-      <AccountStatus app={app} account={account} />
+-      {data.accountMenu?.(account, slot, requirement, true)}
+-    </li>
+-  ));
++          <div className="flex min-w-0 items-center gap-2">
++            {plain ? (
++              <RadioGroup.Item
++                value={account.id}
++                aria-label={accountName(account)}
++                className={radioClass}
++              >
++                <RadioGroup.Indicator className={radioDot} />
++              </RadioGroup.Item>
++            ) : (
++              <Checkbox checked disabled aria-label={accountName(account)} />
++            )}
++            <AccountRowIdentity
++              account={account}
++              actions={
++                provisioned ? undefined : data.accountMenu?.(account, slot, requirement, true)
++              }
++            />
++          </div>
++          <span className="flex min-w-0 flex-wrap items-center gap-2.5">
++            {provisioned && (
++              <span
++                data-account-provisioned
++                className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
++              >
++                Set up automatically
++              </span>
++            )}
++            <AccountStatus app={app} account={account} part="header" />
++          </span>
++        </div>
++        <AccountStatus app={app} account={account} part="details" />
++      </li>
++    );
++  });
+   const list = (
+     <ul
+-      aria-label={`${requirement.definition.name} accounts`}
++      {...(requirement.definition.name.trim() === ""
++        ? {}
++        : { "aria-label": `${requirement.definition.name} accounts` })}
+       className="divide-y divide-border/50 text-[13px]"
+     >
+       {rows}
+@@ -631,7 +733,7 @@ function EditableChoices<E>({
+             : [],
+         ),
+     }),
+-  );
++  ).filter(({ account, linked }) => linked || !provisionedMethod(requirement, account));
+   const ready = Option.isSome(loaded) && edit.connecting !== true;
+   // Picking or connecting another account for a plain requirement retires an app-bound one, so it
+   // asks first.
+@@ -664,7 +766,9 @@ function EditableChoices<E>({
+   ));
+   const list = (
+     <ul
+-      aria-label={`${requirement.definition.name} accounts`}
++      {...(requirement.definition.name.trim() === ""
++        ? {}
++        : { "aria-label": `${requirement.definition.name} accounts` })}
+       className="divide-y divide-border/50 text-[13px]"
+     >
+       {rows}
+@@ -688,18 +792,22 @@ function EditableChoices<E>({
          ) : (
            list
          ))}
@@ -8860,8 +9718,240 @@ index ed27395..d54641b 100644
        {replacingWithNew && bound !== undefined && (
          <RemoveAppBoundAccount
            name={accountName(bound.account)}
+@@ -754,10 +862,12 @@ function ChoiceRow<E>({
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const id = useId();
+   const name = accountName(account);
++  const hostProvisioned = provisionedMethod(requirement, account);
+   // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
+   const appBound = requirement.definition.auth[account.method]?.type === "interactive";
+   const [confirming, setConfirming] = useState(false);
+   const change = async (next: boolean) => {
++    if (hostProvisioned) return;
+     setError(undefined);
+     const exit = await (next ? runLink() : runUnlink());
+     if (Exit.isFailure(exit)) setError(exit.cause);
+@@ -766,32 +876,6 @@ function ChoiceRow<E>({
+   };
+   return (
+     <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
+-      {plain ? (
+-        <RadioGroup.Item
+-          id={id}
+-          value={account.id}
+-          aria-label={name}
+-          disabled={!ready || pending}
+-          className={radioClass}
+-          onClick={() => {
+-            if (linked) return;
+-            if (replaces !== undefined) setConfirming(true);
+-            else void change(true);
+-          }}
+-        >
+-          <RadioGroup.Indicator className={radioDot} />
+-        </RadioGroup.Item>
+-      ) : (
+-        <Checkbox
+-          id={id}
+-          checked={linked}
+-          aria-label={name}
+-          disabled={!ready || pending}
+-          onCheckedChange={(checked) =>
+-            checked !== true && appBound ? setConfirming(true) : void change(checked === true)
+-          }
+-        />
+-      )}
+       {confirming && (
+         <RemoveAppBoundAccount
+           name={replaces ?? name}
+@@ -802,19 +886,68 @@ function ChoiceRow<E>({
+           onRemove={() => void change(replaces !== undefined).then(() => setConfirming(false))}
+         />
+       )}
+-      <label htmlFor={id} className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5">
+-        <AccountAvatar info={account.health?.info} className="size-5" />
+-        <span className="min-w-0 flex-1 break-words">{name}</span>
+-      </label>
+-      {pending && <Spinner className="size-3.5 text-muted-foreground" />}
+-      <AccountStatus
+-        app={app}
+-        account={account}
+-        reconnect={data.reconnectAction?.(account, slot, requirement)}
+-      />
+-      {data.accountMenu?.(account, slot, requirement, linked)}
++      <div
++        className="flex min-w-0 flex-col items-stretch gap-y-1 [&_.provider-icon]:size-5 [&_.provider-icon]:rounded-md"
++        data-account-row-header
++      >
++        <div className="flex min-w-0 items-center gap-2">
++          {plain ? (
++            <RadioGroup.Item
++              id={id}
++              value={account.id}
++              aria-label={name}
++              disabled={!ready || pending || hostProvisioned}
++              className={radioClass}
++              onClick={() => {
++                if (linked) return;
++                if (replaces !== undefined) setConfirming(true);
++                else void change(true);
++              }}
++            >
++              <RadioGroup.Indicator className={radioDot} />
++            </RadioGroup.Item>
++          ) : (
++            <Checkbox
++              id={id}
++              checked={linked}
++              aria-label={name}
++              disabled={!ready || pending || hostProvisioned}
++              onCheckedChange={(checked) =>
++                checked !== true && appBound ? setConfirming(true) : void change(checked === true)
++              }
++            />
++          )}
++          <AccountRowIdentity
++            account={account}
++            labelFor={id}
++            actions={
++              hostProvisioned ? undefined : data.accountMenu?.(account, slot, requirement, linked)
++            }
++          />
++        </div>
++        <span className="flex min-w-0 flex-wrap items-center gap-2.5">
++          {hostProvisioned && (
++            <span
++              data-account-provisioned
++              className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
++            >
++              Set up automatically
++            </span>
++          )}
++          {pending && <Spinner className="size-3.5 text-muted-foreground" />}
++          <AccountStatus
++            app={app}
++            account={account}
++            part="header"
++            reconnect={
++              hostProvisioned ? undefined : data.reconnectAction?.(account, slot, requirement)
++            }
++          />
++        </span>
++      </div>
++      <AccountStatus app={app} account={account} part="details" />
+       {error && (
+-        <div className="basis-full text-xs">
++        <div className="w-full min-w-0 text-xs">
+           <Failure cause={error} />
+         </div>
+       )}
+@@ -906,25 +1035,37 @@ function RemoveAppBoundAccount({
+ function AccountStatus({
+   app,
+   account,
++  part,
+   reconnect,
+ }: {
+   readonly app: App;
+   readonly account: AccountSummary;
++  readonly part: "header" | "details";
+   readonly reconnect?: ReactNode;
+ }) {
++  if (accountNeedsSignIn(account) && part === "details") return null;
+   if (accountNeedsSignIn(account))
+     return (
+       <span className="flex items-center gap-2 text-xs text-sign-in-warning">
+         Needs sign-in{reconnect}
+       </span>
+     );
++  if (account.signIn?.state === "unavailable" && part === "details") return null;
+   if (account.signIn?.state === "unavailable")
+     return <span className="text-xs text-sign-in-warning">Unavailable</span>;
+-  return <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} />;
++  return (
++    <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
++  );
+ }
+ 
+ /** This app's check of a linked account; apps without a check show nothing. */
+-function AppCheck({ health }: { readonly health: AccountAppHealth | undefined }) {
++function AppCheck({
++  health,
++  part,
++}: {
++  readonly health: AccountAppHealth | undefined;
++  readonly part: "header" | "details";
++}) {
+   if (health === undefined || (!health.checkable && health.check === null)) return null;
+-  return <AccountCheckResult health={health} />;
++  return <AccountCheckResult health={health} part={part} />;
+ }
+diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
+index 929e2545..fbe90d76 100644
+--- a/packages/ui/src/implementation/dashboard/common.tsx
++++ b/packages/ui/src/implementation/dashboard/common.tsx
+@@ -61,24 +61,30 @@ export function ProviderIcon({
+   name,
+   url,
+   icons,
++  medium = false,
+   large = false,
+   declared = null,
+   pending = false,
++  showFallback = true,
+ }: {
+   readonly name: string;
+   readonly url?: string | null | undefined;
+   readonly icons?: readonly CatalogIcon[] | undefined;
++  /** A 24-pixel logo in the compact account row. */
++  readonly medium?: boolean;
+   readonly large?: boolean;
+   /** An app's own icon, shown before the domain logo. */
+   readonly declared?: AppIconSources | null;
+   /** The app's own icon is still loading. */
+   readonly pending?: boolean;
++  /** Hide the generic package glyph when a provider has no logo. */
++  readonly showFallback?: boolean;
+ }) {
+   const catalogIcons = useCatalogIcons();
+   const { logo } = useProductBrand();
+   const [failed, setFailed] = useState<readonly string[]>([]);
+   const normalized = name.toLowerCase().trim();
+-  const size = large ? 24 : 17;
++  const size = large || medium ? 24 : 17;
+   const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
+   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
+   // The built-in app keeps the name Executor and shows the deployment's logo.
+@@ -88,6 +94,7 @@ export function ProviderIcon({
+   const own = sources !== null && !failed.includes(sources.light) ? sources : null;
+   const icon =
+     own === null && !waiting && source !== null && !failed.includes(source) ? source : null;
++  if (!showFallback && !waiting && own === null && icon === null) return null;
+   const fail = (key: string) => () =>
+     setFailed((current) => (current.includes(key) ? current : [...current, key]));
+   return (
+@@ -96,6 +103,7 @@ export function ProviderIcon({
+         "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
+         large &&
+           "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
++        medium && "[&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+       )}
+       aria-hidden
+     >
+@@ -130,9 +138,9 @@ export function ProviderIcon({
+         />
+       ) : waiting ? (
+         <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
+-      ) : (
++      ) : showFallback ? (
+         <HugeiconsIcon icon={PackageIcon} aria-hidden size={large ? 23 : 17} strokeWidth={1.5} />
+-      )}
++      ) : null}
+     </span>
+   );
+ }
 diff --git a/packages/utils/package.json b/packages/utils/package.json
-index 4bd3285..9f94e31 100644
+index 4bd3285e..9f94e31c 100644
 --- a/packages/utils/package.json
 +++ b/packages/utils/package.json
 @@ -4,6 +4,8 @@
@@ -8875,7 +9965,7 @@ index 4bd3285..9f94e31 100644
      "./safe-fetch": "./src/safe-fetch.ts",
 diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
 new file mode 100644
-index 0000000..b026675
+index 00000000..b0266758
 --- /dev/null
 +++ b/packages/utils/src/account-display-privacy.ts
 @@ -0,0 +1,212 @@
@@ -9093,7 +10183,7 @@ index 0000000..b026675
 +};
 diff --git a/packages/utils/src/account-secrets.ts b/packages/utils/src/account-secrets.ts
 new file mode 100644
-index 0000000..1de5b1c
+index 00000000..1de5b1c7
 --- /dev/null
 +++ b/packages/utils/src/account-secrets.ts
 @@ -0,0 +1,34 @@
