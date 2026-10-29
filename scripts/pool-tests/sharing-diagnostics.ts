@@ -12,7 +12,11 @@ const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
 
 /** Scans raw sinks before any fixture redaction, returning counts only. */
 export class FixtureDiagnostics {
-  constructor(private name: string) {}
+  private name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
 
   sql(query: string): string {
     return output(["exec", "-i", `${this.name}-postgres`, "psql", "-X", "-v", "ON_ERROR_STOP=1",
