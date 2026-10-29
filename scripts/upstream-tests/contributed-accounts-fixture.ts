@@ -25,6 +25,7 @@ const { CurrentOrganization, organizationOwner, RequireOrganization } = await lo
 const { CurrentUserId, Authentication, ApiAuthentication } = await load(`${contracts}auth.ts`);
 const { HostedExecutor } = await load(`${contracts}executor.ts`);
 const { ScheduleWakeup } = await load(`${contracts}schedules.ts`);
+const { HostedAppRuntime } = await load(`${contracts}app-ui.ts`);
 const { hostedResourceLifecycle, sharedAppCreation } = await load(
   `${implementation}resource-lifecycle.ts`,
 );
@@ -179,6 +180,8 @@ export const contributedFixture = async (
               Effect.provideService(GroupDatabase, Effect.succeed(sql)),
               Effect.provideService(HostedExecutor, Effect.succeed(executor)),
               Effect.provideService(ScheduleWakeup, Effect.void),
+              // App payloads read whether a build has a screen; without `screen` it stays unknown.
+              Effect.provideService(HostedAppRuntime, { asset: () => Effect.die("no assets") }),
             );
           const context = yield* Layer.build(
             Layer.mergeAll(hostedAppAccountHandlers, hostedGroupHandlers).pipe(

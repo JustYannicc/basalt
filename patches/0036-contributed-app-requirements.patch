@@ -765,7 +765,7 @@ index ae2d077..a71eee1 100644
        rows,
      )).map((row) => row.app);
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index b72b5a2..00c46b1 100644
+index a81e449..b3098b3 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,3 +1,4 @@
@@ -773,7 +773,7 @@ index b72b5a2..00c46b1 100644
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
  import { fullAuthority } from "@executor-js/authorization";
-@@ -647,7 +648,15 @@ export const hostedAppUi = <R = never>(
+@@ -691,7 +692,15 @@ export const hostedAppUi = <R = never>(
            Effect.mapError(unavailable),
          ),
        );
@@ -1345,15 +1345,15 @@ index 8eee52b..9b640b7 100644
  
  /**
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index e9ad51b..a1b5314 100644
+index 15cc029..c6c281c 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
 @@ -1,3 +1,4 @@
 +import { visibleAccountStatuses } from "./account-identity.ts";
  import type { AuthContext } from "@better-auth/core";
  import type { Principal } from "../contracts/auth.ts";
- import { accountOAuthRedirectUri } from "./auth.ts";
-@@ -246,11 +247,18 @@ export const inventory = (owner: OwnerId) =>
+ import { requestAuthentication, requestTombstones } from "./batch-authentication.ts";
+@@ -250,11 +251,18 @@ export const inventory = (owner: OwnerId) =>
          (entry) => [entry.account, entry],
        ),
      );
@@ -1377,7 +1377,7 @@ index e9ad51b..a1b5314 100644
      const selected = new Set(links.map((link) => link.account));
      return {
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index c36b2d4..6214df1 100644
+index 441ac49..cde1155 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
 @@ -1,3 +1,4 @@
@@ -1385,7 +1385,7 @@ index c36b2d4..6214df1 100644
  import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { permittedAppIds } from "@executor-js/authorization";
-@@ -127,7 +128,11 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+@@ -131,7 +132,11 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
              (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
            ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
          : false;
@@ -1607,10 +1607,10 @@ index 593ad25..375b582 100644
          yourAccounts={scopeAccounts("user", userLinks, canUse && deployed, notDeployed)}
        />
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index b36520c..d3b827c 100644
+index 896d3d1..59e0898 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -107,6 +107,8 @@ const withSummaries = (
+@@ -99,6 +99,8 @@ const withSummaries = (
  ): readonly RequirementLink<AccountSummary>[] =>
    links.map((link) => ({
      requirement: link.requirement,
