@@ -15,4 +15,7 @@ test("Home timing excludes response data and the thrown failure", async () => {
     { operation: "credentials", durationMs: 4, count: 2, failures: 0 },
     { operation: "membership", durationMs: 6, count: 0, failures: 1 },
   ]);
+  const brokenReporter = () => { throw new Error("logger failed"); };
+  assert.equal(await timePoolRead("credentials", async () => response, undefined, brokenReporter), response);
+  await assert.rejects(timePoolRead("membership", async () => { throw failure; }, undefined, brokenReporter), (value) => value === failure);
 });

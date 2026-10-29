@@ -22,6 +22,7 @@ export async function timePoolRead<T>(
     failures = 0;
     return value;
   } finally {
-    report({ operation, durationMs: Math.max(0, Math.round(clock() - started)), count: total, failures });
+    try { report({ operation, durationMs: Math.max(0, Math.round(clock() - started)), count: total, failures }); }
+    catch { /* Logging must not change the read's result. */ }
   }
 }
