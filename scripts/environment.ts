@@ -185,6 +185,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     EXECUTOR_PRODUCT_DOCS_URL: brand.links.docs ?? undefined,
     EXECUTOR_PRODUCT_PRIVACY_URL: brand.links.privacy ?? undefined,
     EXECUTOR_PRODUCT_TERMS_URL: brand.links.terms ?? undefined,
+    EXECUTOR_PRODUCT_SOURCE_URL: brand.links.source ?? undefined,
     AUTH_EMAIL_PROVISION_SUBDOMAIN: "false",
     GITHUB_CLIENT_ID: source.AUTH_GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: source.AUTH_GITHUB_CLIENT_SECRET,

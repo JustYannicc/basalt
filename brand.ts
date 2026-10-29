@@ -23,12 +23,15 @@ export const brand = {
   emailDomain: "auth.signalbox.run",
   /**
    * The brand's own docs, privacy and terms pages, as absolute URLs. The tools service links
-   * each one only when it is set; the router also sends those paths here.
+   * each one only when it is set; the router also sends those paths here. `source` is where the
+   * code is published, linked from the dashboard sidebar; a fork points it at its own repository,
+   * or sets it to null to show no link.
    */
   links: {
     docs: null as string | null,
     privacy: null as string | null,
     terms: null as string | null,
+    source: "https://github.com/JustYannicc/basalt" as string | null,
   },
 } as const;
 

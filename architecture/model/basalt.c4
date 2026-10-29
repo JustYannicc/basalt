@@ -8,6 +8,7 @@ model {
     }
 
     brandConfig = part "Brand configuration" {
+      description "Name, logo, hosts and the brand's own links: docs, privacy, terms and the public source repository the dashboard sidebar links. A fork points the source link at its own repository or sets it to null."
       metadata { code "brand.ts"; configuration "true" }
     }
 

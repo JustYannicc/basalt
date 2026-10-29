@@ -1,21 +1,22 @@
 diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
-index 82df0ba6e..294039e69 100644
+index 82df0ba6e..f5c46eca8 100644
 --- a/apps/docs/content/run/self-host.mdx
 +++ b/apps/docs/content/run/self-host.mdx
-@@ -32,4 +32,5 @@ These settings override the defaults:
+@@ -32,4 +32,6 @@ These settings override the defaults:
  | `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
  | `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
 +| `EXECUTOR_PRODUCT_DOCS_URL`, `EXECUTOR_PRODUCT_PRIVACY_URL`, `EXECUTOR_PRODUCT_TERMS_URL` | no | Your own docs, privacy policy and terms. With another product name, a link you leave unset is not shown. |
++| `EXECUTOR_PRODUCT_SOURCE_URL` | no | Where your deployment's source code is published, such as your fork. With another product name, the dashboard sidebar links it; unset, it shows no source link. |
  | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
  | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
-@@ -100,6 +101,7 @@ the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
+@@ -100,6 +102,7 @@ the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
  `EXECUTOR_PRODUCT_LOGO_URL` replaces the logo and favicon; serve a square image of at least 64
  pixels. With another name, setup guides leave out Executor's own plugins and screenshots, and
 -the dashboard leaves out Executor's feedback and GitHub links. The built-in app keeps the name
 -Executor and shows your logo.
-+the dashboard leaves out Executor's feedback and GitHub links. Docs, privacy and terms links
-+point at the pages you set, and are left out when you set none. The built-in app shows your name
-+and logo; agents still reach it as `executor`.
++the dashboard leaves out Executor's feedback and GitHub links. Docs, privacy, terms and source
++code links point at the pages you set, and are left out when you set none. The built-in app
++shows your name and logo; agents still reach it as `executor`.
  
  ## Run it
 diff --git a/apps/hosted/cloud/src/infrastructure/product-brand.ts b/apps/hosted/cloud/src/infrastructure/product-brand.ts
@@ -51,16 +52,18 @@ index d1dc20279..b4f4f1177 100644
      // Only framework lookups and the published skills read the large authoring reference.
      const authoring = yield* cloudAuthoringReference;
 diff --git a/apps/hosted/self-host/compose.yaml b/apps/hosted/self-host/compose.yaml
-index 80d4b4905..d58c4d6f2 100644
+index 80d4b4905..f24b821af 100644
 --- a/apps/hosted/self-host/compose.yaml
 +++ b/apps/hosted/self-host/compose.yaml
-@@ -32,4 +32,8 @@ services:
+@@ -32,4 +32,10 @@ services:
        EXECUTOR_PRODUCT_NAME:
        EXECUTOR_PRODUCT_LOGO_URL:
-+      # Your own docs, privacy and terms pages; under another name, unset links are not shown.
++      # Your own docs, privacy and terms pages and source code; under another name, unset links
++      # are not shown.
 +      EXECUTOR_PRODUCT_DOCS_URL:
 +      EXECUTOR_PRODUCT_PRIVACY_URL:
 +      EXECUTOR_PRODUCT_TERMS_URL:
++      EXECUTOR_PRODUCT_SOURCE_URL:
        # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
        # document there, which authorization servers must be able to fetch over public HTTPS.
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
@@ -459,25 +462,27 @@ index 1b2d6512b..d33046475 100644
  
  /** The agent instructions that lead such a failure's recovery. */
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 89d68399e..84dc99b14 100644
+index 89d68399e..8e38bbf5e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -80,4 +80,5 @@ export const productBrand = {
+@@ -80,4 +80,6 @@ export const productBrand = {
    logo: "/acme-tools.png",
    server: "acme-tools",
 +  privacy: "https://acme.example/privacy",
++  source: "https://git.acme.example/acme/tools",
  } as const;
  /**
-@@ -5713,4 +5714,5 @@ export const scenarios = plan({
+@@ -5713,4 +5715,5 @@ export const scenarios = plan({
      fixtures: "actors",
      file: "product-brand.spec.ts",
 +    managementApps: ["owner"],
      title:
        "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
-@@ -5718,4 +5720,5 @@ export const scenarios = plan({
+@@ -5718,4 +5721,6 @@ export const scenarios = plan({
        EXECUTOR_PRODUCT_NAME: productBrand.name,
        EXECUTOR_PRODUCT_LOGO_URL: productBrand.logo,
 +      EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
++      EXECUTOR_PRODUCT_SOURCE_URL: productBrand.source,
      },
      targets: {
 diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
@@ -1050,10 +1055,10 @@ index b1aac77fa..c5ca99d7f 100644
                ),
              );
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
-index 3e5f77054..6da36dc67 100644
+index 3e5f77054..589b022a9 100644
 --- a/e2e/tests/product-brand.spec.ts
 +++ b/e2e/tests/product-brand.spec.ts
-@@ -56,6 +56,71 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+@@ -56,6 +56,82 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
            ),
          ).not.toMatch(executorName);
 +        // The configured privacy page is linked; terms are not configured, so no link shows.
@@ -1085,6 +1090,17 @@ index 3e5f77054..6da36dc67 100644
 +        expect(
 +          yield* browser.use("Count the sidebar's Docs links", (page) =>
 +            page.getByRole("link", { name: "Docs" }).count(),
++          ),
++        ).toBe(0);
++        // The sidebar links the configured source, not Executor's own repository.
++        expect(
++          yield* browser.use("Read the sidebar's source link", (page) =>
++            page.getByRole("link", { name: "Source code", exact: true }).getAttribute("href"),
++          ),
++        ).toBe(productBrand.source);
++        expect(
++          yield* browser.use("Count the sidebar's GitHub star links", (page) =>
++            page.getByRole("link", { name: "Star on GitHub" }).count(),
 +          ),
 +        ).toBe(0);
 +        // The built-in app's own page and its account read under the configured name too.
@@ -2648,26 +2664,55 @@ index 67d984779..d274b2a05 100644
                    <span className="block truncate text-xs text-muted-foreground">
                      {app === undefined
 diff --git a/packages/ui/src/implementation/dashboard/shell.tsx b/packages/ui/src/implementation/dashboard/shell.tsx
-index 3565f8901..e00dd402e 100644
+index 3565f8901..b10aba13b 100644
 --- a/packages/ui/src/implementation/dashboard/shell.tsx
 +++ b/packages/ui/src/implementation/dashboard/shell.tsx
-@@ -17,6 +17,6 @@ export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
+@@ -6,4 +6,5 @@ import {
+   Message01Icon,
+   SidebarLeft01Icon,
++  SourceCodeIcon,
+   StarIcon,
+ } from "@hugeicons/core-free-icons";
+@@ -11,13 +12,19 @@ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components
+ import { useMediaQuery } from "../hooks/media-query.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+-import { isDefaultProductBrand } from "@executor-js/utils/product-brand";
++import { isDefaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
  
- /** Executor's own feedback and source links appear only while the deployment presents Executor. */
+ /** The public issue tracker, shared by the Feedback link and the support channels. */
+ export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
+ 
+-/** Executor's own feedback and source links appear only while the deployment presents Executor. */
 -const resources = (docsUrl: string, executor: boolean) => [
 -  { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
-+const resources = (docsUrl: string | undefined, executor: boolean) => [
+-  ...(executor
++/**
++ * Executor's own feedback and source links appear only while the deployment presents Executor;
++ * under another name, its own source link appears when it publishes one.
++ */
++const resources = (docsUrl: string | undefined, brand: ProductBrand) => [
 +  ...(docsUrl === undefined ? [] : [{ label: "Docs", href: docsUrl, icon: BookOpen01Icon }]),
-   ...(executor
++  ...(!isDefaultProductBrand(brand) && brand.source !== undefined
++    ? [{ label: "Source code", href: brand.source, icon: SourceCodeIcon }]
++    : []),
++  ...(isDefaultProductBrand(brand)
      ? [
-@@ -50,5 +50,5 @@ function ResourceLinks({
+         { label: "Feedback", href: issuesUrl, icon: Message01Icon },
+@@ -50,11 +57,10 @@ function ResourceLinks({
    support,
  }: {
 -  readonly docsUrl: string;
 +  readonly docsUrl: string | undefined;
    readonly support: ReactNode;
  }) {
-@@ -83,6 +83,6 @@ export function DashboardShell({
+-  const executor = isDefaultProductBrand(useProductBrand());
+   return (
+     <div className="sidebar-resource-links flex flex-col items-start gap-0.5 [padding:0_10px_8px] [&_a]:inline-flex [&_a]:items-center [&_a]:gap-1.5 [&_a]:text-[11px] [&_a]:min-h-6 [&_button]:inline-flex [&_button]:items-center [&_button]:gap-1.5 [&_button]:text-[11px] [&_button]:min-h-6 max-[740px]:[padding:4px_8px_8px] max-[740px]:[&_a]:min-h-10 max-[740px]:[&_a]:text-[13px] max-[740px]:[&_a]:gap-2 max-[740px]:[&_button]:min-h-10 max-[740px]:[&_button]:text-[13px] max-[740px]:[&_button]:gap-2">
+-      {resources(docsUrl, executor).map(({ label, href, icon }) => (
++      {resources(docsUrl, useProductBrand()).map(({ label, href, icon }) => (
+         <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
+           <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
+@@ -83,6 +89,6 @@ export function DashboardShell({
    children,
  }: {
 -  /** The owning product chooses same-origin or public documentation. */
@@ -2695,13 +2740,14 @@ index 5664dcd85..74cee4dd1 100644
    },
    retryable: true,
 diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
-index e51cafadf..6788899d4 100644
+index e51cafadf..7bf45d022 100644
 --- a/packages/utils/src/product-brand.ts
 +++ b/packages/utils/src/product-brand.ts
-@@ -5,8 +5,12 @@ import { Config, Context, Effect, Schema } from "effect";
+@@ -5,8 +5,14 @@ import { Config, Context, Effect, Schema } from "effect";
   * What a deployment calls itself in its pages, emails, OAuth client metadata and MCP server
   * description. `logo` is a square image URL, absolute or a path on the deployment's own origin.
-+ * `docs`, `privacy` and `terms` are the deployment's own pages behind those links.
++ * `docs`, `privacy` and `terms` are the deployment's own pages behind those links. `source` is
++ * where its source code is published.
   */
  export const ProductBrand = Schema.Struct({
    name: Schema.NonEmptyString,
@@ -2709,9 +2755,10 @@ index e51cafadf..6788899d4 100644
 +  docs: Schema.optional(Schema.NonEmptyString),
 +  privacy: Schema.optional(Schema.NonEmptyString),
 +  terms: Schema.optional(Schema.NonEmptyString),
++  source: Schema.optional(Schema.NonEmptyString),
  });
  export type ProductBrand = typeof ProductBrand.Type;
-@@ -21,4 +25,14 @@ export const isDefaultProductBrand = (brand: ProductBrand) =>
+@@ -21,4 +27,14 @@ export const isDefaultProductBrand = (brand: ProductBrand) =>
    brand.name === defaultProductBrand.name;
  
 +/**
@@ -2726,7 +2773,7 @@ index e51cafadf..6788899d4 100644
 +
  /** The name an MCP client lists this server under, such as `executor`. */
  export const productServerName = (brand: ProductBrand) =>
-@@ -34,22 +48,50 @@ export const productLogoUrl = (brand: ProductBrand, origin: string) =>
+@@ -34,22 +50,51 @@ export const productLogoUrl = (brand: ProductBrand, origin: string) =>
  
  /** A setting left empty or blank counts as unset. */
 -const setting = (name: string, fallback: string) =>
@@ -2756,6 +2803,7 @@ index e51cafadf..6788899d4 100644
 +  docs: "EXECUTOR_PRODUCT_DOCS_URL",
 +  privacy: "EXECUTOR_PRODUCT_PRIVACY_URL",
 +  terms: "EXECUTOR_PRODUCT_TERMS_URL",
++  source: "EXECUTOR_PRODUCT_SOURCE_URL",
 +} as const;
 +
  /**
@@ -2775,8 +2823,8 @@ index e51cafadf..6788899d4 100644
 +    productBrandSettings.logo,
 +    (yield* setting(productBrandSettings.logo)) ?? defaultProductBrand.logo,
 +  );
-+  const links: { docs?: string; privacy?: string; terms?: string } = {};
-+  for (const link of ["docs", "privacy", "terms"] as const) {
++  const links: { docs?: string; privacy?: string; terms?: string; source?: string } = {};
++  for (const link of ["docs", "privacy", "terms", "source"] as const) {
 +    const value = yield* urlOrPath(
 +      productBrandSettings[link],
 +      yield* setting(productBrandSettings[link]),
