@@ -44,6 +44,8 @@ const measure = (label: "before" | "after") => {
   const report = files(join(runs, created[0]!, "self-host", "report"));
   const profiles = report.filter(file => file.endsWith("/batch-profile.json"));
   const results = report.filter(file => file.endsWith("/diagnostics/results.json"));
+  for (const file of report.filter(file => file.endsWith("/batch-trace-counts.json")))
+    copyFileSync(file, join(output, `${label}-trace-counts.json`));
   if (profiles.length !== 1 || results.length !== 1) throw new Error(`Missing ${label} E2E evidence`);
   const profile: Profile = JSON.parse(readFileSync(profiles[0]!, "utf8"));
   const tests: { testResults: { assertionResults: {

@@ -325,7 +325,7 @@
     {
       "identity": "executor-dashboard-batch-authentication",
       "file": "0035-dashboard-batch-authentication.patch",
-      "content_sha256": "a98c5e6f60ac8ea36caeee74582d058b1418701465d8516b384b8c2234b47b88",
+      "content_sha256": "bcc6b0c2be972aa5dd2fac89c33923499e3702c1092026e9f3e23312e55fb251",
       "kind": "upstream",
       "upstream_pull_request": 2439,
       "database_sensitive": false,
