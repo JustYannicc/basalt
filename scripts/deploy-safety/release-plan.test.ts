@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ClassificationReport } from "../releases/types.ts";
-import { deploymentPayloadFor } from "./github-ledger.ts";
-import { currentCommit, gitRepositoryRoot, latestProductionBase } from "./release-plan.ts";
+import type { PinSummary } from "./contracts.ts";
+import { deploymentPayloadFor, type DeploymentPayload } from "./github-ledger.ts";
+import { currentCommit, gitRepositoryRoot, latestProductionBase, liveCommitContaining, productionCommitContaining } from "./release-plan.ts";
 
 test("candidate SHA comes from checked-out HEAD, not workflow_dispatch GITHUB_SHA", () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-candidate-sha-"));
@@ -113,4 +114,86 @@ test("a retry after failed initial attempts still requires the production databa
     globalThis.fetch = originalFetch;
     for (const [name, value] of previous) restore(name, value);
   }
+});
+
+test("production already containing a candidate stops its release, including after a pull request release", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "basalt-already-live-")));
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const commit = (cwd: string, name: string) => {
+    writeFileSync(join(cwd, name), `${name}\n`);
+    git(cwd, "add", name);
+    git(cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", name);
+    return git(cwd, "rev-parse", "HEAD");
+  };
+  const origin = join(root, "origin");
+  const checkout = join(root, "checkout");
+  const previous = new Map(["GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"].map((name) => [name, process.env[name]]));
+  const originalFetch = globalThis.fetch;
+  try {
+    execFileSync("git", ["init", "--quiet", "--initial-branch=main", origin]);
+    const older = commit(origin, "older");
+    const deployed = commit(origin, "deployed");
+    execFileSync("git", ["clone", "--quiet", origin, checkout]);
+    const newer = commit(checkout, "newer");
+    // A `Manual release` of a pull request leaves production on a head the main checkout never fetched.
+    git(origin, "switch", "--quiet", "-c", "release-updates/tools");
+    const pullHead = commit(origin, "pull-head");
+    assert.throws(() => git(checkout, "cat-file", "-e", `${pullHead}^{commit}`));
+
+    Object.assign(process.env, { GITHUB_TOKEN: "fixture-token", GITHUB_REPOSITORY: "owner/repo" });
+    delete process.env.GITHUB_RUN_ID;
+    delete process.env.GITHUB_RUN_ATTEMPT;
+    const pins = {
+      tools: { repository: "https://github.com/UsefulSoftwareCo/executor.git", commit: "a".repeat(40) },
+      home: { repository: "https://github.com/router-for-me/CLIProxyAPIHome.git", tag: "v1", commit: "b".repeat(40), binary: "home", assets: { amd64: { name: "amd64", sha256: "c".repeat(64) }, arm64: { name: "arm64", sha256: "d".repeat(64) } } },
+      node: { repository: "https://github.com/router-for-me/CLIProxyAPI.git", tag: "v1", commit: "e".repeat(40), binary: "node", assets: { amd64: { name: "amd64", sha256: "f".repeat(64) }, arm64: { name: "arm64", sha256: "0".repeat(64) } } },
+    };
+    let live = deployed;
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      const report: ClassificationReport = {
+        schemaVersion: 1,
+        base: { gitCommit: older, pins },
+        candidate: { gitCommit: live, pins },
+        databaseChanged: false,
+        workflowChanged: false,
+        evidence: { database: { state: "unchanged", sources: [] }, workflow: { state: "unchanged", sources: [] } },
+      };
+      if (url.pathname.endsWith("/deployments"))
+        return Response.json([{ id: 9, sha: live, environment: "production", payload: deploymentPayloadFor(report), created_at: "2026-10-29T12:00:00Z" }]);
+      if (url.pathname.endsWith("/deployments/9/statuses"))
+        return Response.json([{ id: 91, state: "success", created_at: "2026-10-29T12:05:00Z" }]);
+      throw new Error(`Unexpected fixture request: ${url}`);
+    };
+
+    assert.equal(await productionCommitContaining(deployed, checkout), deployed);
+    assert.equal(await productionCommitContaining(older, checkout), deployed);
+    assert.equal(await productionCommitContaining(newer, checkout), undefined);
+    live = pullHead;
+    assert.equal(await productionCommitContaining(older, checkout), pullHead);
+    assert.equal(await productionCommitContaining(newer, checkout), undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of previous) restore(name, value);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("only the last successful production commit decides whether a candidate is already live", () => {
+  const [candidate, live, failed] = ["1", "2", "3"].map((digit) => digit.repeat(40)) as [string, string, string];
+  const asked: Array<[string, string]> = [];
+  const contains = (ancestor: string, descendant: string) => {
+    asked.push([ancestor, descendant]);
+    return descendant === live;
+  };
+  const pins = {} as PinSummary;
+  const payload = {} as DeploymentPayload;
+  assert.equal(liveCommitContaining(candidate, { state: "uninitialized" }, contains), undefined);
+  assert.equal(liveCommitContaining(candidate, { state: "ready", deploymentId: 1, gitCommit: live, pins, payload }, contains), live);
+  assert.equal(liveCommitContaining(live, { state: "ready", deploymentId: 1, gitCommit: live, pins, payload }, () => assert.fail("same commit")), live);
+  // A failed release after the success isn't live; the success before it is.
+  const unresolved = { state: "unresolved", deploymentId: 2, gitCommit: failed, deploymentStatus: "failure", reason: "failed" } as const;
+  assert.equal(liveCommitContaining(candidate, { ...unresolved, lastSuccessful: { deploymentId: 1, gitCommit: live, pins } }, contains), live);
+  assert.equal(liveCommitContaining(candidate, unresolved, contains), undefined);
+  assert.deepEqual(asked, [[candidate, live], [candidate, live]]);
 });

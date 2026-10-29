@@ -21,25 +21,32 @@ async function json(fetcher: MainCandidateFetch, token: string, url: string): Pr
 }
 
 /**
- * The current main commit may be released manually only when the push Check from the CI workflow
- * passed on exactly that commit. An expected head pins the commit the backup was taken for.
+ * A main commit may be released manually only when the push Check from the CI workflow passed on
+ * exactly that commit. Without a candidate it's the checked-out commit, which must be the current
+ * main head. A candidate, such as the commit Deploy handed off or the one a backup was taken for,
+ * only has to be on main, so main moving past it doesn't invalidate it.
  */
 export async function validateMainCandidate(
   repository: string,
   token: string,
   checkedOut: string,
-  expectedHead?: string,
+  candidate?: string,
   fetcher: MainCandidateFetch = fetch,
 ): Promise<MainCandidate> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error("GITHUB_REPOSITORY must identify the repository");
-  const head = checkedOut.trim().toLowerCase();
-  if (!sha.test(head)) throw new Error("the checked-out main commit must be a full commit SHA");
-  if (expectedHead !== undefined && expectedHead.toLowerCase() !== head)
-    throw new Error("main changed since this manual release was backed up; start a new release");
+  const head = (candidate ?? checkedOut).trim().toLowerCase();
+  if (!sha.test(head)) throw new Error(`the ${candidate === undefined ? "checked-out main commit" : "release candidate"} must be a full commit SHA`);
   const api = `https://api.github.com/repos/${repository}`;
   const main = await json(fetcher, token, `${api}/commits/main`) as { sha?: unknown };
-  if (typeof main.sha !== "string" || main.sha.toLowerCase() !== head)
-    throw new Error("the checked-out commit is not the current main head");
+  if (typeof main.sha !== "string") throw new Error("GitHub returned no main head");
+  const mainHead = main.sha.toLowerCase();
+  if (mainHead !== head) {
+    if (candidate === undefined) throw new Error("the checked-out commit is not the current main head");
+    // "ahead" means main is the candidate plus newer commits; "behind" or "diverged" means main doesn't contain it.
+    const comparison = await json(fetcher, token, `${api}/compare/${head}...${mainHead}?per_page=1`) as { status?: unknown };
+    if (comparison.status !== "identical" && comparison.status !== "ahead")
+      throw new Error("main does not contain the release candidate");
+  }
   const query = new URLSearchParams({ head_sha: head, event: "push", branch: "main", status: "completed", per_page: "100" });
   const runs = await json(fetcher, token, `${api}/actions/workflows/ci.yml/runs?${query}`) as { workflow_runs?: unknown };
   if (!Array.isArray(runs.workflow_runs)) throw new Error("GitHub returned no Check runs for the main release candidate");
@@ -51,7 +58,7 @@ export async function validateMainCandidate(
   const pulls = await json(fetcher, token, `${api}/commits/${head}/pulls`);
   if (!Array.isArray(pulls)) throw new Error("GitHub returned no pull request list for the main release candidate");
   if (pulls.some((pull: { head?: { ref?: unknown } }) => typeof pull.head?.ref === "string" && pull.head.ref.startsWith("release-updates/")))
-    throw new Error("the main head is a release update; release it through Manual release with its pull request");
+    throw new Error("the release candidate is a release update; release it through Manual release with its pull request");
   return { head };
 }
 
@@ -64,14 +71,15 @@ async function runMainCandidateCli(env = process.env): Promise<void> {
   const token = env.GH_TOKEN ?? env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN is required");
   if (env.GITHUB_REF !== "refs/heads/main") throw new Error("manual main releases run only from main");
-  const expected = env.MAIN_RELEASE_EXPECTED_HEAD;
-  if (env.MAIN_RELEASE_REQUIRE_EXPECTED === "true" && !expected)
-    throw new Error("the backed-up main head is missing; start a new release");
+  // The backup job passes the dispatched candidate, if any; the deploy job requires the backed-up one.
+  const requested = env.MAIN_RELEASE_CANDIDATE?.trim();
+  if (env.MAIN_RELEASE_REQUIRE_CANDIDATE === "true" && !requested)
+    throw new Error("the backed-up release candidate is missing; start a new release");
   const candidate = await validateMainCandidate(
     env.GITHUB_REPOSITORY ?? "",
     token,
     env.MAIN_RELEASE_CHECKOUT ?? "",
-    expected || undefined,
+    requested || undefined,
   );
   const lines = mainCandidateOutputLines(candidate);
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, lines, { encoding: "utf8", mode: 0o600 });

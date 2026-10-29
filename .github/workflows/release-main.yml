@@ -1,9 +1,15 @@
 name: Manual release of main
 
 on:
-  # Releases the current main head through the same backup, report and checks as an update PR. Used when
-  # a merged change needs the manual path, for example a runtime carried-patch change.
+  # Releases a main commit through the same backup, report and checks as an update PR. Used when a merged
+  # change needs the manual path, for example a runtime carried-patch change. Deploy passes the commit its
+  # Check passed on; without one this releases the current main head.
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: Full commit SHA on main to release; empty releases the current main head
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -21,6 +27,7 @@ jobs:
     timeout-minutes: 45
     outputs:
       head: ${{ steps.candidate.outputs.head }}
+      already_live: ${{ steps.live.outputs.already_live }}
     env:
       # Set this repository variable to stop every release while a manual restore and rollback run.
       PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
@@ -37,26 +44,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      - name: Validate that the main head passed its push Check
+      - name: Validate that the candidate is on main and passed its push Check
         id: candidate
         run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
+        env:
+          MAIN_RELEASE_CANDIDATE: ${{ inputs.candidate }}
+      # Check runs can finish out of order, so a newer release may already have shipped this commit.
+      - name: Stop when production already contains the candidate
+        id: live
+        run: node scripts/deploy-safety/release.ts already-live --candidate "$RELEASE_HEAD"
+        env:
+          RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
       - name: Select the validated release source
+        if: steps.live.outputs.already_live == 'false'
         run: |
           git fetch --no-tags origin "$RELEASE_HEAD"
           git worktree add --detach "$RUNNER_TEMP/candidate" "$RELEASE_HEAD"
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
       - name: Classify against the last successful production deployment
+        if: steps.live.outputs.already_live == 'false'
         run: |
           mkdir -p .local
           node scripts/deploy-safety/release.ts report --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" > .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
       - name: Complete the release backup before the deploy job
+        if: steps.live.outputs.already_live == 'false'
         run: node scripts/deploy-safety/release.ts backup-only --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json
         env:
           RELEASE_HEAD: ${{ steps.candidate.outputs.head }}
-      - uses: actions/upload-artifact@v4
+      - if: steps.live.outputs.already_live == 'false'
+        uses: actions/upload-artifact@v4
         with:
           name: main-release-report
           path: .local/production-report.json
@@ -66,7 +85,7 @@ jobs:
 
   deploy:
     needs: backup
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && needs.backup.outputs.already_live == 'false'
     environment: production-release
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -122,11 +141,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      - name: Reject a main change since the backup
+      # The backup is for this candidate's transition, so main moving past it is fine; main dropping it isn't.
+      - name: Reject a backed-up candidate main no longer contains
         run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
         env:
-          MAIN_RELEASE_EXPECTED_HEAD: ${{ needs.backup.outputs.head }}
-          MAIN_RELEASE_REQUIRE_EXPECTED: "true"
+          MAIN_RELEASE_CANDIDATE: ${{ needs.backup.outputs.head }}
+          MAIN_RELEASE_REQUIRE_CANDIDATE: "true"
       - name: Select the same immutable release source
         run: |
           git fetch --no-tags origin "$RELEASE_HEAD"

@@ -128,20 +128,14 @@ jobs:
       RELEASE_CANDIDATE_SHA: ${{ github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Hands off this Check's commit even when main has moved on, so a busy main can't defer every release to a
+      # newer head. Releases run one at a time in deploy-production. GitHub keeps one pending run per group and a
+      # newer one replaces it, which is fine: the newer run carries a newer commit, and Manual release of main stops
+      # without deploying when production already contains its candidate.
       - name: Hand database and Workflow-identity releases to Manual release of main
         run: |
-          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
-          if [[ "$head" != "$RELEASE_CANDIDATE_SHA" ]]; then
-            check="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$head&event=push&per_page=1" --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')"
-            case "$check" in
-              "completed success") echo "::notice::main has moved to $head; its own Deploy run releases it"; exit 0 ;;
-              # A Check that hasn't been created yet right after a push counts as pending.
-              "completed "*) echo "::error::main has moved to $head, whose push Check is '$check'; nothing releases this change until main has a passing head"; exit 1 ;;
-              *) echo "::notice::main has moved to $head; its own Deploy run releases it"; exit 0 ;;
-            esac
-          fi
-          if gh api "repos/$GITHUB_REPOSITORY/commits/$head/pulls" --jq '.[].head.ref' | grep -q '^release-updates/'; then
-            echo "::error::main head $head is a release update; release it through Manual release with its pull request"
+          if gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_CANDIDATE_SHA/pulls" --jq '.[].head.ref' | grep -q '^release-updates/'; then
+            echo "::error::$RELEASE_CANDIDATE_SHA is a release update; release it through Manual release with its pull request"
             exit 1
           fi
-          gh workflow run release-main.yml --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run release-main.yml --repo "$GITHUB_REPOSITORY" --ref main -f candidate="$RELEASE_CANDIDATE_SHA"

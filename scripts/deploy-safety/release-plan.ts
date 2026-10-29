@@ -49,6 +49,30 @@ export function rollForwardTo(candidateGitCommit: string, repositoryRoot = trust
   };
 }
 
+/**
+ * The last successful production commit when it is `candidate` or contains it, so releasing the
+ * candidate would move production backwards. Check runs can finish out of order, so an older
+ * candidate's release can start after a newer one has gone live.
+ */
+export function liveCommitContaining(
+  candidate: string,
+  ledger: DeploymentLedger,
+  contains: RollForward["contains"],
+): string | undefined {
+  const live = ledger.state === "ready" ? ledger.gitCommit : ledger.state === "unresolved" ? ledger.lastSuccessful?.gitCommit : undefined;
+  return live && (live === candidate || contains(candidate, live)) ? live : undefined;
+}
+
+export async function productionCommitContaining(candidate: string, repositoryRoot = trustedRepositoryRoot): Promise<string | undefined> {
+  const ledger = await readDeploymentLedger(readLedgerEnvironment());
+  return liveCommitContaining(candidate, ledger, (ancestor, descendant) => {
+    // A `Manual release` of a pull request records its head commit, which a main checkout lacks.
+    if (spawnSync("git", ["cat-file", "-e", `${descendant}^{commit}`], { cwd: repositoryRoot, stdio: "ignore" }).status !== 0)
+      execFileSync("git", ["fetch", "--quiet", "--no-tags", "origin", descendant], { cwd: repositoryRoot, stdio: ["ignore", "ignore", "pipe"] });
+    return rollForwardTo(candidate, repositoryRoot).contains(ancestor, descendant);
+  });
+}
+
 export async function latestProductionBase(): Promise<{
   state: "uninitialized" | "ready" | "unresolved";
   baseGitCommit?: string;

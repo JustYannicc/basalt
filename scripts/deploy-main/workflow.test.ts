@@ -64,8 +64,41 @@ test("database and Workflow-identity releases go to Manual release of main witho
   assert.match(handoff, /^    needs: deploy\n    if: needs\.deploy\.outputs\.manual_required != 'false'$/m);
   assert.match(handoff, /^    permissions:\n      contents: read\n      actions: write$/m);
   assert.doesNotMatch(handoff, /secrets\.|actions\/checkout|npm |node /);
-  assert.match(handoff, /^\s+"completed "\*\) echo "::error::[^\n]*"; exit 1 ;;\n\s+\*\) echo "::notice::[^\n]*"; exit 0 ;;$/m);
-  assert.doesNotMatch(handoff, /"null null"/);
-  assert.match(handoff, /release-updates\/[\s\S]*?exit 1[\s\S]*?gh workflow run release-main\.yml --repo "\$GITHUB_REPOSITORY" --ref main/);
   assert.match(workflow, /^      manual_required: \$\{\{ steps\.report\.outputs\.manual_required \}\}$/m);
+});
+
+test("the handoff releases this Check's commit even when main has moved on", () => {
+  const handoff = workflow.slice(workflow.indexOf("\n  handoff:\n"));
+  const script = handoff.match(/^        run: \|\n((?:          [^\n]*\n?)+)/m)?.[1];
+  assert.ok(script, "handoff must run a script");
+  // A newer head, or its pending or failed Check, no longer defers or blocks this release.
+  assert.doesNotMatch(script, /commits\/main|ci\.yml\/runs|exit 0/);
+  assert.match(script, /^          if gh api "repos\/\$GITHUB_REPOSITORY\/commits\/\$RELEASE_CANDIDATE_SHA\/pulls" --jq '\.\[\]\.head\.ref' \| grep -q '\^release-updates\/'; then\n[^\n]*::error::[^\n]*\n\s+exit 1\n\s+fi\n/m);
+  assert.match(script, /\n          gh workflow run release-main\.yml --repo "\$GITHUB_REPOSITORY" --ref main -f candidate="\$RELEASE_CANDIDATE_SHA"\n?$/);
+  assert.equal(script.match(/gh workflow run/g)?.length, 1);
+  assert.match(handoff, /^      RELEASE_CANDIDATE_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}$/m);
+});
+
+test("Manual release of main releases a dispatched candidate main contains, and never one production already has", () => {
+  const release = readFileSync(fileURLToPath(new URL("../../.github/workflows/release-main.yml", import.meta.url)), "utf8");
+  const backup = release.slice(release.indexOf("\n  backup:\n"), release.indexOf("\n  deploy:\n"));
+  const deploy = release.slice(release.indexOf("\n  deploy:\n"));
+  assert.match(release, /^  workflow_dispatch:\n    inputs:\n      candidate:\n        description: [^\n]+\n        required: false\n        type: string$/m);
+  assert.match(release, /^  group: deploy-production\n  cancel-in-progress: false$/m);
+  // Trusted scripts come from main; the candidate is only ever checked out into its own worktree.
+  assert.equal(release.match(/^          ref: main$/gm)?.length, 2);
+  assert.match(backup, /run: MAIN_RELEASE_CHECKOUT="\$\(git rev-parse HEAD\)" node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ inputs\.candidate \}\}\n/);
+  assert.doesNotMatch(release, /\$\{\{ inputs\.candidate \}\}"|run: [^\n]*inputs\.candidate/);
+  assert.match(backup, /^      already_live: \$\{\{ steps\.live\.outputs\.already_live \}\}$/m);
+  assert.match(backup, /\n\s+id: live\n\s+run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$RELEASE_HEAD"\n/);
+  const guarded = backup.slice(backup.indexOf("id: live"));
+  assert.ok(backup.indexOf("id: live") > backup.indexOf("id: candidate"));
+  // Nothing after the guard runs once production has the candidate: no worktree, report, backup or artifact.
+  const steps = guarded.split(/\n      - /).slice(1);
+  assert.equal(steps.length, 4);
+  for (const step of steps) assert.match(step, /^(?:name: [^\n]+\n        )?if: steps\.live\.outputs\.already_live == 'false'\n/, step);
+  assert.match(deploy, /^    if: github\.ref == 'refs\/heads\/main' && needs\.backup\.outputs\.already_live == 'false'$/m);
+  // The deploy job only needs main to still contain the backed-up candidate, not to equal it.
+  assert.match(deploy, /node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ needs\.backup\.outputs\.head \}\}\n\s+MAIN_RELEASE_REQUIRE_CANDIDATE: "true"\n/);
+  assert.doesNotMatch(release, /MAIN_RELEASE_EXPECTED_HEAD|MAIN_RELEASE_REQUIRE_EXPECTED/);
 });

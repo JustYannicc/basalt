@@ -1,7 +1,7 @@
 import { appendFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
+import { classifyCurrentRelease, classifyManualRollbackCandidate, currentCommit, latestProductionBase, productionCommitContaining, verifyFreshManualRollbackReport, verifyFreshReport, gitRepositoryRoot } from "./release-plan.ts";
 import { assertWorkflowsDrained, inspectWorkflowChange } from "./cloudflare.ts";
 import { parseReportFile, reportDigest, SafetyGateError } from "./contracts.ts";
 import { releaseBackup, type SupersededRelease } from "./github-ledger.ts";
@@ -24,6 +24,17 @@ async function main(args: string[]): Promise<void> {
       ...(result.deploymentStatus ? { latest_deployment_status: result.deploymentStatus } : {}),
     });
     print(result);
+    return;
+  }
+
+  if (command === "already-live") {
+    const candidate = required(options, "--candidate").trim().toLowerCase();
+    if (!/^[a-f0-9]{40}$/.test(candidate)) throw new SafetyGateError("The release candidate must be a full commit SHA");
+    const live = await productionCommitContaining(candidate);
+    if (live)
+      process.stderr.write(`::notice::${candidate} is already live: the last successful production deployment, ${live}, contains it\n`);
+    writeActionOutputs({ already_live: String(live !== undefined) });
+    print({ candidate, alreadyLive: live !== undefined, ...(live ? { productionGitCommit: live } : {}) });
     return;
   }
 
@@ -173,7 +184,7 @@ async function main(args: string[]): Promise<void> {
     return;
   }
 
-  throw new SafetyGateError("Usage: release.ts <latest-base|report|rollback-report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]");
+  throw new SafetyGateError("Usage: release.ts <latest-base|already-live|report|rollback-report|backup-only|inspect-workflows|rollback-target|manual-rollback|deploy> [options]");
 }
 
 export function candidateCheckout(options: ReleaseCliOptions, allowTrustedMainBootstrap = false): { root: string; commit: string } {
