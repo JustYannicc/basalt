@@ -37,10 +37,12 @@ main{flex:1;padding:56px 0 48px}
 a{color:inherit;text-underline-offset:3px}
 .home main{display:flex;flex-direction:column;justify-content:center;padding:64px 0}
 h1{margin:0 0 16px;font-size:clamp(30px,6vw,44px);line-height:1.12;letter-spacing:-.025em;font-weight:600}
+.subheadline{margin:0 0 20px;color:#0a0a0a;font-size:20px;line-height:1.4;letter-spacing:-.01em}
 .lede{margin:0 0 20px;max-width:56ch;color:#404040;font-size:17px;line-height:1.6}
 .tagline{margin:0 0 32px;color:#737373;font:14px "Geist Mono",ui-monospace,monospace}
 .action{align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 20px;border-radius:8px;background:#0a0a0a;color:#fff;font-weight:500;text-decoration:none}
 .action:hover{background:#262626}
+.note{margin:40px 0 0;max-width:56ch;color:#737373;font-size:13px}
 .legal h1{font-size:30px;margin-bottom:8px}
 .summary{margin:0;color:#737373}
 .updated{margin:4px 0 32px;color:#737373;font-size:13px}
@@ -73,9 +75,9 @@ function document(title: string, description: string, kind: "home" | "legal", co
 function homePage(): string {
   return document(
     brand.name,
-    home.body,
+    home.note,
     "home",
-    `<h1>${inline(home.headline)}</h1><p class="lede">${inline(home.body)}</p><p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a>`,
+    `<h1>${inline(home.headline)}</h1><p class="subheadline">${inline(home.subheadline)}</p><p class="lede">${inline(home.body)}</p><p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p>`,
   );
 }
 

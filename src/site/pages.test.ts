@@ -10,7 +10,7 @@ const paths = ["/", "/privacy", "/terms", "/legal-notice"];
 
 test("the home page says what the service does, why it asks for Google access, and links privacy", () => {
   const home = page("/");
-  assert.match(text(home), /Gmail, Calendar and Drive through your own Google sign-in/);
+  assert.match(text(home), /connects your agents to Gmail, Calendar and Drive with your own Google sign-in/);
   assert.match(home, /<a href="\/privacy">Privacy<\/a>/);
   assert.match(home, new RegExp(`<a class="action" href="https://${brand.host}">Sign in</a>`));
   assert.equal(home.match(/class="action"/g)?.length, 1);
@@ -40,7 +40,8 @@ test("privacy names the Limited Use commitment, complaint routes and metadata-on
   assert.match(privacy, /including the Limited Use requirements/);
   assert.match(privacy, /Federal Data Protection and Information Commissioner \(FDPIC\)/);
   assert.match(privacy, /where EU law applies, your local supervisory authority/);
-  assert.match(privacy, /Failure records hold no headers, credentials, prompts, responses or error text/);
+  assert.match(privacy, /When a request fails, the pool backend currently keeps the provider's error response/);
+  assert.match(privacy, /rely on the EU Standard Contractual Clauses/);
   assert.match(text(page("/terms")), /governed by Swiss law\. The courts of Zurich/);
 });
 

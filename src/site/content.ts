@@ -24,15 +24,21 @@ const { name, site } = brand;
 const email = `[${site.email}](mailto:${site.email})`;
 const operator = `${site.operator}, ${site.region}`;
 
+/**
+ * The home page says what we are building, the way a manifesto would. What the app does with
+ * Google data stays one quiet line under it, which Google's review requires.
+ */
 export const home = {
-  headline: "Your AI agents, connected to the apps you already use.",
+  headline: "Let the work come to you.",
+  subheadline: "Your attention is the scarcest thing you have.",
   body: [
-    `${name} lets Claude Code, Codex, Cursor and other AI agents use your apps and accounts through one connection.`,
-    "You sign in to each service yourself, and your agents act only with the access you grant.",
-    "If you connect a Google account, they can work in Gmail, Calendar and Drive through your own Google sign-in.",
+    "Today you chase your tools and hand work to AI one task at a time.",
+    `${name} turns that around: your agents do the work, and come to you only when they need you.`,
+    "It all lives in one place you can open from anywhere, and it works with the apps you already use.",
   ].join(" "),
-  tagline: "Your accounts, your permissions.",
+  tagline: "Less managing. More done.",
   action: { label: "Sign in", href: `https://${brand.host}` },
+  note: `${name} connects your agents to Gmail, Calendar and Drive with your own Google sign-in, so they can work in them for you.`,
 } as const;
 
 const privacy: LegalPage = {
@@ -55,10 +61,10 @@ const privacy: LegalPage = {
       p: "**Apps and their data.** Apps you install can store their own data. Workflow inputs and results are stored encrypted.",
     },
     {
-      p: "**Model subscriptions.** If you connect a model subscription to your pool, its credentials are held by the pool backend, which runs in the EU. We keep daily usage counts per person, provider and model (requests, tokens and cost) for 30 days. Your model requests and responses pass through the pool backend to your provider, which doesn't log their content. To continue some conversations across providers, it can store parts of a response, such as tool-call details, in the pool database for about an hour.",
+      p: "**Model subscriptions.** If you connect a model subscription to your pool, its credentials are held by the pool backend, which runs in the EU. We keep daily usage counts per person, provider and model (requests, tokens and cost) for 30 days. Your model requests and responses pass through the pool backend to your provider. The pool backend doesn't keep the content of requests that succeed. To continue some conversations across providers, it can store parts of a response, such as tool-call details, in the pool database for about an hour.",
     },
     {
-      p: "When a request fails, we keep only a record of the failure, without its content: the time, pool, person or key, provider, model, account, HTTP status, error type and code, duration and request ID. Failure records hold no headers, credentials, prompts, responses or error text. We keep them for 30 days.",
+      p: "When a request fails, the pool backend currently keeps the provider's error response, which can include content, together with the key that made the request. We are removing these copies.",
     },
     {
       p: "**Feedback.** If you send feedback, we receive your message, the page you were on, recent error codes and any screenshot you choose to attach.",
@@ -90,7 +96,7 @@ const privacy: LegalPage = {
       ],
     },
     {
-      p: "Some of these recipients process data outside Switzerland and the EEA, including in the United States. Those transfers rely on standard contractual clauses or, where the recipient is certified, the Swiss-US and EU-US Data Privacy Framework. We don't sell your data and don't use it for advertising.",
+      p: "Some of these recipients process data outside Switzerland and the EEA, including in the United States. Those transfers rely on the EU Standard Contractual Clauses. We don't sell your data and don't use it for advertising.",
     },
     { h2: "Google user data" },
     {
@@ -116,7 +122,7 @@ const privacy: LegalPage = {
         "Your account, organizations and connected accounts: until you remove them or ask us to delete your account.",
         "Sessions: 7 days, or until you sign out.",
         "Inactive agent connections: revoked after 30 days.",
-        "Pool usage counts and failure records: 30 days.",
+        "Pool usage counts: 30 days.",
       ],
     },
     {
