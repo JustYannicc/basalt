@@ -284,6 +284,91 @@ index 2a3ff58..39b330e 100644
  /**
   * Personal and shared credentials use one list. Administrators also manage the organization's
   * OAuth clients from here, since those clients only exist to connect accounts.
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index 896d3d1..4b9eb13 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -1,4 +1,5 @@
+ import { usePreload } from "@executor-js/ui/dashboard/context";
++import { loadedValue } from "@executor-js/dashboard-start/registry";
+ import { AppResources } from "./app-resources.tsx";
+ import { AppAccounts } from "./app-accounts.tsx";
+ import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
+@@ -14,7 +15,7 @@ import {
+   type RequirementLink,
+ } from "@executor-js/ui/contracts/app-accounts";
+ import { AppAccessSettings } from "./resource-settings.tsx";
+-import { appAccessAtom } from "../../contracts/resource-access.ts";
++import { appAccessAtom, resourceDirectoryAtom } from "../../contracts/resource-access.ts";
+ import {
+   emptyManyRequirements,
+   type AccountSummary,
+@@ -25,7 +26,7 @@ import { scheduleBindings } from "../../contracts/schedules.ts";
+ import { sessionAtom } from "../../contracts/auth.ts";
+ import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
+ import { Exit, Option, Schema } from "effect";
+-import { AsyncResult } from "effect/reactivity";
++import { Atom, AsyncResult } from "effect/reactivity";
+ import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
+ import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+@@ -72,6 +73,7 @@ import { AppTools } from "./app-tools.tsx";
+ import { AppSource, AppVersions } from "./app-source.tsx";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ 
+ /** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
+ export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
+@@ -83,9 +85,48 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params)
+       appLinksAtom({ organization, app }),
+       userLinksAtom({ organization, app }),
+       appAccessAtom({ organization, app }),
++      listedAppReads(organization)(app),
+     ],
+   });
+ 
++/**
++ * The overview's tools, skills, workflows and source reads wait for the app and its links. When
++ * the Apps list already holds this app, its version, access and linked accounts start them with
++ * the page's first reads instead. Opening an app without the list loaded reads nothing extra, and
++ * a guess the page's own reads contradict costs one unused read: the page renders from its own.
++ */
++const listedAppReads = Atom.family((organization: OrganizationReference) =>
++  Atom.family((app: AppId) =>
++    Atom.readable((get) => {
++      const listed = loadedValue(get.registry, resourceDirectoryAtom(organization));
++      if (listed === undefined || !AsyncResult.isSuccess(listed)) return;
++      const entry = listed.value.apps.find((item) => item.app.id === app);
++      if (entry === undefined) return;
++      // The list names no requirement per link, so a user requirement counts any linked account of
++      // its provider, as the app card does. App requirements stay unknown, so never missing.
++      const user = Object.entries(entry.app.requirements.accounts).flatMap(([slot, requirement]) =>
++        requirement.scope === "user"
++          ? listed.value.accounts.flatMap(({ account }) =>
++              entry.linkedAccounts.includes(account.id) && account.provider === requirement.provider
++                ? [{ requirement: slot, account }]
++                : [],
++            )
++          : [],
++      );
++      const requirements = requirementAccounts(entry.app, { user });
++      if (entry.access.canUse) {
++        const bindings = appBrowserBindings(organization, entry.app);
++        get(bindings.skills);
++        if (missingRequirements(requirements).length === 0) {
++          get(toolsAtom({ organization, app, version: entry.app.activeVersion ?? undefined }));
++          get(bindings.workflows);
++        }
++      }
++      if (entry.access.canManage) get(appManagement(organization).authoring(app));
++    }),
++  ),
++);
++
+ /** Views that read only the app. The others also read the inventory and the app's links. */
+ const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
+ 
 diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
 index cc100f2..0dc8705 100644
 --- a/apps/hosted/web/src/implementation/pages/approvals.tsx
@@ -355,17 +440,18 @@ index dfbede9..9cd3d11 100644
  export function GroupsPage({ id }: { readonly id?: string }) {
    const { organization } = useOrganizationRoute();
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 07066aa..6eeae66 100644
+index caa38b1..eecfe7f 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4694,6 +4694,16 @@ export const scenarios = plan({
+@@ -4694,6 +4694,17 @@ export const scenarios = plan({
        local: na("This journey checks hosted app metadata requests."),
      },
    },
 +  navigationIntentReads: {
 +    fixtures: "actors",
 +    file: "navigation-intent.spec.ts",
-+    title: "Hovering an app link reads the app before the click, and opening it reuses that read",
++    title:
++      "Hovering an app link reads the app and its tools before the click, and opening it reuses that read",
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: sourceStorageCloud,
@@ -377,10 +463,10 @@ index 07066aa..6eeae66 100644
      file: "organization-icon.spec.ts",
 diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
 new file mode 100644
-index 0000000..ce4601c
+index 0000000..99d63bd
 --- /dev/null
 +++ b/e2e/tests/navigation-intent.spec.ts
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,104 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -405,6 +491,11 @@ index 0000000..ce4601c
 +    batch.includes(app)
 +  );
 +};
++
++/** Whether a dashboard read batch also asks for this app's tool index. */
++const readsTools = (request: Request, app: string) =>
++  (request.postData() ?? "").includes(`"group":"tools","endpoint":"index"`) &&
++  (request.postData() ?? "").includes(app);
 +
 +layer(HostedLive, { excludeTestServices: true })("Navigation intent", (it) => {
 +  it.effect(scenarios.navigationIntentReads.title, (context) =>
@@ -451,15 +542,17 @@ index 0000000..ce4601c
 +          });
 +          return Promise.resolve();
 +        });
-+        // Hovering shows intent: the app is read while the list is still open.
-+        yield* browser.use("Hover the app's link", (page) =>
++        // Hovering shows intent: the app is read while the list is still open. The list already
++        // names the app's version and accounts, so its tools are read in the same batch.
++        const [hovered] = yield* browser.use("Hover the app's link", (page) =>
 +          Promise.all([
 +            page
 +              .waitForRequest((request) => readsApp(request, app.id))
-+              .then((read) => read.response()),
++              .then((read) => read.response().then(() => read)),
 +            link(page).hover(),
 +          ]),
 +        );
++        expect(readsTools(hovered, app.id)).toBe(true);
 +        expect(
 +          yield* browser.use("Read the current path", (page) =>
 +            Promise.resolve(new URL(page.url()).pathname),
@@ -479,7 +572,7 @@ index 0000000..ce4601c
 +  );
 +});
 diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
-index 567d471..0f3ec8c 100644
+index 567d471..056e847 100644
 --- a/packages/dashboard-start/src/implementation/registry.tsx
 +++ b/packages/dashboard-start/src/implementation/registry.tsx
 @@ -7,7 +7,7 @@
@@ -491,10 +584,25 @@ index 567d471..0f3ec8c 100644
  import { Cause } from "effect";
  import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
  import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
-@@ -359,6 +359,46 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
+@@ -359,6 +359,61 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
    };
  };
  
++/**
++ * The value `atom` holds if something already read it, without starting a read. A read can act on
++ * data another page loaded, such as the list it was opened from, at no cost when there is none.
++ */
++export const loadedValue = <A,>(
++  registry: AtomRegistry.AtomRegistry,
++  atom: Atom.Atom<A>,
++): A | undefined => {
++  const node = registry.getNodes().get(nodeKey(atom));
++  // Reading a node that is not valid would compute it, which starts the read.
++  if (node === undefined || node.currentState() !== "valid") return undefined;
++  // SAFETY: the registry stores each atom's node under that atom's key.
++  return node.value() as A;
++};
++
 +/** The reads a matched route declares, from its static data, params and current values. */
 +export type RouteReads = (
 +  match: {
@@ -538,7 +646,7 @@ index 567d471..0f3ec8c 100644
  /**
   * Create the registry for one router. `initialValues` are values known before rendering, such as
   * browser entry data or a server-verified session. `connect` joins it to Start's streaming.
-@@ -375,9 +415,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
+@@ -375,9 +430,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
    const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
    return {
      registry,
