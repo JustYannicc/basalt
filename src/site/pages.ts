@@ -1,5 +1,6 @@
 import { brand } from "../../brand.ts";
 import { home, legalPages, type Block, type LegalPage } from "./content.ts";
+import { introSeconds } from "./volcano.ts";
 
 const escapeHtml = (value: string) =>
   value
@@ -40,7 +41,11 @@ main{flex:1}
 .mark{display:inline-flex;align-items:center;gap:8px;color:#f8f8f4;text-decoration:none;font:italic 22px/1 "EB Garamond",Georgia,serif}
 .mark img{width:20px;height:20px;border-radius:5px;box-shadow:0 0 0 1px #303034}
 .home main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:80px;align-items:center;padding:96px 0}
-.art{display:block;width:100%;max-width:520px;height:auto;image-rendering:pixelated}
+.art{position:relative;width:100%;max-width:560px;aspect-ratio:128/144}
+.art img{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
+.art .intro{animation:handover 0s linear ${introSeconds}s forwards}
+@keyframes handover{to{visibility:hidden}}
+@media (prefers-reduced-motion:reduce){.art img{display:none}.art{background:url(/brand/hero/volcano.png) center/100% 100% no-repeat;image-rendering:pixelated}}
 h1{margin:0 0 28px;font-weight:400;font-size:clamp(40px,5vw,64px);line-height:1.04;letter-spacing:-.01em}
 h1 em{display:block}
 .lede{margin:0 0 18px;max-width:34em;color:#a3a29d}
@@ -95,8 +100,9 @@ function document(title: string, description: string, kind: "home" | "legal", co
 
 function homePage(): string {
   const [roman, italic] = home.headline;
-  // The eruption loops; people who ask for less motion get its still frame.
-  const art = `<picture><source srcset="/brand/hero/volcano.png" media="(prefers-reduced-motion: reduce)"><img class="art" src="/brand/hero/volcano.webp" alt="" width="112" height="128"></picture>`;
+  // The eruption plays once on top of the loop that carries on from it, then steps aside when
+  // both reach the same frame. People who ask for less motion get a still.
+  const art = `<div class="art" aria-hidden="true"><img src="/brand/hero/volcano-loop.webp" alt=""><img class="intro" src="/brand/hero/volcano-intro.webp" alt=""></div>`;
   return document(
     brand.name,
     home.note,
