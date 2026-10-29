@@ -28,6 +28,7 @@ jobs:
     outputs:
       head: ${{ steps.candidate.outputs.head }}
       already_live: ${{ steps.live.outputs.already_live }}
+      trusted: ${{ steps.trusted.outputs.commit }}
     env:
       # Set this repository variable to stop every release while a manual restore and rollback run.
       PRODUCTION_RELEASE_HOLD: ${{ vars.PRODUCTION_RELEASE_HOLD }}
@@ -44,6 +45,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
+      # main can move between the jobs now, so the deploy job runs the same trusted scripts as this one.
+      - name: Record the trusted main commit
+        id: trusted
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Validate that the candidate is on main and passed its push Check
         id: candidate
         run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
@@ -135,7 +140,7 @@ jobs:
       # No one approves this job, and Deploy usually dispatches it. Nothing quiesces writes first; the backup and the fail-closed drain step below gate it.
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ needs.backup.outputs.trusted }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -143,7 +148,7 @@ jobs:
           node-version: 24.18.0
       # The backup is for this candidate's transition, so main moving past it is fine; main dropping it isn't.
       - name: Reject a backed-up candidate main no longer contains
-        run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
+        run: node scripts/release-merge/main-candidate.ts
         env:
           MAIN_RELEASE_CANDIDATE: ${{ needs.backup.outputs.head }}
           MAIN_RELEASE_REQUIRE_CANDIDATE: "true"

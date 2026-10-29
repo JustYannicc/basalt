@@ -4,6 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { pins as fixturePins, sha } from "../releases/fixtures.test-helpers.ts";
 import type { ClassificationReport } from "../releases/types.ts";
 import type { PinSummary } from "./contracts.ts";
 import { deploymentPayloadFor, type DeploymentPayload } from "./github-ledger.ts";
@@ -143,11 +144,7 @@ test("production already containing a candidate stops its release, including aft
     Object.assign(process.env, { GITHUB_TOKEN: "fixture-token", GITHUB_REPOSITORY: "owner/repo" });
     delete process.env.GITHUB_RUN_ID;
     delete process.env.GITHUB_RUN_ATTEMPT;
-    const pins = {
-      tools: { repository: "https://github.com/UsefulSoftwareCo/executor.git", commit: "a".repeat(40) },
-      home: { repository: "https://github.com/router-for-me/CLIProxyAPIHome.git", tag: "v1", commit: "b".repeat(40), binary: "home", assets: { amd64: { name: "amd64", sha256: "c".repeat(64) }, arm64: { name: "arm64", sha256: "d".repeat(64) } } },
-      node: { repository: "https://github.com/router-for-me/CLIProxyAPI.git", tag: "v1", commit: "e".repeat(40), binary: "node", assets: { amd64: { name: "amd64", sha256: "f".repeat(64) }, arm64: { name: "arm64", sha256: "0".repeat(64) } } },
-    };
+    const pins = fixturePins();
     let live = deployed;
     globalThis.fetch = async (input) => {
       const url = new URL(String(input));
@@ -180,7 +177,7 @@ test("production already containing a candidate stops its release, including aft
 });
 
 test("only the last successful production commit decides whether a candidate is already live", () => {
-  const [candidate, live, failed] = ["1", "2", "3"].map((digit) => digit.repeat(40)) as [string, string, string];
+  const [candidate, live, failed] = [sha("1"), sha("2"), sha("3")];
   const asked: Array<[string, string]> = [];
   const contains = (ancestor: string, descendant: string) => {
     asked.push([ancestor, descendant]);

@@ -85,8 +85,13 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   const deploy = release.slice(release.indexOf("\n  deploy:\n"));
   assert.match(release, /^  workflow_dispatch:\n    inputs:\n      candidate:\n        description: [^\n]+\n        required: false\n        type: string$/m);
   assert.match(release, /^  group: deploy-production\n  cancel-in-progress: false$/m);
-  // Trusted scripts come from main; the candidate is only ever checked out into its own worktree.
-  assert.equal(release.match(/^          ref: main$/gm)?.length, 2);
+  // Trusted scripts come from main, the same commit in both jobs; the candidate only goes into its own worktree.
+  assert.match(backup, /^          ref: main$/m);
+  assert.match(backup, /^      trusted: \$\{\{ steps\.trusted\.outputs\.commit \}\}$/m);
+  assert.match(backup, /\n\s+id: trusted\n\s+run: echo "commit=\$\(git rev-parse HEAD\)" >> "\$GITHUB_OUTPUT"\n/);
+  assert.ok(backup.indexOf("id: trusted") < backup.indexOf("id: candidate"));
+  assert.match(deploy, /^          ref: \$\{\{ needs\.backup\.outputs\.trusted \}\}$/m);
+  assert.doesNotMatch(deploy, /^          ref: main$/m);
   assert.match(backup, /run: MAIN_RELEASE_CHECKOUT="\$\(git rev-parse HEAD\)" node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ inputs\.candidate \}\}\n/);
   assert.doesNotMatch(release, /\$\{\{ inputs\.candidate \}\}"|run: [^\n]*inputs\.candidate/);
   assert.match(backup, /^      already_live: \$\{\{ steps\.live\.outputs\.already_live \}\}$/m);
@@ -99,6 +104,6 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   for (const step of steps) assert.match(step, /^(?:name: [^\n]+\n        )?if: steps\.live\.outputs\.already_live == 'false'\n/, step);
   assert.match(deploy, /^    if: github\.ref == 'refs\/heads\/main' && needs\.backup\.outputs\.already_live == 'false'$/m);
   // The deploy job only needs main to still contain the backed-up candidate, not to equal it.
-  assert.match(deploy, /node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ needs\.backup\.outputs\.head \}\}\n\s+MAIN_RELEASE_REQUIRE_CANDIDATE: "true"\n/);
+  assert.match(deploy, /run: node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ needs\.backup\.outputs\.head \}\}\n\s+MAIN_RELEASE_REQUIRE_CANDIDATE: "true"\n/);
   assert.doesNotMatch(release, /MAIN_RELEASE_EXPECTED_HEAD|MAIN_RELEASE_REQUIRE_EXPECTED/);
 });
