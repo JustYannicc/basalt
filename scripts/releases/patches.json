@@ -300,7 +300,7 @@
       "file": "0032-app-account-counts.patch",
       "content_sha256": "f339e8f8fc054ad28b2ba84bdb60c5bc0e2beaa8ffedcdaa335d355baadb2aa9",
       "kind": "upstream",
-      "upstream_pull_request": 2432,
+      "upstream_pull_request": 2438,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
