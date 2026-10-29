@@ -330,6 +330,15 @@
       "upstream_pull_request": 2439,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-dashboard-batch-resources",
+      "file": "0037-dashboard-batch-resources.patch",
+      "content_sha256": "04e94582066c660b09f4b57b9d2f29e2e59fb7963775190800ad5144fe9ec106",
+      "kind": "upstream",
+      "upstream_pull_request": 2451,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

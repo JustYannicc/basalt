@@ -29,6 +29,9 @@ jobs:
         run: bunx playwright install --with-deps chromium
       - name: Compare the baseline and candidate through the real dashboard batch endpoint
         run: node scripts/profile-dashboard-batch.ts
+      - name: Check Cloud resources stay within each dashboard batch request
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name 'Cloud dashboard batches share one SQL pool'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

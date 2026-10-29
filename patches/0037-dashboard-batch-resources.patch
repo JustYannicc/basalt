@@ -1,0 +1,252 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/batch-execution.ts b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
+@@ -0,0 +1,26 @@
++import { dashboardBatchPath } from "@executor-js/dashboard-start/batch";
++import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
++import { Context, Effect, Option, Scope } from "effect";
++import { HttpServerRequest } from "effect/http";
++
++const BatchScope = Context.Reference<Scope.Scope | undefined>("cloud/BatchScope", {
++  defaultValue: () => undefined,
++});
++
++/** Keep batch resources outside the child scopes that close each read. */
++export const withBatchExecution = <A, E, R>(handler: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const url = HttpServerRequest.toURL(request);
++    if (request.method !== "POST" || Option.isNone(url) || url.value.pathname !== dashboardBatchPath)
++      return yield* handler;
++    // Fork before the reads: their cleanup runs before these shared resources close.
++    const scope = yield* Scope.fork(yield* Effect.scope, "sequential");
++    return yield* handler.pipe(Effect.provideService(BatchScope, scope));
++  });
++
++/** Execution memos normally follow the caller's scope; batched reads share their resource scope. */
++export const makeBatchExecutionMemo = <A, E, R>(build: Effect.Effect<A, E, R | Scope.Scope>) =>
++  Effect.map(makeExecutionMemo(build), (memo) =>
++    Effect.flatMap(BatchScope, (scope) => (scope === undefined ? memo : Scope.provide(memo, scope))),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -14,7 +14,7 @@
+ } from "@executor-js/sdk/core";
+ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+ import { SqlClient } from "effect/sql";
+-import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
++import { makeBatchExecutionMemo } from "./batch-execution.ts";
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, FiberSet, Option } from "effect";
+ import { FetchHttpClient, HttpClient } from "effect/http";
+@@ -99,7 +99,7 @@
+   const blobs = yield* cloudBlobs;
+   // App storage, hosted permission checks and Better Auth share the event's client.
+   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
+-  const executor = yield* makeExecutionMemo(
++  const executor = yield* makeBatchExecutionMemo(
+     Effect.gen(function* () {
+       const key = yield* secrets.encryptionKey;
+       const services = yield* database;
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -3,7 +3,7 @@
+  * the executor, hosted permission checks and Better Auth. Worker events connect through Hyperdrive
+  * (about 4 ms); consumers still share one pool, so sequential work reuses one connection.
+  */
+-import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
++import { makeBatchExecutionMemo } from "./batch-execution.ts";
+ import { Context, Effect, Layer, Option, Scope } from "effect";
+ import { SqlClient, type SqlError } from "effect/sql";
+ import {
+@@ -36,7 +36,7 @@
+   InvocationDatabase,
+   Effect.gen(function* () {
+     const connection = yield* cloudDatabaseConnection;
+-    return yield* makeExecutionMemo(
++    return yield* makeBatchExecutionMemo(
+       Effect.gen(function* () {
+         const object = yield* Effect.serviceOption(ObjectDatabase);
+         if (Option.isSome(object)) return yield* object.value.sql;
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -88,6 +88,7 @@
+   type BackgroundJob,
+ } from "./infrastructure/background-jobs.ts";
+ import { cloudEgress } from "./infrastructure/executor.ts";
++import { withBatchExecution } from "./infrastructure/batch-execution.ts";
+ import { cloudProduct } from "./infrastructure/product.ts";
+ import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
+ import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
+@@ -704,6 +705,7 @@
+     return {
+       fetch: handle.pipe(
+         roleHosts,
++        withBatchExecution,
+         withNotFoundDocument,
+         Effect.tapCause(reportCloudFailure),
+         Effect.catchTag("AuthenticationUnavailable", () =>
+diff --git a/e2e/tests/cloud-dashboard-batch-resources.spec.ts b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
+@@ -0,0 +1,123 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Redacted, Schedule, Schema } from "effect";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { batchPath } from "../support/read-batches.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String });
++const decodeAnswer = Schema.decodeUnknownEffect(
++  Schema.fromJsonString(Schema.Struct({ id: Schema.Int, status: Schema.Int })),
++);
++
++layer(HostedLive, { excludeTestServices: true })("Cloud dashboard batch resources", (it) => {
++  it.effect(scenarios.cloudDashboardBatchResources.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          api = yield* Api,
++          client = yield* HttpClient.HttpClient,
++          telemetry = yield* Telemetry,
++          evidence = yield* Evidence;
++        const organization = actors.organization.id;
++        const prefix = `/api/organizations/${organization}`;
++        const app = yield* body(
++          App,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: `Batch resources ${randomUUID().slice(0, 8)}`,
++            files: [
++              {
++                path: "index.ts",
++                content: `import { defineApp, query, object, router } from "apps";
++export default defineApp({}, async () => ({ tools: router({
++  status: query({ description: "Status", input: object({}) }, async () => "ready"),
++}) }));`,
++              },
++              appsManifest,
++            ],
++          }),
++        );
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const read = (group: string, endpoint: string, params: Record<string, string> = {}) => ({
++          group,
++          endpoint,
++          params,
++          query: {},
++        });
++        const reads = [
++          read("viewer", "get"),
++          read("organization", "access", { organization }),
++          read("organization", "inventory", { organization }),
++          read("apps", "get", { organization, app: app.id }),
++          read("appAccounts", "appList", { organization, app: app.id }),
++          read("appAccounts", "userList", { organization, app: app.id }),
++          read("resourceAccess", "app", { organization, app: app.id }),
++          read("tools", "index", { organization, app: app.id }),
++        ];
++        const origin = targetHosts(yield* Target).browser;
++        const cookies = Redacted.value(yield* actors.owner.cookies);
++        const traces = yield* Effect.forEach(
++          [0, 1],
++          () =>
++            Effect.scoped(
++              Effect.gen(function* () {
++                const traceId = randomUUID().replaceAll("-", "");
++                const traceparent = `00-${traceId}-${traceId.slice(0, 16)}-01`;
++                const request = yield* HttpClientRequest.post(new URL(batchPath, origin)).pipe(
++                  HttpClientRequest.setHeaders({
++                    origin,
++                    traceparent,
++                    cookie: cookies.map(({ name, value }) => `${name}=${value}`).join("; "),
++                    "executor-wire-revision": "1",
++                  }),
++                  HttpClientRequest.bodyJson({
++                    reads: reads.map((read, id) => ({ ...read, id, traceparent })),
++                  }),
++                );
++                const response = yield* client.execute(request);
++                expect(response.status).toBe(200);
++                const text = yield* response.text;
++                const answers = yield* Effect.forEach(text.trim().split("\n"), decodeAnswer);
++                expect(answers.map(({ id }) => id).sort((a, b) => a - b)).toEqual(
++                  reads.map((_, id) => id),
++                );
++                expect(answers.map(({ status }) => status)).toEqual(reads.map(() => 200));
++                return traceId;
++              }),
++            ),
++          { concurrency: "unbounded" },
++        ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
++        for (const trace of traces) {
++          // Resource initialization finishes before its read, so all eight read spans bound the count.
++          const spans = yield* telemetry.query(trace).pipe(
++            Effect.flatMap((result) =>
++              result.data.filter(({ span }) => span.operationName === "dashboard.batch.read")
++                .length === reads.length
++                ? Effect.succeed(result.data)
++                : Effect.fail(new Error("The completed batch trace has not reached Motel")),
++            ),
++            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
++          );
++          const count = (name: string) =>
++            spans.filter(({ span }) => span.operationName === name).length;
++          const counts = {
++            pools: count("runtime.cloud.database.initialize"),
++            executors: count("runtime.cloud.executor.initialize"),
++          };
++          yield* evidence.json(`batch-resources-${trace}.json`, counts);
++          expect(counts).toEqual({ pools: 1, executors: 1 });
++        }
++      }),
++    ),
++  );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1967,6 +1967,16 @@
+         "Cloud installs a new team in its request with an immediate wake, or in its provisioning workflow, whose next step requests the schedule-wake job.",
+       ),
+       local: na("Local has no hosted provisioning jobs."),
++    },
++  },
++  cloudDashboardBatchResources: {
++    fixtures: "actors",
++    file: "cloud-dashboard-batch-resources.spec.ts",
++    title: "Cloud dashboard batches share one SQL pool and executor within each request",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Self-host builds its executor and SQL pool at startup."),
++      local: na("The local dashboard does not batch its reads."),
+     },
+   },
+   cloudMcpObjectConnections: {
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -103,7 +103,7 @@
+     runner: 3,
+ 
+     pattern:
+-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
++      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
