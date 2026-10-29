@@ -58,7 +58,7 @@ test("usage always delegates the intent's pool and owner, ignoring supplied pool
   const response = await f.send("usage", intent, owner, { pool: "pool-b", owner: member, caller: member, days: 1, members: [member] });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { scope: "pool", pool: pool.pool });
-  assert.deepEqual(f.reads, [[pool.pool, owner, owner, 30, [member]]]);
+  assert.deepEqual(f.reads, [[pool.pool, owner, owner, 30, [member], true]]);
 });
 
 test("signed cap action refuses the owner, invalid targets and invalid amounts through PoolUsage", async () => {
