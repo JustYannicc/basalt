@@ -13,6 +13,17 @@ PRIVACY_PROGRESS_MARKER = "POOL_PRIVACY_PROGRESS "
 PRIVACY_RETRY_MARKER = "POOL_PRIVACY_RETRY "
 HOME_INIT_FAILURE_MARKER = "POOL_HOME_INIT_FAILURE "
 
+# Home's pinned LogFormatter adds these columns before the message. Strip only
+# that format, then apply the same closed projection used for raw messages.
+HOME_LOG_LINE = re.compile(
+    r"\[CLIProxyAPIHome\] "
+    r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] "
+    r"\[[^\]\r\n]+\] "
+    r"\[(?:panic|fatal|error|warn |info |debug|trace)\] "
+    r"(?:\[[^\]\r\n]+:\d+\] )?"
+    r"(?P<message>[^\r\n]*)"
+)
+
 PRIVACY_AUDIT_FIELDS = frozenset(
     {
         "usage_rows",
@@ -79,6 +90,9 @@ def _extract_home_message(name: str, line: str) -> str | None:
         return None
 
     candidate = line.strip()
+    home_log = HOME_LOG_LINE.fullmatch(candidate)
+    if home_log is not None:
+        return home_log.group("message")
     if candidate.startswith("{"):
         try:
             record = json.loads(candidate, object_pairs_hook=_unique_json_object)

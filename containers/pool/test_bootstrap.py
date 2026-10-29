@@ -160,6 +160,47 @@ class BootstrapContractTests(unittest.TestCase):
         joined = "\n".join(output)
         self.assertNotIn("sentinel", joined)
 
+    def test_read_output_forwards_pinned_home_formatter_signals(self) -> None:
+        messages = [
+            'POOL_PRIVACY_PROGRESS {"batches":2,"rows_updated":7}',
+            'POOL_PRIVACY_RETRY {"attempt":3,"retry_after_seconds":12}',
+            (
+                "POOL_PRIVACY_AUDIT "
+                '{"active_key_count":1,"deleted_key_count":0,'
+                '"matched_active_key_copies":10,"purged_rows":4,'
+                '"unknown_key_count":0,"usage_rows":5}'
+            ),
+        ]
+        # These columns match Home's LogFormatter, including its padded level
+        # and optional caller. Only the projected message may reach stdout.
+        for caller in ("", "[private-caller-sentinel.go:144] "):
+            with self.subTest(caller=caller):
+                lines = [
+                    "[CLIProxyAPIHome] [2026-10-29 12:00:00] "
+                    "[private-request-sentinel] [info ] " + caller + message + "\n"
+                    for message in messages
+                ]
+                output = self.read_child_output("home", lines)
+                self.assertEqual(output, messages)
+                self.assertNotIn("sentinel", "\n".join(output))
+                self.assertEqual(self.read_child_output("node", lines), [])
+
+    def test_read_output_rejects_content_in_pinned_home_formatter(self) -> None:
+        prefix = (
+            "[CLIProxyAPIHome] [2026-10-29 12:00:00] "
+            "[--------] [info ] [diagnostics_privacy_worker.go:144] "
+        )
+        valid = 'POOL_PRIVACY_RETRY {"attempt":3,"retry_after_seconds":12}'
+        lines = [
+            prefix + 'provider failure: private-body-sentinel\n',
+            prefix + valid + ' error=private-token-sentinel\n',
+            prefix + 'POOL_PRIVACY_RETRY {"attempt":3,"retry_after_seconds":12,"body":"private-body-sentinel"}\n',
+            prefix + 'POOL_PRIVACY_RETRY {"attempt":3,"attempt":4,"retry_after_seconds":12}\n',
+            prefix.replace("CLIProxyAPIHome", "CLIProxyAPINode") + valid + "\n",
+            prefix.replace("[info ]", "[unknown]") + valid + "\n",
+        ]
+        self.assertEqual(self.read_child_output("home", lines), [])
+
     def test_read_output_rejects_untrusted_or_malformed_content(self) -> None:
         sentinel = "provider-content-sentinel raw-token-sentinel"
         invalid_lines = [
@@ -234,10 +275,17 @@ class BootstrapContractTests(unittest.TestCase):
             ]
         )
 
+        # Actual Home startup errors use its custom formatter too.
+        log_lines.extend(
+            "[CLIProxyAPIHome] [2026-10-29 12:00:00] [--------] "
+            "[fatal] [main.go:380] " + message + " error=private-sentinel\n"
+            for message in failures.values()
+        )
+
         output = self.read_child_output("home", log_lines)
 
-        self.assertEqual(len(output), len(failures))
-        for line, expected_category in zip(output, failures):
+        self.assertEqual(len(output), 2 * len(failures))
+        for line, expected_category in zip(output, [*failures, *failures]):
             self.assertTrue(line.startswith(HOME_INIT_FAILURE_MARKER))
             counts = json.loads(line[len(HOME_INIT_FAILURE_MARKER) :])
             self.assertEqual(set(counts), set(HOME_INIT_FAILURE_CATEGORIES))
