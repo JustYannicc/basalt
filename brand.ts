@@ -38,6 +38,8 @@ export const brand = {
    * named by entity and region only, with one contact address for every request.
    */
   site: {
+    /** Where it answers: canonical links and share cards need the whole URL. */
+    url: "https://signalbox.run",
     operator: "Signalbox",
     region: "Zurich, Switzerland",
     email: "info@signalbox.run",

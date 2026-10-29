@@ -35,14 +35,29 @@ test("the operator is named by entity, region and email only, with no placeholde
   }
 });
 
-test("privacy names the Limited Use commitment, complaint routes and metadata-only failure records", () => {
+test("privacy names the Limited Use commitment, complaint routes and the failed-request copies it keeps for now", () => {
   const privacy = text(page("/privacy"));
   assert.match(privacy, /including the Limited Use requirements/);
   assert.match(privacy, /Federal Data Protection and Information Commissioner \(FDPIC\)/);
   assert.match(privacy, /where EU law applies, your local supervisory authority/);
   assert.match(privacy, /When a request fails, the pool backend currently keeps the provider's error response/);
   assert.match(privacy, /rely on the EU Standard Contractual Clauses/);
+  assert.match(privacy, /We don't log what your tools read or return\. A tool call waiting for your approval is stored encrypted/);
   assert.match(text(page("/terms")), /governed by Swiss law\. The courts of Zurich/);
+});
+
+test("pages carry share tags with the apex origin, and the 404 page points nowhere", () => {
+  for (const path of paths) {
+    const html = page(path);
+    const url = `${brand.site.url}${path}`;
+    assert.ok(html.includes(`<link rel="canonical" href="${url}">`), path);
+    assert.ok(html.includes(`<meta property="og:url" content="${url}">`), path);
+    assert.ok(html.includes(`<meta property="og:image" content="${brand.site.url}/brand/hero/card.png">`), path);
+    assert.match(html, /<meta name="description" content="[^"]+">/, path);
+  }
+  const missing = sitePage("/pricing").html;
+  assert.doesNotMatch(missing, /canonical|og:/);
+  assert.match(missing, /<title>Page not found · Signalbox<\/title>/);
 });
 
 test("inline markup escapes HTML and allows only bold and links", () => {
@@ -62,4 +77,7 @@ test("the worker serves pages without scripts and answers anything else with 404
   assert.equal(missing.headers.get("cache-control"), "no-store");
   assert.equal(handleSite(new Request("https://signalbox.run/", { method: "POST" })).status, 405);
   assert.equal(await handleSite(new Request("https://signalbox.run/", { method: "HEAD" })).text(), "");
+  const robots = handleSite(new Request("https://signalbox.run/robots.txt"));
+  assert.equal(robots.status, 200);
+  assert.equal(await robots.text(), "User-agent: *\nAllow: /\n");
 });

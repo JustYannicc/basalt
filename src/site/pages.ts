@@ -1,6 +1,6 @@
 import { brand } from "../../brand.ts";
 import { home, legalPages, type Block, type LegalPage } from "./content.ts";
-import { introSeconds } from "./volcano.ts";
+import { height, introSeconds, width } from "./volcano.ts";
 
 const escapeHtml = (value: string) =>
   value
@@ -24,12 +24,11 @@ function block(item: Block): string {
   return `<p>${inline(item.p)}</p>`;
 }
 
-// Imprint's register: a garamond on near-black, warm greys, hairline rules and a quiet sans for
-// small print. Dark only: the site has no theme toggle.
+// A garamond on near-black, warm greys, hairline rules and the system sans for small print.
+// Dark only: the site has no theme toggle.
 const style = `
-@font-face{font-family:"EB Garamond";src:url(/brand/fonts/eb-garamond.woff2) format("woff2");font-weight:400 800;font-display:swap}
-@font-face{font-family:"EB Garamond";src:url(/brand/fonts/eb-garamond-italic.woff2) format("woff2");font-style:italic;font-weight:400 800;font-display:swap}
-@font-face{font-family:Geist;src:url(/brand/fonts/geist-sans.woff2) format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"EB Garamond";src:url(/brand/serif/eb-garamond.woff2) format("woff2");font-weight:400 800;font-display:swap}
+@font-face{font-family:"EB Garamond";src:url(/brand/serif/eb-garamond-italic.woff2) format("woff2");font-style:italic;font-weight:400 800;font-display:swap}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;color-scheme:dark}
 body{margin:0;background:#09090b;color:#f8f8f4;font:18px/1.55 "EB Garamond",Georgia,serif;-webkit-font-smoothing:antialiased}
@@ -41,22 +40,21 @@ main{flex:1}
 .mark{display:inline-flex;align-items:center;gap:8px;color:#f8f8f4;text-decoration:none;font:italic 22px/1 "EB Garamond",Georgia,serif}
 .mark img{width:20px;height:20px;border-radius:5px;box-shadow:0 0 0 1px #303034}
 .home main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:80px;align-items:center;padding:96px 0}
-.art{position:relative;width:100%;max-width:560px;aspect-ratio:128/144}
+.art{position:relative;width:100%;max-width:560px;aspect-ratio:${width}/${height}}
 .art img{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
 .art .intro{animation:handover 0s linear ${introSeconds}s forwards}
 @keyframes handover{to{visibility:hidden}}
-@media (prefers-reduced-motion:reduce){.art img{display:none}.art{background:url(/brand/hero/volcano.png) center/100% 100% no-repeat;image-rendering:pixelated}}
 h1{margin:0 0 28px;font-weight:400;font-size:clamp(40px,5vw,64px);line-height:1.04;letter-spacing:-.01em}
 h1 em{display:block}
 .lede{margin:0 0 18px;max-width:34em;color:#a3a29d}
 .tagline{margin:28px 0 40px;font-style:italic;color:#f8f8f4}
 .action{font-size:22px}
-.note{margin:40px 0 0;max-width:40em;color:#6f6e6a;font:13px/1.6 Geist,system-ui,sans-serif}
+.note{margin:40px 0 0;max-width:40em;color:#6f6e6a;font:13px/1.6 system-ui,sans-serif}
 header{padding:28px 0}
 .legal main{width:100%;max-width:640px;margin:0 auto;padding:40px 0 72px}
 .legal h1{margin-bottom:10px;font-size:clamp(36px,5vw,48px)}
 .summary{margin:0;font-style:italic;color:#a3a29d}
-.updated{margin:14px 0 28px;color:#6f6e6a;font:12px Geist,system-ui,sans-serif}
+.updated{margin:14px 0 28px;color:#6f6e6a;font:12px system-ui,sans-serif}
 section{margin-top:36px;padding-top:28px;border-top:1px solid #ecebe61f}
 section:first-of-type{margin-top:32px}
 h2{margin:0 0 12px;font-size:23px;font-style:italic;font-weight:400}
@@ -64,7 +62,7 @@ p,ul{margin:0 0 14px;color:#a3a29d;font-size:17px;line-height:1.6}
 strong{color:#f8f8f4;font-weight:500}
 ul{padding-left:20px}
 li{margin:0 0 8px}
-footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 0 32px;border-top:1px solid #ecebe61f;color:#6f6e6a;font:13px Geist,system-ui,sans-serif}
+footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 0 32px;border-top:1px solid #ecebe61f;color:#6f6e6a;font:13px system-ui,sans-serif}
 footer nav a{text-decoration:none}
 footer nav a:hover{color:#f8f8f4}
 footer .mark{color:#a3a29d;font-size:26px}
@@ -92,22 +90,46 @@ function footer(withMark: boolean): string {
   return `<footer><nav aria-label="Site">${items.join(" · ")}</nav>${withMark ? mark() : ""}</footer>`;
 }
 
-function document(title: string, description: string, kind: "home" | "legal", content: string): string {
+function document(
+  title: string,
+  description: string,
+  kind: "home" | "legal",
+  content: string,
+  /** The page's own path; the 404 page has none, so nothing points search or shares at it. */
+  path?: string,
+): string {
   // The home page carries its mark in the footer, as a manifesto signs off; other pages lead with it.
   const header = kind === "home" ? "" : `<header>${mark()}</header>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#09090b"><title>${escapeHtml(title)}</title><meta name="description" content="${escapeHtml(description)}"><link rel="icon" href="${escapeHtml(brand.logo)}"><style>${style}</style></head><body><div class="page ${kind}">${header}<main>${content}</main>${footer(kind === "home")}</div></body></html>`;
+  const meta = (attribute: "name" | "property", key: string, value: string) =>
+    `<meta ${attribute}="${key}" content="${escapeHtml(value)}">`;
+  const share =
+    path === undefined
+      ? ""
+      : `<link rel="canonical" href="${brand.site.url}${path}">${[
+          meta("property", "og:type", "website"),
+          meta("property", "og:site_name", brand.name),
+          meta("property", "og:title", title),
+          meta("property", "og:description", description),
+          meta("property", "og:url", `${brand.site.url}${path}`),
+          meta("property", "og:image", `${brand.site.url}/brand/hero/card.png`),
+          meta("name", "twitter:card", "summary_large_image"),
+        ].join("")}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#09090b"><title>${escapeHtml(title)}</title>${meta("name", "description", description)}${share}<link rel="preload" href="/brand/serif/eb-garamond.woff2" as="font" type="font/woff2" crossorigin><link rel="icon" href="${escapeHtml(brand.logo)}"><link rel="apple-touch-icon" href="${escapeHtml(brand.logo)}"><style>${style}</style></head><body><div class="page ${kind}">${header}<main>${content}</main>${footer(kind === "home")}</div></body></html>`;
 }
 
 function homePage(): string {
   const [roman, italic] = home.headline;
-  // The eruption plays once on top of the loop that carries on from it, then steps aside when
-  // both reach the same frame. People who ask for less motion get a still.
-  const art = `<div class="art" aria-hidden="true"><img src="/brand/hero/volcano-loop.webp" alt=""><img class="intro" src="/brand/hero/volcano-intro.webp" alt=""></div>`;
+  // The eruption plays once on top of the loop that carries on from it, then steps aside. The
+  // frames line up when both images start together; a slow load can cut the intro short. People
+  // who ask for less motion get a still and download neither animation.
+  const still = `<source media="(prefers-reduced-motion: reduce)" srcset="/brand/hero/volcano.png">`;
+  const art = `<div class="art" aria-hidden="true"><picture>${still}<img src="/brand/hero/volcano-loop.webp" alt=""></picture><picture>${still}<img class="intro" src="/brand/hero/volcano-intro.webp" alt=""></picture></div>`;
   return document(
     brand.name,
     home.note,
     "home",
-    `${art}<div><h1>${inline(roman)}<em>${inline(italic)}</em></h1><p class="lede">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p></div>`,
+    `${art}<div><h1>${inline(roman)} <em>${inline(italic)}</em></h1><p class="lede">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p></div>`,
+    "/",
   );
 }
 
@@ -131,6 +153,7 @@ function legalPage(page: LegalPage): string {
     page.summary,
     "legal",
     `<h1>${inline(page.title)}</h1><p class="summary">${inline(page.summary)}</p><p class="updated">Updated ${brand.site.updated}</p>${sections(page.blocks)}`,
+    page.path,
   );
 }
 

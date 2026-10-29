@@ -2,3 +2,8 @@
 /brand/fonts/*
   Access-Control-Allow-Origin: *
   Cache-Control: public, max-age=86400
+# The public site's type and art. Regenerated under the same names, so a day, not immutable.
+/brand/serif/*
+  Cache-Control: public, max-age=86400
+/brand/hero/*
+  Cache-Control: public, max-age=86400

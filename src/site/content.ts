@@ -58,7 +58,7 @@ const privacy: LegalPage = {
       p: "**Connected accounts.** When you connect a service such as Google, GitHub, Slack, Atlassian, GitLab, Miro, Zoho CRM or Zendesk, we store the access and refresh tokens that service gives us. For services that use keys, such as AWS or ElevenLabs, we store the keys you enter. They are encrypted (AES-256-GCM) before they are stored and used only to make the requests you or your agents ask for.",
     },
     {
-      p: "**Apps and their data.** Apps you install can store their own data. Workflow inputs and results are stored encrypted.",
+      p: "**Apps and their data.** Apps you install can store their own data. Workflows keep their inputs, results and each step's output, encrypted. Events apps send each other are stored encrypted for 3 days.",
     },
     {
       p: "**Model subscriptions.** If you connect a model subscription to your pool, its credentials are held by the pool backend, which runs in the EU. We keep daily usage counts per person, provider and model (requests, tokens and cost) for 30 days. Your model requests and responses pass through the pool backend to your provider. The pool backend doesn't keep the content of requests that succeed. To continue some conversations across providers, it can store parts of a response, such as tool-call details, in the pool database for about an hour.",
@@ -67,9 +67,11 @@ const privacy: LegalPage = {
       p: "When a request fails, the pool backend currently keeps the provider's error response, which can include content, together with the key that made the request. We are removing these copies.",
     },
     {
-      p: "**Feedback.** If you send feedback, we receive your message, the page you were on, recent error codes and any screenshot you choose to attach.",
+      p: "**Feedback.** If you or your agent send feedback, we receive the message, the page you were on, recent error codes and any screenshot you choose to attach.",
     },
-    { p: "We do not keep a record of what your tools read or return." },
+    {
+      p: "We don't log what your tools read or return. A tool call waiting for your approval is stored encrypted until you answer it, and deleted after it expires if you don't. Otherwise tool data is kept only where you or an app save it, such as a workflow's history.",
+    },
     { h2: "Why we use it" },
     {
       p: `We use your data to provide the service you signed up for, and, for security, error reports and usage counts, for our legitimate interest in running ${name} safely and reliably.`,
@@ -123,6 +125,7 @@ const privacy: LegalPage = {
         "Sessions: 7 days, or until you sign out.",
         "Inactive agent connections: revoked after 30 days.",
         "Pool usage counts: 30 days.",
+        "Events apps send each other: 3 days.",
       ],
     },
     {

@@ -9,16 +9,13 @@
  *
  *   node scripts/site-volcano.ts   (needs img2webp from libwebp)
  */
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 // The intro ends once the blast has settled and every puff alive was born steady.
-import { introSeconds, loopSeconds } from "../src/site/volcano.ts";
-
-export const width = 128;
-export const height = 144;
+import { height, introSeconds, loopSeconds, width } from "../src/site/volcano.ts";
+import { run } from "./process.ts";
 /** Seconds per frame. */
 const step = 0.08;
 /** When the mountain blows, and how long the blast takes to settle into a steady eruption. */
@@ -63,6 +60,17 @@ function noise(x: number, y: number): number {
   const top = hash(ix, iy) + (hash(ix + 1, iy) - hash(ix, iy)) * fx;
   const bottom = hash(ix, iy + 1) + (hash(ix + 1, iy + 1) - hash(ix, iy + 1)) * fx;
   return top + (bottom - top) * fy;
+}
+
+/**
+ * Noise drifting up the page at `speed` (down when negative) that still repeats every loop: two
+ * drifts a loop apart, crossfaded across it, with their contrast kept where they mix.
+ */
+function drift(x: number, y: number, time: number, speed: number): number {
+  const mix = fract(time / loopSeconds);
+  const span = speed * loopSeconds;
+  const blend = noise(x, y + mix * span) * (1 - mix) + noise(x, y - (1 - mix) * span) * mix;
+  return clamp(0.5 + (blend - 0.5) / Math.hypot(1 - mix, mix));
 }
 
 const crater = { x: 0.48, y: 0.62 };
@@ -113,7 +121,9 @@ export function field(x: number, y: number, time: number): Cell {
   // Ash: puffs born at the vent rise, swell and cool. Before the blast only a faint wisp rises.
   let ash = 0;
   let light = 0;
-  const newest = Math.floor(time / puffEvery);
+  // A hair over, so a puff born on this very frame counts despite float rounding.
+  const newest = Math.floor(time / puffEvery + 1e-9);
+  const puffsPerLoop = Math.round(loopSeconds / puffEvery);
   for (let born = newest; born > newest - puffLife / puffEvery - 1; born -= 1) {
     const birth = born * puffEvery;
     const age = (time - birth) / puffLife;
@@ -121,11 +131,13 @@ export function field(x: number, y: number, time: number): Cell {
     const blown = birth >= blast;
     const force = blown ? strength(birth) : 0.25;
     const phase = Math.min(1, age * (blown ? 0.75 + 0.25 * force : 0.8));
-    const cx = crater.x + Math.sin(phase * 3 + born * 1.7) * 0.05 * phase + phase * 0.05;
+    // Each puff's sway and lobes come from its place in the loop, so the loop closes on itself.
+    const seed = ((born % puffsPerLoop) + puffsPerLoop) % puffsPerLoop;
+    const cx = crater.x + Math.sin(phase * 3 + seed * 1.7) * 0.05 * phase + phase * 0.05;
     const cy = crater.y - 0.04 - Math.pow(phase, 0.8) * 0.4;
     const radius = (0.03 + Math.pow(phase, 0.9) * 0.16) * (blown ? 0.8 + 0.2 * force : 0.5);
     for (let lobe = 0; lobe < 3; lobe += 1) {
-      const angle = born * 2.4 + lobe * 2.1;
+      const angle = seed * 2.4 + lobe * 2.1;
       const lx = cx + Math.cos(angle) * radius * 0.45;
       const ly = cy + Math.sin(angle) * radius * 0.3;
       const distance = Math.hypot(x - lx, (y - ly) * 1.1) / (radius * 0.75);
@@ -136,7 +148,7 @@ export function field(x: number, y: number, time: number): Cell {
     }
   }
   if (ash > 0) {
-    const billow = noise(x * 16, y * 16 - time * 1.6) * 0.6 + noise(x * 34, y * 34) * 0.4;
+    const billow = drift(x * 16, y * 16, time, -1.6) * 0.6 + noise(x * 34, y * 34) * 0.4;
     const cover = 1 - Math.exp(-ash * 1.8);
     tone = Math.max(tone, cover * (0.12 + billow * 0.42) + Math.min(0.5, light * 0.75));
   }
@@ -147,14 +159,14 @@ export function field(x: number, y: number, time: number): Cell {
     if (rise > -0.01 && rise < fountain) {
       const spread = 0.012 + rise * 0.3;
       const core = Math.min(1, Math.max(0, 1 - Math.abs(x - crater.x) / spread) * 1.6);
-      heat = Math.max(heat, core * (1.15 - rise / fountain) * (0.75 + 0.25 * noise(x * 60, y * 60 + time * 2)));
+      heat = Math.max(heat, core * (1.15 - rise / fountain) * (0.75 + 0.25 * drift(x * 60, y * 60, time, 2)));
     }
   }
   // Bombs: a burst at the blast, then a steady scatter. Each is one hot cell with a cooling trail.
   const bombs: Array<[number, number]> = [];
   for (let index = 0; index < 18; index += 1) bombs.push([blast + hash(index, 11) * 0.3, index]);
   const every = 0.6;
-  const latest = Math.floor(time / every);
+  const latest = Math.floor(time / every + 1e-9);
   for (let k = latest; k > latest - 4; k -= 1) if (k * every >= blast + 0.6) bombs.push([k * every, 100 + (k % 8)]);
   for (const [launched, seed] of bombs) {
     const flight = time - launched;
@@ -197,16 +209,6 @@ export function frame(time: number): Uint8Array {
   return pixels;
 }
 
-const crcTable = Array.from({ length: 256 }, (_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  return c >>> 0;
-});
-const crc32 = (bytes: Uint8Array) => {
-  let c = 0xffffffff;
-  for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-};
 const chunk = (type: string, data: Uint8Array) => {
   const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
   const out = Buffer.alloc(body.length + 8);
@@ -216,15 +218,16 @@ const chunk = (type: string, data: Uint8Array) => {
   return out;
 };
 
-/** An 8-bit RGB PNG of one frame. */
-export function png(pixels: Uint8Array): Buffer {
+/** An 8-bit RGB PNG, one frame by default. */
+export function png(pixels: Uint8Array, columns = width, rows = height): Buffer {
   const header = Buffer.alloc(13);
-  header.writeUInt32BE(width, 0);
-  header.writeUInt32BE(height, 4);
+  header.writeUInt32BE(columns, 0);
+  header.writeUInt32BE(rows, 4);
   header.set([8, 2, 0, 0, 0], 8);
-  const raw = Buffer.alloc(height * (width * 3 + 1));
-  for (let row = 0; row < height; row += 1)
-    raw.set(pixels.subarray(row * width * 3, (row + 1) * width * 3), row * (width * 3 + 1) + 1);
+  const stride = columns * 3;
+  const raw = Buffer.alloc(rows * (stride + 1));
+  for (let row = 0; row < rows; row += 1)
+    raw.set(pixels.subarray(row * stride, (row + 1) * stride), row * (stride + 1) + 1);
   return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk("IHDR", header),
@@ -242,16 +245,31 @@ function animate(name: string, start: number, seconds: number, loop: number) {
     return file;
   });
   const output = new URL(`../public/brand/hero/${name}`, import.meta.url).pathname;
-  const encoded = spawnSync(
-    "img2webp",
-    ["-loop", String(loop), "-lossless", "-d", String(Math.round(step * 1000)), ...files, "-o", output],
-    { stdio: "inherit" },
-  );
-  if (encoded.status !== 0) throw new Error("img2webp failed");
+  try {
+    run("img2webp", ["-loop", String(loop), "-lossless", "-d", String(Math.round(step * 1000)), ...files, "-o", output]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
+/** The share card: one still, 4× per cell, centred on page black at 1200×630. */
+function card(still: Uint8Array): Buffer {
+  const [columns, rows, scale] = [1200, 630, 4];
+  const pixels = new Uint8Array(columns * rows * 3);
+  for (let i = 0; i < columns * rows; i += 1) pixels.set(greys[0], i * 3);
+  const [left, top] = [(columns - width * scale) / 2, (rows - height * scale) / 2];
+  for (let y = 0; y < height * scale; y += 1)
+    for (let x = 0; x < width * scale; x += 1) {
+      const from = (Math.floor(y / scale) * width + Math.floor(x / scale)) * 3;
+      pixels.set(still.subarray(from, from + 3), ((top + y) * columns + left + x) * 3);
+    }
+  return png(pixels, columns, rows);
 }
 
 if (import.meta.main) {
   animate("volcano-intro.webp", 0, introSeconds, 1);
   animate("volcano-loop.webp", introSeconds, loopSeconds, 0);
-  writeFileSync(new URL("../public/brand/hero/volcano.png", import.meta.url), png(frame(introSeconds + 1.2)));
+  const still = frame(introSeconds + 1.2);
+  writeFileSync(new URL("../public/brand/hero/volcano.png", import.meta.url), png(still));
+  writeFileSync(new URL("../public/brand/hero/card.png", import.meta.url), card(still));
 }

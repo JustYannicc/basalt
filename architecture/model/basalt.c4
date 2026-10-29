@@ -179,6 +179,7 @@ model {
   basalt.deployment -[sync]-> basalt.brandConfig "read deployment configuration"
   basalt.deployment -[sync]-> basalt.telemetry "resolve optional telemetry deployment settings"
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"
+  basalt.build -[sync]-> basalt.site "render the home page volcano to the page's timing"
   basalt.build -[sync]-> basalt.deployment "read deployment settings"
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
   basalt.releaseUpdates -[sync]-> basalt.pool "read pool control contract"
