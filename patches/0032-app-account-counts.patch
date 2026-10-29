@@ -111,10 +111,10 @@ index f90ca288..a288173a 100644
    ),
    accounts: Schema.Array(
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 0faaaff8..c36b2d43 100644
+index 1d876183..441ac498 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
-@@ -7,7 +7,13 @@
+@@ -7,7 +7,13 @@ import { Effect } from "effect";
  import { SqlClient } from "effect/sql";
  import { teamAppPending } from "./provisioning.ts";
  import { HttpApiBuilder } from "effect/http-api";
@@ -129,30 +129,32 @@ index 0faaaff8..c36b2d43 100644
  import { HostedApi } from "../contracts/api.ts";
  import { HostedExecutor } from "../contracts/executor.ts";
  import { CurrentOrganization } from "../contracts/organization.ts";
-@@ -18,7 +24,7 @@
+@@ -18,7 +24,7 @@ import {
    type AccessRevision,
  } from "../contracts/resource-access.ts";
  import { requireGroupSharing } from "./group-sharing.ts";
 -import { callerLinkedAccounts } from "./app-accounts.ts";
 +import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+ import { appUiIndicators } from "./app-ui.ts";
  import {
    policyDatabase,
-   currentResourceAuthority,
-@@ -51,13 +57,16 @@
+@@ -52,16 +58,16 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
      });
      const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
      const links = yield* callerLinkedAccounts(usableApps);
+-    const indicated = new Map(
+-      (yield* appUiIndicators(listedApps.map(({ app }) => app))).map((app) => [app.id, app]),
++    const appLinked = yield* appLinkedAccounts(
++      yield* policyDatabase,
++      listedApps.map(({ app }) => app.id),
+     );
 -    const appEntries = listedApps.map(({ app, access }) => ({
--      app,
+-      app: indicated.get(app.id) ?? app,
 -      access,
 -      linkedAccounts: [
 -        ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
 -      ],
 -    }));
-+    const appLinked = yield* appLinkedAccounts(
-+      yield* policyDatabase,
-+      listedApps.map(({ app }) => app.id),
-+    );
 +    const appAccounts = new Map<AppId, Set<AccountId>>();
 +    for (const link of appLinked) {
 +      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
@@ -162,16 +164,19 @@ index 0faaaff8..c36b2d43 100644
      const linked = new Set(links.map((link) => link.id));
      const accounts = (yield* executor.accounts.list({ owner })).filter(
        (account) => policy.tools.kind === "all" || linked.has(account.id),
-@@ -97,6 +106,20 @@
+@@ -101,6 +107,23 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
          ];
        }),
      );
 +    const listedAccounts = accountEntries.flat();
 +    const listed = new Set(listedAccounts.map(({ account }) => account.id));
++    const indicated = new Map(
++      (yield* appUiIndicators(listedApps.map(({ app }) => app))).map((app) => [app.id, app]),
++    );
 +    const appEntries = listedApps.map(({ app, access }) => {
 +      const shared = [...(appAccounts.get(app.id) ?? [])];
 +      return {
-+        app,
++        app: indicated.get(app.id) ?? app,
 +        access,
 +        appAccountCount: shared.length,
 +        appLinkedAccounts: shared.filter((id) => listed.has(id)),
@@ -183,7 +188,7 @@ index 0faaaff8..c36b2d43 100644
      const pendingApp =
        policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
          ? yield* teamAppPending(
-@@ -104,7 +127,7 @@
+@@ -108,7 +131,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
              (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
            ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
          : false;
