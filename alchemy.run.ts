@@ -145,7 +145,8 @@ export default Alchemy.Stack(
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
     if (preview === undefined)
-      yield* Cloudflare.Worker("Site", {
+      // Upstream's Command.Build already owns "Site". Alchemy reuses logical IDs across resource types.
+      yield* Cloudflare.Worker("PublicSite", {
         main: fileURLToPath(new URL("./src/site/worker.ts", import.meta.url)),
         // Only the brand's logo, fonts and favicon come from assets. The router's own pages in
         // public/, such as /setup and /share, must never answer on the apex.
@@ -153,7 +154,7 @@ export default Alchemy.Stack(
           directory: fileURLToPath(new URL("./public/", import.meta.url)),
           runWorkerFirst: ["/*", "!/brand/*", "!/favicon.ico"],
         },
-        domain: brand.zone,
+        domain: { name: brand.zone, redirects: [`www.${brand.zone}`] },
         workersDev: false,
         compatibility: { date: "2026-09-08" },
       });

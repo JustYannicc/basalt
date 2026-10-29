@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "a9eda1c22d8e8557ed7b4fe5b8ccd36e3b8d20e5855af7f42dd006f936ca8165" }
+    metadata { bindings "7278c931f46eea99496f529ed1040f2b92ab7dd74db7e4091f05d2da8408262f" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -78,6 +78,18 @@ deployment {
       storage resource-d8b9aa1b37df9f99e19fa98b53b1e21dc6a3b3a21bda98460e9bea4a96edcd9e "App Origin Wildcard" {
         app = instanceOf basalt.router {
           metadata { resource "resource-d8b9aa1b37df9f99e19fa98b53b1e21dc6a3b3a21bda98460e9bea4a96edcd9e" }
+        }
+      }
+      storage resource-f668c0bb0d55cc271f34e53cc4be481aa6c1e6653b218ed149cb5fd6807bec03 "Router" {
+        app = instanceOf basalt.router {
+          metadata { resource "resource-f668c0bb0d55cc271f34e53cc4be481aa6c1e6653b218ed149cb5fd6807bec03" }
+        }
+      }
+    }
+    zone group-c3679ee8560118df "Public site" {
+      worker resource-531eb6d7acc49f1f691a2eeccb49b761ebee12d7fe88bdff67c0d19793319ca8 "Public Site" {
+        app = instanceOf basalt.site {
+          metadata { resource "resource-531eb6d7acc49f1f691a2eeccb49b761ebee12d7fe88bdff67c0d19793319ca8" }
         }
       }
     }
@@ -324,6 +336,16 @@ views {
   deployment view deployment_group_bf8a1fdd7ff69e09 {
     title "Basalt/Deployment/Router"
     include deployed.group-bf8a1fdd7ff69e09.*
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_531eb6d7acc49f1f691a2eeccb49b761ebee12d7fe88bdff67c0d19793319ca8 {
+    title "Basalt/Deployment/Public site/Public Site"
+    include deployed.group-c3679ee8560118df.resource-531eb6d7acc49f1f691a2eeccb49b761ebee12d7fe88bdff67c0d19793319ca8.**
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_c3679ee8560118df {
+    title "Basalt/Deployment/Public site"
+    include deployed.group-c3679ee8560118df.*
     autoLayout TopBottom
   }
   deployment view deployment_group_e3fd948365456088 {
