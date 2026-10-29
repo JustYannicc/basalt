@@ -132,7 +132,7 @@ test("a stalled run stops at its deadline, names the phase it stalled in and is 
   const { exit, lines, calls } = await run([stalled, Effect.void]);
   assert.ok(Date.now() - started < 2000);
   assert.equal(calls, 1);
-  assert.equal(failure(exit).message, 'Cloud migration failed at "plan the auth schema" (attempt 1 of 2): no progress within 200ms');
+  assert.equal(failure(exit).message, 'Cloud migration failed at "plan the auth schema" (attempt 1 of 2): did not finish within 200ms');
   assert.deepEqual(lines.slice(1), ["Blocker report: fixture"]);
 });
 
@@ -200,7 +200,7 @@ test("report lines carry sessions and lock waits but no login names or addresses
   ]);
   assert.deepEqual(lines, [
     'Blocker report: deploy-job session pid 10: active, waiting on Lock:relation, for relation AccessExclusiveLock on oauthResource, transaction open 40s, in this state 39s, application executor-deploy-job, same login: select * from "oauthResource" where "identifier" = $1',
-    'Blocker report: blocker pid 11 (blocks 10): idle in transaction, waiting on Client:ClientRead, transaction open 300s, in this state 290s, application app personexample.com x, other login: update "user" set email = ? where id = ?',
+    'Blocker report: blocker pid 11 (blocks 10): idle in transaction, waiting on Client:ClientRead, transaction open 300s, in this state 290s, application (redacted), other login: update "user" set email = ? where id = ?',
   ]);
   assert.deepEqual(formatBlockerRows([]), ["Blocker report: no deploy-job sessions or open transactions"]);
 });
@@ -230,7 +230,7 @@ test("every session sets its limits with plain SET, and the deploy command outla
 
 test("Better Auth's own pool is bounded and its sessions get the same settings before any query", () => {
   const source = readFileSync(resolve(upstream, "apps/hosted/cloud/src/implementation/auth-provisioning.ts"), "utf8");
-  for (const option of ["connectionTimeoutMillis:", "query_timeout:", "keepAlive: true"]) assert.ok(source.includes(option), option);
+  for (const option of ["connectionTimeoutMillis:", "query_timeout:", "keepAlive: true", "keepAliveInitialDelayMillis:"]) assert.ok(source.includes(option), option);
   assert.match(source, /onConnect: \(client\) => client\.query\(migrationSessionSettings\.join\("; "\)\)/);
   assert.doesNotMatch(source, /statement_timeout:|lock_timeout:|options:/, "limits stay out of the startup packet");
 });

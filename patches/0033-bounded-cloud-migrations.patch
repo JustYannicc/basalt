@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/auth-provisioning.ts b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
-index dfc171d..fe7f291 100644
+index dfc171d..5354034 100644
 --- a/apps/hosted/cloud/src/implementation/auth-provisioning.ts
 +++ b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
 @@ -1,12 +1,13 @@
@@ -18,7 +18,7 @@ index dfc171d..fe7f291 100644
  
  /** The caller's scope owns the setup pool; migrations and provisioning use the same options. */
  export const cloudAuthSetup = Effect.gen(function* () {
-@@ -15,10 +16,26 @@ export const cloudAuthSetup = Effect.gen(function* () {
+@@ -15,10 +16,27 @@ export const cloudAuthSetup = Effect.gen(function* () {
    const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
    const database = yield* Effect.acquireRelease(
      Effect.try({
@@ -35,6 +35,7 @@ index dfc171d..fe7f291 100644
 +          connectionTimeoutMillis: Duration.toMillis(migrationLimits.connect),
 +          query_timeout: Duration.toMillis(migrationLimits.read),
 +          keepAlive: true,
++          keepAliveInitialDelayMillis: 10_000,
 +          onConnect: (client) => client.query(migrationSessionSettings.join("; ")),
 +        };
 +        return new Pool(config);
@@ -49,7 +50,7 @@ index dfc171d..fe7f291 100644
    const base = cloudAuthOptions({ ...settings, rateLimitEnabled: true }, [], unavailableAuthEmail);
 diff --git a/apps/hosted/cloud/src/implementation/migration-guard.ts b/apps/hosted/cloud/src/implementation/migration-guard.ts
 new file mode 100644
-index 0000000..ae091f3
+index 0000000..4b8ac9c
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/migration-guard.ts
 @@ -0,0 +1,316 @@
@@ -234,7 +235,7 @@ index 0000000..ae091f3
 +        attempts: limits.attempts,
 +        reason:
 +          cause instanceof AttemptDeadline
-+            ? `no progress within ${Duration.format(limits.attempt)}`
++            ? `did not finish within ${Duration.format(limits.attempt)}`
 +            : describe(cause),
 +      });
 +      yield* Console.error(stopped.message);
@@ -291,11 +292,11 @@ index 0000000..ae091f3
 +
 +const label = (value: string | null, fallback: string) => {
 +  const clean = (value ?? "")
-+    // No `@`: another client's application name could hold an email address.
++    // Another client's application name could hold an email address, so values with `@` are dropped.
 +    .replace(/[^\w .:/()-]/g, "")
 +    .slice(0, 60)
 +    .trim();
-+  return clean === "" ? fallback : clean;
++  return (value ?? "").includes("@") ? "(redacted)" : clean === "" ? fallback : clean;
 +};
 +
 +/** Report lines for `rows`: no values, addresses or login names. */
@@ -328,7 +329,7 @@ index 0000000..ae091f3
 +export const blockerQuery = `
 +with ours as (
 +  select pid from pg_stat_activity
-+  where application_name = $1 and pid <> pg_backend_pid()
++  where datname = current_database() and application_name = $1 and pid <> pg_backend_pid()
 +), blockers as (
 +  select distinct b.pid, o.pid as blocks
 +  from ours o cross join lateral unnest(pg_blocking_pids(o.pid)) as b(pid)
