@@ -62,7 +62,7 @@
     {
       "identity": "executor-product-brand-surfaces",
       "file": "0007-product-brand-surfaces.patch",
-      "content_sha256": "b3b323870dcecddcc61a8f26caae94808fd88e5720cc374773c751cf156d68d5",
+      "content_sha256": "36744490ebf2af225ee63ad8dd3fd5fde5c3c6049d9c2ea1dbd70cb4e5610a80",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
