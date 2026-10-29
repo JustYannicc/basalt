@@ -560,10 +560,16 @@ index 2d2586d..6b26522 100644
              "Browser-managed session. Sign in through this deployment; bearer credentials cannot call session-only endpoints.",
          },
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
-index 677230b..0c64605 100644
+index 677230b..8cabeca 100644
 --- a/apps/hosted/server/src/contracts/app-ui.ts
 +++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -12,7 +12,7 @@ import {
+@@ -8,11 +8,13 @@ import {
+   VersionNotFound,
+   HttpUrl,
+   StorageError,
++  type BuildId,
+   type Runtime,
++  type RuntimeBuildUnavailable,
  } from "@executor-js/sdk/core";
  import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
  import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
@@ -572,10 +578,10 @@ index 677230b..0c64605 100644
  import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
  import { Principal } from "./auth.ts";
  import {
-@@ -25,6 +25,15 @@ import {
+@@ -25,6 +27,15 @@ import {
  } from "./organization.ts";
  export { AppSignInFailure, AppSignInId } from "apps/ui/auth/contracts";
-
+ 
 +/** Nested remains the default. Opaque uses the reserved a-<UUID> label, independent of names. */
 +export const appUiAddressScheme = Config.Literals(
 +  ["nested", "opaque"],
@@ -588,7 +594,7 @@ index 677230b..0c64605 100644
  /** Immutable ownership plus the exact current browser origin. Slug reuse cannot transfer a session. */
  export const AppUiTarget = Schema.Struct({
    app: AppId,
-@@ -79,16 +88,25 @@ export type AppUiUnavailable = typeof AppUiUnavailable.Type;
+@@ -79,16 +90,25 @@ export type AppUiUnavailable = typeof AppUiUnavailable.Type;
   * usable link. An unavailable page says why, because an app without a UI is not an outage.
   */
  export const AppUiLocation = Schema.Union([
@@ -616,11 +622,49 @@ index 677230b..0c64605 100644
  ]);
  /** A browser started this attempt on an app origin; only a digest of its HttpOnly proof is retained. */
  export const AppUiAttempt = Schema.Struct({
+@@ -170,10 +190,16 @@ export class HostedAppSessions extends Context.Service<
+   }
+ >()("hosted/AppSessions") {}
+ 
+-/** Asset access uses the same retained runtime that built and executes the app. */
+-export class HostedAppRuntime extends Context.Service<HostedAppRuntime, Pick<Runtime, "asset">>()(
+-  "hosted/AppRuntime",
+-) {}
++/**
++ * Asset access uses the same retained runtime that built and executes the app. `screen` answers
++ * whether a build lists a UI document from its stored manifest alone, without reading asset bytes.
++ */
++export class HostedAppRuntime extends Context.Service<
++  HostedAppRuntime,
++  Pick<Runtime, "asset"> & {
++    readonly screen?: (build: BuildId) => Effect.Effect<boolean, RuntimeBuildUnavailable>;
++  }
++>()("hosted/AppRuntime") {}
+ 
+ /** URL discovery uses organization grants; browser authorization still requires a user session. */
+ export const HostedAppUi = HttpApiGroup.make("appUi").add(
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
-index 25b17a5..30b2ae5 100644
+index b9e3a83..9b34125 100644
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
-@@ -267,7 +267,7 @@ export const HostedApps = HttpApiGroup.make("apps")
+@@ -44,6 +44,7 @@ import {
+   OrganizationReference,
+   OrganizationForbidden,
+   RequireOrganization,
++  AppScreenRecord,
+ } from "./organization.ts";
+ 
+ /** Catalog installation is create-only: it cannot overwrite another app by name. */
+@@ -129,7 +130,7 @@ export const HostedApps = HttpApiGroup.make("apps")
+   .add(
+     HttpApiEndpoint.get("get", `${prefix}/:app`, {
+       params: app,
+-      success: App,
++      success: AppScreenRecord,
+       error: [StorageError, AppNotFound],
+     }).annotate(RequiredAction, "discover"),
+   )
+@@ -220,7 +221,7 @@ export const HostedApps = HttpApiGroup.make("apps")
        .annotate(RequiredAction, "manage")
        .annotate(
          OpenApi.Description,
@@ -763,18 +807,70 @@ index 225328f..54d4bdf 100644
      origin,
      fromHost,
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index 372254f..b72b5a2 100644
+index 372254f..a81e449 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -57,6 +57,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
+@@ -57,7 +57,9 @@ import { HostedExecutor } from "../contracts/executor.ts";
  import {
    CurrentOrganization,
    OrganizationForbidden,
 +  OrganizationId,
    organizationOwner,
++  AppScreenRecord,
    type OrganizationAccess,
  } from "../contracts/organization.ts";
-@@ -120,17 +121,37 @@ export const hostedAppUi = <R = never>(
+ import { callerAccounts, stillLinked } from "./app-accounts.ts";
+@@ -86,6 +88,49 @@ const accountIds = (accounts: AppAccounts) => [
+ ];
+ const privateJson = (value: unknown, status = 200) =>
+   HttpServerResponse.jsonUnsafe(value, { status, headers: appPrivateHeaders });
++
++/**
++ * Whether each immutable version lists a UI document. Bounded, so a long-lived isolate keeps only
++ * recent versions; a miss reads the version and its build manifest again, never asset bytes.
++ */
++const screens = new Map<string, boolean>();
++const rememberScreen = (key: string, hasUi: boolean) => {
++  const oldest = screens.keys().next();
++  if (screens.size >= 1024 && !oldest.done) screens.delete(oldest.value);
++  screens.set(key, hasUi);
++};
++
++/** Read the active build's UI listing inside an existing app payload, without a browser request per app. */
++export const appUiIndicator = (app: App) =>
++  Effect.gen(function* () {
++    if (app.activeVersion === null) return false;
++    const key = `${app.owner}\u0000${app.activeVersion}`;
++    const known = screens.get(key);
++    if (known !== undefined) return known;
++    const runtime = yield* HostedAppRuntime;
++    if (runtime.screen === undefined) return undefined;
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const version = yield* executor.apps.version({
++      owner: app.owner,
++      app: app.id,
++      version: app.activeVersion,
++      versionOwner: app.owner,
++    });
++    const hasUi = yield* runtime.screen(version.build);
++    rememberScreen(key, hasUi);
++    return hasUi;
++  }).pipe(
++    Effect.catch(() => Effect.succeed(undefined)),
++    Effect.map((hasUi): typeof AppScreenRecord.Type => ({
++      ...app,
++      ...(hasUi === undefined ? {} : { hasUi }),
++    })),
++  );
++
++/** Lists read their apps' indicators a few at a time; remembered versions answer without reads. */
++export const appUiIndicators = (apps: Iterable<App>) =>
++  Effect.forEach(apps, appUiIndicator, { concurrency: 8 });
++
+ const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
+   privateJson(
+     error,
+@@ -120,17 +165,37 @@ export const hostedAppUi = <R = never>(
    const target = Effect.gen(function* () {
      const { request, host } = yield* requestOrigin;
      const sessions = yield* HostedAppSessions;
@@ -819,7 +915,7 @@ index 372254f..b72b5a2 100644
      };
    });
    const readVersion = (app: App, requested?: VersionId) =>
-@@ -289,6 +310,31 @@ export const hostedAppUi = <R = never>(
+@@ -289,6 +354,31 @@ export const hostedAppUi = <R = never>(
          ),
        );
      });
@@ -851,7 +947,7 @@ index 372254f..b72b5a2 100644
    const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
      handlers.handle("location", ({ params }) =>
        Effect.gen(function* () {
-@@ -309,9 +355,19 @@ export const hostedAppUi = <R = never>(
+@@ -309,9 +399,19 @@ export const hostedAppUi = <R = never>(
            Effect.mapError(() => new AppUiUnavailable()),
          );
          if (page === undefined)
@@ -873,7 +969,7 @@ index 372254f..b72b5a2 100644
          const sessions = yield* HostedAppSessions;
          const organization = yield* sessions
            .organization({ id: access.organization })
-@@ -322,7 +378,9 @@ export const hostedAppUi = <R = never>(
+@@ -322,7 +422,9 @@ export const hostedAppUi = <R = never>(
          const status = yield* domainStatus(organization).pipe(
            Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
          );
@@ -884,7 +980,7 @@ index 372254f..b72b5a2 100644
        }),
      ),
    );
-@@ -598,6 +656,7 @@ export const hostedAppUi = <R = never>(
+@@ -598,6 +700,7 @@ export const hostedAppUi = <R = never>(
        accountIds: accounts?.user,
        accounts: yield* accountNotice,
        origin: current.target.origin,
@@ -892,7 +988,7 @@ index 372254f..b72b5a2 100644
        version: version.id,
        asset: (path) => assets(version, path),
      });
-@@ -682,7 +741,8 @@ export const hostedAppUi = <R = never>(
+@@ -682,7 +785,8 @@ export const hostedAppUi = <R = never>(
        htmlFailure,
      );
    return {
@@ -976,37 +1072,31 @@ index c0fb721..1797a53 100644
      plugins: [
        ...base.plugins,
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
-index a1bc3c7..6c662f2 100644
+index a1bc3c7..09033a6 100644
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
-@@ -38,16 +38,23 @@ class AppUiKey extends Data.Class<{
+@@ -8,7 +8,7 @@ import {
+   AppSignInId,
+ } from "@executor-js/hosted-server/app-ui/contracts";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+-import type { AppId, AppSlug, VersionId } from "@executor-js/sdk";
++import type { AppId, AppSlug } from "@executor-js/sdk";
+ import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
+ import { Atom, AtomHttpApi } from "effect/reactivity";
+ import type { HttpApiEndpoint } from "effect/http-api";
+@@ -38,8 +38,11 @@ class AppUiKey extends Data.Class<{
    readonly slug: string;
    readonly app: AppId;
    readonly appSlug: AppSlug;
 -  readonly version: VersionId;
-+  readonly version: VersionId | null;
  }> {}
++/**
++ * Keyed by the app and its origin, not its version, so an activation refreshes the read in place
++ * and a mounted app frame stays mounted while its own watch script reloads it.
++ */
  const location = Atom.family((key: AppUiKey) =>
    // The open-app control polls version status; it loads after hydration.
    browserOnly(
-     AppUiClient.runtime.atom(
-       Stream.fromEffectSchedule(
--        Effect.flatMap(AppUiClient, (client) =>
--          client.appUi.location({ params: { organization: key.organization, app: key.app } }),
--        ),
-+        key.version === null
-+          ? Effect.succeed({
-+              status: "unavailable" as const,
-+              embedded: false,
-+              reason: "no_ui" as const,
-+              url: null,
-+            })
-+          : Effect.flatMap(AppUiClient, (client) =>
-+              client.appUi.location({ params: { organization: key.organization, app: key.app } }),
-+            ),
-         Schedule.spaced("3 seconds"),
-       ).pipe(Stream.takeUntil((location) => location.status !== "pending")),
-     ),
 diff --git a/apps/hosted/web/src/implementation/last-organization.ts b/apps/hosted/web/src/implementation/last-organization.ts
 index c1dff4a..66bc9a3 100644
 --- a/apps/hosted/web/src/implementation/last-organization.ts
@@ -1022,124 +1112,135 @@ index c1dff4a..66bc9a3 100644
    `Path=/; SameSite=Lax${window.location.protocol === "https:" ? "; Secure" : ""}`;
 
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index e29dddf..b36520c 100644
+index e29dddf..896d3d1 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -49,6 +49,9 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
+@@ -49,6 +49,7 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
  import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
  import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
  import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
-+import { AppSlug } from "@executor-js/sdk";
-+import { AppScreen } from "./app-screen.tsx";
-+import { appUiLocationAtom } from "../../contracts/app-ui.ts";
++import { AppScreen, NoAppScreen } from "./app-screen.tsx";
  import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
  import {
    AppOverview,
-@@ -86,7 +89,13 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params)
-   });
-
- /** Views that read only the app. The others also read the inventory and the app's links. */
--const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
-+const appWideViews: ReadonlySet<AppView> = new Set([
-+  "app",
-+  "settings",
-+  "versions",
-+  "source",
-+  "history",
-+]);
-
- /**
-  * Links with their sign-in state and checks by this app. Accounts the caller can use show the
-@@ -134,7 +143,20 @@ export function AppDetailPage({
-     : Option.isSome(inventory.data)
-       ? inventory.data.value.apps.find((item) => item.id === appId)
-       : undefined;
--  const selectedView = view ?? (tool === undefined ? "overview" : "tools");
-+  const screen = useAtomValue(
-+    appUiLocationAtom({
-+      organization,
-+      slug: organizationSlug,
-+      app: appId,
-+      appSlug: app?.slug ?? AppSlug.make("loading"),
-+      version: app?.activeVersion ?? null,
-+    }),
-+  );
-+  const hasAppScreen =
-+    AsyncResult.isSuccess(screen) &&
-+    screen.value.embedded === true &&
-+    !(screen.value.status === "unavailable" && screen.value.reason === "no_ui");
-+  const selectedView = view ?? (tool === undefined ? (hasAppScreen ? "app" : "overview") : "tools");
-   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
-   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
-   const session = useAtomValue(sessionAtom);
-@@ -185,6 +207,7 @@ export function AppDetailPage({
+@@ -143,6 +144,11 @@ export function AppDetailPage({
+   const access = Option.getOrUndefined(authority.data);
+   const canManage = access?.canManage === true,
+     canUse = access?.canUse === true;
++  // Only callers who can use the app get its tab and its prewarmed frame.
++  const screenApp =
++    canUse && app !== undefined && app.activeVersion !== null && app.hasUi !== false
++      ? app
++      : undefined;
+   const accessPendingReason = AsyncResult.isFailure(authority.result)
+     ? "App access could not be checked. Retry the access request."
+     : "Checking app access…";
+@@ -185,6 +191,7 @@ export function AppDetailPage({
        app={app}
        view={selectedView}
        canInspectSource={canManage}
-+      hasAppScreen={hasAppScreen}
++      hasAppScreen={screenApp !== undefined}
        sourceDisabledReason={sourceReason}
        back={
          <Link
-@@ -234,6 +257,12 @@ export function AppDetailPage({
-           pending={pending}
-         >
-           {({ current }) => {
-+            if (selectedView === "app")
-+              return canUse ? (
-+                <AppScreen app={current} />
+@@ -223,7 +230,32 @@ export function AppDetailPage({
+         )
+       }
+     >
+-      {appWideViews.has(selectedView) || !canUse ? (
++      <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
++        {screenApp !== undefined ? (
++          <AppScreen app={screenApp} />
++        ) : selectedView === "app" ? (
++          <QueryResult
++            result={allResults({ access: authority.result, current: query.result })}
++            Failure={HostedFailure}
++            retry={() => {
++              authority.refresh();
++              query.refresh();
++            }}
++            pending={pending}
++          >
++            {() =>
++              canUse ? (
++                <NoAppScreen />
 +              ) : (
-+                <p className="p-5">You do not have access to this app.</p>
-+              );
-             if (selectedView === "settings")
-               return (
-                 <AppSettings
++                <p className="p-5 text-sm text-muted-foreground">
++                  This app is not shared with you. You can manage its settings.
++                </p>
++              )
++            }
++          </QueryResult>
++        ) : null}
++      </div>
++      {selectedView !== "app" && (appWideViews.has(selectedView) || !canUse) ? (
+         <QueryResult
+           result={allResults({ access: authority.result, current: query.result })}
+           Failure={HostedFailure}
+@@ -305,7 +337,7 @@ export function AppDetailPage({
+             );
+           }}
+         </QueryResult>
+-      ) : (
++      ) : selectedView !== "app" ? (
+         <QueryResult
+           result={allResults({
+             access: authority.result,
+@@ -460,7 +492,7 @@ export function AppDetailPage({
+             );
+           }}
+         </QueryResult>
+-      )}
++      ) : null}
+     </AppDetailLayout>
+   );
+ }
 diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 new file mode 100644
-index 0000000..bde0386
+index 0000000..f638c61
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,154 @@
 +import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 +import type { App } from "@executor-js/sdk";
 +import { Button } from "@executor-js/ui/components/button";
++import { Skeleton } from "@executor-js/ui/components/skeleton";
 +import { AsyncResult } from "effect/reactivity";
 +import { useEffect, useRef, useState } from "react";
 +import { appUiError, appUiLocationAtom } from "../../contracts/app-ui.ts";
 +import { useOrganizationRoute } from "../components/organization.tsx";
 +
-+/** Reuses URL discovery, including no-UI and domain readiness, instead of guessing from app names. */
++/** App metadata keeps the card label in the existing list request. */
 +export function AppScreenBadge({ app }: { readonly app: App }) {
-+  const { organization, slug } = useOrganizationRoute();
-+  const result = useAtomValue(
-+    appUiLocationAtom({
-+      organization,
-+      slug,
-+      app: app.id,
-+      appSlug: app.slug,
-+      version: app.activeVersion,
-+    }),
-+  );
-+  return AsyncResult.isSuccess(result) &&
-+    result.value.embedded &&
-+    !(result.value.status === "unavailable" && result.value.reason === "no_ui") ? (
-+    <span className="text-xs text-muted-foreground">App screen</span>
++  const hasUi = "hasUi" in app ? app.hasUi : undefined;
++  return app.activeVersion !== null && hasUi !== false ? (
++    <span className="font-mono text-xs text-muted-foreground">App screen</span>
 +  ) : null;
 +}
 +
-+export function AppScreen({ app }: { readonly app: App }) {
++/**
++ * The app's location, read again when its active version changes. The previous answer stays
++ * while that read runs, so the screen and its controls never fall back to loading.
++ */
++export function useAppUiLocation(app: App) {
 +  const { organization, slug } = useOrganizationRoute();
-+  const location = appUiLocationAtom({
-+    organization,
-+    slug,
-+    app: app.id,
-+    appSlug: app.slug,
-+    version: app.activeVersion,
-+  });
++  const location = appUiLocationAtom({ organization, slug, app: app.id, appSlug: app.slug });
 +  const result = useAtomValue(location);
 +  const refresh = useAtomRefresh(location);
++  const version = useRef(app.activeVersion);
++  useEffect(() => {
++    if (version.current === app.activeVersion) return;
++    version.current = app.activeVersion;
++    refresh();
++  }, [app.activeVersion, refresh]);
++  return { result, refresh };
++}
++
++export function AppScreen({ app }: { readonly app: App }) {
++  const { result, refresh } = useAppUiLocation(app);
 +  if (AsyncResult.isFailure(result))
 +    return <ScreenStatus message={appUiError(result.cause)} retry={refresh} />;
-+  if (!AsyncResult.isSuccess(result)) return <ScreenStatus message="Loading app…" />;
++  if (!AsyncResult.isSuccess(result)) return <AppSkeleton />;
 +  if (result.value.status === "pending")
 +    return <ScreenStatus message="Preparing app domain…" retry={refresh} />;
 +  if (result.value.status === "failed")
@@ -1162,6 +1263,11 @@ index 0000000..bde0386
 +  return <AppFrame key={result.value.url} url={result.value.url} name={app.name} />;
 +}
 +
++/** The App view of an app whose active version has no UI, or that has no active version. */
++export function NoAppScreen() {
++  return <ScreenStatus message="This app has no screen." />;
++}
++
 +function ScreenStatus({
 +  message,
 +  retry,
@@ -1170,7 +1276,7 @@ index 0000000..bde0386
 +  readonly retry?: (() => void) | undefined;
 +}) {
 +  return (
-+    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5">
++    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
 +      <p role="status" className="text-sm text-muted-foreground">
 +        {message}
 +      </p>
@@ -1183,13 +1289,20 @@ index 0000000..bde0386
 +  );
 +}
 +
++function AppSkeleton() {
++  return (
++    <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
++      <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
++    </div>
++  );
++}
++
 +/** A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError. */
 +function AppFrame({ url, name }: { readonly url: string; readonly name: string }) {
 +  const frame = useRef<HTMLIFrameElement>(null);
 +  const [attempt, setAttempt] = useState(0);
 +  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
 +  useEffect(() => {
-+    setState("loading");
 +    const timer = window.setTimeout(() => setState("failed"), 30000);
 +    const ready = (event: MessageEvent) => {
 +      if (
@@ -1210,17 +1323,20 @@ index 0000000..bde0386
 +  return (
 +    <div className="relative flex min-h-0 flex-1 flex-col">
 +      {state === "loading" && (
-+        <div
-+          role="status"
-+          className="absolute inset-x-0 top-0 z-10 bg-background p-3 text-sm text-muted-foreground"
-+        >
-+          Loading app…
++        <div className="absolute inset-0 z-10 flex">
++          <AppSkeleton />
 +        </div>
 +      )}
 +      {state === "failed" && (
 +        <div role="alert" className="flex items-center gap-3 border-b p-3 text-sm">
 +          <span>The app did not finish loading. Retry or open it in a new tab.</span>
-+          <Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>
++          <Button
++            variant="outline"
++            onClick={() => {
++              setState("loading");
++              setAttempt((value) => value + 1);
++            }}
++          >
 +            Retry
 +          </Button>
 +        </div>
@@ -1240,10 +1356,60 @@ index 0000000..bde0386
 +  );
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
-index 8f88b3a..64a7d3e 100644
+index 8f88b3a..a2c0320 100644
 --- a/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-sign-in.tsx
-@@ -98,7 +98,7 @@ function DeployedOpenAppAction({
+@@ -1,4 +1,3 @@
+-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+ import type { App } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
+ import { AsyncResult } from "effect/reactivity";
+@@ -6,11 +5,10 @@ import { useEffect } from "react";
+ import {
+   appSignInFailureMessage,
+   appUiError,
+-  appUiLocationAtom,
+   type AppSignInFailure,
+   type AppSignInId,
+ } from "../../contracts/app-ui.ts";
+-import { useOrganizationRoute } from "../components/organization.tsx";
++import { useAppUiLocation } from "./app-screen.tsx";
+ 
+ /**
+  * The server answers `/app-auth` with a redirect whenever it has an attempt to resolve, so this page
+@@ -43,28 +41,11 @@ export function AppSignInPage({
+  * accounts the caller linked to it.
+  */
+ export function OpenAppAction({ app }: { readonly app: App }) {
+-  return app.activeVersion === null ? null : (
+-    <DeployedOpenAppAction app={app} version={app.activeVersion} />
+-  );
++  return app.activeVersion === null ? null : <DeployedOpenAppAction app={app} />;
+ }
+ 
+-function DeployedOpenAppAction({
+-  app,
+-  version,
+-}: {
+-  readonly app: App;
+-  readonly version: NonNullable<App["activeVersion"]>;
+-}) {
+-  const { organization, slug } = useOrganizationRoute();
+-  const location = appUiLocationAtom({
+-    organization,
+-    slug,
+-    app: app.id,
+-    appSlug: app.slug,
+-    version,
+-  });
+-  const result = useAtomValue(location);
+-  const refresh = useAtomRefresh(location);
++function DeployedOpenAppAction({ app }: { readonly app: App }) {
++  const { result, refresh } = useAppUiLocation(app);
+   if (AsyncResult.isFailure(result))
+     return (
+       <div className="flex items-center gap-2">
+@@ -98,7 +79,7 @@ function DeployedOpenAppAction({
    return (
      <Button variant="outline" asChild>
        <a href={result.value.url} target="_blank" rel="noopener noreferrer">
@@ -1645,7 +1811,7 @@ index caf168d..02c6259 100644
      managementApps: ["owner"],
 diff --git a/e2e/tests/app-ui-cookie-isolation.spec.ts b/e2e/tests/app-ui-cookie-isolation.spec.ts
 new file mode 100644
-index 0000000..a5b9b42
+index 0000000..06293cb
 --- /dev/null
 +++ b/e2e/tests/app-ui-cookie-isolation.spec.ts
 @@ -0,0 +1,185 @@
@@ -1697,7 +1863,7 @@ index 0000000..a5b9b42
 +        yield* browser.login(actors.owner);
 +        yield* browser.omitNetworkTrace;
 +        yield* browser.use("Open the app inside the HTTPS dashboard", (page) =>
-+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}`),
++          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=app`),
 +        );
 +        yield* browser.use("The authenticated app renders", (page) =>
 +          page
@@ -1895,13 +2061,14 @@ index 1f60a28..2d79959 100644
          yield* onboarding.emailSignIn(email);
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 new file mode 100644
-index 0000000..0000000
+index 0000000..ee561fc
 --- /dev/null
 +++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,664 @@
 +/** Browser proof through a real self-host, including the existing browser-bound sign-in protocol. */
 +import { expect, layer } from "@effect/vitest";
-+import { Effect } from "effect";
++import { Effect, Schema } from "effect";
++import type { Page, Request, Route } from "playwright";
 +import { scenarios } from "../test-plan.ts";
 +import { Actors } from "../support/actors.ts";
 +import { Api, body } from "../support/api.ts";
@@ -1910,6 +2077,8 @@ index 0000000..0000000
 +import { App } from "../support/contracts.ts";
 +import { appsManifest } from "../support/apps-release.ts";
 +import { waitForAppUrl } from "../support/app-pages.ts";
++import { saveAndDeploy } from "../support/app-authoring.ts";
++import { batchPath, batchedReads } from "../support/read-batches.ts";
 +import { Target } from "../support/platform.ts";
 +
 +const files = [
@@ -1923,6 +2092,66 @@ index 0000000..0000000
 +  },
 +  appsManifest,
 +];
++
++/** Location reads of one app, sent on their own or inside a dashboard read batch. */
++const locationReads = (app: string, request: Request) => {
++  const path = new URL(request.url()).pathname;
++  if (path.endsWith(`/apps/${app}/ui`)) return 1;
++  if (path !== batchPath || request.method() !== "POST") return 0;
++  return batchedReads(request.postData()).filter(
++    (read) => read.group === "appUi" && read.endpoint === "location" && read.params.app === app,
++  ).length;
++};
++
++/** Hold an app's location read until released, whether it travels alone or in a batch. */
++const holdLocation = (page: Page, organization: string, app: string) => {
++  let release!: () => void;
++  let requested!: () => void;
++  const gate = new Promise<void>((resolve) => (release = resolve));
++  const seen = new Promise<void>((resolve) => (requested = resolve));
++  const direct = `**/api/organizations/${organization}/apps/${app}/ui`;
++  const batch = `**${batchPath}`;
++  const held: Array<Promise<void>> = [];
++  const hold = (route: Route) => {
++    requested();
++    const continued = gate.then(() => route.continue());
++    held.push(continued);
++    return continued;
++  };
++  const batched = (route: Route) =>
++    locationReads(app, route.request()) > 0 ? hold(route) : route.fallback();
++  return Promise.all([page.route(direct, hold), page.route(batch, batched)]).then(() => ({
++    requested: seen,
++    // Held reads continue before their routes are removed.
++    release: () => {
++      release();
++      return Promise.all(held).then(() =>
++        Promise.all([page.unroute(direct, hold), page.unroute(batch, batched)]),
++      );
++    },
++  }));
++};
++
++/** Count frames of `title` the page removes and app loading states it adds from now on. */
++const watchFrame = (page: Page, title: string) =>
++  page.evaluate((title) => {
++    const seen = { removed: 0, loading: 0 };
++    const has = (node: Node, selector: string) =>
++      node instanceof Element && (node.matches(selector) || node.querySelector(selector) !== null);
++    new MutationObserver((records) => {
++      for (const record of records) {
++        for (const node of record.removedNodes)
++          if (has(node, `iframe[title="${title}"]`)) seen.removed++;
++        for (const node of record.addedNodes)
++          if (has(node, '[aria-label="Loading app"]')) seen.loading++;
++      }
++    }).observe(document.body, { childList: true, subtree: true });
++    Reflect.set(window, "__frameChanges", seen);
++  }, title);
++const frameChanges = (page: Page) =>
++  page.evaluate(
++    () => Reflect.get(window, "__frameChanges") as { removed: number; loading: number },
++  );
 +
 +layer(HostedLive, { excludeTestServices: true })("Embedded app screens", (it) => {
 +  it.effect(scenarios.embeddedAppUi.title, (context) =>
@@ -1964,6 +2193,7 @@ index 0000000..0000000
 +          });
 +        const first = yield* deploy("Embedded fixture one");
 +        const second = yield* deploy("Embedded fixture two", first.url);
++        const failing = yield* deploy("Embedded fixture failure");
 +        const unknownHost = `a-${crypto.randomUUID()}.fixture.localhost`;
 +        const unknownApp = yield* browser.use("Unknown opaque app hosts are refused", (page) =>
 +          page.context().request.get(first.url, { headers: { Host: unknownHost } }),
@@ -1973,38 +2203,85 @@ index 0000000..0000000
 +        // Cookies never enter retained network traces or screenshots.
 +        yield* browser.omitNetworkTrace;
 +        const detail = `/org/${actors.organization.slug}/apps/${first.app.id}`;
-+        yield* browser.use("Open the app cards", (page) =>
-+          page.goto(`/org/${actors.organization.slug}/apps`),
-+        );
-+        yield* browser.use("App cards advertise screens", (page) =>
-+          page
-+            .getByRole("link", { name: `Open ${first.app.name}`, exact: true })
-+            .getByText("App screen")
-+            .waitFor(),
-+        );
++        let appListUiRequests = 0;
++        yield* browser.use("App cards use their list payload for screen labels", (page) => {
++          const countUiRequest = (request: Request) => {
++            appListUiRequests += locationReads(first.app.id, request);
++          };
++          page.on("request", countUiRequest);
++          return page
++            .goto(`/org/${actors.organization.slug}/apps`)
++            .then(() =>
++              page
++                .getByRole("link", { name: `Open ${first.app.name}`, exact: true })
++                .getByText("App screen")
++                .waitFor(),
++            )
++            .finally(() => page.off("request", countUiRequest));
++        });
++        expect(appListUiRequests).toBe(0);
 +        yield* browser.checkpoint("apps-list-with-screen");
-+        yield* browser.use("The App tab completes sign-in inside its frame", (page) =>
-+          Promise.all([
-+            page.waitForResponse(
-+              (response) =>
-+                new URL(response.url()).origin === first.url &&
-+                new URL(response.url()).pathname === "/_executor/auth/callback" &&
-+                response.status() === 302 &&
-+                response.request().frame() !== page.mainFrame(),
++        const firstLocation = yield* browser.use(
++          "Hold app location while the detail tab renders",
++          (page) =>
++            holdLocation(page, actors.organization.id, first.app.id).then((hold) =>
++              page
++                .goto(detail)
++                .then(() => hold.requested)
++                .then(() => hold),
 +            ),
-+            page.goto(detail),
-+          ]),
 +        );
-+        yield* browser.use("The isolated app renders its authored screen", (page) =>
++        yield* browser.use("App tab is present while its location is held", (page) => {
++          const navigation = page.getByRole("navigation", { name: "App navigation" });
++          return Promise.all([
++            navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
++            navigation
++              .getByRole("link", { name: "Overview", exact: true })
++              .getAttribute("aria-current"),
++          ]).then(([appView, overview]) => {
++            expect(appView).toBeNull();
++            expect(overview).toBe("page");
++          });
++        });
++        yield* browser.use("Release the app location", () => firstLocation.release());
++        yield* browser.use("The App frame completes sign-in while prewarmed", (page) =>
++          page.waitForResponse(
++            (response) =>
++              new URL(response.url()).origin === first.url &&
++              new URL(response.url()).pathname === "/_executor/auth/callback" &&
++              response.status() === 302 &&
++              response.request().frame() !== page.mainFrame(),
++          ),
++        );
++        yield* browser.use("Overview remains selected after the location resolves", (page) => {
++          const navigation = page.getByRole("navigation", { name: "App navigation" });
++          return Promise.all([
++            navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
++            navigation
++              .getByRole("link", { name: "Overview", exact: true })
++              .getAttribute("aria-current"),
++          ]).then(([appView, overview]) => {
++            expect(appView).toBeNull();
++            expect(overview).toBe("page");
++          });
++        });
++        yield* browser.checkpoint("embedded-app-default-overview");
++        yield* browser.use("Opening App reveals the prewarmed screen", (page) =>
 +          page
-+            .frameLocator(`iframe[title="${first.app.name} app"]`)
-+            .getByRole("heading", { name: "Embedded fixture screen" })
-+            .waitFor(),
++            .getByRole("navigation", { name: "App navigation" })
++            .getByRole("link", { name: "App", exact: true })
++            .click()
++            .then(() =>
++              page
++                .frameLocator(`iframe[title="${first.app.name} app"]`)
++                .getByRole("heading", { name: "Embedded fixture screen" })
++                .waitFor(),
++            ),
 +        );
 +        yield* browser.use("The host receives app readiness", (page) =>
-+          page.getByRole("status").filter({ hasText: "Loading app…" }).waitFor({ state: "hidden" }),
++          page.getByRole("status", { name: "Loading app" }).waitFor({ state: "hidden" }),
 +        );
-+        yield* browser.use("The default App tab has the approved sandbox", (page) =>
++        yield* browser.use("The opened App tab has the approved sandbox", (page) =>
 +          Promise.all([
 +            page
 +              .getByRole("navigation", { name: "App navigation" })
@@ -2014,9 +2291,9 @@ index 0000000..0000000
 +            page.locator("iframe").getAttribute("allow"),
 +            page.locator("iframe").getAttribute("referrerpolicy"),
 +            page.getByRole("link", { name: "Open in new tab" }).getAttribute("href"),
-+          ]).then(([selected, sandbox, allow, referrer, href]) => {
-+            expect(page.url()).toBe(`${target.metadata.origin}${detail}`);
-+            expect(selected).toBe("page");
++          ]).then(([appView, sandbox, allow, referrer, href]) => {
++            expect(page.url()).toBe(`${target.metadata.origin}${detail}?view=app`);
++            expect(appView).toBe("page");
 +            expect(sandbox).toBe(
 +              "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads",
 +            );
@@ -2026,6 +2303,138 @@ index 0000000..0000000
 +          }),
 +        );
 +        yield* browser.checkpoint("embedded-app-tab");
++        yield* browser.use("Switching tabs keeps the ready frame mounted", (page) => {
++          const iframe = page.locator(`iframe[title="${first.app.name} app"]`);
++          let documentLoads = 0;
++          const countLoad = (request: { resourceType(): string; url(): string }) => {
++            const url = new URL(request.url());
++            if (
++              request.resourceType() === "document" &&
++              url.origin === new URL(first.url).origin &&
++              url.pathname === "/"
++            )
++              documentLoads++;
++          };
++          page.on("request", countLoad);
++          const before = documentLoads;
++          const navigation = page.getByRole("navigation", { name: "App navigation" });
++          return iframe.elementHandle().then((original) =>
++            navigation
++              .getByRole("link", { name: "App", exact: true })
++              .click()
++              .then(() => navigation.getByRole("link", { name: "Overview", exact: true }).click())
++              .then(() => navigation.getByRole("link", { name: "App", exact: true }).click())
++              .then(() =>
++                Promise.all([
++                  iframe.evaluate((element, previous) => element === previous, original),
++                  page.getByRole("status", { name: "Loading app" }).count(),
++                ]),
++              )
++              .then(([sameFrame, loading]) => {
++                expect(sameFrame).toBe(true);
++                expect(documentLoads).toBe(before);
++                expect(loading).toBe(0);
++              })
++              .finally(() => page.off("request", countLoad)),
++          );
++        });
++        yield* browser.use("Watch the open App frame", (page) =>
++          watchFrame(page, `${first.app.name} app`),
++        );
++        const original = yield* browser.use("Keep the open App frame", (page) =>
++          page.locator(`iframe[title="${first.app.name} app"]`).elementHandle(),
++        );
++        const updated = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${first.app.id}`, {
++          files: files.map((file) =>
++            file.path === "ui/index.html"
++              ? {
++                  ...file,
++                  content: file.content.replace(
++                    "Embedded fixture screen</h1>",
++                    "Embedded fixture screen updated</h1>",
++                  ),
++                }
++              : file,
++          ),
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        const { app: activated } = yield* body(
++          Schema.Struct({ app: Schema.Struct({ activeVersion: Schema.String }) }),
++          updated,
++        );
++        yield* browser.use("The frame's own watch script loads the new version", (page) =>
++          page
++            .frameLocator(`iframe[title="${first.app.name} app"]`)
++            .getByRole("heading", { name: "Embedded fixture screen updated" })
++            .waitFor({ timeout: 20_000 }),
++        );
++        yield* browser.use("The dashboard reads the activated version", (page) => {
++          // A returning tab reads the app and its location again; the activated version then reads
++          // the location once more. Chrome does not always keep streamed batch bodies, so either
++          // signal shows the dashboard has the new version.
++          const appRead = page.waitForResponse((response) => {
++            const url = new URL(response.url());
++            return url.origin === target.metadata.origin &&
++              (url.pathname === batchPath || url.pathname.endsWith(`/apps/${first.app.id}`))
++              ? response.text().then(
++                  (text) => text.includes(activated.activeVersion),
++                  () => false,
++                )
++              : false;
++          });
++          let reads = 0;
++          let reread!: () => void;
++          const reread2 = new Promise<void>((resolve) => (reread = resolve));
++          const countReads = (request: Request) => {
++            reads += locationReads(first.app.id, request);
++            if (reads >= 2) reread();
++          };
++          page.on("request", countReads);
++          return page
++            .evaluate(() =>
++              document.dispatchEvent(new Event("visibilitychange", { bubbles: true })),
++            )
++            .then(() => Promise.race([appRead, reread2]))
++            .finally(() => page.off("request", countReads))
++            .then(() =>
++              page.evaluate(
++                () =>
++                  new Promise((resolve) =>
++                    requestAnimationFrame(() => requestAnimationFrame(resolve)),
++                  ),
++              ),
++            );
++        });
++        yield* browser.use("Activation keeps the mounted frame without a loading state", (page) =>
++          Promise.all([
++            frameChanges(page),
++            page
++              .locator(`iframe[title="${first.app.name} app"]`)
++              .evaluate((element, previous) => element === previous, original),
++            page.getByRole("status", { name: "Loading app" }).count(),
++          ]).then(([changes, sameFrame, loading]) => {
++            expect(changes).toEqual({ removed: 0, loading: 0 });
++            expect(sameFrame).toBe(true);
++            expect(loading).toBe(0);
++          }),
++        );
++        yield* browser.checkpoint("embedded-app-activated");
++        yield* browser.use("Open in new tab still opens the canonical app URL", (page) => {
++          const pagePromise = page.context().waitForEvent("page");
++          const url = new URL(first.url).href;
++          return Promise.all([
++            pagePromise,
++            page.getByRole("link", { name: "Open in new tab" }).click(),
++          ]).then(([opened]) =>
++            opened
++              .waitForURL(url)
++              .then(() => opened.waitForLoadState())
++              .then(() => {
++                expect(new URL(opened.url()).href).toBe(url);
++                return opened.close();
++              }),
++          );
++        });
 +        yield* browser.use("App origins cannot read the dashboard DOM or cookies", (page) => {
 +          const frame = page.frames().find((frame) => frame.url().startsWith(first.url));
 +          expect(frame).toBeDefined();
@@ -2102,14 +2511,70 @@ index 0000000..0000000
 +              expect(response.headers()["content-security-policy"]).toBe("frame-ancestors 'none'"),
 +            ),
 +        );
-+        yield* browser.use("Open the second app's own frame", (page) =>
-+          page.goto(`/org/${actors.organization.slug}/apps/${second.app.id}?view=app`),
++        // Hold both the location read and the app document, so tab switches land mid-load.
++        let releaseDocument!: () => void;
++        const documentHeld = new Promise<void>((resolve) => (releaseDocument = resolve));
++        const heldDocuments: Array<Promise<void>> = [];
++        const holdDocument = (route: Route) => {
++          const continued = documentHeld.then(() => route.continue());
++          heldDocuments.push(continued);
++          return continued;
++        };
++        let secondLocationReads = 0;
++        const countSecondLocation = (request: Request) => {
++          secondLocationReads += locationReads(second.app.id, request);
++        };
++        const secondLocation = yield* browser.use("Open the second app's own frame", (page) =>
++          page
++            .route(`${second.url}/`, holdDocument)
++            .then(() => holdLocation(page, actors.organization.id, second.app.id))
++            .then((hold) => {
++              page.on("request", countSecondLocation);
++              return page
++                .goto(`/org/${actors.organization.slug}/apps/${second.app.id}?view=app`)
++                .then(() => hold.requested)
++                .then(() => hold);
++            }),
 +        );
++        const switchTabs = (page: Page) => {
++          const navigation = page.getByRole("navigation", { name: "App navigation" });
++          const loading = page.getByRole("status", { name: "Loading app" });
++          return loading
++            .waitFor()
++            .then(() => navigation.getByRole("link", { name: "Overview", exact: true }).click())
++            .then(() => loading.waitFor({ state: "hidden" }))
++            .then(() => navigation.getByRole("link", { name: "App", exact: true }).click())
++            .then(() => loading.waitFor());
++        };
++        yield* browser.use("Switching tabs while the location loads keeps it pending", switchTabs);
++        yield* browser.use("Release the second app's location", () => secondLocation.release());
++        const secondFrame = yield* browser.use("The second app's frame mounts", (page) =>
++          page.locator(`iframe[title="${second.app.name} app"]`).elementHandle(),
++        );
++        yield* browser.use("Switching tabs while the frame loads keeps it pending", switchTabs);
++        yield* browser.use("Release the second app's document", (page) => {
++          releaseDocument();
++          return Promise.all(heldDocuments).then(() =>
++            page.unroute(`${second.url}/`, holdDocument),
++          );
++        });
 +        yield* browser.use("The second app has its own screen", (page) =>
 +          page
 +            .frameLocator("iframe")
 +            .getByRole("heading", { name: "Embedded fixture screen" })
 +            .waitFor(),
++        );
++        yield* browser.use("Mid-load tab switches kept one location read and one frame", (page) =>
++          Promise.all([
++            page
++              .locator(`iframe[title="${second.app.name} app"]`)
++              .evaluate((element, previous) => element === previous, secondFrame),
++            page.getByRole("status", { name: "Loading app" }).waitFor({ state: "hidden" }),
++          ]).then(([sameFrame]) => {
++            page.off("request", countSecondLocation);
++            expect(sameFrame).toBe(true);
++            expect(secondLocationReads).toBe(1);
++          }),
 +        );
 +        yield* browser.use("The second app cannot fetch the first app's session", (page) => {
 +          const frame = page.frames().find((frame) => frame.url().startsWith(second.url));
@@ -2164,20 +2629,37 @@ index 0000000..0000000
 +          appCommitted: false,
 +        });
 +        // Network failure and time are controlled at the browser boundary.
-+        yield* browser.use("Refuse the next app document", (page) =>
-+          page.route(`${first.url}/`, (route) => route.abort("failed")),
++        // The held document fails before its route is removed, so it cannot load late.
++        let failDocument!: () => void;
++        const documentGate = new Promise<void>((resolve) => (failDocument = resolve));
++        const failedDocuments: Array<Promise<void>> = [];
++        const failLater = (route: Route) => {
++          const failed = documentGate.then(() => route.abort("failed"));
++          failedDocuments.push(failed);
++          return failed;
++        };
++        yield* browser.use("Hold the next app document", (page) =>
++          page.route(`${failing.url}/`, failLater),
 +        );
 +        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
-+        yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
-+        yield* browser.use("The pending frame announces loading", (page) =>
-+          page.getByRole("status").filter({ hasText: "Loading app…" }).waitFor(),
++        const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
++        yield* browser.use("Open the failing frame", (page) =>
++          page.goto(`${failingDetail}?view=app`),
 +        );
-+        yield* browser.use("Reach the loading deadline", (page) => page.clock.fastForward(30001));
++        yield* browser.use("The pending frame announces loading", (page) =>
++          page.getByRole("status", { name: "Loading app" }).waitFor(),
++        );
++        yield* browser.use("Reach the loading deadline", (page) => page.clock.runFor(30001));
 +        yield* browser.use("The failed frame offers recovery", (page) =>
 +          page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
 +        );
 +        yield* browser.checkpoint("embedded-app-failed");
-+        yield* browser.use("Restore app documents", (page) => page.unroute(`${first.url}/`));
++        yield* browser.use("Restore app documents", (page) => {
++          failDocument();
++          return Promise.all(failedDocuments).then(() =>
++            page.unroute(`${failing.url}/`, failLater),
++          );
++        });
 +        yield* browser.use("Retry the app frame", (page) =>
 +          page.getByRole("button", { name: "Retry", exact: true }).click(),
 +        );
@@ -2235,6 +2717,14 @@ index 0000000..0000000
 +            ]),
 +          ),
 +        ).toEqual([0, 0]);
++        yield* browser.use("Opening App for a tool-only app explains it has no screen", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${toolOnly.id}?view=app`)
++            .then(() =>
++              page.getByRole("status").filter({ hasText: "This app has no screen." }).waitFor(),
++            ),
++        );
++        yield* browser.checkpoint("embedded-app-no-screen");
 +      }),
 +    ),
 +  );
@@ -2474,7 +2964,7 @@ index 8fce008..b992545 100644
        </div>
        <div className={contentClasses[view]}>{children}</div>
 diff --git a/packages/ui/src/implementation/dashboard/app-loading.tsx b/packages/ui/src/implementation/dashboard/app-loading.tsx
-index e075817..e7e1678 100644
+index e075817..82a73d5 100644
 --- a/packages/ui/src/implementation/dashboard/app-loading.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-loading.tsx
 @@ -296,6 +296,12 @@ export function AppDetailLoading({
@@ -2483,9 +2973,9 @@ index e075817..e7e1678 100644
    switch (view) {
 +    case "app":
 +      return (
-+        <p role="status" className="p-5 text-sm text-muted-foreground">
-+          Loading app…
-+        </p>
++        <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
++          <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
++        </div>
 +      );
      case "skills":
        return <SkillBrowserLoading />;
@@ -2617,436 +3107,53 @@ diff --git a/apps/hosted/server/src/contracts/resource-access.ts b/apps/hosted/s
        access: AppAccess,
        /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
        linkedAccounts: Schema.Array(AccountId),
-diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
---- a/apps/hosted/server/src/contracts/apps.ts
-+++ b/apps/hosted/server/src/contracts/apps.ts
-@@ -45,6 +45,7 @@
-   OrganizationReference,
-   OrganizationForbidden,
-   RequireOrganization,
-+  AppScreenRecord,
- } from "./organization.ts";
- 
- /** Catalog installation is create-only: it cannot overwrite another app by name. */
-@@ -145,7 +146,7 @@
-   .add(
-     HttpApiEndpoint.get("get", `${prefix}/:app`, {
-       params: app,
--      success: App,
-+      success: AppScreenRecord,
-       error: [StorageError, AppNotFound],
-     }).annotate(RequiredAction, "discover"),
-   )
-diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
---- a/apps/hosted/server/src/implementation/app-ui.ts
-+++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -59,6 +59,7 @@
-   OrganizationForbidden,
-   OrganizationId,
-   organizationOwner,
-+  AppScreenRecord,
-   type OrganizationAccess,
- } from "../contracts/organization.ts";
- import { callerAccounts, stillLinked } from "./app-accounts.ts";
-@@ -87,6 +88,29 @@
- ];
- const privateJson = (value: unknown, status = 200) =>
-   HttpServerResponse.jsonUnsafe(value, { status, headers: appPrivateHeaders });
-+
-+/** Read the active build once inside an existing app payload, without one browser request per app. */
-+export const appUiIndicator = (app: App) =>
-+  Effect.gen(function* () {
-+    if (app.activeVersion === null) return false;
-+    const executor = yield* Effect.flatten(HostedExecutor);
-+    const version = yield* executor.apps.version({
-+      owner: app.owner,
-+      app: app.id,
-+      version: app.activeVersion,
-+      versionOwner: app.owner,
-+    });
-+    const runtime = yield* HostedAppRuntime;
-+    if (runtime.asset === undefined) return undefined;
-+    return (yield* runtime.asset({ build: version.build, path: "index.html" })) !== undefined;
-+  }).pipe(
-+    Effect.catch(() => Effect.succeed(undefined)),
-+    Effect.map((hasUi): typeof AppScreenRecord.Type => ({
-+      ...app,
-+      ...(hasUi === undefined ? {} : { hasUi }),
-+    })),
-+  );
-+
- const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
-   privateJson(
-     error,
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+index e9ad51b..e80f848 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
-@@ -21,6 +21,7 @@
+@@ -21,6 +21,7 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
  import { OrganizationTombstones } from "../contracts/organization-removal.ts";
  import { requireOrganizationAdmin } from "./access.ts";
  import { callerLinkedAccounts } from "./app-accounts.ts";
-+import { appUiIndicator } from "./app-ui.ts";
++import { appUiIndicators } from "./app-ui.ts";
  import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
  import { APIError } from "better-auth/api";
  import { ErrorReporter, Effect, Layer, Schema } from "effect";
-@@ -227,7 +228,8 @@
+@@ -227,7 +228,8 @@ export const inventory = (owner: OwnerId) =>
      const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
      // Membership is read once for both the app and the account policies.
      const actor = yield* currentResourceAuthority;
 -    const apps = yield* visibleAppsAs(actor, listedApps);
 +    const visibleApps = yield* visibleAppsAs(actor, listedApps);
-+    const apps = yield* Effect.forEach(visibleApps, appUiIndicator);
++    const apps = yield* appUiIndicators(visibleApps);
      const accounts = permitsAction(policy, "read")
        ? yield* executor.accounts
            .list({ owner })
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+index 0faaaff..1d87618 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
-@@ -19,6 +19,7 @@
+@@ -19,6 +19,7 @@ import {
  } from "../contracts/resource-access.ts";
  import { requireGroupSharing } from "./group-sharing.ts";
  import { callerLinkedAccounts } from "./app-accounts.ts";
-+import { appUiIndicator } from "./app-ui.ts";
++import { appUiIndicators } from "./app-ui.ts";
  import {
    policyDatabase,
    currentResourceAuthority,
-@@ -51,13 +52,17 @@
+@@ -51,8 +52,11 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
      });
      const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
      const links = yield* callerLinkedAccounts(usableApps);
--    const appEntries = listedApps.map(({ app, access }) => ({
--      app,
--      access,
--      linkedAccounts: [
--        ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
--      ],
--    }));
-+    const appEntries = yield* Effect.forEach(listedApps, ({ app, access }) =>
-+      appUiIndicator(app).pipe(
-+        Effect.map((app) => ({
-+          app,
-+          access,
-+          linkedAccounts: [
-+            ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
-+          ],
-+        })),
-+      ),
++    const indicated = new Map(
++      (yield* appUiIndicators(listedApps.map(({ app }) => app))).map((app) => [app.id, app]),
 +    );
-     const linked = new Set(links.map((link) => link.id));
-     const accounts = (yield* executor.accounts.list({ owner })).filter(
-       (account) => policy.tools.kind === "all" || linked.has(account.id),
-diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
---- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
-+++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -49,9 +49,7 @@
- import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
- import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
- import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
--import { AppSlug } from "@executor-js/sdk";
- import { AppScreen } from "./app-screen.tsx";
--import { appUiLocationAtom } from "../../contracts/app-ui.ts";
- import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
- import {
-   AppOverview,
-@@ -143,19 +141,7 @@
-     : Option.isSome(inventory.data)
-       ? inventory.data.value.apps.find((item) => item.id === appId)
-       : undefined;
--  const screen = useAtomValue(
--    appUiLocationAtom({
--      organization,
--      slug: organizationSlug,
--      app: appId,
--      appSlug: app?.slug ?? AppSlug.make("loading"),
--      version: app?.activeVersion ?? null,
--    }),
--  );
--  const hasAppScreen =
--    AsyncResult.isSuccess(screen) &&
--    screen.value.embedded === true &&
--    !(screen.value.status === "unavailable" && screen.value.reason === "no_ui");
-+  const hasAppScreen = app !== undefined && app.activeVersion !== null && app.hasUi !== false;
-   const selectedView = view ?? (tool === undefined ? (hasAppScreen ? "app" : "overview") : "tools");
-   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
-   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
-@@ -246,7 +232,10 @@
-         )
-       }
-     >
--      {appWideViews.has(selectedView) || !canUse ? (
-+      <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
-+        {hasAppScreen && app !== undefined ? <AppScreen app={app} /> : null}
-+      </div>
-+      {selectedView !== "app" && (appWideViews.has(selectedView) || !canUse) ? (
-         <QueryResult
-           result={allResults({ access: authority.result, current: query.result })}
-           Failure={HostedFailure}
-@@ -257,12 +246,6 @@
-           pending={pending}
-         >
-           {({ current }) => {
--            if (selectedView === "app")
--              return canUse ? (
--                <AppScreen app={current} />
--              ) : (
--                <p className="p-5">You do not have access to this app.</p>
--              );
-             if (selectedView === "settings")
-               return (
-                 <AppSettings
-@@ -334,7 +317,7 @@
-             );
-           }}
-         </QueryResult>
--      ) : (
-+      ) : selectedView !== "app" ? (
-         <QueryResult
-           result={allResults({
-             access: authority.result,
-@@ -489,7 +472,7 @@
-             );
-           }}
-         </QueryResult>
--      )}
-+      ) : null}
-     </AppDetailLayout>
-   );
- }
-diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
---- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
-+++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
-@@ -1,27 +1,17 @@
- import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
- import type { App } from "@executor-js/sdk";
- import { Button } from "@executor-js/ui/components/button";
-+import { Skeleton } from "@executor-js/ui/components/skeleton";
- import { AsyncResult } from "effect/reactivity";
- import { useEffect, useRef, useState } from "react";
- import { appUiError, appUiLocationAtom } from "../../contracts/app-ui.ts";
- import { useOrganizationRoute } from "../components/organization.tsx";
- 
--/** Reuses URL discovery, including no-UI and domain readiness, instead of guessing from app names. */
-+/** App metadata keeps the card label in the existing list request. */
- export function AppScreenBadge({ app }: { readonly app: App }) {
--  const { organization, slug } = useOrganizationRoute();
--  const result = useAtomValue(
--    appUiLocationAtom({
--      organization,
--      slug,
--      app: app.id,
--      appSlug: app.slug,
--      version: app.activeVersion,
--    }),
--  );
--  return AsyncResult.isSuccess(result) &&
--    result.value.embedded &&
--    !(result.value.status === "unavailable" && result.value.reason === "no_ui") ? (
--    <span className="text-xs text-muted-foreground">App screen</span>
-+  const hasUi = "hasUi" in app ? app.hasUi : undefined;
-+  return app.activeVersion !== null && hasUi !== false ? (
-+    <span className="font-mono text-xs text-muted-foreground">App screen</span>
-   ) : null;
- }
- 
-@@ -38,7 +28,7 @@
-   const refresh = useAtomRefresh(location);
-   if (AsyncResult.isFailure(result))
-     return <ScreenStatus message={appUiError(result.cause)} retry={refresh} />;
--  if (!AsyncResult.isSuccess(result)) return <ScreenStatus message="Loading app…" />;
-+  if (!AsyncResult.isSuccess(result)) return <AppSkeleton />;
-   if (result.value.status === "pending")
-     return <ScreenStatus message="Preparing app domain…" retry={refresh} />;
-   if (result.value.status === "failed")
-@@ -69,7 +59,7 @@
-   readonly retry?: (() => void) | undefined;
- }) {
-   return (
--    <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5">
-+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-5">
-       <p role="status" className="text-sm text-muted-foreground">
-         {message}
-       </p>
-@@ -82,6 +72,14 @@
-   );
- }
- 
-+function AppSkeleton() {
-+  return (
-+    <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
-+      <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
-+    </div>
-+  );
-+}
-+
- /** A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError. */
- function AppFrame({ url, name }: { readonly url: string; readonly name: string }) {
-   const frame = useRef<HTMLIFrameElement>(null);
-@@ -109,11 +107,8 @@
-   return (
-     <div className="relative flex min-h-0 flex-1 flex-col">
-       {state === "loading" && (
--        <div
--          role="status"
--          className="absolute inset-x-0 top-0 z-10 bg-background p-3 text-sm text-muted-foreground"
--        >
--          Loading app…
-+        <div className="absolute inset-0 z-10 flex">
-+          <AppSkeleton />
-         </div>
-       )}
-       {state === "failed" && (
-diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
---- a/e2e/tests/embedded-app-ui.spec.ts
-+++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -72,17 +72,55 @@
-         // Cookies never enter retained network traces or screenshots.
-         yield* browser.omitNetworkTrace;
-         const detail = `/org/${actors.organization.slug}/apps/${first.app.id}`;
--        yield* browser.use("Open the app cards", (page) =>
--          page.goto(`/org/${actors.organization.slug}/apps`),
--        );
--        yield* browser.use("App cards advertise screens", (page) =>
--          page
--            .getByRole("link", { name: `Open ${first.app.name}`, exact: true })
--            .getByText("App screen")
--            .waitFor(),
--        );
-+        let appListUiRequests = 0;
-+        yield* browser.use("App cards use their list payload for screen labels", (page) => {
-+          const countUiRequest = (request: { url(): string }) => {
-+            if (new URL(request.url()).pathname.endsWith(`/apps/${first.app.id}/ui`))
-+              appListUiRequests++;
-+          };
-+          page.on("request", countUiRequest);
-+          return page
-+            .goto(`/org/${actors.organization.slug}/apps`)
-+            .then(() =>
-+              page
-+                .getByRole("link", { name: `Open ${first.app.name}`, exact: true })
-+                .getByText("App screen")
-+                .waitFor(),
-+            )
-+            .finally(() => page.off("request", countUiRequest));
-+        });
-+        expect(appListUiRequests).toBe(0);
-         yield* browser.checkpoint("apps-list-with-screen");
--        yield* browser.use("The App tab completes sign-in inside its frame", (page) =>
-+        let releaseLocation!: () => void;
-+        let locationRequested!: () => void;
-+        const requestedLocation = new Promise<void>((resolve) => (locationRequested = resolve));
-+        yield* browser.use("Hold app location while the detail tab renders", (page) => {
-+          const gate = new Promise<void>((resolve) => (releaseLocation = resolve));
-+          return page
-+            .route(
-+              `**/api/organizations/${actors.organization.id}/apps/${first.app.id}/ui`,
-+              (route) => {
-+                locationRequested();
-+                return gate.then(() => route.continue());
-+              },
-+            )
-+            .then(() => page.goto(detail))
-+            .then(() => requestedLocation);
-+        });
-+        yield* browser.use("App appears selected before its location resolves", (page) => {
-+          const navigation = page.getByRole("navigation", { name: "App navigation" });
-+          return Promise.all([
-+            navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
-+            navigation
-+              .getByRole("link", { name: "Overview", exact: true })
-+              .getAttribute("aria-current"),
-+          ]).then(([appView, overview]) => {
-+            expect(appView).toBe("page");
-+            expect(overview).toBeNull();
-+          });
-+        });
-+        releaseLocation();
-+        yield* browser.use("The App frame completes sign-in while prewarmed", (page) =>
-           Promise.all([
-             page.waitForResponse(
-               (response) =>
-@@ -91,7 +129,6 @@
-                 response.status() === 302 &&
-                 response.request().frame() !== page.mainFrame(),
-             ),
--            page.goto(detail),
-           ]),
-         );
-         yield* browser.use("The isolated app renders its authored screen", (page) =>
-@@ -101,7 +138,7 @@
-             .waitFor(),
-         );
-         yield* browser.use("The host receives app readiness", (page) =>
--          page.getByRole("status").filter({ hasText: "Loading app…" }).waitFor({ state: "hidden" }),
-+          page.getByRole("status", { name: "Loading app" }).waitFor({ state: "hidden" }),
-         );
-         yield* browser.use("The default App tab has the approved sandbox", (page) =>
-           Promise.all([
-@@ -125,6 +162,56 @@
-           }),
-         );
-         yield* browser.checkpoint("embedded-app-tab");
-+        yield* browser.use("Switching tabs keeps the ready frame mounted", (page) => {
-+          const iframe = page.locator(`iframe[title="${first.app.name} app"]`);
-+          let documentLoads = 0;
-+          const countLoad = (request: { resourceType(): string; url(): string }) => {
-+            const url = new URL(request.url());
-+            if (
-+              request.resourceType() === "document" &&
-+              url.origin === new URL(first.url).origin &&
-+              url.pathname === "/"
-+            )
-+              documentLoads++;
-+          };
-+          page.on("request", countLoad);
-+          const before = documentLoads;
-+          const navigation = page.getByRole("navigation", { name: "App navigation" });
-+          return iframe.elementHandle().then((original) =>
-+            navigation
-+              .getByRole("link", { name: "Overview", exact: true })
-+              .click()
-+              .then(() => navigation.getByRole("link", { name: "App", exact: true }).click())
-+              .then(() =>
-+                Promise.all([
-+                  iframe.evaluate((element, previous) => element === previous, original),
-+                  page.getByRole("status", { name: "Loading app" }).count(),
-+                ]),
-+              )
-+              .then(([sameFrame, loading]) => {
-+                expect(sameFrame).toBe(true);
-+                expect(documentLoads).toBe(before);
-+                expect(loading).toBe(0);
-+              })
-+              .finally(() => page.off("request", countLoad)),
-+          );
-+        });
-+        yield* browser.use("Open in new tab still opens the canonical app URL", (page) => {
-+          const pagePromise = page.context().waitForEvent("page");
-+          const url = new URL(first.url).href;
-+          return Promise.all([
-+            pagePromise,
-+            page.getByRole("link", { name: "Open in new tab" }).click(),
-+          ]).then(([opened]) =>
-+            opened
-+              .waitForURL(url)
-+              .then(() => opened.waitForLoadState())
-+              .then(() => {
-+                expect(new URL(opened.url()).href).toBe(url);
-+                return opened.close();
-+              }),
-+          );
-+        });
-         yield* browser.use("App origins cannot read the dashboard DOM or cookies", (page) => {
-           const frame = page.frames().find((frame) => frame.url().startsWith(first.url));
-           expect(frame).toBeDefined();
-@@ -269,7 +353,7 @@
-         yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
-         yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
-         yield* browser.use("The pending frame announces loading", (page) =>
--          page.getByRole("status").filter({ hasText: "Loading app…" }).waitFor(),
-+          page.getByRole("status", { name: "Loading app" }).waitFor(),
-         );
-         yield* browser.use("Reach the loading deadline", (page) => page.clock.fastForward(30001));
-         yield* browser.use("The failed frame offers recovery", (page) =>
+     const appEntries = listedApps.map(({ app, access }) => ({
+-      app,
++      app: indicated.get(app.id) ?? app,
+       access,
+       linkedAccounts: [
+         ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
 diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
 --- a/apps/hosted/server/src/implementation/apps.ts
 +++ b/apps/hosted/server/src/implementation/apps.ts
@@ -3067,327 +3174,66 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
    });
  /** Retained source is administrative data; versions from other owners stay private. */
  export const appVersions = (owner: OwnerId, app: AppId) =>
-diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
---- a/e2e/tests/embedded-app-ui.spec.ts
-+++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -350,8 +350,10 @@
-           appCommitted: false,
-         });
-         // Network failure and time are controlled at the browser boundary.
--        yield* browser.use("Refuse the next app document", (page) =>
--          page.route(`${first.url}/`, (route) => route.abort("failed")),
-+        let releaseDocument!: () => void;
-+        const documentGate = new Promise<void>((resolve) => (releaseDocument = resolve));
-+        yield* browser.use("Hold the next app document", (page) =>
-+          page.route(`${first.url}/`, (route) => documentGate.then(() => route.abort("failed"))),
-         );
-         yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
-         yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
-@@ -363,7 +365,9 @@
-           page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
-         );
-         yield* browser.checkpoint("embedded-app-failed");
--        yield* browser.use("Restore app documents", (page) => page.unroute(`${first.url}/`));
-+        yield* browser.use("Restore app documents", (page) =>
-+          page.unroute(`${first.url}/`).then(releaseDocument),
-+        );
-         yield* browser.use("Retry the app frame", (page) =>
-           page.getByRole("button", { name: "Retry", exact: true }).click(),
-         );
-diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
---- a/e2e/tests/embedded-app-ui.spec.ts
-+++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -350,29 +350,40 @@
-           appCommitted: false,
-         });
-         // Network failure and time are controlled at the browser boundary.
-+        const failurePage = yield* browser.use("Open a fresh page for the loading failure", (page) =>
-+          page.context().newPage(),
-+        );
-+        yield* Effect.addFinalizer(() =>
-+          browser.use("Close the loading failure page", () => failurePage.close()).pipe(Effect.orDie),
-+        );
-         let releaseDocument!: () => void;
-         const documentGate = new Promise<void>((resolve) => (releaseDocument = resolve));
-         yield* browser.use("Hold the next app document", (page) =>
--          page.route(`${first.url}/`, (route) => documentGate.then(() => route.abort("failed"))),
--        );
--        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
--        yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
-+          failurePage.route(`${first.url}/`, (route) =>
-+            documentGate.then(() => route.abort("failed")),
-+          ),
-+        );
-+        yield* browser.use("Control the frame loading deadline", () => failurePage.clock.install());
-+        yield* browser.use("Open the failing frame", () => failurePage.goto(`${detail}?view=app`));
-         yield* browser.use("The pending frame announces loading", (page) =>
--          page.getByRole("status", { name: "Loading app" }).waitFor(),
--        );
--        yield* browser.use("Reach the loading deadline", (page) => page.clock.fastForward(30001));
-+          failurePage.getByRole("status", { name: "Loading app" }).waitFor(),
-+        );
-+        yield* browser.use("Reach the loading deadline", () => failurePage.clock.runFor(30001));
-         yield* browser.use("The failed frame offers recovery", (page) =>
--          page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
-+          failurePage
-+            .getByRole("alert")
-+            .filter({ hasText: "The app did not finish loading" })
-+            .waitFor(),
-         );
-         yield* browser.checkpoint("embedded-app-failed");
-         yield* browser.use("Restore app documents", (page) =>
--          page.unroute(`${first.url}/`).then(releaseDocument),
-+          failurePage.unroute(`${first.url}/`).then(releaseDocument),
-         );
-         yield* browser.use("Retry the app frame", (page) =>
--          page.getByRole("button", { name: "Retry", exact: true }).click(),
-+          failurePage.getByRole("button", { name: "Retry", exact: true }).click(),
-         );
-         yield* browser.use("Retry renders the real screen", (page) =>
--          page
-+          failurePage
-             .frameLocator("iframe")
-             .getByRole("heading", { name: "Embedded fixture screen" })
-             .waitFor(),
-diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
---- a/e2e/tests/embedded-app-ui.spec.ts
-+++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -356,8 +356,7 @@
-         yield* Effect.addFinalizer(() =>
-           browser.use("Close the loading failure page", () => failurePage.close()).pipe(Effect.orDie),
-         );
--        let releaseDocument!: () => void;
--        const documentGate = new Promise<void>((resolve) => (releaseDocument = resolve));
-+        const documentGate = new Promise<void>(() => {});
-         yield* browser.use("Hold the next app document", (page) =>
-           failurePage.route(`${first.url}/`, (route) =>
-             documentGate.then(() => route.abort("failed")),
-@@ -376,9 +375,7 @@
-             .waitFor(),
-         );
-         yield* browser.checkpoint("embedded-app-failed");
--        yield* browser.use("Restore app documents", (page) =>
--          failurePage.unroute(`${first.url}/`).then(releaseDocument),
--        );
-+        yield* browser.use("Restore app documents", () => failurePage.unroute(`${first.url}/`));
-         yield* browser.use("Retry the app frame", (page) =>
-           failurePage.getByRole("button", { name: "Retry", exact: true }).click(),
-         );
-diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
---- a/e2e/tests/embedded-app-ui.spec.ts
-+++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -63,6 +63,7 @@
-           });
-         const first = yield* deploy("Embedded fixture one");
-         const second = yield* deploy("Embedded fixture two", first.url);
-+        const failing = yield* deploy("Embedded fixture failure");
-         const unknownHost = `a-${crypto.randomUUID()}.fixture.localhost`;
-         const unknownApp = yield* browser.use("Unknown opaque app hosts are refused", (page) =>
-           page.context().request.get(first.url, { headers: { Host: unknownHost } }),
-@@ -350,37 +351,27 @@
-           appCommitted: false,
-         });
-         // Network failure and time are controlled at the browser boundary.
--        const failurePage = yield* browser.use("Open a fresh page for the loading failure", (page) =>
--          page.context().newPage(),
--        );
--        yield* Effect.addFinalizer(() =>
--          browser.use("Close the loading failure page", () => failurePage.close()).pipe(Effect.orDie),
--        );
-         const documentGate = new Promise<void>(() => {});
-         yield* browser.use("Hold the next app document", (page) =>
--          failurePage.route(`${first.url}/`, (route) =>
--            documentGate.then(() => route.abort("failed")),
--          ),
--        );
--        yield* browser.use("Control the frame loading deadline", () => failurePage.clock.install());
--        yield* browser.use("Open the failing frame", () => failurePage.goto(`${detail}?view=app`));
-+          page.route(`${failing.url}/`, (route) => documentGate.then(() => route.abort("failed"))),
-+        );
-+        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
-+        const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
-+        yield* browser.use("Open the failing frame", (page) => page.goto(`${failingDetail}?view=app`));
-         yield* browser.use("The pending frame announces loading", (page) =>
--          failurePage.getByRole("status", { name: "Loading app" }).waitFor(),
--        );
--        yield* browser.use("Reach the loading deadline", () => failurePage.clock.runFor(30001));
-+          page.getByRole("status", { name: "Loading app" }).waitFor(),
-+        );
-+        yield* browser.use("Reach the loading deadline", (page) => page.clock.runFor(30001));
-         yield* browser.use("The failed frame offers recovery", (page) =>
--          failurePage
--            .getByRole("alert")
--            .filter({ hasText: "The app did not finish loading" })
--            .waitFor(),
-+          page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
-         );
-         yield* browser.checkpoint("embedded-app-failed");
--        yield* browser.use("Restore app documents", () => failurePage.unroute(`${first.url}/`));
-+        yield* browser.use("Restore app documents", (page) => page.unroute(`${failing.url}/`));
-         yield* browser.use("Retry the app frame", (page) =>
--          failurePage.getByRole("button", { name: "Retry", exact: true }).click(),
-+          page.getByRole("button", { name: "Retry", exact: true }).click(),
-         );
-         yield* browser.use("Retry renders the real screen", (page) =>
--          failurePage
-+          page
-             .frameLocator("iframe")
-             .getByRole("heading", { name: "Embedded fixture screen" })
-             .waitFor(),
-
-
-diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
---- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
-+++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -142,7 +142,7 @@
-       ? inventory.data.value.apps.find((item) => item.id === appId)
-       : undefined;
-   const hasAppScreen = app !== undefined && app.activeVersion !== null && app.hasUi !== false;
--  const selectedView = view ?? (tool === undefined ? (hasAppScreen ? "app" : "overview") : "tools");
-+  const selectedView = view ?? (tool === undefined ? "overview" : "tools");
-   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
-   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
-   const session = useAtomValue(sessionAtom);
-
-
-diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
---- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
-+++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
-@@ -86,7 +86,6 @@
-   const [attempt, setAttempt] = useState(0);
-   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
-   useEffect(() => {
--    setState("loading");
-     const timer = window.setTimeout(() => setState("failed"), 30000);
-     const ready = (event: MessageEvent) => {
-       if (
-@@ -114,7 +113,13 @@
-       {state === "failed" && (
-         <div role="alert" className="flex items-center gap-3 border-b p-3 text-sm">
-           <span>The app did not finish loading. Retry or open it in a new tab.</span>
--          <Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>
-+          <Button
-+            variant="outline"
-+            onClick={() => {
-+              setState("loading");
-+              setAttempt((value) => value + 1);
-+            }}
-+          >
-             Retry
-           </Button>
-         </div>
-
-diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
---- a/e2e/tests/embedded-app-ui.spec.ts
-+++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -108,7 +108,7 @@
-             .then(() => page.goto(detail))
-             .then(() => requestedLocation);
-         });
--        yield* browser.use("App appears selected before its location resolves", (page) => {
-+        yield* browser.use("App tab is present while its location is held", (page) => {
-           const navigation = page.getByRole("navigation", { name: "App navigation" });
-           return Promise.all([
-             navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
-@@ -116,32 +116,49 @@
-               .getByRole("link", { name: "Overview", exact: true })
-               .getAttribute("aria-current"),
-           ]).then(([appView, overview]) => {
--            expect(appView).toBe("page");
--            expect(overview).toBeNull();
-+            expect(appView).toBeNull();
-+            expect(overview).toBe("page");
-           });
-         });
-         releaseLocation();
-         yield* browser.use("The App frame completes sign-in while prewarmed", (page) =>
--          Promise.all([
--            page.waitForResponse(
--              (response) =>
--                new URL(response.url()).origin === first.url &&
--                new URL(response.url()).pathname === "/_executor/auth/callback" &&
--                response.status() === 302 &&
--                response.request().frame() !== page.mainFrame(),
-+          page.waitForResponse(
-+            (response) =>
-+              new URL(response.url()).origin === first.url &&
-+              new URL(response.url()).pathname === "/_executor/auth/callback" &&
-+              response.status() === 302 &&
-+              response.request().frame() !== page.mainFrame(),
-+          ),
-+        );
-+        yield* browser.use("Overview remains selected after the location resolves", (page) => {
-+          const navigation = page.getByRole("navigation", { name: "App navigation" });
-+          return Promise.all([
-+            navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
-+            navigation
-+              .getByRole("link", { name: "Overview", exact: true })
-+              .getAttribute("aria-current"),
-+          ]).then(([appView, overview]) => {
-+            expect(appView).toBeNull();
-+            expect(overview).toBe("page");
-+          });
-+        });
-+        yield* browser.checkpoint("embedded-app-default-overview");
-+        yield* browser.use("Opening App reveals the prewarmed screen", (page) =>
-+          page
-+            .getByRole("navigation", { name: "App navigation" })
-+            .getByRole("link", { name: "App", exact: true })
-+            .click()
-+            .then(() =>
-+              page
-+                .frameLocator(`iframe[title="${first.app.name} app"]`)
-+                .getByRole("heading", { name: "Embedded fixture screen" })
-+                .waitFor(),
-             ),
--          ]),
--        );
--        yield* browser.use("The isolated app renders its authored screen", (page) =>
--          page
--            .frameLocator(`iframe[title="${first.app.name} app"]`)
--            .getByRole("heading", { name: "Embedded fixture screen" })
--            .waitFor(),
-         );
-         yield* browser.use("The host receives app readiness", (page) =>
-           page.getByRole("status", { name: "Loading app" }).waitFor({ state: "hidden" }),
-         );
--        yield* browser.use("The default App tab has the approved sandbox", (page) =>
-+        yield* browser.use("The opened App tab has the approved sandbox", (page) =>
-           Promise.all([
-             page
-               .getByRole("navigation", { name: "App navigation" })
-@@ -151,9 +168,9 @@
-             page.locator("iframe").getAttribute("allow"),
-             page.locator("iframe").getAttribute("referrerpolicy"),
-             page.getByRole("link", { name: "Open in new tab" }).getAttribute("href"),
--          ]).then(([selected, sandbox, allow, referrer, href]) => {
--            expect(page.url()).toBe(`${target.metadata.origin}${detail}`);
--            expect(selected).toBe("page");
-+          ]).then(([appView, sandbox, allow, referrer, href]) => {
-+            expect(page.url()).toBe(`${target.metadata.origin}${detail}?view=app`);
-+            expect(appView).toBe("page");
-             expect(sandbox).toBe(
-               "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads",
-             );
-@@ -180,8 +197,9 @@
-           const navigation = page.getByRole("navigation", { name: "App navigation" });
-           return iframe.elementHandle().then((original) =>
-             navigation
--              .getByRole("link", { name: "Overview", exact: true })
-+              .getByRole("link", { name: "App", exact: true })
-               .click()
-+              .then(() => navigation.getByRole("link", { name: "Overview", exact: true }).click())
-               .then(() => navigation.getByRole("link", { name: "App", exact: true }).click())
-               .then(() =>
-                 Promise.all([
-@@ -357,7 +375,9 @@
-         );
-         yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
-         const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
--        yield* browser.use("Open the failing frame", (page) => page.goto(`${failingDetail}?view=app`));
-+        yield* browser.use("Open the failing frame", (page) =>
-+          page.goto(`${failingDetail}?view=app`),
-+        );
-         yield* browser.use("The pending frame announces loading", (page) =>
-           page.getByRole("status", { name: "Loading app" }).waitFor(),
-         );
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+index 05269d7..167bdb0 100644
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -14,7 +14,7 @@ import { RuntimeContext } from "alchemy";
+ import type * as Cloudflare from "alchemy/Cloudflare";
+ import { Config, Context, Effect, Layer } from "effect";
+ import { SqlClient } from "effect/sql";
+-import { cloudBuildAsset } from "../implementation/build-storage.ts";
++import { cloudBuildAsset, loadCloudBuildRecord } from "../implementation/build-storage.ts";
+ import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+ import { cloudBlobs } from "./blobs.ts";
+ import { cloudExecutor } from "./executor.ts";
+@@ -70,6 +70,11 @@ export const cloudProductServices = Effect.fn(function* (
+           Effect.flatMap((read) => read(build, path)),
+           Effect.provide(RuntimeContext.phantom),
+         ),
++      screen: (build) =>
++        loadCloudBuildRecord(build).pipe(
++          Effect.map((record) => record.ui?.some((file) => file.path === "index.html") === true),
++          Effect.provideService(BlobStore, blobs),
++        ),
+     }),
+   );
+   return { origin, blobs, sdk, sql, withDatabase, services };
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index f11ed1d..040f8f9 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -43,8 +43,13 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+ import { deliverEvents } from "@executor-js/sdk/scheduling";
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
+-import { workerdHostHandler } from "@executor-js/sdk/workerd";
+-import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
++import { loadStoredWorkerBuild, workerdHostHandler } from "@executor-js/sdk/workerd";
++import {
++  BlobStore,
++  type AppRuntime,
++  type BlobStorage,
++  type WorkflowRuntime,
++} from "@executor-js/sdk/core";
+ import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
+@@ -208,7 +213,16 @@ export const selfHostExecutorServices = <E, R>(
+         ),
+         Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
+         Layer.succeed(OrganizationDefaults, initialize),
+-        Layer.succeed(HostedAppRuntime, toEffectRuntime(runtime, blobs)),
++        Layer.succeed(HostedAppRuntime, {
++          ...toEffectRuntime(runtime, blobs),
++          screen: (build) =>
++            loadStoredWorkerBuild(build).pipe(
++              Effect.map(
++                (record) => record.ui?.some((file) => file.path === "index.html") === true,
++              ),
++              Effect.provideService(BlobStore, blobs),
++            ),
++        }),
+         // Self-host cannot remove an organization.
+         noOrganizationRemovals,
+       );
