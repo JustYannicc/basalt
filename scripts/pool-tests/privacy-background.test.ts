@@ -102,10 +102,12 @@ test("large historical cleanup serves through failed batches and resumes after S
       await delay(200);
     }
     assert.ok(partial > 0 && partial < 20_001, "A bounded batch must commit before the crash");
+    console.log("PASS: a bounded historical cleanup batch committed after the injected fault cleared");
     const before = await fixture.captureContainerLogs();
     assert.ok(!before.pool.includes("POOL_PRIVACY_AUDIT "), "No final audit is emitted during partial work");
     await fixture.crashAndReplace(candidate);
     assert.equal((await fetch(`${fixture.node}/v1/models`, { headers: { Authorization: `Bearer ${key.key}` }, signal: AbortSignal.timeout(3_000) })).status, 200);
+    console.log("PASS: replacement serves after SIGKILL with historical cleanup pending");
     await fixture.diagnostics.waitForPrivacy(420_000);
     fixture.diagnostics.sql("drop policy fixture_privacy_latency on usage; alter table usage disable row level security");
     const counts = fixture.diagnostics.sql(`select rows_scanned,matched_active_api_key_copies,active_api_key_count
@@ -123,6 +125,9 @@ test("large historical cleanup serves through failed batches and resumes after S
     assert.deepEqual(await fixture.diagnostics.scan([key.key, "fail-request-private-background-prompt-173", "private-background-response-269"]),
       { database: 0, files: 0, logs: 0 });
     console.log("PASS: serving starts before cleanup, retries surface, and SIGKILL resumes without losing or duplicating audit counts");
+  } catch (error) {
+    console.log("PRIVACY_BACKGROUND_FAILURE_HEALTH " + JSON.stringify(fixture.diagnostics.failureHealth()));
+    throw error;
   } finally {
     await fixture.close();
   }

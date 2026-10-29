@@ -25,6 +25,40 @@ export class FixtureDiagnostics {
       "-v", "VERBOSITY=sqlstate", "-U", "fixture_admin", "-d", "basalt_pool", "-At"], query).trim();
   }
 
+  failureHealth(): Record<string, number> {
+    const read = (args: string[]) => spawnSync("docker", args, { encoding: "utf8", timeout: 5_000 });
+    const health: Record<string, number> = {
+      postgres_running: -1, postgres_oom_killed: -1, postgres_exit_code: -1, postgres_restarts: -1,
+      data_used_kib: -1, data_available_kib: -1,
+    };
+    const inspected = read(["inspect", `${this.name}-postgres`]);
+    try {
+      const container = JSON.parse(inspected.stdout)[0];
+      if (typeof container.State?.Running === "boolean") health.postgres_running = Number(container.State.Running);
+      if (typeof container.State?.OOMKilled === "boolean") health.postgres_oom_killed = Number(container.State.OOMKilled);
+      if (Number.isSafeInteger(container.State?.ExitCode)) health.postgres_exit_code = container.State.ExitCode;
+      if (Number.isSafeInteger(container.RestartCount)) health.postgres_restarts = container.RestartCount;
+    } catch { /* Missing container state stays unknown. */ }
+    const disk = read(["exec", `${this.name}-postgres`, "df", "-Pk", "/var/lib/postgresql/data"]);
+    const columns = (disk.stdout ?? "").trim().split("\n").at(-1)?.trim().split(/\s+/) ?? [];
+    if (disk.status === 0 && /^\d+$/.test(columns[2] ?? "") && /^\d+$/.test(columns[3] ?? "")) {
+      health.data_used_kib = Number(columns[2]);
+      health.data_available_kib = Number(columns[3]);
+    }
+    // Project fixed signatures only. Raw Postgres logs can contain row values.
+    const logs = read(["logs", "--tail", "200", `${this.name}-postgres`]);
+    const raw = `${logs.stdout ?? ""}${logs.stderr ?? ""}`;
+    for (const [name, pattern] of Object.entries({
+      no_space: /No space left on device/g,
+      signal_9: /terminated by signal 9/g,
+      out_of_memory: /out of memory/gi,
+      panic: /PANIC:/g,
+      recovery: /database system is in recovery mode/g,
+      shutdown: /database system is shut down/g,
+    })) health[`postgres_log_${name}`] = (raw.match(pattern) ?? []).length;
+    return health;
+  }
+
   statementTimesOut(query: string, role = "fixture_admin"): boolean {
     const result = spawnSync("docker", ["exec", "-i", `${this.name}-postgres`, "psql", "-X", "-v", "ON_ERROR_STOP=1",
       "-v", "VERBOSITY=sqlstate", "-U", "fixture_admin", "-d", "basalt_pool", "-At"], {
