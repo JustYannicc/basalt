@@ -1,13 +1,12 @@
 diff --git a/docs/management/api.md b/docs/management/api.md
-index 37fad63..9384165 100644
+index 37fad63..1ddb2a6 100644
 --- a/docs/management/api.md
 +++ b/docs/management/api.md
-@@ -4734,3 +4734,21 @@ DELETE query:
- | `provider` | string | conditionally | Alias of `channel`. |
+@@ -41,6 +41,25 @@ Home management state is stored in the database-backed cluster repository. When
  
- Successful writes return `{ "status": "ok" }`.
-+
-+### Metadata-only diagnostics
+ The route list below is the database-backed route set registered by `cmd/home` through `WithDatabaseManagement`.
+ 
++## Metadata-only diagnostics
 +
 +`CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1` opts Home into a strict usage projection.
 +It drops request-log pushes and removes failure bodies, client headers, unknown
@@ -22,8 +21,40 @@ index 37fad63..9384165 100644
 +guards protect the usage table against older processes during rollout. Existing
 +billing amounts and usage counts remain. Authentication credentials and the
 +separate replay KV store are unchanged. Backups can retain older copies until
-+normal backup expiry. The private runtime audit contains counts and numeric key
-+IDs only, never credentials or failure content.
++normal backup expiry. The private database journal retains affected numeric key
++IDs. Runtime audit logs contain counts only, including distinct active keys and
++matching diagnostic token copies, never key IDs, credentials or failure content.
++
+ ## Authentication
+ 
+ Management routes under `/v8/management/*` and `/v0/management/*` require a management key. The exception is `GET/POST /v8/management/oauth/callback`: it validates a pending OAuth `state` without the management-key middleware. Availability checks still apply, so a disabled Management API also disables the v8 callback.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index 515ad4b..a060346 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -41,6 +41,22 @@ Home management state 存储在 database-backed cluster repository 中。如果
+ 
+ 下面的 route 清单是 `cmd/home` 通过 `WithDatabaseManagement` 注册的 database-backed route set。
+ 
++## 仅保留元数据的诊断模式
++
++设置 `CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1` 后，Home 会严格筛选 usage 字段。
++它会丢弃 request-log 推送，并在调度器接收、入队、写入备用日志和数据库之前，
++移除失败响应正文、客户端请求头、未知 payload 字段和原始客户端密钥。
++Usage 使用 SHA-256 密钥指纹关联客户端；该指纹不能用于认证。
++节点发送预先计算的指纹时，`api_key` 与 `api_key_fingerprint` 必须一致。
++
++启动时，不可变的 `diagnostics_metadata_only_v1_1_6` 数据步骤会分批清理历史诊断数据。
++清理前会记录计数和受影响的有效密钥 ID；重复启动会继续未完成的步骤。
++PostgreSQL 写入触发器会在滚动发布期间过滤旧进程的 usage 写入。
++现有计费金额和 usage 计数保持不变，认证凭据及独立的 replay KV 存储也保持不变。
++备份中的旧副本会保留至正常备份过期。私有数据库日志保留受影响的数字密钥 ID。
++运行日志只输出计数，包括不同有效密钥的数量及匹配的诊断密钥副本数量，
++不会输出密钥 ID、认证凭据或失败内容。
++
+ ## 认证
+ 
+ `/v8/management/*` 和 `/v0/management/*` 管理路由需要 management key。例外是 `GET/POST /v8/management/oauth/callback`：该接口通过待完成的 OAuth `state` 校验，不经过管理密钥中间件；仍受接口可用性检查约束，Management API 禁用时 v8 回调也禁用。
 diff --git a/internal/cluster/api_keys.go b/internal/cluster/api_keys.go
 index 8b6ce81..c945ebe 100644
 --- a/internal/cluster/api_keys.go
@@ -240,7 +271,7 @@ index 680fffb..3e06df6 100644
  		if errMigrate := migration.run(db); errMigrate != nil {
 diff --git a/internal/cluster/diagnostics_privacy.go b/internal/cluster/diagnostics_privacy.go
 new file mode 100644
-index 0000000..89c2798
+index 0000000..6e9a42d
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy.go
 @@ -0,0 +1,341 @@
@@ -251,7 +282,6 @@ index 0000000..89c2798
 +	"encoding/hex"
 +	"encoding/json"
 +	"fmt"
-+	"github.com/google/uuid"
 +	"math"
 +	"net/http"
 +	"os"
@@ -260,6 +290,7 @@ index 0000000..89c2798
 +	"strings"
 +	"time"
 +
++	"github.com/google/uuid"
 +	"github.com/tidwall/gjson"
 +)
 +
@@ -587,21 +618,22 @@ index 0000000..89c2798
 +}
 diff --git a/internal/cluster/diagnostics_privacy_audit.go b/internal/cluster/diagnostics_privacy_audit.go
 new file mode 100644
-index 0000000..e4e25bd
+index 0000000..c78695b
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_audit.go
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,141 @@
 +package cluster
 +
 +import (
 +	"context"
 +	"encoding/json"
 +	"errors"
++	"sort"
++	"strings"
++
 +	log "github.com/sirupsen/logrus"
 +	"github.com/tidwall/gjson"
 +	"gorm.io/gorm"
-+	"sort"
-+	"strings"
 +)
 +
 +func collectDiagnosticsPrivacyAudit(ctx context.Context, db *gorm.DB) (diagnosticsPrivacyAuditCounts, error) {

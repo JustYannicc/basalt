@@ -106,7 +106,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | One-time credentials | The model key and personal PAT, encrypted in the pool controller and durably consumed before the setup response; claim expiry is five minutes. |
 | Computer observation | Successful model usage for the exact key and current pool binding, plus a real successful MCP tool call recorded through a private signed action. Both are required for green status. |
 | Pool controller | The singleton EU control-plane actor that owns readiness, warmth and recovery alarms. |
-| Pool runtime | The warm EU container running the released control-plane and inference binaries. |
+| Pool runtime | The warm EU container running control-plane and inference binaries built from pinned release sources with registered Basalt carries. |
 | Pool database | A separate logical pool database in the same EU cluster. |
 | Connection interface | Basalt's planned interface; the dependency already provides public connectors. |
 | Vault interface | Basalt's planned interface; the dependency already provides public secret custody. |
