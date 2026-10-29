@@ -43,11 +43,21 @@ test("large historical cleanup serves through failed batches and resumes after S
     alter table usage force row level security;
     create policy fixture_privacy_latency on usage using (fixture_privacy_visible(id));`);
     console.log("PASS: historical read latency policy installed");
-    fixture.diagnostics.sql("alter role fixture_admin nosuperuser");
-    console.log("PASS: fixture role now enforces the latency policy");
+    // PostgreSQL's initdb bootstrap role cannot lose SUPERUSER. Give this
+    // disposable database a separate owner so both Home and the probe use RLS.
+    fixture.diagnostics.sql(`create role fixture_runtime login password 'fixture-only';
+      alter database basalt_pool owner to fixture_runtime;
+      alter schema public owner to fixture_runtime;
+      do $$ declare item record; begin
+        for item in select tablename from pg_tables where schemaname='public' loop
+          execute format('alter table public.%I owner to fixture_runtime',item.tablename);
+        end loop;
+      end $$;`);
+    fixture.useDatabaseRole("fixture_runtime");
+    console.log("PASS: non-superuser fixture owner enforces the latency policy");
     // A database-side latency bound makes this independent of runner speed. The
     // same row policy applies to real cleanup transactions tagged by Home.
-    assert.ok(fixture.diagnostics.statementTimesOut("select count(*) from usage;"), "A whole-table audit cannot fit its former 30-second transaction");
+    assert.ok(fixture.diagnostics.statementTimesOut("select count(*) from usage;", "fixture_runtime"), "A whole-table audit cannot fit its former 30-second transaction");
     console.log("PASS: 20,001-row history exceeds the former single-transaction audit deadline");
     fixture.diagnostics.sql(`create table fixture_privacy_fault (enabled boolean not null);
       insert into fixture_privacy_fault values (true);

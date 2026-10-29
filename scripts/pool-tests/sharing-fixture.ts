@@ -213,6 +213,14 @@ export class SharingFixture {
       headers: { Authorization: `Bearer ${this.managementKey}` }, signal: AbortSignal.timeout(3_000),
     })).ok, "replacement privacy image readiness", this.readinessTimeoutMs);
   }
+  useDatabaseRole(role: string): void {
+    const index = this.runArgs.findIndex((value) => value.startsWith("POOL_DATABASE_URL="));
+    assert.ok(index >= 0, "Fixture database configuration must exist before switching roles");
+    const url = new URL(this.runArgs[index]!.slice("POOL_DATABASE_URL=".length));
+    url.username = role;
+    this.runArgs[index] = `POOL_DATABASE_URL=${url}`;
+  }
+
   async crashAndReplace(image: string): Promise<void> {
     docker(["kill", "--signal", "KILL", `${this.name}-pool`], this.operationTimeoutMs);
     await this.replaceImage(image);

@@ -25,10 +25,10 @@ export class FixtureDiagnostics {
       "-v", "VERBOSITY=sqlstate", "-U", "fixture_admin", "-d", "basalt_pool", "-At"], query).trim();
   }
 
-  statementTimesOut(query: string): boolean {
+  statementTimesOut(query: string, role = "fixture_admin"): boolean {
     const result = spawnSync("docker", ["exec", "-i", `${this.name}-postgres`, "psql", "-X", "-v", "ON_ERROR_STOP=1",
       "-v", "VERBOSITY=sqlstate", "-U", "fixture_admin", "-d", "basalt_pool", "-At"], {
-      input: `begin; set local statement_timeout='30s'; set local application_name='home-privacy-maintenance'; ${query}`,
+      input: `begin; set local role ${identifier(role)}; set local statement_timeout='30s'; set local application_name='home-privacy-maintenance'; ${query}`,
       encoding: "utf8", timeout: 40_000,
     });
     return result.status === 3 && /57014/.test(result.stderr);
