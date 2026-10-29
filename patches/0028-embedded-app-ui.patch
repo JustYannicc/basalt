@@ -1072,7 +1072,7 @@ index c0fb721..1797a53 100644
      plugins: [
        ...base.plugins,
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
-index a1bc3c7..09033a6 100644
+index a1bc3c79..09033a63 100644
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
 @@ -8,7 +8,7 @@ import {
@@ -1197,7 +1197,7 @@ index e29dddf..896d3d1 100644
  }
 diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 new file mode 100644
-index 0000000..f638c61
+index 00000000..f638c615
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 @@ -0,0 +1,154 @@
@@ -2061,10 +2061,10 @@ index 1f60a28..2d79959 100644
          yield* onboarding.emailSignIn(email);
 diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
 new file mode 100644
-index 0000000..ee561fc
+index 00000000..02d0505a
 --- /dev/null
 +++ b/e2e/tests/embedded-app-ui.spec.ts
-@@ -0,0 +1,664 @@
+@@ -0,0 +1,736 @@
 +/** Browser proof through a real self-host, including the existing browser-bound sign-in protocol. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -2230,6 +2230,11 @@ index 0000000..ee561fc
 +                .then(() => hold.requested)
 +                .then(() => hold),
 +            ),
++        );
++        yield* Effect.addFinalizer(() =>
++          browser
++            .use("Release the first location hold", () => firstLocation.release())
++            .pipe(Effect.orDie),
 +        );
 +        yield* browser.use("App tab is present while its location is held", (page) => {
 +          const navigation = page.getByRole("navigation", { name: "App navigation" });
@@ -2520,6 +2525,16 @@ index 0000000..ee561fc
 +          heldDocuments.push(continued);
 +          return continued;
 +        };
++        yield* Effect.addFinalizer(() =>
++          browser
++            .use("Release the app document hold", (page) => {
++              releaseDocument();
++              return Promise.all(heldDocuments).then(() =>
++                page.unroute(`${second.url}/`, holdDocument),
++              );
++            })
++            .pipe(Effect.orDie),
++        );
 +        let secondLocationReads = 0;
 +        const countSecondLocation = (request: Request) => {
 +          secondLocationReads += locationReads(second.app.id, request);
@@ -2546,6 +2561,11 @@ index 0000000..ee561fc
 +            .then(() => navigation.getByRole("link", { name: "App", exact: true }).click())
 +            .then(() => loading.waitFor());
 +        };
++        yield* Effect.addFinalizer(() =>
++          browser
++            .use("Release the second location hold", () => secondLocation.release())
++            .pipe(Effect.orDie),
++        );
 +        yield* browser.use("Switching tabs while the location loads keeps it pending", switchTabs);
 +        yield* browser.use("Release the second app's location", () => secondLocation.release());
 +        const secondFrame = yield* browser.use("The second app's frame mounts", (page) =>
@@ -2725,6 +2745,58 @@ index 0000000..ee561fc
 +            ),
 +        );
 +        yield* browser.checkpoint("embedded-app-no-screen");
++        const draftResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps`, {
++          name: "Undeployed screen fixture",
++          files,
++        });
++        expect(draftResponse.status).toBe(200);
++        const draft = yield* body(App, draftResponse);
++        expect(draftResponse.body).toMatchObject({ activeVersion: null });
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${draft.id}`).pipe(Effect.orDie),
++        );
++        yield* browser.use("An undeployed app explains it has no screen", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${draft.id}?view=app`)
++            .then(() =>
++              page.getByRole("status").filter({ hasText: "This app has no screen." }).waitFor(),
++            ),
++        );
++        const adminAccess = yield* api.request(
++          actors.admin,
++          "GET",
++          `${prefix}/apps/${first.app.id}/access`,
++        );
++        expect(adminAccess.body).toMatchObject({ canManage: true, canUse: false });
++        yield* browser.login(actors.admin);
++        let adminLocationReads = 0;
++        yield* browser.use("Manage-only admins get no App tab or prewarm", (page) => {
++          const count = (request: Request) => {
++            adminLocationReads += locationReads(first.app.id, request);
++          };
++          page.on("request", count);
++          return page
++            .goto(`${detail}?view=app`)
++            .then(() =>
++              page
++                .getByText("This app is not shared with you. You can manage its settings.")
++                .waitFor(),
++            )
++            .then(() =>
++              Promise.all([
++                page
++                  .getByRole("navigation", { name: "App navigation" })
++                  .getByRole("link", { name: "App", exact: true })
++                  .count(),
++                page.locator("iframe").count(),
++              ]),
++            )
++            .then((counts) => {
++              expect(counts).toEqual([0, 0]);
++              expect(adminLocationReads).toBe(0);
++            })
++            .finally(() => page.off("request", count));
++        });
 +      }),
 +    ),
 +  );

@@ -258,7 +258,7 @@
     {
       "identity": "executor-embedded-app-ui",
       "file": "0028-embedded-app-ui.patch",
-      "content_sha256": "dca3a07280e05c796988d0dce8e23cd9073bf0b2e3924f61296ad01b9a8d50f9",
+      "content_sha256": "a19507d8c934f0483fb9c160abad2b646eb2d5ae76d42ad868097f20b666dd36",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -298,7 +298,7 @@
     {
       "identity": "executor-app-account-counts",
       "file": "0032-app-account-counts.patch",
-      "content_sha256": "f339e8f8fc054ad28b2ba84bdb60c5bc0e2beaa8ffedcdaa335d355baadb2aa9",
+      "content_sha256": "e4dd0bf992d7b467ed0f0c4313837aadd6f85abdfe33d6942bc19e869dfb7e0c",
       "kind": "upstream",
       "upstream_pull_request": 2438,
       "database_sensitive": false,
