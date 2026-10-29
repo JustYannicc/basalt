@@ -23,63 +23,100 @@ function block(item: Block): string {
   return `<p>${inline(item.p)}</p>`;
 }
 
-// The dashboard's own faces and quiet palette, so the site reads as the same product. Dark only:
-// the site has no theme toggle.
+// Imprint's register: a garamond on near-black, warm greys, hairline rules and a quiet sans for
+// small print. Dark only: the site has no theme toggle.
 const style = `
+@font-face{font-family:"EB Garamond";src:url(/brand/fonts/eb-garamond.woff2) format("woff2");font-weight:400 800;font-display:swap}
+@font-face{font-family:"EB Garamond";src:url(/brand/fonts/eb-garamond-italic.woff2) format("woff2");font-style:italic;font-weight:400 800;font-display:swap}
 @font-face{font-family:Geist;src:url(/brand/fonts/geist-sans.woff2) format("woff2");font-weight:100 900;font-display:swap}
-@font-face{font-family:"Geist Mono";src:url(/brand/fonts/geist-mono.woff2) format("woff2");font-weight:100 900;font-display:swap}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;color-scheme:dark}
-body{margin:0;background:#0a0a0a;color:#fafafa;font:15px/1.65 Geist,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-.page{max-width:680px;min-height:100vh;min-height:100svh;margin:0 auto;padding:40px 24px 32px;display:flex;flex-direction:column}
-.mark{display:inline-flex;align-items:center;gap:10px;color:inherit;text-decoration:none;font:500 15px "Geist Mono",ui-monospace,monospace}
-.mark img{width:28px;height:28px;border-radius:6px;box-shadow:0 0 0 1px #262626}
-main{flex:1;padding:56px 0 48px}
-a{color:inherit;text-underline-offset:3px}
-.home main{display:flex;flex-direction:column;justify-content:center;padding:64px 0}
-h1{margin:0 0 16px;font-size:clamp(30px,6vw,44px);line-height:1.12;letter-spacing:-.025em;font-weight:600}
-.subheadline{margin:0 0 20px;color:#fafafa;font-size:20px;line-height:1.4;letter-spacing:-.01em}
-.lede{margin:0 0 20px;max-width:56ch;color:#d4d4d4;font-size:17px;line-height:1.6}
-.tagline{margin:0 0 32px;color:#a3a3a3;font:14px "Geist Mono",ui-monospace,monospace}
-.action{align-self:flex-start;display:inline-flex;align-items:center;min-height:44px;padding:0 20px;border-radius:8px;background:#fafafa;color:#0a0a0a;font-weight:500;text-decoration:none}
-.action:hover{background:#d4d4d4}
-.note{margin:40px 0 0;max-width:56ch;color:#a3a3a3;font-size:13px}
-.legal h1{font-size:30px;margin-bottom:8px}
-.summary{margin:0;color:#a3a3a3}
-.updated{margin:4px 0 32px;color:#a3a3a3;font-size:13px}
-h2{margin:36px 0 8px;font-size:17px;font-weight:600;letter-spacing:-.01em}
-p,ul{margin:0 0 14px;color:#d4d4d4}
+body{margin:0;background:#09090b;color:#f8f8f4;font:18px/1.55 "EB Garamond",Georgia,serif;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration-thickness:1px;text-underline-offset:4px}
+a:hover{color:#fff}
+:focus-visible{outline:1px solid #ecebe6;outline-offset:3px}
+.page{min-height:100vh;min-height:100svh;max-width:1180px;margin:0 auto;padding:0 32px;display:flex;flex-direction:column}
+main{flex:1}
+.mark{display:inline-flex;align-items:center;gap:8px;color:#f8f8f4;text-decoration:none;font:italic 22px/1 "EB Garamond",Georgia,serif}
+.mark img{width:20px;height:20px;border-radius:5px;box-shadow:0 0 0 1px #303034}
+.home main{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:72px;align-items:center;padding:96px 0}
+.art{display:block;width:100%;max-width:470px;height:auto;margin-left:auto;image-rendering:pixelated}
+h1{margin:0 0 28px;font-weight:400;font-size:clamp(40px,5vw,64px);line-height:1.04;letter-spacing:-.01em}
+h1 em{display:block}
+.lede{margin:0 0 18px;max-width:34em;color:#a3a29d}
+.tagline{margin:28px 0 40px;font-style:italic;color:#f8f8f4}
+.action{font-size:22px}
+.note{margin:40px 0 0;max-width:40em;color:#6f6e6a;font:13px/1.6 Geist,system-ui,sans-serif}
+header{padding:28px 0}
+.legal main{width:100%;max-width:640px;margin:0 auto;padding:40px 0 72px}
+.legal h1{margin-bottom:10px;font-size:clamp(36px,5vw,48px)}
+.summary{margin:0;font-style:italic;color:#a3a29d}
+.updated{margin:14px 0 28px;color:#6f6e6a;font:12px Geist,system-ui,sans-serif}
+section{margin-top:36px;padding-top:28px;border-top:1px solid #ecebe61f}
+section:first-of-type{margin-top:32px}
+h2{margin:0 0 12px;font-size:23px;font-style:italic;font-weight:400}
+p,ul{margin:0 0 14px;color:#a3a29d;font-size:17px;line-height:1.6}
+strong{color:#f8f8f4;font-weight:500}
 ul{padding-left:20px}
 li{margin:0 0 8px}
-footer{display:flex;flex-wrap:wrap;gap:6px 14px;padding-top:20px;border-top:1px solid #262626;color:#a3a3a3;font-size:13px}
-footer a{text-decoration:none}
-footer a:hover{color:#fafafa;text-decoration:underline}
-:focus-visible{outline:2px solid #fafafa;outline-offset:2px}
+footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:24px 0 32px;border-top:1px solid #ecebe61f;color:#6f6e6a;font:13px Geist,system-ui,sans-serif}
+footer nav a{text-decoration:none}
+footer nav a:hover{color:#f8f8f4}
+footer .mark{color:#a3a29d;font-size:26px}
+@media (max-width:820px){
+.page{padding:0 24px}
+.home main{grid-template-columns:1fr;gap:40px;padding:24px 0 56px}
+.art{max-width:300px;margin:0 auto}
+footer{flex-direction:column-reverse;align-items:flex-start}
+}
 `;
 
-function footer(): string {
+const mark = () =>
+  `<a class="mark" href="/"><img src="${escapeHtml(brand.logo)}" alt="" width="20" height="20"><span>${escapeHtml(brand.name.toLowerCase())}</span></a>`;
+
+function footer(withMark: boolean): string {
   const links: ReadonlyArray<readonly [string, string]> = [
     ...legalPages.map((page) => [page.label, page.path] as const),
     ["Contact", `mailto:${brand.site.email}`],
     ...(brand.links.source === null ? [] : [["GitHub", brand.links.source] as const]),
   ];
-  return `<footer><span>© 2026 ${escapeHtml(brand.name)}</span>${links
-    .map(([label, href]) => `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`)
-    .join("")}</footer>`;
+  const items = [
+    `© 2026 ${escapeHtml(brand.name)}`,
+    ...links.map(([label, href]) => `<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`),
+  ];
+  return `<footer><nav aria-label="Site">${items.join(" · ")}</nav>${withMark ? mark() : ""}</footer>`;
 }
 
 function document(title: string, description: string, kind: "home" | "legal", content: string): string {
-  const name = escapeHtml(brand.name);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#0a0a0a"><title>${escapeHtml(title)}</title><meta name="description" content="${escapeHtml(description)}"><link rel="icon" href="${escapeHtml(brand.logo)}"><style>${style}</style></head><body><div class="page ${kind}"><header><a class="mark" href="/"><img src="${escapeHtml(brand.logo)}" alt="" width="28" height="28"><span>${name.toLowerCase()}</span></a></header><main>${content}</main>${footer()}</div></body></html>`;
+  // The home page carries its mark in the footer, as a manifesto signs off; other pages lead with it.
+  const header = kind === "home" ? "" : `<header>${mark()}</header>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark"><meta name="theme-color" content="#09090b"><title>${escapeHtml(title)}</title><meta name="description" content="${escapeHtml(description)}"><link rel="icon" href="${escapeHtml(brand.logo)}"><style>${style}</style></head><body><div class="page ${kind}">${header}<main>${content}</main>${footer(kind === "home")}</div></body></html>`;
 }
 
 function homePage(): string {
+  const [roman, italic] = home.headline;
+  // The eruption loops; people who ask for less motion get its still frame.
+  const art = `<picture><source srcset="/brand/hero/volcano.png" media="(prefers-reduced-motion: reduce)"><img class="art" src="/brand/hero/volcano.webp" alt="" width="112" height="128"></picture>`;
   return document(
     brand.name,
     home.note,
     "home",
-    `<h1>${inline(home.headline)}</h1><p class="subheadline">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p>`,
+    `${art}<div><h1>${inline(roman)}<em>${inline(italic)}</em></h1><p class="lede">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p></div>`,
   );
+}
+
+/** Each heading opens a section, set off by a hairline rule. */
+function sections(blocks: readonly Block[]): string {
+  let html = "";
+  let open = false;
+  for (const item of blocks) {
+    if ("h2" in item) {
+      html += `${open ? "</section>" : ""}<section>`;
+      open = true;
+    }
+    html += block(item);
+  }
+  return open ? `${html}</section>` : html;
 }
 
 function legalPage(page: LegalPage): string {
@@ -87,7 +124,7 @@ function legalPage(page: LegalPage): string {
     `${page.title} · ${brand.name}`,
     page.summary,
     "legal",
-    `<h1>${inline(page.title)}</h1><p class="summary">${inline(page.summary)}</p><p class="updated">Last updated ${brand.site.updated}</p>${page.blocks.map(block).join("")}`,
+    `<h1>${inline(page.title)}</h1><p class="summary">${inline(page.summary)}</p><p class="updated">Updated ${brand.site.updated}</p>${sections(page.blocks)}`,
   );
 }
 

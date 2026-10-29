@@ -29,7 +29,8 @@ const operator = `${site.operator}, ${site.region}`;
  * Google data stays one quiet line under it, which Google's review requires.
  */
 export const home = {
-  headline: "Put the work at the center.",
+  /** Two lines, the second set in italic. */
+  headline: ["Put the work", "at the center."],
   subheadline: "AI still works the way Office did.",
   body: [
     "Today everything starts with you: your laptop, your apps, your files, your agents. You carry the work between them, and AI helps one task at a time. Office worked like that, until Drive put the document at the center and let everyone come to it.",
