@@ -105,6 +105,7 @@ const fixture = <A>(
     copies: { calls: number; collisions: number };
     reads: { get: number; source: number };
     changeProvider: () => void;
+    failNextRemoval: () => void;
     setup: (
       user?: string,
       signingKey?: Redacted.Redacted<string>,
@@ -148,6 +149,7 @@ const fixture = <A>(
       ('m4', ${organization}, 'invited', 'member'), ('m5', ${organization}, 'admin', 'admin')`;
         const lifecycle = yield* hostedResourceLifecycle;
         let nextId = 0;
+        let removalFails = false;
         const copies = { calls: 0, collisions: 0 };
         const reads = { get: 0, source: 0 };
         const copying = yield* Deferred.make<void>();
@@ -297,9 +299,19 @@ const fixture = <A>(
           accounts: {
             remove: (input: Parameters<Executor["accounts"]["remove"]>[0]) =>
               Effect.gen(function* () {
-                assert.equal(yield* InProvisioningTransaction, true, "retirement uses the setup transaction");
-                const [row] = yield* sql`select id, owner from executor_accounts where id = ${input.account}`;
-                if (row !== undefined) yield* lifecycle.hooks.accountRemoving(row as unknown as Account);
+                assert.equal(
+                  yield* InProvisioningTransaction,
+                  true,
+                  "retirement uses the setup transaction",
+                );
+                if (removalFails) {
+                  removalFails = false;
+                  return yield* new sdk.StorageError();
+                }
+                const [row] =
+                  yield* sql`select id, owner from executor_accounts where id = ${input.account}`;
+                if (row !== undefined)
+                  yield* lifecycle.hooks.accountRemoving(row as unknown as Account);
                 yield* sql`delete from hosted_account_access where account_id = ${input.account}`;
                 yield* sql`delete from executor_accounts where id = ${input.account}`;
                 return { account: input.account };
@@ -342,6 +354,9 @@ const fixture = <A>(
           executor,
           copies,
           reads,
+          failNextRemoval: () => {
+            removalFails = true;
+          },
           changeProvider: () => {
             requirements.accounts.pool.provider = provisionedPoolProvider;
             poolProvisioned = true;
@@ -493,7 +508,9 @@ test("every reconcile of a recorded pool logs one decision with counts only", as
       const [beforeOwnerDeployment] = yield* sql<{ version: string; bundle: string }>`select
         metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
         metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'bundle' as bundle from organization`;
-      const [currentApp] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+      const [currentApp] = yield* sql<{
+        active_deployment: string;
+      }>`select active_deployment from executor_apps`;
       const [currentDeployment] = yield* sql<{ requirements: unknown }>`select requirements
         from executor_deployments where id = ${currentApp!.active_deployment}`;
       yield* sql`insert into executor_deployments (id, requirements, app, files)
@@ -912,7 +929,10 @@ test("a rotated signing key re-mints and re-links once, deletes the unlinked old
       );
       assert.equal((yield* sql`select * from executor_apps`).length, 1);
       assert.equal((yield* sql`select * from executor_accounts`).length, 1);
-      assert.equal((yield* sql`select id from executor_accounts where id = ${original!.id}`).length, 0);
+      assert.equal(
+        (yield* sql`select id from executor_accounts where id = ${original!.id}`).length,
+        0,
+      );
       const [state] = yield* sql<{
         pool: { tokenKeyVersion: string; account: string };
       }>`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
@@ -1025,10 +1045,7 @@ for (const failure of ["unlinked", "deleted", "invalid token", "wrong pool token
         );
         assert.equal((yield* sql`select * from executor_apps`).length, 1);
         assert.equal((yield* sql`select * from hosted_app_account_links`).length, 1);
-        assert.equal(
-          (yield* sql`select * from executor_accounts`).length,
-          1,
-        );
+        assert.equal((yield* sql`select * from executor_accounts`).length, 1);
         const [access] =
           yield* sql`select * from hosted_account_access where account_id = ${link!.account}`;
         assert.equal(access!.personal_user_id, "person-a");
@@ -1101,7 +1118,10 @@ test("a legacy unlinked pool deletes the personal account whose signed claims ma
       yield* setup();
       const [link] = yield* sql`select account from hosted_app_account_links`;
       assert.notEqual(link!.account, original!.id);
-      assert.equal((yield* sql`select id from executor_accounts where id = ${original!.id}`).length, 0);
+      assert.equal(
+        (yield* sql`select id from executor_accounts where id = ${original!.id}`).length,
+        0,
+      );
       assert.equal(
         (yield* sql`select label from executor_accounts where id = ${unrelated.id}`)[0]!.label,
         "Pool access",
@@ -1170,7 +1190,10 @@ for (const legacyUnlinked of [false, true]) {
         const [account] =
           yield* sql`select provider from executor_accounts where id = ${link!.account}`;
         assert.equal(account!.provider, provisionedPoolProvider);
-        assert.equal((yield* sql`select id from executor_accounts where id = ${original!.id}`).length, 0);
+        assert.equal(
+          (yield* sql`select id from executor_accounts where id = ${original!.id}`).length,
+          0,
+        );
         assert.equal((yield* sql`select * from executor_accounts`).length, 1);
       }),
     );
@@ -1265,8 +1288,14 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
     ({ sql, executor, setup, changeProvider }) =>
       Effect.gen(function* () {
         yield* setup();
-        const [before] = yield* sql<{ id: string; active_deployment: string }>`select id, active_deployment from executor_apps`;
-        const [oldAccount] = yield* sql<{ id: string; provider: string }>`select id, provider from executor_accounts`;
+        const [before] = yield* sql<{
+          id: string;
+          active_deployment: string;
+        }>`select id, active_deployment from executor_apps`;
+        const [oldAccount] = yield* sql<{
+          id: string;
+          provider: string;
+        }>`select id, provider from executor_accounts`;
         assert.equal(oldAccount!.provider, oldPoolProvider);
         poolBundle = "current-bundle";
         poolFiles = poolAppFiles;
@@ -1280,12 +1309,17 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
           );
 
         assert.equal((yield* Effect.exit(job()))._tag, "Failure");
-        const [deployed] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+        const [deployed] = yield* sql<{
+          active_deployment: string;
+        }>`select active_deployment from executor_apps`;
         assert.notEqual(deployed!.active_deployment, before!.active_deployment);
         const [failed] = yield* sql<{ status: string }>`select status from hosted_provisioning
           where id = 'pool-post-deploy-retry'`;
         assert.equal(failed!.status, "queued", "the failed member job remains retryable");
-        const [oldLink] = yield* sql<{ account: string; provider: string }>`select l.account, a.provider
+        const [oldLink] = yield* sql<{
+          account: string;
+          provider: string;
+        }>`select l.account, a.provider
           from hosted_app_account_links l join executor_accounts a on a.id = l.account`;
         assert.equal(oldLink!.account, oldAccount!.id);
         assert.equal(oldLink!.provider, oldPoolProvider);
@@ -1323,7 +1357,11 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
         assert.equal(repaired!.provider, provisionedPoolProvider);
         assert.deepEqual(
           yield* Effect.promise(() => verifyPoolToken(Redacted.value(key), repaired!.token)),
-          { pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id, owner: "person-a", organization },
+          {
+            pool: (yield* sql<{ id: string }>`select id from executor_apps`)[0]!.id,
+            owner: "person-a",
+            organization,
+          },
         );
         const [adopted] = yield* sql<{ version: string; bundle: string }>`select
           metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
@@ -1352,7 +1390,9 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
           accessRepaired: 0,
           tokenRepaired: false,
         });
-        const [following] = yield* sql<{ active_deployment: string }>`select active_deployment from executor_apps`;
+        const [following] = yield* sql<{
+          active_deployment: string;
+        }>`select active_deployment from executor_apps`;
         assert.notEqual(following!.active_deployment, adopted!.version);
         const [followingRecord] = yield* sql<{ version: string; bundle: string }>`select
           metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'version' as version,
@@ -1728,8 +1768,15 @@ test("pool repair keeps a replaced account linked by another app", async () => {
       yield* sql`insert into hosted_app_account_links values ('other-app', 'service', null, ${original!.id}, 'person-a', now())`;
       yield* setup("person-a", Redacted.make("cd".repeat(32)));
       assert.equal((yield* sql`select * from executor_accounts`).length, 2);
-      assert.equal((yield* sql`select label from executor_accounts where id = ${original!.id}`)[0]!.label, "Pool access (retired)");
-      assert.equal((yield* sql`select * from hosted_app_account_links where app = 'other-app' and account = ${original!.id}`).length, 1);
+      assert.equal(
+        (yield* sql`select label from executor_accounts where id = ${original!.id}`)[0]!.label,
+        "Pool access (retired)",
+      );
+      assert.equal(
+        (yield* sql`select * from hosted_app_account_links where app = 'other-app' and account = ${original!.id}`)
+          .length,
+        1,
+      );
     }),
   );
 });
@@ -1744,31 +1791,47 @@ test("retired pool cleanup journals deletion, keeps linked accounts and is idemp
       const [linked] = yield* sql`select account from hosted_app_account_links`;
       yield* sql`update executor_accounts set label = 'Pool access (retired)'`;
       yield* cleanupRetiredPoolAccounts(executor);
-      assert.equal((yield* sql`select * from executor_accounts where id = ${unlinked!.id}`).length, 0);
-      assert.equal((yield* sql`select * from executor_accounts where id = ${linked!.account}`).length, 1);
-      assert.equal((yield* sql`select * from hosted_app_account_links where account = ${linked!.account}`).length, 1);
-      const journal = yield* sql`select * from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`;
+      assert.equal(
+        (yield* sql`select * from executor_accounts where id = ${unlinked!.id}`).length,
+        0,
+      );
+      assert.equal(
+        (yield* sql`select * from executor_accounts where id = ${linked!.account}`).length,
+        1,
+      );
+      assert.equal(
+        (yield* sql`select * from hosted_app_account_links where account = ${linked!.account}`)
+          .length,
+        1,
+      );
+      const journal =
+        yield* sql`select * from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`;
       assert.equal(journal.length, 1);
       assert.ok(journal[0]!.completed_at);
       yield* cleanupRetiredPoolAccounts(executor);
-      assert.deepEqual(yield* sql`select * from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`, journal);
+      assert.deepEqual(
+        yield* sql`select * from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`,
+        journal,
+      );
       assert.equal((yield* sql`select * from executor_accounts`).length, 1);
     }),
   );
 });
 
 test("retired pool cleanup rolls back its journal and deletion together on failure", async () => {
-  await fixture(({ sql, setup, executor }) =>
+  await fixture(({ sql, setup, executor, failNextRemoval }) =>
     Effect.gen(function* () {
       yield* setup();
       yield* sql`delete from hosted_app_account_links`;
       yield* sql`update executor_accounts set label = 'Pool access (retired)'`;
-      const remove = executor.accounts.remove;
-      executor.accounts.remove = () => Effect.fail(new sdk.StorageError());
+      failNextRemoval();
       assert.equal((yield* Effect.exit(cleanupRetiredPoolAccounts(executor)))._tag, "Failure");
-      assert.equal((yield* sql`select * from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`).length, 0);
+      assert.equal(
+        (yield* sql`select * from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`)
+          .length,
+        0,
+      );
       assert.equal((yield* sql`select * from executor_accounts`).length, 1);
-      executor.accounts.remove = remove;
       yield* cleanupRetiredPoolAccounts(executor);
       assert.equal((yield* sql`select * from executor_accounts`).length, 0);
     }),
@@ -1776,22 +1839,31 @@ test("retired pool cleanup rolls back its journal and deletion together on failu
 });
 
 test("retired pool cleanup advances its cursor over bounded batches", async () => {
-  await fixture(({ sql, setup, executor }) => Effect.gen(function* () {
-    yield* setup();
-    const [original] = yield* sql`select * from executor_accounts`;
-    yield* sql`delete from hosted_app_account_links`;
-    yield* sql`delete from hosted_account_access`;
-    yield* sql`delete from executor_accounts`;
-    for (let index = 0; index < 101; index++) {
-      const id = `acc_retired_${String(index).padStart(3, "0")}`;
-      yield* sql`insert into executor_accounts values (${id}, ${original!.owner}, ${original!.provider}, ${original!.token}, 'token', 'Pool access (retired)')`;
-      yield* sql`insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id) values (${id}, ${organization}, 'person-a', 'personal', 'person-a')`;
-    }
-    yield* cleanupRetiredPoolAccounts(executor);
-    assert.equal((yield* sql`select * from executor_accounts`).length, 1);
-    assert.equal((yield* sql`select completed_at from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`)[0]!.completed_at, null);
-    yield* cleanupRetiredPoolAccounts(executor);
-    assert.equal((yield* sql`select * from executor_accounts`).length, 0);
-    assert.ok((yield* sql`select completed_at from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`)[0]!.completed_at);
-  }));
+  await fixture(({ sql, setup, executor }) =>
+    Effect.gen(function* () {
+      yield* setup();
+      const [original] = yield* sql`select * from executor_accounts`;
+      yield* sql`delete from hosted_app_account_links`;
+      yield* sql`delete from hosted_account_access`;
+      yield* sql`delete from executor_accounts`;
+      for (let index = 0; index < 101; index++) {
+        const id = `acc_retired_${String(index).padStart(3, "0")}`;
+        yield* sql`insert into executor_accounts values (${id}, ${original!.owner}, ${original!.provider}, ${original!.token}, 'token', 'Pool access (retired)')`;
+        yield* sql`insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id) values (${id}, ${organization}, 'person-a', 'personal', 'person-a')`;
+      }
+      yield* cleanupRetiredPoolAccounts(executor);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 1);
+      assert.equal(
+        (yield* sql`select completed_at from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`)[0]!
+          .completed_at,
+        null,
+      );
+      yield* cleanupRetiredPoolAccounts(executor);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 0);
+      assert.ok(
+        (yield* sql`select completed_at from private_hosted_data_steps where name = 'basalt-retired-pool-accounts'`)[0]!
+          .completed_at,
+      );
+    }),
+  );
 });

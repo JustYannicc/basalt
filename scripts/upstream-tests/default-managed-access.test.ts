@@ -4,33 +4,38 @@ import { Effect, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { defaultKeyHasher } from "../../.upstream/apps/hosted/server/node_modules/@better-auth/api-key/dist/index.mjs";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
-import {
-  AccountId,
-  AccountNotFound,
-  AppId,
-  StorageError,
-  StorageHost,
-  VersionId,
-  type Account,
-  type App,
-  type Executor,
-} from "../../.upstream/packages/sdk/src/core.ts";
-import { organizationDefaults } from "../../.upstream/apps/hosted/server/src/implementation/organization-defaults.ts";
-import { defaultExecutorAppSource } from "../../.upstream/apps/hosted/server/src/implementation/executor-app.ts";
-import {
-  OrganizationId,
-  organizationOwner,
-} from "../../.upstream/apps/hosted/server/src/contracts/organization.ts";
-import type { HostedApiDocument } from "../../.upstream/apps/hosted/server/src/contracts/api.ts";
-import { queueDefaultManagedAccess } from "../../.upstream/apps/hosted/server/src/implementation/default-managed-access.ts";
-import { createDataStepJournal } from "../../.upstream/packages/app-management/src/data-steps.ts";
-import { ScheduleWakeup } from "../../.upstream/apps/hosted/server/src/contracts/schedules.ts";
+import type { Account } from "../../.upstream/packages/sdk/src/contracts/account.ts";
+import type { App } from "../../.upstream/packages/sdk/src/contracts/apps.ts";
+import type { Executor } from "../../.upstream/packages/sdk/src/contracts/executor.ts";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
+const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
+const { AccountId, AccountNotFound, AppId, StorageError, StorageHost, VersionId } = await load(
+  "packages/sdk/src/core.ts",
+);
+const { organizationDefaults } = await load(
+  "apps/hosted/server/src/implementation/organization-defaults.ts",
+);
+const { defaultExecutorAppSource } = await load(
+  "apps/hosted/server/src/implementation/executor-app.ts",
+);
+const { OrganizationId, organizationOwner } = await load(
+  "apps/hosted/server/src/contracts/organization.ts",
+);
+const { ScheduleWakeup } = await load("apps/hosted/server/src/contracts/schedules.ts");
+const {
+  queueDefaultManagedAccess,
+}: { queueDefaultManagedAccess: Effect.Effect<void, unknown, SqlClient.SqlClient> } = await load(
+  "apps/hosted/server/src/implementation/default-managed-access.ts",
+);
+const { createDataStepJournal } = await load("packages/app-management/src/data-steps.ts");
 
 const organization = OrganizationId.make("default-access-fixture");
 const owner = organizationOwner(organization);
 const appId = AppId.make("app_defaults");
 const version = VersionId.make("dpl_defaults");
-const document = { components: { securitySchemes: {} } } as unknown as HostedApiDocument;
+const document = { components: { securitySchemes: {} } };
 const origin = "https://fixture.invalid";
 
 const fixture = (
@@ -72,9 +77,12 @@ const fixture = (
             },
           },
         };
-        const files = (yield* defaultExecutorAppSource(origin, document)).files;
+        const files = (yield* defaultExecutorAppSource(origin, document)).files as readonly {
+          path: string;
+          content?: string;
+        }[];
         assert.match(
-          files.find((file) => file.path === "provider.ts")!.content,
+          files.find((file) => file.path === "provider.ts")!.content!,
           /apiKey: secrets\(\{ provisioned: true/,
         );
         const accounts = { alex: "acc_alex", sam: "acc_sam" };

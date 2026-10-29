@@ -339,7 +339,7 @@
       "upstream_issue": 2444,
       "database_sensitive": false,
       "workflow_sensitive": false,
-      "content_sha256": "b63ecf5bf89a1b05183a5660a44a79060d3e975f3f90bcc11f7283f15f320678"
+      "content_sha256": "6fc46dbd8f0d950f79f4ea4651150a9e65a409c5814ec479e8a80bd2657891a0"
     },
     {
       "identity": "basalt-default-managed-access",
