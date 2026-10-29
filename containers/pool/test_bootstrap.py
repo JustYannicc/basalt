@@ -20,6 +20,7 @@ from .readiness import Readiness
 from .child_signals import (
     HOME_INIT_FAILURE_CATEGORIES,
     HOME_INIT_FAILURE_MARKER,
+    HOME_MAINTENANCE_FAILURE_MARKER,
     MAX_HOME_SIGNAL_INTEGER,
     privacy_audit_line,
     safe_child_output_line,
@@ -299,6 +300,33 @@ class BootstrapContractTests(unittest.TestCase):
                 "node", 'time="..." level=error msg="failed to open database: x"'
             )
         )
+
+    def test_read_output_maps_existing_backfill_failures_to_counts(self) -> None:
+        failures = {
+            "derived_columns": "usage derived-column backfill batch failed",
+            "cache_read": "usage cache-read backfill batch failed",
+            "token_accounting": "usage token accounting backfill batch failed",
+        }
+        for category, message in failures.items():
+            with self.subTest(category=category):
+                lines = [
+                    "[CLIProxyAPIHome] [2026-10-29 12:00:00] "
+                    "[private-request-sentinel] [warn ] [main.go:811] "
+                    + message + " error=private-response-sentinel\n",
+                    'time="2026-10-29T12:00:00Z" level=warning msg='
+                    + json.dumps(message) + ' error="private-token-sentinel"\n',
+                    json.dumps({"level": "warning", "msg": message,
+                                "error": "private-content-sentinel"}) + "\n",
+                ]
+                counts = {name: int(name == category) for name in failures}
+                expected = HOME_MAINTENANCE_FAILURE_MARKER + json.dumps(
+                    counts, sort_keys=True, separators=(",", ":")
+                )
+                self.assertEqual(self.read_child_output("home", lines), [expected] * 3)
+                self.assertEqual(self.read_child_output("node", lines), [])
+                self.assertIsNone(safe_child_output_line("home", message + " private-content-sentinel"))
+                self.assertIsNone(safe_child_output_line("home", "provider: " + message))
+                self.assertIsNone(safe_child_output_line("home", message + "ish error=private-content-sentinel"))
 
     def test_readiness_payload_contains_only_boot_identity(self) -> None:
         readiness = Readiness("fixture-management-key")

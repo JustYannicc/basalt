@@ -47,9 +47,11 @@ The bounded unit tests use Python's standard library. From the repository root, 
 
 The pool builds Home and its node from the exact release source commits. <code>sources.json</code> pins each source archive and privacy carry by SHA-256. The release patch registry binds that manifest. A version update must port the carries or meet their manual retirement proof before the image builds.
 
-Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The effective configuration enables commercial mode and disables request logging, debug output and file logging. The supervisor drops arbitrary child output. It forwards validated privacy progress, retry and final audit counts, plus fixed startup failure counts. It never forwards error text or key IDs.
+Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The effective configuration enables commercial mode and disables request logging, debug output and file logging. The supervisor drops arbitrary child output. It forwards validated privacy progress, retry and final audit counts, plus fixed startup and maintenance failure counts. Derived-column, cache-read and token-accounting backfill failures emit <code>POOL_HOME_MAINTENANCE_FAILURE</code> with one closed numeric category set. It never forwards error text or key IDs.
 
-Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint cannot authenticate a request. The credential store still keeps the live key that authentication needs. Provider response bodies, prompts, completions, authentication headers and raw client keys are excluded from diagnostics. Only closed billing tiers and validated numeric quota measurements survive alongside usage counters.
+Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint cannot authenticate a request. The credential store still keeps the live key that authentication needs. Provider response bodies, prompts, completions, authentication headers and raw client keys are excluded from usage diagnostics. Only closed billing tiers and validated numeric quota measurements survive alongside usage counters.
+
+Known privacy gap: the separate Home application-log table can still receive response content forwarded by the node. That table is outside this usage cleanup and needs capture prevention, an old-writer guard and historical cleanup in the next carry. Disabling request and file logging does not close that path.
 
 Exact request verification keeps an opaque canonical UUID session ID. The node projects custom session text to a UUID before retaining it; Home refuses free-form session text. This preserves the importer's exact-account verification without retaining session content.
 
