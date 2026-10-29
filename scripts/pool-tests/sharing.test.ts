@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../../brand.ts";
 import { callerHeader } from "../../apps/pool/contract.ts";
-import { accessPath, accessPrefix, accessTtl, type AccessChange } from "../../src/pool/access-contract.ts";
+import { accessGrace, accessPath, accessPrefix, accessTtl, type AccessChange } from "../../src/pool/access-contract.ts";
+import { PoolControl } from "../../src/pool/attribution.ts";
+import { SyntheticOAuthProvider } from "./import-fixture.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
 import { backendUserName, personPrefix } from "../../src/pool/backend-users.ts";
 import { Computers } from "../../src/pool/computers.ts";
@@ -26,17 +28,24 @@ async function ok<T>(response: Response): Promise<T> {
 }
 
 test("real pinned Home/node: share, claim, switch, remove during stream, delete person", { timeout: 420_000 }, async () => {
-  const fixture = new SharingFixture();
+  const subscriptionProvider = new SyntheticOAuthProvider();
+  await subscriptionProvider.start();
+  const fixture = new SharingFixture({ resourcePrefix: "basalt-1412-sharing", poolContainerArgs: subscriptionProvider.poolContainerArgs });
   try {
     await fixture.start();
     const client = new HomeClient((input, init) => fixture.fetchHome(input, init));
     const home = new ComputerHome(client);
-    const computers = new Computers({ storage: new MemoryStorage(), home, signingKey, origin });
+    const storage = new MemoryStorage();
+    let clockOffset = 0;
+    const now = () => Date.now() + clockOffset;
+    const control = new PoolControl(storage, { signingKey, now: () => new Date(now()), home: (input, init) => fixture.fetchHome(input, init) });
+    const computers = new Computers({ storage, home, signingKey, origin, now,
+      contributions: (audiences, person) => control.reconcileContributions(audiences, person) });
     const tokenP1 = await signPoolToken(signingKey, P1);
     const tokenP2 = await signPoolToken(signingKey, P2);
     const audience = (claims: PoolClaims, users: string[]) => ({ ...claims, name: claims.pool, users });
     async function access(change: AccessChange) {
-      const at = Date.now();
+      const at = now();
       const envelope = await signEnvelope(signingKey, accessPrefix, { ...change, at, expiresAt: at + accessTtl });
       return computers.access(new Request(`${origin}${accessPath}`, {
         method: "POST", body: JSON.stringify({ envelope }),
@@ -48,7 +57,7 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
       })));
     }
     async function action(action: string, intent?: string, extra: Record<string, unknown> = {}) {
-      const envelope = await signEnvelope(signingKey, "sbs1", { ...extra, user: B, intent, action, expiresAt: Date.now() + 30_000 });
+      const envelope = await signEnvelope(signingKey, "sbs1", { ...extra, user: B, intent, action, expiresAt: now() + 30_000 });
       return computers.handle(new Request(`${origin}/setup/${action}`, { method: "POST", body: JSON.stringify({ envelope }) }));
     }
     async function create(intent: string, name: string) {
@@ -140,6 +149,58 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
     }
     console.log("PASS 3: P1 -> P2 -> P1, unchanged key id and secret, zero new keys, next request uses selected account");
 
+    // B contributes through the public pool control API. The fixture provider receives only
+    // synthetic credentials; Home and the node still perform the actual routing and deletion.
+    async function poolCall(path: string, caller: string | null, method: string, body?: unknown) {
+      return control.handle(new Request(`${origin}/pool/v1${path}`, {
+        method, headers: { Authorization: `Bearer ${tokenP1}`, ...(caller === null ? {} : { [callerHeader]: caller }), "Content-Type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }));
+    }
+    const loginFile = (label: string) => ({
+      type: "claude", email: "synthetic-member@example.invalid", access_token: `sk-ant-oat01-synthetic-${label}`,
+      refresh_token: `synthetic-${label}-refresh`, expired: "2099-01-01T00:00:00Z", proxy_url: subscriptionProvider.url,
+    });
+    const beforeTool = fixture.events.length;
+    const deniedTool = await poolCall("/login-files/tool", B, "POST", loginFile("refused-tool"));
+    assert.equal(deniedTool.status, 403);
+    assert.match((await deniedTool.json() as { message: string }).message, /Accounts → Connect new account/);
+    assert.equal(fixture.events.length, beforeTool, "A member tool upload must not reach Home");
+    const ownerUpload = await ok<{ accountId: string }>(await poolCall("/login-files/tool", A, "POST", loginFile("owner-tool")));
+    assert.ok((await new PoolHome(client, P1.pool).credentials()).some((row) => row.id === ownerUpload.accountId));
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(ownerUpload.accountId)}`, A, "DELETE")).status, 200);
+    async function contribute(label: string) {
+      const result = await ok<{ accountId: string }>(await poolCall("/login-files", B, "POST", loginFile(label)));
+      const account = (await ok<{ accounts: { id: string; addedBy: string | null }[] }>(await poolCall("/pool", A, "GET"))).accounts
+        .find((row) => row.id === result.accountId);
+      assert.equal(account?.addedBy, B);
+      return result.accountId;
+    }
+    const ownerComputer = await home.mint(A, P1.pool, "synthetic-contribution-owner");
+    async function servedByMember(session: string) {
+      const before = subscriptionProvider.requests.length;
+      const response = await fixture.subscription(ownerComputer.key, session);
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      assert.match(body, /"text":"OK"/);
+      assert.ok(subscriptionProvider.requests.slice(before).some((request) => new URL(`https://${request.authority}`).hostname === "api.anthropic.com"
+        && new URL(request.path, "https://provider.invalid").pathname === "/v1/messages"));
+    }
+    const contributed = await contribute("owner-removes");
+    await servedByMember("contributed-before-owner-remove");
+    const ownerAccount = (await new PoolHome(client, P1.pool).membership()).members.find((row) => row.auth_id !== contributed)!.auth_id;
+    const deniedRemoval = await poolCall(`/accounts/${encodeURIComponent(ownerAccount)}`, B, "DELETE");
+    assert.equal(deniedRemoval.status, 403);
+    assert.equal((await deniedRemoval.json() as { message: string }).message,
+      "Only the pool's owner or the person who added it can remove this subscription.");
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(contributed)}`, A, "DELETE")).status, 200);
+    assert.ok(!(await new PoolHome(client, P1.pool).credentials()).some((row) => row.id === contributed));
+    const departingContribution = await contribute("member-departs");
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(departingContribution)}`, null, "DELETE")).status, 401);
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(ownerAccount)}`, null, "DELETE")).status, 401);
+    await servedByMember("contributed-before-member-departs");
+    console.log("PASS contributions: B's login file records B; A's request reaches B's provider; B cannot remove A's account; A removes B's");
+
     const stale = await context(tokenP1);
     const streaming = await fixture.model(computer.modelKey, "slow-session", true);
     assert.equal(streaming.status, 200);
@@ -157,6 +218,15 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
       && event.path === `/v8/management/access/api-keys?id=${computer.keyId}` && event.status === 200));
     assert.ok(!(await fixture.keys()).some((key) => key.api_key_id === computer.keyId));
     assert.equal(fixture.slowFinished, false, "Access removal must acknowledge while the old stream is still running");
+    assert.ok(!(await new PoolHome(client, P1.pool).membership()).members.some((row) => row.auth_id === departingContribution));
+    const providerCalls = subscriptionProvider.requests.length;
+    const detachedResponse = await fixture.subscription(ownerComputer.key, "immediately-after-member-departure");
+    const detachedBody = await detachedResponse.text();
+    assert.ok(!detachedResponse.ok, detachedBody);
+    assert.equal(subscriptionProvider.requests.length, providerCalls, "The next request must never reach the departed member's provider");
+    assert.ok((await new PoolHome(client, P1.pool).credentials()).some((row) => row.id === departingContribution), "Keep the credential until durable unlink runs");
+    console.log(`PASS departure: next owner request ${detachedResponse.status}; zero calls to B's provider; credential retained for durable remove`);
+
     await refused(computer.modelKey, "next-after-removal");
     fixture.finishStream();
     for (;;) { const part = await reader.read(); if (part.done) break; stream += decoder.decode(part.value, { stream: true }); }
@@ -174,6 +244,19 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
     assert.deepEqual(await fixture.keys(), keysAfterRemoval);
     console.log("PASS 4: removal acknowledged after Home deletion; old stream completed; next request 401; computer removed; stale links/switch refused");
 
+    // Advance only the Worker's clock past grace; Home and node still use real time.
+    clockOffset += accessGrace + 1;
+    await ok(await access({ action: "audience", pools: [audience(P1, [A, B])] }));
+    const afterReshare = await contribute("after-reshare");
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(afterReshare)}`, null, "DELETE")).status, 401);
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(departingContribution)}`, null, "DELETE")).status, 200);
+    const retained = await new PoolHome(client, P1.pool).credentials();
+    assert.ok(!retained.some((row) => row.id === departingContribution));
+    assert.ok(retained.some((row) => row.id === afterReshare));
+    await servedByMember("fresh-contribution-after-old-cleanup");
+    assert.equal((await poolCall(`/accounts/${encodeURIComponent(afterReshare)}`, B, "DELETE")).status, 200);
+    console.log("PASS re-share: old callerless cleanup deletes the old credential; fresh contribution is refused and still serves requests");
+
     const ownSetup = await context(tokenP2);
     const remaining = await create(ownSetup.intent, "Own pool computer");
     await turn(remaining.modelKey, "P2", "before-person-deleted");
@@ -188,6 +271,6 @@ test("real pinned Home/node: share, claim, switch, remove during stream, delete 
     await refused(remaining.modelKey, "next-after-account-deletion");
     console.log("PASS 5: person-deleted removed B's remaining P2 key and Home user; node refused that key");
   } finally {
-    await fixture.close();
+    try { await fixture.close(); } finally { await subscriptionProvider.close(); }
   }
 });

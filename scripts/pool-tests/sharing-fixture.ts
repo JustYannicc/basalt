@@ -7,6 +7,9 @@ import { FixtureDiagnostics } from "./sharing-diagnostics.ts";
 
 export class MemoryStorage implements ComputerStorage {
   private values = new Map<string, unknown>();
+  private alarm: number | null = null;
+  async getAlarm() { return this.alarm; }
+  async setAlarm(time: number) { this.alarm = time; }
   async get<T>(key: string): Promise<T | undefined> {
     return structuredClone(this.values.get(key)) as T | undefined;
   }
@@ -75,6 +78,8 @@ export class SharingFixture {
   private upstream = createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
+    // Only Home's provider calls count; local port probes on a dev machine hit "/" without a key.
+    if (!request.url?.startsWith("/v1/")) { response.writeHead(404); response.end(); return; }
     const key = request.headers.authorization ?? "";
     this.calls.push(key);
     const pool = key === "Bearer fixture-p1" ? "P1" : key === "Bearer fixture-p2" ? "P2" : undefined;
@@ -254,6 +259,13 @@ export class SharingFixture {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Session-ID": session },
       body: JSON.stringify({ model, stream: true, max_tokens: 32, prompt_cache_key: session,
         messages: [{ role: "user", content: slow === "fail" ? this.failureContent : slow ? "slow-stream" : "Reply with the pool name" }] }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  }
+  async subscription(key: string, session: string): Promise<Response> {
+    return fetch(`${this.node}/v1/messages`, {
+      method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json", "X-Session-ID": session },
+      body: JSON.stringify({ model: "claude-sonnet-4-5-20250929", stream: true, max_tokens: 32, messages: [{ role: "user", content: "Reply OK" }] }),
       signal: AbortSignal.timeout(20_000),
     });
   }

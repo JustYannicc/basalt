@@ -36,7 +36,8 @@ async function readFile(response: Response, provider: string): Promise<Uint8Arra
 }
 
 /** Called only after control token and owner authorization. Never returns Home error bodies. */
-export async function exportLoginFile(url: URL, client: HomeClient, home: PoolHome): Promise<Response> {
+export async function exportLoginFile(url: URL, client: HomeClient, home: PoolHome,
+  contributors: () => Promise<Record<string, string>>): Promise<Response> {
   let id: string;
   try { id = decodeURIComponent(url.pathname.split("/").at(-2)!); }
   catch { return fail(400, "invalid_query", "Provide a valid account id."); }
@@ -46,6 +47,10 @@ export async function exportLoginFile(url: URL, client: HomeClient, home: PoolHo
     || url.searchParams.getAll("provider").length !== 1
     || [...url.searchParams.keys()].some((key) => key !== "provider")) {
     return fail(400, "invalid_query", "Provide an account id and exactly one provider: claude or codex.");
+  }
+  const addedBy = (await contributors())[id];
+  if (addedBy !== undefined && addedBy !== home.owner) {
+    return fail(403, "not_owner", "Only accounts added by the pool owner can be exported.");
   }
   await requireMembership(home, id);
   const files = (await home.credentials()).filter((row) => row.id === id);

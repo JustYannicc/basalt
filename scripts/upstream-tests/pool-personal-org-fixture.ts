@@ -30,7 +30,10 @@ const { OrganizationDefaults } = await load(
 );
 
 /** Native Better Auth invitation endpoints and PostgreSQL triggers share this embedded database. */
-export const personalOrgFixture = (run: (f: any) => Effect.Effect<unknown, unknown, any>) =>
+export const personalOrgFixture = (
+  run: (f: any) => Effect.Effect<unknown, unknown, any>,
+  fixtureOptions: { userDeletion?: boolean } = {},
+) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -110,6 +113,7 @@ export const personalOrgFixture = (run: (f: any) => Effect.Effect<unknown, unkno
         );
         const options = {
           ...base,
+          user: { ...base.user, deleteUser: { enabled: fixtureOptions.userDeletion ?? false } },
           secret: "fixture-only-auth-secret-never-used-outside-tests",
           database: { db: database, type: "postgres", transaction: true },
           emailAndPassword: { enabled: true, autoSignIn: false },

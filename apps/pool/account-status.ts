@@ -53,12 +53,14 @@ export function accountStatus(account: Account, sites: readonly { readonly id: s
   const windows = orderedWindows(account.windows).slice(0, 4);
   const reset = resetText(account, now);
   const resetMeter = windows.findIndex((window) => window.windowSeconds === 18_000);
+  // The plan names the subscription, so only editors and its holder see it; the rest is shared.
+  const shared = { identity: false } as const;
   const badges = [
     ...(plan ? [{ label: plan, tone: "neutral" as const }] : []),
-    states[account.state],
-    ...(account.readingFailed ? [{ label: "Usage reading failed", tone: "warning" as const }]
-      : account.freshness === "stale" ? [{ label: "Usage reading stale", tone: "warning" as const }] : []),
-    ...(reset && resetMeter < 0 ? [{ label: text(reset, 96), tone: "neutral" as const }] : []),
+    { ...states[account.state], ...shared },
+    ...(account.readingFailed ? [{ label: "Usage reading failed", tone: "warning" as const, ...shared }]
+      : account.freshness === "stale" ? [{ label: "Usage reading stale", tone: "warning" as const, ...shared }] : []),
+    ...(reset && resetMeter < 0 ? [{ label: text(reset, 96), tone: "neutral" as const, ...shared }] : []),
   ].slice(0, 8);
   const meters = windows.map((window, index) => ({
     ...meter(window),

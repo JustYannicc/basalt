@@ -39,12 +39,16 @@ export interface ControlAttribution {
   acceptedCallback(session: Session): Promise<void>;
   status(home: PoolHome, session: Session): Promise<SignInStatus>;
   cancel(home: PoolHome, session: Session): Promise<void>;
-  started(session: Session, accountId: string): Promise<void>;
+  started(session: Session, accountId: string, owner?: string): Promise<void>;
   uploadStarted(): Promise<string>;
   uploadFinished(upload: string): Promise<void>;
   retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
-  uploaded(home: PoolHome, id: string, upload: string, key: string): Promise<void>;
+  uploaded(home: PoolHome, id: string, upload: string, key: string, caller?: string): Promise<void>;
   removed(id: string): Promise<void>;
+  contributed(pool: string, id: string, caller?: string): Promise<boolean>;
+  departedContribution(pool: string, id: string, owner: string): Promise<boolean>;
+  completedContributionRemoval(pool: string, id: string, owner: string): Promise<boolean>;
+  forgetContribution(pool: string, id: string, owner: string): Promise<void>;
   cached(session: Session): SignInStatus | undefined;
   callback(home: HomeClient, session: Session): Promise<boolean>;
   polled(session: Session): Promise<void>;
@@ -55,6 +59,7 @@ export interface ControlDependencies extends HomeDependencies {
   attribution: ControlAttribution | null;
   client?: HomeClient;
   added?: (ids: string[]) => void;
+  contributors?: (pool: string) => Promise<Record<string, string>>;
 }
 export interface Session {
   pool: string;
@@ -311,6 +316,7 @@ export class PoolHome {
     this.onProductEvent = onProductEvent;
     this.accountId = accountId;
   }
+  get owner(): string | undefined { return this.accountId; }
   ownMembership(all: Membership): Membership {
     const groups = all.groups.filter((group) => group.channel_name === this.name);
     const ids = new Set(groups.map((group) => group.id));
@@ -398,9 +404,18 @@ export class PoolHome {
     }
     return { records: [...records.values()] };
   }
-  async remove(id: string, detached: () => Promise<void>): Promise<void> {
+  // Home v1.1.6 internal/cluster/management/channel_groups.go:249-263 deletes membership only.
+  async detach(ids: string[]): Promise<void> {
+    const selected = new Set(ids);
+    for (const member of (await this.membership()).members.filter((member) => selected.has(member.auth_id))) {
+      const response = await this.client.response(`/channel-group-details/${member.id}`, { method: "DELETE" });
+      if (!response.ok && response.status !== 404) throw new BackendFailure(response.status);
+      await response.body?.cancel();
+    }
+  }
+  async remove(id: string, detached: () => Promise<void>, recorded = false): Promise<void> {
     const members = (await this.membership()).members.filter((member) => member.auth_id === id);
-    if (!members.length) return fail(404, "not_found", "This account is not in this pool.");
+    if (!members.length && !recorded) return fail(404, "not_found", "This account is not in this pool.");
     // Keep membership as retry authority until the credential deletion is acknowledged.
     const deleted = await this.client.response(`/credentials?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!deleted.ok && deleted.status !== 404) throw new BackendFailure(deleted.status);
@@ -420,6 +435,7 @@ interface RouteContext {
   home: PoolHome;
   pool: string;
   accountId: string;
+  caller: string;
   isOwner: boolean;
   now: Date;
 }
@@ -429,9 +445,17 @@ async function sessionFor(ctx: RouteContext, opaque = ctx.url.searchParams.get("
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
-  "GET /pool": async ({ home, isOwner }) => json(await home.view(isOwner)),
+  "GET /pool": async ({ home, isOwner, deps, pool, caller }) => {
+    const view = await home.view(isOwner);
+    const contributors = view.accounts.length ? await deps.contributors?.(pool) ?? {} : {};
+    return json({ ...view, accounts: view.accounts.map((account) => {
+      const addedBy = contributors[account.id] ?? null;
+      return { ...account, addedBy, ...(!isOwner && addedBy !== caller ? { label: "", plan: null, message: null } : {}) };
+    }) });
+  },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
-  "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
+  "GET /accounts/:id/export": async ({ url, client, home, deps, pool }) =>
+    exportLoginFile(url, client, home, () => deps.contributors?.(pool) ?? Promise.resolve({})),
   "POST /sign-ins": async (ctx) => {
     const { request, client, pool, now, deps } = ctx;
     const state = attribution(ctx);
@@ -452,7 +476,7 @@ const routes: Record<string, Route> = {
     const started: unknown = await response.json();
     if (!object(started) || !text(started.url) || !text(started.state)) return unavailable();
     const session: Session = { pool, provider, state: started.state as string, flow: detectFlow(started), expiresAt: new Date(now.getTime() + signInTtlMs).toISOString() };
-    await state.started(session, ctx.accountId);
+    await state.started(session, ctx.caller, ctx.accountId);
     return json({
       session: await signSession(deps.signingKey, session), provider, flow: session.flow,
       url: started.url as string, userCode: text(started.user_code) ?? (object(started.meta) ? text(started.meta.user_code) : null), expiresAt: session.expiresAt,
@@ -466,7 +490,7 @@ const routes: Record<string, Route> = {
     // uuid.go:25-50 reuses a root uuid. Strip all caller-supplied credential selectors.
     const { uuid: _uuid, id: _id, auth_index: _authIndex, ...credential } = value;
     const raw = JSON.stringify(credential);
-    const identity = JSON.stringify([ctx.pool, credential], (_key, entry: unknown) => object(entry)
+    const identity = JSON.stringify([ctx.pool, ctx.caller, credential], (_key, entry: unknown) => object(entry)
       ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)));
     const key = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -482,14 +506,23 @@ const routes: Record<string, Route> = {
     const saved: unknown = await response.json();
     if (!object(saved) || typeof saved.name !== "string" || !saved.name.endsWith(".json") || saved.name.length <= 5) return unavailable();
     const id = saved.name.slice(0, -5);
-    await state.uploaded(ctx.home, id, upload, key);
+    await state.uploaded(ctx.home, id, upload, key, ctx.caller);
     return json({ accountId: id });
   },
   "DELETE /accounts/:id": async (ctx) => {
     let id: string;
     try { id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length)); }
     catch { return fail(404, "not_found", "This account does not exist."); }
-    await ctx.home.remove(id, () => attribution(ctx).removed(id));
+    const state = attribution(ctx);
+    if (!ctx.caller) {
+      if (await state.completedContributionRemoval(ctx.pool, id, ctx.accountId))
+        return fail(404, "not_found", "This contribution was already removed.");
+      if (!await state.departedContribution(ctx.pool, id, ctx.accountId))
+        return fail(401, "unauthorized", "A signed-in pool caller is required.");
+    } else if (!ctx.isOwner && !await state.contributed(ctx.pool, id, ctx.caller))
+      return fail(403, "not_owner", "Only the pool's owner or the person who added it can remove this subscription.");
+    await ctx.home.remove(id, () => state.removed(id), await state.contributed(ctx.pool, id));
+    await state.forgetContribution(ctx.pool, id, ctx.accountId);
     return json(null);
   },
   "POST /sign-ins/callback": async (ctx) => {
@@ -518,6 +551,9 @@ const routes: Record<string, Route> = {
   },
   "GET /sign-ins/status": async (ctx) => json(await attribution(ctx).status(ctx.home, await sessionFor(ctx))),
 };
+// Only the pool app can call the Worker with its pool token. Its tool uses this
+// distinct path; Accounts uses /login-files so the host tracks member contributions.
+routes["POST /login-files/tool"] = routes["POST /login-files"]!;
 
 /** Check the request before it can wait for, load or mutate attribution state. */
 export async function authorizeControl(request: Request, signingKey: string, previousSigningKey?: string) {
@@ -532,17 +568,22 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
-  if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  const caller = text(request.headers.get(callerHeader));
+  if (routeKey === "POST /login-files/tool" && !isOwner)
+    return fail(403, "not_owner", "Only the pool's owner can upload login files with this tool. Use Accounts → Connect new account to add your subscription.");
+  const contribution = ["POST /sign-ins", "GET /sign-ins/status", "POST /sign-ins/callback", "DELETE /sign-ins", "POST /login-files", "DELETE /accounts/:id"].includes(routeKey);
+  if (contribution && !caller && routeKey !== "DELETE /accounts/:id") return fail(401, "unauthorized", "A signed-in pool caller is required.");
+  if (routeKey !== "GET /pool" && !contribution && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
   const isRead = routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
-  return { claims, url, route, routeKey, isOwner, isRead };
+  return { claims, url, route, routeKey, isOwner, isRead, caller: caller ?? "" };
 }
 
 export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
   try {
-    const { claims, url, route, isOwner, isRead } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
+    const { claims, url, route, isOwner, isRead, caller } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added, deps.onProductEvent, claims.owner);
     if (!isRead) await (deps.attribution ?? unavailable()).expireLocked(client);
-    return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, isOwner, now: deps.now?.() ?? new Date() });
+    return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, caller, isOwner, now: deps.now?.() ?? new Date() });
   } catch (error) { return failureResponse(error); }
 }
