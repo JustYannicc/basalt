@@ -36,12 +36,14 @@ diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/ap
    AppId,
    VersionId,
    StorageError,
-@@ -189,13 +191,13 @@
+@@ -189,13 +191,16 @@
          if (Object.hasOwn(state.accounts, user.userId) && saved === undefined) return;
          if (
            saved !== undefined &&
 -          (saved.provider !== requirement.provider || saved.method !== "apiKey")
-+          (saved.method !== "apiKey" || (saved.provider !== requirement.provider && !isProvisionedMethod(requirement.definition, "apiKey")))
++          (saved.method !== "apiKey" ||
++            (saved.provider !== requirement.provider &&
++              !isProvisionedMethod(requirement.definition, "apiKey")))
          )
            return yield* new StorageError();
 -        // Existing saved accounts keep their credential and links; setup does not mint replacement
@@ -50,16 +52,19 @@ diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/ap
 +        // A host-provisioned provider change remints the recorded managed key once. Read current SQL metadata on every
          // call; this is not an isolate-local result cache.
 -        if (state.version === current.activeVersion && saved !== undefined) return;
-+        if (state.version === current.activeVersion && saved?.provider === requirement.provider) return;
++        if (state.version === current.activeVersion && saved?.provider === requirement.provider)
++          return;
          // Build/network work finished above. Only account creation or selection repair needs the lock.
          yield* executor[StorageHost]
            .transaction(
-@@ -225,17 +227,18 @@
+@@ -225,17 +230,20 @@
                if (Object.hasOwn(state.accounts, user.userId) && saved === undefined) return;
                if (
                  saved !== undefined &&
 -                (saved.provider !== requirement.provider || saved.method !== "apiKey")
-+                (saved.method !== "apiKey" || (saved.provider !== requirement.provider && !isProvisionedMethod(requirement.definition, "apiKey")))
++                (saved.method !== "apiKey" ||
++                  (saved.provider !== requirement.provider &&
++                    !isProvisionedMethod(requirement.definition, "apiKey")))
                )
                  return yield* new StorageError();
                const eligible =
@@ -76,17 +81,21 @@ diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/ap
                  (yield* Effect.gen(function* () {
                    const token = yield* managedAccountKey(organization, user.userId).pipe(
                      Effect.provideService(SqlClient.SqlClient, sql),
-@@ -264,12 +267,20 @@
+@@ -264,12 +272,24 @@
                      intent = true;
                    return created;
                  }));
 +              if (saved !== undefined && compatible === undefined) {
-+                const fields = Redacted.value(yield* executor.managedAccounts.readCredentials({ owner, account: saved.id }));
++                const fields = Redacted.value(
++                  yield* executor.managedAccounts.readCredentials({ owner, account: saved.id }),
++                );
 +                if (typeof fields.token !== "string") return yield* new StorageError();
 +                if (yield* retireUnlinkedManagedAccount(executor, sql, owner, saved.id))
-+                  yield* revokeManagedAccountKey(organization, user.userId, Redacted.make(fields.token)).pipe(
-+                    Effect.provideService(SqlClient.SqlClient, sql),
-+                  );
++                  yield* revokeManagedAccountKey(
++                    organization,
++                    user.userId,
++                    Redacted.make(fields.token),
++                  ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 +              }
                const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });
                yield* sql`update "organization" set metadata = jsonb_set(jsonb_set(
@@ -101,13 +110,17 @@ diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/ap
 diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/server/src/implementation/api-keys.ts
 --- a/apps/hosted/server/src/implementation/api-keys.ts
 +++ b/apps/hosted/server/src/implementation/api-keys.ts
-@@ -170,3 +170,16 @@
+@@ -170,3 +170,20 @@
          false, 86400000, 10, 0, now(), now(), ${JSON.stringify(pinnedKeyMetadata(organization))})`;
      return token;
    }).pipe(Effect.mapError(() => new StorageError()));
 +
 +/** Revoke only the replaced host key, after its saved account has no remaining app links. */
-+export const revokeManagedAccountKey = (organization: OrganizationId, user: string, token: Redacted.Redacted<string>) =>
++export const revokeManagedAccountKey = (
++  organization: OrganizationId,
++  user: string,
++  token: Redacted.Redacted<string>,
++) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    const hash = yield* Effect.tryPromise({
@@ -147,9 +160,10 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
    "dependencies": {
      "@better-auth/api-key": "1.7.5",
 diff --git a/apps/hosted/server/src/implementation/default-managed-access.ts b/apps/hosted/server/src/implementation/default-managed-access.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/default-managed-access.ts
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,26 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +
@@ -157,11 +171,14 @@ diff --git a/apps/hosted/server/src/implementation/default-managed-access.ts b/a
 +export const queueDefaultManagedAccess = Effect.gen(function* () {
 +  const sql = yield* SqlClient.SqlClient;
 +  const name = "basalt-default-managed-access";
-+  yield* sql.withTransaction(Effect.gen(function* () {
-+    yield* sql`insert into private_hosted_data_steps (name, run, mode) values (${name}, 'apply', 'apply') on conflict do nothing`;
-+    const [step] = yield* sql<{ completed: boolean }>`select completed_at is not null as completed from private_hosted_data_steps where name = ${name} and run = 'apply' for update`;
-+    if (step?.completed) return;
-+    yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
++  yield* sql.withTransaction(
++    Effect.gen(function* () {
++      yield* sql`insert into private_hosted_data_steps (name, run, mode) values (${name}, 'apply', 'apply') on conflict do nothing`;
++      const [step] = yield* sql<{
++        completed: boolean;
++      }>`select completed_at is not null as completed from private_hosted_data_steps where name = ${name} and run = 'apply' for update`;
++      if (step?.completed) return;
++      yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
 +      select 'member', team.id, holder.key, now() + interval '15 minutes'
 +      from organization team
 +      cross join lateral jsonb_each_text(coalesce(team.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) holder
@@ -169,8 +186,9 @@ diff --git a/apps/hosted/server/src/implementation/default-managed-access.ts b/a
 +      join "user" on "user".id = member."userId" and "user"."emailVerified" = true
 +      join executor_accounts account on account.id = holder.value and account.owner = 'organization:' || team.id
 +      where team.metadata::jsonb -> 'executorDefaults' ->> 'deployment' is not null`;
-+    yield* sql`update private_hosted_data_steps set completed_at = now() where name = ${name} and run = 'apply'`;
-+  }));
++      yield* sql`update private_hosted_data_steps set completed_at = now() where name = ${name} and run = 'apply'`;
++    }),
++  );
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
 --- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
@@ -180,10 +198,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cl
  /**
   * Cloud runs data steps inside the new Worker after it deploys. Schema migrations run earlier, in
   * Alchemy, with only a database connection; data steps need the Worker's services, such as app
-@@ -70,6 +71,7 @@
-       const sql = yield* Effect.flatten(GroupDatabase);
-       if (mode === "apply") {
-         yield* cleanupRetiredPoolAccounts(executor).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+@@ -73,6 +74,7 @@
+         yield* cleanupRetiredPoolAccounts(executor).pipe(
+           Effect.provideService(SqlClient.SqlClient, sql),
+         );
 +        yield* queueDefaultManagedAccess.pipe(Effect.provideService(SqlClient.SqlClient, sql));
        }
        const poolKey = yield* PoolAppSigningKey;

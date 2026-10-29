@@ -91,7 +91,7 @@
     {
       "identity": "basalt-member-pools",
       "file": "0010-member-pools.patch",
-      "content_sha256": "3a5efd1d3b4bc0572f676a1bed88c52b6d370ab3d1d4395c855340cd12a2d479",
+      "content_sha256": "ed91db0a22ba770b9b5a0deaa21006770035edb45f55c28bfb66d200cb63f8ae",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -339,7 +339,7 @@
       "upstream_issue": 2444,
       "database_sensitive": false,
       "workflow_sensitive": false,
-      "content_sha256": "942c0553abb4e2d33614afc3339a482d27228381fa0fb53528324277fe4fdf6c"
+      "content_sha256": "b63ecf5bf89a1b05183a5660a44a79060d3e975f3f90bcc11f7283f15f320678"
     },
     {
       "identity": "basalt-default-managed-access",
@@ -348,7 +348,7 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false,
-      "content_sha256": "f45771246caea3aa8aa4a3053b3de8f64844ac3a5d23103bf3e4cfc873af4201"
+      "content_sha256": "3e8dc0a247f6c297e9a4eec5b84a6b7b527f2c39049e79ccd94d984fe3514dfb"
     }
   ],
   "pool_carries": {

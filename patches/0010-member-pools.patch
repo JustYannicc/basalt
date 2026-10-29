@@ -25,20 +25,21 @@ diff --git a/apps/hosted/cloud/src/implementation/default-app.ts b/apps/hosted/c
 diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
 --- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
 +++ b/apps/hosted/cloud/src/infrastructure/data-steps.ts
-@@ -18,9 +18,11 @@
+@@ -18,9 +18,12 @@
    hostedAppCopies,
    ScheduleWakeup,
  } from "@executor-js/hosted-server";
 -import { Clock, Config, Effect } from "effect";
 +import { Clock, Config, Effect, Option } from "effect";
-+import { queuePoolAppUpgrades, cleanupRetiredPoolAccounts } from "@executor-js/hosted-server/pool-app-upgrades";
++import { queuePoolAppUpgrades } from "@executor-js/hosted-server/pool-app-upgrades";
  import { SqlClient } from "effect/sql";
  import { cloudBlobs } from "./blobs.ts";
 +import { PoolAppSigningKey } from "../contracts/pools.ts";
++import { cleanupRetiredPoolAccounts } from "@executor-js/hosted-server/pool-app-upgrades";
  
  /** A tick stops starting items after this long, then resumes from its cursor on the next tick. */
  const tickBudgetMs = 20_000;
-@@ -56,11 +58,20 @@
+@@ -56,11 +59,22 @@
      const applyThrough = named === "" ? reviewedThrough : named;
      // The build framework step rewrites retained builds in the same bucket the executor reads.
      const blobs = yield* cloudBlobs;
@@ -49,7 +50,9 @@ diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cl
        const { executor } = yield* Effect.flatten(AppManagementHost);
        const sql = yield* Effect.flatten(GroupDatabase);
 +      if (mode === "apply") {
-+        yield* cleanupRetiredPoolAccounts(executor).pipe(Effect.provideService(SqlClient.SqlClient, sql));
++        yield* cleanupRetiredPoolAccounts(executor).pipe(
++          Effect.provideService(SqlClient.SqlClient, sql),
++        );
 +      }
 +      const poolKey = yield* PoolAppSigningKey;
 +      if (Option.isSome(poolKey)) {
@@ -126,11 +129,14 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -1,3 +1,4 @@
+@@ -28,6 +28,7 @@
+   sourceActorLost,
+ } from "./app-accounts.ts";
+ import { usableAppLinks } from "./resource-policy.ts";
 +import { ManagedAccountRetirement } from "./managed-account-retirement.ts";
- /** Product metadata commits with SDK resources using the same SQL transaction context. */
- import {
-   AccountConnectionRefused,
+ 
+ type AppCreation =
+   | { readonly kind: "member" }
 @@ -37,6 +38,23 @@
  const AppCreation = Context.Reference<AppCreation>("hosted/AppCreation", {
    defaultValue: () => ({ kind: "member" }),
@@ -174,18 +180,21 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
        appCreated: (app) =>
          Effect.gen(function* () {
            const organization = yield* organizationOf(app.owner);
-@@ -556,6 +586,11 @@
-         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+@@ -557,6 +587,14 @@
        accountRemoving: (account) =>
          Effect.gen(function* () {
+           const organization = yield* organizationOf(account.owner);
 +          if ((yield* ManagedAccountRetirement) === account.id) {
-+            if ((yield* sql`select 1 from hosted_app_account_links where account = ${account.id} limit 1`).length > 0)
++            if (
++              (yield* sql`select 1 from hosted_app_account_links where account = ${account.id} limit 1`)
++                .length > 0
++            )
 +              return yield* new StorageError();
 +            return;
 +          }
-           const organization = yield* organizationOf(account.owner);
            const user = yield* member(organization, yield* CurrentUserId);
            const policy = yield* sql`select p.account_id from hosted_account_access p
+         where p.account_id = ${account.id} and p.organization_id = ${organization}
 diff --git a/apps/hosted/cloud/src/contracts/pools.ts b/apps/hosted/cloud/src/contracts/pools.ts
 new file mode 100644
 --- /dev/null
@@ -606,6 +615,7 @@ index 0000000..64b051e
 +      });
 +  });
 diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-app-upgrades.ts
 @@ -0,0 +1,78 @@
@@ -688,10 +698,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-app-upgrades.ts b/apps/h
 +  });
 +};
 diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted/server/src/implementation/pool-account.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-account.ts
-@@ -0,0 +1,115 @@
-+import { retireUnlinkedManagedAccount } from "./managed-account-retirement.ts";
+@@ -0,0 +1,119 @@
 +/** Credential repair stays in the member setup transaction, after locking the pool's app. */
 +import { AccountId, StorageError, type App, type Executor } from "@executor-js/sdk/core";
 +import { Effect, Redacted, Schema } from "effect";
@@ -701,6 +711,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted
 +import { usableAppLinks } from "./resource-policy.ts";
 +import { personalAccountCreation } from "./resource-lifecycle.ts";
 +import { signPoolToken, verifyPoolToken } from "./pool-token.ts";
++import { retireUnlinkedManagedAccount } from "./managed-account-retirement.ts";
 +
 +/** A rotation gets a separate rollout without persisting the signing secret. */
 +export const poolTokenKeyVersion = (key: Redacted.Redacted<string>) =>
@@ -803,7 +814,11 @@ diff --git a/apps/hosted/server/src/implementation/pool-account.ts b/apps/hosted
 +    });
 +    for (const previous of stale)
 +      if (!(yield* retireUnlinkedManagedAccount(executor, sql, owner, previous)))
-+        yield* executor.accounts.update({ owner, account: previous, label: "Pool access (retired)" });
++        yield* executor.accounts.update({
++          owner,
++          account: previous,
++          label: "Pool access (retired)",
++        });
 +    return { account: account.id, changed: true };
 +  });
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
@@ -1113,39 +1128,64 @@ diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/sr
        ...sentry.build,
        ...environment,
 diff --git a/apps/hosted/server/src/implementation/managed-account-retirement.ts b/apps/hosted/server/src/implementation/managed-account-retirement.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/managed-account-retirement.ts
-@@ -0,0 +1,26 @@
-+import { StorageHost, StorageError, type AccountId, type Executor, type OwnerId } from "@executor-js/sdk/core";
+@@ -0,0 +1,49 @@
++import {
++  StorageHost,
++  StorageError,
++  type AccountId,
++  type Executor,
++  type OwnerId,
++} from "@executor-js/sdk/core";
 +import { Context, Effect } from "effect";
 +import type { SqlClient } from "effect/sql";
 +
 +/** Only a host repair can retire this exact account, after proving that it has no links. */
-+export const ManagedAccountRetirement = Context.Reference<AccountId | undefined>("hosted/ManagedAccountRetirement", {
-+  defaultValue: () => undefined,
-+});
++export const ManagedAccountRetirement = Context.Reference<AccountId | undefined>(
++  "hosted/ManagedAccountRetirement",
++  {
++    defaultValue: () => undefined,
++  },
++);
 +
 +export const retireUnlinkedManagedAccount = (
 +  executor: Executor,
 +  sql: SqlClient.SqlClient,
 +  owner: OwnerId,
 +  account: AccountId,
-+) => executor[StorageHost].transaction(Effect.gen(function* () {
-+  const rows = yield* sql`select id from executor_accounts where id = ${account} and owner = ${owner} for update`;
-+  if (rows.length === 0) return true;
-+  // Link inserts take the account's key-share lock. Recheck after obtaining its exclusive lock.
-+  if ((yield* sql`select 1 from hosted_app_account_links where account = ${account} limit 1`).length > 0)
-+    return false;
-+  yield* executor.accounts.remove({ owner, account }).pipe(Effect.provideService(ManagedAccountRetirement, account));
-+  return true;
-+})).pipe(Effect.catchTags({
-+  AccountWebhooksActive: () => Effect.succeed(false),
-+  AccountWorkflowsActive: () => Effect.succeed(false),
-+}), Effect.mapError(() => new StorageError()));
++) =>
++  executor[StorageHost]
++    .transaction(
++      Effect.gen(function* () {
++        const rows =
++          yield* sql`select id from executor_accounts where id = ${account} and owner = ${owner} for update`;
++        if (rows.length === 0) return true;
++        // Link inserts take the account's key-share lock. Recheck after obtaining its exclusive lock.
++        if (
++          (yield* sql`select 1 from hosted_app_account_links where account = ${account} limit 1`)
++            .length > 0
++        )
++          return false;
++        yield* executor.accounts
++          .remove({ owner, account })
++          .pipe(Effect.provideService(ManagedAccountRetirement, account));
++        return true;
++      }),
++    )
++    .pipe(
++      Effect.catchTags({
++        AccountWebhooksActive: () => Effect.succeed(false),
++        AccountWorkflowsActive: () => Effect.succeed(false),
++      }),
++      Effect.mapError(() => new StorageError()),
++    );
 diff --git a/apps/hosted/server/src/implementation/pool-account-cleanup.ts b/apps/hosted/server/src/implementation/pool-account-cleanup.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-account-cleanup.ts
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,35 @@
 +import { AccountId, type Executor, OwnerId } from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -1155,21 +1195,29 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-cleanup.ts b/app
 +const name = "basalt-retired-pool-accounts";
 +
 +/** GO approved: remove zero-link retired pool credentials. The journal and deletion commit together. */
-+export const cleanupRetiredPoolAccounts = (executor: Executor) => Effect.gen(function* () {
-+  const sql = yield* SqlClient.SqlClient;
-+  yield* sql.withTransaction(Effect.gen(function* () {
-+    yield* sql`insert into private_hosted_data_steps (name, run, mode) values (${name}, 'apply', 'apply') on conflict do nothing`;
-+    const [step] = yield* sql<{ completed: boolean; cursor: string | null }>`select cursor, completed_at is not null as completed from private_hosted_data_steps where name = ${name} and run = 'apply' for update`;
-+    if (step?.completed) return;
-+    const accounts = yield* Schema.decodeUnknownEffect(Retired)(yield* sql`select a.id, a.owner
++export const cleanupRetiredPoolAccounts = (executor: Executor) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`insert into private_hosted_data_steps (name, run, mode) values (${name}, 'apply', 'apply') on conflict do nothing`;
++        const [step] = yield* sql<{
++          completed: boolean;
++          cursor: string | null;
++        }>`select cursor, completed_at is not null as completed from private_hosted_data_steps where name = ${name} and run = 'apply' for update`;
++        if (step?.completed) return;
++        const accounts = yield* Schema.decodeUnknownEffect(Retired)(
++          yield* sql`select a.id, a.owner
 +      from executor_accounts a join hosted_account_access p on p.account_id = a.id
 +      where a.label = 'Pool access (retired)' and a.method = 'token' and p.kind = 'personal'
 +        and a.owner = 'organization:' || p.organization_id
 +        and a.id > ${step?.cursor ?? ""}
 +        and not exists (select 1 from hosted_app_account_links l where l.account = a.id)
-+      order by a.id limit 100`);
-+    for (const account of accounts)
-+      yield* retireUnlinkedManagedAccount(executor, sql, account.owner, account.id);
-+    yield* sql`update private_hosted_data_steps set cursor = ${accounts.at(-1)?.id ?? step?.cursor ?? null}, completed_at = ${accounts.length < 100 ? sql`now()` : sql`null`} where name = ${name} and run = 'apply'`;
-+  }));
-+});
++      order by a.id limit 100`,
++        );
++        for (const account of accounts)
++          yield* retireUnlinkedManagedAccount(executor, sql, account.owner, account.id);
++        yield* sql`update private_hosted_data_steps set cursor = ${accounts.at(-1)?.id ?? step?.cursor ?? null}, completed_at = ${accounts.length < 100 ? sql`now()` : sql`null`} where name = ${name} and run = 'apply'`;
++      }),
++    );
++  });
