@@ -24,6 +24,7 @@ const program = Effect.gen(function* () {
     ["PoolWorker", "../src/pool/worker.ts"],
     ["Catalog", "../src/catalog/worker.ts"],
     ["Router", "../src/router.ts"],
+    ["Site", "../src/site/worker.ts"],
   ]) {
     yield* bundler.build({
       id,

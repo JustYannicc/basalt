@@ -29,9 +29,20 @@ export const brand = {
    */
   links: {
     docs: null as string | null,
-    privacy: null as string | null,
-    terms: null as string | null,
+    privacy: "https://signalbox.run/privacy" as string | null,
+    terms: "https://signalbox.run/terms" as string | null,
     source: "https://github.com/JustYannicc/basalt" as string | null,
+  },
+  /**
+   * The public site at the zone's apex: home, privacy, terms and legal notice. The operator is
+   * named by entity and region only, with one contact address for every request.
+   */
+  site: {
+    operator: "Signalbox",
+    region: "Zurich, Switzerland",
+    email: "info@signalbox.run",
+    /** When the legal pages last changed, as they print it. */
+    updated: "29 October 2026",
   },
 } as const;
 

@@ -26,6 +26,8 @@ The router preserves incoming URLs, headers and bodies, and streams responses th
 
 The tools service's Worker also serves its own marketing site, docs and legal pages on every host. The router never forwards them: a signed-out `/` goes to sign-in, and the Docs, Privacy and Terms paths redirect to the brand's own pages once `brand.links` names them, and answer 404 until then. The tools service shows those links only when they are set.
 
+The brand's own site is a separate Worker on the zone's apex ([src/site](src/site)): the home page, Privacy Policy, Terms of Service and legal notice, rendered from `brand.ts` with no scripts, forms or third-party requests. `brand.site` names the operator by entity and region and gives one contact address. Privacy and Terms on the app host redirect there.
+
 [brand.ts](brand.ts) is the one brand config: the name, logo, host and zone, MCP entry name, OAuth app name, email domain and the brand's own docs and legal links. A rename changes it and the files in [public/](public); every place the tools service shows a name follows. [upstream.json](upstream.json) is the only tools-service commit pin. The generated upstream checkout and dependencies are ignored by Git.
 
 ## Deployment

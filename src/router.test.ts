@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { brand } from "../brand.ts";
 import router, { handleRequest, notFoundPage, type RouterEnv } from "./router.ts";
 
 function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]): RouterEnv {
@@ -207,9 +208,6 @@ test("never forwards the tools service's marketing, docs or legal pages", async 
     "/apps",
     "/apps/github",
     "/about-executor",
-    "/privacy",
-    "/privacy/",
-    "/terms",
     "/index.html",
     "/404.html",
     "/pricing/index.html",
@@ -222,6 +220,16 @@ test("never forwards the tools service's marketing, docs or legal pages", async 
   ]) {
     const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
     assert.equal(response.status, 404, path);
+  }
+  // The brand's own legal pages are on its site; the tools service's never answer.
+  for (const [path, page] of [
+    ["/privacy", brand.links.privacy],
+    ["/privacy/", brand.links.privacy],
+    ["/terms", brand.links.terms],
+  ] as const) {
+    const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
+    assert.equal(response.status, 302, path);
+    assert.equal(response.headers.get("location"), page, path);
   }
   assert.equal(toolsCalls, 0);
 });
