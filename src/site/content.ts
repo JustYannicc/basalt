@@ -29,14 +29,13 @@ const operator = `${site.operator}, ${site.region}`;
  * Google data stays one quiet line under it, which Google's review requires.
  */
 export const home = {
-  headline: "Let the work come to you.",
-  subheadline: "Your attention is the scarcest thing you have.",
+  headline: "Put the work at the center.",
+  subheadline: "AI still works the way Office did.",
   body: [
-    "Today you chase your tools and hand work to AI one task at a time.",
-    `${name} turns that around: your agents do the work, and come to you only when they need you.`,
-    "It all lives in one place you can open from anywhere, and it works with the apps you already use.",
-  ].join(" "),
-  tagline: "Less managing. More done.",
+    "Today everything starts with you: your laptop, your apps, your files, your agents. You carry the work between them, and AI helps one task at a time. Office worked like that, until Drive put the document at the center and let everyone come to it.",
+    `${name} does that for work with AI. The work lives in one place, and the people and agents on it gather around it. Agents do the work and come to you only when they need you. We're building one place for everything you do with AI: simple enough to start in a minute, with no ceiling.`,
+  ],
+  tagline: "The work comes first.",
   action: { label: "Sign in", href: `https://${brand.host}` },
   note: `${name} connects your agents to Gmail, Calendar and Drive with your own Google sign-in, so they can work in them for you.`,
 } as const;

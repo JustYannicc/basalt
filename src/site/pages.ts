@@ -78,7 +78,7 @@ function homePage(): string {
     brand.name,
     home.note,
     "home",
-    `<h1>${inline(home.headline)}</h1><p class="subheadline">${inline(home.subheadline)}</p><p class="lede">${inline(home.body)}</p><p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p>`,
+    `<h1>${inline(home.headline)}</h1><p class="subheadline">${inline(home.subheadline)}</p>${home.body.map((paragraph) => `<p class="lede">${inline(paragraph)}</p>`).join("")}<p class="tagline">${inline(home.tagline)}</p><a class="action" href="${escapeHtml(home.action.href)}">${escapeHtml(home.action.label)}</a><p class="note">${inline(home.note)}</p>`,
   );
 }
 
