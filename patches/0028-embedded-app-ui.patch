@@ -2775,7 +2775,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/host
      >
 -      {appWideViews.has(selectedView) || !canUse ? (
 +      <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
-+        {app === undefined ? null : <AppScreen app={app} />}
++        {hasAppScreen && app !== undefined ? <AppScreen app={app} /> : null}
 +      </div>
 +      {selectedView !== "app" && (appWideViews.has(selectedView) || !canUse) ? (
          <QueryResult
@@ -2873,7 +2873,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/host
 +function AppSkeleton() {
 +  return (
 +    <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
-+      <Skeleton className="absolute inset-0 size-full rounded-none" />
++      <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
 +    </div>
 +  );
 +}
@@ -2890,7 +2890,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/host
 -          className="absolute inset-x-0 top-0 z-10 bg-background p-3 text-sm text-muted-foreground"
 -        >
 -          Loading app…
-+        <div className="absolute inset-0 z-10">
++        <div className="absolute inset-0 z-10 flex">
 +          <AppSkeleton />
          </div>
        )}
@@ -2981,7 +2981,7 @@ diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.
          );
          yield* browser.use("The default App tab has the approved sandbox", (page) =>
            Promise.all([
-@@ -125,6 +162,53 @@
+@@ -125,6 +162,56 @@
            }),
          );
          yield* browser.checkpoint("embedded-app-tab");
@@ -3020,17 +3020,20 @@ diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.
 +          );
 +        });
 +        yield* browser.use("Open in new tab still opens the canonical app URL", (page) => {
-+          const popupPromise = page.waitForEvent("popup");
-+          return page
-+            .getByRole("link", { name: "Open in new tab" })
-+            .click()
-+            .then(() => popupPromise)
-+            .then((popup) =>
-+              popup.waitForLoadState().then(() => {
-+                expect(popup.url()).toBe(first.url);
-+                return popup.close();
++          const pagePromise = page.context().waitForEvent("page");
++          const url = new URL(first.url).href;
++          return Promise.all([
++            pagePromise,
++            page.getByRole("link", { name: "Open in new tab" }).click(),
++          ]).then(([opened]) =>
++            opened
++              .waitForURL(url)
++              .then(() => opened.waitForLoadState())
++              .then(() => {
++                expect(new URL(opened.url()).href).toBe(url);
++                return opened.close();
 +              }),
-+            );
++          );
 +        });
          yield* browser.use("App origins cannot read the dashboard DOM or cookies", (page) => {
            const frame = page.frames().find((frame) => frame.url().startsWith(first.url));
@@ -3064,3 +3067,327 @@ diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/
    });
  /** Retained source is administrative data; versions from other owners stay private. */
  export const appVersions = (owner: OwnerId, app: AppId) =>
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -350,8 +350,10 @@
+           appCommitted: false,
+         });
+         // Network failure and time are controlled at the browser boundary.
+-        yield* browser.use("Refuse the next app document", (page) =>
+-          page.route(`${first.url}/`, (route) => route.abort("failed")),
++        let releaseDocument!: () => void;
++        const documentGate = new Promise<void>((resolve) => (releaseDocument = resolve));
++        yield* browser.use("Hold the next app document", (page) =>
++          page.route(`${first.url}/`, (route) => documentGate.then(() => route.abort("failed"))),
+         );
+         yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
+         yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
+@@ -363,7 +365,9 @@
+           page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
+         );
+         yield* browser.checkpoint("embedded-app-failed");
+-        yield* browser.use("Restore app documents", (page) => page.unroute(`${first.url}/`));
++        yield* browser.use("Restore app documents", (page) =>
++          page.unroute(`${first.url}/`).then(releaseDocument),
++        );
+         yield* browser.use("Retry the app frame", (page) =>
+           page.getByRole("button", { name: "Retry", exact: true }).click(),
+         );
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -350,29 +350,40 @@
+           appCommitted: false,
+         });
+         // Network failure and time are controlled at the browser boundary.
++        const failurePage = yield* browser.use("Open a fresh page for the loading failure", (page) =>
++          page.context().newPage(),
++        );
++        yield* Effect.addFinalizer(() =>
++          browser.use("Close the loading failure page", () => failurePage.close()).pipe(Effect.orDie),
++        );
+         let releaseDocument!: () => void;
+         const documentGate = new Promise<void>((resolve) => (releaseDocument = resolve));
+         yield* browser.use("Hold the next app document", (page) =>
+-          page.route(`${first.url}/`, (route) => documentGate.then(() => route.abort("failed"))),
+-        );
+-        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
+-        yield* browser.use("Open the failing frame", (page) => page.goto(`${detail}?view=app`));
++          failurePage.route(`${first.url}/`, (route) =>
++            documentGate.then(() => route.abort("failed")),
++          ),
++        );
++        yield* browser.use("Control the frame loading deadline", () => failurePage.clock.install());
++        yield* browser.use("Open the failing frame", () => failurePage.goto(`${detail}?view=app`));
+         yield* browser.use("The pending frame announces loading", (page) =>
+-          page.getByRole("status", { name: "Loading app" }).waitFor(),
+-        );
+-        yield* browser.use("Reach the loading deadline", (page) => page.clock.fastForward(30001));
++          failurePage.getByRole("status", { name: "Loading app" }).waitFor(),
++        );
++        yield* browser.use("Reach the loading deadline", () => failurePage.clock.runFor(30001));
+         yield* browser.use("The failed frame offers recovery", (page) =>
+-          page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
++          failurePage
++            .getByRole("alert")
++            .filter({ hasText: "The app did not finish loading" })
++            .waitFor(),
+         );
+         yield* browser.checkpoint("embedded-app-failed");
+         yield* browser.use("Restore app documents", (page) =>
+-          page.unroute(`${first.url}/`).then(releaseDocument),
++          failurePage.unroute(`${first.url}/`).then(releaseDocument),
+         );
+         yield* browser.use("Retry the app frame", (page) =>
+-          page.getByRole("button", { name: "Retry", exact: true }).click(),
++          failurePage.getByRole("button", { name: "Retry", exact: true }).click(),
+         );
+         yield* browser.use("Retry renders the real screen", (page) =>
+-          page
++          failurePage
+             .frameLocator("iframe")
+             .getByRole("heading", { name: "Embedded fixture screen" })
+             .waitFor(),
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -356,8 +356,7 @@
+         yield* Effect.addFinalizer(() =>
+           browser.use("Close the loading failure page", () => failurePage.close()).pipe(Effect.orDie),
+         );
+-        let releaseDocument!: () => void;
+-        const documentGate = new Promise<void>((resolve) => (releaseDocument = resolve));
++        const documentGate = new Promise<void>(() => {});
+         yield* browser.use("Hold the next app document", (page) =>
+           failurePage.route(`${first.url}/`, (route) =>
+             documentGate.then(() => route.abort("failed")),
+@@ -376,9 +375,7 @@
+             .waitFor(),
+         );
+         yield* browser.checkpoint("embedded-app-failed");
+-        yield* browser.use("Restore app documents", (page) =>
+-          failurePage.unroute(`${first.url}/`).then(releaseDocument),
+-        );
++        yield* browser.use("Restore app documents", () => failurePage.unroute(`${first.url}/`));
+         yield* browser.use("Retry the app frame", (page) =>
+           failurePage.getByRole("button", { name: "Retry", exact: true }).click(),
+         );
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -63,6 +63,7 @@
+           });
+         const first = yield* deploy("Embedded fixture one");
+         const second = yield* deploy("Embedded fixture two", first.url);
++        const failing = yield* deploy("Embedded fixture failure");
+         const unknownHost = `a-${crypto.randomUUID()}.fixture.localhost`;
+         const unknownApp = yield* browser.use("Unknown opaque app hosts are refused", (page) =>
+           page.context().request.get(first.url, { headers: { Host: unknownHost } }),
+@@ -350,37 +351,27 @@
+           appCommitted: false,
+         });
+         // Network failure and time are controlled at the browser boundary.
+-        const failurePage = yield* browser.use("Open a fresh page for the loading failure", (page) =>
+-          page.context().newPage(),
+-        );
+-        yield* Effect.addFinalizer(() =>
+-          browser.use("Close the loading failure page", () => failurePage.close()).pipe(Effect.orDie),
+-        );
+         const documentGate = new Promise<void>(() => {});
+         yield* browser.use("Hold the next app document", (page) =>
+-          failurePage.route(`${first.url}/`, (route) =>
+-            documentGate.then(() => route.abort("failed")),
+-          ),
+-        );
+-        yield* browser.use("Control the frame loading deadline", () => failurePage.clock.install());
+-        yield* browser.use("Open the failing frame", () => failurePage.goto(`${detail}?view=app`));
++          page.route(`${failing.url}/`, (route) => documentGate.then(() => route.abort("failed"))),
++        );
++        yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
++        const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
++        yield* browser.use("Open the failing frame", (page) => page.goto(`${failingDetail}?view=app`));
+         yield* browser.use("The pending frame announces loading", (page) =>
+-          failurePage.getByRole("status", { name: "Loading app" }).waitFor(),
+-        );
+-        yield* browser.use("Reach the loading deadline", () => failurePage.clock.runFor(30001));
++          page.getByRole("status", { name: "Loading app" }).waitFor(),
++        );
++        yield* browser.use("Reach the loading deadline", (page) => page.clock.runFor(30001));
+         yield* browser.use("The failed frame offers recovery", (page) =>
+-          failurePage
+-            .getByRole("alert")
+-            .filter({ hasText: "The app did not finish loading" })
+-            .waitFor(),
++          page.getByRole("alert").filter({ hasText: "The app did not finish loading" }).waitFor(),
+         );
+         yield* browser.checkpoint("embedded-app-failed");
+-        yield* browser.use("Restore app documents", () => failurePage.unroute(`${first.url}/`));
++        yield* browser.use("Restore app documents", (page) => page.unroute(`${failing.url}/`));
+         yield* browser.use("Retry the app frame", (page) =>
+-          failurePage.getByRole("button", { name: "Retry", exact: true }).click(),
++          page.getByRole("button", { name: "Retry", exact: true }).click(),
+         );
+         yield* browser.use("Retry renders the real screen", (page) =>
+-          failurePage
++          page
+             .frameLocator("iframe")
+             .getByRole("heading", { name: "Embedded fixture screen" })
+             .waitFor(),
+
+
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -142,7 +142,7 @@
+       ? inventory.data.value.apps.find((item) => item.id === appId)
+       : undefined;
+   const hasAppScreen = app !== undefined && app.activeVersion !== null && app.hasUi !== false;
+-  const selectedView = view ?? (tool === undefined ? (hasAppScreen ? "app" : "overview") : "tools");
++  const selectedView = view ?? (tool === undefined ? "overview" : "tools");
+   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
+   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
+   const session = useAtomValue(sessionAtom);
+
+
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -86,7 +86,6 @@
+   const [attempt, setAttempt] = useState(0);
+   const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
+   useEffect(() => {
+-    setState("loading");
+     const timer = window.setTimeout(() => setState("failed"), 30000);
+     const ready = (event: MessageEvent) => {
+       if (
+@@ -114,7 +113,13 @@
+       {state === "failed" && (
+         <div role="alert" className="flex items-center gap-3 border-b p-3 text-sm">
+           <span>The app did not finish loading. Retry or open it in a new tab.</span>
+-          <Button variant="outline" onClick={() => setAttempt((value) => value + 1)}>
++          <Button
++            variant="outline"
++            onClick={() => {
++              setState("loading");
++              setAttempt((value) => value + 1);
++            }}
++          >
+             Retry
+           </Button>
+         </div>
+
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -108,7 +108,7 @@
+             .then(() => page.goto(detail))
+             .then(() => requestedLocation);
+         });
+-        yield* browser.use("App appears selected before its location resolves", (page) => {
++        yield* browser.use("App tab is present while its location is held", (page) => {
+           const navigation = page.getByRole("navigation", { name: "App navigation" });
+           return Promise.all([
+             navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
+@@ -116,32 +116,49 @@
+               .getByRole("link", { name: "Overview", exact: true })
+               .getAttribute("aria-current"),
+           ]).then(([appView, overview]) => {
+-            expect(appView).toBe("page");
+-            expect(overview).toBeNull();
++            expect(appView).toBeNull();
++            expect(overview).toBe("page");
+           });
+         });
+         releaseLocation();
+         yield* browser.use("The App frame completes sign-in while prewarmed", (page) =>
+-          Promise.all([
+-            page.waitForResponse(
+-              (response) =>
+-                new URL(response.url()).origin === first.url &&
+-                new URL(response.url()).pathname === "/_executor/auth/callback" &&
+-                response.status() === 302 &&
+-                response.request().frame() !== page.mainFrame(),
++          page.waitForResponse(
++            (response) =>
++              new URL(response.url()).origin === first.url &&
++              new URL(response.url()).pathname === "/_executor/auth/callback" &&
++              response.status() === 302 &&
++              response.request().frame() !== page.mainFrame(),
++          ),
++        );
++        yield* browser.use("Overview remains selected after the location resolves", (page) => {
++          const navigation = page.getByRole("navigation", { name: "App navigation" });
++          return Promise.all([
++            navigation.getByRole("link", { name: "App", exact: true }).getAttribute("aria-current"),
++            navigation
++              .getByRole("link", { name: "Overview", exact: true })
++              .getAttribute("aria-current"),
++          ]).then(([appView, overview]) => {
++            expect(appView).toBeNull();
++            expect(overview).toBe("page");
++          });
++        });
++        yield* browser.checkpoint("embedded-app-default-overview");
++        yield* browser.use("Opening App reveals the prewarmed screen", (page) =>
++          page
++            .getByRole("navigation", { name: "App navigation" })
++            .getByRole("link", { name: "App", exact: true })
++            .click()
++            .then(() =>
++              page
++                .frameLocator(`iframe[title="${first.app.name} app"]`)
++                .getByRole("heading", { name: "Embedded fixture screen" })
++                .waitFor(),
+             ),
+-          ]),
+-        );
+-        yield* browser.use("The isolated app renders its authored screen", (page) =>
+-          page
+-            .frameLocator(`iframe[title="${first.app.name} app"]`)
+-            .getByRole("heading", { name: "Embedded fixture screen" })
+-            .waitFor(),
+         );
+         yield* browser.use("The host receives app readiness", (page) =>
+           page.getByRole("status", { name: "Loading app" }).waitFor({ state: "hidden" }),
+         );
+-        yield* browser.use("The default App tab has the approved sandbox", (page) =>
++        yield* browser.use("The opened App tab has the approved sandbox", (page) =>
+           Promise.all([
+             page
+               .getByRole("navigation", { name: "App navigation" })
+@@ -151,9 +168,9 @@
+             page.locator("iframe").getAttribute("allow"),
+             page.locator("iframe").getAttribute("referrerpolicy"),
+             page.getByRole("link", { name: "Open in new tab" }).getAttribute("href"),
+-          ]).then(([selected, sandbox, allow, referrer, href]) => {
+-            expect(page.url()).toBe(`${target.metadata.origin}${detail}`);
+-            expect(selected).toBe("page");
++          ]).then(([appView, sandbox, allow, referrer, href]) => {
++            expect(page.url()).toBe(`${target.metadata.origin}${detail}?view=app`);
++            expect(appView).toBe("page");
+             expect(sandbox).toBe(
+               "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads",
+             );
+@@ -180,8 +197,9 @@
+           const navigation = page.getByRole("navigation", { name: "App navigation" });
+           return iframe.elementHandle().then((original) =>
+             navigation
+-              .getByRole("link", { name: "Overview", exact: true })
++              .getByRole("link", { name: "App", exact: true })
+               .click()
++              .then(() => navigation.getByRole("link", { name: "Overview", exact: true }).click())
+               .then(() => navigation.getByRole("link", { name: "App", exact: true }).click())
+               .then(() =>
+                 Promise.all([
+@@ -357,7 +375,9 @@
+         );
+         yield* browser.use("Control the frame loading deadline", (page) => page.clock.install());
+         const failingDetail = `/org/${actors.organization.slug}/apps/${failing.app.id}`;
+-        yield* browser.use("Open the failing frame", (page) => page.goto(`${failingDetail}?view=app`));
++        yield* browser.use("Open the failing frame", (page) =>
++          page.goto(`${failingDetail}?view=app`),
++        );
+         yield* browser.use("The pending frame announces loading", (page) =>
+           page.getByRole("status", { name: "Loading app" }).waitFor(),
+         );
