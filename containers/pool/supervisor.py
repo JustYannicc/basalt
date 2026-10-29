@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import signal
 import subprocess
 import sys
@@ -36,6 +37,33 @@ BOOTSTRAP_MARKER = "database config is empty; run with -import first"
 STARTUP_TIMEOUT_SECONDS = 180
 
 
+def privacy_audit_line(name: str, line: str) -> str | None:
+    """Allow only the startup audit's counts and opaque numeric key IDs."""
+    marker = "POOL_PRIVACY_AUDIT "
+    if name != "home" or marker not in line:
+        return None
+    try:
+        # Logrus quotes and escapes a JSON message in its text format.
+        if 'msg="' in line:
+            line = json.JSONDecoder().raw_decode(line.split("msg=", 1)[1])[0]
+        elif line.startswith("{"):
+            line = json.loads(line).get("msg", "")
+        if not isinstance(line, str) or marker not in line:
+            return None
+        value = json.JSONDecoder().raw_decode(line.split(marker, 1)[1])[0]
+    except (ValueError, TypeError):
+        return None
+    fields = {"usage_rows", "purged_rows", "active_key_count", "deleted_key_count", "unknown_key_count"}
+    if not isinstance(value, dict) or set(value) != fields | {"active_key_ids"}:
+        return None
+    if any(type(value[key]) is not int or value[key] < 0 for key in fields):
+        return None
+    ids = value["active_key_ids"]
+    if not isinstance(ids, list) or len(ids) > 10000 or any(type(item) is not int or item <= 0 for item in ids):
+        return None
+    return marker + json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 class Child:
     def __init__(
         self,
@@ -43,7 +71,6 @@ class Child:
         command: list[str],
         env: dict[str, str],
         cwd: pathlib.Path,
-        secrets: tuple[str, ...],
     ) -> None:
         self.name = name
         self.config_empty = threading.Event()
@@ -57,7 +84,6 @@ class Child:
             text=True,
             bufsize=1,
         )
-        self._secrets = tuple(secret for secret in secrets if secret)
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
 
@@ -65,14 +91,13 @@ class Child:
         stream = self.process.stdout
         if stream is None:
             return
-        for line in stream:
+        while line := stream.readline(8192):
             if BOOTSTRAP_MARKER in line:
                 self.config_empty.set()
-            safe = line.rstrip("\n")
-            for secret in self._secrets:
-                safe = safe.replace(secret, "[redacted]")
-            if safe:
-                print(f"[{self.name}] {safe}", flush=True)
+            # Provider errors can contain full responses. Do not forward them.
+            safe = privacy_audit_line(self.name, line)
+            if safe is not None:
+                print(safe, flush=True)
 
 
 def wait_for_home(
@@ -158,14 +183,12 @@ def main() -> int:
         for signum in (signal.SIGTERM, signal.SIGINT):
             original_signals[signum] = signal.signal(signum, request_stop)
 
-        secrets = (database_url, management_key)
         atomic_write(ROOT / "cluster.yaml", cluster_yaml(database_url))
         home_child = Child(
             "home",
             [HOME_BINARY, "-addr", "0.0.0.0:8327"],
             child_environment("home", management_key),
             ROOT,
-            secrets,
         )
         children.append(home_child)
         home_state = wait_for_home(home_child, management_key, stop)
@@ -179,7 +202,6 @@ def main() -> int:
                 [HOME_BINARY, "-addr", "0.0.0.0:8327"],
                 child_environment("home", management_key),
                 ROOT,
-                secrets,
             )
             children[-1] = home_child
             home_state = wait_for_home(home_child, management_key, stop)
@@ -195,7 +217,6 @@ def main() -> int:
             [NODE_BINARY, "-home-disable-cluster-discovery"],
             child_environment("node", management_key, home_jwt, readiness.boot_id),
             ROOT / "node",
-            secrets + (home_jwt,),
         )
         children.append(node_child)
 

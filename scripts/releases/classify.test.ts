@@ -5,6 +5,16 @@ import { artifact, pins, sha } from "./fixtures.test-helpers.ts";
 import { sha256PatchContent } from "./patch-registry.ts";
 import type { PatchManifestV3 } from "./types.ts";
 
+test("pool source pins and carries require the database backup gate without a release version change", () => {
+  for (const path of ["containers/pool/sources.json", "containers/pool/patches/cliproxy-home-v1.1.6-metadata-only.patch"]) {
+    const base = pins();
+    const report = classifySnapshots({ baseGitCommit: sha("1"), candidateGitCommit: sha("2"),
+      basePins: base, candidatePins: structuredClone(base), localChangedPaths: [path] });
+    assert.equal(report.databaseChanged, true, path);
+    assert.equal(report.evidence.database.state, "changed");
+  }
+});
+
 test("reports exact Git and pin candidates and keeps an unproven Home update database-unknown", () => {
   const base = pins();
   const candidate = structuredClone(base);

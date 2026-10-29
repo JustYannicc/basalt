@@ -12,6 +12,7 @@ from .pool_contract import (
     pool_config_patch,
 )
 from .readiness import Readiness
+from .supervisor import privacy_audit_line
 
 
 class BootstrapContractTests(unittest.TestCase):
@@ -45,7 +46,8 @@ class BootstrapContractTests(unittest.TestCase):
 
     def test_restart_patch_leaves_credentials_and_keys_out(self) -> None:
         patch = pool_config_patch(False)
-        self.assertEqual(patch["server"], {"port": 8317})
+        self.assertEqual(patch["server"], {"port": 8317, "commercial-mode": True})
+        self.assertEqual(patch["observability"]["logs"], {"request-log": False, "debug": False, "logging-to-file": False})
         self.assertEqual(patch["routing"], {
             "strategy": "round-robin",
             "session-affinity": True,
@@ -55,6 +57,25 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertNotIn("api-keys", patch)
         self.assertNotIn("codex-api-key", patch)
         self.assertNotIn("secret-key", patch["management"])
+
+    def test_child_logs_allow_only_private_audit_counts_and_ids(self) -> None:
+        self.assertIsNone(privacy_audit_line("node", "prompt=private auth=secret"))
+        self.assertIsNone(privacy_audit_line("home", "upstream failure body=private"))
+        audit: dict[str, object] = {"usage_rows": 5, "purged_rows": 5, "active_key_count": 1,
+                 "deleted_key_count": 0, "unknown_key_count": 0, "active_key_ids": [2]}
+        line = "POOL_PRIVACY_AUDIT " + json.dumps(audit)
+        parsed = privacy_audit_line("home", line)
+        assert parsed is not None
+        self.assertEqual(json.loads(parsed.split(" ", 1)[1]), audit)
+        wrapped = 'time="2026-10-29T12:00:00Z" level=info msg=' + json.dumps(line)
+        parsed = privacy_audit_line("home", wrapped)
+        assert parsed is not None
+        self.assertEqual(json.loads(parsed.split(" ", 1)[1]), audit)
+        audit["content"] = "private"
+        self.assertIsNone(privacy_audit_line("home", "POOL_PRIVACY_AUDIT " + json.dumps(audit)))
+        audit.pop("content")
+        audit["active_key_ids"] = ["token"]
+        self.assertIsNone(privacy_audit_line("home", "POOL_PRIVACY_AUDIT " + json.dumps(audit)))
 
     def test_readiness_payload_contains_only_boot_identity(self) -> None:
         readiness = Readiness("fixture-management-key")

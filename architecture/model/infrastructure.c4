@@ -152,7 +152,7 @@ model {
   releaseSource = adapter "Release source" {
     #external
     technology "GitHub Releases"
-    metadata { hosts "github.com" }
+    metadata { hosts "github.com|codeload.github.com" }
   }
   providerSource = adapter "Provider source" {
     #external
@@ -192,7 +192,7 @@ model {
     technology "npm registry · Alpine packages"
     metadata { hosts "registry.npmjs.org|dl-cdn.alpinelinux.org"; sdks "package:npm|package:apk" }
   }
-  basalt.build -[sync]-> releaseSource "download verified releases"
+  basalt.build -[sync]-> releaseSource "download verified release sources and binaries"
   basalt.deployment -[sync]-> releaseSource "download CI actions"
   basalt.build -[sync]-> containerRegistry "pull pinned images"
   basalt.build -[sync]-> packageSource "install build packages"

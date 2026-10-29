@@ -43,6 +43,20 @@ The parent router owns <code>X-Signalbox-Pool-Boot</code>; it can read <code>boo
 
 The bounded unit tests use Python's standard library. From the repository root, run <code>python3 -m unittest containers.pool.test_bootstrap</code>. The parent owns the Docker/PostgreSQL integration run.
 
+## Diagnostic privacy
+
+The pool builds Home and its node from the exact release source commits. <code>sources.json</code> pins each source archive and privacy carry by SHA-256. The release patch registry binds that manifest. A version update must port the carries or meet their manual retirement proof before the image builds.
+
+Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The effective configuration enables commercial mode and disables request logging, debug output and file logging. The supervisor drops arbitrary child output. It forwards only the privacy audit's validated counts and numeric key IDs to private runtime logs.
+
+Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint cannot authenticate a request. The credential store still keeps the live key that authentication needs. Provider response bodies, prompts, completions, authentication headers and raw client keys are excluded from diagnostics. Only closed billing tiers and validated numeric quota measurements survive alongside usage counters.
+
+Home applies a forward-only privacy step before readiness. It records the affected key IDs and counts, removes historical diagnostic content and raw keys, and protects writes from older processes during rollout. The step preserves usage counts and billing. Repeated boots resume incomplete work. It leaves the existing cross-provider replay cache unchanged.
+
+The purge removes the live database's diagnostic copies. Existing database backups can retain earlier copies until normal backup cleanup removes them. Restoring an older backup requires the privacy step to run again.
+
+CI builds <code>legacy-runtime</code> and <code>runtime</code> from this Dockerfile. The upgrade regression first reproduces the leak with the released binaries, then checks the purge, a forced failure, an old writer and another boot against a disposable PostgreSQL database. It scans raw diagnostic rows, files and container logs before fixture redaction. Authentication storage and the explicitly retained replay cache are separate from these diagnostic sinks.
+
 ## Routing and model catalog
 
 The image explicitly sets round-robin selection, session affinity with a one-hour TTL, and three additional request-retry rounds. It tries all eligible credentials per round and caps cooldown wait between rounds at 30 seconds. Home owns quota/error cooldown and automatically fails over when a bound credential becomes unavailable. Upstream defaults are round-robin, affinity disabled, and three retry rounds.

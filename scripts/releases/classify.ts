@@ -7,6 +7,7 @@ import { classifyPatchChanges } from "./classify-patches.ts";
 import {
   assertPatchManifestContentMatchesFiles,
   assertPatchManifestMatchesFiles,
+  assertPoolCarryManifestContent,
   parsePatchManifest,
 } from "./patch-registry.ts";
 import { githubRepository, sameArtifact } from "./sources.ts";
@@ -199,6 +200,8 @@ function readManifestAt(repositoryRoot: string, commit: string): PatchManifestV3
     gitBuffer(repositoryRoot, ["show", `${commit}:patches/${file}`]),
   ]));
   assertPatchManifestContentMatchesFiles(manifest, contentByFile);
+  if (manifest.pool_carries)
+    assertPoolCarryManifestContent(manifest, gitBuffer(repositoryRoot, ["show", `${commit}:${manifest.pool_carries.manifest}`]));
   return manifest;
 }
 
