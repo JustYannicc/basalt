@@ -19,12 +19,28 @@ interface Profile {
   lastChecks: { sessions: number; organizations: number; memberships: number; removals: number };
 }
 
-const apply = (reverse: boolean) => {
+// Carries after this one may change the same server files, so they come off whole first and go
+// back on after, in order. Only this carry's server implementation is switched.
+const later = readdirSync(join(root, "patches"))
+  .filter(file => /^\d{4}-.*\.patch$/.test(file) && file > "0035-dashboard-batch-authentication.patch")
+  .sort()
+  .map(file => join(root, "patches", file));
+const switchPatch = (file: string, reverse: boolean, include?: string) => {
   const result = spawnSync("git", [
     "apply", ...(reverse ? ["--reverse"] : []),
-    "--include=apps/hosted/server/src/implementation/*", patch,
+    ...(include === undefined ? [] : [`--include=${include}`]), file,
   ], { cwd: upstream, stdio: "inherit" });
   if (result.status !== 0) throw new Error("Could not switch the dashboard batch implementation");
+};
+const server = "apps/hosted/server/src/implementation/*";
+const apply = (reverse: boolean) => {
+  if (reverse) {
+    for (const file of [...later].reverse()) switchPatch(file, true);
+    switchPatch(patch, true, server);
+  } else {
+    switchPatch(patch, false, server);
+    for (const file of later) switchPatch(file, false);
+  }
 };
 
 const directories = () => {
