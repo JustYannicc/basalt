@@ -9,3 +9,13 @@ export const telemetryBindings = Effect.gen(function* () {
   }
   return result;
 });
+
+/**
+ * Native Worker logs without query strings. Request URLs can carry sign-in codes, unsubscribe
+ * links and app outbound searches, and the privacy page promises tool input stays out of logs.
+ */
+export const workerObservability = {
+  enabled: true,
+  redactQueryString: true,
+  logs: { enabled: true, invocationLogs: true, persist: true },
+};
