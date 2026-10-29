@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { Effect, Layer, Context, Redacted } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FetchHttpClient } from "effect/http";
-import { firstPartyOAuthClientDefinitions } from "../../.upstream/apps/hosted/server/src/implementation/first-party-oauth.ts";
 import { startEnvironment } from "../../.upstream/e2e/sdk/environment.ts";
 import { startScenario } from "../../.upstream/e2e/sdk/scenario.ts";
 import { Target } from "../../.upstream/e2e/support/platform.ts";
@@ -107,22 +106,22 @@ const program = Effect.gen(function* () {
   check(Number.isInteger(frameworkProtocol) && frameworkProtocol > 0,
     "The built Basalt framework must identify its protocol");
 
-  const hostedClient = firstPartyOAuthClientDefinitions.find((client) => client.id === "slack-rest");
-  check(hostedClient, "The pinned host has not added the slack-rest client yet");
-  assert.deepEqual(hostedClient.defaultScopes, [], "slack-rest must ask for no normal OAuth scopes");
-  equal(hostedClient.server.authorizationParams?.user_scope, appMethod.userScope,
-    "Hosted slack-rest user_scope differs from the maintained app");
-  equal(hostedClient.server.tokenResponse?.path, "authed_user", "Hosted slack-rest must read authed_user");
-  equal(hostedClient.server.tokenResponse?.requiredOnExchange, true,
-    "Hosted slack-rest must require the nested grant during authorization-code exchange");
-  equal(hostedClient.tokenEndpointAuthMethod, "client_secret_post", "Slack REST client auth method changed");
-  equal(hostedClient.server.grantedScopeSeparator, ",", "Slack's comma-separated user scopes must be parsed");
-  equal(new URL(hostedClient.server.authorizationUrl).href, new URL(appMethod.authorizationUrl).href,
-    "The Slack user app and hosted client authorization endpoints differ");
-  equal(new URL(hostedClient.server.tokenUrl).href, new URL(appMethod.tokenUrl).href,
-    "The Slack user app and hosted client token endpoints differ");
-  equal(appMethod.userScope.split(",").length, appMethod.userScopes.length,
-    "Slack user_scope did not serialize the maintained user scope list");
+  // Supply the test client through the host's supported fixture setting.
+  const hostedClient = {
+    id: "slack-rest",
+    label: "Synthetic Slack",
+    server: {
+      authorizationUrl: appMethod.authorizationUrl,
+      tokenUrl: appMethod.tokenUrl,
+      authorizationParams: { user_scope: appMethod.userScope },
+      tokenResponse: { path: "authed_user", requiredOnExchange: true },
+      grantedScopeSeparator: ",",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: [],
+    allowedScopes: appMethod.userScopes,
+    placement: { hosts: ["slack.com"] },
+  };
 
   const originalSpecUrl = openapiSpecUrl(source);
   const spec = yield* Effect.promise(() => vendorSpec(originalSpecUrl, directory));

@@ -111,8 +111,8 @@ export function slackCatalogEntry(source) {
     name: manifest.executor?.title ?? "Slack",
     description: manifest.description ?? "",
     auth: [
-      { method: "oauth", kind: "oauth2" },
-      { method: "token", kind: "secrets", label: "Bot or user token (xoxb-/xoxp-)" },
+      { method: "user", kind: "oauth2" },
+      { method: "token", kind: "secrets", label: "Paste a token" },
     ],
     icons,
     source: "apps/slack.json",

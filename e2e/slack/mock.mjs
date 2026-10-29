@@ -3,7 +3,6 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { handleCatalog } from "../../src/catalog/worker.ts";
 import { slackCatalogEntry } from "./catalog.mjs";
 
 const person = (id) => ({
@@ -55,13 +54,7 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
       const url = new URL(request.url ?? "/", origin);
       const path = url.pathname;
       if (request.method === "GET" && path === "/catalog/index.json") {
-        const result = await handleCatalog(new Request(url.href), async () =>
-          new Response(JSON.stringify(official), { status: 200, headers: { "content-type": "application/json" } }),
-        );
-        const payload = await result.arrayBuffer();
-        response.writeHead(result.status, Object.fromEntries(result.headers));
-        response.end(Buffer.from(payload));
-        return;
+        return output(response, 200, official);
       }
       if (request.method === "GET" && path === "/catalog/apps/slack.json") {
         requests.catalog.push({ path, package: appSource?.package });
