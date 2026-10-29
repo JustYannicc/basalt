@@ -1,0 +1,396 @@
+diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -1,5 +1,6 @@
+ import { hostCookieName } from "../contracts/browser.ts";
+ import { apiKeys, apiKeyManagement } from "./api-keys.ts";
++import { requestAuthentication } from "./batch-authentication.ts";
+ import {
+   CurrentUsage,
+   isReadMethod,
+@@ -167,7 +168,8 @@
+         ) {
+           return yield* Effect.fail(new Forbidden());
+         }
+-        const principal = yield* auth.current(new Headers(request.headers));
++        const identity = yield* requestAuthentication(auth);
++        const principal = yield* identity.current(new Headers(request.headers));
+         if (principal === null) return yield* Effect.fail(new Unauthorized());
+         const operation = {
+           area: group.identifier,
+diff --git a/apps/hosted/server/src/implementation/batch-authentication.ts b/apps/hosted/server/src/implementation/batch-authentication.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/batch-authentication.ts
+@@ -0,0 +1,75 @@
++import { dashboardBatchPath, maxBatchReads } from "@executor-js/dashboard-start/batch";
++import { Cache, Context, Data, Effect, Option } from "effect";
++import { HttpRouter, HttpServerRequest } from "effect/http";
++import { Authentication, type Principal } from "../contracts/auth.ts";
++import { OrganizationTombstones } from "../contracts/organization-removal.ts";
++import type { OrganizationId } from "../contracts/organization.ts";
++
++const BatchAuthentication = Context.Reference<typeof Authentication.Service | undefined>(
++  "hosted/BatchAuthentication",
++  { defaultValue: () => undefined },
++);
++const BatchTombstones = Context.Reference<typeof OrganizationTombstones.Service | undefined>(
++  "hosted/BatchTombstones",
++  { defaultValue: () => undefined },
++);
++
++class Membership extends Data.Class<{
++  readonly principal: Principal;
++  readonly organization: OrganizationId;
++}> {}
++
++/** A batch's reads all carry its one identity; other requests use the native checks. */
++export const requestAuthentication = (native: typeof Authentication.Service) =>
++  Effect.map(BatchAuthentication, (batch) => batch ?? native);
++
++export const requestTombstones = Effect.gen(function* () {
++  return (yield* BatchTombstones) ?? (yield* OrganizationTombstones);
++});
++
++/**
++ * Share pending and completed identity reads only inside one dashboard batch. The router's
++ * streaming response captures this context, so every read shares it until the batch ends.
++ * Resource permissions still run in each endpoint, and the next request reads authority again.
++ */
++export const batchAuthentication = HttpRouter.middleware(
++  Effect.gen(function* () {
++    const native = yield* Authentication;
++    const tombstones = yield* OrganizationTombstones;
++    return (handler) =>
++      Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const url = HttpServerRequest.toURL(request);
++        if (
++          request.method !== "POST" ||
++          Option.isNone(url) ||
++          url.value.pathname !== dashboardBatchPath ||
++          request.headers.authorization !== undefined
++        )
++          return yield* handler;
++        const current = yield* Effect.cached(native.current(new Headers(request.headers)));
++        const organizations = yield* Cache.make({
++          capacity: maxBatchReads,
++          lookup: native.organization,
++        });
++        const memberships = yield* Cache.make({
++          capacity: maxBatchReads,
++          lookup: ({ principal, organization }: Membership) =>
++            native.membership(principal, organization),
++        });
++        const removed = yield* Cache.make({ capacity: maxBatchReads, lookup: tombstones });
++        return yield* handler.pipe(
++          Effect.provideService(BatchAuthentication, {
++            ...native,
++            current: () => current,
++            organization: (reference) => Cache.get(organizations, reference),
++            membership: (principal, organization) =>
++              Cache.get(memberships, new Membership({ principal, organization })),
++          }),
++          Effect.provideService(BatchTombstones, (organization) =>
++            Cache.get(removed, organization),
++          ),
++        );
++      });
++  }),
++);
+diff --git a/apps/hosted/server/src/implementation/middleware.ts b/apps/hosted/server/src/implementation/middleware.ts
+--- a/apps/hosted/server/src/implementation/middleware.ts
++++ b/apps/hosted/server/src/implementation/middleware.ts
+@@ -2,6 +2,7 @@
+ import { requireUserLive } from "./auth.ts";
+ import { requireOrganizationLive } from "./organization.ts";
+ import { requireAccountTargetLive } from "./proofs/account-access.ts";
++import { batchAuthentication } from "./batch-authentication.ts";
+ 
+ /**
+  * Every hosted API middleware implementation. Hosts provide this once where they build the API;
+@@ -11,4 +12,5 @@
+   requireUserLive,
+   requireOrganizationLive,
+   requireAccountTargetLive,
++  batchAuthentication.layer,
+ );
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -1,5 +1,6 @@
+ import type { AuthContext } from "@better-auth/core";
+ import type { Principal } from "../contracts/auth.ts";
++import { requestAuthentication, requestTombstones } from "./batch-authentication.ts";
+ import { accountOAuthRedirectUri } from "./auth.ts";
+ import {
+   CurrentUsage,
+@@ -99,7 +100,7 @@
+  * organization that is being erased.
+  */
+ const refuseRemoved = (organization: OrganizationId) =>
+-  Effect.flatMap(OrganizationTombstones, (removed) => removed(organization)).pipe(
++  Effect.flatMap(requestTombstones, (removed) => removed(organization)).pipe(
+     Effect.mapError(() => new AuthenticationUnavailable()),
+     Effect.flatMap((gone) => (gone ? Effect.fail(new OrganizationForbidden()) : Effect.void)),
+   );
+@@ -156,15 +157,16 @@
+       request.headers.origin !== auth.origin
+     )
+       return yield* new Forbidden();
+-    const principal = yield* auth.current(headers);
++    const identity = yield* requestAuthentication(auth);
++    const principal = yield* identity.current(headers);
+     if (principal === null) return yield* new Unauthorized();
+-    const organization = yield* auth.organization(reference);
++    const organization = yield* identity.organization(reference);
+     yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
+     // Removal is reported before membership. The reads run one after the other: on Cloud they
+     // share the event's one SQL connection, and overlapping them would open a second one, a TLS
+     // login that costs far more than the few milliseconds the second read waits.
+     yield* refuseRemoved(organization);
+-    const membership = yield* auth.membership(principal, organization);
++    const membership = yield* identity.membership(principal, organization);
+     const access = {
+       organization,
+       owner: organizationOwner(organization),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1064,6 +1064,17 @@
+       "self-host": scheduled,
+       cloud: scheduled,
+       local: na("The local dashboard does not batch its reads; most of them are live streams"),
++    },
++  },
++  dashboardBatchAuthentication: {
++    fixtures: "actors",
++    file: "dashboard-batch-authentication.spec.ts",
++    title:
++      "A dashboard batch checks its session and each membership once, without retaining authority for the next request",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("The local dashboard does not batch its reads"),
+     },
+   },
+   dashboardBuildChange: {
+diff --git a/e2e/tests/dashboard-batch-authentication.spec.ts b/e2e/tests/dashboard-batch-authentication.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/dashboard-batch-authentication.spec.ts
+@@ -0,0 +1,214 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Redacted, Schedule, Schema } from "effect";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors, freshOwnerSession } from "../support/actors.ts";
++import { Api, body, type Session } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { batchPath, type BatchedRead } from "../support/read-batches.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String });
++const Answer = Schema.Struct({
++  id: Schema.Int,
++  status: Schema.Int,
++  text: Schema.optional(Schema.String),
++});
++const decodeAnswer = Schema.decodeUnknownEffect(Schema.fromJsonString(Answer));
++
++/** Read the public batch stream with an actor's cookie jar, without opening a dashboard page. */
++const send = (session: Session, reads: ReadonlyArray<BatchedRead>) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const client = yield* HttpClient.HttpClient;
++      const origin = targetHosts(yield* Target).browser;
++      const cookies = Redacted.value(yield* session.cookies);
++      const traceId = randomUUID().replaceAll("-", "");
++      const request = yield* HttpClientRequest.post(new URL(batchPath, origin)).pipe(
++        HttpClientRequest.setHeaders({
++          origin,
++          cookie: cookies.map(({ name, value }) => `${name}=${value}`).join("; "),
++          "executor-wire-revision": "1",
++        }),
++        HttpClientRequest.bodyJson({
++          reads: reads.map((read) => ({
++            ...read,
++            traceparent: `00-${traceId}-${traceId.slice(0, 16)}-01`,
++          })),
++        }),
++      );
++      const started = yield* Clock.currentTimeMillis;
++      const response = yield* client.execute(request);
++      const text = yield* response.text;
++      const ms = (yield* Clock.currentTimeMillis) - started;
++      expect(response.status).toBe(200);
++      const answers = yield* Effect.forEach(text.trim().split("\n"), (line) => decodeAnswer(line));
++      return { traceId, ms, answers: answers.sort((left, right) => left.id - right.id) };
++    }),
++  );
++
++/** Wait for all reads to be delivered before counting the batch's actual authentication spans. */
++const authentication = (traceId: string, reads: number) =>
++  Effect.gen(function* () {
++    const telemetry = yield* Telemetry;
++    const evidence = yield* Evidence;
++    let operations: Record<string, number> = {};
++    return yield* telemetry.query(traceId).pipe(
++      Effect.tap((result) =>
++        Effect.sync(() => {
++          operations = {};
++          for (const { span } of result.data)
++            operations[span.operationName] = (operations[span.operationName] ?? 0) + 1;
++        }),
++      ),
++      Effect.flatMap((result) =>
++        result.data.filter(({ span }) => span.operationName === "dashboard.batch.read")
++          .length === reads
++          ? Effect.succeed(result.data)
++          : Effect.fail(new Error("The completed batch trace must reach Motel")),
++      ),
++      Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
++      Effect.timeout("25 seconds"),
++      Effect.tapError(() => evidence.json("batch-trace-counts.json", { reads, operations })),
++      Effect.map((spans) => ({
++        sessions: spans.filter(({ span }) => span.operationName === "auth.current").length,
++        organizations: spans.filter(({ span }) => span.operationName === "auth.organization")
++          .length,
++        memberships: spans.filter(({ span }) => span.operationName === "auth.membership").length,
++        removals: spans.filter(
++          ({ span }) =>
++            span.operationName === "sql.execute" &&
++            String(span.tags["db.query.text"] ?? "").includes("from hosted_organization_removal"),
++        ).length,
++      })),
++    );
++  });
++
++layer(HostedLive, { excludeTestServices: true })("Dashboard batch authentication", (it) => {
++  it.effect(scenarios.dashboardBatchAuthentication.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const evidence = yield* Evidence;
++        const cloud = (yield* Target).metadata.target === "cloud";
++        const expected = {
++          sessions: 1,
++          organizations: cloud ? 1 : 0,
++          memberships: 1,
++          removals: cloud ? 1 : 0,
++        };
++        const organization = actors.organization.id;
++        const prefix = `/api/organizations/${organization}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Batch authentication",
++          files: [
++            {
++              path: "index.ts",
++              content: `import { defineApp, query, object, router } from "apps";
++export default defineApp({}, async () => ({
++  tools: router({ hello: query({ description: "Greeting", input: object({}) }, async () => "Hello") }),
++}));`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const read = (group: string, endpoint: string, params: Record<string, string> = {}) => ({
++          id: 0,
++          group,
++          endpoint,
++          params,
++          query: {},
++        });
++        const batch = (reads: ReadonlyArray<BatchedRead>) =>
++          reads.map((read, id) => ({ ...read, id }));
++        const page = batch([
++          read("viewer", "get"),
++          read("organization", "access", { organization }),
++          read("organization", "inventory", { organization }),
++          read("apps", "get", { organization, app: app.id }),
++          read("appAccounts", "appList", { organization, app: app.id }),
++          read("appAccounts", "userList", { organization, app: app.id }),
++          read("resourceAccess", "app", { organization, app: app.id }),
++          read("tools", "index", { organization, app: app.id }),
++        ]);
++        const first = yield* send(actors.owner, page);
++        expect(first.answers.map(({ status }) => status)).toEqual(page.map(() => 200));
++        const firstChecks = yield* authentication(first.traceId, page.length);
++
++        const samples: Array<number> = [];
++        let last = first;
++        for (let index = 0; index < 30; index++) {
++          last = yield* send(actors.owner, page);
++          expect(last.answers.map(({ status }) => status)).toEqual(page.map(() => 200));
++          samples.push(last.ms);
++        }
++        const lastChecks = yield* authentication(last.traceId, page.length);
++        samples.sort((left, right) => left - right);
++        yield* evidence.json("batch-profile.json", {
++          reads: page.length,
++          samples: samples.length,
++          p50Ms: samples[Math.ceil(samples.length * 0.5) - 1],
++          p90Ms: samples[Math.ceil(samples.length * 0.9) - 1],
++          firstChecks,
++          lastChecks,
++        });
++        expect(firstChecks, "Dashboard batch authentication budget").toEqual(expected);
++        expect(lastChecks, "Dashboard batch authentication budget").toEqual(expected);
++
++        // Aliases share a membership check; another reference must never inherit that access.
++        const mixed = yield* send(
++          actors.owner,
++          batch([
++            read("organization", "access", { organization }),
++            read("organization", "access", { organization: actors.organization.slug }),
++            read("organization", "access", { organization: `missing-${randomUUID()}` }),
++          ]),
++        );
++        expect(mixed.answers.map(({ status }) => status)).toEqual([200, 200, 403]);
++        expect(yield* authentication(mixed.traceId, 3)).toEqual({
++          ...expected,
++          organizations: cloud ? 3 : 0,
++        });
++
++        const identity = batch([
++          read("viewer", "get"),
++          read("organization", "access", { organization }),
++        ]);
++        const member = yield* send(actors.member, identity);
++        expect(member.answers.map(({ status }) => status)).toEqual([200, 200]);
++        expect(JSON.parse(member.answers[1]?.text ?? "null")).toMatchObject({ role: "member" });
++        const signedIn = yield* body(
++          Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
++          yield* api.request(actors.member, "GET", "/api/auth/get-session"),
++        );
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
++            organizationId: organization,
++            memberIdOrEmail: signedIn.user.email,
++          })).status,
++        ).toBe(200);
++        const removed = yield* send(actors.member, identity);
++        expect(removed.answers.map(({ status }) => status)).toEqual([200, 403]);
++
++        const fresh = yield* freshOwnerSession;
++        expect((yield* send(fresh, identity)).answers.map(({ status }) => status)).toEqual([
++          200, 200,
++        ]);
++        expect((yield* api.request(fresh, "POST", "/api/auth/sign-out", {})).status).toBe(200);
++        const revoked = yield* send(fresh, identity);
++        expect(revoked.answers.map(({ status }) => status)).toEqual([401, 401]);
++      }),
++    ),
++  );
++});
