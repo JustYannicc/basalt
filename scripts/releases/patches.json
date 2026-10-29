@@ -335,7 +335,7 @@
       "identity": "executor-host-managed-accounts",
       "file": "0036-host-managed-accounts.patch",
       "kind": "upstream",
-      "upstream_pull_request": null,
+      "upstream_pull_request": 2450,
       "upstream_issue": 2444,
       "database_sensitive": false,
       "workflow_sensitive": false,
