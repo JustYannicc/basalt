@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Deferred, Effect, Layer, Option, Redacted, Schema } from "effect";
 import {
   fixture,
   load,
@@ -116,6 +116,38 @@ test("role demotion acknowledges the resulting native policy before the role cha
     const result = yield* Effect.exit(demote().pipe(Effect.andThen(sql`update member set role = 'member' where id = 'm-other'`)));
     assert.equal(result._tag, "Failure");
     assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+  }));
+});
+
+test("concurrent audience projection waits for the native membership write after its before-hook", async () => {
+  const { withOrganizationAccessRequest } = await load("apps/hosted/cloud/src/implementation/organization-access-request.ts");
+  await fixture(({ sql, changes, hook }) => Effect.gen(function* () {
+    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+    yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
+    const projected = yield* Deferred.make<void>();
+    const competing = yield* Deferred.make<void>();
+    const request = new Request("https://host.example.test/api/auth/organization/update-member-role", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ organizationId: organization, memberId: "m-other", role: "member" }),
+    });
+    const role = withOrganizationAccessRequest(request, () => Effect.gen(function* () {
+      yield* hook.memberRoleChanging({ organization, member: "m-other", role: "member" });
+      yield* Deferred.succeed(projected, undefined);
+      yield* Deferred.await(competing);
+      yield* Effect.yieldNow;
+      yield* sql`update member set role = 'member' where id = 'm-other'`;
+    }));
+    const projection = Effect.gen(function* () {
+      yield* Deferred.await(projected);
+      yield* Deferred.succeed(competing, undefined);
+      yield* hook.appAccessChanged({ organization });
+    });
+    yield* Effect.all([role, projection], { concurrency: "unbounded" });
+    assert.equal(changes.length, 2);
+    assert.deepEqual(changes[0].pools[0].managers, ["owner"]);
+    assert.deepEqual(changes[1].pools[0].managers, ["owner"]);
+    assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "member" }]);
   }));
 });
 

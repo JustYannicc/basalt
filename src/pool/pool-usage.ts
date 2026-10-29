@@ -1,6 +1,7 @@
 import { callerHeader, controlBasePath, usageDays, type UsageSummary } from "../../apps/pool/contract.ts";
 import { readCap, readCaps, setCap } from "./caps.ts";
 import { accountsView, HomeClient, poolGroupPrefix } from "./control.ts";
+import type { PoolPermissions } from "./authorization.ts";
 import { fail, failureResponse, json, rows, text } from "./json.ts";
 import { LimitHistory } from "./limit-history.ts";
 import { verifyPoolToken } from "./token.ts";
@@ -9,8 +10,7 @@ import { UsageLedger } from "./usage-summary.ts";
 import { mapBounded } from "./bounded.ts";
 import { needsQuotaCollection, type QuotaCollection } from "./quota-collection.ts";
 
-// Usage, cost and caps per pool. The owner sees everyone on their pool; anyone else gets only their
-// own numbers, filtered before anything is added up. Caps are the pool backend's spend limits.
+// Personal summaries filter before aggregation. Pool managers can inspect the whole pool.
 
 export const summaryPath = `${controlBasePath}/usage/summary`;
 export const maxMembers = 500;
@@ -25,6 +25,7 @@ interface Dependencies {
   previousSigningKey?: string;
   /** Everyone who can use the pool, from the pool directory. */
   audience: (pool: string) => Promise<readonly string[]>;
+  permissions?: (pool: string, user: string) => Promise<PoolPermissions | undefined>;
   /** Keeps a background sync alive after the response. */
   defer?: (work: Promise<void>) => void;
   now?: () => Date;
@@ -93,7 +94,7 @@ export class PoolUsage {
     return this.syncing;
   }
 
-  async summary(pool: string, owner: string, caller: string, days: number, members: readonly string[] = []): Promise<UsageSummary> {
+  async summary(pool: string, owner: string, caller: string, days: number, members: readonly string[] = [], canManage = caller === owner): Promise<UsageSummary> {
     const now = this.deps.now?.() ?? new Date();
     const readAt = await this.ledger.readAt();
     // Serve what's stored; only catch up in the background when the alarm fell behind.
@@ -102,16 +103,16 @@ export class PoolUsage {
       if (this.deps.defer) this.deps.defer(work);
       else await work;
     }
-    if (caller !== owner) {
+    if (!canManage) {
       const cap = await readCap(this.deps.client, caller, pool);
-      return this.ledger.summary(pool, { owner, caller, members: [], days, now, cap: () => cap });
+      return this.ledger.summary(pool, { owner, caller, canManage, members: [], days, now, cap: () => cap });
     }
     const people = [...new Set([owner, ...members])];
     const caps = await readCaps(this.deps.client, pool, people.filter((person) => person !== owner));
-    return this.ledger.summary(pool, { owner, caller, members: people, days, now, cap: (member) => caps.get(member) ?? null });
+    return this.ledger.summary(pool, { owner, caller, canManage, members: people, days, now, cap: (member) => caps.get(member) ?? null });
   }
 
-  /** Owner-only; the owner is never capped. */
+  /** The caller authorizes management; the recorded owner is never capped. */
   async setCap(pool: string, owner: string, member: string, weekly: number | null): Promise<void> {
     if (!isMemberId(member)) return fail(400, "invalid_query", "Choose a member of this pool.");
     if (member === owner) return fail(400, "invalid_query", "The pool's owner has no cap.");
@@ -130,8 +131,11 @@ export class PoolUsage {
       if (!caller) return fail(403, "unauthorized", "Sign in to see your usage on this pool.");
       const raw = new URL(request.url).searchParams.get("days") ?? String(usageDays);
       if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > usageDays) return fail(400, "invalid_query", `Ask for 1 to ${usageDays} days.`);
-      const members = caller === claims.owner ? (await this.deps.audience(claims.pool)).slice(0, maxMembers) : [];
-      return json(await this.summary(claims.pool, claims.owner, caller, Number(raw), members));
+      const permissions = await this.deps.permissions?.(claims.pool, caller);
+      if (permissions !== undefined && !permissions.canUse) return fail(403, "unauthorized", "This pool is not available to you.");
+      const canManage = permissions?.canManage ?? caller === claims.owner;
+      const members = canManage ? (await this.deps.audience(claims.pool)).slice(0, maxMembers) : [];
+      return json(await this.summary(claims.pool, claims.owner, caller, Number(raw), members, canManage));
     } catch (error) { return failureResponse(error); }
   }
 }

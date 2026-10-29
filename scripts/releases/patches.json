@@ -361,7 +361,7 @@
     {
       "identity": "basalt-native-pool-authorization",
       "file": "0040-native-pool-authorization.patch",
-      "content_sha256": "a163e0e9b22c00789a38a82c8bd052a8bbcaff54496d59518d2d10c2b1037a8b",
+      "content_sha256": "9d8a2d82d7d625f381863442710801d828b6ce41df17efd26ba6a24bbd87cc83",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

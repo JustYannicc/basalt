@@ -208,7 +208,7 @@ export class Computers {
       return json(null);
     }
     const members = Array.isArray(payload.members) ? payload.members.filter(isMemberId).slice(0, maxMembers) : [];
-    return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members));
+    return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members, true));
   }
   private async create(registry: Registry, intent: SetupIntent, input: Record<string, unknown>): Promise<Response> {
     const name = text(input.name)?.trim();

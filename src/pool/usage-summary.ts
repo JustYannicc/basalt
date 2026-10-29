@@ -31,6 +31,7 @@ interface Cursor { version: number; pools: string[]; readAt: string | null; fres
 interface Options { now?: () => Date; history?: Pick<LimitHistory, "advice"> }
 export interface SummaryOptions {
   owner: string; caller: string; members: readonly string[]; days: number; now: Date;
+  canManage?: boolean;
   cap: (member: string) => Cap | null;
 }
 const zero = (): UsageSlice => ({ requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 }, cost: 0, unpriced: 0 });
@@ -303,6 +304,7 @@ export class UsageLedger {
     return this.queue.run(async () => {
       await this.storage.recover(pendingKey);
       const { owner, caller, days, now, cap } = options;
+      const canManage = options.canManage ?? caller === owner;
       if (!Number.isInteger(days) || days < 1 || days > 30) throw new Error("Invalid usage days");
       const end = Date.parse(dayOf(now.getTime())) + dayMs;
       const start = end - days * dayMs;
@@ -313,15 +315,15 @@ export class UsageLedger {
       const accountBuckets: AccountBucket[] = [];
       for (const day of dayKeys) {
         for (const bucket of stored.get(poolKey(pool, day)) as Bucket[] | undefined ?? []) {
-          if (caller === owner || bucket.person === person) buckets.push({ ...bucket, day });
+          if (canManage || bucket.person === person) buckets.push({ ...bucket, day });
         }
         for (const bucket of stored.get(accountKey(pool, day)) as AccountBucket[] | undefined ?? []) {
-          if (caller === owner || bucket.person === person) accountBuckets.push(bucket);
+          if (canManage || bucket.person === person) accountBuckets.push(bucket);
         }
       }
-      const result: UsageSummary = { scope: caller === owner ? "pool" : "you", from: new Date(start).toISOString(), to: new Date(end).toISOString(),
+      const result: UsageSummary = { scope: canManage ? "pool" : "you", from: new Date(start).toISOString(), to: new Date(end).toISOString(),
         ...slices(buckets, accountBuckets), cap: cap(caller), readAt: (stored.get(cursorKey) as Cursor | undefined)?.readAt ?? null };
-      if (caller !== owner) return result;
+      if (!canManage) return result;
       const members = await Promise.all([...new Set(options.members)].map(async (member) => {
         const person = await digest(member);
         const own = slices(buckets.filter((bucket) => bucket.person === person), [], false);
