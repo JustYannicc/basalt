@@ -122,6 +122,7 @@ The model uses the names and identifiers below. Planned parts are not current de
 | Term | Meaning |
 | --- | --- |
 | App account count | The number of distinct accounts linked to an app's app-scope requirements for everyone. The hosted app directory and local overview return the count without adding account identifiers or details; the app card combines it with the viewer's own user-scope links. |
+| Account list app links | The app-scope links of accounts the viewer already lists, for apps the viewer may see. The hosted app directory and local overview return them beside the count, so the Accounts list names every app an account serves; accounts outside the viewer's list stay counted only. |
 
 The catalog's carried apps pin the exact prepared host framework and default-export `defineApp` from their root entrypoint. Read operations explicitly run without approval; ticket creation always requires approval. The ticket app takes a validated site through native account connection setup. The saved account binds authorization, callback, refresh, API and health to that exact site. Catalog requests and tool input cannot select the tenant. Its source stays available independently of optional hosted credentials. Community publication uses a separately validated public framework release and an approved publisher namespace.
 

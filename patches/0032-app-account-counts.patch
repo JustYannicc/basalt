@@ -1,18 +1,20 @@
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index 731c694..ef49665 100644
+index 731c694e..230bfb14 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -61,6 +61,8 @@
+@@ -61,6 +61,10 @@
    readonly apps: readonly App[];
    /** The caller's linked accounts for each listed app. */
    readonly links: readonly AppAccountLink[];
 +  /** The number of distinct app-scope accounts linked for everyone, when this inventory lists it. */
 +  readonly appAccountCounts?: readonly { readonly app: AppId; readonly count: number }[];
++  /** The listed accounts linked to each listed app for everyone, when this inventory lists them. */
++  readonly appLinks?: readonly AppAccountLink[];
    readonly accounts: readonly AccountSummary[];
  }
  /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */
 diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
-index 6ff45ba..fa0f475 100644
+index 6ff45bae..fa0f4751 100644
 --- a/packages/ui/src/implementation/dashboard/apps.tsx
 +++ b/packages/ui/src/implementation/dashboard/apps.tsx
 @@ -129,8 +129,10 @@
@@ -94,23 +96,40 @@ index 6ff45ba..fa0f475 100644
                      </div>
                      {screen?.(app)}
 diff --git a/apps/hosted/server/src/contracts/resource-access.ts b/apps/hosted/server/src/contracts/resource-access.ts
-index f90ca28..afc4c94 100644
+index f90ca288..a288173a 100644
 --- a/apps/hosted/server/src/contracts/resource-access.ts
 +++ b/apps/hosted/server/src/contracts/resource-access.ts
-@@ -135,6 +135,8 @@
+@@ -135,6 +135,10 @@
        access: AppAccess,
        /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
        linkedAccounts: Schema.Array(AccountId),
 +      /** Distinct app-scope accounts linked for everyone, counted without returning their details. */
 +      appAccountCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++      /** The listed accounts linked to the app for everyone; others count without their details. */
++      appLinkedAccounts: Schema.Array(AccountId),
      }),
    ),
    accounts: Schema.Array(
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 0faaaff..12be1ab 100644
+index 0faaaff8..c36b2d43 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
-@@ -18,7 +18,7 @@
+@@ -7,7 +7,13 @@
+ import { SqlClient } from "effect/sql";
+ import { teamAppPending } from "./provisioning.ts";
+ import { HttpApiBuilder } from "effect/http-api";
+-import { StorageError, type AppId, type Provider, type ProviderId } from "@executor-js/sdk/core";
++import {
++  StorageError,
++  type AccountId,
++  type AppId,
++  type Provider,
++  type ProviderId,
++} from "@executor-js/sdk/core";
+ import { HostedApi } from "../contracts/api.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+@@ -18,7 +24,7 @@
    type AccessRevision,
  } from "../contracts/resource-access.ts";
  import { requireGroupSharing } from "./group-sharing.ts";
@@ -119,46 +138,87 @@ index 0faaaff..12be1ab 100644
  import {
    policyDatabase,
    currentResourceAuthority,
-@@ -51,9 +51,20 @@
+@@ -51,13 +57,16 @@
      });
      const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
      const links = yield* callerLinkedAccounts(usableApps);
+-    const appEntries = listedApps.map(({ app, access }) => ({
+-      app,
+-      access,
+-      linkedAccounts: [
+-        ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
+-      ],
+-    }));
 +    const appLinked = yield* appLinkedAccounts(
 +      yield* policyDatabase,
 +      listedApps.map(({ app }) => app.id),
 +    );
-+    const appAccounts = new Map<AppId, Set<string>>();
++    const appAccounts = new Map<AppId, Set<AccountId>>();
 +    for (const link of appLinked) {
-+      const accounts = appAccounts.get(link.app) ?? new Set<string>();
++      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
 +      accounts.add(link.id);
 +      appAccounts.set(link.app, accounts);
 +    }
-     const appEntries = listedApps.map(({ app, access }) => ({
-       app,
-       access,
-+      appAccountCount: appAccounts.get(app.id)?.size ?? 0,
-       linkedAccounts: [
-         ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
-       ],
+     const linked = new Set(links.map((link) => link.id));
+     const accounts = (yield* executor.accounts.list({ owner })).filter(
+       (account) => policy.tools.kind === "all" || linked.has(account.id),
+@@ -97,6 +106,20 @@
+         ];
+       }),
+     );
++    const listedAccounts = accountEntries.flat();
++    const listed = new Set(listedAccounts.map(({ account }) => account.id));
++    const appEntries = listedApps.map(({ app, access }) => {
++      const shared = [...(appAccounts.get(app.id) ?? [])];
++      return {
++        app,
++        access,
++        appAccountCount: shared.length,
++        appLinkedAccounts: shared.filter((id) => listed.has(id)),
++        linkedAccounts: [
++          ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
++        ],
++      };
++    });
+     const pendingApp =
+       policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
+         ? yield* teamAppPending(
+@@ -104,7 +127,7 @@
+             (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
+           ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
+         : false;
+-    return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
++    return { apps: appEntries, accounts: listedAccounts, pendingApp };
+   });
+ /** The compare-and-swap revision protects settings and all group grants as one update. */
+ export const shareApp = (
 diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
-index c250445..930c065 100644
+index c2504450..9d2862b0 100644
 --- a/apps/hosted/web/src/contracts/resource-access.ts
 +++ b/apps/hosted/web/src/contracts/resource-access.ts
-@@ -177,8 +177,12 @@
+@@ -177,18 +177,32 @@
                    access.audience.groups.some((id) => id === key.group))),
          )
          .map(({ app }) => app);
-+      const listedAppIds = new Set(apps.map((app) => app.id));
-+      const appAccountCounts = data.apps
-+        .filter(({ app }) => listedAppIds.has(app.id))
-+        .map(({ app, appAccountCount }) => ({ app: app.id, count: appAccountCount }));
-       const links = data.apps
+-      const links = data.apps
 -        .filter(({ app }) => apps.some((item) => item.id === app.id))
-+        .filter(({ app }) => listedAppIds.has(app.id))
-         .flatMap(({ app, linkedAccounts }) =>
-           linkedAccounts.map((account) => ({ app: app.id, account })),
+-        .flatMap(({ app, linkedAccounts }) =>
+-          linkedAccounts.map((account) => ({ app: app.id, account })),
++      const listedAppIds = new Set(apps.map((app) => app.id));
++      const listed = data.apps.filter(({ app }) => listedAppIds.has(app.id));
++      const appAccountCounts = listed.map(({ app, appAccountCount }) => ({
++        app: app.id,
++        count: appAccountCount,
++      }));
++      const pairs = (accounts: (entry: (typeof listed)[number]) => readonly AccountId[]) =>
++        listed.flatMap((entry) =>
++          accounts(entry).map((account) => ({ app: entry.app.id, account })),
          );
-@@ -188,7 +192,13 @@
++      const links = pairs((entry) => entry.linkedAccounts);
++      const appLinks = pairs((entry) => entry.appLinkedAccounts);
+       const accounts = data.accounts.map(({ account, provider, health }) => ({
+         ...account,
+         providerName: provider.definition.name,
          providerUrl: providerDisplayUrl(provider.definition),
          ...(health === undefined ? {} : { health }),
        }));
@@ -167,6 +227,7 @@ index c250445..930c065 100644
 +        apps,
 +        accounts,
 +        links,
++        appLinks,
 +        appAccountCounts,
 +        pendingApp: key.group !== "private" && data.pendingApp,
 +      };
@@ -174,10 +235,10 @@ index c250445..930c065 100644
    ),
  );
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 693ff4c..40d9d36 100644
+index 693ff4c2..2cab8086 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -459,6 +459,10 @@
+@@ -459,6 +459,12 @@
    apps: Schema.Array(App),
    /** The accounts linked to each app, oldest first. */
    links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
@@ -185,22 +246,27 @@ index 693ff4c..40d9d36 100644
 +  appAccountCounts: Schema.Array(
 +    Schema.Struct({ app: AppId, count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
 +  ),
++  /** The accounts linked to each app for everyone, oldest first. */
++  appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
    accounts: Schema.Array(DashboardAccount),
  });
  export type DashboardOverview = typeof DashboardOverview.Type;
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index 2126ea7..9eb0b78 100644
+index 2126ea7f..58403762 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
-@@ -271,6 +271,18 @@
+@@ -269,8 +269,23 @@
+       { concurrency: 4 },
+     );
      // An account's checks are those of the apps that link it, in either scope; the inventory
-     // lists the user links, each app and account once.
+-    // lists the user links, each app and account once.
++    // lists the user and app links apart, each app and account once per scope.
      const all = yield* accountLinks(sql, executor);
 +    const listedApps = new Set(apps.map((app) => app.id));
-+    const appAccounts = new Map<string, Set<string>>();
++    const appAccounts = new Map<AppId, Set<AccountId>>();
 +    for (const link of all) {
 +      if (link.subject !== null || !listedApps.has(link.app)) continue;
-+      const accounts = appAccounts.get(link.app) ?? new Set<string>();
++      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
 +      accounts.add(link.account);
 +      appAccounts.set(link.app, accounts);
 +    }
@@ -208,20 +274,23 @@ index 2126ea7..9eb0b78 100644
 +      app: app.id,
 +      count: appAccounts.get(app.id)?.size ?? 0,
 +    }));
++    const appLinks = [...appAccounts].flatMap(([app, accounts]) =>
++      [...accounts].map((account) => ({ app, account })),
++    );
      const pairs = (subjectScoped: boolean) => {
        const seen = new Set<string>();
        return all.flatMap((link) => {
-@@ -297,7 +309,7 @@
+@@ -297,7 +312,7 @@
          ...(health === undefined ? {} : { health }),
        });
      }
 -    return { apps, links, accounts: display };
-+    return { apps, links, appAccountCounts, accounts: display };
++    return { apps, links, appLinks, appAccountCounts, accounts: display };
    });
    const appDetail = (appId: AppId) =>
      Effect.gen(function* () {
 diff --git a/e2e/tests/server-rendered-dashboard.spec.ts b/e2e/tests/server-rendered-dashboard.spec.ts
-index 3f01d67..48edec8 100644
+index 3f01d670..48edec8c 100644
 --- a/e2e/tests/server-rendered-dashboard.spec.ts
 +++ b/e2e/tests/server-rendered-dashboard.spec.ts
 @@ -5,12 +5,17 @@
@@ -290,7 +359,7 @@ index 3f01d67..48edec8 100644
          const document = (path: string) =>
            browser.use(`Request ${path}`, (page) =>
 diff --git a/e2e/tests/local-server-rendered-dashboard.spec.ts b/e2e/tests/local-server-rendered-dashboard.spec.ts
-index 206e700..74ad422 100644
+index 206e700e..74ad4221 100644
 --- a/e2e/tests/local-server-rendered-dashboard.spec.ts
 +++ b/e2e/tests/local-server-rendered-dashboard.spec.ts
 @@ -15,6 +15,7 @@
@@ -362,3 +431,200 @@ index 206e700..74ad422 100644
          yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");
        }),
      ),
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 2fe6b482..9c18e650 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -3,7 +3,7 @@
+ import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { UserCircleIcon } from "@hugeicons/core-free-icons";
+-import type { AccountDetail, FailureProps } from "../../contracts/dashboard.ts";
++import type { AccountDetail, AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
+ import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
+ import { Button } from "../components/button.tsx";
+ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+@@ -12,6 +12,8 @@
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
+ import { AccountDisplayStatus } from "./account-status.tsx";
++import { ProviderIcon } from "./common.tsx";
++import { cn } from "../lib/utils.ts";
+ 
+ type AccountInfo = NonNullable<AccountHealth["info"]>;
+ 
+@@ -94,6 +96,35 @@
+   );
+ }
+ 
++/**
++ * The photo an account's last check reported, on a light tile so dark logos stay visible in
++ * either theme, or its provider's icon. `compact` is the 24-pixel account row, which shows no
++ * generic glyph for a provider without a logo.
++ */
++export function AccountLogo({
++  account,
++  compact = false,
++}: {
++  readonly account: AccountSummary;
++  readonly compact?: boolean;
++}) {
++  const info = account.health?.info;
++  return info?.avatarUrl ? (
++    <AccountAvatar
++      info={info}
++      fallback={false}
++      className={cn("border bg-white", compact ? "size-6 rounded-md" : "size-8.5 rounded-[7px]")}
++    />
++  ) : (
++    <ProviderIcon
++      name={account.providerName ?? "Account"}
++      url={account.providerUrl}
++      medium={compact}
++      showFallback={!compact}
++    />
++  );
++}
++
+ /** The upstream identity a check reported, for the account heading. */
+ export function AccountIdentity({ info }: { readonly info: AccountInfo }) {
+   const name = info.displayName ?? info.username ?? info.email;
+diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
+index 11c022dd..3cba9a14 100644
+--- a/packages/ui/src/implementation/dashboard/accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts.tsx
+@@ -2,7 +2,7 @@
+ import { PageFrame, PageHeader } from "./page.tsx";
+ import { Option } from "effect";
+ import { AccountRowsSkeleton } from "./loading.tsx";
+-import { AccountCheckDot, AccountIdentity } from "./account-health.tsx";
++import { AccountCheckDot, AccountIdentity, AccountLogo } from "./account-health.tsx";
+ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+@@ -11,7 +11,7 @@
+ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
+ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
+ 
+-import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
++import { Empty, SearchInput } from "./common.tsx";
+ import { Button } from "../components/button.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+@@ -96,6 +96,8 @@
+   useEffect(() => {
+     highlighted.current?.scrollIntoView({ block: "center" });
+   }, [highlight]);
++  // App-scope links list the apps an account serves for everyone, beside the caller's own.
++  const links = [...data.links, ...(data.appLinks ?? [])];
+   const accounts = data.accounts.filter((account) =>
+     `${account.label} ${account.providerName ?? ""}`.toLowerCase().includes(search.toLowerCase()),
+   );
+@@ -124,7 +126,7 @@
+           </div>
+           {accounts.map((account) => {
+             const apps = data.apps.filter((app) =>
+-              data.links.some((link) => link.app === app.id && link.account === account.id),
++              links.some((link) => link.app === app.id && link.account === account.id),
+             );
+             return (
+               <div
+@@ -135,10 +137,7 @@
+                   : {})}
+               >
+                 <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
+-                  <ProviderIcon
+-                    name={account.providerName ?? "Account"}
+-                    url={account.providerUrl}
+-                  />
++                  <AccountLogo account={account} />
+                   <div>
+                     <strong>{account.label || "Unnamed account"}</strong>
+                     {account.description && (
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index fc155b88..ff19b9c6 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -24,7 +24,7 @@
+   type Query,
+ } from "../../contracts/dashboard.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+-import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
++import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
+ import { EmptyState } from "./empty-state.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Checkbox } from "../components/checkbox.tsx";
+@@ -559,16 +559,7 @@
+     .filter((value, index, values) => values.indexOf(value) === index);
+   const identity = (
+     <>
+-      {info?.avatarUrl ? (
+-        <AccountAvatar info={info} fallback={false} className="size-6 rounded-md border bg-white" />
+-      ) : (
+-        <ProviderIcon
+-          name={account.providerName ?? "Account"}
+-          url={account.providerUrl}
+-          medium
+-          showFallback={false}
+-        />
+-      )}
++      <AccountLogo account={account} compact />
+       <span className="min-w-0 truncate font-medium" title={name} data-account-name>
+         {name}
+       </span>
+diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
+index 6dd11109..e6283935 100644
+--- a/e2e/tests/account-status.spec.ts
++++ b/e2e/tests/account-status.spec.ts
+@@ -427,6 +427,51 @@
+         );
+         // Opening checks once; the explicitly refreshed threshold result remains current on revisit.
+         expect(yield* statusBackend.calls).toBe(2);
++        // The account list names the app a for-everyone account serves and shows the reported logo.
++        const [backendAccount] = accounts;
++        if (backendAccount === undefined)
++          return yield* Effect.die("The backend account is missing");
++        const highlighted = '.inventory-row[aria-current="true"]';
++        const openListAt = (id: string) =>
++          browser.use(`Open the account list at ${id}`, (page) =>
++            page
++              .goto(`/org/${actors.organization.slug}/accounts?account=${id}`)
++              .then(() => page.locator(highlighted).waitFor()),
++          );
++        yield* openListAt(backendAccount);
++        expect(
++          yield* browser.use("Read the app-scope account's apps", (page) =>
++            page.locator(highlighted).locator(".app-references").innerText(),
++          ),
++        ).toContain("Account status fixture");
++        yield* openListAt(account);
++        for (const scheme of ["dark", "light"] as const) {
++          const listed = yield* browser.use(`Read the listed logo in ${scheme} mode`, (page) => {
++            const image = page
++              .locator(highlighted)
++              .locator(".app-cell > [data-slot='account-avatar'] img");
++            return page
++              .emulateMedia({ colorScheme: scheme })
++              .then(() => image.waitFor())
++              .then(() =>
++                image.evaluate((element) => ({
++                  source: (element as HTMLImageElement).src,
++                  width: (element as HTMLImageElement).naturalWidth,
++                  background: getComputedStyle(element.parentElement!).backgroundColor,
++                })),
++              );
++          });
++          expect(listed.source).toBe(`${statusBackend.origin}/logo.svg`);
++          expect(listed.width).toBeGreaterThan(0);
++          expect(listed.background).toBe("rgb(255, 255, 255)");
++        }
++        yield* evidence.attach(
++          "account-list-lab-logo.png",
++          "image/png",
++          yield* browser.use("Capture the listed accounts", (page) =>
++            page.locator(".inventory").screenshot(),
++          ),
++        );
+         for (const [status, classified] of [
+           [401, "credentials_rejected"],
+           [403, "forbidden"],
