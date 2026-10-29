@@ -204,7 +204,11 @@ export class HomeClient {
   private clock: () => number;
   constructor(fetchHome: HomeDependencies["home"], clock: () => number = Date.now) { this.fetchHome = fetchHome; this.clock = clock; }
   async response(path: string, init?: RequestInit): Promise<Response> {
-    try { return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal); } catch { return unavailable(); }
+    try { return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal); }
+    catch {
+      init?.signal?.throwIfAborted();
+      return unavailable();
+    }
   }
   async data(path: string, init?: RequestInit): Promise<Json> {
     const response = await this.response(path, init);
