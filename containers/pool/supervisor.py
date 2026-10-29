@@ -38,7 +38,7 @@ STARTUP_TIMEOUT_SECONDS = 180
 
 
 def privacy_audit_line(name: str, line: str) -> str | None:
-    """Allow only the startup audit's counts and opaque numeric key IDs."""
+    """Allow only the startup audit's counts."""
     marker = "POOL_PRIVACY_AUDIT "
     if name != "home" or marker not in line:
         return None
@@ -54,12 +54,9 @@ def privacy_audit_line(name: str, line: str) -> str | None:
     except (ValueError, TypeError):
         return None
     fields = {"usage_rows", "purged_rows", "active_key_count", "deleted_key_count", "unknown_key_count"}
-    if not isinstance(value, dict) or set(value) != fields | {"active_key_ids"}:
+    if not isinstance(value, dict) or set(value) != fields:
         return None
     if any(type(value[key]) is not int or value[key] < 0 for key in fields):
-        return None
-    ids = value["active_key_ids"]
-    if not isinstance(ids, list) or len(ids) > 10000 or any(type(item) is not int or item <= 0 for item in ids):
         return None
     return marker + json.dumps(value, sort_keys=True, separators=(",", ":"))
 

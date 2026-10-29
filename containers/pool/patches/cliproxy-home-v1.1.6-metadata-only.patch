@@ -587,10 +587,10 @@ index 0000000..89c2798
 +}
 diff --git a/internal/cluster/diagnostics_privacy_audit.go b/internal/cluster/diagnostics_privacy_audit.go
 new file mode 100644
-index 0000000..0114ed5
+index 0000000..0ddba49
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_audit.go
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,138 @@
 +package cluster
 +
 +import (
@@ -708,27 +708,18 @@ index 0000000..0114ed5
 +		return errors.New("privacy purge summary is incomplete")
 +	}
 +	counts := diagnosticsPrivacyCountsFromAudit(&audit)
-+	activeKeyIDs := counts.MatchedActiveAPIKeyIDs
-+	if len(activeKeyIDs) > 10000 {
-+		activeKeyIDs = activeKeyIDs[:10000]
-+	}
-+	if activeKeyIDs == nil {
-+		activeKeyIDs = []uint{}
-+	}
 +	marker := struct {
-+		UsageRows       int64  `json:"usage_rows"`
-+		PurgedRows      int64  `json:"purged_rows"`
-+		ActiveKeyCount  int64  `json:"active_key_count"`
-+		DeletedKeyCount int64  `json:"deleted_key_count"`
-+		UnknownKeyCount int64  `json:"unknown_key_count"`
-+		ActiveKeyIDs    []uint `json:"active_key_ids"`
++		UsageRows       int64 `json:"usage_rows"`
++		PurgedRows      int64 `json:"purged_rows"`
++		ActiveKeyCount  int64 `json:"active_key_count"`
++		DeletedKeyCount int64 `json:"deleted_key_count"`
++		UnknownKeyCount int64 `json:"unknown_key_count"`
 +	}{
 +		UsageRows:       audit.RowsScanned,
 +		PurgedRows:      step.UsageRowsUpdated,
 +		ActiveKeyCount:  int64(len(counts.MatchedActiveAPIKeyIDs)),
 +		DeletedKeyCount: audit.DeletedAPIKeyCount,
 +		UnknownKeyCount: audit.UnknownKeyCount,
-+		ActiveKeyIDs:    activeKeyIDs,
 +	}
 +	encoded, errMarshal := json.Marshal(marker)
 +	if errMarshal != nil {
@@ -1642,10 +1633,10 @@ index 0000000..55047ec
 +}
 diff --git a/internal/cluster/diagnostics_privacy_test.go b/internal/cluster/diagnostics_privacy_test.go
 new file mode 100644
-index 0000000..11a2510
+index 0000000..3de0ccd
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_test.go
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,217 @@
 +package cluster
 +
 +import (
@@ -1827,6 +1818,9 @@ index 0000000..11a2510
 +	assertPrivateBytesAbsent(t, logs.String(), key.APIKey, body)
 +	if !strings.Contains(logs.String(), "POOL_PRIVACY_AUDIT ") {
 +		t.Fatal("safe audit marker missing")
++	}
++	if strings.Contains(logs.String(), "active_key_ids") {
++		t.Fatal("audit log contains key IDs")
 +	}
 +	var audit diagnosticsPrivacyAuditRecord
 +	if errRead := db.First(&audit, "name = ?", diagnosticPrivacyStepName).Error; errRead != nil {
