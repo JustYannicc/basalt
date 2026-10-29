@@ -67,7 +67,8 @@ function bankedResets(value: unknown): BankedResets | null {
 function windowView(row: Json): UsageWindow {
   const ratio = finite(row.remaining_ratio) ? row.remaining_ratio : finite(row.used_ratio) ? 1 - row.used_ratio : null;
   return {
-    id: text(row.id) ?? "", label: text(row.label) ?? text(row.id) ?? "",
+    // Home labels only additional limits; a raw window id never reaches a screen.
+    id: text(row.id) ?? "", label: text(row.label) ?? "Usage",
     remainingRatio: row.is_unlimited === true ? 1 : ratio === null ? null : Math.min(1, Math.max(0, ratio)),
     resetAt: row.is_unlimited === true ? null : text(row.reset_at),
     observedAt: text(row.observed_at),

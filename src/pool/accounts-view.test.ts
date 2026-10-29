@@ -24,7 +24,7 @@ test("Codex details retain 5h, weekly and real model families; capacity still re
   const result = view(detail({ windows: [
     window("codex-1-week", 604800, "account", null),
     window("codex-code-review-1-week", 604800, "model", "codex_code_review"),
-    { ...window("codex-bengalfox-1-week", 604800, "model", "codex_bengalfox"), remaining_ratio: 0.1 },
+    { ...window("codex-bengalfox-1-week", 604800, "model", "codex_bengalfox"), remaining_ratio: 0.1, label: "Spark" },
     window("codex-5-hour", 18000),
     window("codex-bengalfox-5-hour", 18000, "model", "codex_bengalfox"),
     window("codex-custom-1-week", 604800, "model", "codex_custom"),
@@ -38,6 +38,7 @@ test("Codex details retain 5h, weekly and real model families; capacity still re
     { status: "available", expires_at: null },
   ] } }));
   assert.deepEqual(result.windows.map((w) => w.id), ["codex-bengalfox-5-hour", "codex-5-hour", "codex-bengalfox-1-week", "codex-custom-1-week", "codex-1-week"]);
+  assert.deepEqual(result.windows.map((w) => w.label), ["Usage", "Usage", "Spark", "Usage", "Usage"]);
   assert.deepEqual(orderedWindows(result.windows), result.windows);
   assert.equal(capacity([result])[0]!.left, 0.8);
   assert.equal(result.windows.at(-1)!.windowSeconds, 604800);
