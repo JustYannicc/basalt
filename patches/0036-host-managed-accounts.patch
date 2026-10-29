@@ -1,0 +1,334 @@
+diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
+--- a/packages/sdk/src/contracts/provider.ts
++++ b/packages/sdk/src/contracts/provider.ts
+@@ -90,6 +90,12 @@
+ });
+ export type AccountProvisioned = typeof AccountProvisioned.Type;
+ 
++/** A host-owned credential is identified by its declared method, including mixed providers. */
++export const isProvisionedMethod = (definition: ProviderDefinition, method: string) => {
++  const auth = definition.auth[method];
++  return auth?.type === "secrets" && auth.provisioned === true;
++};
++
+ /** Methods a person can connect. Host provisioning remains available through managedAccounts. */
+ export const connectableMethods = (definition: ProviderDefinition) =>
+   Object.entries(definition.auth).filter(
+diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+--- a/apps/hosted/server/src/implementation/resource-access.ts
++++ b/apps/hosted/server/src/implementation/resource-access.ts
+@@ -1,3 +1,4 @@
++import { isProvisionedMethod } from "@executor-js/sdk/core";
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { permittedAppIds } from "@executor-js/authorization";
+@@ -100,6 +101,7 @@
+           provider = yield* executor.accounts.provider({ owner, account: account.id });
+           providers.set(account.provider, provider);
+         }
++        if (isProvisionedMethod(provider.definition, account.method)) return [];
+         const checks = health.get(account.id);
+         return [
+           checks === undefined
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -14,7 +14,7 @@
+   permitsApp,
+   permittedAppIds,
+ } from "@executor-js/authorization";
+-import { AppId } from "@executor-js/sdk/core";
++import { AppId, isProvisionedMethod } from "@executor-js/sdk/core";
+ import { Context } from "effect";
+ import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./resource-policy.ts";
+ import { readOrganizationIconUpload } from "./organization-icons.ts";
+@@ -228,11 +228,18 @@
+     // Membership is read once for both the app and the account policies.
+     const actor = yield* currentResourceAuthority;
+     const apps = yield* visibleAppsAs(actor, listedApps);
+-    const accounts = permitsAction(policy, "read")
++    const visible = permitsAction(policy, "read")
+       ? yield* executor.accounts
+           .list({ owner })
+           .pipe(Effect.flatMap((listed) => visibleAccountsAs(actor, listed)))
+       : [];
++    const providers = new Map(
++      (yield* executor.accounts.providers({ owner })).map((provider) => [provider.id, provider.definition]),
++    );
++    const accounts = visible.filter((account) => {
++      const definition = providers.get(account.provider);
++      return definition !== undefined && !isProvisionedMethod(definition, account.method);
++    });
+     const linked = yield* callerLinkedAccounts(apps.map((app) => app.id));
+     // An account linked to several requirements of one app is listed once for it.
+     const links = [
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -1,3 +1,4 @@
++import { isProvisionedMethod } from "@executor-js/sdk/core";
+ /**
+  * The routes that link accounts to an app's requirements, in either scope. App links need edit
+  * access to the app and, to link, use of the account; reading them needs use of the app. User links
+@@ -190,7 +191,7 @@
+     });
+     const linkedIds = new Set(linkedAccounts.map((account) => account.id));
+     const candidates = (yield* visibleAccounts(all)).filter(
+-      (account) => !linkedIds.has(account.id),
++      (account) => !linkedIds.has(account.id) && !isProvisionedMethod(required.definition, account.method),
+     );
+     const usable = (yield* Effect.forEach(
+       candidates,
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -1,3 +1,4 @@
++import { isProvisionedMethod } from "@executor-js/sdk/core";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { connectOptions, connectionClient } from "./oauth-clients.ts";
+ import { localResourceHandlers } from "./resources.ts";
+@@ -300,6 +301,7 @@
+     for (const account of accounts) {
+       const definition = definitions.get(account.provider);
+       if (definition === undefined) return yield* Effect.fail(new StorageError());
++      if (isProvisionedMethod(definition, account.method)) continue;
+       const health = checks.get(account.id);
+       display.push({
+         ...account,
+diff --git a/apps/local/server/src/implementation/app-accounts.ts b/apps/local/server/src/implementation/app-accounts.ts
+--- a/apps/local/server/src/implementation/app-accounts.ts
++++ b/apps/local/server/src/implementation/app-accounts.ts
+@@ -1,3 +1,4 @@
++import { isProvisionedMethod } from "@executor-js/sdk/core";
+ /**
+  * The accounts linked to each local app's requirements, kept in `local_app_account_links`, and the
+  * accounts every operation runs with: resolved by the same rules as hosted, app requirements from
+@@ -214,7 +215,7 @@
+       accounts: [
+         ...linked.map((account) => ({ account, linked: true })),
+         ...all
+-          .filter((account) => !linkedIds.has(account.id))
++          .filter((account) => !linkedIds.has(account.id) && !isProvisionedMethod(required.definition, account.method))
+           .map((account) => ({ account, linked: false })),
+       ],
+     } satisfies AppAccountRequirement;
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -18,6 +18,7 @@
+ import {
+   providerDisplayUrl,
+   accountNeedsSignIn,
++  currentAccountCheck,
+   type AccountDetail,
+   type AccountSummary,
+   type FailureProps,
+@@ -47,7 +48,7 @@
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ const provisionedOnly = (requirement: AccountRequirement) =>
+-  Object.values(requirement.definition.auth).every(
++  Object.keys(requirement.definition.auth).length > 0 && Object.values(requirement.definition.auth).every(
+     (method) => method.type === "secrets" && method.provisioned === true,
+   );
+ 
+@@ -390,8 +391,22 @@
+   readonly accounts: readonly AccountSummary[];
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+-  const appRequirements = scoped(app, "app");
+-  const userRequirements = scoped(app, "user");
++  useRevalidateChecks(app, "app", appAccounts.links.map((link) => link.account), appAccounts.revalidate);
++  useRevalidateChecks(app, "user", yourAccounts.links.map((link) => link.account), yourAccounts.revalidate);
++  const visible = (data: ScopeAccounts<E>) => ([slot, requirement]: RequirementEntry) => {
++    if (!provisionedOnly(requirement)) return true;
++    if (appAccounts.edit === undefined) return false;
++    const linked = data.links.filter((link) => link.requirement === slot);
++    return linked.length === 0 || linked.some(({ account }) => {
++      const check = currentAccountCheck(account, app.id);
++      return accountNeedsSignIn(account) || account.signIn?.state === "unavailable" ||
++        (check !== undefined && check.status !== "healthy");
++    });
++  };
++  const appRequirements = scoped(app, "app").filter(visible(appAccounts));
++  const userRequirements = scoped(app, "user").filter(visible(yourAccounts));
++  if (appRequirements.length === 0 && userRequirements.length === 0 && Object.keys(app.requirements.accounts).length > 0)
++    return null;
+   if (appRequirements.length === 0 && userRequirements.length === 0)
+     return (
+       <EmptyState size="compact" title="No accounts required">
+@@ -446,13 +461,7 @@
+   readonly description: string;
+   readonly requirements: readonly RequirementEntry[];
+ }) {
+-  const { app, scope, data } = props;
+-  useRevalidateChecks(
+-    app,
+-    scope,
+-    data.links.map((link) => link.account),
+-    data.revalidate,
+-  );
++  const { data } = props;
+   const readOnly = data.edit === undefined;
+   return (
+     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -7469,6 +7469,17 @@
+       "self-host": scheduled,
+       cloud: na("Uses a loopback credential backend and the shared hosted dashboard."),
+       local: na("Exercises hosted account checks and rows."),
++    },
++  },
++  hostManagedAccounts: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "host-managed-accounts.spec.ts",
++    title: "host-managed accounts are hidden from sign-ins and healthy app sections, with repair details for editors",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a retained host credential in the isolated self-host database."),
++      local: na("Exercises hosted account ownership and editor access."),
+     },
+   },
+   provisionedAccounts: {
+diff --git a/e2e/tests/provisioned-accounts.spec.ts b/e2e/tests/provisioned-accounts.spec.ts
+--- a/e2e/tests/provisioned-accounts.spec.ts
++++ b/e2e/tests/provisioned-accounts.spec.ts
+@@ -112,36 +112,14 @@
+         expect(used.status, JSON.stringify(used.body)).toBe(200);
+         expect(used.body).toMatchObject({ valid: true });
+         yield* browser.use("Reload the provisioned account row", (page) => page.reload());
+-        yield* browser.use("Wait for the provisioned account identity", (page) =>
+-          page.getByText("Host account", { exact: true }).waitFor(),
++        yield* browser.use("Wait for the Accounts tab", (page) =>
++          page.getByRole("navigation", { name: "App navigation" }).getByRole("link", { name: "Accounts", exact: true }).waitFor(),
+         );
+-        const provisionedText = yield* browser.use("Read the provisioned account section", (page) =>
+-          page.getByRole("region", { name: "Your accounts", exact: true }).innerText(),
+-        );
+-        const accountRow = yield* browser.use(
+-          "Read the provisioned row label and attribution slot",
+-          (page) => {
+-            const row = page
+-              .getByRole("region", { name: "Your accounts", exact: true })
+-              .getByText("Host account", { exact: true })
+-              .locator("xpath=ancestor::li[1]");
+-            return Promise.all([
+-              row.locator("[data-account-provisioned]").innerText(),
+-              row.locator("[data-added-by-slot]").innerText(),
+-            ]);
+-          },
+-        );
+-        yield* evidence.attach(
+-          "provisioned-after.png",
+-          "image/png",
+-          yield* browser.use("Capture automatic setup", (page) =>
+-            page.screenshot({ fullPage: true }),
+-          ),
+-        );
+-        expect(provisionedText).toContain("Set up automatically");
+-        expect(accountRow).toEqual(["Set up automatically", ""]);
+-        yield* browser.use("Wait for automatic setup", (page) =>
+-          page.locator("[data-account-provisioned]").waitFor(),
++        expect(yield* browser.use("Healthy host access stays out of the app section", (page) =>
++          page.getByRole("region", { name: "Host access", exact: true }).count(),
++        )).toBe(0);
++        yield* evidence.attach("provisioned-after.png", "image/png",
++          yield* browser.use("Capture automatic setup", (page) => page.screenshot({ fullPage: true })),
+         );
+         const actions = yield* browser.use("Read provisioned row actions", (page) =>
+           Promise.all([
+diff --git a/e2e/tests/host-managed-accounts.spec.ts b/e2e/tests/host-managed-accounts.spec.ts
+--- /dev/null
++++ b/e2e/tests/host-managed-accounts.spec.ts
+@@ -0,0 +1,88 @@
++/** Host credentials appear only when an editor needs to repair the app. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String, requirements: Schema.Struct({ accounts: Schema.Struct({ pool: Schema.Struct({ provider: Schema.String }) }) }) });
++const source = (provisioned: boolean, broken = false) => `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const pool = defineProvider({ name: "Signalbox pool", auth: {
++  token: secrets({ label: "Pool access", ${provisioned ? "provisioned: true," : ""} fields: object({ token: string() }) }),
++}, async health() { ${broken ? 'throw new Error("Host access needs repair");' : 'return {};'} } });
++const subscription = defineProvider({ name: "Subscription", auth: { key: secrets({ label: "Subscription", fields: object({ token: string() }) }) } });
++export default defineApp({ app: { accounts: { pool } }, user: { accounts: { subscription } } }, {
++  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
++});`;
++
++layer(HostedLive, { excludeTestServices: true })("Host-managed account visibility", (it) => {
++  it.effect(scenarios.hostManagedAccounts.title, (context) => withHostedCase(context, Effect.gen(function* () {
++    const api = yield* Api, actors = yield* Actors, browser = yield* Browser, evidence = yield* Evidence;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const files = (provisioned: boolean, broken = false) => [{ path: "index.ts", content: source(provisioned, broken) }, appsManifest];
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, { name: "Synthetic pool", files: files(false) });
++    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++    const app = yield* body(App, deployed), path = `${prefix}/apps/${app.id}`;
++    let account: string | undefined;
++    yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.andThen(Effect.gen(function* () {
++      yield* api.request(actors.owner, "DELETE", path);
++      if (account !== undefined) yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++    })), Effect.orDie));
++    const pending = yield* body(Resource, yield* api.request(actors.owner, "POST", `${path}/accounts/app/pool/connections`, {}));
++    const saved = yield* api.request(actors.owner, "POST", `${prefix}/connections/${pending.id}/submit`, { method: "token", label: "Pool access", fields: { token: "synthetic-pool-token" } });
++    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++    account = (yield* body(Resource, saved)).id;
++    const access = yield* body(Schema.Struct({ revision: Schema.String }), yield* api.request(actors.owner, "GET", `${path}/access`));
++    expect((yield* api.request(actors.owner, "PATCH", `${path}/access`, { revision: access.revision, audience: { kind: "everyone" } })).status).toBe(200);
++    const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, { files: files(true) });
++    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++    const current = yield* body(Schema.Struct({ app: App }), updated);
++    yield* legacyStorage([{ sql: "UPDATE executor_accounts SET provider = $1 WHERE id = $2", params: [current.app.requirements.accounts.pool.provider, account] }]);
++    yield* serverControl("start");
++    const check = () => api.request(actors.owner, "POST", `${prefix}/accounts/${account}/health`);
++    expect((yield* check()).status).toBe(200);
++    yield* browser.login(actors.owner);
++    yield* browser.use("Open synthetic saved sign-ins", (page) => page.goto(`/org/${actors.organization.slug}/accounts`));
++    yield* browser.use("Wait for Accounts", (page) => page.getByRole("heading", { name: /^Accounts/ }).waitFor());
++    yield* evidence.attach("personal-accounts.png", "image/png", yield* browser.use("Capture synthetic personal Accounts", (page) => page.screenshot({ fullPage: true })));
++    const personal = yield* browser.use("Read saved sign-ins", (page) => page.locator("main").innerText());
++    yield* browser.use("Open synthetic pool Accounts", (page) => page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`));
++    yield* browser.use("Wait for Subscription", (page) => page.getByRole("region", { name: "Subscription", exact: true }).waitFor());
++    yield* evidence.attach("pool-accounts.png", "image/png", yield* browser.use("Capture synthetic pool Accounts", (page) => page.screenshot({ fullPage: true })));
++    const healthy = yield* browser.use("Read a healthy host requirement", (page) => page.getByRole("region", { name: "Signalbox pool", exact: true }).count());
++    expect(personal).not.toContain("Pool access");
++    expect(healthy).toBe(0);
++    for (const route of ["inventory", "resources"]) {
++      const response = yield* api.request(actors.owner, "GET", `${prefix}/${route}`);
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      expect(JSON.stringify((yield* body(Schema.Struct({ accounts: Schema.Array(Schema.Unknown) }), response)).accounts)).not.toContain(account);
++    }
++    expect((yield* api.request(actors.owner, "POST", `${path}/deploy`, { files: files(true, true) })).status).toBe(200);
++    const failed = yield* check();
++    expect(failed.status, JSON.stringify(failed.body)).toBe(200);
++    expect(JSON.stringify(failed.body)).toContain("Host access needs repair");
++    yield* browser.use("Reload failed host access", (page) => page.reload());
++    yield* browser.use("An editor sees the failed check", (page) => page.getByRole("region", { name: "Signalbox pool", exact: true }).getByText("Host access needs repair", { exact: true }).waitFor());
++    yield* evidence.attach("pool-broken-check.png", "image/png", yield* browser.use("Capture the failed requirement", (page) => page.screenshot({ fullPage: true })));
++    yield* browser.login(actors.member);
++    yield* browser.use("Open host access as a member", (page) => page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`));
++    yield* browser.use("Wait for member Subscription", (page) => page.getByRole("region", { name: "Subscription", exact: true }).waitFor());
++    expect(yield* browser.use("Only editors see host repairs", (page) => page.getByRole("region", { name: "Signalbox pool", exact: true }).count())).toBe(0);
++    yield* legacyStorage([{ sql: "DELETE FROM hosted_app_account_links WHERE app = $1 AND requirement = 'pool'", params: [app.id] }]);
++    yield* serverControl("start");
++    const choices = yield* api.request(actors.owner, "GET", `${path}/accounts/app/pool`);
++    expect(choices.status, JSON.stringify(choices.body)).toBe(200);
++    expect((yield* body(Schema.Struct({ accounts: Schema.Array(Schema.Unknown) }), choices)).accounts).toEqual([]);
++    yield* browser.login(actors.owner);
++    yield* browser.use("Open missing host access as an editor", (page) => page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`));
++    yield* browser.use("An editor sees missing host access", (page) => page.getByRole("region", { name: "Signalbox pool", exact: true }).waitFor());
++    yield* evidence.attach("pool-unlinked.png", "image/png", yield* browser.use("Capture missing host access", (page) => page.screenshot({ fullPage: true })));
++  })));
++});

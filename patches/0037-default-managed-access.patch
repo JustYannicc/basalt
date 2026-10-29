@@ -1,0 +1,190 @@
+diff --git a/apps/hosted/server/src/implementation/executor-app.ts b/apps/hosted/server/src/implementation/executor-app.ts
+--- a/apps/hosted/server/src/implementation/executor-app.ts
++++ b/apps/hosted/server/src/implementation/executor-app.ts
+@@ -93,7 +93,7 @@
+     ]),
+   }));
+ 
+-/** The default app accepts a saved user API key through the ordinary secrets method. */
++/** The default app uses the API key the host provisions for each member. */
+ export const defaultExecutorAppSource = (origin: string, document: HostedApiDocument) =>
+   Effect.map(providerName, (name) => ({
+     files: SourceFiles.make([
+@@ -106,7 +106,7 @@
+         content: `import { defineProvider, object, string, secrets, oauth2 } from "apps";
+ 
+ export const provider = defineProvider({ name: ${JSON.stringify(name)}, auth: {
+-  apiKey: secrets({ label: ${JSON.stringify(`${name} API key`)}, fields: object({ token: string(), organization: string() }) }),
++  apiKey: secrets({ provisioned: true, label: ${JSON.stringify(`${name} API key`)}, fields: object({ token: string(), organization: string() }) }),
+   oauth: oauth2({ discover: ${JSON.stringify(`${origin}/api`)} }),
+ } });
+ `,
+diff --git a/apps/hosted/server/src/implementation/organization-defaults.ts b/apps/hosted/server/src/implementation/organization-defaults.ts
+--- a/apps/hosted/server/src/implementation/organization-defaults.ts
++++ b/apps/hosted/server/src/implementation/organization-defaults.ts
+@@ -1,10 +1,12 @@
++import { retireUnlinkedManagedAccount } from "./managed-account-retirement.ts";
+ import { organizationAppCreation, personalAccountCreation } from "./resource-lifecycle.ts";
+ import type { HostedApiDocument } from "../contracts/api.ts";
+-import { managedAccountKey } from "./api-keys.ts";
++import { managedAccountKey, revokeManagedAccountKey } from "./api-keys.ts";
+ import { pinnedOnly } from "@executor-js/app-management/data-steps";
+ import { sourceFilesEqual } from "@executor-js/sdk/core";
+ import {
+   AccountId,
++  isProvisionedMethod,
+   AppId,
+   VersionId,
+   StorageError,
+@@ -189,13 +191,13 @@
+         if (Object.hasOwn(state.accounts, user.userId) && saved === undefined) return;
+         if (
+           saved !== undefined &&
+-          (saved.provider !== requirement.provider || saved.method !== "apiKey")
++          (saved.method !== "apiKey" || (saved.provider !== requirement.provider && !isProvisionedMethod(requirement.definition, "apiKey")))
+         )
+           return yield* new StorageError();
+-        // Existing saved accounts keep their credential and links; setup does not mint replacement
+-        // keys or link them again, so a member's unlink stays. Read current SQL metadata on every
++        // Compatible saved accounts keep their credentials and links, including a member's unlink.
++        // A host-provisioned provider change remints the recorded managed key once. Read current SQL metadata on every
+         // call; this is not an isolate-local result cache.
+-        if (state.version === current.activeVersion && saved !== undefined) return;
++        if (state.version === current.activeVersion && saved?.provider === requirement.provider) return;
+         // Build/network work finished above. Only account creation or selection repair needs the lock.
+         yield* executor[StorageHost]
+           .transaction(
+@@ -225,17 +227,18 @@
+               if (Object.hasOwn(state.accounts, user.userId) && saved === undefined) return;
+               if (
+                 saved !== undefined &&
+-                (saved.provider !== requirement.provider || saved.method !== "apiKey")
++                (saved.method !== "apiKey" || (saved.provider !== requirement.provider && !isProvisionedMethod(requirement.definition, "apiKey")))
+               )
+                 return yield* new StorageError();
+               const eligible =
+                 yield* sql`select member.id from member join "user" on "user".id = member."userId"
+                 where member."organizationId" = ${organization} and member."userId" = ${user.userId}
+-                and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
++                and (member.role in ('owner', 'admin') or ${saved !== undefined}) and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)
+                 for share of member, "user"`.pipe(Effect.mapError(() => new StorageError()));
+               if (eligible.length === 0) return;
++              const compatible = saved?.provider === requirement.provider ? saved : undefined;
+               const account =
+-                saved ??
++                compatible ??
+                 (yield* Effect.gen(function* () {
+                   const token = yield* managedAccountKey(organization, user.userId).pipe(
+                     Effect.provideService(SqlClient.SqlClient, sql),
+@@ -264,12 +267,20 @@
+                     intent = true;
+                   return created;
+                 }));
++              if (saved !== undefined && compatible === undefined) {
++                const fields = Redacted.value(yield* executor.managedAccounts.readCredentials({ owner, account: saved.id }));
++                if (typeof fields.token !== "string") return yield* new StorageError();
++                if (yield* retireUnlinkedManagedAccount(executor, sql, owner, saved.id))
++                  yield* revokeManagedAccountKey(organization, user.userId, Redacted.make(fields.token)).pipe(
++                    Effect.provideService(SqlClient.SqlClient, sql),
++                  );
++              }
+               const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });
+               yield* sql`update "organization" set metadata = jsonb_set(jsonb_set(
+             coalesce(metadata::jsonb, '{}'::jsonb), '{executorKeyAccounts}', ${accounts}::jsonb),
+             '{executorDefaults}', jsonb_build_object('installed', true, 'app', ${app.id}::text, 'deployment', ${current.activeVersion}::text)
+           )::text where id = ${organization}`.pipe(Effect.mapError(() => new StorageError()));
+-              return saved === undefined;
++              return compatible === undefined;
+             }),
+           )
+           .pipe(Effect.uninterruptible);
+diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/server/src/implementation/api-keys.ts
+--- a/apps/hosted/server/src/implementation/api-keys.ts
++++ b/apps/hosted/server/src/implementation/api-keys.ts
+@@ -170,3 +170,16 @@
+         false, 86400000, 10, 0, now(), now(), ${JSON.stringify(pinnedKeyMetadata(organization))})`;
+     return token;
+   }).pipe(Effect.mapError(() => new StorageError()));
++
++/** Revoke only the replaced host key, after its saved account has no remaining app links. */
++export const revokeManagedAccountKey = (organization: OrganizationId, user: string, token: Redacted.Redacted<string>) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const hash = yield* Effect.tryPromise({
++      try: () => defaultKeyHasher(Redacted.value(token)),
++      catch: () => new StorageError(),
++    });
++    yield* sql`update apikey set enabled = false, "updatedAt" = now()
++      where key = ${hash} and "referenceId" = ${user}
++        and metadata::jsonb ->> 'organization' = ${organization}`;
++  }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+--- a/apps/hosted/server/src/implementation/provisioning.ts
++++ b/apps/hosted/server/src/implementation/provisioning.ts
+@@ -144,7 +144,10 @@
+     return yield* sql`select "user".id as "userId", "user".name from member join "user" on "user".id = member."userId"
+       where member."organizationId" = ${organization}
+       and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
+-      and ((member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
++      and (((member.role in ('owner', 'admin') or exists (
++          select 1 from organization defaults_team where defaults_team.id = member."organizationId"
++          and coalesce(defaults_team.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb) ? member."userId"
++        )) and (${requireVerifiedEmail} = false or "user"."emailVerified" = true))
+         or (${rotationOnly} = true and ${user ?? null}::text is not null and exists (
+           select 1 from organization pool_team where pool_team.id = member."organizationId"
+           and coalesce(pool_team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) ? member."userId"
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -32,7 +32,8 @@
+     "./pool-defaults": "./src/implementation/pool-defaults.ts",
+     "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts",
+     "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts",
+-    "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts"
++    "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts",
++    "./default-managed-access": "./src/implementation/default-managed-access.ts"
+   },
+   "dependencies": {
+     "@better-auth/api-key": "1.7.5",
+diff --git a/apps/hosted/server/src/implementation/default-managed-access.ts b/apps/hosted/server/src/implementation/default-managed-access.ts
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/default-managed-access.ts
+@@ -0,0 +1,22 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Revisit every retained default-key holder once, including members demoted since setup. */
++export const queueDefaultManagedAccess = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const name = "basalt-default-managed-access";
++  yield* sql.withTransaction(Effect.gen(function* () {
++    yield* sql`insert into private_hosted_data_steps (name, run, mode) values (${name}, 'apply', 'apply') on conflict do nothing`;
++    const [step] = yield* sql<{ completed: boolean }>`select completed_at is not null as completed from private_hosted_data_steps where name = ${name} and run = 'apply' for update`;
++    if (step?.completed) return;
++    yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
++      select 'member', team.id, holder.key, now() + interval '15 minutes'
++      from organization team
++      cross join lateral jsonb_each_text(coalesce(team.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) holder
++      join member on member."organizationId" = team.id and member."userId" = holder.key
++      join "user" on "user".id = member."userId" and "user"."emailVerified" = true
++      join executor_accounts account on account.id = holder.value and account.owner = 'organization:' || team.id
++      where team.metadata::jsonb -> 'executorDefaults' ->> 'deployment' is not null`;
++    yield* sql`update private_hosted_data_steps set completed_at = now() where name = ${name} and run = 'apply'`;
++  }));
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/data-steps.ts b/apps/hosted/cloud/src/infrastructure/data-steps.ts
+--- a/apps/hosted/cloud/src/infrastructure/data-steps.ts
++++ b/apps/hosted/cloud/src/infrastructure/data-steps.ts
+@@ -1,3 +1,4 @@
++import { queueDefaultManagedAccess } from "@executor-js/hosted-server/default-managed-access";
+ /**
+  * Cloud runs data steps inside the new Worker after it deploys. Schema migrations run earlier, in
+  * Alchemy, with only a database connection; data steps need the Worker's services, such as app
+@@ -70,6 +71,7 @@
+       const sql = yield* Effect.flatten(GroupDatabase);
+       if (mode === "apply") {
+         yield* cleanupRetiredPoolAccounts(executor).pipe(Effect.provideService(SqlClient.SqlClient, sql));
++        yield* queueDefaultManagedAccess.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+       }
+       const poolKey = yield* PoolAppSigningKey;
+       if (Option.isSome(poolKey)) {
