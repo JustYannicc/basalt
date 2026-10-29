@@ -321,6 +321,15 @@
       "upstream_pull_request": 2437,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-dashboard-batch-authentication",
+      "file": "0035-dashboard-batch-authentication.patch",
+      "content_sha256": "a98c5e6f60ac8ea36caeee74582d058b1418701465d8516b384b8c2234b47b88",
+      "kind": "upstream",
+      "upstream_pull_request": 2439,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }

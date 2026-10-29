@@ -9,6 +9,32 @@ permissions:
   contents: read
 
 jobs:
+  dashboard-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Build the isolated self-host test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenario's browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Compare the baseline and candidate through the real dashboard batch endpoint
+        run: node scripts/profile-dashboard-batch.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dashboard-batch-profile
+          path: ${{ runner.temp }}/dashboard-batch-profile
+          if-no-files-found: warn
   check:
     runs-on: ubuntu-latest
     services:
