@@ -75,6 +75,7 @@ test("deploys hand the brand's name and logo to the tools service", () => {
   assert.equal(env.EXECUTOR_PRODUCT_DOCS_URL, brand.links.docs ?? undefined);
   assert.equal(env.EXECUTOR_PRODUCT_PRIVACY_URL, brand.links.privacy ?? undefined);
   assert.equal(env.EXECUTOR_PRODUCT_TERMS_URL, brand.links.terms ?? undefined);
+  assert.equal(env.EXECUTOR_PRODUCT_SOURCE_URL, brand.links.source ?? undefined);
   // The router serves the logo; a rename that moves it must move the file too.
   assert.ok(existsSync(fileURLToPath(new URL(`../public${brand.logo}`, import.meta.url))));
 });

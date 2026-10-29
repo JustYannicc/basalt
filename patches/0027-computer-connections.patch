@@ -233,39 +233,47 @@ diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/p
 diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
 --- a/packages/utils/src/product-brand.ts
 +++ b/packages/utils/src/product-brand.ts
-@@ -5,6 +5,8 @@
+@@ -5,7 +5,9 @@
   * What a deployment calls itself in its pages, emails, OAuth client metadata and MCP server
   * description. `logo` is a square image URL, absolute or a path on the deployment's own origin.
-  * `docs`, `privacy` and `terms` are the deployment's own pages behind those links.
-+ * `computerSetup` is the deployment's own page that sets up agents on a person's computer; the
-+ * Connect page offers it ahead of the MCP setup only when it is set.
+  * `docs`, `privacy` and `terms` are the deployment's own pages behind those links. `source` is
+- * where its source code is published.
++ * where its source code is published. `computerSetup` is the deployment's own page that sets up
++ * agents on a person's computer; the Connect page offers it ahead of the MCP setup only when it is
++ * set.
   */
  export const ProductBrand = Schema.Struct({
    name: Schema.NonEmptyString,
-@@ -12,6 +14,7 @@
-   docs: Schema.optional(Schema.NonEmptyString),
+@@ -14,6 +16,7 @@
    privacy: Schema.optional(Schema.NonEmptyString),
    terms: Schema.optional(Schema.NonEmptyString),
+   source: Schema.optional(Schema.NonEmptyString),
 +  computerSetup: Schema.optional(Schema.NonEmptyString),
  });
  export type ProductBrand = typeof ProductBrand.Type;
  
-@@ -72,6 +75,7 @@
-   docs: "EXECUTOR_PRODUCT_DOCS_URL",
+@@ -75,6 +78,7 @@
    privacy: "EXECUTOR_PRODUCT_PRIVACY_URL",
    terms: "EXECUTOR_PRODUCT_TERMS_URL",
+   source: "EXECUTOR_PRODUCT_SOURCE_URL",
 +  computerSetup: "EXECUTOR_COMPUTER_SETUP_URL",
  } as const;
  
  /**
-@@ -84,8 +88,8 @@
+@@ -87,8 +91,14 @@
      productBrandSettings.logo,
      (yield* setting(productBrandSettings.logo)) ?? defaultProductBrand.logo,
    );
--  const links: { docs?: string; privacy?: string; terms?: string } = {};
--  for (const link of ["docs", "privacy", "terms"] as const) {
-+  const links: { docs?: string; privacy?: string; terms?: string; computerSetup?: string } = {};
-+  for (const link of ["docs", "privacy", "terms", "computerSetup"] as const) {
+-  const links: { docs?: string; privacy?: string; terms?: string; source?: string } = {};
+-  for (const link of ["docs", "privacy", "terms", "source"] as const) {
++  const links: {
++    docs?: string;
++    privacy?: string;
++    terms?: string;
++    source?: string;
++    computerSetup?: string;
++  } = {};
++  for (const link of ["docs", "privacy", "terms", "source", "computerSetup"] as const) {
      const value = yield* urlOrPath(
        productBrandSettings[link],
        yield* setting(productBrandSettings[link]),
