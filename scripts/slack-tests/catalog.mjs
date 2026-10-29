@@ -61,8 +61,8 @@ export function localSlackPackage(source, localOrigin, specUrl) {
         (_whole, prefix, url, suffix) => prefix + localSlackUrl(url, localOrigin) + suffix);
       content = token.content;
       const health = rewrite(content,
-        /(fetch\(\s*["'])(https?:\/\/[^"']+)(["']\s*,)/g,
-        (_whole, prefix, url, suffix) => prefix + localSlackUrl(url, localOrigin) + suffix);
+        /https:\/\/slack\.com\/api\/(?:auth\.test|users\.profile\.get)/g,
+        (url) => localSlackUrl(url, localOrigin));
       content = health.content;
       const hosts = rewrite(content,
         /(hosts\s*:\s*\[[^\]]*?)(["'])(?:\*\.)?(?:[a-z0-9-]+\.)*slack\.com\2/gi,

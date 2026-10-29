@@ -1,6 +1,6 @@
 --- a/README.md
 +++ b/README.md
-@@ -8,12 +8,27 @@
+@@ -8,12 +8,31 @@
  
  **Auth**
  
@@ -8,7 +8,7 @@
 -- OAuth: create a Slack app at https://api.slack.com/apps, add the redirect URI shown on Executor's connect page under "OAuth & Permissions", and enter its client ID and secret. The flow requests bot scopes (comma separated) and yields a bot token; reduce the scopes to what the app needs. Every requested scope was checked against its docs.slack.dev scope page as a bot scope; `mpim:write` is user-token only and is not requested.
 +- Token: a bot token (`xoxb-`) or user token (`xoxp-`) from your Slack app's "OAuth & Permissions" page at https://api.slack.com/apps. This method keeps the supplied token as-is.
 +- User OAuth (`user`): create a Slack app at https://api.slack.com/apps, add the redirect URI shown on the host's connect page, add the scopes below under **User Token Scopes**, and enter the client ID and secret. This flow sends a comma-separated `user_scope` only; it omits the OAuth `scope` parameter and does not request a bot grant. The exchange requires `authed_user.access_token`, which is used for health checks and API calls.
- 
++
 +  `user_scope` contains:
 +
 +  - Conversations: `channels:history`, `channels:read`, `channels:write`, `groups:history`, `groups:read`, `groups:write`, `im:history`, `im:read`, `im:write`, `mpim:history`, `mpim:read`, `mpim:write`.
@@ -18,7 +18,7 @@
 +  - Pins, reminders and workspace data: `emoji:read`, `pins:read`, `pins:write`, `reminders:read`, `reminders:write`, `team:read`, `usergroups:read`, `usergroups:write`, `users.profile:read`, `users.profile:write`, `users:read`, `users:read.email`.
 +
 +- Bot OAuth (`oauth`): use the existing bot-token flow with the redirect URI shown on the host's connect page, then enter the Slack app's client ID and secret. It requests the existing bot scopes and continues to use the top-level bot access token.
-+
+ 
  **Known gaps**
  
  - No operations are skipped after the patches (171 of the 174 spec operations are exposed; the 3 removed are the oauth.* methods above).
@@ -31,9 +31,25 @@
 +- The user grant omits `bookmarks:*` and `canvases:*` because the maintained OpenAPI description contains no corresponding operations.
  - File uploads via the legacy multipart `files.upload` are not supported.
  - Icon is Slack's hash mark from the Slack website (`a.slack-edge.com`), as Simple Icons has no Slack entry.
++
++**Account checks**
++
++Checks read `auth.test` and `users.profile.get` for the authenticated user. Rejected credentials use the host's reconnect recovery; explicit permission failures and temporary service failures remain distinct. Checks report the user's name, email and photo when Slack supplies them. Missing optional profile fields do not invalidate a token. Existing OAuth scopes and account identities are unchanged.
 --- a/index.ts
 +++ b/index.ts
-@@ -11,11 +11,52 @@
+@@ -1,9 +1,10 @@
+ import {
+   accountRouter,
+-  boolean,
+   decodeJson,
+   defineApp,
+   defineProvider,
++  json,
++  ProviderError,
+   object,
+   oauth2,
+   router,
+@@ -11,25 +12,143 @@
    string,
    withApprovals,
  } from "apps";
@@ -43,6 +59,15 @@
  import { icons } from "./icon.js";
  import { options } from "./openapi.js";
  
+-// Slack answers HTTP 200 with {ok:false,error} for bad tokens, so decode `ok` first and only
+-// then rely on the fields that are present on success.
+-const Auth = object({
+-  ok: boolean(),
+-  error: string().optional(),
+-  user_id: string().optional(),
+-  user: string().optional(),
+-  url: string().optional(),
+-});
 +const userScopes = [
 +  "calls:read",
 +  "calls:write",
@@ -84,10 +109,84 @@
 +  "users:write",
 +] as const;
 +
- // Slack answers HTTP 200 with {ok:false,error} for bad tokens, so decode `ok` first and only
- // then rely on the fields that are present on success.
- const Auth = object({
-@@ -30,6 +71,16 @@
++// Slack reports authentication and permission failures in HTTP 200 envelopes.
++function rejectSlack(body: unknown, status: number) {
++  if (typeof body !== "object" || body === null || !("ok" in body) || body.ok !== false) return;
++  const error = "error" in body ? body.error : undefined;
++  switch (error) {
++    case "invalid_auth":
++    case "token_revoked":
++    case "token_expired":
++    case "not_authed":
++    case "account_inactive":
++      throw new ProviderError({ reason: "unauthorized", status });
++    case "missing_scope":
++    case "no_permission":
++    case "access_denied":
++    case "team_access_not_granted":
++    case "not_allowed_token_type":
++      throw new ProviderError({ reason: "forbidden", status });
++    case "ratelimited":
++      throw new ProviderError({ reason: "rate_limited", status });
++    case "internal_error":
++    case "fatal_error":
++    case "service_unavailable":
++      throw new ProviderError({ reason: "unavailable", status });
++    default:
++      throw new Error("Slack could not verify this account. Try checking again.");
++  }
++}
++
++function record(value: unknown): value is Record<string, unknown> {
++  return typeof value === "object" && value !== null && !Array.isArray(value);
++}
++
++// Omit missing or malformed display fields without rejecting valid credentials.
++function text(value: unknown) {
++  return typeof value === "string" && value.trim().length > 0 && value.length <= 255
++    ? value.trim()
++    : undefined;
++}
++
++function httpUrl(value: unknown) {
++  if (typeof value !== "string") return undefined;
++  try {
++    const url = new URL(value);
++    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
++async function slackRead(
++  fetch: typeof globalThis.fetch,
++  url: string,
++  token: string,
++  signal: AbortSignal,
++  method: "GET" | "POST",
++): Promise<Record<string, unknown>> {
++  const response = await fetch(url, {
++    method,
++    signal,
++    headers: { Authorization: `Bearer ${token}` },
++  });
++  // A bare 403 does not prove a scope gap. Only Slack's explicit code does.
++  if (response.status === 403)
++    rejectSlack(
++      await response
++        .clone()
++        .json()
++        .catch(() => null),
++      403,
++    );
++  const body = await decodeJson(response, json());
++  rejectSlack(body, response.status);
++  if (!record(body) || body.ok !== true)
++    throw new Error("Slack returned an invalid account check. Try checking again.");
++  return body;
++}
+ 
+ const slack = defineProvider({
    name: "Slack",
    hosts: ["slack.com"],
    auth: {
@@ -104,19 +203,53 @@
      token: secrets({
        label: "Bot or user token (xoxb-/xoxp-)",
        fields: object({ token: string({ minLength: 1 }) }),
-@@ -75,7 +126,10 @@
+@@ -75,17 +194,34 @@
      }),
    },
    async health({ account, fetch, signal }) {
 -    const token = account.method === "oauth" ? account.fields.access_token : account.fields.token;
+-    const response = await fetch("https://slack.com/api/auth.test", {
+-      method: "POST",
+-      signal,
+-      headers: { Authorization: `Bearer ${token}` },
+-    });
+-    const me = await decodeJson(response, Auth);
+-    if (!me.ok || me.user_id === undefined) {
+-      throw new Error(`Slack auth.test failed: ${me.error ?? "unknown_error"}`);
+-    }
+-    return { accountInfo: { externalId: me.user_id, username: me.user, profileUrl: me.url } };
 +    const token =
 +      account.method === "user" || account.method === "oauth"
 +        ? account.fields.access_token
 +        : account.fields.token;
-     const response = await fetch("https://slack.com/api/auth.test", {
-       method: "POST",
-       signal,
-@@ -97,7 +151,7 @@
++    const me = await slackRead(fetch, "https://slack.com/api/auth.test", token, signal, "POST");
++    const externalId = text(me.user_id);
++    if (externalId === undefined)
++      throw new Error("Slack did not identify this account. Try checking again.");
++    const url = new URL("https://slack.com/api/users.profile.get");
++    url.searchParams.set("user", externalId);
++    const result = await slackRead(fetch, url.href, token, signal, "GET");
++    const profile = record(result.profile) ? result.profile : {};
++    const displayName = text(profile.display_name) ?? text(profile.real_name);
++    const username = text(me.user);
++    const email = text(profile.email);
++    const avatarUrl =
++      httpUrl(profile.image_192) ?? httpUrl(profile.image_72) ?? httpUrl(profile.image_48);
++    const profileUrl = httpUrl(me.url);
++    return {
++      accountInfo: {
++        externalId,
++        ...(displayName === undefined ? {} : { displayName }),
++        ...(username === undefined ? {} : { username }),
++        ...(email === undefined ? {} : { email }),
++        ...(avatarUrl === undefined ? {} : { avatarUrl }),
++        ...(profileUrl === undefined ? {} : { profileUrl }),
++      },
++    };
+   },
+ });
+ 
+@@ -97,7 +233,7 @@
          user?.accounts.slack ?? [],
          (account) =>
            withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>

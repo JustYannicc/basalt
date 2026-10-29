@@ -2,8 +2,8 @@
   "package": "@executor.sh/slack",
   "publishedUrl": "https://catalog.executor.sh/apps/slack.json",
   "publishedSha256": "c138a9ce254fcb00b4cd6d901d64d230167a52b1d353b45da1c91b744e5fb071",
-  "carriedSha256": "2920bd906cbeba87e75c31ae78e915183f461cb9e82d6e130e3a339a600abdd3",
-  "patchSha256": "4a95fb03db2a9fa2b23bc4d0a5fccde976072b9f7d0a7f71e8e4ee6743e769bb",
+  "carriedSha256": "2469dd7300086a0a0261805c19151ec312035d64a7689b689d7987c2c13ee9f6",
+  "patchSha256": "5427b17861b04299653db0e48ec3f88f1460f87a0c5b7c658fca5ee4a4581cfc",
   "contribution": {
     "kind": "issue",
     "url": "https://github.com/UsefulSoftwareCo/executor/issues/2368",
@@ -12,7 +12,7 @@
   "license": "Not declared in the published package",
   "basaltOverlay": {
     "file": "slack.basalt.patch",
-    "sha256": "806289b1b0ee3bc958ffd68b6bcaed4f845f0d4fc51aa80d3c693596ad996f16",
+    "sha256": "216f52e8c53c57993a09257c74515bfecf4d4fa61fdaf89d661515673d1b43a4",
     "appsVersion": "0.0.1-beta.104-basalt.1"
   }
 }

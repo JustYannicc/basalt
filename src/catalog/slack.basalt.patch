@@ -1,8 +1,6 @@
-diff --git a/README.md b/README.md
-index e18e6c5..22bf421 100644
 --- a/README.md
 +++ b/README.md
-@@ -19,8 +19,6 @@ Channels, messages, threads, users, files, reactions, pins, reminders, user grou
+@@ -19,8 +19,6 @@
    - Calls and presence: `calls:read`, `calls:write`, `dnd:read`, `dnd:write`, `users:write`.
    - Pins, reminders and workspace data: `emoji:read`, `pins:read`, `pins:write`, `reminders:read`, `reminders:write`, `team:read`, `usergroups:read`, `usergroups:write`, `users.profile:read`, `users.profile:write`, `users:read`, `users:read.email`.
  
@@ -11,18 +9,16 @@ index e18e6c5..22bf421 100644
  **Known gaps**
  
  - No operations are skipped after the patches (171 of the 174 spec operations are exposed; the 3 removed are the oauth.* methods above).
-diff --git a/index.ts b/index.ts
-index e9ad9f5..87463aa 100644
 --- a/index.ts
 +++ b/index.ts
-@@ -82,54 +82,12 @@ const slack = defineProvider({
+@@ -150,54 +150,12 @@
        tokenResponse: { path: "authed_user", requiredOnExchange: true },
      }),
      token: secrets({
 -      label: "Bot or user token (xoxb-/xoxp-)",
 +      label: "Paste a token",
        fields: object({ token: string({ minLength: 1 }) }),
-     }),
+-    }),
 -    // Slack offers no client registration: the connect page asks for a Slack app's client.
 -    oauth: oauth2({
 -      authorizationUrl: "https://slack.com/oauth/v2/authorize",
@@ -61,7 +57,7 @@ index e9ad9f5..87463aa 100644
 -        "canvases:read",
 -        "canvases:write",
 -      ],
--    }),
+     }),
    },
    async health({ account, fetch, signal }) {
 -    const token =
@@ -69,14 +65,12 @@ index e9ad9f5..87463aa 100644
 -        ? account.fields.access_token
 -        : account.fields.token;
 +    const token = account.method === "user" ? account.fields.access_token : account.fields.token;
-     const response = await fetch("https://slack.com/api/auth.test", {
-       method: "POST",
-       signal,
-diff --git a/openapi.ts b/openapi.ts
-index 45b8ff1..97af4f7 100644
+     const me = await slackRead(fetch, "https://slack.com/api/auth.test", token, signal, "POST");
+     const externalId = text(me.user_id);
+     if (externalId === undefined)
 --- a/openapi.ts
 +++ b/openapi.ts
-@@ -42,7 +42,6 @@ export const options = {
+@@ -42,7 +42,6 @@
    methods: {
      user: [{ scheme: "slackAuth", field: "access_token", part: "value", prefix: "" }],
      token: [{ scheme: "slackAuth", field: "token", part: "value", prefix: "" }],
@@ -84,8 +78,6 @@ index 45b8ff1..97af4f7 100644
    },
    oauth: [],
    patches: [
-diff --git a/package.json b/package.json
-index 5e3afbf..6844418 100644
 --- a/package.json
 +++ b/package.json
 @@ -7,6 +7,6 @@

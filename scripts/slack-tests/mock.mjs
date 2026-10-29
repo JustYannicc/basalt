@@ -154,6 +154,8 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
         const user = person(actor);
         if (operation === "auth.test")
           return output(response, 200, { ok: true, user_id: user.id, user: user.name, team_id: "T000000001", team: "Example team", url: "https://example.test/" });
+        if (operation === "users.profile.get")
+          return output(response, 200, { ok: true, profile: { display_name: user.name, email: `${actor}@example.test`, image_192: "https://example.test/avatar.png" } });
         if (operation === "conversations.history") {
           if (channel !== "C000000001") return output(response, 200, { ok: false, error: "channel_not_found" });
           return output(response, 200, {
