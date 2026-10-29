@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { brand } from "../brand.ts";
 import { afterFreshDns } from "./fresh-dns.ts";
+import { waitForPublicSite } from "./site-readiness.ts";
 import { visibleText } from "./visible-text.ts";
 
 const origin = `https://${brand.host}`;
-const site = await afterFreshDns(() => fetch(brand.site.url, { redirect: "manual" }));
-assert.equal(site.status, 200, "Public site homepage must load");
-assert.ok(site.headers.get("content-security-policy"), "Public site must send its Content Security Policy");
+await waitForPublicSite(brand.site.url);
 // A first deploy creates the custom domain moments before this check runs.
 const root = await afterFreshDns(() => fetch(origin, { redirect: "manual" }));
 assert.equal(root.status, 302, "A signed-out homepage must send people to sign-in");
