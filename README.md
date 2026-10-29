@@ -24,7 +24,7 @@ You need:
 Then:
 
 1. Fork this repository.
-2. Edit [brand.ts](brand.ts): your name, host, zone and links.
+2. Edit [brand.ts](brand.ts): your name, host, zone, email domain, links and site operator. Replace the logo files in [public/](public) too.
 3. Add the secrets in [docs/self-hosting.md](docs/self-hosting.md) to your fork's GitHub Actions.
 4. Push to `main`. Checks run, then Deploy ships it to your domain.
 
@@ -41,7 +41,7 @@ Connectors are optional. Each OAuth connector needs its own OAuth app: see [docs
 
 ## Development
 
-Needs Node 24.3 or newer.
+Needs Node 24.3 or newer and [Bun](https://bun.sh).
 
     npm run prepare:upstream   # fetch the pinned Executor and apply the patches
     npm run check              # tests that need no credentials
