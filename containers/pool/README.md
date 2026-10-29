@@ -53,6 +53,8 @@ Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint
 
 Home applies a forward-only privacy step before readiness. It records the affected key IDs and counts, removes historical diagnostic content and raw keys, and protects writes from older processes during rollout. The step preserves usage counts and billing. Repeated boots resume incomplete work. It leaves the existing cross-provider replay cache unchanged.
 
+The audit log reports <code>active_key_count</code> for distinct affected active credentials and <code>matched_active_key_copies</code> for diagnostic token copies matching those credentials. The same key can appear in both a usage column and its payload, so the copy count can exceed the key count. IDs remain in the private database journal.
+
 The purge removes the live database's diagnostic copies. Existing database backups can retain earlier copies until normal backup cleanup removes them. Restoring an older backup requires the privacy step to run again.
 
 CI builds <code>legacy-runtime</code> and <code>runtime</code> from this Dockerfile. The upgrade regression first reproduces the leak with the released binaries, then checks the purge, a forced failure, an old writer and another boot against a disposable PostgreSQL database. It scans raw diagnostic rows, files and container logs before fixture redaction. Authentication storage and the explicitly retained replay cache are separate from these diagnostic sinks.

@@ -53,7 +53,7 @@ def privacy_audit_line(name: str, line: str) -> str | None:
         value = json.JSONDecoder().raw_decode(line.split(marker, 1)[1])[0]
     except (ValueError, TypeError):
         return None
-    fields = {"usage_rows", "purged_rows", "active_key_count", "deleted_key_count", "unknown_key_count"}
+    fields = {"usage_rows", "purged_rows", "active_key_count", "matched_active_key_copies", "deleted_key_count", "unknown_key_count"}
     if not isinstance(value, dict) or set(value) != fields:
         return None
     if any(type(value[key]) is not int or value[key] < 0 for key in fields):

@@ -587,10 +587,10 @@ index 0000000..89c2798
 +}
 diff --git a/internal/cluster/diagnostics_privacy_audit.go b/internal/cluster/diagnostics_privacy_audit.go
 new file mode 100644
-index 0000000..0ddba49
+index 0000000..e4e25bd
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_audit.go
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,140 @@
 +package cluster
 +
 +import (
@@ -709,17 +709,19 @@ index 0000000..0ddba49
 +	}
 +	counts := diagnosticsPrivacyCountsFromAudit(&audit)
 +	marker := struct {
-+		UsageRows       int64 `json:"usage_rows"`
-+		PurgedRows      int64 `json:"purged_rows"`
-+		ActiveKeyCount  int64 `json:"active_key_count"`
-+		DeletedKeyCount int64 `json:"deleted_key_count"`
-+		UnknownKeyCount int64 `json:"unknown_key_count"`
++		UsageRows              int64 `json:"usage_rows"`
++		PurgedRows             int64 `json:"purged_rows"`
++		ActiveKeyCount         int64 `json:"active_key_count"`
++		MatchedActiveKeyCopies int64 `json:"matched_active_key_copies"`
++		DeletedKeyCount        int64 `json:"deleted_key_count"`
++		UnknownKeyCount        int64 `json:"unknown_key_count"`
 +	}{
-+		UsageRows:       audit.RowsScanned,
-+		PurgedRows:      step.UsageRowsUpdated,
-+		ActiveKeyCount:  int64(len(counts.MatchedActiveAPIKeyIDs)),
-+		DeletedKeyCount: audit.DeletedAPIKeyCount,
-+		UnknownKeyCount: audit.UnknownKeyCount,
++		UsageRows:              audit.RowsScanned,
++		PurgedRows:             step.UsageRowsUpdated,
++		ActiveKeyCount:         int64(len(counts.MatchedActiveAPIKeyIDs)),
++		MatchedActiveKeyCopies: audit.MatchedActiveAPIKeyCopies,
++		DeletedKeyCount:        audit.DeletedAPIKeyCount,
++		UnknownKeyCount:        audit.UnknownKeyCount,
 +	}
 +	encoded, errMarshal := json.Marshal(marker)
 +	if errMarshal != nil {
@@ -1633,10 +1635,10 @@ index 0000000..55047ec
 +}
 diff --git a/internal/cluster/diagnostics_privacy_test.go b/internal/cluster/diagnostics_privacy_test.go
 new file mode 100644
-index 0000000..3de0ccd
+index 0000000..270c2f3
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_test.go
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,231 @@
 +package cluster
 +
 +import (
@@ -1791,8 +1793,10 @@ index 0000000..3de0ccd
 +	}
 +	var logs bytes.Buffer
 +	previous := log.StandardLogger().Out
++	previousFormatter := log.StandardLogger().Formatter
 +	log.SetOutput(&logs)
-+	t.Cleanup(func() { log.SetOutput(previous) })
++	log.SetFormatter(&log.JSONFormatter{})
++	t.Cleanup(func() { log.SetOutput(previous); log.SetFormatter(previousFormatter) })
 +	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
 +	if errPrepare := prepareDiagnosticsPrivacyStep(t.Context(), db, diagnosticPrivacyStepName); errPrepare != nil {
 +		t.Fatal(errPrepare)
@@ -1821,6 +1825,18 @@ index 0000000..3de0ccd
 +	}
 +	if strings.Contains(logs.String(), "active_key_ids") {
 +		t.Fatal("audit log contains key IDs")
++	}
++	var marker map[string]int64
++	for _, line := range strings.Split(logs.String(), "\n") {
++		message := gjson.Get(line, "msg").String()
++		if strings.HasPrefix(message, "POOL_PRIVACY_AUDIT ") {
++			if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "POOL_PRIVACY_AUDIT ")), &marker); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	if marker["active_key_count"] != 1 || marker["matched_active_key_copies"] != 2 {
++		t.Fatal("audit did not report one active key and both diagnostic token copies")
 +	}
 +	var audit diagnosticsPrivacyAuditRecord
 +	if errRead := db.First(&audit, "name = ?", diagnosticPrivacyStepName).Error; errRead != nil {

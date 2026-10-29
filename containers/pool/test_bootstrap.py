@@ -62,7 +62,7 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertIsNone(privacy_audit_line("node", "prompt=private auth=secret"))
         self.assertIsNone(privacy_audit_line("home", "upstream failure body=private"))
         audit: dict[str, object] = {"usage_rows": 5, "purged_rows": 5, "active_key_count": 1,
-                 "deleted_key_count": 0, "unknown_key_count": 0}
+                 "matched_active_key_copies": 10, "deleted_key_count": 0, "unknown_key_count": 0}
         line = "POOL_PRIVACY_AUDIT " + json.dumps(audit)
         parsed = privacy_audit_line("home", line)
         assert parsed is not None
