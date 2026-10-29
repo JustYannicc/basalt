@@ -45,6 +45,7 @@ export interface SharingFixtureOptions {
   readonly failureResponse?: string;
   readonly resourcePrefix?: string;
   readonly poolContainerArgs?: readonly string[];
+  readonly postgresDataStorage?: "tmpfs" | "volume";
   readonly operationTimeoutMs?: number;
   readonly readinessTimeoutMs?: number;
   readonly onStage?: (stage: string) => void;
@@ -56,6 +57,7 @@ export class SharingFixture {
   private poolContainerArgs: readonly string[];
   private operationTimeoutMs: number;
   private readinessTimeoutMs: number;
+  private postgresDataStorage: "tmpfs" | "volume";
   private runArgs: string[] = [];
   private failureContent: string;
   private failureResponse: string;
@@ -116,6 +118,7 @@ export class SharingFixture {
     this.poolContainerArgs = options.poolContainerArgs ?? [];
     this.operationTimeoutMs = options.operationTimeoutMs ?? 60_000;
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? 90_000;
+    this.postgresDataStorage = options.postgresDataStorage ?? "tmpfs";
     this.onStage = options.onStage;
   }
 
@@ -157,7 +160,9 @@ export class SharingFixture {
     this.resources.push(postgres);
     this.stage("postgres container start started");
     docker(["run", "--detach", "--name", postgres, "--network", this.network, "--memory", "256m",
-      "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+      ...(this.postgresDataStorage === "volume"
+        ? ["--mount", "type=volume,destination=/var/lib/postgresql/data"]
+        : ["--tmpfs", "/var/lib/postgresql/data:rw,size=256m"]),
       "--env", "POSTGRES_USER=fixture_admin", "--env", "POSTGRES_PASSWORD=fixture-only",
       "--env", "POSTGRES_DB=basalt_pool", "postgres:16"], this.operationTimeoutMs);
     this.stage("postgres container start complete");

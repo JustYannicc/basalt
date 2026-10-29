@@ -12,6 +12,9 @@ test("large historical cleanup serves through failed batches and resumes after S
   const legacy = process.env.POOL_TEST_LEGACY_IMAGE, candidate = process.env.POOL_TEST_IMAGE;
   assert.ok(legacy && candidate, "Build legacy and candidate pool images before the background proof");
   const fixture = new SharingFixture({ image: legacy, resourcePrefix: "basalt-privacy-background",
+    // Historical rewrites and WAL exceed the small fixtures' 256 MiB tmpfs.
+    // The anonymous volume is deleted by fixture.close() with --volumes.
+    postgresDataStorage: "volume",
     failureContent: "fail-request-private-background-prompt-173", failureResponse: "private-background-response-269" });
   try {
     await fixture.start();
