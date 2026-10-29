@@ -1456,10 +1456,9 @@ index 00000000..b824af74
 +});
 diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
 new file mode 100644
-index 00000000..6dd11109f31db590cdc7da52f9e04863112bd6bf
 --- /dev/null
 +++ b/e2e/tests/account-status.spec.ts
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,504 @@
 +/** App checks use real linked backend credentials and expose bounded display data through HTTP and the row. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -1889,6 +1888,51 @@ index 00000000..6dd11109f31db590cdc7da52f9e04863112bd6bf
 +        );
 +        // Opening checks once; the explicitly refreshed threshold result remains current on revisit.
 +        expect(yield* statusBackend.calls).toBe(2);
++        // The account list names the app a for-everyone account serves and shows the reported logo.
++        const [backendAccount] = accounts;
++        if (backendAccount === undefined)
++          return yield* Effect.die("The backend account is missing");
++        const highlighted = '.inventory-row[aria-current="true"]';
++        const openListAt = (id: string) =>
++          browser.use(`Open the account list at ${id}`, (page) =>
++            page
++              .goto(`/org/${actors.organization.slug}/accounts?account=${id}`)
++              .then(() => page.locator(highlighted).waitFor()),
++          );
++        yield* openListAt(backendAccount);
++        expect(
++          yield* browser.use("Read the app-scope account's apps", (page) =>
++            page.locator(highlighted).locator(".app-references").innerText(),
++          ),
++        ).toContain("Account status fixture");
++        yield* openListAt(account);
++        for (const scheme of ["dark", "light"] as const) {
++          const listed = yield* browser.use(`Read the listed logo in ${scheme} mode`, (page) => {
++            const image = page
++              .locator(highlighted)
++              .locator(".app-cell > [data-slot='account-avatar'] img");
++            return page
++              .emulateMedia({ colorScheme: scheme })
++              .then(() => image.waitFor())
++              .then(() =>
++                image.evaluate((element) => ({
++                  source: (element as HTMLImageElement).src,
++                  width: (element as HTMLImageElement).naturalWidth,
++                  background: getComputedStyle(element.parentElement!).backgroundColor,
++                })),
++              );
++          });
++          expect(listed.source).toBe(`${statusBackend.origin}/logo.svg`);
++          expect(listed.width).toBeGreaterThan(0);
++          expect(listed.background).toBe("rgb(255, 255, 255)");
++        }
++        yield* evidence.attach(
++          "account-list-lab-logo.png",
++          "image/png",
++          yield* browser.use("Capture the listed accounts", (page) =>
++            page.locator(".inventory").screenshot(),
++          ),
++        );
 +        for (const [status, classified] of [
 +          [401, "credentials_rejected"],
 +          [403, "forbidden"],
@@ -9133,16 +9177,67 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
 index d6ce5bf8..2fe6b482 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -11,6 +11,8 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+@@ -3,13 +3,17 @@
+ import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { UserCircleIcon } from "@hugeicons/core-free-icons";
+-import type { AccountDetail, FailureProps } from "../../contracts/dashboard.ts";
++import type { AccountDetail, AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
+ import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
+ import { Button } from "../components/button.tsx";
+ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { appDisplayName } from "../../contracts/product-brand.ts";
- 
-+import { AccountDisplayStatus } from "./account-status.tsx";
 +
++import { AccountDisplayStatus } from "./account-status.tsx";
++import { ProviderIcon } from "./common.tsx";
++import { cn } from "../lib/utils.ts";
+
  type AccountInfo = NonNullable<AccountHealth["info"]>;
- 
- /** What one app's latest check means for the reader; tone matches the other status pills. */
-@@ -201,29 +203,68 @@ export function AccountHealthPanel<E>({
+
+@@ -89,6 +93,40 @@
+         </AvatarFallback>
+       )}
+     </Avatar>
++  );
++}
++
++/**
++ * The photo an account's last check reported, on a light tile so dark logos stay visible in
++ * either theme, or its provider's icon. `compact` is the 24-pixel account row, which shows no
++ * generic glyph for a provider without a logo.
++ */
++export function AccountLogo({
++  account,
++  compact = false,
++}: {
++  readonly account: AccountSummary;
++  readonly compact?: boolean;
++}) {
++  const url = account.health?.info?.avatarUrl;
++  const provider = (
++    <ProviderIcon
++      name={account.providerName ?? "Account"}
++      url={account.providerUrl}
++      medium={compact}
++      showFallback={!compact}
++    />
++  );
++  return url ? (
++    <Avatar
++      className={cn("border bg-white", compact ? "size-6 rounded-md" : "size-8.5 rounded-[7px]")}
++      data-slot="account-avatar"
++    >
++      <AvatarImage src={url} alt="" referrerPolicy="no-referrer" />
++      <AvatarFallback className="rounded-[inherit] bg-transparent">{provider}</AvatarFallback>
++    </Avatar>
++  ) : (
++    provider
+   );
+ }
+
+@@ -201,29 +239,68 @@ export function AccountHealthPanel<E>({
  }
  
  /** One app's latest check, spelled out with its time and, when it failed, the reason given. */
@@ -9394,6 +9489,15 @@ diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/package
 index ed273951..1ba231c1 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -24,7 +24,7 @@
+   type Query,
+ } from "../../contracts/dashboard.ts";
+ import { AppProviderIcon, ProviderIcon } from "./common.tsx";
+-import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
++import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
+ import { EmptyState } from "./empty-state.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Checkbox } from "../components/checkbox.tsx";
 @@ -46,7 +46,23 @@ import {
  import { cn } from "../lib/utils.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
@@ -9503,7 +9607,7 @@ index ed273951..1ba231c1 100644
            <ReadOnlyChoices {...props} slot={slot} requirement={requirement} linked={linked} />
          ) : (
            <EditableChoices
-@@ -524,12 +537,77 @@ function RequirementView<E>({
+@@ -524,12 +537,68 @@ function RequirementView<E>({
    );
  }
  
@@ -9531,16 +9635,7 @@ index ed273951..1ba231c1 100644
 +    .filter((value, index, values) => values.indexOf(value) === index);
 +  const identity = (
 +    <>
-+      {info?.avatarUrl ? (
-+        <AccountAvatar info={info} fallback={false} className="size-6 rounded-md border bg-white" />
-+      ) : (
-+        <ProviderIcon
-+          name={account.providerName ?? "Account"}
-+          url={account.providerUrl}
-+          medium
-+          showFallback={false}
-+        />
-+      )}
++      <AccountLogo account={account} compact />
 +      <span className="min-w-0 truncate font-medium" title={name} data-account-name>
 +        {name}
 +      </span>
@@ -9583,7 +9678,7 @@ index ed273951..1ba231c1 100644
  /** Account names sort the rows, so linking one does not move it. */
  const byName = <C extends { readonly account: AccountSummary }>(choices: readonly C[]) =>
    [...choices].sort(
-@@ -552,29 +630,59 @@ function ReadOnlyChoices<E>({
+@@ -552,29 +621,59 @@ function ReadOnlyChoices<E>({
  }) {
    const plain = requirement.cardinality === "one";
    if (linked.length === 0)
@@ -9663,7 +9758,7 @@ index ed273951..1ba231c1 100644
        className="divide-y divide-border/50 text-[13px]"
      >
        {rows}
-@@ -631,7 +733,7 @@ function EditableChoices<E>({
+@@ -631,7 +724,7 @@ function EditableChoices<E>({
              : [],
          ),
      }),
@@ -9672,7 +9767,7 @@ index ed273951..1ba231c1 100644
    const ready = Option.isSome(loaded) && edit.connecting !== true;
    // Picking or connecting another account for a plain requirement retires an app-bound one, so it
    // asks first.
-@@ -664,7 +766,9 @@ function EditableChoices<E>({
+@@ -664,7 +757,9 @@ function EditableChoices<E>({
    ));
    const list = (
      <ul
@@ -9683,7 +9778,7 @@ index ed273951..1ba231c1 100644
        className="divide-y divide-border/50 text-[13px]"
      >
        {rows}
-@@ -688,18 +792,22 @@ function EditableChoices<E>({
+@@ -688,18 +783,22 @@ function EditableChoices<E>({
          ) : (
            list
          ))}
@@ -9718,7 +9813,7 @@ index ed273951..1ba231c1 100644
        {replacingWithNew && bound !== undefined && (
          <RemoveAppBoundAccount
            name={accountName(bound.account)}
-@@ -754,10 +862,12 @@ function ChoiceRow<E>({
+@@ -754,10 +853,12 @@ function ChoiceRow<E>({
    const [error, setError] = useState<Cause.Cause<E>>();
    const id = useId();
    const name = accountName(account);
@@ -9731,7 +9826,7 @@ index ed273951..1ba231c1 100644
      setError(undefined);
      const exit = await (next ? runLink() : runUnlink());
      if (Exit.isFailure(exit)) setError(exit.cause);
-@@ -766,32 +876,6 @@ function ChoiceRow<E>({
+@@ -766,32 +867,6 @@ function ChoiceRow<E>({
    };
    return (
      <li aria-busy={pending} className={cn(rowClass, "hover:bg-muted/25 focus-within:bg-muted/25")}>
@@ -9764,7 +9859,7 @@ index ed273951..1ba231c1 100644
        {confirming && (
          <RemoveAppBoundAccount
            name={replaces ?? name}
-@@ -802,19 +886,68 @@ function ChoiceRow<E>({
+@@ -802,19 +877,68 @@ function ChoiceRow<E>({
            onRemove={() => void change(replaces !== undefined).then(() => setConfirming(false))}
          />
        )}
@@ -9845,7 +9940,7 @@ index ed273951..1ba231c1 100644
            <Failure cause={error} />
          </div>
        )}
-@@ -906,25 +1035,37 @@ function RemoveAppBoundAccount({
+@@ -906,25 +1026,37 @@ function RemoveAppBoundAccount({
  function AccountStatus({
    app,
    account,

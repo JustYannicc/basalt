@@ -111,10 +111,10 @@ index f90ca288..a288173a 100644
    ),
    accounts: Schema.Array(
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 1d876183..441ac498 100644
+index 0faaaff8..c36b2d43 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
-@@ -7,7 +7,13 @@ import { Effect } from "effect";
+@@ -7,7 +7,13 @@
  import { SqlClient } from "effect/sql";
  import { teamAppPending } from "./provisioning.ts";
  import { HttpApiBuilder } from "effect/http-api";
@@ -129,32 +129,30 @@ index 1d876183..441ac498 100644
  import { HostedApi } from "../contracts/api.ts";
  import { HostedExecutor } from "../contracts/executor.ts";
  import { CurrentOrganization } from "../contracts/organization.ts";
-@@ -18,7 +24,7 @@ import {
+@@ -18,7 +24,7 @@
    type AccessRevision,
  } from "../contracts/resource-access.ts";
  import { requireGroupSharing } from "./group-sharing.ts";
 -import { callerLinkedAccounts } from "./app-accounts.ts";
 +import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
- import { appUiIndicators } from "./app-ui.ts";
  import {
    policyDatabase,
-@@ -52,16 +58,16 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+   currentResourceAuthority,
+@@ -51,13 +57,16 @@
      });
      const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
      const links = yield* callerLinkedAccounts(usableApps);
--    const indicated = new Map(
--      (yield* appUiIndicators(listedApps.map(({ app }) => app))).map((app) => [app.id, app]),
-+    const appLinked = yield* appLinkedAccounts(
-+      yield* policyDatabase,
-+      listedApps.map(({ app }) => app.id),
-     );
 -    const appEntries = listedApps.map(({ app, access }) => ({
--      app: indicated.get(app.id) ?? app,
+-      app,
 -      access,
 -      linkedAccounts: [
 -        ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
 -      ],
 -    }));
++    const appLinked = yield* appLinkedAccounts(
++      yield* policyDatabase,
++      listedApps.map(({ app }) => app.id),
++    );
 +    const appAccounts = new Map<AppId, Set<AccountId>>();
 +    for (const link of appLinked) {
 +      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
@@ -164,19 +162,16 @@ index 1d876183..441ac498 100644
      const linked = new Set(links.map((link) => link.id));
      const accounts = (yield* executor.accounts.list({ owner })).filter(
        (account) => policy.tools.kind === "all" || linked.has(account.id),
-@@ -101,6 +107,23 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+@@ -97,6 +106,20 @@
          ];
        }),
      );
 +    const listedAccounts = accountEntries.flat();
 +    const listed = new Set(listedAccounts.map(({ account }) => account.id));
-+    const indicated = new Map(
-+      (yield* appUiIndicators(listedApps.map(({ app }) => app))).map((app) => [app.id, app]),
-+    );
 +    const appEntries = listedApps.map(({ app, access }) => {
 +      const shared = [...(appAccounts.get(app.id) ?? [])];
 +      return {
-+        app: indicated.get(app.id) ?? app,
++        app,
 +        access,
 +        appAccountCount: shared.length,
 +        appLinkedAccounts: shared.filter((id) => listed.has(id)),
@@ -188,7 +183,7 @@ index 1d876183..441ac498 100644
      const pendingApp =
        policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
          ? yield* teamAppPending(
-@@ -108,7 +131,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+@@ -104,7 +127,7 @@
              (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
            ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
          : false;
@@ -295,7 +290,6 @@ index 2126ea7f..58403762 100644
    const appDetail = (appId: AppId) =>
      Effect.gen(function* () {
 diff --git a/e2e/tests/server-rendered-dashboard.spec.ts b/e2e/tests/server-rendered-dashboard.spec.ts
-index 3f01d670..48edec8c 100644
 --- a/e2e/tests/server-rendered-dashboard.spec.ts
 +++ b/e2e/tests/server-rendered-dashboard.spec.ts
 @@ -5,12 +5,17 @@
@@ -305,7 +299,7 @@ index 3f01d670..48edec8c 100644
 +import { appLinksFixture, keyProvider } from "../support/app-links.ts";
 +import { Api } from "../support/api.ts";
  import { scenarios } from "../test-plan.ts";
- 
+
  /** React reports a server/browser markup difference with one of these messages or codes. */
  const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
  /** A document navigation, as a browser sends it. */
@@ -313,21 +307,23 @@ index 3f01d670..48edec8c 100644
 +const appLinksSource = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 +const service = ${keyProvider("Shared account count fixture")};
 +export default defineApp({ app: { accounts: { service: service.many() } } }, async () => ({ tools: router({}) }));`;
- 
+
  layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (it) => {
    it.effect(scenarios.serverRenderedDashboard.title, (context) =>
-@@ -19,6 +24,10 @@
+@@ -19,6 +24,12 @@
        Effect.gen(function* () {
          const actors = yield* Actors;
          const browser = yield* Browser;
 +        const api = yield* Api;
 +        const shared = yield* appLinksFixture([{ path: "index.ts", content: appLinksSource }]);
-+        yield* shared.connect(actors.owner, "app", "service", "synthetic shared account one");
-+        yield* shared.connect(actors.owner, "app", "service", "synthetic shared account two");
++        const sharedAccounts = [
++          yield* shared.connect(actors.owner, "app", "service", "synthetic shared account one"),
++          yield* shared.connect(actors.owner, "app", "service", "synthetic shared account two"),
++        ];
          // Repeated and encoded parameters stand in for a signed OAuth query that must survive.
          const destination = `/org/${actors.organization.slug}/apps?view=accounts&scope=a%20b&scope=c`;
- 
-@@ -73,6 +82,35 @@
+
+@@ -73,6 +84,67 @@
          expect(headers["cache-control"]).toContain("no-store");
          expect(headers["vary"]).toContain("Cookie");
          const html = yield* browser.use("Read the document the server sent", () => response.text());
@@ -353,16 +349,67 @@ index 3f01d670..48edec8c 100644
 +              Schema.Struct({
 +                app: Schema.Struct({ id: Schema.String }),
 +                appAccountCount: Schema.Number,
++                appLinkedAccounts: Schema.Array(Schema.String),
 +              }),
 +            ),
 +          }),
 +        )(inventoryResponse.body);
-+        expect(
-+          counts.apps.find((item) => item.app.id === shared.app.id)?.appAccountCount,
-+        ).toBe(2);
++        const sharedEntry = counts.apps.find((item) => item.app.id === shared.app.id);
++        expect(sharedEntry?.appAccountCount).toBe(2);
++        // The owner lists both accounts, so the directory names them for the Accounts list.
++        expect([...(sharedEntry?.appLinkedAccounts ?? [])].sort()).toEqual(
++          [...sharedAccounts].sort(),
++        );
++        // A member may use the app without seeing the owner's personal accounts behind it.
++        const memberResponse = yield* api.request(
++          actors.member,
++          "GET",
++          `/api/organizations/${actors.organization.id}/resources`,
++        );
++        expect(memberResponse.status, JSON.stringify(memberResponse.body)).toBe(200);
++        const memberDirectory = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({
++            apps: Schema.Array(
++              Schema.Struct({
++                app: Schema.Struct({ id: Schema.String }),
++                appAccountCount: Schema.Number,
++                appLinkedAccounts: Schema.Array(Schema.String),
++              }),
++            ),
++          }),
++        )(memberResponse.body);
++        const memberEntry = memberDirectory.apps.find((item) => item.app.id === shared.app.id);
++        expect(memberEntry?.appAccountCount).toBe(2);
++        expect(memberEntry?.appLinkedAccounts).toEqual([]);
++        const memberPayload = JSON.stringify(memberResponse.body);
++        for (const privateValue of [
++          ...sharedAccounts,
++          "synthetic shared account one",
++          "synthetic shared account two",
++        ])
++          expect(memberPayload).not.toContain(privateValue);
          /** The document the server renders for a navigation to `path`. */
          const document = (path: string) =>
            browser.use(`Request ${path}`, (page) =>
+@@ -199,6 +271,18 @@
+         expect(failures).toEqual([]);
+         expect(refusedReads).toEqual([]);
+         yield* browser.checkpoint("Refused organization after hydration");
++
++        // An account linked only for everyone lists the app it serves.
++        const sharedRow = yield* browser.use("Open the accounts list", (page) => {
++          const row = page
++            .locator(".inventory-row")
++            .filter({ hasText: "synthetic shared account one" });
++          return page
++            .goto(`/org/${actors.organization.slug}/accounts`)
++            .then(() => row.waitFor())
++            .then(() => row.locator(".app-references").innerText());
++        });
++        expect(sharedRow).toContain(shared.app.name);
+       }),
+     ),
+   );
 diff --git a/e2e/tests/local-server-rendered-dashboard.spec.ts b/e2e/tests/local-server-rendered-dashboard.spec.ts
 index 206e700e..74ad4221 100644
 --- a/e2e/tests/local-server-rendered-dashboard.spec.ts
@@ -436,64 +483,6 @@ index 206e700e..74ad4221 100644
          yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");
        }),
      ),
-diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index 2fe6b482..9c18e650 100644
---- a/packages/ui/src/implementation/dashboard/account-health.tsx
-+++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -3,7 +3,7 @@
- import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
- import { HugeiconsIcon } from "@hugeicons/react";
- import { UserCircleIcon } from "@hugeicons/core-free-icons";
--import type { AccountDetail, FailureProps } from "../../contracts/dashboard.ts";
-+import type { AccountDetail, AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
- import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
- import { Button } from "../components/button.tsx";
- import { LocalTime, shortMoment } from "../components/local-time.tsx";
-@@ -12,6 +12,8 @@
- import { appDisplayName } from "../../contracts/product-brand.ts";
- 
- import { AccountDisplayStatus } from "./account-status.tsx";
-+import { ProviderIcon } from "./common.tsx";
-+import { cn } from "../lib/utils.ts";
- 
- type AccountInfo = NonNullable<AccountHealth["info"]>;
- 
-@@ -94,6 +96,35 @@
-   );
- }
- 
-+/**
-+ * The photo an account's last check reported, on a light tile so dark logos stay visible in
-+ * either theme, or its provider's icon. `compact` is the 24-pixel account row, which shows no
-+ * generic glyph for a provider without a logo.
-+ */
-+export function AccountLogo({
-+  account,
-+  compact = false,
-+}: {
-+  readonly account: AccountSummary;
-+  readonly compact?: boolean;
-+}) {
-+  const info = account.health?.info;
-+  return info?.avatarUrl ? (
-+    <AccountAvatar
-+      info={info}
-+      fallback={false}
-+      className={cn("border bg-white", compact ? "size-6 rounded-md" : "size-8.5 rounded-[7px]")}
-+    />
-+  ) : (
-+    <ProviderIcon
-+      name={account.providerName ?? "Account"}
-+      url={account.providerUrl}
-+      medium={compact}
-+      showFallback={!compact}
-+    />
-+  );
-+}
-+
- /** The upstream identity a check reported, for the account heading. */
- export function AccountIdentity({ info }: { readonly info: AccountInfo }) {
-   const name = info.displayName ?? info.username ?? info.email;
 diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
 index 11c022dd..3cba9a14 100644
 --- a/packages/ui/src/implementation/dashboard/accounts.tsx
@@ -510,7 +499,7 @@ index 11c022dd..3cba9a14 100644
 @@ -11,7 +11,7 @@
  import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
  import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
- 
+
 -import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
 +import { Empty, SearchInput } from "./common.tsx";
  import { Button } from "../components/button.tsx";
@@ -546,67 +535,61 @@ index 11c022dd..3cba9a14 100644
                    <div>
                      <strong>{account.label || "Unnamed account"}</strong>
                      {account.description && (
-diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index fc155b88..ff19b9c6 100644
---- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
-+++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -24,7 +24,7 @@
-   type Query,
- } from "../../contracts/dashboard.ts";
- import { AppProviderIcon, ProviderIcon } from "./common.tsx";
--import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
-+import { AccountCheckResult, AccountLogo } from "./account-health.tsx";
- import { EmptyState } from "./empty-state.tsx";
- import { Button } from "../components/button.tsx";
- import { Checkbox } from "../components/checkbox.tsx";
-@@ -559,16 +559,7 @@
-     .filter((value, index, values) => values.indexOf(value) === index);
-   const identity = (
-     <>
--      {info?.avatarUrl ? (
--        <AccountAvatar info={info} fallback={false} className="size-6 rounded-md border bg-white" />
--      ) : (
--        <ProviderIcon
--          name={account.providerName ?? "Account"}
--          url={account.providerUrl}
--          medium
--          showFallback={false}
--        />
--      )}
-+      <AccountLogo account={account} compact />
-       <span className="min-w-0 truncate font-medium" title={name} data-account-name>
-         {name}
-       </span>
-diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
-index 6dd11109..e6283935 100644
---- a/e2e/tests/account-status.spec.ts
-+++ b/e2e/tests/account-status.spec.ts
-@@ -427,6 +427,51 @@
-         );
-         // Opening checks once; the explicitly refreshed threshold result remains current on revisit.
-         expect(yield* statusBackend.calls).toBe(2);
-+        // The account list names the app a for-everyone account serves and shows the reported logo.
-+        const [backendAccount] = accounts;
-+        if (backendAccount === undefined)
-+          return yield* Effect.die("The backend account is missing");
-+        const highlighted = '.inventory-row[aria-current="true"]';
-+        const openListAt = (id: string) =>
-+          browser.use(`Open the account list at ${id}`, (page) =>
-+            page
-+              .goto(`/org/${actors.organization.slug}/accounts?account=${id}`)
-+              .then(() => page.locator(highlighted).waitFor()),
-+          );
-+        yield* openListAt(backendAccount);
-+        expect(
-+          yield* browser.use("Read the app-scope account's apps", (page) =>
-+            page.locator(highlighted).locator(".app-references").innerText(),
-+          ),
-+        ).toContain("Account status fixture");
-+        yield* openListAt(account);
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -3,17 +3,13 @@
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
++import { holdQuery } from "../support/query-transition.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+ import { acceptedToken, accountCheckUpstream } from "../support/account-check-upstream.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { scenarios } from "../test-plan.ts";
+-
+-/** The synthetic photo the identity check reports; the browser request is answered locally. */
+-const avatar = "https://avatars.example.test/u/4242.png";
+-const pixel =
+-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+ const Health = Schema.Struct({
+   account: Schema.String,
+@@ -99,6 +95,8 @@
+           actors = yield* Actors,
+           browser = yield* Browser;
+         const upstream = yield* accountCheckUpstream;
++        /** The synthetic photo the identity check reports, served by the fake service. */
++        const avatar = `${upstream.origin}/avatar.svg`;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const deploy = (name: string, health: string) =>
+           Effect.gen(function* () {
+@@ -234,13 +232,6 @@
+
+         // The account's health shows why the last check failed.
+         yield* browser.login(actors.owner);
+-        yield* browser.use("Serve the reported photo from its external origin", (page) =>
+-          page
+-            .context()
+-            .route(avatar, (route) =>
+-              route.fulfill({ contentType: "image/png", body: Buffer.from(pixel, "base64") }),
+-            ),
+-        );
+         yield* browser.use("Open the accounts with a failed check", (page) =>
+           page
+             .goto(`/org/${actors.organization.slug}/accounts`)
+@@ -374,7 +365,58 @@
+             return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+           }),
+         ).toBe(avatar);
++        // The photo is also the row's logo, on a light tile that keeps a black mark visible.
 +        for (const scheme of ["dark", "light"] as const) {
-+          const listed = yield* browser.use(`Read the listed logo in ${scheme} mode`, (page) => {
++          const logo = yield* browser.use(`Read the row logo in ${scheme} mode`, (page) => {
 +            const image = page
-+              .locator(highlighted)
++              .locator(".inventory-row")
++              .filter({ hasText: "Synthetic Person" })
 +              .locator(".app-cell > [data-slot='account-avatar'] img");
 +            return page
 +              .emulateMedia({ colorScheme: scheme })
@@ -619,17 +602,81 @@ index 6dd11109..e6283935 100644
 +                })),
 +              );
 +          });
-+          expect(listed.source).toBe(`${statusBackend.origin}/logo.svg`);
-+          expect(listed.width).toBeGreaterThan(0);
-+          expect(listed.background).toBe("rgb(255, 255, 255)");
++          expect(logo).toEqual({ source: avatar, width: 32, background: "rgb(255, 255, 255)" });
 +        }
-+        yield* evidence.attach(
-+          "account-list-lab-logo.png",
-+          "image/png",
-+          yield* browser.use("Capture the listed accounts", (page) =>
-+            page.locator(".inventory").screenshot(),
-+          ),
+         yield* browser.checkpoint("Account list with check results");
++
++        const fallback = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const held = yield* holdQuery(["/avatar.svg"], "fail", { allRequests: true });
++            yield* browser.use("Open the list while the photo is still loading", (page) =>
++              page.reload({ waitUntil: "domcontentloaded" }),
++            );
++            yield* held.requested;
++            const providerVisible = () =>
++              browser.use("Read the row's provider fallback", (page) =>
++                page
++                  .locator(".inventory-row")
++                  .filter({ hasText: "Synthetic Person" })
++                  .locator(".app-cell > [data-slot='account-avatar'] .provider-icon")
++                  .isVisible(),
++              );
++            const loading = yield* providerVisible();
++            yield* held.release;
++            yield* browser.use("Wait for the failed photo requests to finish", (page) =>
++              page.waitForLoadState("networkidle"),
++            );
++            return { loading, failed: yield* providerVisible() };
++          }),
 +        );
-         for (const [status, classified] of [
-           [401, "credentials_rejected"],
-           [403, "forbidden"],
++        expect(fallback).toEqual({ loading: true, failed: true });
++        yield* browser.checkpoint("Provider icon after the reported photo fails");
++        yield* browser.use("Load the reported photo after it recovers", (page) =>
++          page
++            .reload()
++            .then(() => page.locator(".app-cell > [data-slot='account-avatar'] img").waitFor()),
++        );
+
+         // Another redeploy makes the result outdated; viewing the app's accounts shows it at once
+         // and checks it again in the background, without any action.
+diff --git a/e2e/support/account-check-upstream.ts b/e2e/support/account-check-upstream.ts
+--- a/e2e/support/account-check-upstream.ts
++++ b/e2e/support/account-check-upstream.ts
+@@ -37,7 +37,7 @@
+
+ /**
+  * A synthetic service with one safe read, `GET /me`, and an MCP server at `/mcp`. `/me` returns a
+- * synthetic user for the accepted token and 401 for any other token. The MCP server initializes
++ * synthetic user, with a photo at `/avatar.svg`, for the accepted token and 401 for any other token. The MCP server initializes
+  * anyone but lists its tools only for the accepted token. Both answer the configured failure.
+  * `anonymousRequests` counts the MCP requests that carried no credentials.
+  */
+@@ -128,14 +128,24 @@
+         id: "user-4242",
+         name: "Synthetic Person",
+         login: "synthetic-person",
+-        avatar: "https://avatars.example.test/u/4242.png",
++        avatar: `http://${request.headers.host}/avatar.svg`,
+       });
+     }),
+   );
++  // A black mark, so a dark theme without a light tile would hide it.
++  const avatar = HttpRouter.add(
++    "GET",
++    "/avatar.svg",
++    HttpServerResponse.text(
++      `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M4 4h24v24H4z"/></svg>`,
++      { contentType: "image/svg+xml" },
++    ),
++  );
+   const services = yield* Layer.build(
+-    HttpRouter.serve(Layer.mergeAll(me, mcp), { disableLogger: true, disableListenLog: true }).pipe(
+-      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+-    ),
++    HttpRouter.serve(Layer.mergeAll(me, mcp, avatar), {
++      disableLogger: true,
++      disableListenLog: true,
++    }).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+   );
+   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");

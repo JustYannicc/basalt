@@ -258,7 +258,7 @@
     {
       "identity": "executor-embedded-app-ui",
       "file": "0028-embedded-app-ui.patch",
-      "content_sha256": "a19507d8c934f0483fb9c160abad2b646eb2d5ae76d42ad868097f20b666dd36",
+      "content_sha256": "2dac7bcd2e92bb4ffccb621e3b5483672f2ea0d6606d92f843b880958f88f778",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -278,7 +278,7 @@
     {
       "identity": "executor-account-status",
       "file": "0030-account-status.patch",
-      "content_sha256": "d6416c15c06afac0f33efb9f7ff20cfd861c5e77a656766eb2c608e63bc23ea5",
+      "content_sha256": "0c9358298e8c0bc7ec859d4d8f0f6dad0e7f8d54600c7bb69c3267a405f3b6f2",
       "kind": "overlay",
       "upstream_pull_request": null,
       "upstream_issue": 2418,
@@ -298,7 +298,7 @@
     {
       "identity": "executor-app-account-counts",
       "file": "0032-app-account-counts.patch",
-      "content_sha256": "e4dd0bf992d7b467ed0f0c4313837aadd6f85abdfe33d6942bc19e869dfb7e0c",
+      "content_sha256": "256782366054ca85f91fa925c90e11956bc020a656415cf5e68fd835122a400b",
       "kind": "upstream",
       "upstream_pull_request": 2438,
       "database_sensitive": false,
