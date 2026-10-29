@@ -36,16 +36,39 @@ function meter(window: UsageWindow) {
   };
 }
 
+function resetText(account: Account, now: Date): string | null {
+  const resets = account.bankedResets;
+  if (!resets) return null;
+  const expiry = resets.nextExpiresAt === null ? null : instant(resets.nextExpiresAt);
+  if (!expiry) return `${resets.available} banked reset${resets.available === 1 ? "" : "s"}`;
+  const days = Math.max(0, Math.ceil((Date.parse(expiry) - now.getTime()) / 86_400_000));
+  return `↻ ${resets.available} banked · next expires in ${days} day${days === 1 ? "" : "s"}`;
+}
+
 /** The account check result for one pool account, within the host's display limits. */
-export function accountStatus(account: Account, sites: readonly { readonly id: string; readonly site?: string }[]) {
+export function accountStatus(account: Account, sites: readonly { readonly id: string; readonly site?: string }[], now = new Date()) {
   const plan = account.plan === null ? "" : text(account.plan, 64);
   // Like the pool screen, a note shows only when something is wrong.
   const message = account.message === null || account.state === "active" ? "" : text(account.message, 128);
+  const windows = orderedWindows(account.windows).slice(0, 4);
+  const reset = resetText(account, now);
+  const resetMeter = windows.findIndex((window) => window.windowSeconds === 18_000);
+  const badges = [
+    ...(plan ? [{ label: plan, tone: "neutral" as const }] : []),
+    states[account.state],
+    ...(account.readingFailed ? [{ label: "Usage reading failed", tone: "warning" as const }]
+      : account.freshness === "stale" ? [{ label: "Usage reading stale", tone: "warning" as const }] : []),
+    ...(reset && resetMeter < 0 ? [{ label: text(reset, 96), tone: "neutral" as const }] : []),
+  ].slice(0, 8);
+  const meters = windows.map((window, index) => ({
+    ...meter(window),
+    ...(reset && index === resetMeter ? { detail: text(reset, 256) } : {}),
+  }));
   return {
     accountInfo: identityOf(account, sites),
     status: {
-      badges: [...(plan ? [{ label: plan, tone: "neutral" as const }] : []), states[account.state]],
-      meters: orderedWindows(account.windows).slice(0, 4).map(meter),
+      badges,
+      meters,
       stats: message ? [{ label: "Note", value: message }] : [],
     },
   };

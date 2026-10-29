@@ -15,6 +15,11 @@ const account: Account = {
     { id: "week", label: "Weekly", remainingRatio: null, resetAt: null, windowSeconds: null },
   ],
   observedAt: "2030-01-02T00:00:00Z",
+  freshness: "fresh",
+  readingFailed: false,
+  nextReadAt: null,
+  earliestResetAt: null,
+  bankedResets: null,
 };
 const sites = [{ id: "codex", site: "chatgpt.com" }];
 
@@ -70,6 +75,25 @@ test("windows read shortest first, and an active account shows no note", () => {
   assert.deepEqual(status.meters.map((meter) => meter.label), ["5 hours", "Weekly"]);
   assert.deepEqual(status.stats, []);
   assert.deepEqual(accountStatus({ ...account, state: "disabled" }, sites).status.badges.at(-1), { label: "Paused", tone: "warning" });
+});
+
+test("reset credits use the five-hour meter, with expiry or a bounded fallback badge", () => {
+  const codex = accountStatus({ ...account, bankedResets: { available: 2, nextExpiresAt: "2030-01-05T00:00:00Z" } }, sites, new Date("2030-01-02T00:00:00Z")).status;
+  assert.equal(codex.meters[0]!.detail, "↻ 2 banked · next expires in 3 days");
+  const claude = accountStatus({ ...account, provider: "claude", windows: [], bankedResets: { available: 2, nextExpiresAt: null } }, sites).status;
+  assert.ok(claude.badges.some((badge) => badge.label === "2 banked resets"));
+  assert.equal(claude.meters.length, 0);
+});
+
+test("stale and failed readings show warning badges within host limits", () => {
+  const stale = accountStatus({ ...account, freshness: "stale" }, sites).status;
+  assert.ok(stale.badges.some((badge) => badge.label === "Usage reading stale" && badge.tone === "warning"));
+  const failed = accountStatus({ ...account, readingFailed: true, freshness: "fresh" }, sites).status;
+  assert.ok(failed.badges.some((badge) => badge.label === "Usage reading failed" && badge.tone === "warning"));
+  const full = accountStatus({ ...account, readingFailed: true, bankedResets: { available: 2, nextExpiresAt: null } }, sites).status;
+  assert.ok(full.badges.length <= 8);
+  assert.ok(full.meters.length <= 4);
+  assert.ok(full.badges.every((badge) => badge.label.length <= 96));
 });
 
 test("pool refusals map to the host's check failures", () => {

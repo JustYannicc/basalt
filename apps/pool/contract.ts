@@ -35,9 +35,21 @@ export interface UsageWindow {
   readonly resetAt: string | null;
   /** Window length in seconds, or null. */
   readonly windowSeconds: number | null;
+  /** ISO time this window was last read, or null; windows of one account can be read at different times. */
+  readonly observedAt: string | null;
 }
 
 export type AccountState = "active" | "disabled" | "unavailable" | "error";
+
+/** How current the account's limit reading is: `never` before its first reading. */
+export type ReadingFreshness = "fresh" | "stale" | "never";
+
+/** Provider-issued resets the account can use, such as Codex reset credits or Claude reset grants. */
+export interface BankedResets {
+  readonly available: number;
+  /** ISO time the next one expires, or null when none expires or the provider doesn't say. */
+  readonly nextExpiresAt: string | null;
+}
 
 export interface Account {
   readonly id: string;
@@ -50,6 +62,16 @@ export interface Account {
   readonly windows: readonly UsageWindow[];
   /** ISO time usage was last read, or null before the first read. */
   readonly observedAt: string | null;
+  /** Whether that reading is still current; a stale one keeps its last-known windows. */
+  readonly freshness: ReadingFreshness;
+  /** True when the last attempt to read limits failed, even if older readings remain. */
+  readonly readingFailed: boolean;
+  /** ISO time the backend reads it again, or null. */
+  readonly nextReadAt: string | null;
+  /** The soonest reset across all of the account's windows, or null. */
+  readonly earliestResetAt: string | null;
+  /** Null when the provider reports none or doesn't support them. */
+  readonly bankedResets: BankedResets | null;
   /**
    * Set by the pool app, not the Worker: the app's Accounts tab holds this subscription, so it's
    * removed there. Accounts added before the tab could connect them have none.
@@ -128,6 +150,10 @@ export interface Cap {
   readonly resetAt: string;
 }
 
+export interface AccountUsage extends UsageSlice {
+  readonly account: string;
+}
+
 /** Per member, for the pool's owner only. `member` is the tools-service user id. */
 export interface MemberUsage extends UsageSlice {
   readonly member: string;
@@ -175,6 +201,11 @@ export interface UsageSummary {
   readonly models: readonly ModelUsage[];
   readonly days: readonly DayUsage[];
   readonly members?: readonly MemberUsage[];
+  /**
+   * Per account in this pool (`account` matches `Account.id`). The owner gets everyone's requests;
+   * anyone else only their own, split by the account that served them.
+   */
+  readonly accounts: readonly AccountUsage[];
   readonly accountsNeeded?: readonly AccountsNeeded[];
   /** The caller's own cap on this pool; always null for the owner. */
   readonly cap: Cap | null;

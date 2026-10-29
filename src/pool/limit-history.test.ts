@@ -16,10 +16,10 @@ class Memory implements UsageStorage {
 const start = Date.parse("2026-10-01T00:00:00Z");
 const step = 5 * 60_000;
 function window(remainingRatio: number | null, windowSeconds = 604800): UsageWindow {
-  return { id: String(windowSeconds), label: "synthetic", remainingRatio, windowSeconds, resetAt: null };
+  return { id: String(windowSeconds), label: "synthetic", remainingRatio, windowSeconds, resetAt: null, observedAt: null };
 }
 function account(id: string, remainingRatio = 0.8, state: Account["state"] = "active", provider = "provider-a"): Account {
-  return { id, provider, state, label: "synthetic", plan: null, message: null, windows: [window(remainingRatio)], observedAt: new Date(start).toISOString() };
+  return { id, provider, state, label: "synthetic", plan: null, message: null, freshness: "fresh", readingFailed: false, nextReadAt: null, earliestResetAt: null, bankedResets: null, windows: [window(remainingRatio)], observedAt: new Date(start).toISOString() };
 }
 async function freshSample(history: LimitHistory, pool: string, accounts: readonly Account[], now = new Date(start)) {
   await history.sample(pool, accounts.map((account) => ({ ...account, observedAt: now.toISOString() })), now);

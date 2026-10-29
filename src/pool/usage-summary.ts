@@ -1,4 +1,4 @@
-import type { Cap, DayUsage, ModelUsage, TokenCounts, UsageSlice, UsageSummary } from "../../apps/pool/contract.ts";
+import type { AccountUsage, Cap, DayUsage, ModelUsage, TokenCounts, UsageSlice, UsageSummary } from "../../apps/pool/contract.ts";
 import { digest, parseBackendUserName } from "./backend-users.ts";
 import { poolGroupPrefix, type HomeClient } from "./control.ts";
 import { object, rows, text, unavailable, type Json } from "./json.ts";
@@ -15,12 +15,16 @@ const cursorKey = `${prefix}cursor`;
 const daysKey = `${prefix}days`;
 const pendingKey = `${prefix}pending`;
 const dayOf = (at: number) => new Date(at).toISOString().slice(0, 10);
-const poolKey = (pool: string, day: string) => `${prefix}pool:${encodeURIComponent(pool)}:${day}`;
+const legacyPoolKey = (pool: string, day: string) => `${prefix}pool:${encodeURIComponent(pool)}:${day}`;
+const poolKey = (pool: string, day: string) => `usage-v2:model:${encodeURIComponent(pool)}:${day}`;
+const accountKey = (pool: string, day: string) => `usage-v2:account:${encodeURIComponent(pool)}:${day}`;
 const seenKey = (day: string) => `${prefix}seen:${day}`;
 // Daily receipt maps use 4096 SHA-256 prefixes. Read/write only the shards
 // touched by a page; the day metadata contains pool ids, never receipt ids.
 const receiptKey = (day: string, hash: string) => `${seenKey(day)}:shard:${hash.slice(0, 3)}`;
+// Existing buckets without an account remain in totals until retention removes them.
 interface Bucket extends ModelUsage { person: string }
+interface AccountBucket extends UsageSlice { person: string; account: string }
 interface Receipts { pools: string[]; pruned?: number }
 interface Scan { from: number; to: number; offset: number }
 interface Cursor { version: number; pools: string[]; readAt: string | null; fresh?: Scan; late?: Scan; lateAt?: number; scan?: Scan }
@@ -54,8 +58,9 @@ export function recordTokens(row: Json, canonical: boolean): TokenCounts {
     output: count(tokens.output_tokens), total: count(tokens.total_tokens) };
 }
 const rounded = <T extends UsageSlice>(value: T): T => ({ ...value, cost: Number(value.cost.toFixed(6)) });
-function slices(buckets: readonly (Bucket & { day: string })[]) {
+function slices(buckets: readonly (Bucket & { day: string })[], accountBuckets: readonly AccountBucket[] = [], includeAccounts = true) {
   let total = zero();
+  const accounts = new Map<string, AccountUsage>();
   const models = new Map<string, ModelUsage>();
   const days = new Map<string, DayUsage>();
   for (const bucket of buckets) {
@@ -69,7 +74,25 @@ function slices(buckets: readonly (Bucket & { day: string })[]) {
     days.set(bucket.day, { day: bucket.day, ...add(old ?? zero(), bucket), models: [...dayModels.values()] });
   }
   const sorted = (items: readonly ModelUsage[]) => [...items].sort((a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model)).map(rounded);
-  return { total: rounded(total), models: sorted([...models.values()]), days: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)).map((day) => ({ ...rounded(day), models: sorted(day.models) })) };
+  if (includeAccounts) for (const bucket of accountBuckets) {
+    accounts.set(bucket.account, { account: bucket.account, ...add(accounts.get(bucket.account) ?? zero(), bucket) });
+  }
+  return { accounts: [...accounts.values()].sort((a, b) => a.account.localeCompare(b.account)).map(rounded), total: rounded(total), models: sorted([...models.values()]), days: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)).map((day) => ({ ...rounded(day), models: sorted(day.models) })) };
+}
+
+function foldBuckets(buckets: readonly (Bucket & { account?: string })[]) {
+  const models = new Map<string, Bucket>(), accounts = new Map<string, AccountBucket>();
+  for (const bucket of buckets) {
+    const modelId = JSON.stringify([bucket.person, bucket.provider, bucket.model]);
+    models.set(modelId, { person: bucket.person, provider: bucket.provider, model: bucket.model,
+      ...add(models.get(modelId) ?? zero(), bucket) });
+    if (bucket.account) {
+      const accountId = JSON.stringify([bucket.person, bucket.account]);
+      accounts.set(accountId, { person: bucket.person, account: bucket.account,
+        ...add(accounts.get(accountId) ?? zero(), bucket) });
+    }
+  }
+  return { models: [...models.values()], accounts: [...accounts.values()] };
 }
 
 /** One instance for the singleton DO. Reads and alarms share its queue. */
@@ -94,15 +117,26 @@ export class UsageLedger {
       const state = await this.storage.getMany<unknown>([daysKey, cursorKey]);
       let days = state.get(daysKey) as string[] | undefined ?? [];
       let cursor = state.get(cursorKey) as Cursor | undefined;
-      // Rebuild pre-sharded buckets and receipts together once. Reading only
-      // metadata avoids loading each day's potentially megabyte-sized id map.
-      if (cursor && cursor.version !== 4) {
+      // Move v4's person × model × account buckets to separate person × model
+      // and person × account totals without dropping retained usage.
+      if (cursor?.version === 4) {
+        const known = cursor.pools ?? [];
+        for (const day of days) for (const pool of known) {
+          const sourceKey = legacyPoolKey(pool, day);
+          const source = await this.storage.get<(Bucket & { account?: string })[]>(sourceKey);
+          if (!source) continue;
+          const folded = foldBuckets(source);
+          await this.storage.commit(new Map<string, unknown>([[poolKey(pool, day), folded.models], [accountKey(pool, day), folded.accounts]]), [sourceKey], pendingKey);
+        }
+        cursor = { ...cursor, version: 5 };
+        await this.storage.commit(new Map([[cursorKey, cursor]]), [], pendingKey);
+      } else if (cursor && cursor.version !== 5) {
         const known = cursor.pools ?? [...new Set([...(await this.storage.getMany<Receipts>(days.map(seenKey))).values()].flatMap((value) => value.pools))];
-        cursor = { version: 4, pools: known, readAt: null };
-        await this.storage.commit(new Map<string, unknown>([[daysKey, []], [cursorKey, cursor]]), days.flatMap((day) => [seenKey(day), ...known.map((pool) => poolKey(pool, day))]), pendingKey);
+        cursor = { version: 5, pools: known, readAt: null };
+        await this.storage.commit(new Map<string, unknown>([[daysKey, []], [cursorKey, cursor]]), days.flatMap((day) => [seenKey(day), ...known.flatMap((pool) => [poolKey(pool, day), accountKey(pool, day), legacyPoolKey(pool, day)])]), pendingKey);
         days = [];
       }
-      cursor ??= { version: 4, pools: [], readAt: null };
+      cursor ??= { version: 5, pools: [], readAt: null };
       // One expired day, 128 shards per alarm. Cleanup keeps up with daily
       // expiry without making a single sync delete a whole busy day's receipts.
       const expired = days.find((day) => day < cutoff);
@@ -111,9 +145,9 @@ export class UsageLedger {
         const first = meta.pruned ?? 0, end = Math.min(shardCount, first + 128);
         const deletes = Array.from({ length: end - first }, (_, i) => receiptKey(expired, (first + i).toString(16).padStart(3, "0")));
         const writes = new Map<string, unknown>();
-        if (first === 0) deletes.push(...meta.pools.map((pool) => poolKey(pool, expired)));
+        if (first === 0) deletes.push(...meta.pools.flatMap((pool) => [poolKey(pool, expired), accountKey(pool, expired)]));
         if (end === shardCount) {
-          deletes.push(seenKey(expired), ...meta.pools.map((pool) => poolKey(pool, expired)));
+          deletes.push(seenKey(expired), ...meta.pools.flatMap((pool) => [poolKey(pool, expired), accountKey(pool, expired)]));
           days = days.filter((day) => day !== expired); writes.set(daysKey, days);
         } else writes.set(seenKey(expired), { ...meta, pruned: end });
         await this.storage.commit(writes, deletes, pendingKey);
@@ -181,8 +215,10 @@ export class UsageLedger {
             const user = parseBackendUserName(object(row.client) ? row.client.username : undefined);
             const pool = (credential ? pools.get(credential) : undefined) ?? (user ? tags.get(user.pool) : undefined);
             const seen = stored.get(receiptKey(day, hash)) as Record<string, number> | undefined;
-            if (pool !== undefined && day >= cutoff && !Object.hasOwn(seen ?? {}, hash)) { bucketKeys.add(poolKey(pool, day)); metaKeys.add(seenKey(day)); }
-            return { ...item, pool, user };
+            if (pool !== undefined && day >= cutoff && !Object.hasOwn(seen ?? {}, hash)) {
+              bucketKeys.add(poolKey(pool, day)); if (credential) bucketKeys.add(accountKey(pool, day)); metaKeys.add(seenKey(day));
+            }
+            return { ...item, pool, user, account: credential ?? undefined };
           });
           for (const [key, value] of await this.storage.getMany<unknown>([...bucketKeys, ...metaKeys])) stored.set(key, value);
           const load = <T>(key: string, fallback: T): T => {
@@ -192,7 +228,17 @@ export class UsageLedger {
             }
             return writes.get(key) as T;
           };
-          for (const { row, day, hash, pool, user } of attributed) {
+          const modelIndexes = new Map<string, Map<string, number>>();
+          const accountIndexes = new Map<string, Map<string, number>>();
+          const upsert = <T>(key: string, identity: (row: T) => string, value: T, indexes: Map<string, Map<string, number>>) => {
+            const values = load<T[]>(key, []);
+            let index = indexes.get(key);
+            if (!index) { index = new Map(values.map((row, i) => [identity(row), i])); indexes.set(key, index); }
+            const id = identity(value), position = index.get(id);
+            if (position === undefined) { index.set(id, values.length); values.push(value); }
+            else values[position] = value;
+          };
+          for (const { row, day, hash, pool, user, account } of attributed) {
             if (day < cutoff || pool === undefined) continue;
             const receipts = load<Record<string, number>>(receiptKey(day, hash), {});
             if (Object.hasOwn(receipts, hash)) continue;
@@ -201,17 +247,36 @@ export class UsageLedger {
             if (!cursor.pools.includes(pool)) cursor.pools.push(pool);
             const meta = load<Receipts>(seenKey(day), { pools: [] });
             if (!meta.pools.includes(pool)) meta.pools.push(pool);
-            const buckets: Bucket[] = load<Bucket[]>(poolKey(pool, day), []);
             const person = user?.person ?? "other";
             const model = text(row.model) ?? "", provider = text(row.provider) ?? "";
-            const index = buckets.findIndex((bucket) => bucket.person === person && bucket.model === model && bucket.provider === provider);
             const amount = object(row.billing) ? row.billing.amount : null;
             // api.md:3103 calls this credits. The public contract currently calls it USD.
             // Home v1.1.6 cluster/billing.go:1452-1456; management/usage_observability.go:1644-1650.
             const priced = typeof amount === "number" && Number.isFinite(amount)
               && (!object(row.billing) || row.billing.matched_price_rule !== "default:zero");
-            const value = { person, model, provider, ...add(buckets[index] ?? zero(), { requests: 1, tokens: recordTokens(row, canonical), cost: priced ? amount : 0, unpriced: priced ? 0 : 1 }) };
-            if (index < 0) buckets.push(value); else buckets[index] = value;
+            const increment = { requests: 1, tokens: recordTokens(row, canonical), cost: priced ? amount : 0, unpriced: priced ? 0 : 1 };
+            const modelKey = poolKey(pool, day), modelId = JSON.stringify([person, provider, model]);
+            const models = load<Bucket[]>(modelKey, []);
+            let modelIndex = modelIndexes.get(modelKey);
+            if (!modelIndex) {
+              modelIndex = new Map(models.map((bucket, i) => [JSON.stringify([bucket.person, bucket.provider, bucket.model]), i]));
+              modelIndexes.set(modelKey, modelIndex);
+            }
+            const oldModel = modelIndex.get(modelId);
+            const modelValue = { person, model, provider, ...add(oldModel === undefined ? zero() : models[oldModel]!, increment) };
+            upsert(modelKey, (bucket) => JSON.stringify([bucket.person, bucket.provider, bucket.model]), modelValue, modelIndexes);
+            if (account) {
+              const key = accountKey(pool, day), identity = JSON.stringify([person, account]);
+              const accountValues = load<AccountBucket[]>(key, []);
+              let accountIndex = accountIndexes.get(key);
+              if (!accountIndex) {
+                accountIndex = new Map(accountValues.map((bucket, i) => [JSON.stringify([bucket.person, bucket.account]), i]));
+                accountIndexes.set(key, accountIndex);
+              }
+              const oldAccount = accountIndex.get(identity);
+              const accountValue = { person, account, ...add(oldAccount === undefined ? zero() : accountValues[oldAccount]!, increment) };
+              upsert(key, (bucket) => JSON.stringify([bucket.person, bucket.account]), accountValue, accountIndexes);
+            }
           }
           scan.offset += items.length;
           const complete = scan.offset >= page.total;
@@ -244,18 +309,22 @@ export class UsageLedger {
       const person = await digest(caller);
       const buckets: (Bucket & { day: string })[] = [];
       const dayKeys = Array.from({ length: days }, (_, i) => dayOf(start + i * dayMs));
-      const stored = await this.storage.getMany<unknown>([cursorKey, ...dayKeys.map((day) => poolKey(pool, day))]);
+      const stored = await this.storage.getMany<unknown>([cursorKey, ...dayKeys.flatMap((day) => [poolKey(pool, day), accountKey(pool, day)])]);
+      const accountBuckets: AccountBucket[] = [];
       for (const day of dayKeys) {
         for (const bucket of stored.get(poolKey(pool, day)) as Bucket[] | undefined ?? []) {
           if (caller === owner || bucket.person === person) buckets.push({ ...bucket, day });
         }
+        for (const bucket of stored.get(accountKey(pool, day)) as AccountBucket[] | undefined ?? []) {
+          if (caller === owner || bucket.person === person) accountBuckets.push(bucket);
+        }
       }
       const result: UsageSummary = { scope: caller === owner ? "pool" : "you", from: new Date(start).toISOString(), to: new Date(end).toISOString(),
-        ...slices(buckets), cap: cap(caller), readAt: (stored.get(cursorKey) as Cursor | undefined)?.readAt ?? null };
+        ...slices(buckets, accountBuckets), cap: cap(caller), readAt: (stored.get(cursorKey) as Cursor | undefined)?.readAt ?? null };
       if (caller !== owner) return result;
       const members = await Promise.all([...new Set(options.members)].map(async (member) => {
         const person = await digest(member);
-        const own = slices(buckets.filter((bucket) => bucket.person === person));
+        const own = slices(buckets.filter((bucket) => bucket.person === person), [], false);
         return { member, ...own.total, models: own.models, days: own.days, cap: cap(member) };
       }));
       return { ...result, members, accountsNeeded: await this.options.history?.advice(pool, now) ?? [] };

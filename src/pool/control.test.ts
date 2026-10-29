@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PoolView, SignInStarted, SignInStatus } from "../../apps/pool/contract.ts";
 import { attributionStorageKey, PoolControl, type ControlStorage } from "./attribution.ts";
-import { handleControl } from "./control.ts";
+import { handleControl, HomeClient } from "./control.ts";
 import providers from "./providers.json" with { type: "json" };
 import { signPoolToken } from "./token.ts";
 
@@ -96,6 +96,11 @@ class FakeHome {
       const quota = this.quota.filter((row) => !ids.size || ids.has(String(row.credential_id)));
       const offset = Number(url.searchParams.get("offset") ?? 0);
       return Response.json({ items: quota.slice(offset, offset + limit), total: quota.length, limit, offset });
+    }
+    if (endpoint.startsWith("/quota/credentials/")) {
+      const id = decodeURIComponent(endpoint.slice("/quota/credentials/".length));
+      const credential = this.quota.find((row) => row.credential_id === id) ?? { credential_id: id };
+      return Response.json({ credential, windows: credential.primary_windows ?? [], reset_credits: null });
     }
     if (endpoint === "/usage/records") {
       const limit = Number(url.searchParams.get("limit") ?? 50);
@@ -418,7 +423,7 @@ test("duplicate channel groups use the lowest id and all duplicate members are v
 
 test("pool view filters global credentials and quotas, sorts ids and normalizes usage", async () => {
   const f = await fixture(); f.home.addGroup("pool-a", 1, ["z", "a", "u", "e"]); f.home.addGroup("pool-b", 2, ["foreign"]);
-  f.home.addFile("foreign"); f.home.addFile("z", provider, { disabled: true, unavailable: true, status: "error", email: "fake@example.invalid" });
+  f.home.addFile("foreign"); f.home.addFile("z", "synthetic", { disabled: true, unavailable: true, status: "error", email: "fake@example.invalid" });
   f.home.addFile("a", provider, { unavailable: true }); f.home.addFile("u"); f.home.addFile("e", provider, { status: "error", status_message: "Needs sign-in" });
   f.home.quota = [{ credential_id: "z", plan: { name: "Example plan" }, observed_at: "2026-01-01T00:00:00Z", primary_windows: [
     { id: "high", label: "High", remaining_ratio: 2, reset_at: "2026-01-02T00:00:00Z", window_seconds: 3600 },
@@ -675,17 +680,35 @@ test("pool view reads credentials and quota concurrently and reuses cached chann
     return undefined;
   };
   const reading = f.call("/pool"); await entered.promise; await nextTurn();
-  try { assert.ok(f.home.calls.some((call) => call.path.includes("/quota/credentials?"))); }
+  try { assert.ok(f.home.calls.some((call) => call.path.includes("/quota/credentials/"))); }
   finally { release.resolve(); await reading; }
   f.home.override = undefined;
   await f.call("/pool");
   assert.equal(f.home.calls.filter((call) => call.path.endsWith("/channel-groups")).length, 1);
+  assert.equal(f.home.calls.filter((call) => call.path.includes("/quota/credentials/")).length, 1, "a second view reuses the cached detail read");
   // A deleted cached group is re-discovered after Home's 404.
   f.home.groups = [{ id: 4, channel_name: "signalbox-pool-pool-a" }];
   f.home.members = [{ id: 4, channel_group_id: 4, auth_id: "account" }];
   f.home.override = (path) => path.endsWith("/channel-group-details?channel_group_id=1") ? Response.json({ error: "not_found" }, { status: 404 }) : undefined;
   const view = await (await f.call("/pool")).json() as PoolView;
   assert.deepEqual(view.accounts.map((account) => account.id), ["account"]);
+});
+
+test("a missing quota detail leaves that account visible and a refresh drops its cached detail", async () => {
+  const f = await fixture(); f.home.addGroup("pool-a", 1, ["missing", "refreshed"]);
+  f.home.addFile("missing"); f.home.addFile("refreshed");
+  f.home.override = (path) => path.endsWith("/quota/credentials/missing") ? Response.json({}, { status: 404 }) : undefined;
+  const view = await (await f.call("/pool")).json() as PoolView;
+  assert.deepEqual(view.accounts.map((account) => account.id), ["missing", "refreshed"]);
+  assert.equal(view.accounts.find((account) => account.id === "missing")!.freshness, "never");
+  const client = new HomeClient(f.home.fetch);
+  const before = f.home.calls.filter((call) => call.path.endsWith("/quota/credentials/refreshed")).length;
+  await client.quota(["refreshed"], true);
+  await client.quota(["refreshed"], true);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/credentials/refreshed")).length, before + 1);
+  await client.refreshQuota(["refreshed"]);
+  await client.quota(["refreshed"], true);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/credentials/refreshed")).length, before + 2);
 });
 
 test("global ownership reads every membership in one call and reuses the snapshot for add", async () => {
@@ -957,15 +980,17 @@ test("unauthorized and non-owner requests bypass a blocked global attribution qu
 });
 
 for (const count of [75, 205]) {
-  test(`pool quota covers all ${count} credentials within Home's 200-item limit`, async () => {
+  test(`pool view reads all ${count} details; sampler lists stay within Home's 200-item limit`, async () => {
     const f = await fixture(); const ids = Array.from({ length: count }, (_, i) => `account-${String(i).padStart(3, "0")}`);
     f.home.addGroup("pool-a", 1, ids);
     for (const id of ids) {
-      f.home.addFile(id); f.home.quota.push({ credential_id: id, plan: { name: `plan-${id}` }, primary_windows: [{ id: "usage", remaining_ratio: 0.5 }] });
+      f.home.addFile(id); f.home.quota.push({ credential_id: id, plan: { name: `plan-${id}` }, primary_windows: [{ id: "usage", scope: "account", window_seconds: 604800, remaining_ratio: 0.5 }] });
     }
     const view = await (await f.call("/pool")).json() as PoolView;
     assert.equal(view.accounts.length, count);
     for (const account of view.accounts) { assert.equal(account.plan, `plan-${account.id}`); assert.equal(account.windows.length, 1); }
+    assert.equal(f.home.calls.filter((call) => call.path.includes("/quota/credentials/")).length, count);
+    assert.equal((await new HomeClient(f.home.fetch).quota(ids)).length, count);
     const calls = f.home.calls.filter((call) => call.path.includes("/quota/credentials?"));
     assert.equal(calls.length, Math.ceil(count / 200));
     for (const call of calls) {

@@ -1,6 +1,7 @@
+import { accountsView } from "./accounts-view.ts";
+import { mapBounded } from "./bounded.ts";
 import providers from "./providers.json" with { type: "json" };
 import {
-  type Account,
   callerHeader,
   controlBasePath as base,
   type ControlErrorCode,
@@ -8,7 +9,6 @@ import {
   type SignInFlow,
   type SignInStarted,
   type SignInStatus,
-  type UsageWindow,
   type UsageRecord,
   type UsageResponse,
 } from "../../apps/pool/contract.ts";
@@ -18,6 +18,8 @@ import { exportLoginFile } from "./login-export.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
+
+export { accountsView } from "./accounts-view.ts";
 
 export interface HomeDependencies {
   signingKey: string;
@@ -68,7 +70,6 @@ export const poolGroupPrefix = "signalbox-pool-";
 export const signInTtlMs = 20 * 60_000;
 const management = "/v8/management";
 const sessionPrefix = "sbs1";
-const memberConcurrency = 4;
 // Home v1.1.6 management/quota_snapshots.go:18-19 caps each list at 200.
 const quotaBatchSize = 200;
 // Home v1.1.6 cluster/usage_observability.go:23.
@@ -192,7 +193,9 @@ async function body(request: Request, code: ControlErrorCode): Promise<{ raw: st
 export class HomeClient {
   private fetchHome: HomeDependencies["home"];
   private groupCache = new Map<string, Group[]>();
-  constructor(fetchHome: HomeDependencies["home"]) { this.fetchHome = fetchHome; }
+  private quotaDetails = new Map<string, { promise: Promise<Json | null>; expiresAt: number }>();
+  private clock: () => number;
+  constructor(fetchHome: HomeDependencies["home"], clock: () => number = Date.now) { this.fetchHome = fetchHome; this.clock = clock; }
   async response(path: string, init?: RequestInit): Promise<Response> {
     try { return await this.fetchHome(`${management}${path}`, init); } catch { return unavailable(); }
   }
@@ -222,21 +225,12 @@ export class HomeClient {
   }
   invalidateGroups(): void { this.groupCache.clear(); }
   async members(groups: Group[]): Promise<Member[]> {
-    const results: Member[][] = Array.from({ length: groups.length }, () => []);
-    let next = 0;
     try {
-      await Promise.all(Array.from({ length: Math.min(memberConcurrency, groups.length) }, async () => {
-        for (;;) {
-          const index = next++;
-          const group = groups[index];
-          if (!group) return;
-          results[index] = rows((await this.data(`/channel-group-details?channel_group_id=${group.id}`)).channel_group_details).map((row) => {
-            if (!positiveId(row.id) || row.channel_group_id !== group.id || !text(row.auth_id)) return unavailable();
-            return { id: row.id, channel_group_id: group.id, auth_id: row.auth_id as string };
-          });
-        }
-      }));
-      return results.flat();
+      return (await mapBounded(groups, async (group) =>
+        rows((await this.data(`/channel-group-details?channel_group_id=${group.id}`)).channel_group_details).map((row) => {
+          if (!positiveId(row.id) || row.channel_group_id !== group.id || !text(row.auth_id)) return unavailable();
+          return { id: row.id, channel_group_id: group.id, auth_id: row.auth_id as string };
+        }))).flat();
     } catch (error) { this.invalidateGroups(); throw error; }
   }
   async allMembership(): Promise<Membership> {
@@ -248,7 +242,9 @@ export class HomeClient {
     });
     return { groups, members };
   }
-  async quota(ids: string[]): Promise<Json[]> {
+  async quota(ids: string[], detail = false): Promise<Json[]> {
+    if (detail) return (await mapBounded([...new Set(ids)], (id) => this.quotaDetail(id)))
+      .filter((value): value is Json => value !== null);
     const items: Json[] = [];
     for (let offset = 0; offset < ids.length; offset += quotaBatchSize) {
       const batch = ids.slice(offset, offset + quotaBatchSize);
@@ -262,12 +258,40 @@ export class HomeClient {
   }
   async refreshQuota(ids: string[]): Promise<void> {
     for (const id of new Set(ids)) {
+      this.dropQuotaDetail(id);
       try {
         const response = await this.response("/credentials/quota/fetch", post({ auth_index: id }));
         await response.body?.cancel();
         if (response.status === 401 || response.status === 403) return;
       } catch { /* Home's next collection can read usage. */ }
     }
+  }
+  dropQuotaDetail(id: string): void { this.quotaDetails.delete(id); }
+  private quotaDetail(id: string): Promise<Json | null> {
+    const now = this.clock();
+    const cached = this.quotaDetails.get(id);
+    if (cached && cached.expiresAt > now) return cached.promise;
+    if (cached) this.quotaDetails.delete(id);
+    const entry = { promise: undefined as unknown as Promise<Json | null>, expiresAt: Infinity };
+    entry.promise = (async () => {
+      const response = await this.response(`/quota/credentials/${encodeURIComponent(id)}`);
+      if (response.status === 404) { await response.body?.cancel(); return null; }
+      if (!response.ok) throw new BackendFailure(response.status);
+      let value: unknown;
+      try { value = await response.json(); } catch { return unavailable(); }
+      if (!object(value) || !object(value.credential) || value.credential.credential_id !== id) return unavailable();
+      const collection = object(value.collection) ? value.collection : undefined;
+      const nextProbeAt = collection ? collection.next_probe_at : object(value.credential) ? value.credential.next_probe_at : undefined;
+      const probeAt = typeof nextProbeAt === "string" ? Date.parse(nextProbeAt) : NaN;
+      const refreshAt = Number.isFinite(probeAt) ? Math.min(this.clock() + 60_000, probeAt) : this.clock() + 60_000;
+      if (this.quotaDetails.get(id) === entry) entry.expiresAt = refreshAt;
+      return value;
+    })().catch((error: unknown) => {
+      if (this.quotaDetails.get(id) === entry) this.quotaDetails.delete(id);
+      throw error;
+    });
+    this.quotaDetails.set(id, entry);
+    return entry.promise;
   }
 }
 
@@ -336,7 +360,7 @@ export class PoolHome {
     if (!ids.size) return { isOwner, providers, accounts: [] };
     const [files, usage] = await Promise.all([
       this.credentials(),
-      this.client.quota([...ids].sort()),
+      this.client.quota([...ids].sort(), true),
     ]);
     return { isOwner, providers, accounts: accountsView(files, usage, ids) };
   }
@@ -380,6 +404,7 @@ export class PoolHome {
     // Keep membership as retry authority until the credential deletion is acknowledged.
     const deleted = await this.client.response(`/credentials?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     if (!deleted.ok && deleted.status !== 404) throw new BackendFailure(deleted.status);
+    this.client.dropQuotaDetail(id);
     await detached();
     for (const member of members) {
       const response = await this.client.response(`/channel-group-details/${member.id}`, { method: "DELETE" });
@@ -387,35 +412,6 @@ export class PoolHome {
     }
   }
 }
-/** The public view of the credentials in `ids`, with their quota readings. */
-export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<string>): Account[] {
-  const byId = new Map(quota.map((row) => [row.credential_id, row]));
-  return files.filter((row) => typeof row.id === "string" && ids.has(row.id)).map((row): Account => {
-    const reading = byId.get(row.id);
-    return {
-      id: row.id as string, provider: text(row.provider) ?? text(row.type) ?? "",
-      label: text(row.email) ?? text(row.label) ?? text(row.name) ?? row.id as string,
-      plan: object(reading?.plan) ? text(reading.plan.name) : null,
-      state: row.disabled ? "disabled" : row.unavailable ? "unavailable" : row.status === "error" ? "error" : "active",
-      message: text(row.status_message),
-      windows: Array.isArray(reading?.primary_windows) ? rows(reading.primary_windows).map(windowView) : [],
-      observedAt: text(reading?.observed_at),
-    };
-  }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-}
-function finite(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-function windowView(row: Json): UsageWindow {
-  const ratio = finite(row.remaining_ratio) ? row.remaining_ratio : finite(row.used_ratio) ? 1 - row.used_ratio : null;
-  return {
-    id: text(row.id) ?? "", label: text(row.label) ?? text(row.id) ?? "",
-    remainingRatio: row.is_unlimited === true ? 1 : ratio === null ? null : Math.min(1, Math.max(0, ratio)),
-    resetAt: row.is_unlimited === true ? null : text(row.reset_at),
-    windowSeconds: finite(row.window_seconds) ? row.window_seconds : null,
-  };
-}
-
 interface RouteContext {
   request: Request;
   url: URL;

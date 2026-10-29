@@ -31,6 +31,9 @@ async function fixture(provider = "claude") {
       const group = Number(new URL(`https://home.invalid${path}`).searchParams.get("channel_group_id"));
       return Response.json({ channel_group_details: state.members.filter((member) => member.channel_group_id === group) });
     }
+    if (path.startsWith("/v8/management/quota/credentials/")) return Response.json({
+      credential: { credential_id: decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)) }, windows: [], reset_credits: null,
+    });
     if (path.startsWith("/v8/management/quota/credentials?")) return Response.json({ items: [] });
     if (path === "/v8/management/credentials") return Response.json({ files: state.files });
     if (path === `/v8/management/credentials/download?id=${id}`) {

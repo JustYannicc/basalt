@@ -96,7 +96,7 @@ async function control<T>(
 }
 
 export const view = query(
-  { description: "This pool's accounts with their usage windows, and the providers it can connect", input: object({}) },
+  { description: "This pool's accounts with their limit windows, reading freshness and banked resets, and the providers it can connect", input: object({}) },
   async (ctx: Context): Promise<Result<PoolView>> => {
     const result = await control<PoolView>(ctx, "/pool");
     if (!result.ok) return result;
@@ -108,7 +108,7 @@ export const view = query(
 
 export const usage = query(
   {
-    description: "Tokens and API-equivalent cost through this pool for the last `days` days (1 to 30, default 30), per model and per UTC day. The pool's owner gets the whole pool, each member's totals and cap by tools-service user id, and whether each provider needs an account added or removed. Anyone else gets only their own usage on this pool and their own weekly cap with when it resets.",
+    description: "Tokens and API-equivalent cost through this pool for the last `days` days (1 to 30, default 30), per model, per UTC day and per serving account. The pool's owner gets the whole pool, each member's totals and cap by tools-service user id, and whether each provider needs an account added or removed. Anyone else gets only their own usage on this pool and their own weekly cap with when it resets.",
     input: object({ days: number().optional() }),
   },
   async (ctx: Context, { days }) => control<UsageSummary>(ctx, `/usage/summary?days=${Math.min(30, Math.max(1, Math.round(days ?? 30)))}`),
