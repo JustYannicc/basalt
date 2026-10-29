@@ -335,7 +335,7 @@
       "identity": "contributed-app-requirements",
       "file": "0036-contributed-app-requirements.patch",
       "upstream_issue": 2431,
-      "content_sha256": "4831b904e774c17f590dcb04ccb07879c885b799e94724efb7d0fc1cdc85e7a8",
+      "content_sha256": "5eae7034b42ea7f8529d24b57baec5a3a6e948be889fad604b33e0ae944c32cd",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

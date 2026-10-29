@@ -1345,14 +1345,17 @@ index 8eee52b..9b640b7 100644
  
  /**
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index 15cc029..c6c281c 100644
+index 15cc029..310ddcd 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
-@@ -1,3 +1,4 @@
+@@ -22,6 +22,7 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
+ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
+ import { requireOrganizationAdmin } from "./access.ts";
+ import { callerLinkedAccounts } from "./app-accounts.ts";
 +import { visibleAccountStatuses } from "./account-identity.ts";
- import type { AuthContext } from "@better-auth/core";
- import type { Principal } from "../contracts/auth.ts";
- import { requestAuthentication, requestTombstones } from "./batch-authentication.ts";
+ import { appUiIndicators } from "./app-ui.ts";
+ import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
+ import { APIError } from "better-auth/api";
 @@ -250,11 +251,18 @@ export const inventory = (owner: OwnerId) =>
          (entry) => [entry.account, entry],
        ),
