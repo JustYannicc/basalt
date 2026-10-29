@@ -243,3 +243,22 @@ test("native pool deletion stays denied after setup tombstones expire", async ()
   assert.equal((await f.context(owner)).status, 403);
   assert.equal((await f.context(member)).status, 403);
 });
+
+test("native managers set caps only with use access and demotion survives restart", async () => {
+  const writes: unknown[][] = [];
+  const f = fixture({
+    summary: async () => { throw new Error("A cap write must not query the summary"); },
+    setCap: async (...args) => { writes.push(args); },
+  });
+  const project = (managers: string[]) => f.access({ action: "audience", pools: [{ ...pool,
+    authorization: "executor-app-v1", managers }] });
+  assert.equal((await project([owner, member])).status, 200);
+  const setup = await f.intent(member);
+  assert.equal((await f.action("cap", member, setup, { member: "capped-person", weekly: 10 })).status, 200);
+  assert.deepEqual(writes, [[pool.pool, owner, "capped-person", 10]]);
+  f.advance(1);
+  assert.equal((await project([owner])).status, 200);
+  f.restart();
+  assert.equal((await f.action("cap", member, setup, { member: "capped-person", weekly: 20 })).status, 403);
+  assert.equal(writes.length, 1);
+});

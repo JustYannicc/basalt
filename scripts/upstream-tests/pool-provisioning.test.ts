@@ -411,6 +411,25 @@ test("deleted pools stay deleted; unverified members and missing keys create not
   );
 });
 
+test("pool reconciliation and key rotation preserve native authorization and sibling metadata", async () => {
+  await fixture(({ sql, setup }) => Effect.gen(function* () {
+    yield* setup();
+    yield* setup("person-b");
+    yield* sql`update organization set metadata = jsonb_set(jsonb_set(metadata::jsonb,
+      '{basaltPools,person-a,authorization}', '"executor-app-v1"'::jsonb),
+      '{basaltPools,person-b,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+    const [before] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    yield* setup();
+    const [reconciled] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    assert.deepEqual(reconciled!.pools, before!.pools);
+    yield* setup("person-a", Redacted.make("d1".repeat(32)));
+    const [rotated] = yield* sql<{ pools: Record<string, Record<string, unknown>> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    assert.equal(rotated!.pools["person-a"]!.authorization, "executor-app-v1");
+    assert.notEqual(rotated!.pools["person-a"]!.tokenKeyVersion, before!.pools["person-a"]!.tokenKeyVersion);
+    assert.deepEqual(rotated!.pools["person-b"], before!.pools["person-b"]);
+  }));
+});
+
 test("two owners get distinct pools and names under concurrent setup", async () => {
   await fixture(({ sql, setup }) =>
     Effect.gen(function* () {

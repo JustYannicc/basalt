@@ -196,8 +196,12 @@ export class Computers {
   private async ownerUsage(action: "usage" | "cap", intent: SetupIntent, user: string, payload: Record<string, unknown>): Promise<Response> {
     const usage = this.deps.usage;
     if (!usage) return fail(404, "not_found", "This setup endpoint does not exist.");
-    if (intent.owner !== user) return fail(403, "unauthorized", "Only the pool's owner can see each person's usage or set caps.");
-    await this.run(async (registry) => this.check(await PoolDirectory.load(this.deps.storage, this.now()), registry, intent));
+    await this.run(async (registry) => {
+      const directory = await PoolDirectory.load(this.deps.storage, this.now());
+      this.check(directory, registry, intent);
+      const canManage = directory.permissions(intent.pool, user)?.canManage ?? intent.owner === user;
+      if (!canManage) return fail(403, "unauthorized", "Only a pool manager can see each person's usage or set caps.");
+    });
     if (action === "cap") {
       if (payload.weekly !== null && !isWeeklyCap(payload.weekly)) return fail(400, "invalid_query", "Enter a weekly cap between $0.01 and $100,000, in whole cents.");
       await usage.setCap(intent.pool, intent.owner, String(payload.member ?? ""), payload.weekly);

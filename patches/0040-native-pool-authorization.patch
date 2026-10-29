@@ -1,3 +1,51 @@
+diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
+index 4d34ed7..4bf0364 100644
+--- a/apps/hosted/cloud/src/implementation/access-hooks.ts
++++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
+@@ -7,6 +7,11 @@ import { Schema } from "effect";
+
+ export interface CloudAccessHooks {
+   readonly memberRemoving: (organization: string, member: string) => Promise<void>;
++  readonly memberRoleChanging?: (
++    organization: string,
++    member: string,
++    role: string,
++  ) => Promise<void>;
+   /** Grants may already be committed. The host logs failures; lazy key minting repairs them. */
+   readonly membersAdded: (organization: string) => Promise<void>;
+   readonly userDeleting: (user: string) => Promise<void>;
+@@ -54,8 +59,15 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+     beforeAcceptInvitation: async ({ invitation }) => {
+       requireMember(invitation.role);
+     },
+-    beforeUpdateMemberRole: async ({ newRole }) => {
++    beforeUpdateMemberRole: async ({ newRole, member, organization }) => {
+       requireMember(newRole);
++      try {
++        await access?.memberRoleChanging?.(organization.id, member.id, newRole);
++      } catch {
++        throw new APIError("SERVICE_UNAVAILABLE", {
++          message: "Pool permissions could not be updated. No role was changed. Try again.",
++        });
++      }
+     },
+     beforeAddMember: async ({ member, user }) => {
+       // Better Auth calls this for the creator too. Only its create endpoint owns that exception.
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index e3b5647..5fe34b4 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -163,6 +163,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+       {
+         memberRemoving: (organization, member) =>
+           runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
++        memberRoleChanging: (organization, member, role) =>
++          runCallback(
++            withSql(access.memberRoleChanging?.({ organization, member, role }) ?? Effect.void),
++          ),
+         membersAdded: (organization) =>
+           runCallback(
+             withSql(
 diff --git a/apps/hosted/server/src/implementation/app-policy.ts b/apps/hosted/server/src/implementation/app-policy.ts
 new file mode 100644
 index 0000000..d223c5d
@@ -39,10 +87,10 @@ index 0000000..d223c5d
 +};
 diff --git a/apps/hosted/server/src/implementation/application-audience.ts b/apps/hosted/server/src/implementation/application-audience.ts
 new file mode 100644
-index 0000000..3b28427
+index 0000000..44c4ec0
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/application-audience.ts
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +import { AppId, StorageError } from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import { Principal } from "../contracts/auth.ts";
@@ -63,6 +111,7 @@ index 0000000..3b28427
 +  organization: OrganizationId,
 +  apps: readonly AppId[],
 +  removing?: GroupMemberId,
++  changing?: { readonly member: GroupMemberId; readonly role: typeof OrganizationRole.Type },
 +) =>
 +  Effect.gen(function* () {
 +    if (apps.length === 0) return [];
@@ -88,7 +137,7 @@ index 0000000..3b28427
 +          organization,
 +          user: policy.user,
 +          member: policy.member,
-+          role: policy.role,
++          role: policy.member === changing?.member ? changing.role : policy.role,
 +        });
 +        if (access.canUse) users.push(policy.user);
 +        if (access.canManage) managers.push(policy.user);
@@ -99,7 +148,7 @@ index 0000000..3b28427
 +    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
 +  );
 diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
-index 86e037d..2067d84 100644
+index 86e037d..250b7ea 100644
 --- a/apps/hosted/server/src/implementation/pool-access-hook.ts
 +++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
 @@ -1,16 +1,20 @@
@@ -112,9 +161,9 @@ index 86e037d..2067d84 100644
  import { accessPath, accessPrefix, accessTtl, type AccessChange } from "./pool-access-contract.ts";
  import { signEnvelope } from "./pool-token.ts";
 +import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
-+import { OrganizationId } from "../contracts/organization.ts";
++import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
 +import { applicationAudiences } from "./application-audience.ts";
- 
+
  const Pool = Schema.Struct({
 -  pool: Schema.String,
 +  pool: AppId,
@@ -124,8 +173,19 @@ index 86e037d..2067d84 100644
 +  authorization: Schema.NullOr(Schema.String),
    users: Schema.Array(Schema.String),
  });
- 
-@@ -56,7 +60,8 @@ export const poolAccessLifecycle = (
+
+@@ -51,12 +55,18 @@ export const poolAccessLifecycle = (
+       Effect.catch(() => new StorageError()),
+     );
+
+-  const pools = (organization: string, apps?: readonly string[], removing?: string) =>
++  const pools = (
++    organization: string,
++    apps?: readonly string[],
++    removing?: string,
++    changing?: { readonly member: string; readonly role: string },
++  ) =>
+     Effect.gen(function* () {
        const sql = yield* SqlClient.SqlClient;
        // JSON expands only this organization's recorded pools; deleted apps stay deleted.
        const rows = yield* sql`select app.id as pool, entry.key as owner, o.id as organization,
@@ -135,7 +195,7 @@ index 86e037d..2067d84 100644
            select entry.key as id union select m."userId" from member m
            where m."organizationId" = o.id
            and ((access.audience = 'private' and access.creator_id = m."userId")
-@@ -71,7 +76,29 @@ export const poolAccessLifecycle = (
+@@ -71,18 +81,54 @@ export const poolAccessLifecycle = (
          join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
          join hosted_app_access access on access.id = app.id and access.organization_id = o.id
          where o.id = ${organization} ${apps === undefined ? sql`` : sql`and ${sql.in("app.id", apps)}`}`;
@@ -146,10 +206,17 @@ index 86e037d..2067d84 100644
 +        removing === undefined
 +          ? undefined
 +          : yield* Schema.decodeUnknownEffect(GroupMemberId)(removing);
++      const role =
++        changing === undefined
++          ? undefined
++          : yield* Schema.decodeUnknownEffect(
++              Schema.Struct({ member: GroupMemberId, role: OrganizationRole }),
++            )(changing);
 +      const access = yield* applicationAudiences(
 +        organizationId,
 +        found.filter((pool) => pool.authorization === "executor-app-v1").map((pool) => pool.pool),
 +        member,
++        role,
 +      ).pipe(Effect.provideService(GroupDatabase, Effect.succeed(sql)));
 +      return found.map((pool) => {
 +        const { authorization, ...legacy } = pool;
@@ -164,8 +231,67 @@ index 86e037d..2067d84 100644
 +        };
 +      });
      }).pipe(Effect.catch(() => new StorageError()));
- 
-   const audience = (organization: string, apps?: readonly string[], removing?: string) =>
+
+-  const audience = (organization: string, apps?: readonly string[], removing?: string) =>
++  const audience = (
++    organization: string,
++    apps?: readonly string[],
++    removing?: string,
++    changing?: { readonly member: string; readonly role: string },
++  ) =>
+     Effect.gen(function* () {
+       if (Option.isNone(key)) return yield* send({ action: "audience", pools: [] });
+-      const found = yield* pools(organization, apps, removing);
++      const found = yield* pools(organization, apps, removing, changing);
+       if (found.length > 0) yield* send({ action: "audience", pools: found });
+     });
+   return {
+     appAccessChanged: ({ organization, apps }) => audience(organization, apps),
+     memberRemoving: ({ organization, member }) => audience(organization, undefined, member),
++    memberRoleChanging: ({ organization, member, role }) =>
++      audience(organization, undefined, undefined, { member, role }),
+     appRemoving: (app) =>
+       Effect.gen(function* () {
+         if (Option.isNone(key)) return yield* send({ action: "pool-deleted", pool: app });
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index 2983978..f61649d 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -141,9 +141,14 @@ export const poolDefaults = (
+           for share of member, "user"`;
+         return eligible.length === 1 ? state : undefined;
+       });
+-    const record = (pools: typeof Pools.Type.pools, pool: (typeof Pools.Type.pools)[string]) =>
++    const record = (pool: (typeof Pools.Type.pools)[string]) =>
++      // Other writers own fields such as the authorization handoff. Keep their stored bytes.
+       sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
+-        array[${basaltPools}], ${JSON.stringify({ ...pools, [user]: pool })}::jsonb)::text
++        array[${basaltPools}], coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) ||
++        jsonb_build_object(${user}::text,
++          (coalesce(metadata::jsonb -> ${basaltPools} -> ${user}, '{}'::jsonb)
++            - array['app', 'version', 'bundle', 'account', 'tokenKeyVersion']::text[])
++          || ${JSON.stringify(pool)}::jsonb))::text
+         where id = ${organization}`;
+     if (saved !== undefined) {
+       // One line per pool per job says what this reconcile decided, with ids and counts only.
+@@ -278,7 +283,7 @@ export const poolDefaults = (
+             intent = true;
+             tokenRepaired = true;
+           }
+-          yield* record(current.pools, {
++          yield* record({
+             app: app.id,
+             version,
+             ...(bundle === undefined ? {} : { bundle }),
+@@ -361,7 +366,7 @@ export const poolDefaults = (
+           user,
+           locked,
+         );
+-        yield* record(current.pools, {
++        yield* record({
+           app: app.id,
+           version: locked.activeVersion,
+           bundle: poolAppVersion,
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
 index 55cd660..3819d75 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
@@ -175,13 +301,13 @@ index 55cd660..3819d75 100644
    type SharedAudience,
  } from "../contracts/resource-access.ts";
 +import { AppPolicy, appAccessOf } from "./app-policy.ts";
- 
+
  /** A concrete client remains owned by this invocation (Cloud) or host process (self-host). */
  export const policyDatabase = Effect.flatten(GroupDatabase).pipe(
 @@ -69,31 +70,6 @@ export const lockCurrentActor = Effect.gen(function* () {
    return yield* membership((yield* CurrentOrganization).organization, yield* CurrentUserId, true);
  });
- 
+
 -const AppPolicy = Schema.Struct({
 -  app: AppId,
 -  creator: Schema.NullOr(Principal.fields.userId),
@@ -210,3 +336,20 @@ index 55cd660..3819d75 100644
  /** Resolve app policies in one read, retaining tenant and group checks for every row. */
  export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
    Effect.gen(function* () {
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 5a6b7ab..f539fbd 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -95,6 +95,12 @@ export interface HostAccessLifecycle {
+     /** Membership id to exclude while projecting the post-removal audience. */
+     readonly member: string;
+   }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
++  readonly memberRoleChanging?: (input: {
++    readonly organization: string;
++    readonly member: string;
++    /** The host's resulting role, projected before its membership write. */
++    readonly role: string;
++  }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
+   readonly appRemoving?: (
+     app: string,
+   ) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;

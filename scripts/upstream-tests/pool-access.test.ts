@@ -93,6 +93,32 @@ test("native pool membership removal omits use and management without changing t
   );
 });
 
+test("role demotion acknowledges the resulting native policy before the role changes", async () => {
+  const { organizationAccessHooks } = await load("apps/hosted/cloud/src/implementation/access-hooks.ts");
+  await fixture(({ sql, changes, hook, fail }) => Effect.gen(function* () {
+    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+    yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
+    const callbacks = organizationAccessHooks({
+      memberRemoving: async () => {}, membersAdded: async () => {}, userDeleting: async () => {},
+      memberRoleChanging: (organization: string, member: string, role: string) => Effect.runPromise(
+        hook.memberRoleChanging({ organization, member, role }).pipe(Effect.provideService(SqlClient, sql)),
+      ),
+    });
+    const demote = () => Effect.tryPromise(() => callbacks.beforeUpdateMemberRole({
+      newRole: "member", member: { id: "m-other" }, organization: { id: organization },
+    }));
+    yield* demote();
+    assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "other", "owner"]);
+    assert.deepEqual(changes.at(-1).pools[0].managers, ["owner"]);
+    assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+    fail();
+    const result = yield* Effect.exit(demote().pipe(Effect.andThen(sql`update member set role = 'member' where id = 'm-other'`)));
+    assert.equal(result._tag, "Failure");
+    assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+  }));
+});
+
 test("member removal projects the audience without its membership and refuses a failed acknowledgement", async () => {
   const { organizationAccessHooks } = await load(
     "apps/hosted/cloud/src/implementation/access-hooks.ts",
