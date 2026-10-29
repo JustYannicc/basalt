@@ -7,9 +7,10 @@ RUN python3 fetch_sources.py --destination /source
 
 FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS source-build
 ARG TARGETARCH
+ENV GOMAXPROCS=2
 COPY --from=source-fetch /source /source
-RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/respserver/push ./internal/respserver ./cmd/home -run TestDiagnosticsPrivacy -count=1 && \
-    cd /source/node && go test -p=2 -mod=readonly ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps -run MetadataOnly -count=1
+RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible' -count=1 && \
+    cd /source/node && go test -p=2 -mod=readonly ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/logging -run MetadataOnly -count=1
 RUN mkdir -p /out/home /out/node && \
     cd /source/home && \
     CGO_ENABLED=0 GOOS=linux GOARCH="$TARGETARCH" go build -p=2 -mod=readonly -buildvcs=false \

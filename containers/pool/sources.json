@@ -9,10 +9,10 @@
         {
           "identity": "cliproxy-home-metadata-only-diagnostics",
           "file": "cliproxy-home-v1.1.6-metadata-only.patch",
-          "sha256": "47fc2f66fda0cb98ab42543f3b32e81cc2597931d4c5a6850152e2e86d863b20",
+          "sha256": "152011b1bb05d371cbfbc02827af37008a158413fb4f47d4b646a50f10571446",
           "retirement": {
             "mode": "manual",
-            "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
+            "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
           }
         }
       ]
@@ -25,10 +25,10 @@
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "cliproxy-node-v8.0.40-metadata-only.patch",
-          "sha256": "73acb067c52db6f6674f488a6b64c1a6799f1e11b89b158ef6687cd983fb750e",
+          "sha256": "59b067a60ec1e80808bc81eb7dfc2022780854bd8e6ad572624e621809aa5979",
           "retirement": {
             "mode": "manual",
-            "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
+            "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
           }
         }
       ]
