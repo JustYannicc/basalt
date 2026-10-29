@@ -39,8 +39,8 @@ a:hover{color:#fff}
 main{flex:1}
 .mark{display:inline-flex;align-items:center;gap:8px;color:#f8f8f4;text-decoration:none;font:italic 22px/1 "EB Garamond",Georgia,serif}
 .mark img{width:20px;height:20px;border-radius:5px;box-shadow:0 0 0 1px #303034}
-.home main{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:72px;align-items:center;padding:96px 0}
-.art{display:block;width:100%;max-width:470px;height:auto;margin-left:auto;image-rendering:pixelated}
+.home main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:80px;align-items:center;padding:96px 0}
+.art{display:block;width:100%;max-width:520px;height:auto;image-rendering:pixelated}
 h1{margin:0 0 28px;font-weight:400;font-size:clamp(40px,5vw,64px);line-height:1.04;letter-spacing:-.01em}
 h1 em{display:block}
 .lede{margin:0 0 18px;max-width:34em;color:#a3a29d}
