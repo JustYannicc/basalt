@@ -164,7 +164,10 @@ export async function inspectPublishedAppsRelease(registryUrl, version) {
 
   const tarball = new URL(release.dist?.tarball);
   assert.equal(tarball.origin, "https://registry.npmjs.org", "The published apps tarball origin changed");
-  const archiveResponse = await fetch(tarball, { signal: AbortSignal.timeout(60_000) });
+  const archiveUrl = new URL("https://registry.npmjs.org");
+  archiveUrl.pathname = tarball.pathname;
+  archiveUrl.search = tarball.search;
+  const archiveResponse = await fetch(archiveUrl, { signal: AbortSignal.timeout(60_000) });
   assert.equal(archiveResponse.status, 200, `Could not fetch the published apps@${version} archive`);
   const archive = Buffer.from(await archiveResponse.arrayBuffer());
   const integrity = `sha512-${createHash("sha512").update(archive).digest("base64")}`;

@@ -13,7 +13,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
+      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
     }
 
     deployment = module "Deployment" {
