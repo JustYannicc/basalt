@@ -76,6 +76,8 @@ jobs:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           POOL_TEST_IMAGE: basalt-1409-pool:test
       - run: npm run check:upstream
+        env:
+          MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - run: npm run build
       - run: npm run check:build
       - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
