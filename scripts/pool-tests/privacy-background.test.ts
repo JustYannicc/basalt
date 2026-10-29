@@ -61,12 +61,15 @@ test("large historical cleanup serves through failed batches and resumes after S
     console.log("PASS: 20,001-row history exceeds the former single-transaction audit deadline");
     fixture.diagnostics.sql(`create table fixture_privacy_fault (enabled boolean not null);
       insert into fixture_privacy_fault values (true);
+      grant select on fixture_privacy_fault to fixture_runtime;
       create function fixture_privacy_fail_batch() returns trigger language plpgsql as $$ begin
         if current_setting('application_name')='home-privacy-maintenance' and (select enabled from fixture_privacy_fault limit 1)
           then raise exception 'fixture transient batch failure'; end if;
         return new;
       end $$;
       create trigger z_fixture_privacy_fail before update on usage for each row execute function fixture_privacy_fail_batch();`);
+    assert.equal(fixture.diagnostics.sql("set role fixture_runtime; select enabled::int from fixture_privacy_fault").split("\n").at(-1), "1",
+      "Home's runtime role must read the injected fault switch");
     const startup = Date.now();
     await fixture.replaceImage(candidate);
     assert.ok(Date.now() - startup < 30_000, "Serving must start while the historical purge is still blocked");
@@ -90,6 +93,8 @@ test("large historical cleanup serves through failed batches and resumes after S
     }
     assert.ok(servingUsage, "The live request must reach durable usage before the crash");
     fixture.diagnostics.sql("update fixture_privacy_fault set enabled=false");
+    assert.equal(fixture.diagnostics.sql("set role fixture_runtime; select enabled::int from fixture_privacy_fault").split("\n").at(-1), "0",
+      "Home's runtime role must see the fault cleared before cleanup resumes");
     let partial = 0;
     for (let index = 0; index < 200; index++) {
       partial = Number(fixture.diagnostics.sql(`select usage_rows_updated from home_data_migration where name=${quote(step)} and completed=false`));
