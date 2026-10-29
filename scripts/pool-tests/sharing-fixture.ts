@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ComputerStorage } from "../../src/pool/computers.ts";
+import { FixtureDiagnostics } from "./sharing-diagnostics.ts";
 
 export class MemoryStorage implements ComputerStorage {
   private values = new Map<string, unknown>();
@@ -39,8 +40,12 @@ export interface HomeProvider { name: string; keys: { id: string; "api-key": str
 export interface HomeEvent { method: string; path: string; status: number }
 
 export interface SharingFixtureOptions {
+  readonly image?: string;
+  readonly failureContent?: string;
+  readonly failureResponse?: string;
   readonly resourcePrefix?: string;
   readonly poolContainerArgs?: readonly string[];
+  readonly postgresDataStorage?: "tmpfs" | "volume";
   readonly operationTimeoutMs?: number;
   readonly readinessTimeoutMs?: number;
   readonly onStage?: (stage: string) => void;
@@ -52,12 +57,18 @@ export class SharingFixture {
   private poolContainerArgs: readonly string[];
   private operationTimeoutMs: number;
   private readinessTimeoutMs: number;
+  private postgresDataStorage: "tmpfs" | "volume";
+  private runArgs: string[] = [];
+  private failureContent: string;
+  private failureResponse: string;
+  readonly diagnostics: FixtureDiagnostics;
   private onStage?: (stage: string) => void;
   // CI builds the pinned image once; a local run builds and later removes its own.
   private image: string;
   private resources: string[] = [];
   private network: string | undefined;
   private imageAttempted = false;
+  private buildImage: boolean;
   private logRedactions = ["fixture-management-key", "fixture-only"];
   private release = () => {};
   private gate = new Promise<void>((resolve) => { this.release = resolve; });
@@ -69,8 +80,8 @@ export class SharingFixture {
     const pool = key === "Bearer fixture-p1" ? "P1" : key === "Bearer fixture-p2" ? "P2" : undefined;
     if (!pool) { response.writeHead(401); response.end("unknown fixture key"); return; }
     if (raw.includes("fail-request")) {
-      response.writeHead(400, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: { message: "synthetic failure", type: "invalid_request_error" } })); return;
+      response.writeHead(400, { "Content-Type": "application/json", "X-Private-Response": this.failureResponse });
+      response.end(JSON.stringify({ error: { message: `${this.failureResponse} ${raw}`, type: "invalid_request_error" } })); return;
     }
     const slow = raw.includes("slow-stream");
     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -99,10 +110,15 @@ export class SharingFixture {
 
   constructor(options: SharingFixtureOptions = {}) {
     this.name = `${options.resourcePrefix ?? "basalt-usage"}-${process.pid}-${Date.now().toString(36)}`;
-    this.image = process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
+    this.image = options.image ?? process.env.POOL_TEST_IMAGE ?? `${this.name}-pool:test`;
+    this.buildImage = options.image === undefined && !process.env.POOL_TEST_IMAGE;
+    this.failureContent = options.failureContent ?? "fail-request";
+    this.failureResponse = options.failureResponse ?? "synthetic failure";
+    this.diagnostics = new FixtureDiagnostics(this.name);
     this.poolContainerArgs = options.poolContainerArgs ?? [];
     this.operationTimeoutMs = options.operationTimeoutMs ?? 60_000;
     this.readinessTimeoutMs = options.readinessTimeoutMs ?? 90_000;
+    this.postgresDataStorage = options.postgresDataStorage ?? "tmpfs";
     this.onStage = options.onStage;
   }
 
@@ -129,7 +145,7 @@ export class SharingFixture {
   }
   async start(): Promise<void> {
     console.log(`Resources: ${this.name}-postgres, ${this.name}-pool, ${this.image}`);
-    if (!process.env.POOL_TEST_IMAGE) {
+    if (this.buildImage) {
       this.stage("docker build started");
       this.imageAttempted = true;
       docker(["build", "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64", "--tag", this.image, "containers/pool"], 240_000);
@@ -144,7 +160,9 @@ export class SharingFixture {
     this.resources.push(postgres);
     this.stage("postgres container start started");
     docker(["run", "--detach", "--name", postgres, "--network", this.network, "--memory", "256m",
-      "--tmpfs", "/var/lib/postgresql/data:rw,size=256m",
+      ...(this.postgresDataStorage === "volume"
+        ? ["--mount", "type=volume,destination=/var/lib/postgresql/data"]
+        : ["--tmpfs", "/var/lib/postgresql/data:rw,size=256m"]),
       "--env", "POSTGRES_USER=fixture_admin", "--env", "POSTGRES_PASSWORD=fixture-only",
       "--env", "POSTGRES_DB=basalt_pool", "postgres:16"], this.operationTimeoutMs);
     this.stage("postgres container start complete");
@@ -162,12 +180,13 @@ export class SharingFixture {
     const container = `${this.name}-pool`;
     this.resources.push(container);
     this.stage("pool container start started");
-    docker(["run", "--detach", "--name", container, "--network", this.network, "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64",
+    this.runArgs = ["run", "--detach", "--name", container, "--network", this.network, "--platform", process.env.POOL_TEST_PLATFORM ?? "linux/amd64",
       "--memory", "256m", ...(process.platform === "linux" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
       "--publish", "127.0.0.1::8317", "--publish", "127.0.0.1::8318", "--publish", "127.0.0.1::8327",
       "--env", `POOL_DATABASE_URL=postgresql://fixture_admin:fixture-only@${postgres}:5432/basalt_pool`,
       "--env", `POOL_MANAGEMENT_KEY=${this.managementKey}`, "--env", "POOL_MANAGEMENT_ALLOW_REMOTE=true",
-      ...this.poolContainerArgs, this.image], this.operationTimeoutMs);
+      ...this.poolContainerArgs];
+    docker([...this.runArgs, this.image], this.operationTimeoutMs);
     this.stage("pool container start complete");
     this.stage("pool readiness started");
     this.home = this.origin(container, 8327);
@@ -187,6 +206,31 @@ export class SharingFixture {
     })) } });
     this.stage("pool fixture configuration complete");
   }
+  async replaceImage(image: string): Promise<void> {
+    const container = `${this.name}-pool`;
+    docker(["stop", "--time", "20", container], this.operationTimeoutMs);
+    docker(["rm", container], this.operationTimeoutMs);
+    docker([...this.runArgs, image], this.operationTimeoutMs);
+    this.home = this.origin(container, 8327);
+    this.node = this.origin(container, 8317);
+    const readiness = this.origin(container, 8318);
+    await until(async () => (await fetch(`${readiness}/ready`, {
+      headers: { Authorization: `Bearer ${this.managementKey}` }, signal: AbortSignal.timeout(3_000),
+    })).ok, "replacement privacy image readiness", this.readinessTimeoutMs);
+  }
+  useDatabaseRole(role: string): void {
+    const index = this.runArgs.findIndex((value) => value.startsWith("POOL_DATABASE_URL="));
+    assert.ok(index >= 0, "Fixture database configuration must exist before switching roles");
+    const url = new URL(this.runArgs[index]!.slice("POOL_DATABASE_URL=".length));
+    url.username = role;
+    this.runArgs[index] = `POOL_DATABASE_URL=${url}`;
+  }
+
+  async crashAndReplace(image: string): Promise<void> {
+    docker(["kill", "--signal", "KILL", `${this.name}-pool`], this.operationTimeoutMs);
+    await this.replaceImage(image);
+  }
+
   async fetchHome(input: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);
     headers.set("X-Management-Key", this.managementKey);
@@ -209,7 +253,7 @@ export class SharingFixture {
     return fetch(`${this.node}/v1/chat/completions`, {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", "X-Session-ID": session },
       body: JSON.stringify({ model, stream: true, max_tokens: 32, prompt_cache_key: session,
-        messages: [{ role: "user", content: slow === "fail" ? "fail-request" : slow ? "slow-stream" : "Reply with the pool name" }] }),
+        messages: [{ role: "user", content: slow === "fail" ? this.failureContent : slow ? "slow-stream" : "Reply with the pool name" }] }),
       signal: AbortSignal.timeout(20_000),
     });
   }

@@ -331,5 +331,9 @@
       "database_sensitive": false,
       "workflow_sensitive": false
     }
-  ]
+  ],
+  "pool_carries": {
+    "manifest": "containers/pool/sources.json",
+    "content_sha256": "dacb2ad728eca6146ccfb8efc3058a1dd176b439816538911140f5004f3be3aa"
+  }
 }

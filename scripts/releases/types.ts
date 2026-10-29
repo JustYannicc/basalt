@@ -46,6 +46,7 @@ export type PatchManifestV3 = {
   format_version: 3;
   repository: string;
   patches: PatchRecord[];
+  pool_carries?: { manifest: "containers/pool/sources.json"; content_sha256: string };
 };
 
 export type LegacyUpstreamPatchRecord = {

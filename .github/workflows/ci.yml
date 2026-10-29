@@ -76,7 +76,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources
       - run: npm run prepare:upstream
       - name: Prove release updates, broken patches, rollback and preview cleanup gates
         run: |
@@ -95,12 +95,15 @@ jobs:
           ARCHITECTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: npm run architecture:test
       - name: Build the pinned pool image
-        run: docker build --tag basalt-1409-pool:test containers/pool
+        run: |
+          docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy containers/pool
+          docker build --target runtime --tag basalt-1409-pool:test containers/pool
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           POOL_TEST_IMAGE: basalt-1409-pool:test
+          POOL_TEST_LEGACY_IMAGE: basalt-1409-pool:privacy-legacy
       - run: npm run check:upstream
         env:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres

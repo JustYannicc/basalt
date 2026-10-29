@@ -94,7 +94,7 @@ export function changedPatchFiles(paths: string[]): string[] {
 }
 
 export function localDatabasePaths(paths: string[]): string[] {
-  return paths.filter(isDatabasePath);
+  return paths.filter((path) => isDatabasePath(path) || /^containers\/pool\/(?:sources\.json|patches\/.*\.patch)$/.test(path));
 }
 
 export function localWorkflowPaths(paths: string[]): string[] {

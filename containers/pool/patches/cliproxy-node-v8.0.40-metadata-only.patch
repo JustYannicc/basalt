@@ -1,0 +1,1527 @@
+diff --git a/internal/api/middleware/metadata_only_test.go b/internal/api/middleware/metadata_only_test.go
+new file mode 100644
+index 0000000..f28b1cf
+--- /dev/null
++++ b/internal/api/middleware/metadata_only_test.go
+@@ -0,0 +1,41 @@
++package middleware
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++)
++
++func TestMetadataOnlyModeSkipsErrorOnlyRequestBodyFiles(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	gin.SetMode(gin.TestMode)
++	logsDir := t.TempDir()
++	logger := logging.NewFileRequestLogger(false, logsDir, "", 0)
++	engine := gin.New()
++	engine.Use(RequestLoggingMiddleware(logger))
++	engine.POST("/v1/chat/completions", func(c *gin.Context) {
++		c.Status(http.StatusBadRequest)
++	})
++
++	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("sentinel-prompt-body-173"))
++	request.Header.Set("Authorization", "sentinel-auth-header-284")
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, request)
++	if response.Code != http.StatusBadRequest {
++		t.Fatalf("response status = %d, want %d", response.Code, http.StatusBadRequest)
++	}
++	entries, err := os.ReadDir(logsDir)
++	if err != nil {
++		t.Fatalf("read request log directory: %v", err)
++	}
++	if len(entries) != 0 {
++		t.Fatalf("metadata-only request created diagnostic files: %s", filepath.Join(logsDir, entries[0].Name()))
++	}
++}
+diff --git a/internal/api/middleware/request_logging.go b/internal/api/middleware/request_logging.go
+index 48f2d58..809eb31 100644
+--- a/internal/api/middleware/request_logging.go
++++ b/internal/api/middleware/request_logging.go
+@@ -16,6 +16,7 @@ import (
+ 
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/klauspost/compress/zstd"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	log "github.com/sirupsen/logrus"
+@@ -32,7 +33,7 @@ const (
+ // large and unknown-size bodies are spooled to disk and retained only for error logs.
+ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
+ 	return func(c *gin.Context) {
+-		if logger == nil {
++		if diagnostics.MetadataOnlyEnabled() || logger == nil {
+ 			c.Next()
+ 			return
+ 		}
+diff --git a/internal/api/server.go b/internal/api/server.go
+index fc1646c..dd0704b 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -121,6 +121,7 @@ type Server struct {
+ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
+ 	if cfg != nil {
+ 		cfg = cfg.CloneForRuntime()
++		cfg.ApplyMetadataOnlyDiagnostics()
+ 	}
+ 	optionState := &serverOptionConfig{
+ 		requestLoggerFactory: defaultRequestLoggerFactory,
+diff --git a/internal/api/server_metadata_only_test.go b/internal/api/server_metadata_only_test.go
+new file mode 100644
+index 0000000..60f4e3d
+--- /dev/null
++++ b/internal/api/server_metadata_only_test.go
+@@ -0,0 +1,55 @@
++package api
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestMetadataOnlyConfigIsForcedAtStartupAndReload(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	gin.SetMode(gin.TestMode)
++
++	tmpDir := t.TempDir()
++	authDir := filepath.Join(tmpDir, "auth")
++	if err := os.MkdirAll(authDir, 0700); err != nil {
++		t.Fatalf("create auth dir: %v", err)
++	}
++	newConfig := func() *proxyconfig.Config {
++		return &proxyconfig.Config{
++			SDKConfig:      sdkconfig.SDKConfig{APIKeys: []string{"test-key"}, RequestLog: true},
++			AuthDir:        authDir,
++			Debug:          true,
++			CommercialMode: false,
++			LoggingToFile:  true,
++		}
++	}
++
++	server := NewServer(newConfig(), auth.NewManager(nil, nil, nil), sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
++	assertMetadataOnlyServerConfig(t, server)
++	if server.requestLogger != nil {
++		t.Fatal("metadata-only startup created a request logger")
++	}
++	if !server.UpdateClientsContext(context.Background(), newConfig()) {
++		t.Fatal("UpdateClientsContext() rejected metadata-only reload")
++	}
++	assertMetadataOnlyServerConfig(t, server)
++}
++
++func assertMetadataOnlyServerConfig(t *testing.T, server *Server) {
++	t.Helper()
++	server.cfgMu.RLock()
++	cfg := server.cfg
++	server.cfgMu.RUnlock()
++	if cfg == nil || !cfg.CommercialMode || cfg.RequestLog || cfg.Debug || cfg.LoggingToFile {
++		t.Fatalf("effective server config = %+v, want metadata-only settings", cfg)
++	}
++}
+diff --git a/internal/api/server_reload.go b/internal/api/server_reload.go
+index 36c8e1c..61e393f 100644
+--- a/internal/api/server_reload.go
++++ b/internal/api/server_reload.go
+@@ -55,6 +55,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
+ 		return false
+ 	}
+ 	cfg = cfg.CloneForRuntime()
++	cfg.ApplyMetadataOnlyDiagnostics()
+ 	// Reconstruct old config from YAML snapshot to avoid reference sharing issues
+ 	var oldCfg *config.Config
+ 	s.cfgMu.RLock()
+diff --git a/internal/config/config_load.go b/internal/config/config_load.go
+index baca01e..71bae52 100644
+--- a/internal/config/config_load.go
++++ b/internal/config/config_load.go
+@@ -155,6 +155,14 @@ func managementSecretKeyPath(data []byte) []string {
+ // If optional is true and the file is missing, it returns an empty Config.
+ // If optional is true and the file is empty or invalid, it returns an empty Config.
+ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
++	cfg, err := loadConfigOptional(configFile, optional)
++	if cfg != nil {
++		cfg.ApplyMetadataOnlyDiagnostics()
++	}
++	return cfg, err
++}
++
++func loadConfigOptional(configFile string, optional bool) (*Config, error) {
+ 	// Read the entire configuration file into memory.
+ 	data, err := os.ReadFile(configFile)
+ 	if err != nil {
+diff --git a/internal/config/metadata_only.go b/internal/config/metadata_only.go
+new file mode 100644
+index 0000000..5802fb0
+--- /dev/null
++++ b/internal/config/metadata_only.go
+@@ -0,0 +1,15 @@
++package config
++
++import "github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++
++// ApplyMetadataOnlyDiagnostics keeps request and application logging disabled
++// whenever metadata-only diagnostics are opted in.
++func (cfg *Config) ApplyMetadataOnlyDiagnostics() {
++	if cfg == nil || !diagnostics.MetadataOnlyEnabled() {
++		return
++	}
++	cfg.CommercialMode = true
++	cfg.RequestLog = false
++	cfg.Debug = false
++	cfg.LoggingToFile = false
++}
+diff --git a/internal/config/metadata_only_test.go b/internal/config/metadata_only_test.go
+new file mode 100644
+index 0000000..3604c46
+--- /dev/null
++++ b/internal/config/metadata_only_test.go
+@@ -0,0 +1,52 @@
++package config
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++)
++
++func TestMetadataOnlyDiagnosticsForcesLoadedAndParsedConfig(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	data := []byte("debug: true\ncommercial-mode: false\nlogging-to-file: true\nrequest-log: true\n")
++
++	parsed, err := ParseConfigBytes(data)
++	if err != nil {
++		t.Fatalf("ParseConfigBytes(): %v", err)
++	}
++	assertMetadataOnlyConfig(t, parsed)
++
++	path := filepath.Join(t.TempDir(), "config.yaml")
++	if err := os.WriteFile(path, data, 0600); err != nil {
++		t.Fatalf("write config: %v", err)
++	}
++	loaded, err := LoadConfigOptional(path, false)
++	if err != nil {
++		t.Fatalf("LoadConfigOptional(): %v", err)
++	}
++	assertMetadataOnlyConfig(t, loaded)
++
++	missing, err := LoadConfigOptional(filepath.Join(t.TempDir(), "missing.yaml"), true)
++	if err != nil {
++		t.Fatalf("LoadConfigOptional(missing optional config): %v", err)
++	}
++	assertMetadataOnlyConfig(t, missing)
++}
++
++func TestMetadataOnlyDiagnosticsLeavesOrdinaryConfigUnchanged(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "")
++	cfg := &Config{SDKConfig: SDKConfig{RequestLog: true}, Debug: true, CommercialMode: false, LoggingToFile: true}
++	cfg.ApplyMetadataOnlyDiagnostics()
++	if !cfg.RequestLog || !cfg.Debug || cfg.CommercialMode || !cfg.LoggingToFile {
++		t.Fatalf("ordinary config changed: %+v", cfg)
++	}
++}
++
++func assertMetadataOnlyConfig(t *testing.T, cfg *Config) {
++	t.Helper()
++	if cfg == nil || !cfg.CommercialMode || cfg.RequestLog || cfg.Debug || cfg.LoggingToFile {
++		t.Fatalf("metadata-only config = %+v, want commercial mode with request, debug, and file logging off", cfg)
++	}
++}
+diff --git a/internal/config/parse.go b/internal/config/parse.go
+index c3442be..6ae8016 100644
+--- a/internal/config/parse.go
++++ b/internal/config/parse.go
+@@ -125,6 +125,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
+ 	cfg.SanitizeOAuthSettings()
+ 	cfg.SanitizeOAuthRequestScopedErrors()
+ 	cfg.SanitizePayloadRules()
++	cfg.ApplyMetadataOnlyDiagnostics()
+ 
+ 	return &cfg, nil
+ }
+diff --git a/internal/diagnostics/metadata_only.go b/internal/diagnostics/metadata_only.go
+new file mode 100644
+index 0000000..44e006d
+--- /dev/null
++++ b/internal/diagnostics/metadata_only.go
+@@ -0,0 +1,90 @@
++package diagnostics
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"os"
++	"strings"
++
++	"github.com/google/uuid"
++)
++
++// MetadataOnlyEnv opts the process into metadata-only diagnostics when set to 1.
++const MetadataOnlyEnv = "CLIPROXY_DIAGNOSTICS_METADATA_ONLY"
++
++// MetadataOnlyEnabled reads the opt-in each time so callers can use it before
++// configuration is loaded and config reloads cannot bypass the mode.
++func MetadataOnlyEnabled() bool {
++	return strings.TrimSpace(os.Getenv(MetadataOnlyEnv)) == "1"
++}
++
++// FingerprintAPIKey returns a stable fingerprint without retaining the raw key.
++func FingerprintAPIKey(apiKey string) string {
++	apiKey = strings.TrimSpace(apiKey)
++	if apiKey == "" {
++		return ""
++	}
++	sum := sha256.Sum256([]byte(apiKey))
++	return "sha256:" + hex.EncodeToString(sum[:])
++}
++
++// FailureClassification maps HTTP status to a closed diagnostic vocabulary.
++func FailureClassification(status int) (string, string) {
++	switch status {
++	case 400:
++		return "invalid_request", "http_400"
++	case 401:
++		return "unauthorized", "http_401"
++	case 403:
++		return "permission_denied", "http_403"
++	case 404:
++		return "not_found", "http_404"
++	case 408:
++		return "timeout", "http_408"
++	case 429:
++		return "rate_limit", "http_429"
++	case 504:
++		return "timeout", "http_504"
++	default:
++		if status >= 500 && status <= 599 {
++			return "upstream", "http_5xx"
++		}
++		return "unknown", "unknown"
++	}
++}
++
++// SafeRequestID accepts only canonical UUIDs, which are the generated IDs used
++// by execution and inbound request paths.
++func SafeRequestID(value string) string {
++	value = strings.TrimSpace(value)
++	id, err := uuid.Parse(value)
++	if err != nil || id.String() != value || id.Version() != 4 {
++		return ""
++	}
++	return value
++}
++
++// SafeTraceID accepts generated UUIDs and the legacy eight-character hex trace.
++func SafeTraceID(value string) string {
++	value = strings.TrimSpace(value)
++	if id, err := uuid.Parse(value); err == nil && id.String() == value && id.Version() == 7 {
++		return value
++	}
++	if len(value) != 8 {
++		return ""
++	}
++	if _, err := hex.DecodeString(value); err != nil {
++		return ""
++	}
++	return strings.ToLower(value)
++}
++
++// SafeServiceTier keeps the finite billing tiers without retaining client text.
++func SafeServiceTier(value string) string {
++	switch strings.ToLower(strings.TrimSpace(value)) {
++	case "auto", "default", "standard", "flex", "priority", "fast":
++		return strings.ToLower(strings.TrimSpace(value))
++	default:
++		return ""
++	}
++}
+diff --git a/internal/diagnostics/metadata_only_test.go b/internal/diagnostics/metadata_only_test.go
+new file mode 100644
+index 0000000..9f1640a
+--- /dev/null
++++ b/internal/diagnostics/metadata_only_test.go
+@@ -0,0 +1,75 @@
++package diagnostics
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"testing"
++)
++
++func TestMetadataOnlyEnabledUsesExplicitOptIn(t *testing.T) {
++	for _, value := range []string{"", "true", "0"} {
++		t.Setenv(MetadataOnlyEnv, value)
++		if MetadataOnlyEnabled() {
++			t.Fatalf("MetadataOnlyEnabled() = true for %q", value)
++		}
++	}
++	t.Setenv(MetadataOnlyEnv, "1")
++	if !MetadataOnlyEnabled() {
++		t.Fatal("MetadataOnlyEnabled() = false for opt-in value")
++	}
++}
++
++func TestFingerprintAPIKeyHashesTrimmedValueWithoutTrustingPrefixes(t *testing.T) {
++	key := "  raw-client-key  "
++	sum := sha256.Sum256([]byte("raw-client-key"))
++	want := "sha256:" + hex.EncodeToString(sum[:])
++	if got := FingerprintAPIKey(key); got != want {
++		t.Fatalf("FingerprintAPIKey() = %q, want %q", got, want)
++	}
++	prefixedKeySum := sha256.Sum256([]byte(want))
++	wantPrefixedKey := "sha256:" + hex.EncodeToString(prefixedKeySum[:])
++	if got := FingerprintAPIKey(" " + want + " "); got != wantPrefixedKey {
++		t.Fatalf("FingerprintAPIKey() on raw key with a fingerprint-like prefix = %q, want %q", got, wantPrefixedKey)
++	}
++}
++
++func TestFailureClassificationIsClosed(t *testing.T) {
++	tests := []struct {
++		status int
++		typ    string
++		code   string
++	}{
++		{400, "invalid_request", "http_400"},
++		{401, "unauthorized", "http_401"},
++		{403, "permission_denied", "http_403"},
++		{404, "not_found", "http_404"},
++		{408, "timeout", "http_408"},
++		{429, "rate_limit", "http_429"},
++		{504, "timeout", "http_504"},
++		{503, "upstream", "http_5xx"},
++		{422, "unknown", "unknown"},
++	}
++	for _, test := range tests {
++		typ, code := FailureClassification(test.status)
++		if typ != test.typ || code != test.code {
++			t.Errorf("FailureClassification(%d) = %q/%q, want %q/%q", test.status, typ, code, test.typ, test.code)
++		}
++	}
++}
++
++func TestSafeIDsAcceptGeneratedVersionsOnly(t *testing.T) {
++	requestID := "7c9a1f40-209d-4b83-8f9c-eaef07268439"
++	traceID := "018f3a5b-1234-7abc-def0-12345678abcd"
++	if got := SafeRequestID(requestID); got != requestID {
++		t.Fatalf("SafeRequestID() = %q, want %q", got, requestID)
++	}
++	if got := SafeTraceID(traceID); got != traceID {
++		t.Fatalf("SafeTraceID() = %q, want %q", got, traceID)
++	}
++	if got := SafeRequestID(traceID); got != "" {
++		t.Fatalf("SafeRequestID() accepted non-execution UUID: %q", got)
++	}
++	if got := SafeTraceID("not-a-generated-id"); got != "" {
++		t.Fatalf("SafeTraceID() accepted arbitrary text: %q", got)
++	}
++}
+diff --git a/internal/redisqueue/metadata_only_test.go b/internal/redisqueue/metadata_only_test.go
+new file mode 100644
+index 0000000..e4dfca7
+--- /dev/null
++++ b/internal/redisqueue/metadata_only_test.go
+@@ -0,0 +1,138 @@
++package redisqueue
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++)
++
++func TestUsageQueueMetadataOnlyDropsSensitiveValuesAndKeepsDiagnostics(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	gin.SetMode(gin.TestMode)
++
++	const (
++		clientID       = "metadata-only-queue-account-1"
++		modelID        = "gpt-safe-queue-diagnostic"
++		requestSecret  = "queue-sentinel-request-984"
++		responseSecret = "queue-sentinel-response-216"
++		headerSecret   = "queue-sentinel-header-317"
++		authSecret     = "queue-sentinel-auth-428"
++		freeTextSecret = "queue-sentinel-error-539"
++		rawAPIKey      = "  queue-client-key-secret-640  "
++	)
++
++	modelRegistry := registry.GetGlobalRegistry()
++	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{{ID: modelID}})
++	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
++
++	traceID := "018f3a5b-1234-7abc-def0-12345678abcd"
++	executionID := "7c9a1f40-209d-4b83-8f9c-eaef07268439"
++	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
++	ginCtx.Request = httptest.NewRequest(http.MethodPost, "https://proxy.invalid/v1/responses", strings.NewReader(requestSecret))
++	ginCtx.Request.Header.Set("Authorization", authSecret)
++	ginCtx.Request.Header.Set("X-Sentinel", headerSecret)
++	ginCtx.Set("userApiKey", rawAPIKey)
++	ctx := context.WithValue(context.Background(), "gin", ginCtx)
++	ctx = internallogging.WithRequestID(ctx, traceID)
++	ctx = coreusage.WithExecutionRequestID(ctx, executionID)
++	ctx = coreusage.WithAPIKey(ctx, rawAPIKey)
++	ctx = coreusage.WithAccessProvider(ctx, freeTextSecret)
++	ctx = internallogging.WithEndpoint(ctx, requestSecret)
++	ctx = internallogging.WithClientRequestMetadata(ctx, internallogging.ClientRequestMetadata{
++		ClientIP: requestSecret, ResolvedClientIP: requestSecret, XForwardedFor: requestSecret,
++		UserAgent: requestSecret, SessionID: requestSecret, ParentSessionID: requestSecret,
++	})
++	ctx = internallogging.WithResponseStatusHolder(ctx)
++	internallogging.SetResponseStatus(ctx, http.StatusServiceUnavailable)
++	ctx = internallogging.WithResponseHeadersHolder(ctx)
++	internallogging.SetResponseHeaders(ctx, http.Header{"X-Sentinel": {headerSecret}, "Authorization": {authSecret}})
++
++	withEnabledQueue(t, func() {
++		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
++			RequestID: executionID, TraceID: traceID, Provider: "openai", ExecutorType: "OpenAIExecutor",
++			Model: modelID, Alias: requestSecret, APIKey: rawAPIKey, AuthID: clientID,
++			AuthIndex: "account-73", AccessTokenSHA256: authSecret, AuthType: freeTextSecret,
++			BaseURL: requestSecret, Source: authSecret, AccessProvider: freeTextSecret,
++			SessionID: requestSecret, ParentSessionID: requestSecret, ReasoningEffort: freeTextSecret,
++			ServiceTier: freeTextSecret, EffectiveServiceTier: freeTextSecret,
++			ResponseServiceTier: freeTextSecret, ResponseModel: freeTextSecret,
++			RequestedAt: time.Date(2026, 10, 29, 10, 11, 12, 0, time.UTC),
++			Latency:     1250 * time.Millisecond, TTFT: 200 * time.Millisecond, Failed: true,
++			Fail:            coreusage.Failure{StatusCode: http.StatusServiceUnavailable, Body: responseSecret, Type: requestSecret, Code: authSecret},
++			Detail:          coreusage.Detail{InputTokens: 13, OutputTokens: 5, TotalTokens: 18, ResponseServiceTier: freeTextSecret},
++			ResponseHeaders: http.Header{"X-Sentinel": {headerSecret}, "Authorization": {authSecret}},
++		})
++
++		payload := popSinglePayload(t)
++		requireStringField(t, payload, "provider", "openai")
++		requireStringField(t, payload, "model", modelID)
++		requireStringField(t, payload, "auth_index", "account-73")
++		requireStringField(t, payload, "request_id", traceID)
++		requireStringField(t, payload, "execution_id", executionID)
++		requireIntField(t, payload, "latency_ms", 1250)
++		requireBoolField(t, payload, "failed", true)
++		tokens := requireTokensPayload(t, payload)
++		requireIntField(t, tokens, "input_tokens", 13)
++		requireIntField(t, tokens, "output_tokens", 5)
++		requireIntField(t, tokens, "total_tokens", 18)
++
++		var gotAPIKey string
++		if err := json.Unmarshal(payload["api_key"], &gotAPIKey); err != nil {
++			t.Fatalf("unmarshal api_key: %v", err)
++		}
++		sum := sha256.Sum256([]byte(strings.TrimSpace(rawAPIKey)))
++		wantAPIKey := "sha256:" + hex.EncodeToString(sum[:])
++		var marker string
++		if err := json.Unmarshal(payload["api_key_fingerprint"], &marker); err != nil || marker != wantAPIKey {
++			t.Fatal("explicit identity fingerprint missing")
++		}
++		if gotAPIKey != wantAPIKey {
++			t.Fatalf("api_key = %q, want fingerprint %q", gotAPIKey, wantAPIKey)
++		}
++
++		var fail struct {
++			StatusCode int    `json:"status_code"`
++			Body       string `json:"body"`
++			Type       string `json:"type"`
++			Code       string `json:"code"`
++		}
++		if err := json.Unmarshal(payload["fail"], &fail); err != nil {
++			t.Fatalf("unmarshal fail: %v", err)
++		}
++		if fail.StatusCode != http.StatusServiceUnavailable || fail.Body != "" || fail.Type != "upstream" || fail.Code != "http_5xx" {
++			t.Fatalf("fail metadata = %+v", fail)
++		}
++		for _, field := range []string{"response_headers", "access_token_sha256", "response_model", "response_service_tier"} {
++			if _, ok := payload[field]; ok {
++				t.Fatalf("payload unexpectedly contains %q", field)
++			}
++		}
++		for _, field := range []string{"source", "endpoint", "client_ip", "resolved_client_ip", "x_forwarded_for", "user_agent"} {
++			requireStringField(t, payload, field, "")
++		}
++		requireStringField(t, payload, "auth_type", "unknown")
++		requireStringField(t, payload, "session_id", coreusage.DiagnosticSessionID(requestSecret))
++		requireMissingField(t, payload, "parent_session_id")
++		encoded, err := json.Marshal(payload)
++		if err != nil {
++			t.Fatalf("marshal payload for sentinel scan: %v", err)
++		}
++		for _, secret := range []string{requestSecret, responseSecret, headerSecret, authSecret, freeTextSecret, rawAPIKey} {
++			if strings.Contains(string(encoded), secret) {
++				t.Fatalf("queued payload contains %q: %s", secret, encoded)
++			}
++		}
++	})
++}
+diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
+index 04328ef..54e7c88 100644
+--- a/internal/redisqueue/plugin.go
++++ b/internal/redisqueue/plugin.go
+@@ -8,6 +8,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+ 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+@@ -26,6 +27,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 	if !Enabled() || !UsageStatisticsEnabled() {
+ 		return
+ 	}
++	if diagnostics.MetadataOnlyEnabled() {
++		ctx, record = coreusage.RedactForMetadataOnly(ctx, record)
++	}
+ 
+ 	timestamp := record.RequestedAt
+ 	if timestamp.IsZero() {
+@@ -53,6 +57,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 		authType = "unknown"
+ 	}
+ 	apiKey := strings.TrimSpace(record.APIKey)
++	apiKeyFingerprint := ""
++	if diagnostics.MetadataOnlyEnabled() {
++		apiKeyFingerprint = apiKey
++	}
+ 	accessProvider := strings.TrimSpace(record.AccessProvider)
+ 	if accessProvider == "" {
+ 		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
+@@ -156,6 +164,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 		Endpoint:             resolveEndpoint(ctx),
+ 		AuthType:             authType,
+ 		APIKey:               apiKey,
++		APIKeyFingerprint:    apiKeyFingerprint,
+ 		IsNativeKey:          isNativeKey,
+ 		AccessProvider:       accessProvider,
+ 		RequestID:            requestID,
+@@ -189,6 +198,7 @@ type queuedUsageDetail struct {
+ 	Endpoint             string                   `json:"endpoint"`
+ 	AuthType             string                   `json:"auth_type"`
+ 	APIKey               string                   `json:"api_key"`
++	APIKeyFingerprint    string                   `json:"api_key_fingerprint,omitempty"`
+ 	IsNativeKey          bool                     `json:"is_native_key"`
+ 	AccessProvider       string                   `json:"access_provider,omitempty"`
+ 	RequestID            string                   `json:"request_id"`
+@@ -239,12 +249,16 @@ type tokenStats struct {
+ type failDetail struct {
+ 	StatusCode int    `json:"status_code"`
+ 	Body       string `json:"body"`
++	Type       string `json:"type,omitempty"`
++	Code       string `json:"code,omitempty"`
+ }
+ 
+ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
+ 	fail := failDetail{
+ 		StatusCode: record.Fail.StatusCode,
+ 		Body:       strings.TrimSpace(record.Fail.Body),
++		Type:       strings.TrimSpace(record.Fail.Type),
++		Code:       strings.TrimSpace(record.Fail.Code),
+ 	}
+ 	if !failed {
+ 		return failDetail{StatusCode: 200}
+diff --git a/internal/runtime/executor/helps/logging_helpers.go b/internal/runtime/executor/helps/logging_helpers.go
+index e1db297..5f6cfaa 100644
+--- a/internal/runtime/executor/helps/logging_helpers.go
++++ b/internal/runtime/executor/helps/logging_helpers.go
+@@ -13,6 +13,7 @@ import (
+ 
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	log "github.com/sirupsen/logrus"
+@@ -58,12 +59,12 @@ type upstreamAttempt struct {
+ }
+ 
+ func requestLogCaptureEnabled(cfg *config.Config) bool {
+-	return cfg != nil && cfg.RequestLog && !cfg.CommercialMode
++	return cfg != nil && !diagnostics.MetadataOnlyEnabled() && cfg.RequestLog && !cfg.CommercialMode
+ }
+ 
+ // RecordAPIRequest stores the upstream request metadata in Gin context for request logging.
+ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequestLog) {
+-	if cfg == nil || cfg.CommercialMode {
++	if cfg == nil || cfg.CommercialMode || diagnostics.MetadataOnlyEnabled() {
+ 		return
+ 	}
+ 	ginCtx := ginContextFrom(ctx)
+diff --git a/internal/runtime/executor/helps/metadata_only_test.go b/internal/runtime/executor/helps/metadata_only_test.go
+new file mode 100644
+index 0000000..9a56630
+--- /dev/null
++++ b/internal/runtime/executor/helps/metadata_only_test.go
+@@ -0,0 +1,96 @@
++package helps
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++)
++
++type metadataOnlyResponseError struct {
++	errorCalls        int
++	responseBodyCalls int
++}
++
++func (e *metadataOnlyResponseError) Error() string {
++	e.errorCalls++
++	return "sentinel-free-text-error-384"
++}
++
++func (e *metadataOnlyResponseError) ResponseBody() []byte {
++	e.responseBodyCalls++
++	return []byte("sentinel-provider-response-275")
++}
++
++func (e *metadataOnlyResponseError) StatusCode() int { return http.StatusUnauthorized }
++
++func TestMetadataOnlyFailureDoesNotReadFreeTextOrResponseBody(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	err := &metadataOnlyResponseError{}
++	failure := failFromErrors(err)
++	if failure.StatusCode != http.StatusUnauthorized || failure.Body != "" {
++		t.Fatalf("failure metadata = %+v", failure)
++	}
++	if err.errorCalls != 0 || err.responseBodyCalls != 0 {
++		t.Fatalf("error body was read: Error() calls=%d ResponseBody() calls=%d", err.errorCalls, err.responseBodyCalls)
++	}
++}
++
++func TestMetadataOnlyReporterDoesNotRetainClientOrResponseText(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	ctx := coreusage.WithAPIKey(context.Background(), "sentinel-client-api-key-930")
++	reporter := NewUsageReporter(ctx, "openai", "sentinel-unregistered-model-821", nil)
++	reporter.SetTranslatedRequestMetadata([]byte(`{"service_tier":"sentinel-request-tier-712"}`), "openai")
++	reporter.SetResponseModel("sentinel-response-model-603")
++	reporter.SetUpstreamModel("sentinel-upstream-model-594")
++	reporter.ObserveResponseModel([]byte(`{"model":"sentinel-response-model-603"}`))
++
++	if reporter.apiKey != "" || reporter.source != "" || reporter.baseURL != "" || reporter.accessTokenHash != "" || reporter.model != "" || reporter.alias != "" || reporter.reasoning != "" || reporter.effectiveServiceTier != "" || reporter.ResponseModel() != "" || reporter.UpstreamModel() != "" {
++		t.Fatalf("metadata-only reporter retained free text or credential metadata: %+v", reporter)
++	}
++	if reporter.serviceTier != "default" {
++		t.Fatal("default billing tier lost")
++	}
++}
++
++func TestMetadataOnlyRequestLoggingHelperSkipsDeferredCapture(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	gin.SetMode(gin.TestMode)
++	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
++	ginCtx.Request = httptest.NewRequest(http.MethodPost, "http://proxy.invalid/v1/chat/completions", strings.NewReader("sentinel-request-body-163"))
++	ctx := context.WithValue(context.Background(), "gin", ginCtx)
++
++	RecordAPIRequest(ctx, &config.Config{}, UpstreamRequestLog{
++		URL: "https://upstream.invalid/sentinel", Method: http.MethodPost,
++		Headers: http.Header{"Authorization": {"sentinel-auth-header-052"}},
++		Body:    []byte("sentinel-upstream-request-941"),
++	})
++	if _, exists := ginCtx.Get(apiAttemptsKey); exists {
++		t.Fatal("metadata-only mode stored an upstream request attempt")
++	}
++	if ginCtx.Keys != nil {
++		t.Fatalf("metadata-only mode stored deferred log state: %v", ginCtx.Keys)
++	}
++}
++
++func TestMetadataOnlyReporterPreservesHomeSelectedModel(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	auth := &cliproxyauth.Auth{ID: "home-selected-account"}
++	ctx := coreusage.WithSelectedModel(context.Background(), auth.ID, "fixture-home-selected-model")
++	reporter := NewUsageReporter(ctx, "home-provider", "fixture-home-selected-model", auth)
++	_, record := coreusage.RedactForMetadataOnly(ctx, reporter.buildRecord(coreusage.Detail{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}, false))
++	if record.Model != "fixture-home-selected-model" || record.Failed || record.Detail.TotalTokens != 3 {
++		t.Fatal("successful Home execution lost its selected model, outcome or tokens")
++	}
++	unknown := NewUsageReporter(ctx, "home-provider", "private-client-model", auth)
++	if unknown.model != "" {
++		t.Fatal("client model text bypassed the Home selection")
++	}
++}
+diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
+index 6a2b951..935e46e 100644
+--- a/internal/runtime/executor/helps/usage_helpers.go
++++ b/internal/runtime/executor/helps/usage_helpers.go
+@@ -16,6 +16,7 @@ import (
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/google/uuid"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+ 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+@@ -86,6 +87,7 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
+ }
+ 
+ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
++	metadataOnly := diagnostics.MetadataOnlyEnabled()
+ 	apiKey := APIKeyFromContext(ctx)
+ 	accessProvider := AccessProviderFromContext(ctx)
+ 	isNativeKey := false
+@@ -110,19 +112,44 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+ 	}
+ 	baseURL := ""
+ 	if auth != nil {
+-		if auth.Attributes != nil {
++		if !metadataOnly && auth.Attributes != nil {
+ 			baseURL = strings.TrimSpace(auth.Attributes["base_url"])
+ 		}
+-		if baseURL == "" && auth.Metadata != nil {
++		if !metadataOnly && baseURL == "" && auth.Metadata != nil {
+ 			if v, ok := auth.Metadata["base_url"].(string); ok {
+ 				baseURL = strings.TrimSpace(v)
+ 			}
+ 		}
+ 	}
++	authID := ""
++	authIndex := ""
++	accessTokenHash := ""
++	if auth != nil {
++		authID = auth.ID
++		authIndex = auth.EnsureIndex()
++		if !metadataOnly {
++			accessTokenHash = authAccessTokenSHA256(auth)
++		}
++	}
++	if metadataOnly {
++		if !usage.DiagnosticModelAllowed(ctx, provider, authID, model) {
++			model = ""
++		}
++		apiKey = ""
++		accessProvider = ""
++		isNativeKey = false
++		alias = ""
++		baseURL = ""
++		sessionID = usage.DiagnosticSessionID(sessionID)
++		parentSessionID = ""
++	}
+ 	traceID := usage.TraceIDFromContext(ctx)
+ 	if traceID == "" {
+ 		traceID = internallogging.GetRequestID(ctx)
+ 	}
++	if metadataOnly {
++		traceID = diagnostics.SafeTraceID(traceID)
++	}
+ 	reporter := &UsageReporter{
+ 		requestID:       uuid.NewString(),
+ 		traceID:         traceID,
+@@ -136,17 +163,24 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+ 		isNativeKey:     isNativeKey,
+ 		sessionID:       sessionID,
+ 		parentSessionID: parentSessionID,
+-		source:          resolveUsageSource(auth, apiKey),
+-		authType:        resolveUsageAuthType(auth),
+-		reasoning:       usage.ReasoningEffortFromContext(ctx),
+-		serviceTier:     usage.ServiceTierFromContext(ctx),
++		source:          "",
++		authType:        "",
++		reasoning:       "",
++		serviceTier:     "",
+ 		generate:        usage.GenerateFromContext(ctx),
+ 		stream:          usage.StreamFromContext(ctx),
+-	}
+-	if auth != nil {
+-		reporter.authID = auth.ID
+-		reporter.authIndex = auth.EnsureIndex()
+-		reporter.accessTokenHash = authAccessTokenSHA256(auth)
++		authID:          authID,
++		authIndex:       authIndex,
++		accessTokenHash: accessTokenHash,
++	}
++	if !metadataOnly {
++		reporter.source = resolveUsageSource(auth, apiKey)
++		reporter.authType = resolveUsageAuthType(auth)
++		reporter.reasoning = usage.ReasoningEffortFromContext(ctx)
++		reporter.serviceTier = usage.ServiceTierFromContext(ctx)
++	} else {
++		reporter.serviceTier = diagnostics.SafeServiceTier(usage.ServiceTierFromContext(ctx))
++		reporter.authType = resolveUsageAuthType(auth)
+ 	}
+ 	return reporter
+ }
+@@ -196,12 +230,16 @@ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
+ 		return
+ 	}
+ 	r.authMu.Lock()
+-	r.accessTokenHash = authAccessTokenSHA256(auth)
++	if diagnostics.MetadataOnlyEnabled() {
++		r.accessTokenHash = ""
++	} else {
++		r.accessTokenHash = authAccessTokenSHA256(auth)
++	}
+ 	r.authMu.Unlock()
+ }
+ 
+ func (r *UsageReporter) accessTokenFingerprint() string {
+-	if r == nil {
++	if r == nil || diagnostics.MetadataOnlyEnabled() {
+ 		return ""
+ 	}
+ 	r.authMu.RLock()
+@@ -212,7 +250,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
+ // ObserveResponseModel stores the model reported by an upstream response or event and
+ // ignores payloads without one; the substitution warning is emitted at publish time.
+ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
+-	if r == nil || r.responseModelFinal.Load() {
++	if r == nil || diagnostics.MetadataOnlyEnabled() || r.responseModelFinal.Load() {
+ 		return
+ 	}
+ 	provider := ""
+@@ -236,7 +274,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
+ 
+ // SetResponseModel sets the reported model directly if valid and not already marked final.
+ func (r *UsageReporter) SetResponseModel(model string) {
+-	if r == nil || r.responseModelFinal.Load() {
++	if r == nil || diagnostics.MetadataOnlyEnabled() || r.responseModelFinal.Load() {
+ 		return
+ 	}
+ 	model = strings.TrimSpace(model)
+@@ -253,7 +291,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
+ // Model substitution detection compares the response against this upstream model,
+ // while usage accounting preserves the client's requested model.
+ func (r *UsageReporter) SetUpstreamModel(model string) {
+-	if r == nil {
++	if r == nil || diagnostics.MetadataOnlyEnabled() {
+ 		return
+ 	}
+ 	r.upstreamModelMu.Lock()
+@@ -279,7 +317,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
+ // warnModelSubstitution warns about a silent upstream model swap, and labels the
+ // credential by index only, never by account.
+ func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
+-	if r == nil {
++	if r == nil || diagnostics.MetadataOnlyEnabled() {
+ 		return
+ 	}
+ 	served := r.ResponseModel()
+@@ -350,6 +388,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
+ 	if r == nil {
+ 		return
+ 	}
++	if diagnostics.MetadataOnlyEnabled() {
++		r.reasoning = ""
++		r.effectiveServiceTier = diagnostics.SafeServiceTier(extractEffectiveServiceTier(payload))
++		return
++	}
+ 	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
+ 	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
+ }
+@@ -699,6 +742,9 @@ func failFromErrors(errs ...error) usage.Failure {
+ 		if err == nil {
+ 			continue
+ 		}
++		if diagnostics.MetadataOnlyEnabled() {
++			return usage.Failure{StatusCode: clienterror.HTTPStatusFromError(err)}
++		}
+ 		body := strings.TrimSpace(err.Error())
+ 		type responseBodyProvider interface {
+ 			ResponseBody() []byte
+@@ -908,6 +954,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
+ 	if b == nil || !ok {
+ 		return
+ 	}
++	if diagnostics.MetadataOnlyEnabled() {
++		b.responseModel = ""
++		b.detail.ResponseServiceTier = diagnostics.SafeServiceTier(b.detail.ResponseServiceTier)
++		detail.ResponseServiceTier = diagnostics.SafeServiceTier(detail.ResponseServiceTier)
++	}
+ 	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
+ 	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) {
+ 		preservedTier := b.detail.ResponseServiceTier
+@@ -935,7 +986,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
+ 	hasUsageCandidate := bytes.Contains(payload, openAIStreamUsageMarker)
+ 	needTier := b.detail.ResponseServiceTier == "" || hasUsageCandidate
+ 	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
+-	if b.responseModel == "" {
++	if !diagnostics.MetadataOnlyEnabled() && b.responseModel == "" {
+ 		if model, _ := extractGenericResponseModelEvent(payload); model != "" {
+ 			b.responseModel = model
+ 		}
+@@ -967,7 +1018,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+ 	if b == nil {
+ 		return
+ 	}
+-	if b.responseModel == "" {
++	if !diagnostics.MetadataOnlyEnabled() && b.responseModel == "" {
+ 		if payload := jsonPayload(line); len(payload) > 0 {
+ 			if model, _ := extractClaudeResponseModelEvent(payload); model != "" {
+ 				b.responseModel = model
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+index 77871d2..24714ca 100644
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -8,6 +8,7 @@ import (
+ 	"time"
+ 
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+ 	"github.com/tidwall/sjson"
+ )
+ 
+@@ -310,7 +311,15 @@ func homeExecutionAttemptContext(ctx context.Context, selection *HomeDispatchSel
+ 	if selection == nil {
+ 		return nil, func() {}, fmt.Errorf("Home dispatch selection is nil")
+ 	}
+-	return selection.AttemptContext(ctx)
++	ctx, release, errBind := selection.AttemptContext(ctx)
++	if errBind != nil {
++		return ctx, release, errBind
++	}
++	if auth := selection.CloneAuth(); auth != nil {
++		model := canonicalHomeConcurrencyModelKey(auth.Attributes[homeUpstreamModelAttributeKey])
++		ctx = usage.WithSelectedModel(ctx, auth.ID, model)
++	}
++	return ctx, release, nil
+ }
+ 
+ func wrapHomeStream(ctx context.Context, result *cliproxyexecutor.StreamResult, selection *HomeDispatchSelection, releaseAttempt func()) *cliproxyexecutor.StreamResult {
+diff --git a/sdk/cliproxy/auth/home_execution_paths_test.go b/sdk/cliproxy/auth/home_execution_paths_test.go
+index e45b9b0..a09c50b 100644
+--- a/sdk/cliproxy/auth/home_execution_paths_test.go
++++ b/sdk/cliproxy/auth/home_execution_paths_test.go
+@@ -1522,3 +1522,39 @@ func TestHomePrepareFailureResultPreservesRequestMetadata(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestMetadataOnlyHomeDispatchPreservesSelectedModel(t *testing.T) {
++	t.Setenv("CLIPROXY_DIAGNOSTICS_METADATA_ONLY", "1")
++	registry := executionregistry.New()
++	pending, errBegin := registry.BeginDispatch()
++	if errBegin != nil {
++		t.Fatal(errBegin)
++	}
++	scope, errInstall := registry.Install(pending, executionregistry.ScopeSpec{CredentialID: "home-only-credential", Model: "fixture-home-only-model"})
++	if errInstall != nil {
++		t.Fatal(errInstall)
++	}
++	selectedAuth := &Auth{ID: "home-only-credential", Provider: "home-only-provider", Attributes: map[string]string{homeUpstreamModelAttributeKey: "fixture-home-only-model"}}
++	selection, errSelection := newHomeDispatchSelection(selectedAuth, nil, "home-only-provider", scope)
++	if errSelection != nil {
++		t.Fatal(errSelection)
++	}
++	defer selection.End("test_finished")
++	ctx, release, errBind := homeExecutionAttemptContext(context.Background(), selection)
++	if errBind != nil {
++		t.Fatal(errBind)
++	}
++	defer release()
++	clean, record := coreusage.RedactForMetadataOnly(ctx, coreusage.Record{Provider: selection.Provider, AuthID: selectedAuth.ID, Model: "fixture-home-only-model"})
++	if record.Model != "fixture-home-only-model" {
++		t.Fatal("metadata-only usage lost the Home-selected model absent from the local registry")
++	}
++	_, arbitrary := coreusage.RedactForMetadataOnly(ctx, coreusage.Record{Provider: selection.Provider, AuthID: selectedAuth.ID, Model: "private-user-model-text"})
++	if arbitrary.Model != "" {
++		t.Fatal("a different client model bypassed the selected model boundary")
++	}
++	_, repeated := coreusage.RedactForMetadataOnly(clean, record)
++	if repeated.Model != record.Model {
++		t.Fatal("queued model changed on repeated sanitization")
++	}
++}
+diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
+index 5bb761e..9c25659 100644
+--- a/sdk/cliproxy/usage/manager.go
++++ b/sdk/cliproxy/usage/manager.go
+@@ -9,6 +9,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
+ 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -81,6 +82,8 @@ type Record struct {
+ type Failure struct {
+ 	StatusCode int
+ 	Body       string
++	Type       string // Closed failure category in metadata-only diagnostics.
++	Code       string // Closed HTTP-status classification in metadata-only diagnostics.
+ }
+ 
+ // Detail holds the token usage breakdown.
+@@ -535,6 +538,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
+ 			record.IsNativeKey = IsNativeAccessProvider(record.AccessProvider)
+ 		}
+ 	}
++	if diagnostics.MetadataOnlyEnabled() {
++		ctx, record = RedactForMetadataOnly(ctx, record)
++	}
+ 	// ensure worker is running even if Start was not called explicitly
+ 	m.Start(context.Background())
+ 	m.mu.Lock()
+diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
+new file mode 100644
+index 0000000..b15e09d
+--- /dev/null
++++ b/sdk/cliproxy/usage/metadata_only.go
+@@ -0,0 +1,209 @@
++package usage
++
++import (
++	"context"
++	"math"
++	"net/http"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
++)
++
++type metadataOnlySanitizedContextKey struct{}
++
++// DiagnosticSessionID keeps only the canonical opaque identity used by usage lookup.
++func DiagnosticSessionID(value string) string {
++	return session.NormalizeToCanonicalUUID(value)
++}
++
++type selectedModelContextKey struct{}
++
++type selectedModel struct {
++	accountID string
++	model     string
++}
++
++// WithSelectedModel binds the model authorized by Home's credential selection.
++// Callers must supply the selected upstream model, never the client model text.
++func WithSelectedModel(ctx context.Context, accountID, model string) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, selectedModelContextKey{}, selectedModel{strings.TrimSpace(accountID), strings.TrimSpace(model)})
++}
++
++// DiagnosticModelAllowed accepts a local model or the model selected by Home.
++func DiagnosticModelAllowed(ctx context.Context, provider, accountID, model string) bool {
++	if ctx != nil {
++		if selected, ok := ctx.Value(selectedModelContextKey{}).(selectedModel); ok && selected.accountID != "" &&
++			selected.accountID == strings.TrimSpace(accountID) && selected.model != "" && strings.EqualFold(selected.model, strings.TrimSpace(model)) {
++			return true
++		}
++	}
++	return RegisteredModel(provider, accountID, model)
++}
++
++// RegisteredModel reports whether model is present in the live registry for
++// this account or provider. User supplied model text is omitted when it is not.
++func RegisteredModel(provider, accountID, model string) bool {
++	model = strings.TrimSpace(model)
++	if model == "" {
++		return false
++	}
++	models := registry.GetGlobalRegistry()
++	if strings.TrimSpace(accountID) != "" && models.ClientSupportsModel(accountID, model) {
++		return true
++	}
++	for _, info := range models.GetAvailableModelsByProvider(provider) {
++		if info != nil && strings.EqualFold(strings.TrimSpace(info.ID), model) {
++			return true
++		}
++	}
++	return false
++}
++
++// RedactForMetadataOnly copies only the fields needed by usage diagnostics and
++// returns a detached context containing generated request IDs only.
++func RedactForMetadataOnly(ctx context.Context, record Record) (context.Context, Record) {
++	if ctx != nil {
++		if sanitized, _ := ctx.Value(metadataOnlySanitizedContextKey{}).(bool); sanitized {
++			return ctx, record
++		}
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	if strings.TrimSpace(record.APIKey) == "" {
++		record.APIKey = APIKeyFromContext(ctx)
++	}
++	record.APIKey = diagnostics.FingerprintAPIKey(record.APIKey)
++
++	if diagnostics.SafeRequestID(record.RequestID) == "" {
++		record.RequestID = diagnostics.SafeRequestID(ExecutionRequestIDFromContext(ctx))
++	}
++	if record.RequestID == "" {
++		record.RequestID = uuid.NewString()
++	}
++	record.TraceID = diagnostics.SafeTraceID(record.TraceID)
++	if record.TraceID == "" {
++		record.TraceID = diagnostics.SafeTraceID(TraceIDFromContext(ctx))
++	}
++	if record.TraceID == "" {
++		record.TraceID = diagnostics.SafeTraceID(internallogging.GetRequestID(ctx))
++	}
++	if record.TraceID == "" {
++		record.TraceID = record.RequestID
++	}
++	if record.RequestedAt.IsZero() {
++		record.RequestedAt = time.Now()
++	}
++
++	contextStatus := internallogging.GetResponseStatus(ctx)
++	if contextStatus >= 400 {
++		record.Failed = true
++		if record.Fail.StatusCode < 400 {
++			record.Fail.StatusCode = contextStatus
++		}
++	}
++	if record.Fail.StatusCode >= 400 {
++		record.Failed = true
++	}
++	if record.Failed {
++		status := record.Fail.StatusCode
++		if status < 400 {
++			status = contextStatus
++		}
++		if status < 400 {
++			status = 500
++		}
++		failureType, failureCode := diagnostics.FailureClassification(status)
++		record.Fail = Failure{StatusCode: status, Type: failureType, Code: failureCode}
++	} else {
++		record.Fail = Failure{}
++	}
++
++	record.Provider = strings.TrimSpace(record.Provider)
++	record.ExecutorType = strings.TrimSpace(record.ExecutorType)
++	if DiagnosticModelAllowed(ctx, record.Provider, record.AuthID, record.Model) {
++		record.Model = strings.TrimSpace(record.Model)
++	} else {
++		record.Model = ""
++	}
++	record.Alias = ""
++	record.BaseURL = ""
++	record.Source = ""
++	record.AuthType = safeAuthType(record.AuthType)
++	record.AccessProvider = ""
++	record.AccessTokenSHA256 = ""
++	if record.SessionID == "" {
++		record.SessionID = internallogging.GetClientRequestMetadata(ctx).SessionID
++	}
++	record.SessionID = DiagnosticSessionID(record.SessionID)
++	record.ParentSessionID = ""
++	record.ReasoningEffort = ""
++	record.ServiceTier = diagnostics.SafeServiceTier(record.ServiceTier)
++	record.EffectiveServiceTier = diagnostics.SafeServiceTier(record.EffectiveServiceTier)
++	record.RequestServiceTier = ""
++	record.ResponseServiceTier = diagnostics.SafeServiceTier(record.ResponseServiceTier)
++	record.ResponseModel = ""
++	record.ResponseHeaders = safeQuotaHeaders(record.Provider, record.ResponseHeaders)
++	record.Detail.ResponseServiceTier = diagnostics.SafeServiceTier(record.Detail.ResponseServiceTier)
++	record.Detail = EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
++	record.IsNativeKey = false
++	if record.Generate != nil {
++		generate := *record.Generate
++		record.Generate = &generate
++	}
++
++	cleanCtx := context.WithValue(context.Background(), metadataOnlySanitizedContextKey{}, true)
++	cleanCtx = internallogging.WithRequestID(cleanCtx, record.TraceID)
++	cleanCtx = WithExecutionRequestID(cleanCtx, record.RequestID)
++	return cleanCtx, record
++}
++
++// Keep only numeric Codex quota measurements. Labels and arbitrary headers are omitted.
++func safeQuotaHeaders(provider string, headers http.Header) http.Header {
++	if provider != "codex" {
++		return nil
++	}
++	out := make(http.Header)
++	for key, values := range headers {
++		key = http.CanonicalHeaderKey(key)
++		if !strings.HasPrefix(key, "X-Codex-Primary-") && !strings.HasPrefix(key, "X-Codex-Secondary-") {
++			continue
++		}
++		numeric := false
++		for _, suffix := range []string{"-Used-Percent", "-Window-Minutes", "-Reset-At", "-Reset-After-Seconds"} {
++			if key == "X-Codex-Primary"+suffix || key == "X-Codex-Secondary"+suffix {
++				numeric = true
++			}
++		}
++		if !numeric || len(values) != 1 || len(values[0]) > 32 {
++			continue
++		}
++		value, err := strconv.ParseFloat(values[0], 64)
++		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
++			continue
++		}
++		out.Set(key, strconv.FormatFloat(value, 'f', -1, 64))
++	}
++	if len(out) == 0 {
++		return nil
++	}
++	return out
++}
++
++func safeAuthType(value string) string {
++	switch value {
++	case "oauth", "api_key", "provider_api_key", "file_auth", "vertex":
++		return value
++	default:
++		return ""
++	}
++}
+diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
+new file mode 100644
+index 0000000..3e6a1a3
+--- /dev/null
++++ b/sdk/cliproxy/usage/metadata_only_test.go
+@@ -0,0 +1,215 @@
++package usage
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++)
++
++type metadataOnlyContextKey struct{}
++
++type metadataOnlyCapture struct {
++	ctx    context.Context
++	record Record
++}
++
++type metadataOnlyCapturePlugin struct {
++	received chan metadataOnlyCapture
++}
++
++func (p metadataOnlyCapturePlugin) HandleUsage(ctx context.Context, record Record) {
++	p.received <- metadataOnlyCapture{ctx: ctx, record: record}
++}
++
++func TestMetadataOnlyPublishDetachesContextAndKeepsSafeFields(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	gin.SetMode(gin.TestMode)
++
++	const (
++		clientID       = "metadata-only-account-1"
++		modelID        = "gpt-safe-diagnostic"
++		requestSecret  = "sentinel-request-body-984"
++		responseSecret = "sentinel-response-body-216"
++		headerSecret   = "sentinel-header-value-317"
++		authSecret     = "sentinel-auth-token-428"
++		freeTextSecret = "sentinel-provider-error-539"
++		rawAPIKey      = "  client-key-secret-640  "
++	)
++
++	modelRegistry := registry.GetGlobalRegistry()
++	modelRegistry.RegisterClient(clientID, "openai", []*registry.ModelInfo{{ID: modelID}})
++	t.Cleanup(func() { modelRegistry.UnregisterClient(clientID) })
++
++	requestID := "7c9a1f40-209d-4b83-8f9c-eaef07268439"
++	traceID := "018f3a5b-1234-7abc-def0-12345678abcd"
++	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
++	ginCtx.Request = httptest.NewRequest(http.MethodPost, "https://proxy.invalid/v1/chat/completions", strings.NewReader(requestSecret))
++	ginCtx.Request.Header.Set("Authorization", authSecret)
++	ginCtx.Request.Header.Set("X-Sentinel", headerSecret)
++	ginCtx.Set("userApiKey", rawAPIKey)
++	ctx := context.WithValue(context.Background(), "gin", ginCtx)
++	ctx = context.WithValue(ctx, metadataOnlyContextKey{}, freeTextSecret)
++	ctx = internallogging.WithRequestID(ctx, traceID)
++	ctx = WithExecutionRequestID(ctx, requestID)
++	ctx = WithAPIKey(ctx, rawAPIKey)
++	ctx = WithAccessProvider(ctx, freeTextSecret)
++	ctx = internallogging.WithEndpoint(ctx, requestSecret)
++	ctx = internallogging.WithClientRequestMetadata(ctx, internallogging.ClientRequestMetadata{
++		ClientIP: requestSecret, ResolvedClientIP: requestSecret, XForwardedFor: requestSecret,
++		UserAgent: requestSecret, SessionID: requestSecret, ParentSessionID: requestSecret,
++	})
++	ctx = internallogging.WithResponseStatusHolder(ctx)
++	internallogging.SetResponseStatus(ctx, http.StatusUnauthorized)
++	ctx = internallogging.WithResponseHeadersHolder(ctx)
++	internallogging.SetResponseHeaders(ctx, http.Header{"X-Sentinel": {headerSecret}, "Authorization": {authSecret}})
++
++	requestedAt := time.Date(2026, 10, 29, 10, 11, 12, 0, time.UTC)
++	responseHeaders := http.Header{"X-Sentinel": {headerSecret}, "Authorization": {authSecret}}
++	record := Record{
++		RequestID: requestID, TraceID: traceID, Provider: "openai", BaseURL: requestSecret,
++		ExecutorType: "OpenAIExecutor", Model: modelID, Alias: requestSecret,
++		APIKey: rawAPIKey, IsNativeKey: true, AccessProvider: freeTextSecret,
++		SessionID: requestSecret, ParentSessionID: requestSecret, AuthID: clientID,
++		AuthIndex: "account-42", AccessTokenSHA256: authSecret, AuthType: freeTextSecret,
++		Source: authSecret, ReasoningEffort: freeTextSecret, ServiceTier: freeTextSecret,
++		EffectiveServiceTier: freeTextSecret, RequestServiceTier: freeTextSecret,
++		ResponseServiceTier: freeTextSecret, ResponseModel: freeTextSecret,
++		Generate: GenerateFlag(true), Stream: true, RequestedAt: requestedAt,
++		Latency: 1350 * time.Millisecond, TTFT: 250 * time.Millisecond, Failed: true,
++		Fail:            Failure{StatusCode: http.StatusUnauthorized, Body: responseSecret, Type: requestSecret, Code: authSecret},
++		Detail:          Detail{InputTokens: 11, OutputTokens: 7, TotalTokens: 18, ResponseServiceTier: freeTextSecret},
++		ResponseHeaders: responseHeaders,
++	}
++
++	manager := NewManager(1)
++	defer manager.Stop()
++	received := make(chan metadataOnlyCapture, 1)
++	manager.Register(metadataOnlyCapturePlugin{received: received})
++	manager.Publish(ctx, record)
++
++	var got metadataOnlyCapture
++	select {
++	case got = <-received:
++	case <-time.After(time.Second):
++		t.Fatal("timed out waiting for sanitized usage record")
++	}
++
++	sum := sha256.Sum256([]byte(strings.TrimSpace(rawAPIKey)))
++	wantAPIKey := "sha256:" + hex.EncodeToString(sum[:])
++	if got.record.APIKey != wantAPIKey {
++		t.Fatalf("APIKey = %q, want fingerprint %q", got.record.APIKey, wantAPIKey)
++	}
++	if got.record.RequestID != requestID || got.record.TraceID != traceID {
++		t.Fatalf("request identifiers = %q/%q, want %q/%q", got.record.RequestID, got.record.TraceID, requestID, traceID)
++	}
++	if got.record.Provider != "openai" || got.record.Model != modelID || got.record.AuthID != clientID || got.record.AuthIndex != "account-42" {
++		t.Fatalf("trusted identities were not preserved: provider=%q model=%q auth=%q index=%q", got.record.Provider, got.record.Model, got.record.AuthID, got.record.AuthIndex)
++	}
++	if !got.record.RequestedAt.Equal(requestedAt) || got.record.Latency != 1350*time.Millisecond || got.record.TTFT != 250*time.Millisecond {
++		t.Fatalf("time and latency metadata changed: requested=%s latency=%s ttft=%s", got.record.RequestedAt, got.record.Latency, got.record.TTFT)
++	}
++	if got.record.Detail.InputTokens != 11 || got.record.Detail.OutputTokens != 7 || got.record.Detail.TotalTokens != 18 {
++		t.Fatalf("token counts changed: %+v", got.record.Detail)
++	}
++	if got.record.Fail.StatusCode != http.StatusUnauthorized || got.record.Fail.Type != "unauthorized" || got.record.Fail.Code != "http_401" || got.record.Fail.Body != "" {
++		t.Fatalf("failure metadata = %+v", got.record.Fail)
++	}
++	if got.record.BaseURL != "" || got.record.Alias != "" || got.record.Source != "" || got.record.AccessTokenSHA256 != "" || got.record.ResponseHeaders != nil || got.record.ResponseModel != "" || got.record.ResponseServiceTier != "" || got.record.Detail.ResponseServiceTier != "" {
++		t.Fatalf("sensitive record fields survived: %+v", got.record)
++	}
++	if got.ctx.Value(metadataOnlyContextKey{}) != nil || got.ctx.Value("gin") != nil || APIKeyFromContext(got.ctx) != "" || AccessProviderFromContext(got.ctx) != "" {
++		t.Fatal("original context values survived metadata-only publication")
++	}
++	if internallogging.GetEndpoint(got.ctx) != "" || internallogging.GetResponseHeaders(got.ctx) != nil || internallogging.GetClientRequestMetadata(got.ctx) != (internallogging.ClientRequestMetadata{}) {
++		t.Fatal("request or response metadata survived in detached context")
++	}
++	if internallogging.GetRequestID(got.ctx) != traceID || ExecutionRequestIDFromContext(got.ctx) != requestID {
++		t.Fatal("detached context lost safe generated identifiers")
++	}
++	_, redactedAgain := RedactForMetadataOnly(got.ctx, got.record)
++	if redactedAgain.APIKey != got.record.APIKey {
++		t.Fatalf("repeated queue-boundary sanitization changed client fingerprint from %q to %q", got.record.APIKey, redactedAgain.APIKey)
++	}
++	encoded, err := json.Marshal(got.record)
++	if err != nil {
++		t.Fatalf("marshal sanitized record: %v", err)
++	}
++	for _, secret := range []string{requestSecret, responseSecret, headerSecret, authSecret, freeTextSecret, rawAPIKey} {
++		if strings.Contains(string(encoded), secret) {
++			t.Fatalf("sanitized record contains %q: %s", secret, encoded)
++		}
++	}
++
++	_, unknownModel := RedactForMetadataOnly(context.Background(), Record{
++		RequestID: requestID, Provider: "openai", AuthID: clientID, Model: requestSecret,
++	})
++	if unknownModel.Model != "" {
++		t.Fatalf("unregistered model survived sanitization: %q", unknownModel.Model)
++	}
++}
++
++func TestMetadataOnlyPreservesBillingTierAndNumericQuotaOnly(t *testing.T) {
++	_, got := RedactForMetadataOnly(context.Background(), Record{
++		Provider: "codex", ServiceTier: "priority", EffectiveServiceTier: "priority", ResponseServiceTier: "priority",
++		ResponseHeaders: http.Header{
++			"X-Codex-Primary-Used-Percent":          {"12.5"},
++			"X-Codex-Secondary-Reset-After-Seconds": {"30"},
++			"X-Codex-Primary-Window-Minutes":        {"secret"},
++			"X-Codex-Private-Used-Percent":          {"1"},
++			"Authorization":                         {"Bearer secret"},
++		},
++	})
++	if got.ServiceTier != "priority" || got.EffectiveServiceTier != "priority" || got.ResponseServiceTier != "priority" {
++		t.Fatal("billing tiers lost")
++	}
++	if len(got.ResponseHeaders) != 2 || got.ResponseHeaders.Get("X-Codex-Primary-Used-Percent") != "12.5" {
++		t.Fatal("safe quota fields lost or unsafe fields kept")
++	}
++	_, bad := RedactForMetadataOnly(context.Background(), Record{ServiceTier: "private", ResponseServiceTier: "private"})
++	if bad.ServiceTier != "" || bad.ResponseServiceTier != "" {
++		t.Fatal("arbitrary tier retained")
++	}
++}
++
++func TestMetadataOnlyPreservesCanonicalSessionCorrelation(t *testing.T) {
++	for _, sessionID := range []string{
++		"7c9a1f40-209d-1b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-3b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-4b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-5b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-6b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-7b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-8b83-8f9c-eaef07268439",
++		"00000000-0000-0000-0000-000000000000",
++	} {
++		t.Run(sessionID, func(t *testing.T) {
++			ctx := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{SessionID: "header:" + sessionID})
++			clean, record := RedactForMetadataOnly(ctx, Record{})
++			if record.SessionID != sessionID {
++				t.Fatal("canonical session was lost before the queue")
++			}
++			if internallogging.GetClientRequestMetadata(clean).SessionID != "" {
++				t.Fatal("original request metadata survived queue detachment")
++			}
++			_, repeated := RedactForMetadataOnly(clean, record)
++			if repeated.SessionID != sessionID {
++				t.Fatal("repeat projection lost the canonical session")
++			}
++		})
++	}
++	_, projected := RedactForMetadataOnly(context.Background(), Record{SessionID: "private-session-content-629"})
++	if projected.SessionID == "" || projected.SessionID == "private-session-content-629" {
++		t.Fatal("custom session was not projected to an opaque identifier")
++	}
++}

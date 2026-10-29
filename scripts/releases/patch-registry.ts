@@ -58,6 +58,11 @@ export function sha256PatchContent(content: string | Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+export function assertPoolCarryManifestContent(manifest: PatchManifestV3, content: Uint8Array): void {
+  if (!manifest.pool_carries || sha256PatchContent(content) !== manifest.pool_carries.content_sha256)
+    throw new Error("Pool source manifest digest does not match the release registry");
+}
+
 export function patchMappingKey(repository: string, patch: PatchRecord): string {
   return JSON.stringify({ identity: patch.identity, origin: patchOriginKey(repository, patch) });
 }
@@ -82,6 +87,8 @@ export function removedPatchRecords(
     const candidate = parsePatchManifestV3(contents.candidate);
     if (base.repository !== candidate.repository)
       return { ok: false, reason: "manifest repository cannot change", removed: [] };
+    if (!sameJson(base.pool_carries, candidate.pool_carries))
+      return { ok: false, reason: "pool carries require a separate reviewed update", removed: [] };
 
     const baseByIdentity = new Map(base.patches.map((patch) => [patch.identity, patch]));
     const candidateIdentities = new Set(candidate.patches.map((patch) => patch.identity));
@@ -116,8 +123,13 @@ function validateManifest(value: unknown): asserts value is PatchManifest {
     validateLegacyManifest(value);
     return;
   }
-  if (value.format_version !== 3 || !hasExactKeys(value, ["format_version", "repository", "patches"]))
+  if (value.format_version !== 3 || !hasOnlyKeys(value, ["format_version", "repository", "patches"], ["pool_carries"]))
     throw new Error("Invalid scripts/releases/patches.json manifest");
+  if (value.pool_carries !== undefined && (!isRecord(value.pool_carries) ||
+    !hasExactKeys(value.pool_carries, ["manifest", "content_sha256"]) ||
+    value.pool_carries.manifest !== "containers/pool/sources.json" ||
+    typeof value.pool_carries.content_sha256 !== "string" || !SHA256.test(value.pool_carries.content_sha256)))
+    throw new Error("Invalid pool carry binding");
 
   const identities = new Set<string>();
   const files = new Set<string>();

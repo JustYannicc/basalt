@@ -13,7 +13,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
+      metadata { code "scripts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
     }
 
     deployment = module "Deployment" {
@@ -115,6 +115,8 @@ model {
       metadata {
         code "containers/pool"
         releaseManifest "containers/pool/releases.json"
+        sourceManifest "containers/pool/sources.json"
+        diagnosticPolicy "metadata-only; fingerprint client keys; purge diagnostic content before readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"

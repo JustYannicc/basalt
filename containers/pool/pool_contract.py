@@ -113,6 +113,12 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "config-version: 8\n"
         "server:\n"
         "  port: 8317\n"
+        "  commercial-mode: true\n"
+        "observability:\n"
+        "  logs:\n"
+        "    request-log: false\n"
+        "    debug: false\n"
+        "    logging-to-file: false\n"
         "management:\n"
         f"  allow-remote: {remote}\n"
         "routing:\n"
@@ -178,6 +184,7 @@ def child_environment(
         "PYTHONUNBUFFERED": "1",
         "TMPDIR": str(ROOT / "tmp"),
         "TZ": "Etc/UTC",
+        "CLIPROXY_DIAGNOSTICS_METADATA_ONLY": "1",
     }
     pathlib.Path(env["HOME"]).mkdir(mode=0o700, parents=True, exist_ok=True)
     if kind == "home":
@@ -189,7 +196,8 @@ def child_environment(
 
 def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
     return {
-        "server": {"port": 8317},
+        "server": {"port": 8317, "commercial-mode": True},
+        "observability": {"logs": {"request-log": False, "debug": False, "logging-to-file": False}},
         "routing": {
             "strategy": "round-robin",
             "session-affinity": True,

@@ -1,0 +1,37 @@
+{
+  "format_version": 1,
+  "artifacts": {
+    "home": {
+      "repository": "router-for-me/CLIProxyAPIHome",
+      "commit": "eca75d683c89c1e66a07865d9de530c6cae3ef9f",
+      "sha256": "c8be1842eba0adbe7b7129b12b1ec6983e0e95abb537caf8e5a06716116c57c4",
+      "patches": [
+        {
+          "identity": "cliproxy-home-metadata-only-diagnostics",
+          "file": "cliproxy-home-v1.1.6-metadata-only.patch",
+          "sha256": "47fc2f66fda0cb98ab42543f3b32e81cc2597931d4c5a6850152e2e86d863b20",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
+          }
+        }
+      ]
+    },
+    "node": {
+      "repository": "router-for-me/CLIProxyAPI",
+      "commit": "d946c4fba6fc9a5cfbca1f3d85184d62ad2fb683",
+      "sha256": "6182c0e7ab64dea342253da9d6aaf66214e7c8e68885f779eda6414cc6deaa82",
+      "patches": [
+        {
+          "identity": "cliproxy-node-metadata-only-diagnostics",
+          "file": "cliproxy-node-v8.0.40-metadata-only.patch",
+          "sha256": "73acb067c52db6f6674f488a6b64c1a6799f1e11b89b158ef6687cd983fb750e",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
+          }
+        }
+      ]
+    }
+  }
+}

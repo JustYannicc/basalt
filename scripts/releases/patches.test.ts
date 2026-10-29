@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertPatchManifestContentMatchesFiles,
   assertPatchManifestMatchesFiles,
+  assertPoolCarryManifestContent,
   parsePatchManifest,
   parsePatchManifestV3,
   patchMappingKey,
@@ -33,6 +34,16 @@ test("format 3 registry requires unique semantic identities, locators, and conte
     ...patchManifest,
     patches: [patchManifest.patches[0], { ...patchManifest.patches[1], content_sha256: patchManifest.patches[0]!.content_sha256 }],
   })), /Invalid or duplicate/);
+});
+
+test("pool carry bindings are explicit and cannot be changed by automated tools-patch retirement", () => {
+  const pool_carries = { manifest: "containers/pool/sources.json", content_sha256: "a".repeat(64) };
+  assert.deepEqual(parsePatchManifestV3(JSON.stringify({ ...patchManifest, pool_carries })).pool_carries, pool_carries);
+  assert.throws(() => assertPoolCarryManifestContent({ ...patchManifest, pool_carries: { ...pool_carries, manifest: "containers/pool/sources.json" } }, Buffer.from("different bytes")), /digest does not match/);
+  assert.throws(() => parsePatchManifestV3(JSON.stringify({ ...patchManifest, pool_carries: { ...pool_carries, manifest: "elsewhere.json" } })), /Invalid pool/);
+  const result = removedPatchRecords({ base: JSON.stringify({ ...patchManifest, pool_carries }),
+    candidate: JSON.stringify({ ...patchManifest, patches: [] }) });
+  assert.equal(result.ok, false);
 });
 
 test("strict JSON rejects duplicate keys, including nested patch fields", () => {

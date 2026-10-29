@@ -1,0 +1,2810 @@
+diff --git a/cmd/home/diagnostics_privacy_maintenance.go b/cmd/home/diagnostics_privacy_maintenance.go
+new file mode 100644
+index 0000000..b69ef9d
+--- /dev/null
++++ b/cmd/home/diagnostics_privacy_maintenance.go
+@@ -0,0 +1,79 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	log "github.com/sirupsen/logrus"
++)
++
++// Runs independently of listeners. A failed batch rolls back and is retried;
++// neither a large history nor a failed cleanup can take serving down.
++func runDiagnosticsPrivacyMaintenance(ctx context.Context, repo *cluster.Repository) {
++	if repo == nil || !cluster.DiagnosticsMetadataOnlyEnabled() {
++		return
++	}
++	var attempts, batches, rowsUpdated int64
++	for ctx.Err() == nil {
++		batchCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
++		result, errBatch := repo.RunDiagnosticsPrivacyBatch(batchCtx)
++		cancel()
++		delay := 100 * time.Millisecond
++		if errBatch != nil {
++			if ctx.Err() != nil {
++				return
++			}
++			attempts++
++			delay = time.Second << min(attempts-1, 6)
++			if delay > time.Minute {
++				delay = time.Minute
++			}
++			message, _ := json.Marshal(struct {
++				Attempt           int64 `json:"attempt"`
++				RetryAfterSeconds int64 `json:"retry_after_seconds"`
++			}{attempts, int64(delay / time.Second)})
++			log.Error("POOL_PRIVACY_RETRY " + string(message))
++		} else {
++			attempts = 0
++			if result.Done {
++				delay = time.Minute
++			} else if result.RowsUpdated > 0 {
++				batches++
++				rowsUpdated += result.RowsUpdated
++				message, _ := json.Marshal(struct {
++					Batches     int64 `json:"batches"`
++					RowsUpdated int64 `json:"rows_updated"`
++				}{batches, rowsUpdated})
++				log.Info("POOL_PRIVACY_PROGRESS " + string(message))
++			}
++		}
++		timer := time.NewTimer(delay)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++			return
++		case <-timer.C:
++		}
++	}
++}
++
++func waitForDiagnosticsPrivacyHistory(ctx context.Context, repo *cluster.Repository) bool {
++	for ctx.Err() == nil {
++		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
++		ready, errProbe := repo.DiagnosticsPrivacyHistoryReady(probeCtx)
++		cancel()
++		if errProbe == nil && ready {
++			return true
++		}
++		timer := time.NewTimer(time.Second)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++			return false
++		case <-timer.C:
++		}
++	}
++	return false
++}
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+index 7f28904..3e93ab0 100644
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -555,6 +555,7 @@ func run() int {
+ 			go respSrv.HandleConn(runCtx, conn)
+ 		}, nil, clusterTLSConfig)
+ 	}()
++	go runDiagnosticsPrivacyMaintenance(runCtx, repo)
+ 	go runUsageDerivedColumnBackfillMaintenance(runCtx, repo)
+ 	go runUsageCacheReadBackfillMaintenance(runCtx, repo)
+ 	go runUsageTokenAccountingBackfillMaintenance(runCtx, repo)
+@@ -798,6 +799,9 @@ func runUsageDerivedColumnBackfillMaintenance(ctx context.Context, repo *cluster
+ 		return
+ 	}
+ 	for {
++		if !waitForDiagnosticsPrivacyHistory(ctx, repo) {
++			return
++		}
+ 		batchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+ 		result, errBackfill := repo.RunUsageDerivedColumnBackfillBatch(batchCtx)
+ 		cancel()
+@@ -879,6 +883,9 @@ func runUsageCacheReadBackfillMaintenance(ctx context.Context, repo *cluster.Rep
+ 	ticker := time.NewTicker(time.Minute)
+ 	defer ticker.Stop()
+ 	for {
++		if !waitForDiagnosticsPrivacyHistory(ctx, repo) {
++			return
++		}
+ 		batchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+ 		result, errBackfill := repo.RunUsageCacheReadBackfillBatch(batchCtx)
+ 		cancel()
+@@ -907,6 +914,9 @@ func runUsageTokenAccountingBackfillMaintenance(ctx context.Context, repo *clust
+ 	ticker := time.NewTicker(time.Minute)
+ 	defer ticker.Stop()
+ 	for {
++		if !waitForDiagnosticsPrivacyHistory(ctx, repo) {
++			return
++		}
+ 		batchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+ 		result, errBackfill := repo.RunUsageTokenAccountingBackfillBatch(batchCtx)
+ 		cancel()
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 37fad63..7947ebd 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -41,6 +41,33 @@ Home management state is stored in the database-backed cluster repository. When
+ 
+ The route list below is the database-backed route set registered by `cmd/home` through `WithDatabaseManagement`.
+ 
++## Metadata-only diagnostics
++
++`CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1` opts Home into a strict usage projection.
++It drops request-log pushes and removes failure bodies, client headers, unknown
++payload fields and raw client keys before scheduler ingestion, queues, fallback
++logs and database writes. Usage keeps a SHA-256 key reference for attribution;
++that reference cannot authenticate. Nodes sending a precomputed reference send
++matching `api_key` and `api_key_fingerprint` fields.
++
++Canonical UUID session IDs remain available for exact request-to-usage lookup.
++Home drops free-form session text. Nodes project custom session text to an
++opaque UUID before diagnostics retain it. Parent session text is omitted.
++
++The PostgreSQL old-writer guard installs before listeners open. The immutable
++`diagnostics_metadata_only_v1_1_6` data step audits and purges historical rows after
++Home starts serving. Each five-second transaction processes at most 100 rows,
++committing its audit counts, cleanup and cursor together. A failed batch emits
++only numeric retry metadata and retries with backoff without stopping serving.
++Other historical backfills yield to this audit; new usage and billing continue.
++
++The private `home_data_migration_audit_key` table retains distinct affected key
++IDs and one-way fingerprints for unknown keys. Runtime logs contain progress,
++retry and completion counts only. Completion is claimed once; the committed
++receipt remains available if the process dies before the line reaches logs.
++Authentication credentials, existing billing and usage totals, and the separate
++replay KV store are unchanged. Backups retain older copies until normal expiry.
++
+ ## Authentication
+ 
+ Management routes under `/v8/management/*` and `/v0/management/*` require a management key. The exception is `GET/POST /v8/management/oauth/callback`: it validates a pending OAuth `state` without the management-key middleware. Availability checks still apply, so a disabled Management API also disables the v8 callback.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index 515ad4b..48d839c 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -41,6 +41,30 @@ Home management state 存储在 database-backed cluster repository 中。如果
+ 
+ 下面的 route 清单是 `cmd/home` 通过 `WithDatabaseManagement` 注册的 database-backed route set。
+ 
++## 仅保留元数据的诊断模式
++
++设置 `CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1` 后，Home 会严格筛选 usage 字段。
++它会丢弃 request-log 推送，并在调度器接收、入队、写入备用日志和数据库之前，
++移除失败响应正文、客户端请求头、未知 payload 字段和原始客户端密钥。
++Usage 使用 SHA-256 密钥指纹关联客户端；该指纹不能用于认证。
++节点发送预先计算的指纹时，`api_key` 与 `api_key_fingerprint` 必须一致。
++
++规范的 UUID 会话 ID 会保留，用于精确关联请求与 usage 记录。
++Home 会丢弃自由文本会话标识。节点在保留诊断数据之前，
++会将自定义会话文本转换成不透明 UUID。父会话文本会被移除。
++
++PostgreSQL 写入保护在监听器打开前安装。Home 开始提供服务后，
++不可变的 `diagnostics_metadata_only_v1_1_6` 步骤会后台审计和清理历史数据。
++每个事务最多处理 100 行，限时五秒，原子提交计数、清理结果和游标。
++失败批次只记录数字重试信息，并退避重试，不会停止服务。
++其他历史回填等待这次审计，新请求的用量和计费继续运行。
++
++私有表 `home_data_migration_audit_key` 保存去重后的受影响密钥 ID，
++未知密钥仅使用单向指纹表示。运行日志仅输出进度、重试和最终计数。
++最终日志只认领一次；若进程在输出前退出，数据库中仍保留完整回执。
++认证凭据、现有计费和用量总数，以及独立的 replay KV 存储保持不变。
++备份中的旧副本保留到正常过期。
++
+ ## 认证
+ 
+ `/v8/management/*` 和 `/v0/management/*` 管理路由需要 management key。例外是 `GET/POST /v8/management/oauth/callback`：该接口通过待完成的 OAuth `state` 校验，不经过管理密钥中间件；仍受接口可用性检查约束，Management API 禁用时 v8 回调也禁用。
+diff --git a/internal/cluster/api_keys.go b/internal/cluster/api_keys.go
+index 8b6ce81..c945ebe 100644
+--- a/internal/cluster/api_keys.go
++++ b/internal/cluster/api_keys.go
+@@ -323,6 +323,7 @@ func (r *Repository) UpdateAPIKeyWithRuntimeChange(ctx context.Context, selector
+ 			}
+ 			if nextKey != strings.TrimSpace(record.APIKey) {
+ 				updates["api_key"] = nextKey
++				updates["diagnostic_fingerprint"] = apiKeyFingerprintForWrite(nextKey, record.DiagnosticFingerprint)
+ 				runtimeChanged = true
+ 			}
+ 		}
+@@ -685,6 +686,7 @@ func (r *Repository) UpdateAPIKeyForUser(ctx context.Context, userID uint, id ui
+ 			}
+ 			if nextKey != strings.TrimSpace(record.APIKey) {
+ 				updates["api_key"] = nextKey
++				updates["diagnostic_fingerprint"] = apiKeyFingerprintForWrite(nextKey, record.DiagnosticFingerprint)
+ 			}
+ 		}
+ 		if update.Channels != nil {
+@@ -1269,6 +1271,7 @@ func replaceAPIKeyEntriesTxWithStats(ctx context.Context, tx *gorm.DB, entries [
+ 			}
+ 			if strings.TrimSpace(record.APIKey) != key {
+ 				updates["api_key"] = key
++				updates["diagnostic_fingerprint"] = apiKeyFingerprintForWrite(key, record.DiagnosticFingerprint)
+ 				updatedEntry = true
+ 				stats.RuntimeChanged = true
+ 			}
+diff --git a/internal/cluster/billing.go b/internal/cluster/billing.go
+index f3fc2ce..f0198e8 100644
+--- a/internal/cluster/billing.go
++++ b/internal/cluster/billing.go
+@@ -1262,8 +1262,12 @@ func billingAPIKeyByValue(ctx context.Context, tx *gorm.DB, apiKey string) (*API
+ 	if apiKey == "" {
+ 		return nil, nil
+ 	}
++	if DiagnosticsMetadataOnlyEnabled() && isDiagnosticAPIKeyFingerprint(apiKey) {
++		return diagnosticAPIKeyByFingerprint(contextOrBackground(ctx), tx, apiKey)
++	}
+ 	record := &APIKeyRecord{}
+-	errFirst := tx.WithContext(contextOrBackground(ctx)).Unscoped().Where("api_key = ?", apiKey).First(record).Error
++	query := tx.WithContext(contextOrBackground(ctx)).Unscoped().Where("api_key = ?", apiKey)
++	errFirst := query.First(record).Error
+ 	if errors.Is(errFirst, gorm.ErrRecordNotFound) {
+ 		return nil, nil
+ 	}
+@@ -1554,6 +1558,9 @@ func maskBillingAPIKey(apiKey string) string {
+ 	if apiKey == "" {
+ 		return ""
+ 	}
++	if isDiagnosticAPIKeyFingerprint(apiKey) {
++		return diagnosticFingerprintDisplay
++	}
+ 	if len(apiKey) <= 8 {
+ 		return "****"
+ 	}
+diff --git a/internal/cluster/database_models.go b/internal/cluster/database_models.go
+index 5bdbb4f..ef92ffa 100644
+--- a/internal/cluster/database_models.go
++++ b/internal/cluster/database_models.go
+@@ -10,7 +10,7 @@ import (
+ // currentDatabaseVersion is shared by the live schema migration gate and the
+ // portable snapshot format. Increment it for every required startup migration
+ // or snapshot format change, and retain mappings for prior snapshot formats.
+-const currentDatabaseVersion = 11
++const currentDatabaseVersion = 12
+ 
+ // databaseModel describes one managed Home database table.
+ type databaseModel struct {
+@@ -280,6 +280,9 @@ var databaseMigrationOnlyModels = []databaseModel{
+ 	// Session bindings are expiring runtime state, not portable snapshot data.
+ 	newDatabaseModel[SessionAffinityRecord]("session_affinity", []string{"key"}, false, false),
+ 	newDatabaseModel[schemaMigrationRecord]("home_schema_migration", []string{"id"}, false, false),
++	newDatabaseModel[diagnosticsPrivacyMigrationRecord]("home_data_migration", []string{"name"}, false, false),
++	newDatabaseModel[diagnosticsPrivacyAuditRecord]("home_data_migration_audit", []string{"name"}, false, false),
++	newDatabaseModel[diagnosticsPrivacyAuditKeyRecord]("home_data_migration_audit_key", []string{"name", "kind", "ref"}, false, false),
+ 	newDatabaseModel[ClusterMasterGateRecord]("cluster_master_gate", []string{"id"}, false, false),
+ 	newDatabaseModel[CPARebalanceClientRecord]("cpa_rebalance_clients", []string{"fingerprint"}, false, false),
+ 	newDatabaseModel[CPARebalancePlanRecord]("cpa_rebalance_plans", []string{"id"}, false, false),
+@@ -362,8 +365,8 @@ func databaseSnapshotModels(formatVersion int) ([]databaseModel, bool) {
+ 		return databaseSnapshotV4Models, true
+ 	case 5:
+ 		return databaseSnapshotV5Models, true
+-	case 6, 7, 8, 9, 10, currentDatabaseVersion:
+-		// Versions 7 through 11 add migrations, indexes, and transient tables;
++	case 6, 7, 8, 9, 10, 11, currentDatabaseVersion:
++		// Versions 7 through 12 add migrations, indexes, and transient tables;
+ 		// portable table shapes still match v6.
+ 		return homeDatabaseModels, true
+ 	default:
+diff --git a/internal/cluster/database_snapshot.go b/internal/cluster/database_snapshot.go
+index 6070c29..b77aa76 100644
+--- a/internal/cluster/database_snapshot.go
++++ b/internal/cluster/database_snapshot.go
+@@ -1087,6 +1087,7 @@ func ImportDatabaseSnapshot(ctx context.Context, db *gorm.DB, snapshot *Validate
+ 	if errEmpty := ensureExistingDatabaseSnapshotTargetEmpty(ctx, db); errEmpty != nil {
+ 		return DatabaseSnapshotImportResult{}, errEmpty
+ 	}
++	privacyStepName := diagnosticsPrivacySnapshotStepName(snapshot.manifest)
+ 	var result DatabaseSnapshotImportResult
+ 	if backend == DatabaseBackendPostgres {
+ 		errMigrate := autoMigratePostgresContext(ctx, db, true, func(lockedCtx context.Context, tx *gorm.DB) error {
+@@ -1094,12 +1095,20 @@ func ImportDatabaseSnapshot(ctx context.Context, db *gorm.DB, snapshot *Validate
+ 			if errImport != nil {
+ 				return errImport
+ 			}
++			if DiagnosticsMetadataOnlyEnabled() {
++				if errPrepare := prepareDiagnosticsPrivacyStep(lockedCtx, tx, privacyStepName); errPrepare != nil {
++					return errors.New("snapshot privacy step could not be journaled")
++				}
++			}
+ 			result = imported
+ 			return nil
+ 		})
+ 		if errMigrate != nil {
+ 			return DatabaseSnapshotImportResult{}, fmt.Errorf("import database snapshot: %w", errMigrate)
+ 		}
++		if errPrivacy := prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db); errPrivacy != nil {
++			return DatabaseSnapshotImportResult{}, fmt.Errorf("imported snapshot privacy migration failed")
++		}
+ 		return result, nil
+ 	}
+ 
+@@ -1111,15 +1120,36 @@ func ImportDatabaseSnapshot(ctx context.Context, db *gorm.DB, snapshot *Validate
+ 		if errImport != nil {
+ 			return errImport
+ 		}
++		if DiagnosticsMetadataOnlyEnabled() {
++			if errPrepare := prepareDiagnosticsPrivacyStep(ctx, tx, privacyStepName); errPrepare != nil {
++				return errors.New("snapshot privacy step could not be journaled")
++			}
++		}
+ 		result = imported
+ 		return runCustomMigrations(tx.WithContext(ctx))
+ 	})
+ 	if errTransaction != nil {
+ 		return DatabaseSnapshotImportResult{}, fmt.Errorf("import database snapshot: %w", errTransaction)
+ 	}
++	if errPrivacy := prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db); errPrivacy != nil {
++		return DatabaseSnapshotImportResult{}, fmt.Errorf("imported snapshot privacy migration failed")
++	}
+ 	return result, nil
+ }
+ 
++func diagnosticsPrivacySnapshotStepName(manifest DatabaseSnapshotManifest) string {
++	var identity strings.Builder
++	identity.WriteString(fmt.Sprint(manifest.FormatVersion))
++	for _, table := range manifest.Tables {
++		identity.WriteByte('\n')
++		identity.WriteString(table.Name)
++		identity.WriteByte(':')
++		identity.WriteString(table.SHA256)
++	}
++	digest := sha256.Sum256([]byte(identity.String()))
++	return fmt.Sprintf("diagnostics_metadata_only_snapshot_%x", digest[:])
++}
++
+ func importDatabaseSnapshotRecords(ctx context.Context, tx *gorm.DB, snapshot *ValidatedDatabaseSnapshot, progress func(DatabaseSnapshotProgress), backend DatabaseBackend) (DatabaseSnapshotImportResult, error) {
+ 	result := DatabaseSnapshotImportResult{Tables: make([]DatabaseSnapshotImportTableResult, 0, len(snapshot.models))}
+ 	now := time.Now().UTC()
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+index 680fffb..766af7d 100644
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -127,7 +127,10 @@ func AutoMigrateContext(ctx context.Context, db *gorm.DB) error {
+ 	}
+ 	ctx = contextOrBackground(ctx)
+ 	if db.Dialector.Name() == "postgres" {
+-		return autoMigratePostgresContext(ctx, db, false, nil)
++		if errMigrate := autoMigratePostgresContext(ctx, db, false, nil); errMigrate != nil {
++			return errMigrate
++		}
++		return prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db)
+ 	}
+ 
+ 	startedAt := time.Now()
+@@ -142,6 +145,10 @@ func AutoMigrateContext(ctx context.Context, db *gorm.DB) error {
+ 		log.WithFields(fields).WithError(errMigrate).Error("database schema migration failed")
+ 		return errMigrate
+ 	}
++	if errPrivacy := prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db); errPrivacy != nil {
++		log.WithFields(fields).WithError(errPrivacy).Error("database privacy migration failed")
++		return errPrivacy
++	}
+ 	log.WithFields(fields).Info("database schema migration completed")
+ 	return nil
+ }
+@@ -254,6 +261,12 @@ func runCustomMigrations(db *gorm.DB) error {
+ 		{name: "migrate_deleted_access_group_bindings", run: migrateDeletedAccessGroupBindings},
+ 		{name: "migrate_oauth_excluded_models_attributes", run: migrateOAuthExcludedModelsAttributes},
+ 	}
++	if isPostgres && DiagnosticsMetadataOnlyEnabled() {
++		migrations = append(migrations, struct {
++			name string
++			run  func(*gorm.DB) error
++		}{name: "install_diagnostics_metadata_only_guards", run: installDiagnosticsMetadataOnlyPostgresGuardsContext})
++	}
+ 	for _, migration := range migrations {
+ 		stageStartedAt := time.Now()
+ 		if errMigrate := migration.run(db); errMigrate != nil {
+diff --git a/internal/cluster/diagnostics_privacy.go b/internal/cluster/diagnostics_privacy.go
+new file mode 100644
+index 0000000..77bf368
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy.go
+@@ -0,0 +1,353 @@
++package cluster
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"math"
++	"net/http"
++	"os"
++	"regexp"
++	"strconv"
++	"strings"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/tidwall/gjson"
++)
++
++const (
++	DiagnosticsMetadataOnlyEnv = "CLIPROXY_DIAGNOSTICS_METADATA_ONLY"
++	diagnosticPrivacyStepName  = "diagnostics_metadata_only_v1_1_6"
++)
++
++var (
++	diagnosticIdentifierPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$`)
++	diagnosticHeaderValuePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
++)
++
++// DiagnosticsMetadataOnlyEnabled reports whether diagnostic payloads must be
++// reduced to the closed metadata projection.
++func DiagnosticsMetadataOnlyEnabled() bool {
++	return strings.TrimSpace(os.Getenv(DiagnosticsMetadataOnlyEnv)) == "1"
++}
++
++// DiagnosticAPIKeyFingerprint returns the stable, non-authentication identity
++// used to attribute diagnostic usage to a client API key.
++func DiagnosticAPIKeyFingerprint(apiKey string) string {
++	apiKey = strings.TrimSpace(apiKey)
++	if apiKey == "" {
++		return ""
++	}
++	digest := sha256.Sum256([]byte(apiKey))
++	return "sha256:" + hex.EncodeToString(digest[:])
++}
++
++func diagnosticAPIKeyFingerprintFromPayload(payload string, fallbackRaw string) string {
++	var fields map[string]json.RawMessage
++	if json.Unmarshal([]byte(payload), &fields) == nil {
++		if fingerprint := decodeJSONFieldString(fields, "api_key_fingerprint"); isDiagnosticAPIKeyFingerprint(fingerprint) {
++			return "sha256:" + strings.ToLower(strings.TrimPrefix(strings.ToLower(fingerprint), "sha256:"))
++		}
++		if apiKey := decodeJSONFieldString(fields, "api_key"); apiKey != "" {
++			return DiagnosticAPIKeyFingerprint(apiKey)
++		}
++	}
++	return DiagnosticAPIKeyFingerprint(fallbackRaw)
++}
++
++func apiKeyFingerprintForWrite(apiKey string, currentFingerprint string) string {
++	if !DiagnosticsMetadataOnlyEnabled() && strings.TrimSpace(currentFingerprint) == "" {
++		return ""
++	}
++	return DiagnosticAPIKeyFingerprint(apiKey)
++}
++
++func isDiagnosticAPIKeyFingerprint(value string) bool {
++	value = strings.TrimSpace(value)
++	if len(value) != len("sha256:")+sha256.Size*2 || !strings.EqualFold(value[:len("sha256:")], "sha256:") {
++		return false
++	}
++	decoded, errDecode := hex.DecodeString(value[len("sha256:"):])
++	return errDecode == nil && len(decoded) == sha256.Size
++}
++
++func sanitizeUsagePayloadMetadataOnly(payload string) (string, error) {
++	quotaPayload, errQuota := sanitizeUsageQuotaHeaders(payload)
++	if errQuota != nil {
++		return "", errQuota
++	}
++	var fields map[string]json.RawMessage
++	if errDecode := json.Unmarshal([]byte(quotaPayload), &fields); errDecode != nil || fields == nil {
++		return "", fmt.Errorf("usage payload must be a json object")
++	}
++
++	projected := make(map[string]any, 16)
++	if raw := strings.TrimSpace(decodeJSONFieldString(fields, "timestamp")); raw != "" {
++		if timestamp, errTime := time.Parse(time.RFC3339Nano, raw); errTime == nil {
++			projected["timestamp"] = timestamp.UTC().Format(time.RFC3339Nano)
++		}
++	}
++	for field, maxLength := range map[string]int{
++		"provider":      80,
++		"executor_type": 128,
++		"model":         256,
++
++		"auth_index":  256,
++		"cpa_node_id": 128,
++	} {
++		if value := diagnosticIdentifier(decodeJSONFieldString(fields, field), maxLength); value != "" {
++			projected[field] = value
++		}
++	}
++	if value := diagnosticAuthType(decodeJSONFieldString(fields, "auth_type")); value != "" {
++		projected["auth_type"] = value
++	}
++	if requestID := diagnosticRequestID(decodeJSONFieldString(fields, "request_id")); requestID != "" {
++		projected["request_id"] = requestID
++	}
++	if sessionID := diagnosticSessionID(decodeJSONFieldString(fields, "session_id")); sessionID != "" {
++		projected["session_id"] = sessionID
++	}
++	if requestID := diagnosticRequestID(decodeJSONFieldString(fields, "upstream_request_id")); requestID != "" {
++		projected["upstream_request_id"] = requestID
++	}
++	serviceTier := decodeJSONFieldString(fields, "service_tier")
++	if serviceTier == "" {
++		serviceTier = decodeJSONFieldString(fields, "request_service_tier")
++	}
++	if value := diagnosticServiceTier(serviceTier); value != "" {
++		projected["service_tier"] = value
++	}
++	if value := diagnosticServiceTier(decodeJSONFieldString(fields, "response_service_tier")); value != "" {
++		projected["response_service_tier"] = value
++	}
++	if apiKey := diagnosticAPIKeyFingerprintFromPayload(quotaPayload, ""); apiKey != "" {
++		projected["api_key"] = apiKey
++		projected["api_key_fingerprint"] = apiKey
++	}
++	if eventType := normalizeUsageObservabilityEventType(decodeJSONFieldString(fields, "event_type")); eventType != "" {
++		projected["event_type"] = eventType
++	}
++	if endpoint := safeDiagnosticEndpoint(decodeJSONFieldString(fields, "endpoint")); endpoint != "" {
++		projected["endpoint"] = endpoint
++	}
++	if failed, ok := decodeJSONFieldBool(fields, "failed"); ok {
++		projected["failed"] = failed
++	}
++	if statusCode, ok := diagnosticStatusCode(gjson.Get(quotaPayload, "fail.status_code")); ok {
++		projected["fail"] = map[string]any{"status_code": statusCode}
++	}
++	if statusCode := usagePayloadInt(quotaPayload, "upstream_status_code", "upstream.status_code", "response.status_code"); statusCode >= 100 && statusCode <= 599 {
++		projected["upstream_status_code"] = statusCode
++	}
++	for _, field := range []string{"latency_ms", "ttft_ms"} {
++		if value, ok := diagnosticNonNegativeInteger(fields[field]); ok {
++			projected[field] = value
++		}
++	}
++	if tokens := diagnosticTokenFields(fields["tokens"]); len(tokens) > 0 {
++		projected["tokens"] = tokens
++	}
++	if accounting := diagnosticTokenAccounting(quotaPayload); accounting != nil {
++		projected["accounting_version"] = UsageTokenAccountingSchemaVersion
++		projected["token_breakdown"] = accounting
++	}
++	if headers := diagnosticQuotaHeaders(quotaPayload); len(headers) > 0 {
++		projected["quota_headers"] = headers
++	}
++
++	encoded, errMarshal := json.Marshal(projected)
++	if errMarshal != nil {
++		return "", fmt.Errorf("encode usage metadata projection: %w", errMarshal)
++	}
++	return string(encoded), nil
++}
++
++func decodeJSONFieldString(fields map[string]json.RawMessage, key string) string {
++	var value string
++	if errDecode := json.Unmarshal(fields[key], &value); errDecode != nil {
++		return ""
++	}
++	return strings.TrimSpace(value)
++}
++
++func decodeJSONFieldBool(fields map[string]json.RawMessage, key string) (bool, bool) {
++	var value bool
++	if errDecode := json.Unmarshal(fields[key], &value); errDecode != nil {
++		return false, false
++	}
++	return value, true
++}
++
++func diagnosticIdentifier(value string, maxLength int) string {
++	value = strings.TrimSpace(value)
++	if value == "" || len(value) > maxLength || !diagnosticIdentifierPattern.MatchString(value) {
++		return ""
++	}
++	return value
++}
++
++func safeDiagnosticEndpoint(value string) string {
++	switch strings.TrimSpace(value) {
++	case "/v1/chat/completions", "/v1/completions", "/v1/responses", "/v1/messages", "/v1/embeddings":
++		return strings.TrimSpace(value)
++	default:
++		return ""
++	}
++}
++
++func diagnosticStatusCode(value gjson.Result) (int64, bool) {
++	if !value.Exists() || value.Type != gjson.Number {
++		return 0, false
++	}
++	code := value.Int()
++	return code, code >= 100 && code <= 599
++}
++
++func diagnosticNonNegativeInteger(raw json.RawMessage) (int64, bool) {
++	if len(raw) == 0 {
++		return 0, false
++	}
++	var value json.Number
++	if errDecode := json.Unmarshal(raw, &value); errDecode == nil {
++		parsed, errParse := strconv.ParseInt(value.String(), 10, 64)
++		return parsed, errParse == nil && parsed >= 0
++	}
++	var numericString string
++	if errDecode := json.Unmarshal(raw, &numericString); errDecode != nil {
++		return 0, false
++	}
++	parsed, errParse := strconv.ParseInt(strings.TrimSpace(numericString), 10, 64)
++	return parsed, errParse == nil && parsed >= 0
++}
++
++func diagnosticTokenFields(raw json.RawMessage) map[string]any {
++	var fields map[string]json.RawMessage
++	if errDecode := json.Unmarshal(raw, &fields); errDecode != nil || fields == nil {
++		return nil
++	}
++	projected := make(map[string]any, len(fields))
++	for _, key := range []string{
++		"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens",
++		"cache_creation_tokens", "cache_write_tokens", "total_tokens",
++	} {
++		if value, ok := diagnosticNonNegativeInteger(fields[key]); ok {
++			projected[key] = value
++		}
++	}
++	if value, ok := decodeJSONFieldBool(fields, "cache_read_tokens_present"); ok {
++		projected["cache_read_tokens_present"] = value
++	}
++	if len(projected) == 0 {
++		return nil
++	}
++	return projected
++}
++
++func diagnosticTokenAccounting(payload string) *UsageTokenBreakdown {
++	var accounting struct {
++		Version   int                 `json:"accounting_version"`
++		Breakdown UsageTokenBreakdown `json:"token_breakdown"`
++	}
++	if errDecode := json.Unmarshal([]byte(payload), &accounting); errDecode != nil ||
++		accounting.Version != UsageTokenAccountingSchemaVersion ||
++		!accounting.Breakdown.Valid() {
++		return nil
++	}
++	return &accounting.Breakdown
++}
++
++func diagnosticQuotaHeaders(payload string) map[string]string {
++	if !strings.EqualFold(strings.TrimSpace(gjson.Get(payload, "provider").String()), "codex") {
++		return nil
++	}
++	result := gjson.Get(payload, "quota_headers")
++	if !result.IsObject() {
++		return nil
++	}
++	filtered := make(map[string]string)
++	for rawKey, rawValue := range result.Map() {
++		key := http.CanonicalHeaderKey(strings.TrimSpace(rawKey))
++		value := strings.TrimSpace(rawValue.String())
++
++		if !strings.HasPrefix(key, codexQuotaHeaderPrefix) {
++			continue
++		}
++		for _, suffix := range []string{"-Used-Percent", "-Window-Minutes", "-Reset-At", "-Reset-After-Seconds"} {
++			if !strings.HasSuffix(key, suffix) {
++				continue
++			}
++			group := strings.TrimSuffix(strings.TrimPrefix(key, codexQuotaHeaderPrefix), suffix)
++			if group != "Primary" && group != "Secondary" {
++				break
++			}
++			if quotaHeaderValueSafe(suffix, value) {
++				filtered[key] = value
++			}
++			break
++		}
++	}
++	return filtered
++}
++
++func quotaHeaderValueSafe(suffix string, value string) bool {
++	if len(value) == 0 || len(value) > 32 {
++		return false
++	}
++	switch suffix {
++	case "-Used-Percent":
++		parsed, errParse := strconv.ParseFloat(value, 64)
++		return errParse == nil && !math.IsInf(parsed, 0) && !math.IsNaN(parsed) && parsed >= 0 && parsed <= 100
++	case "-Window-Minutes":
++		parsed, errParse := strconv.ParseInt(value, 10, 64)
++		return errParse == nil && parsed > 0 && parsed <= 1000000
++	case "-Reset-At":
++		parsed, errParse := strconv.ParseInt(value, 10, 64)
++		return errParse == nil && parsed >= 0 && parsed <= 4102444800
++	case "-Reset-After-Seconds":
++		parsed, errParse := strconv.ParseInt(value, 10, 64)
++		return errParse == nil && parsed >= 0 && parsed <= 315576000
++	default:
++		return false
++	}
++}
++
++func diagnosticRequestID(value string) string {
++	value = strings.TrimSpace(value)
++	if len(value) == 8 {
++		if _, err := hex.DecodeString(value); err == nil {
++			return value
++		}
++	}
++	if id, err := uuid.Parse(value); err == nil && id.String() == value && (id.Version() == 4 || id.Version() == 7) {
++		return value
++	}
++	return ""
++}
++
++func diagnosticServiceTier(value string) string {
++	value = strings.ToLower(strings.TrimSpace(value))
++	switch value {
++	case "auto", "default", "standard", "priority", "flex", "fast":
++		return value
++	}
++	return ""
++}
++func diagnosticAuthType(value string) string {
++	switch value {
++	case "oauth", "api_key", "provider_api_key", "file_auth", "vertex":
++		return value
++	}
++	return ""
++}
++
++func diagnosticSessionID(value string) string {
++	value = strings.TrimSpace(value)
++	id, errParse := uuid.Parse(value)
++	if errParse != nil || id.String() != strings.ToLower(value) {
++		return ""
++	}
++	return id.String()
++}
+diff --git a/internal/cluster/diagnostics_privacy_audit.go b/internal/cluster/diagnostics_privacy_audit.go
+new file mode 100644
+index 0000000..9d75b35
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_audit.go
+@@ -0,0 +1,147 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"strconv"
++	"strings"
++
++	log "github.com/sirupsen/logrus"
++	"github.com/tidwall/gjson"
++	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
++)
++
++// Distinct matches are journaled without retaining the raw token. Unknown
++// references are one-way fingerprints; active/deleted references are key IDs.
++type diagnosticsPrivacyAuditKeyRecord struct {
++	Name string `gorm:"column:name;primaryKey;size:192"`
++	Kind string `gorm:"column:kind;primaryKey;size:16"`
++	Ref  string `gorm:"column:ref;primaryKey;size:80"`
++}
++
++func (diagnosticsPrivacyAuditKeyRecord) TableName() string {
++	return "home_data_migration_audit_key"
++}
++
++func auditDiagnosticsPrivacyRows(tx *gorm.DB, name string, rows []UsageRecord) error {
++	if errEnsure := ensureDiagnosticsPrivacyAudit(tx, name); errEnsure != nil {
++		return errEnsure
++	}
++	tokens := make(map[string]struct{}, len(rows)*2)
++	for index := range rows {
++		for _, token := range []string{rows[index].APIKey, gjson.Get(string(rows[index].PayloadJSON), "api_key").String()} {
++			if token = strings.TrimSpace(token); token != "" {
++				tokens[token] = struct{}{}
++			}
++		}
++	}
++	values := make([]string, 0, len(tokens))
++	for token := range tokens {
++		values = append(values, token)
++	}
++	var keys []APIKeyRecord
++	if len(values) > 0 {
++		if errFind := tx.Unscoped().Select("id", "api_key", "deleted_at").Where("api_key IN ?", values).Find(&keys).Error; errFind != nil {
++			return errFind
++		}
++	}
++	byToken := make(map[string]APIKeyRecord, len(keys))
++	for index := range keys {
++		byToken[strings.TrimSpace(keys[index].APIKey)] = keys[index]
++	}
++	counts := diagnosticsPrivacyAuditCounts{RowsScanned: int64(len(rows))}
++	matches := make(map[diagnosticsPrivacyAuditKeyRecord]struct{})
++	for index := range rows {
++		payload := string(rows[index].PayloadJSON)
++		marker := strings.TrimSpace(gjson.Get(payload, "api_key_fingerprint").String())
++		for _, token := range []string{strings.TrimSpace(rows[index].APIKey), strings.TrimSpace(gjson.Get(payload, "api_key").String())} {
++			if token == "" {
++				continue
++			}
++			counts.TokenCopies++
++			if isDiagnosticAPIKeyFingerprint(marker) && strings.EqualFold(marker, token) {
++				counts.PrehashedTokenCopies++
++				continue
++			}
++			counts.RawTokenCopies++
++			kind, ref := "unknown", DiagnosticAPIKeyFingerprint(token)
++			if key, ok := byToken[token]; ok {
++				ref = strconv.FormatUint(uint64(key.ID), 10)
++				if key.DeletedAt.Valid {
++					kind = "deleted"
++				} else {
++					kind = "active"
++					counts.MatchedActiveAPIKeyCopies++
++				}
++			} else {
++				counts.UnmatchedRawTokenCopies++
++			}
++			matches[diagnosticsPrivacyAuditKeyRecord{Name: name, Kind: kind, Ref: ref}] = struct{}{}
++		}
++	}
++	for match := range matches {
++		insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&match)
++		if insert.Error != nil {
++			return insert.Error
++		}
++		switch match.Kind {
++		case "active":
++			counts.ActiveAPIKeyCount += insert.RowsAffected
++		case "deleted":
++			counts.DeletedAPIKeyCount += insert.RowsAffected
++		default:
++			counts.UnknownKeyCount += insert.RowsAffected
++		}
++	}
++
++	return tx.Model(&diagnosticsPrivacyAuditRecord{}).Where("name = ?", name).Updates(map[string]any{
++		"rows_scanned":                  gorm.Expr("rows_scanned + ?", counts.RowsScanned),
++		"token_copies":                  gorm.Expr("token_copies + ?", counts.TokenCopies),
++		"raw_token_copies":              gorm.Expr("raw_token_copies + ?", counts.RawTokenCopies),
++		"prehashed_token_copies":        gorm.Expr("prehashed_token_copies + ?", counts.PrehashedTokenCopies),
++		"matched_active_api_key_copies": gorm.Expr("matched_active_api_key_copies + ?", counts.MatchedActiveAPIKeyCopies),
++		"unmatched_raw_token_copies":    gorm.Expr("unmatched_raw_token_copies + ?", counts.UnmatchedRawTokenCopies),
++		"active_api_key_count":          gorm.Expr("active_api_key_count + ?", counts.ActiveAPIKeyCount),
++		"deleted_api_key_count":         gorm.Expr("deleted_api_key_count + ?", counts.DeletedAPIKeyCount),
++		"unknown_key_count":             gorm.Expr("unknown_key_count + ?", counts.UnknownKeyCount),
++	}).Error
++}
++
++func emitDiagnosticsPrivacyAuditMarker(ctx context.Context, db *gorm.DB, name string) error {
++	var line []byte
++	errClaim := diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if !state.Completed || state.AuditMarkerEmitted {
++			return nil
++		}
++		var audit diagnosticsPrivacyAuditRecord
++		if errFind := tx.First(&audit, "name = ?", name).Error; errFind != nil {
++			return errFind
++		}
++		marker := struct {
++			UsageRows              int64 `json:"usage_rows"`
++			PurgedRows             int64 `json:"purged_rows"`
++			ActiveKeyCount         int64 `json:"active_key_count"`
++			MatchedActiveKeyCopies int64 `json:"matched_active_key_copies"`
++			DeletedKeyCount        int64 `json:"deleted_key_count"`
++			UnknownKeyCount        int64 `json:"unknown_key_count"`
++		}{audit.RowsScanned, state.UsageRowsUpdated, audit.ActiveAPIKeyCount,
++			audit.MatchedActiveAPIKeyCopies, audit.DeletedAPIKeyCount, audit.UnknownKeyCount}
++		var errEncode error
++		line, errEncode = json.Marshal(marker)
++		if errEncode != nil {
++			return errEncode
++		}
++		return tx.Model(state).Update("audit_marker_emitted", true).Error
++	})
++	if errClaim != nil {
++		return errors.New("privacy audit summary unavailable")
++	}
++	// Claim once before output so parallel Homes and later boots cannot duplicate
++	// the marker. The committed audit remains the receipt if the process dies here.
++	if len(line) > 0 {
++		log.Info("POOL_PRIVACY_AUDIT " + string(line))
++	}
++	return nil
++}
+diff --git a/internal/cluster/diagnostics_privacy_identity.go b/internal/cluster/diagnostics_privacy_identity.go
+new file mode 100644
+index 0000000..8e9d488
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_identity.go
+@@ -0,0 +1,48 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++
++	"gorm.io/gorm"
++)
++
++// Legacy keys can be used immediately while the historical backfill is pending.
++// Normal lookups use the fingerprint index. A first use fills only its matching
++// credential, without treating a fingerprint as an authentication credential.
++func diagnosticAPIKeyByFingerprint(ctx context.Context, tx *gorm.DB, fingerprint string) (*APIKeyRecord, error) {
++	var record APIKeyRecord
++	query := tx.WithContext(ctx).Unscoped().Where("diagnostic_fingerprint = ?", fingerprint).First(&record)
++	if query.Error == nil {
++		return &record, nil
++	}
++	if !errors.Is(query.Error, gorm.ErrRecordNotFound) {
++		return nil, query.Error
++	}
++	var lastID uint
++	for {
++		var rows []APIKeyRecord
++		if errFind := tx.WithContext(ctx).Unscoped().Where("id > ? AND (diagnostic_fingerprint IS NULL OR diagnostic_fingerprint = '')", lastID).
++			Order("id").Limit(diagnosticsPrivacyBatchSize).Find(&rows).Error; errFind != nil {
++			return nil, errFind
++		}
++		if len(rows) == 0 {
++			return nil, nil
++		}
++		for index := range rows {
++			lastID = rows[index].ID
++			if DiagnosticAPIKeyFingerprint(rows[index].APIKey) != fingerprint {
++				continue
++			}
++			updated := tx.Unscoped().Model(&APIKeyRecord{}).Where("id = ? AND api_key = ?", rows[index].ID, rows[index].APIKey).
++				Update("diagnostic_fingerprint", fingerprint)
++			if updated.Error != nil {
++				return nil, updated.Error
++			}
++			if updated.RowsAffected > 0 {
++				rows[index].DiagnosticFingerprint = fingerprint
++				return &rows[index], nil
++			}
++		}
++	}
++}
+diff --git a/internal/cluster/diagnostics_privacy_journal.go b/internal/cluster/diagnostics_privacy_journal.go
+new file mode 100644
+index 0000000..e15b29d
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_journal.go
+@@ -0,0 +1,173 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
++	gormlogger "gorm.io/gorm/logger"
++)
++
++const (
++	diagnosticsPrivacyBatchSize       = 100
++	diagnosticsPrivacyBatchTimeout    = 5 * time.Second
++	diagnosticsPrivacyAdvisoryLockKey = int64(749327842680272319)
++	diagnosticFingerprintDisplay      = "sha256:…"
++	diagnosticPrivacyMatchBasis       = "stored usage token equals a currently active api_key.api_key value; this is not evidence of external authentication use"
++)
++
++type diagnosticsPrivacyMigrationRecord struct {
++	UsageMaxID               uint      `gorm:"column:usage_max_id;not null;default:0"`
++	APIKeyMaxID              uint      `gorm:"column:api_key_max_id;not null;default:0"`
++	BillingChargeMaxID       string    `gorm:"column:billing_charge_max_id;not null;default:''"`
++	Name                     string    `gorm:"column:name;primaryKey;size:192"`
++	LastAPIKeyID             uint      `gorm:"column:last_api_key_id;not null;default:0"`
++	LastUsageID              uint      `gorm:"column:last_usage_id;not null;default:0"`
++	LastBillingChargeID      string    `gorm:"column:last_billing_charge_id;not null;default:''"`
++	APIKeysDone              bool      `gorm:"column:api_keys_done;not null;default:false"`
++	UsageDone                bool      `gorm:"column:usage_done;not null;default:false"`
++	BillingChargesDone       bool      `gorm:"column:billing_charges_done;not null;default:false"`
++	Completed                bool      `gorm:"column:completed;not null;default:false;index:idx_home_data_migration_completed"`
++	AuditMarkerEmitted       bool      `gorm:"column:audit_marker_emitted;not null;default:false"`
++	APIKeyRowsUpdated        int64     `gorm:"column:api_key_rows_updated;not null;default:0"`
++	UsageRowsUpdated         int64     `gorm:"column:usage_rows_updated;not null;default:0"`
++	BillingChargeRowsUpdated int64     `gorm:"column:billing_charge_rows_updated;not null;default:0"`
++	UpdatedAt                time.Time `gorm:"column:updated_at;not null"`
++}
++
++func (diagnosticsPrivacyMigrationRecord) TableName() string {
++	return "home_data_migration"
++}
++
++type diagnosticsPrivacyAuditRecord struct {
++	Name                         string    `gorm:"column:name;primaryKey;size:192"`
++	RowsScanned                  int64     `gorm:"column:rows_scanned;not null;default:0"`
++	TokenCopies                  int64     `gorm:"column:token_copies;not null;default:0"`
++	RawTokenCopies               int64     `gorm:"column:raw_token_copies;not null;default:0"`
++	PrehashedTokenCopies         int64     `gorm:"column:prehashed_token_copies;not null;default:0"`
++	MatchedActiveAPIKeyCopies    int64     `gorm:"column:matched_active_api_key_copies;not null;default:0"`
++	UnmatchedRawTokenCopies      int64     `gorm:"column:unmatched_raw_token_copies;not null;default:0"`
++	UnknownKeyCount              int64     `gorm:"column:unknown_key_count;not null;default:0"`
++	ActiveAPIKeyCount            int64     `gorm:"column:active_api_key_count;not null;default:0"`
++	DeletedAPIKeyCount           int64     `gorm:"column:deleted_api_key_count;not null;default:0"`
++	MatchedActiveAPIKeyIDs       JSONB     `gorm:"column:matched_active_api_key_ids;not null"`
++	ActiveKeyMatchInterpretation string    `gorm:"column:active_key_match_interpretation;not null;type:text"`
++	AuditedAt                    time.Time `gorm:"column:audited_at;not null"`
++}
++
++func (diagnosticsPrivacyAuditRecord) TableName() string {
++	return "home_data_migration_audit"
++}
++
++type diagnosticsPrivacyAuditCounts struct {
++	RowsScanned               int64
++	TokenCopies               int64
++	RawTokenCopies            int64
++	PrehashedTokenCopies      int64
++	MatchedActiveAPIKeyCopies int64
++	UnmatchedRawTokenCopies   int64
++	UnknownKeyCount           int64
++	ActiveAPIKeyCount         int64
++	DeletedAPIKeyCount        int64
++}
++
++func prepareDiagnosticsPrivacyStep(ctx context.Context, db *gorm.DB, name string) error {
++	name = strings.TrimSpace(name)
++	if db == nil || name == "" || len(name) > 192 || !strings.HasPrefix(name, "diagnostics_metadata_only_") {
++		return errors.New("invalid diagnostics privacy step")
++	}
++	var existing diagnosticsPrivacyMigrationRecord
++	query := db.WithContext(contextOrBackground(ctx)).Where("name = ?", name).Limit(1).Find(&existing)
++	if query.Error != nil || query.RowsAffected > 0 {
++		return query.Error
++	}
++	// Pin indexed upper bounds so live traffic cannot extend this historical job.
++	var usage UsageRecord
++	var key APIKeyRecord
++	var charge BillingChargeRecord
++	for _, query := range []*gorm.DB{
++		db.WithContext(ctx).Select("id").Order("id DESC").Limit(1).Find(&usage),
++		db.WithContext(ctx).Unscoped().Select("id").Order("id DESC").Limit(1).Find(&key),
++		db.WithContext(ctx).Select("id").Order("id DESC").Limit(1).Find(&charge),
++	} {
++		if query.Error != nil {
++			return query.Error
++		}
++	}
++	return db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&diagnosticsPrivacyMigrationRecord{
++		Name: name, UsageMaxID: usage.ID, APIKeyMaxID: key.ID, BillingChargeMaxID: charge.ID,
++		UpdatedAt: time.Now().UTC(),
++	}).Error
++}
++
++func diagnosticsPrivacyBatchTransaction(ctx context.Context, db *gorm.DB, name string, run func(*gorm.DB, *diagnosticsPrivacyMigrationRecord) error) error {
++	ctx, cancel := context.WithTimeout(contextOrBackground(ctx), diagnosticsPrivacyBatchTimeout)
++	defer cancel()
++	return db.Session(&gorm.Session{Logger: gormlogger.Discard}).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++		if errLimit := setDiagnosticsPrivacyTransactionLimits(tx, diagnosticsPrivacyBatchTimeout); errLimit != nil {
++			return errLimit
++		}
++		if errLock := lockDiagnosticsPrivacyMigration(tx); errLock != nil {
++			return errLock
++		}
++		var state diagnosticsPrivacyMigrationRecord
++		query := tx.WithContext(ctx).Where("name = ?", name)
++		if tx.Dialector != nil && tx.Dialector.Name() == "postgres" {
++			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
++		}
++		if errFirst := query.First(&state).Error; errFirst != nil {
++			return errFirst
++		}
++		return run(tx.WithContext(ctx), &state)
++	})
++}
++
++func setDiagnosticsPrivacyTransactionLimits(tx *gorm.DB, timeout time.Duration) error {
++	if tx == nil || tx.Dialector == nil || tx.Dialector.Name() != "postgres" {
++		return nil
++	}
++	statementMs := timeout.Milliseconds()
++	if statementMs < 1000 {
++		statementMs = 1000
++	}
++	if statementMs > 30000 {
++		statementMs = 30000
++	}
++	if errSet := tx.Exec("SET LOCAL application_name = 'home-privacy-maintenance'").Error; errSet != nil {
++		return errSet
++	}
++	if errSet := tx.Exec("SET LOCAL lock_timeout = '2s'").Error; errSet != nil {
++		return errSet
++	}
++	return tx.Exec(fmt.Sprintf("SET LOCAL statement_timeout = '%dms'", statementMs)).Error
++}
++
++func lockDiagnosticsPrivacyMigration(tx *gorm.DB) error {
++	if tx == nil || tx.Dialector == nil || tx.Dialector.Name() != "postgres" {
++		return nil
++	}
++	return tx.Exec("SELECT pg_advisory_xact_lock(?)", diagnosticsPrivacyAdvisoryLockKey).Error
++}
++
++func completeDiagnosticsPrivacyStep(ctx context.Context, db *gorm.DB, name string) error {
++	return diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if state.Completed {
++			return nil
++		}
++		if !state.APIKeysDone || !state.UsageDone || !state.BillingChargesDone {
++			return errors.New("privacy data step is incomplete")
++		}
++
++		if errAudit := ensureDiagnosticsPrivacyAudit(tx, name); errAudit != nil {
++			return errAudit
++		}
++		if errAudit := tx.Model(&diagnosticsPrivacyAuditRecord{}).Where("name = ?", name).Update("audited_at", time.Now().UTC()).Error; errAudit != nil {
++			return errAudit
++		}
++		return tx.Model(state).Updates(map[string]any{"completed": true, "updated_at": time.Now().UTC()}).Error
++	})
++}
+diff --git a/internal/cluster/diagnostics_privacy_migration.go b/internal/cluster/diagnostics_privacy_migration.go
+new file mode 100644
+index 0000000..cd5b642
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_migration.go
+@@ -0,0 +1,236 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"time"
++
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
++	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
++)
++
++func runDiagnosticsPrivacyAPIKeyBatch(ctx context.Context, db *gorm.DB, name string) (int64, error) {
++	var updated int64
++	errTransaction := diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if state.Completed || state.APIKeysDone {
++			return nil
++		}
++		var rows []APIKeyRecord
++		query := tx.WithContext(contextOrBackground(ctx)).Unscoped().Select("id", "api_key", "diagnostic_fingerprint").
++			Where("id > ? AND id <= ?", state.LastAPIKeyID, state.APIKeyMaxID).Order("id").Limit(diagnosticsPrivacyBatchSize)
++		if tx.Dialector != nil && tx.Dialector.Name() == "postgres" {
++			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
++		}
++		if errFind := query.Find(&rows).Error; errFind != nil {
++			return errFind
++		}
++		if len(rows) == 0 {
++			return tx.Model(state).Updates(map[string]any{"api_keys_done": true, "updated_at": time.Now().UTC()}).Error
++		}
++		for index := range rows {
++			fingerprint := DiagnosticAPIKeyFingerprint(rows[index].APIKey)
++			if rows[index].DiagnosticFingerprint != fingerprint {
++				if errUpdate := tx.Model(&APIKeyRecord{}).Where("id = ?", rows[index].ID).Update("diagnostic_fingerprint", fingerprint).Error; errUpdate != nil {
++					return errUpdate
++				}
++				updated++
++			}
++		}
++		return tx.Model(state).Updates(map[string]any{
++			"last_api_key_id":      rows[len(rows)-1].ID,
++			"api_key_rows_updated": gorm.Expr("api_key_rows_updated + ?", updated),
++			"updated_at":           time.Now().UTC(),
++		}).Error
++	})
++	if errTransaction != nil {
++		return 0, errors.New("diagnostics privacy api key batch failed")
++	}
++	return updated, nil
++}
++
++func runDiagnosticsPrivacyUsageBatch(ctx context.Context, db *gorm.DB, name string) (int64, error) {
++	var updated int64
++	errTransaction := diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if state.Completed || state.UsageDone {
++			return nil
++		}
++		var rows []UsageRecord
++		query := tx.WithContext(contextOrBackground(ctx)).Select("*").Where("id > ? AND id <= ?", state.LastUsageID, state.UsageMaxID).Order("id").Limit(diagnosticsPrivacyBatchSize)
++		if tx.Dialector != nil && tx.Dialector.Name() == "postgres" {
++			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
++		}
++		if errFind := query.Find(&rows).Error; errFind != nil {
++			return errFind
++		}
++		if len(rows) == 0 {
++			return tx.Model(state).Updates(map[string]any{"usage_done": true, "updated_at": time.Now().UTC()}).Error
++		}
++		if errAudit := auditDiagnosticsPrivacyRows(tx, name, rows); errAudit != nil {
++			return errAudit
++		}
++		for index := range rows {
++			updates, errProjection := diagnosticsPrivacyUsageUpdates(&rows[index])
++			if errProjection != nil {
++				return errProjection
++			}
++			if errUpdate := tx.Model(&UsageRecord{}).Where("id = ?", rows[index].ID).Updates(updates).Error; errUpdate != nil {
++				return errUpdate
++			}
++			updated++
++		}
++		return tx.Model(state).Updates(map[string]any{
++			"last_usage_id":      rows[len(rows)-1].ID,
++			"usage_rows_updated": gorm.Expr("usage_rows_updated + ?", updated),
++			"updated_at":         time.Now().UTC(),
++		}).Error
++	})
++	if errTransaction != nil {
++		return 0, errors.New("diagnostics privacy usage batch failed")
++	}
++	return updated, nil
++}
++
++func diagnosticsPrivacyUsageUpdates(record *UsageRecord) (map[string]any, error) {
++	if record == nil {
++		return nil, errors.New("missing usage row")
++	}
++	payload, errSanitize := sanitizeUsagePayloadMetadataOnly(string(record.PayloadJSON))
++	if errSanitize != nil {
++		payload, errSanitize = sanitizeUsagePayloadMetadataOnly(diagnosticsPrivacyFallbackUsagePayload(record))
++		if errSanitize != nil {
++			return nil, errors.New("usage metadata projection failed")
++		}
++	}
++
++	apiKey := diagnosticAPIKeyFingerprintFromPayload(payload, record.APIKey)
++	if apiKey != "" {
++		payload, errSanitize = sjson.Set(payload, "api_key", apiKey)
++		if errSanitize != nil {
++			return nil, errors.New("usage key projection failed")
++		}
++		payload, errSanitize = sjson.Set(payload, "api_key_fingerprint", apiKey)
++		if errSanitize != nil {
++			return nil, errors.New("usage fingerprint projection failed")
++		}
++	}
++
++	requestID := diagnosticRequestID(gjson.Get(payload, "request_id").String())
++	upstreamRequestID := diagnosticRequestID(gjson.Get(payload, "upstream_request_id").String())
++	eventType := normalizeUsageObservabilityEventType(gjson.Get(payload, "event_type").String())
++	updates := map[string]any{
++		"api_key":               apiKey,
++		"payload":               JSONB(payload),
++		"fail_body":             "",
++		"fail":                  jsonbFromPayloadField(payload, "fail"),
++		"tokens":                jsonbFromPayloadField(payload, "tokens"),
++		"source":                "",
++		"provider":              diagnosticIdentifier(gjson.Get(payload, "provider").String(), 80),
++		"executor_type":         diagnosticIdentifier(gjson.Get(payload, "executor_type").String(), 128),
++		"model":                 diagnosticIdentifier(gjson.Get(payload, "model").String(), 256),
++		"alias":                 "",
++		"effort":                "",
++		"service_tier":          diagnosticServiceTier(gjson.Get(payload, "service_tier").String()),
++		"response_service_tier": diagnosticServiceTier(gjson.Get(payload, "response_service_tier").String()),
++		"endpoint":              safeDiagnosticEndpoint(gjson.Get(payload, "endpoint").String()),
++		"auth_type":             diagnosticIdentifier(gjson.Get(payload, "auth_type").String(), 80),
++		"auth_index":            diagnosticIdentifier(gjson.Get(payload, "auth_index").String(), 256),
++		"request_id":            requestID,
++		"session_id":            diagnosticSessionID(gjson.Get(payload, "session_id").String()),
++		"parent_session_id":     "",
++		"root_session_id":       diagnosticSessionID(gjson.Get(payload, "session_id").String()),
++		"upstream_request_id":   upstreamRequestID,
++		"event_type":            eventType,
++		"cpa_node_id":           diagnosticIdentifier(gjson.Get(payload, "cpa_node_id").String(), 128),
++		"cpa_ip":                "",
++		"cpa_port":              0,
++		"cpa_label":             "",
++	}
++	if statusCode, ok := diagnosticStatusCode(gjson.Get(payload, "fail.status_code")); ok {
++		updates["fail_status_code"] = statusCode
++	}
++	if statusCode := usagePayloadInt(payload, "upstream_status_code"); statusCode >= 100 && statusCode <= 599 {
++		updates["upstream_status_code"] = statusCode
++	}
++	return updates, nil
++}
++
++func diagnosticsPrivacyFallbackUsagePayload(record *UsageRecord) string {
++	fields := map[string]any{
++		"timestamp":            record.Timestamp.UTC().Format(time.RFC3339Nano),
++		"provider":             record.Provider,
++		"executor_type":        record.ExecutorType,
++		"model":                record.Model,
++		"auth_type":            record.AuthType,
++		"auth_index":           record.AuthIndex,
++		"request_id":           record.RequestID,
++		"api_key":              record.APIKey,
++		"failed":               record.Failed,
++		"latency_ms":           record.LatencyMS,
++		"ttft_ms":              record.TTFTMS,
++		"upstream_status_code": record.UpstreamStatusCode,
++		"tokens": map[string]any{
++			"input_tokens": record.InputTokens, "output_tokens": record.OutputTokens,
++			"reasoning_tokens": record.ReasoningTokens, "cached_tokens": record.CachedTokens,
++			"cache_read_tokens": record.CacheReadTokens, "cache_read_tokens_present": record.CacheReadTokensPresent,
++			"cache_creation_tokens": record.CacheCreationTokens, "total_tokens": record.TotalTokens,
++		},
++	}
++	if record.FailStatusCode >= 100 && record.FailStatusCode <= 599 {
++		fields["fail"] = map[string]any{"status_code": record.FailStatusCode}
++	}
++	encoded, errMarshal := json.Marshal(fields)
++	if errMarshal != nil {
++		return `{"timestamp":"1970-01-01T00:00:00Z"}`
++	}
++	return string(encoded)
++}
++
++func runDiagnosticsPrivacyBillingChargeBatch(ctx context.Context, db *gorm.DB, name string) (int64, error) {
++	var updated int64
++	errTransaction := diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if state.Completed || state.BillingChargesDone {
++			return nil
++		}
++		var rows []BillingChargeRecord
++		query := tx.WithContext(contextOrBackground(ctx)).Select("id", "api_key_masked", "endpoint", "provider", "model", "original_model", "actual_model", "request_id").
++			Where("id > ? AND id <= ?", state.LastBillingChargeID, state.BillingChargeMaxID).Order("id").Limit(diagnosticsPrivacyBatchSize)
++		if tx.Dialector != nil && tx.Dialector.Name() == "postgres" {
++			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
++		}
++		if errFind := query.Find(&rows).Error; errFind != nil {
++			return errFind
++		}
++		if len(rows) == 0 {
++			return tx.Model(state).Updates(map[string]any{"billing_charges_done": true, "updated_at": time.Now().UTC()}).Error
++		}
++		for index := range rows {
++			requestID := diagnosticRequestID(rows[index].RequestID)
++			updates := map[string]any{
++				"api_key_masked":  diagnosticFingerprintDisplay,
++				"request_summary": "",
++				"endpoint":        "",
++				"provider":        diagnosticIdentifier(rows[index].Provider, 80),
++				"model":           diagnosticIdentifier(rows[index].Model, 256),
++				"original_model":  diagnosticIdentifier(rows[index].OriginalModel, 256),
++				"actual_model":    diagnosticIdentifier(rows[index].ActualModel, 256),
++				"request_id":      requestID,
++			}
++			if errUpdate := tx.Model(&BillingChargeRecord{}).Where("id = ?", rows[index].ID).Updates(updates).Error; errUpdate != nil {
++				return errUpdate
++			}
++			updated++
++		}
++		return tx.Model(state).Updates(map[string]any{
++			"last_billing_charge_id":      rows[len(rows)-1].ID,
++			"billing_charge_rows_updated": gorm.Expr("billing_charge_rows_updated + ?", updated),
++			"updated_at":                  time.Now().UTC(),
++		}).Error
++	})
++	if errTransaction != nil {
++		return 0, errors.New("diagnostics privacy billing batch failed")
++	}
++	return updated, nil
++}
+diff --git a/internal/cluster/diagnostics_privacy_postgres.go b/internal/cluster/diagnostics_privacy_postgres.go
+new file mode 100644
+index 0000000..4223542
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_postgres.go
+@@ -0,0 +1,407 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++
++	"gorm.io/gorm"
++)
++
++const diagnosticsMetadataOnlyAPIKeyFunctionV1 = `
++CREATE OR REPLACE FUNCTION home_diagnostics_metadata_only_api_key_v1()
++RETURNS trigger
++LANGUAGE plpgsql
++AS $$
++BEGIN
++    IF COALESCE(btrim(NEW.api_key), '') = '' THEN
++        NEW.diagnostic_fingerprint := '';
++    ELSE
++        NEW.diagnostic_fingerprint := 'sha256:' || encode(sha256(convert_to(btrim(NEW.api_key), 'UTF8')), 'hex');
++    END IF;
++    RETURN NEW;
++END;
++$$;
++`
++
++const diagnosticsMetadataOnlyUsageFunctionV1 = `
++CREATE OR REPLACE FUNCTION home_diagnostics_metadata_only_usage_v1()
++RETURNS trigger
++LANGUAGE plpgsql
++AS $$
++DECLARE
++    v_raw jsonb;
++    v_clean jsonb := '{}'::jsonb;
++    v_tokens_raw jsonb;
++    v_tokens jsonb := '{}'::jsonb;
++    v_fail jsonb := '{}'::jsonb;
++    v_quota jsonb := '{}'::jsonb;
++    v_entry record;
++    v_text text;
++    v_key text;
++    v_suffix text;
++    v_group text;
++    v_api_key text;
++    v_status integer;
++    v_breakdown_raw jsonb;
++    v_input jsonb;
++    v_output jsonb;
++    v_in_total bigint;
++    v_in_uncached bigint;
++    v_in_read bigint;
++    v_in_write bigint;
++    v_out_total bigint;
++    v_out_non_reasoning bigint;
++    v_out_reasoning bigint;
++    v_unclassified bigint;
++    v_accounting_total bigint;
++    v_quality text;
++BEGIN
++    v_raw := CASE WHEN jsonb_typeof(NEW.payload) = 'object' THEN NEW.payload ELSE '{}'::jsonb END;
++    v_clean := jsonb_build_object(
++        'timestamp', to_char(NEW.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
++    );
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'provider'), ''), NULLIF(btrim(NEW.provider), ''));
++    IF v_text ~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,79}$' THEN
++        v_clean := v_clean || jsonb_build_object('provider', v_text);
++        NEW.provider := v_text;
++    ELSE
++        NEW.provider := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'executor_type'), ''), NULLIF(btrim(NEW.executor_type), ''));
++    IF v_text ~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,127}$' THEN
++        v_clean := v_clean || jsonb_build_object('executor_type', v_text);
++        NEW.executor_type := v_text;
++    ELSE
++        NEW.executor_type := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'model'), ''), NULLIF(btrim(NEW.model), ''));
++    IF v_text ~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$' THEN
++        v_clean := v_clean || jsonb_build_object('model', v_text);
++        NEW.model := v_text;
++    ELSE
++        NEW.model := '';
++    END IF;
++
++    NEW.alias := '';
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'auth_type'), ''), NULLIF(btrim(NEW.auth_type), ''));
++    IF v_text IN ('oauth','api_key','provider_api_key','file_auth','vertex') THEN
++        v_clean := v_clean || jsonb_build_object('auth_type', v_text);
++        NEW.auth_type := v_text;
++    ELSE
++        NEW.auth_type := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'auth_index'), ''), NULLIF(btrim(NEW.auth_index), ''));
++    IF v_text ~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$' THEN
++        v_clean := v_clean || jsonb_build_object('auth_index', v_text);
++        NEW.auth_index := v_text;
++    ELSE
++        NEW.auth_index := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'request_id'), ''), NULLIF(btrim(NEW.request_id), ''));
++    IF v_text ~ '^([0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$' THEN
++        v_clean := v_clean || jsonb_build_object('request_id', v_text);
++        NEW.request_id := v_text;
++    ELSE
++        NEW.request_id := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'upstream_request_id'), ''), NULLIF(btrim(NEW.upstream_request_id), ''));
++    IF v_text ~ '^([0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$' THEN
++        v_clean := v_clean || jsonb_build_object('upstream_request_id', v_text);
++        NEW.upstream_request_id := v_text;
++    ELSE
++        NEW.upstream_request_id := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'cpa_node_id'), ''), NULLIF(btrim(NEW.cpa_node_id), ''));
++    IF v_text ~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,127}$' THEN
++        v_clean := v_clean || jsonb_build_object('cpa_node_id', v_text);
++        NEW.cpa_node_id := v_text;
++    ELSE
++        NEW.cpa_node_id := '';
++    END IF;
++
++    v_text := lower(COALESCE(NULLIF(btrim(v_raw->>'event_type'), ''), NULLIF(btrim(NEW.event_type), '')));
++    IF v_text ~ '^[a-z0-9_]{1,32}$' THEN
++        v_clean := v_clean || jsonb_build_object('event_type', v_text);
++        NEW.event_type := v_text;
++    ELSE
++        NEW.event_type := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'endpoint'), ''), NULLIF(btrim(NEW.endpoint), ''));
++    IF v_text IN ('/v1/chat/completions', '/v1/completions', '/v1/responses', '/v1/messages', '/v1/embeddings') THEN
++        v_clean := v_clean || jsonb_build_object('endpoint', v_text);
++        NEW.endpoint := v_text;
++    ELSE
++        NEW.endpoint := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'service_tier'), ''), NULLIF(btrim(v_raw->>'request_service_tier'), ''), NULLIF(btrim(NEW.service_tier), ''));
++    IF v_text IN ('auto','default','standard','priority','flex','fast') THEN
++        v_clean := v_clean || jsonb_build_object('service_tier', v_text);
++        NEW.service_tier := v_text;
++    ELSE
++        NEW.service_tier := '';
++    END IF;
++
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'response_service_tier'), ''), NULLIF(btrim(NEW.response_service_tier), ''));
++    IF v_text IN ('auto','default','standard','priority','flex','fast') THEN
++        v_clean := v_clean || jsonb_build_object('response_service_tier', v_text);
++        NEW.response_service_tier := v_text;
++    ELSE
++        NEW.response_service_tier := '';
++    END IF;
++
++    IF jsonb_typeof(v_raw->'failed') = 'boolean' THEN
++        NEW.failed := (v_raw->>'failed')::boolean;
++    END IF;
++    v_clean := v_clean || jsonb_build_object('failed', NEW.failed);
++
++    v_text := COALESCE(v_raw#>>'{fail,status_code}', NEW.fail_status_code::text);
++    IF v_text ~ '^[0-9]{3}$' AND v_text::integer BETWEEN 100 AND 599 THEN
++        v_status := v_text::integer;
++        v_fail := jsonb_build_object('status_code', v_status);
++        v_clean := v_clean || jsonb_build_object('fail', v_fail);
++        NEW.fail_status_code := v_status;
++    ELSE
++        NEW.fail_status_code := 0;
++    END IF;
++
++    v_text := COALESCE(v_raw->>'upstream_status_code', v_raw#>>'{upstream,status_code}', v_raw#>>'{response,status_code}', NEW.upstream_status_code::text);
++    IF v_text ~ '^[0-9]{3}$' AND v_text::integer BETWEEN 100 AND 599 THEN
++        NEW.upstream_status_code := v_text::integer;
++        v_clean := v_clean || jsonb_build_object('upstream_status_code', NEW.upstream_status_code);
++    ELSE
++        NEW.upstream_status_code := 0;
++    END IF;
++
++    IF NEW.latency_ms >= 0 THEN
++        v_clean := v_clean || jsonb_build_object('latency_ms', NEW.latency_ms);
++    END IF;
++    IF NEW.ttft_ms >= 0 THEN
++        v_clean := v_clean || jsonb_build_object('ttft_ms', NEW.ttft_ms);
++    END IF;
++
++    v_tokens_raw := COALESCE(v_raw->'tokens', NEW.tokens, '{}'::jsonb);
++    IF jsonb_typeof(v_tokens_raw) = 'object' THEN
++        FOR v_entry IN SELECT key, value FROM jsonb_each(v_tokens_raw) LOOP
++            IF v_entry.key = ANY (ARRAY['input_tokens', 'output_tokens', 'reasoning_tokens', 'cached_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'cache_write_tokens', 'total_tokens'])
++               AND jsonb_typeof(v_entry.value) = 'number' AND (v_entry.value::text ~ '^[0-9]+$') THEN
++                v_tokens := v_tokens || jsonb_build_object(v_entry.key, v_entry.value);
++            ELSIF v_entry.key = 'cache_read_tokens_present' AND jsonb_typeof(v_entry.value) = 'boolean' THEN
++                v_tokens := v_tokens || jsonb_build_object(v_entry.key, v_entry.value);
++            END IF;
++        END LOOP;
++    END IF;
++    IF v_tokens <> '{}'::jsonb THEN
++        v_clean := v_clean || jsonb_build_object('tokens', v_tokens);
++    END IF;
++
++    v_breakdown_raw := v_raw->'token_breakdown';
++    IF jsonb_typeof(v_breakdown_raw) = 'object' THEN
++        v_input := v_breakdown_raw->'input';
++        v_output := v_breakdown_raw->'output';
++        v_quality := v_breakdown_raw->>'quality';
++        IF jsonb_typeof(v_input) = 'object' AND jsonb_typeof(v_output) = 'object'
++           AND v_breakdown_raw->>'schema_version' = '2'
++           AND v_quality IN ('complete', 'inconsistent', 'unclassified')
++           AND (v_breakdown_raw->>'total_tokens') ~ '^[0-9]+$'
++           AND (v_breakdown_raw->>'unclassified_tokens') ~ '^[0-9]+$'
++           AND (v_input->>'total_tokens') ~ '^[0-9]+$'
++           AND (v_input->>'uncached_tokens') ~ '^[0-9]+$'
++           AND (v_input->>'cache_read_tokens') ~ '^[0-9]+$'
++           AND (v_input->>'cache_write_tokens') ~ '^[0-9]+$'
++           AND (v_output->>'total_tokens') ~ '^[0-9]+$'
++           AND (v_output->>'non_reasoning_tokens') ~ '^[0-9]+$'
++           AND (v_output->>'reasoning_tokens') ~ '^[0-9]+$' THEN
++            v_accounting_total := (v_breakdown_raw->>'total_tokens')::bigint;
++            v_unclassified := (v_breakdown_raw->>'unclassified_tokens')::bigint;
++            v_in_total := (v_input->>'total_tokens')::bigint;
++            v_in_uncached := (v_input->>'uncached_tokens')::bigint;
++            v_in_read := (v_input->>'cache_read_tokens')::bigint;
++            v_in_write := (v_input->>'cache_write_tokens')::bigint;
++            v_out_total := (v_output->>'total_tokens')::bigint;
++            v_out_non_reasoning := (v_output->>'non_reasoning_tokens')::bigint;
++            v_out_reasoning := (v_output->>'reasoning_tokens')::bigint;
++            IF v_in_total = v_in_uncached + v_in_read + v_in_write
++               AND v_out_total = v_out_non_reasoning + v_out_reasoning
++               AND v_accounting_total = v_in_total + v_out_total + v_unclassified
++               AND (v_quality <> 'complete' OR v_unclassified = 0) THEN
++                v_breakdown_raw := jsonb_build_object(
++                    'schema_version', 2,
++                    'quality', v_quality,
++                    'total_tokens', v_accounting_total,
++                    'input', jsonb_build_object('total_tokens', v_in_total, 'uncached_tokens', v_in_uncached, 'cache_read_tokens', v_in_read, 'cache_write_tokens', v_in_write),
++                    'output', jsonb_build_object('total_tokens', v_out_total, 'non_reasoning_tokens', v_out_non_reasoning, 'reasoning_tokens', v_out_reasoning),
++                    'unclassified_tokens', v_unclassified
++                );
++                v_clean := v_clean || jsonb_build_object('accounting_version', 2, 'token_breakdown', v_breakdown_raw);
++            END IF;
++        END IF;
++    END IF;
++
++    FOR v_entry IN
++        SELECT key, value FROM jsonb_each(CASE WHEN jsonb_typeof(v_raw->'quota_headers') = 'object' THEN v_raw->'quota_headers' ELSE '{}'::jsonb END)
++        UNION ALL
++        SELECT key, value FROM jsonb_each(CASE WHEN jsonb_typeof(v_raw->'response_headers') = 'object' THEN v_raw->'response_headers' ELSE '{}'::jsonb END)
++    LOOP
++        v_key := lower(btrim(v_entry.key));
++        IF jsonb_typeof(v_entry.value) = 'string' THEN
++            v_text := btrim(v_entry.value#>>'{}');
++        ELSIF jsonb_typeof(v_entry.value) = 'array' THEN
++            v_text := btrim(v_entry.value->>0);
++        ELSE
++            v_text := '';
++        END IF;
++        IF length(v_text) = 0 OR length(v_text) > 32 THEN
++            CONTINUE;
++        END IF;
++        IF v_key !~ '^x-codex-(primary|secondary)-(used-percent|window-minutes|reset-at|reset-after-seconds)$' THEN CONTINUE; END IF;
++        v_group := substring(v_key from '^x-codex-([a-z0-9][a-z0-9_.-]{0,63})-');
++        v_suffix := substring(v_key from '(-(used-percent|window-minutes|reset-at|reset-after-seconds))$');
++        IF v_suffix = '-used-percent' AND v_text ~ '^[0-9]+(\.[0-9]+)?$' AND v_text::numeric BETWEEN 0 AND 100 THEN
++            v_quota := v_quota || jsonb_build_object(v_key, v_text);
++        ELSIF v_suffix = '-window-minutes' AND v_text ~ '^[0-9]+$' AND length(v_text) <= 7 AND v_text::bigint BETWEEN 1 AND 1000000 THEN
++            v_quota := v_quota || jsonb_build_object(v_key, v_text);
++        ELSIF (v_suffix = '-reset-at' OR v_suffix = '-reset-after-seconds') AND v_text ~ '^[0-9]+$' AND length(v_text) <= 10 AND v_text::bigint BETWEEN 0 AND 4102444800 THEN
++            v_quota := v_quota || jsonb_build_object(v_key, v_text);
++        END IF;
++    END LOOP;
++    IF v_quota <> '{}'::jsonb THEN
++        v_clean := v_clean || jsonb_build_object('quota_headers', v_quota);
++    END IF;
++
++    v_api_key := NULLIF(btrim(v_raw->>'api_key_fingerprint'), '');
++    IF v_api_key IS NOT NULL AND v_api_key ~* '^sha256:[0-9a-f]{64}$' THEN
++        v_api_key := lower(v_api_key);
++        v_clean := v_clean || jsonb_build_object('api_key', v_api_key, 'api_key_fingerprint', v_api_key);
++    ELSE
++        v_api_key := COALESCE(NULLIF(btrim(NEW.api_key), ''), NULLIF(btrim(v_raw->>'api_key'), ''));
++        IF v_api_key IS NOT NULL THEN
++            v_api_key := 'sha256:' || encode(sha256(convert_to(btrim(v_api_key), 'UTF8')), 'hex');
++            v_clean := v_clean || jsonb_build_object('api_key', v_api_key, 'api_key_fingerprint', v_api_key);
++        ELSE
++            v_api_key := '';
++        END IF;
++    END IF;
++
++    NEW.api_key := v_api_key;
++    NEW.payload := jsonb_strip_nulls(v_clean);
++    NEW.tokens := v_tokens;
++    NEW.fail := v_fail;
++    NEW.fail_body := '';
++    NEW.source := '';
++    NEW.effort := '';
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'session_id'), ''), NULLIF(btrim(NEW.session_id), ''));
++    IF lower(v_text) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
++        NEW.session_id := lower(v_text);
++        NEW.payload := NEW.payload || jsonb_build_object('session_id', NEW.session_id);
++    ELSE
++        NEW.session_id := '';
++    END IF;
++    NEW.parent_session_id := '';
++    NEW.root_session_id := NEW.session_id;
++    NEW.cpa_ip := '';
++    NEW.cpa_port := 0;
++    NEW.cpa_label := '';
++    RETURN NEW;
++END;
++$$;
++`
++
++const diagnosticsMetadataOnlyBillingFunctionV1 = `
++CREATE OR REPLACE FUNCTION home_diagnostics_metadata_only_billing_v1()
++RETURNS trigger
++LANGUAGE plpgsql
++AS $$
++BEGIN
++    NEW.api_key_masked := 'sha256:…';
++    NEW.endpoint := '';
++    NEW.request_summary := '';
++    IF COALESCE(NEW.provider, '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,79}$' THEN NEW.provider := ''; END IF;
++    IF COALESCE(NEW.model, '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$' THEN NEW.model := ''; END IF;
++    IF COALESCE(NEW.original_model, '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$' THEN NEW.original_model := ''; END IF;
++    IF COALESCE(NEW.actual_model, '') !~ '^[A-Za-z0-9][A-Za-z0-9_.:/@+-]{0,255}$' THEN NEW.actual_model := ''; END IF;
++    IF COALESCE(NEW.request_id, '') !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$'
++       OR lower(NEW.request_id) ~ '(authorization|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|bearer|cookie)' THEN
++        NEW.request_id := '';
++    END IF;
++    RETURN NEW;
++END;
++$$;
++`
++
++func installDiagnosticsMetadataOnlyPostgresGuardsContext(db *gorm.DB) error {
++	return installDiagnosticsMetadataOnlyPostgresGuards(context.Background(), db)
++}
++
++func installDiagnosticsMetadataOnlyPostgresGuards(ctx context.Context, db *gorm.DB) error {
++	if db == nil || db.Dialector == nil || db.Dialector.Name() != "postgres" {
++		return nil
++	}
++	ctx = contextOrBackground(ctx)
++	errInstall := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++		if errLimit := setDiagnosticsPrivacyTransactionLimits(tx, diagnosticsPrivacyBatchTimeout); errLimit != nil {
++			return errLimit
++		}
++		if errLock := lockDiagnosticsPrivacyMigration(tx); errLock != nil {
++			return errLock
++		}
++		for _, guard := range []struct {
++			table       string
++			triggerName string
++			functionSQL string
++			triggerSQL  string
++		}{
++			{
++				table:       "api_key",
++				triggerName: "home_diagnostics_metadata_only_api_key_v1_trigger",
++				functionSQL: diagnosticsMetadataOnlyAPIKeyFunctionV1,
++				triggerSQL:  `CREATE TRIGGER home_diagnostics_metadata_only_api_key_v1_trigger BEFORE INSERT OR UPDATE ON api_key FOR EACH ROW EXECUTE FUNCTION home_diagnostics_metadata_only_api_key_v1()`,
++			},
++			{
++				table:       "usage",
++				triggerName: "home_diagnostics_metadata_only_usage_v1_trigger",
++				functionSQL: diagnosticsMetadataOnlyUsageFunctionV1,
++				triggerSQL:  `CREATE TRIGGER home_diagnostics_metadata_only_usage_v1_trigger BEFORE INSERT OR UPDATE ON usage FOR EACH ROW EXECUTE FUNCTION home_diagnostics_metadata_only_usage_v1()`,
++			},
++			{
++				table:       "billing_charge",
++				triggerName: "home_diagnostics_metadata_only_billing_v1_trigger",
++				functionSQL: diagnosticsMetadataOnlyBillingFunctionV1,
++				triggerSQL:  `CREATE TRIGGER home_diagnostics_metadata_only_billing_v1_trigger BEFORE INSERT OR UPDATE ON billing_charge FOR EACH ROW EXECUTE FUNCTION home_diagnostics_metadata_only_billing_v1()`,
++			},
++		} {
++			var exists bool
++			if errCheck := tx.Raw(`SELECT EXISTS (
++				SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
++				WHERE t.tgname = ? AND c.relname = ? AND NOT t.tgisinternal
++			)`, guard.triggerName, guard.table).Scan(&exists).Error; errCheck != nil {
++				return errCheck
++			}
++			// Refresh the function even when the trigger already exists. A rolling
++			// upgrade must not keep a prior privacy projection under the same name.
++			if errFunction := tx.Exec(guard.functionSQL).Error; errFunction != nil {
++				return errFunction
++			}
++			if exists {
++				continue
++			}
++			if errTrigger := tx.Exec(guard.triggerSQL).Error; errTrigger != nil {
++				return errTrigger
++			}
++		}
++		return nil
++	})
++	if errInstall != nil {
++		return errors.New("postgres diagnostics guards could not be installed")
++	}
++	return nil
++}
+diff --git a/internal/cluster/diagnostics_privacy_test.go b/internal/cluster/diagnostics_privacy_test.go
+new file mode 100644
+index 0000000..67ca44d
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_test.go
+@@ -0,0 +1,287 @@
++package cluster
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++	"github.com/tidwall/gjson"
++	"gorm.io/gorm"
++)
++
++func privacyTestDB(t *testing.T) *gorm.DB {
++	t.Helper()
++	db, errOpen := OpenSQLite(t.Context(), filepath.Join(t.TempDir(), "home.db"))
++	if errOpen != nil {
++		t.Fatal("open fixture database", errOpen)
++	}
++	handle, errDB := db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	t.Cleanup(func() {
++		if errClose := handle.Close(); errClose != nil {
++			t.Error(errClose)
++		}
++	})
++	if errMigrate := AutoMigrate(db); errMigrate != nil {
++		t.Fatal("migrate fixture", errMigrate)
++	}
++	return db
++}
++
++func assertPrivateBytesAbsent(t *testing.T, value any, secrets ...string) {
++	t.Helper()
++	encoded, errMarshal := json.Marshal(value)
++	if errMarshal != nil {
++		t.Fatal(errMarshal)
++	}
++	for _, secret := range secrets {
++		if bytes.Contains(encoded, []byte(secret)) {
++			t.Fatal("diagnostic projection retained a private sentinel")
++		}
++	}
++}
++
++func TestDiagnosticsPrivacyProjectionAndFingerprintIdentity(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	db := privacyTestDB(t)
++	repo := NewRepository(db)
++	key := APIKeyRecord{APIKey: "client-credential-sentinel-818"}
++	if errCreate := db.Create(&key).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	input := `{"timestamp":"2026-10-29T12:00:00Z","provider":"openai","model":"gpt-4.1","auth_index":"account-1","auth_type":"api_key","request_id":"4aac2bb8-00d3-4bf2-ae6c-b3178dca1940","api_key":"client-credential-sentinel-818","failed":true,"latency_ms":72,"service_tier":"priority","fail":{"status_code":400,"body":"private-response-sentinel-729"},"prompt":"private-prompt-sentinel-630","headers":{"Authorization":"Bearer upstream-sentinel-541"},"tokens":{"total_tokens":0}}`
++	record, errRecord := repo.AppendUsageWithRuntime(t.Context(), input, UsageRuntimeMetadata{})
++	if errRecord != nil {
++		t.Fatal("append private-mode usage", errRecord)
++	}
++	secrets := []string{key.APIKey, "private-response-sentinel-729", "private-prompt-sentinel-630", "upstream-sentinel-541"}
++	assertPrivateBytesAbsent(t, record, secrets...)
++	if record.FailBody != "" || record.FailStatusCode != 400 || record.LatencyMS != 72 || record.ServiceTier != "priority" {
++		t.Fatal("safe metadata was lost")
++	}
++	fingerprint := DiagnosticAPIKeyFingerprint(key.APIKey)
++	if record.APIKey != fingerprint {
++		t.Fatal("key was not fingerprinted")
++	}
++	ok, errValidate := repo.ValidateAPIKey(t.Context(), fingerprint)
++	if errValidate != nil || ok {
++		t.Fatal("fingerprint authenticated")
++	}
++	ok, errValidate = repo.ValidateAPIKey(t.Context(), key.APIKey)
++	if errValidate != nil || !ok {
++		t.Fatal("raw authentication credential stopped working")
++	}
++	matched, errLookup := billingAPIKeyByValue(t.Context(), db, fingerprint)
++	if errLookup != nil || matched == nil || matched.ID != key.ID {
++		t.Fatal("billing identity lost")
++	}
++	var joined []struct {
++		ID    uint
++		KeyID uint
++	}
++	if errJoin := db.Table("usage").Select(`usage.id, api_key.id AS key_id`).Joins(usageObservabilityAPIKeyJoinSQL).Scan(&joined).Error; errJoin != nil {
++		t.Fatal(errJoin)
++	}
++	if len(joined) != 1 || joined[0].KeyID != key.ID {
++		t.Fatal("usage identity lost or duplicated")
++	}
++	twice, errSanitize := SanitizeUsagePayloadSecrets(string(record.PayloadJSON))
++	if errSanitize != nil || gjson.Get(twice, "api_key").String() != fingerprint {
++		t.Fatal("repeat sanitizer rehashed the fingerprint")
++	}
++	// A legacy raw key that looks like a fingerprint must still be hashed as a credential.
++	shaped := `{"api_key":"` + fingerprint + `"}`
++	safe, errSanitize := SanitizeUsagePayloadSecrets(shaped)
++	if errSanitize != nil || gjson.Get(safe, "api_key").String() != DiagnosticAPIKeyFingerprint(fingerprint) {
++		t.Fatal("raw prefix was trusted as metadata")
++	}
++	var stored UsageRecord
++	if errRead := db.First(&stored, record.ID).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	assertPrivateBytesAbsent(t, stored, secrets...)
++}
++
++func TestDiagnosticsPrivacyAuditCountsOnlyAffectedDeletedKeys(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	db := privacyTestDB(t)
++	for _, token := range []string{"affected-deleted-token", "unaffected-deleted-token"} {
++		key := APIKeyRecord{APIKey: token}
++		if err := db.Create(&key).Error; err != nil {
++			t.Fatal(err)
++		}
++		if err := db.Delete(&key).Error; err != nil {
++			t.Fatal(err)
++		}
++	}
++	payload := `{"timestamp":"2026-10-28T12:00:00Z","api_key":"affected-deleted-token","failed":true}`
++	if _, err := NewRepository(db).AppendUsageWithRuntime(t.Context(), payload, UsageRuntimeMetadata{}); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	if err := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); err != nil {
++		t.Fatal(err)
++	}
++	var audit diagnosticsPrivacyAuditRecord
++	if err := db.First(&audit, "name = ?", diagnosticPrivacyStepName).Error; err != nil {
++		t.Fatal(err)
++	}
++	counts := audit
++	if counts.DeletedAPIKeyCount != 1 || counts.UnknownKeyCount != 0 || counts.ActiveAPIKeyCount != 0 {
++		t.Fatal("audit confused affected deleted credentials with unrelated or unknown keys")
++	}
++}
++
++func TestDiagnosticsPrivacyPurgeResumesAndPreservesCounters(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	db := privacyTestDB(t)
++	key := APIKeyRecord{APIKey: "historical-client-sentinel-452"}
++	if errCreate := db.Create(&key).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	body := "historical-response-sentinel-363"
++	const legacySession = "7c9a1f40-209d-1b83-8f9c-eaef07268439"
++	payload := `{"timestamp":"2026-10-28T12:00:00Z","session_id":"` + legacySession + `","provider":"openai","model":"gpt-4.1","api_key":"` + key.APIKey + `","failed":true,"fail":{"status_code":400,"body":"` + body + `"},"tokens":{"total_tokens":7}}`
++	record, errAppend := NewRepository(db).AppendUsageWithRuntime(t.Context(), payload, UsageRuntimeMetadata{})
++	if errAppend != nil {
++		t.Fatal(errAppend)
++	}
++	if record.FailBody != body || record.APIKey != key.APIKey {
++		t.Fatal("fixture did not reproduce the legacy capture")
++	}
++	var logs bytes.Buffer
++	previous := log.StandardLogger().Out
++	previousFormatter := log.StandardLogger().Formatter
++	log.SetOutput(&logs)
++	log.SetFormatter(&log.JSONFormatter{})
++	t.Cleanup(func() { log.SetOutput(previous); log.SetFormatter(previousFormatter) })
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	if errPrepare := prepareDiagnosticsPrivacyStep(t.Context(), db, diagnosticPrivacyStepName); errPrepare != nil {
++		t.Fatal(errPrepare)
++	}
++	if _, errBatch := runDiagnosticsPrivacyAPIKeyBatch(t.Context(), db, diagnosticPrivacyStepName); errBatch != nil {
++		t.Fatal(errBatch)
++	}
++	// Resume the immutable step from a committed partial batch as after a process failure.
++	if errResume := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); errResume != nil {
++		t.Fatal(errResume)
++	}
++	var stored UsageRecord
++	if errRead := db.First(&stored, record.ID).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if stored.TotalTokens != 7 || stored.FailStatusCode != 400 || stored.ID != record.ID {
++		t.Fatal("purge changed counts or status")
++	}
++	if stored.SessionID != legacySession || stored.RootSessionID != legacySession {
++		t.Fatal("purge lost the canonical historical session")
++	}
++	assertPrivateBytesAbsent(t, stored, key.APIKey, body)
++	assertPrivateBytesAbsent(t, logs.String(), key.APIKey, body)
++	if !strings.Contains(logs.String(), "POOL_PRIVACY_AUDIT ") {
++		t.Fatal("safe audit marker missing")
++	}
++	if strings.Contains(logs.String(), "active_key_ids") {
++		t.Fatal("audit log contains key IDs")
++	}
++	var marker map[string]int64
++	for _, line := range strings.Split(logs.String(), "\n") {
++		message := gjson.Get(line, "msg").String()
++		if strings.HasPrefix(message, "POOL_PRIVACY_AUDIT ") {
++			if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "POOL_PRIVACY_AUDIT ")), &marker); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	if marker["active_key_count"] != 1 || marker["matched_active_key_copies"] != 2 {
++		t.Fatal("audit did not report one active key and both diagnostic token copies")
++	}
++	var audit diagnosticsPrivacyAuditRecord
++	if errRead := db.First(&audit, "name = ?", diagnosticPrivacyStepName).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	var matched []diagnosticsPrivacyAuditKeyRecord
++	if errRead := db.Where("name = ? AND kind = ?", diagnosticPrivacyStepName, "active").Find(&matched).Error; errRead != nil || len(matched) != 1 || matched[0].Ref != fmt.Sprint(key.ID) {
++		t.Fatal("affected active key ID missing from the bounded journal")
++	}
++	before, errEncode := json.Marshal(stored)
++	if errEncode != nil {
++		t.Fatal(errEncode)
++	}
++	if errAgain := runDiagnosticsMetadataOnlyPrivacyMigration(context.Background(), db); errAgain != nil {
++		t.Fatal(errAgain)
++	}
++	var after UsageRecord
++	if errRead := db.First(&after, record.ID).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	encoded, errEncode := json.Marshal(after)
++	if errEncode != nil || !bytes.Equal(before, encoded) {
++		t.Fatal("repeat step rewrote retained data")
++	}
++	var count int64
++	if errCount := db.Model(&UsageRecord{}).Count(&count).Error; errCount != nil || count != 1 {
++		t.Fatal("purge dropped or duplicated rows")
++	}
++	// Make the mode-off boundary explicit without wall-clock waits.
++	if !record.Timestamp.Equal(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)) {
++		t.Fatal("timestamp changed")
++	}
++}
++
++func TestDiagnosticsPrivacyPreservesCanonicalSessionLookup(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	db := privacyTestDB(t)
++	for _, sessionID := range []string{
++		"7c9a1f40-209d-1b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-3b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-4b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-5b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-6b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-7b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-8b83-8f9c-eaef07268439",
++		"00000000-0000-0000-0000-000000000000",
++	} {
++		t.Run(sessionID, func(t *testing.T) {
++			record, errAppend := NewRepository(db).AppendUsageWithRuntime(t.Context(), `{"timestamp":"2026-10-29T12:00:00Z","session_id":"`+sessionID+`","failed":false}`, UsageRuntimeMetadata{})
++			if errAppend != nil {
++				t.Fatal(errAppend)
++			}
++			var count int64
++			if errCount := db.Model(&UsageRecord{}).Where("session_id = ?", sessionID).Count(&count).Error; errCount != nil || count != 1 || record.SessionID != sessionID {
++				t.Fatal("canonical session lookup stopped finding usage")
++			}
++		})
++	}
++	raw, errSanitize := SanitizeUsagePayloadSecrets(`{"session_id":"private-client-session-text-289"}`)
++	if errSanitize != nil || strings.Contains(raw, "private-client-session-text-289") {
++		t.Fatal("free session text survived projection")
++	}
++}
++
++func TestDiagnosticsPrivacyServingLegacyKeyBeforeBackfill(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	db := privacyTestDB(t)
++	key := APIKeyRecord{APIKey: "legacy-live-credential-914"}
++	if errCreate := db.Create(&key).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	fingerprint := DiagnosticAPIKeyFingerprint(key.APIKey)
++	matched, errMatch := billingAPIKeyByValue(t.Context(), db, fingerprint)
++	if errMatch != nil || matched == nil || matched.ID != key.ID {
++		t.Fatal("serving lost key identity while historical backfill was pending")
++	}
++	var persisted APIKeyRecord
++	if errRead := db.First(&persisted, key.ID).Error; errRead != nil || persisted.DiagnosticFingerprint != fingerprint {
++		t.Fatal("first use did not establish the indexed diagnostic identity")
++	}
++}
+diff --git a/internal/cluster/diagnostics_privacy_worker.go b/internal/cluster/diagnostics_privacy_worker.go
+new file mode 100644
+index 0000000..8a16672
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_worker.go
+@@ -0,0 +1,110 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++
++	"gorm.io/gorm"
++)
++
++// prepareDiagnosticsMetadataOnlyPrivacyMigration installs only the capture guard.
++// Historical work is driven after listeners open by RunDiagnosticsPrivacyBatch.
++func prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx context.Context, db *gorm.DB) error {
++	if !DiagnosticsMetadataOnlyEnabled() {
++		return nil
++	}
++	if db == nil || db.Dialector == nil {
++		return errors.New("diagnostics privacy migration unavailable")
++	}
++	if db.Dialector.Name() == "postgres" {
++		return installDiagnosticsMetadataOnlyPostgresGuards(ctx, db)
++	}
++	return nil
++}
++
++// DiagnosticsPrivacyBatchResult describes one committed maintenance transaction.
++type DiagnosticsPrivacyBatchResult struct {
++	Done        bool
++	RowsUpdated int64
++}
++
++// RunDiagnosticsPrivacyBatch advances one journaled batch. Call after listeners
++// open. Audit counts, row cleanup and the cursor commit or roll back together.
++func (r *Repository) RunDiagnosticsPrivacyBatch(ctx context.Context) (DiagnosticsPrivacyBatchResult, error) {
++	if !DiagnosticsMetadataOnlyEnabled() {
++		return DiagnosticsPrivacyBatchResult{Done: true}, nil
++	}
++	if r == nil || r.db == nil {
++		return DiagnosticsPrivacyBatchResult{}, errors.New("privacy maintenance unavailable")
++	}
++	ctx = contextOrBackground(ctx)
++	if errContext := ctx.Err(); errContext != nil {
++		return DiagnosticsPrivacyBatchResult{}, errContext
++	}
++	var existing diagnosticsPrivacyMigrationRecord
++	anyStep := r.db.WithContext(ctx).Where("name LIKE ?", "diagnostics_metadata_only_%").Limit(1).Find(&existing)
++	if anyStep.Error != nil {
++		return DiagnosticsPrivacyBatchResult{}, errors.New("privacy journal unavailable")
++	}
++	if anyStep.RowsAffected == 0 {
++		if errPrepare := prepareDiagnosticsPrivacyStep(ctx, r.db, diagnosticPrivacyStepName); errPrepare != nil {
++			return DiagnosticsPrivacyBatchResult{}, errors.New("privacy journal unavailable")
++		}
++	}
++	var state diagnosticsPrivacyMigrationRecord
++	query := r.db.WithContext(ctx).Where("name LIKE ? AND (completed = ? OR audit_marker_emitted = ?)", "diagnostics_metadata_only_%", false, false).
++		Order("name").Limit(1).Find(&state)
++	if query.Error != nil {
++		return DiagnosticsPrivacyBatchResult{}, errors.New("privacy journal unreadable")
++	}
++	if query.RowsAffected == 0 {
++		return DiagnosticsPrivacyBatchResult{Done: true}, nil
++	}
++	var result DiagnosticsPrivacyBatchResult
++	var errBatch error
++	switch {
++	case !state.APIKeysDone:
++		result.RowsUpdated, errBatch = runDiagnosticsPrivacyAPIKeyBatch(ctx, r.db, state.Name)
++	case !state.UsageDone:
++		result.RowsUpdated, errBatch = runDiagnosticsPrivacyUsageBatch(ctx, r.db, state.Name)
++	case !state.BillingChargesDone:
++		result.RowsUpdated, errBatch = runDiagnosticsPrivacyBillingChargeBatch(ctx, r.db, state.Name)
++	case !state.Completed:
++		errBatch = completeDiagnosticsPrivacyStep(ctx, r.db, state.Name)
++	default:
++		errBatch = emitDiagnosticsPrivacyAuditMarker(ctx, r.db, state.Name)
++	}
++	if errBatch != nil {
++		return DiagnosticsPrivacyBatchResult{}, errors.New("privacy maintenance batch failed")
++	}
++	return result, nil
++}
++
++func ensureDiagnosticsPrivacyAudit(tx *gorm.DB, name string) error {
++	return tx.Exec(`INSERT INTO home_data_migration_audit
++		(name, rows_scanned, token_copies, raw_token_copies, prehashed_token_copies,
++		matched_active_api_key_copies, unmatched_raw_token_copies, unknown_key_count,
++		active_api_key_count, deleted_api_key_count, matched_active_api_key_ids,
++		active_key_match_interpretation, audited_at)
++		VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, '[]', ?, CURRENT_TIMESTAMP)
++		ON CONFLICT (name) DO NOTHING`, name, diagnosticPrivacyMatchBasis).Error
++}
++
++// DiagnosticsPrivacyHistoryReady lets other historical backfills yield while
++// this job audits the rows. Serving and new usage ingestion do not wait on it.
++func (r *Repository) DiagnosticsPrivacyHistoryReady(ctx context.Context) (bool, error) {
++	if !DiagnosticsMetadataOnlyEnabled() {
++		return true, nil
++	}
++	if r == nil || r.db == nil {
++		return false, errors.New("privacy history journal unavailable")
++	}
++	var bootstrap diagnosticsPrivacyMigrationRecord
++	query := r.db.WithContext(ctx).Where("name LIKE ?", "diagnostics_metadata_only_%").Limit(1).Find(&bootstrap)
++	if query.Error != nil || query.RowsAffected == 0 {
++		return false, query.Error
++	}
++	var pending diagnosticsPrivacyMigrationRecord
++	query = r.db.WithContext(ctx).Where("name LIKE ? AND completed = ?", "diagnostics_metadata_only_%", false).Limit(1).Find(&pending)
++	return query.Error == nil && query.RowsAffected == 0, query.Error
++}
+diff --git a/internal/cluster/diagnostics_privacy_worker_test.go b/internal/cluster/diagnostics_privacy_worker_test.go
+new file mode 100644
+index 0000000..9e42dd5
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_worker_test.go
+@@ -0,0 +1,198 @@
++package cluster
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++	"gorm.io/gorm"
++)
++
++func seedPrivacyHistory(t *testing.T, db *gorm.DB, count int) APIKeyRecord {
++	t.Helper()
++	key := APIKeyRecord{APIKey: "history-live-key-sentinel-518"}
++	if errCreate := db.Create(&key).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	rows := make([]UsageRecord, count)
++	for index := range rows {
++		rows[index] = UsageRecord{Timestamp: time.Now().UTC(), APIKey: key.APIKey, FailBody: "historical-body-sentinel-729",
++			Failed: true, TotalTokens: 7, FailStatusCode: 400,
++			PayloadJSON: JSONB(`{"api_key":"` + key.APIKey + `","failed":true,"fail":{"body":"historical-body-sentinel-729","status_code":400}}`)}
++	}
++	if errCreate := db.CreateInBatches(rows, 20).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	return key
++}
++
++func privacyStep(t *testing.T, db *gorm.DB) diagnosticsPrivacyMigrationRecord {
++	t.Helper()
++	var step diagnosticsPrivacyMigrationRecord
++	if errRead := db.First(&step, "name = ?", diagnosticPrivacyStepName).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	return step
++}
++
++func TestDiagnosticsPrivacyDoesNotPurgeDuringStartupAndResumesCommittedBatch(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	db := privacyTestDB(t)
++	const count = diagnosticsPrivacyBatchSize*2 + 3
++	key := seedPrivacyHistory(t, db, count)
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	if errMigrate := AutoMigrate(db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	var exposed int64
++	if errCount := db.Model(&UsageRecord{}).Where("fail_body <> ''").Count(&exposed).Error; errCount != nil || exposed != count {
++		t.Fatal("startup ran the historical purge")
++	}
++	var output bytes.Buffer
++	previous := log.StandardLogger().Out
++	log.SetOutput(&output)
++	t.Cleanup(func() { log.SetOutput(previous) })
++	repo := NewRepository(db)
++	for index := 0; index < 10; index++ {
++		if _, errBatch := repo.RunDiagnosticsPrivacyBatch(t.Context()); errBatch != nil {
++			t.Fatal(errBatch)
++		}
++		if privacyStep(t, db).LastUsageID > 0 {
++			break
++		}
++	}
++	partial := privacyStep(t, db)
++	if partial.UsageRowsUpdated != diagnosticsPrivacyBatchSize || partial.Completed {
++		t.Fatal("batch was not bounded and committed before completion")
++	}
++	var audit diagnosticsPrivacyAuditRecord
++	if errRead := db.First(&audit, "name = ?", partial.Name).Error; errRead != nil || audit.RowsScanned != diagnosticsPrivacyBatchSize || audit.MatchedActiveAPIKeyCopies != 2*diagnosticsPrivacyBatchSize {
++		t.Fatal("audit and scrub did not commit together")
++	}
++	if strings.Contains(output.String(), "POOL_PRIVACY_AUDIT ") {
++		t.Fatal("completion marker was emitted during a partial purge")
++	}
++	stopped, cancel := context.WithCancel(t.Context())
++	cancel()
++	if _, errStopped := repo.RunDiagnosticsPrivacyBatch(stopped); !errors.Is(errStopped, context.Canceled) {
++		t.Fatal("cancelled worker advanced its journal")
++	}
++	// A new repository instance has no in-memory cursor or accumulated counts.
++	if errResume := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); errResume != nil {
++		t.Fatal(errResume)
++	}
++	if errRead := db.First(&audit, "name = ?", partial.Name).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if audit.RowsScanned != count || audit.MatchedActiveAPIKeyCopies != count*2 || audit.ActiveAPIKeyCount != 1 {
++		t.Fatal("resume lost or duplicated the durable audit counts")
++	}
++	if errAgain := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); errAgain != nil {
++		t.Fatal(errAgain)
++	}
++	if strings.Count(output.String(), "POOL_PRIVACY_AUDIT ") != 1 {
++		t.Fatal("completion marker was missing or duplicated")
++	}
++	var stored []UsageRecord
++	if errFind := db.Find(&stored).Error; errFind != nil || len(stored) != count {
++		t.Fatal("purge dropped historical usage")
++	}
++	assertPrivateBytesAbsent(t, stored, key.APIKey, "historical-body-sentinel-729")
++	assertPrivateBytesAbsent(t, output.String(), key.APIKey, "historical-body-sentinel-729")
++}
++
++func TestDiagnosticsPrivacyFailedBatchRollsBackAuditAndCursor(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	db := privacyTestDB(t)
++	seedPrivacyHistory(t, db, 3)
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	if errPrepare := prepareDiagnosticsPrivacyStep(t.Context(), db, diagnosticPrivacyStepName); errPrepare != nil {
++		t.Fatal(errPrepare)
++	}
++	for index := 0; index < 2; index++ {
++		if _, errBatch := runDiagnosticsPrivacyAPIKeyBatch(t.Context(), db, diagnosticPrivacyStepName); errBatch != nil {
++			t.Fatal(errBatch)
++		}
++	}
++	var updates int
++	const callback = "privacy_fail_second_usage_update"
++	if errRegister := db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
++		if tx.Statement.Table == "usage" {
++			updates++
++			if updates == 2 {
++				tx.AddError(errors.New("fixture private database error 872"))
++			}
++		}
++	}); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++	_, errBatch := runDiagnosticsPrivacyUsageBatch(t.Context(), db, diagnosticPrivacyStepName)
++	db.Callback().Update().Remove(callback)
++	if errBatch == nil {
++		t.Fatal("failed update did not stop the batch")
++	}
++	step := privacyStep(t, db)
++	if step.LastUsageID != 0 || step.UsageRowsUpdated != 0 {
++		t.Fatal("failed batch advanced the cursor")
++	}
++	var audits, keys int64
++	if errCount := db.Model(&diagnosticsPrivacyAuditRecord{}).Count(&audits).Error; errCount != nil || audits != 0 {
++		t.Fatal("failed batch committed audit counts")
++	}
++	if errCount := db.Model(&diagnosticsPrivacyAuditKeyRecord{}).Count(&keys).Error; errCount != nil || keys != 0 {
++		t.Fatal("failed batch committed distinct-key counts")
++	}
++	if errResume := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); errResume != nil {
++		t.Fatal(errResume)
++	}
++}
++
++// Used by focused migration tests; serving uses one batch per maintenance turn.
++func runDiagnosticsMetadataOnlyPrivacyMigration(ctx context.Context, db *gorm.DB) error {
++	if errPrepare := prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db); errPrepare != nil {
++		return errPrepare
++	}
++	for {
++		result, errBatch := NewRepository(db).RunDiagnosticsPrivacyBatch(ctx)
++		if errBatch != nil || result.Done {
++			return errBatch
++		}
++	}
++}
++
++func TestDiagnosticsPrivacySnapshotImportQueuesBoundedHistoricalWork(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	source := privacyTestDB(t)
++	key := seedPrivacyHistory(t, source, 3)
++	path := filepath.Join(t.TempDir(), "privacy-snapshot.zip")
++	if _, errExport := ExportDatabaseSnapshot(t.Context(), source, DatabaseSnapshotExportOptions{Path: path}); errExport != nil {
++		t.Fatal(errExport)
++	}
++	snapshot, errOpen := OpenDatabaseSnapshot(t.Context(), path)
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	defer snapshot.Close()
++	target := openDatabaseSnapshotSQLiteRawTestDB(t, filepath.Join(t.TempDir(), "restored.db"))
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	if _, errImport := ImportDatabaseSnapshot(t.Context(), target, snapshot, nil); errImport != nil {
++		t.Fatal(errImport)
++	}
++	var pending []diagnosticsPrivacyMigrationRecord
++	if errRead := target.Find(&pending).Error; errRead != nil || len(pending) != 1 || pending[0].UsageMaxID != 3 || pending[0].Completed {
++		t.Fatal("restore did not queue the imported rows for background cleanup")
++	}
++	if errResume := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), target); errResume != nil {
++		t.Fatal(errResume)
++	}
++	var restored []UsageRecord
++	if errRead := target.Find(&restored).Error; errRead != nil || len(restored) != 3 {
++		t.Fatal("restore lost historical usage")
++	}
++	assertPrivateBytesAbsent(t, restored, key.APIKey, "historical-body-sentinel-729")
++}
+diff --git a/internal/cluster/models.go b/internal/cluster/models.go
+index e07573e..67bc0d5 100644
+--- a/internal/cluster/models.go
++++ b/internal/cluster/models.go
+@@ -4,6 +4,7 @@ import (
+ 	"database/sql/driver"
+ 	"encoding/json"
+ 	"fmt"
++	"strings"
+ 	"time"
+ 
+ 	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+@@ -429,15 +430,16 @@ func (UserSecurityThrottleRecord) TableName() string {
+ }
+ 
+ type APIKeyRecord struct {
+-	ID          uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_api_key_active_order,priority:2"`
+-	APIKey      string         `gorm:"column:api_key;not null;uniqueIndex"`
+-	DisplayName *string        `gorm:"column:display_name;type:text"`
+-	UserID      *uint          `gorm:"column:user_id;index;index:idx_api_key_user_active,priority:1"`
+-	Channels    JSONB          `gorm:"column:channels"`
+-	ModelGroups JSONB          `gorm:"column:model_groups"`
+-	CreatedAt   time.Time      `gorm:"column:created_at"`
+-	UpdatedAt   time.Time      `gorm:"column:updated_at"`
+-	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_api_key_active_order,priority:1;index:idx_api_key_user_active,priority:2"`
++	ID                    uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_api_key_active_order,priority:2"`
++	APIKey                string         `gorm:"column:api_key;not null;uniqueIndex"`
++	DiagnosticFingerprint string         `gorm:"column:diagnostic_fingerprint;index:idx_api_key_diagnostic_fingerprint" json:"diagnostic_fingerprint,omitempty"`
++	DisplayName           *string        `gorm:"column:display_name;type:text"`
++	UserID                *uint          `gorm:"column:user_id;index;index:idx_api_key_user_active,priority:1"`
++	Channels              JSONB          `gorm:"column:channels"`
++	ModelGroups           JSONB          `gorm:"column:model_groups"`
++	CreatedAt             time.Time      `gorm:"column:created_at"`
++	UpdatedAt             time.Time      `gorm:"column:updated_at"`
++	DeletedAt             gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_api_key_active_order,priority:1;index:idx_api_key_user_active,priority:2"`
+ }
+ 
+ // TableName returns the database table name.
+@@ -445,6 +447,13 @@ func (APIKeyRecord) TableName() string {
+ 	return "api_key"
+ }
+ 
++func (record *APIKeyRecord) BeforeSave(*gorm.DB) error {
++	if record != nil && (DiagnosticsMetadataOnlyEnabled() || strings.TrimSpace(record.DiagnosticFingerprint) != "") {
++		record.DiagnosticFingerprint = DiagnosticAPIKeyFingerprint(record.APIKey)
++	}
++	return nil
++}
++
+ type ChannelGroupRecord struct {
+ 	ID          uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_channel_group_active_order,priority:2;index:idx_channel_group_enabled_order,priority:3"`
+ 	ChannelName string         `gorm:"column:channel_name;not null"`
+diff --git a/internal/cluster/usage.go b/internal/cluster/usage.go
+index d7428af..20a2a94 100644
+--- a/internal/cluster/usage.go
++++ b/internal/cluster/usage.go
+@@ -118,6 +118,12 @@ func UsageRecordFromPayloadWithRuntime(payload string, metadata UsageRuntimeMeta
+ 	if !json.Valid([]byte(payload)) {
+ 		return nil, fmt.Errorf("usage payload is invalid json")
+ 	}
++	metadataOnly := DiagnosticsMetadataOnlyEnabled()
++	if metadataOnly {
++		metadata.CPAIP = ""
++		metadata.CPAPort = 0
++		metadata.CPALabel = ""
++	}
+ 	sanitizedPayload, errSanitize := SanitizeUsagePayloadSecrets(payload)
+ 	if errSanitize != nil {
+ 		return nil, errSanitize
+@@ -128,6 +134,13 @@ func UsageRecordFromPayloadWithRuntime(payload string, metadata UsageRuntimeMeta
+ 		return nil, errEnrich
+ 	}
+ 	payload = enrichedPayload
++	if metadataOnly {
++		sanitizedPayload, errSanitize = sanitizeUsagePayloadMetadataOnly(payload)
++		if errSanitize != nil {
++			return nil, errSanitize
++		}
++		payload = sanitizedPayload
++	}
+ 
+ 	timestampRaw := strings.TrimSpace(gjson.Get(payload, "timestamp").String())
+ 	if timestampRaw == "" {
+@@ -253,6 +266,9 @@ func SanitizeUsagePayloadSecrets(payload string) (string, error) {
+ 	if !json.Valid([]byte(payload)) {
+ 		return "", fmt.Errorf("usage payload is invalid json")
+ 	}
++	if DiagnosticsMetadataOnlyEnabled() {
++		return sanitizeUsagePayloadMetadataOnly(payload)
++	}
+ 	payload, errQuotaHeaders := sanitizeUsageQuotaHeaders(payload)
+ 	if errQuotaHeaders != nil {
+ 		return "", errQuotaHeaders
+diff --git a/internal/cluster/usage_observability.go b/internal/cluster/usage_observability.go
+index e94425b..cb9fc79 100644
+--- a/internal/cluster/usage_observability.go
++++ b/internal/cluster/usage_observability.go
+@@ -31,6 +31,8 @@ const (
+ 	UsageObservabilityBillingBasisUnknown = "unknown"
+ )
+ 
++const usageObservabilityAPIKeyJoinSQL = `LEFT JOIN "api_key" ON (COALESCE("usage"."payload"->>'api_key_fingerprint', '') = '' AND "api_key"."api_key" = "usage"."api_key") OR ("usage"."payload"->>'api_key_fingerprint' = "usage"."api_key" AND "api_key"."diagnostic_fingerprint" = "usage"."api_key")`
++
+ // ErrUsageObservabilityTooManyTrendBuckets indicates that the applied range and interval exceed the response limit.
+ var ErrUsageObservabilityTooManyTrendBuckets = errors.New("usage overview trend bucket limit exceeded")
+ 
+@@ -940,7 +942,7 @@ func usageObservabilityTotalsSQL(db *gorm.DB, query UsageObservabilityRecordQuer
+ 	// instead of joining auth three times for every usage row.
+ 	scope := usageObservabilityNarrowUsageScope(db.Table("usage").
+ 		Joins(`LEFT JOIN "billing_charge" ON "billing_charge"."usage_id" = "usage"."id"`).
+-		Joins(`LEFT JOIN "api_key" ON "api_key"."api_key" = "usage"."api_key"`), query)
++		Joins(usageObservabilityAPIKeyJoinSQL), query)
+ 	selectSQL := usageObservabilityTotalsSQLSelect()
+ 	if usageObservabilityIsPostgres(db) {
+ 		selectSQL += ", " + usageObservabilityPostgresPercentile(`"usage"."latency_ms"`, 50) + " AS p50_latency_ms, " + usageObservabilityPostgresPercentile(`"usage"."latency_ms"`, 95) + " AS p95_latency_ms"
+@@ -1783,7 +1785,7 @@ func usageObservabilityAggregateBaseQuery(db *gorm.DB, query UsageObservabilityR
+ 	switch strings.TrimSpace(groupBy) {
+ 	case "user", "client_key":
+ 		scope = scope.
+-			Joins(`LEFT JOIN "api_key" ON "api_key"."api_key" = "usage"."api_key"`).
++			Joins(usageObservabilityAPIKeyJoinSQL).
+ 			Joins(`LEFT JOIN "user" ON "user"."id" = COALESCE("billing_charge"."user_id", "api_key"."user_id")`)
+ 	case "credential":
+ 		scope = scope.
+@@ -2428,7 +2430,7 @@ func usageObservabilityRecordSelect() string {
+ func usageObservabilityRecordScope(scope *gorm.DB, query UsageObservabilityRecordQuery) *gorm.DB {
+ 	scope = scope.
+ 		Joins(`LEFT JOIN "billing_charge" ON "billing_charge"."usage_id" = "usage"."id"`).
+-		Joins(`LEFT JOIN "api_key" ON "api_key"."api_key" = "usage"."api_key"`).
++		Joins(usageObservabilityAPIKeyJoinSQL).
+ 		Joins(`LEFT JOIN "user" ON "user"."id" = COALESCE("billing_charge"."user_id", "api_key"."user_id")`).
+ 		Joins(`LEFT JOIN "auth" AS "auth_uuid" ON "auth_uuid"."deleted_at" IS NULL AND "auth_uuid"."uuid" = "usage"."auth_index"`).
+ 		Joins(`LEFT JOIN "auth" AS "auth_by_index" ON "auth_uuid"."uuid" IS NULL AND "auth_by_index"."deleted_at" IS NULL AND "auth_by_index"."index" = "usage"."auth_index"`).
+@@ -2628,7 +2630,7 @@ func usageObservabilityApplyRecordFilters(scope *gorm.DB, query UsageObservabili
+ 	}
+ 	if clientKey := strings.TrimSpace(query.ClientKey); clientKey != "" {
+ 		matcher := "%" + clientKey + "%"
+-		scope = scope.Where(`"api_key"."api_key" LIKE ? OR "billing_charge"."api_key_masked" LIKE ? OR "billing_charge"."api_key_label" LIKE ? OR CAST("api_key"."id" AS TEXT) LIKE ?`, matcher, matcher, matcher, matcher)
++		scope = scope.Where(`"api_key"."api_key" LIKE ? OR "api_key"."diagnostic_fingerprint" LIKE ? OR "billing_charge"."api_key_masked" LIKE ? OR "billing_charge"."api_key_label" LIKE ? OR CAST("api_key"."id" AS TEXT) LIKE ?`, matcher, matcher, matcher, matcher, matcher)
+ 	}
+ 	if clientKeyID := normalizeOptionalUint(query.ClientKeyID); clientKeyID != nil {
+ 		scope = scope.Where(`COALESCE("billing_charge"."api_key_id", "api_key"."id") = ?`, *clientKeyID)
+diff --git a/internal/respserver/diagnostics_privacy_test.go b/internal/respserver/diagnostics_privacy_test.go
+new file mode 100644
+index 0000000..66e9d1e
+--- /dev/null
++++ b/internal/respserver/diagnostics_privacy_test.go
+@@ -0,0 +1,29 @@
++package respserver
++
++import (
++	"context"
++	"net"
++	"os"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestDiagnosticsPrivacyPurgeFailureRefusesConnections(t *testing.T) {
++	t.Setenv(cluster.DiagnosticsMetadataOnlyEnv, "1")
++	t.Chdir(t.TempDir())
++	if err := os.WriteFile("logs", []byte("private-content-sentinel"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	server := New("", nil)
++	local, peer := net.Pipe()
++	defer peer.Close()
++	go server.HandleConn(context.Background(), local)
++	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
++	if _, err := peer.Read(make([]byte, 1)); err == nil {
++		t.Fatal("privacy purge failure accepted a connection")
++	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
++		t.Fatal("privacy purge failure did not close the connection")
++	}
++}
+diff --git a/internal/respserver/push/diagnostics_privacy_test.go b/internal/respserver/push/diagnostics_privacy_test.go
+new file mode 100644
+index 0000000..8d92350
+--- /dev/null
++++ b/internal/respserver/push/diagnostics_privacy_test.go
+@@ -0,0 +1,48 @@
++package push
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++)
++
++func TestDiagnosticsPrivacyFallbackAndRequestLogs(t *testing.T) {
++	t.Setenv(cluster.DiagnosticsMetadataOnlyEnv, "1")
++	t.Chdir(t.TempDir())
++	if errMkdir := os.Mkdir("logs", 0700); errMkdir != nil {
++		t.Fatal(errMkdir)
++	}
++	secret := "fallback-body-and-auth-sentinel-274"
++	historical := `{"api_key":"` + secret + `","fail":{"status_code":400,"body":"` + secret + `"},"headers":{"Authorization":"` + secret + `"}}`
++	if errWrite := os.WriteFile("logs/usage.log", []byte(historical+"\n"), 0600); errWrite != nil {
++		t.Fatal(errWrite)
++	}
++	if errSanitize := SanitizeUsageLog(); errSanitize != nil {
++		t.Fatal(errSanitize)
++	}
++	if errAppend := appendUsageLog(historical); errAppend != nil {
++		t.Fatal(errAppend)
++	}
++	data, errRead := os.ReadFile("logs/usage.log")
++	if errRead != nil || strings.Contains(string(data), secret) {
++		t.Fatal("fallback log retained content")
++	}
++	requestFile := filepath.Join("logs", "node-2026-10-29T120000-req.log")
++	if errWrite := os.WriteFile(requestFile, []byte(secret), 0600); errWrite != nil {
++		t.Fatal(errWrite)
++	}
++	removed, errPurge := PurgeRequestLogs()
++	if errPurge != nil || removed != 1 {
++		t.Fatal("request file was not removed")
++	}
++	handleRequestLog(context.Background(), dispatch.Env{}, []string{"rpush", "request-log", `{"request_log":"` + secret + `"}`})
++	entries, errDir := os.ReadDir("logs")
++	if errDir != nil || len(entries) != 1 || entries[0].Name() != "usage.log" {
++		t.Fatal("request log push created a file")
++	}
++}
+diff --git a/internal/respserver/push/request_log.go b/internal/respserver/push/request_log.go
+index fd089d3..17b01e7 100644
+--- a/internal/respserver/push/request_log.go
++++ b/internal/respserver/push/request_log.go
+@@ -12,12 +12,16 @@ import (
+ 	"sync/atomic"
+ 	"time"
+ 
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
+ 	log "github.com/sirupsen/logrus"
+ 	"github.com/tidwall/gjson"
+ )
+ 
+-var requestLogID atomic.Uint64
++var (
++	requestLogID              atomic.Uint64
++	requestLogFilenamePattern = regexp.MustCompile(`-\d{4}-\d{2}-\d{2}T\d{6}-.+\.log(?:\.gz)?$`)
++)
+ 
+ // handleRequestLog handles a request log.
+ func handleRequestLog(ctx context.Context, env dispatch.Env, args []string) dispatch.Reply {
+@@ -30,6 +34,9 @@ func handleRequestLog(ctx context.Context, env dispatch.Env, args []string) disp
+ 	if !strings.EqualFold(strings.TrimSpace(args[1]), "request-log") {
+ 		return dispatch.Err("unsupported key")
+ 	}
++	if cluster.DiagnosticsMetadataOnlyEnabled() {
++		return dispatch.Integer(1)
++	}
+ 
+ 	payload := strings.TrimSpace(args[2])
+ 	if payload == "" || !gjson.Valid(payload) {
+@@ -72,6 +79,47 @@ func handleRequestLog(ctx context.Context, env dispatch.Env, args []string) disp
+ 	return dispatch.Integer(1)
+ }
+ 
++// PurgeRequestLogs removes request logs left by earlier Home versions when
++// metadata-only diagnostics is enabled.
++func PurgeRequestLogs() (int, error) {
++	if !cluster.DiagnosticsMetadataOnlyEnabled() {
++		return 0, nil
++	}
++	logFilesMu.Lock()
++	defer logFilesMu.Unlock()
++	entries, errRead := os.ReadDir("logs")
++	if errRead != nil {
++		if os.IsNotExist(errRead) {
++			return 0, nil
++		}
++		return 0, fmt.Errorf("read request log directory")
++	}
++	removed := 0
++	for _, entry := range entries {
++		if !requestLogFilenamePattern.MatchString(entry.Name()) {
++			continue
++		}
++		info, errInfo := entry.Info()
++		if errInfo != nil {
++			if os.IsNotExist(errInfo) {
++				continue
++			}
++			return removed, fmt.Errorf("inspect request log file")
++		}
++		if !info.Mode().IsRegular() {
++			continue
++		}
++		if errRemove := os.Remove(filepath.Join("logs", entry.Name())); errRemove != nil {
++			if os.IsNotExist(errRemove) {
++				continue
++			}
++			return removed, fmt.Errorf("remove request log file")
++		}
++		removed++
++	}
++	return removed, nil
++}
++
+ // generateRequestLogID generates a request log id.
+ func generateRequestLogID() string {
+ 	b := make([]byte, 4)
+diff --git a/internal/respserver/push/usage.go b/internal/respserver/push/usage.go
+index c188a51..74dd7ae 100644
+--- a/internal/respserver/push/usage.go
++++ b/internal/respserver/push/usage.go
+@@ -53,6 +53,13 @@ func handleUsage(ctx context.Context, env dispatch.Env, args []string) dispatch.
+ 		return dispatch.Err("invalid usage json")
+ 	}
+ 	payload = enrichedPayload
++	if cluster.DiagnosticsMetadataOnlyEnabled() {
++		sanitizedPayload, errSanitize = cluster.SanitizeUsagePayloadSecrets(payload)
++		if errSanitize != nil {
++			return dispatch.Err("invalid usage json")
++		}
++		payload = sanitizedPayload
++	}
+ 
+ 	// Always update scheduler state before queuing persistence so cooldowns are applied even if log persistence fails.
+ 	if env.Runtime != nil {
+@@ -101,6 +108,11 @@ func appendUsageLog(payload string) error {
+ 	if strings.TrimSpace(payload) == "" {
+ 		return fmt.Errorf("empty payload")
+ 	}
++	sanitized, errSanitize := cluster.SanitizeUsagePayloadSecrets(payload)
++	if errSanitize != nil {
++		return fmt.Errorf("invalid usage metadata")
++	}
++	payload = sanitized
+ 
+ 	logFilesMu.RLock()
+ 	defer logFilesMu.RUnlock()
+diff --git a/internal/respserver/server.go b/internal/respserver/server.go
+index daeb2a6..dcf1116 100644
+--- a/internal/respserver/server.go
++++ b/internal/respserver/server.go
+@@ -39,6 +39,7 @@ type clusterHandler interface {
+ }
+ 
+ type Server struct {
++	privacyStartupFailed    bool
+ 	addr                    string
+ 	runtime                 *home.Runtime
+ 	registry                *dispatch.Registry
+@@ -63,14 +64,27 @@ const (
+ 
+ // New creates a new.
+ func New(addr string, runtime *home.Runtime) *Server {
++	privacyStartupFailed := false
+ 	if errSanitize := resppush.SanitizeUsageLog(); errSanitize != nil {
+-		log.Errorf("usage log sanitization error: %v", errSanitize)
++		if cluster.DiagnosticsMetadataOnlyEnabled() {
++			privacyStartupFailed = true
++			log.Error("usage log privacy purge failed")
++		} else {
++			log.Errorf("usage log sanitization error: %v", errSanitize)
++		}
++	}
++	if removed, errPurge := resppush.PurgeRequestLogs(); errPurge != nil {
++		privacyStartupFailed = true
++		log.WithField("files_removed", removed).Error("request log privacy purge failed")
++	} else if removed > 0 {
++		log.WithField("files_removed", removed).Info("request log privacy purge completed")
+ 	}
+ 	server := &Server{
+-		addr:         strings.TrimSpace(addr),
+-		runtime:      runtime,
+-		registry:     buildRegistry(),
+-		fingerprints: NewFingerprintRegistry(),
++		privacyStartupFailed: privacyStartupFailed,
++		addr:                 strings.TrimSpace(addr),
++		runtime:              runtime,
++		registry:             buildRegistry(),
++		fingerprints:         NewFingerprintRegistry(),
+ 	}
+ 	limits := cluster.DefaultInFlightLimits()
+ 	server.inFlightLimits.Store(&limits)
+@@ -325,6 +339,10 @@ func (s *Server) HandleConn(ctx context.Context, conn net.Conn) {
+ 	if s == nil || conn == nil {
+ 		return
+ 	}
++	if s.privacyStartupFailed {
++		_ = conn.Close()
++		return
++	}
+ 	if ctx == nil {
+ 		ctx = context.Background()
+ 	}

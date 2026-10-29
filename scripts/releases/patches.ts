@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { GitHubApi } from "./github.ts";
-import { assertPatchManifestContentMatchesFiles, assertPatchManifestMatchesFiles, parsePatchManifestV3, patchManifestPath } from "./patch-registry.ts";
+import { assertPatchManifestContentMatchesFiles, assertPatchManifestMatchesFiles, assertPoolCarryManifestContent, parsePatchManifestV3, patchManifestPath } from "./patch-registry.ts";
 import type { PatchManifestV3 } from "./types.ts";
 
 const PATCH_FILE = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.patch$/;
@@ -23,6 +23,7 @@ export function readPatchManifest(root: string): PatchManifestV3 {
     readFileSync(join(root, "patches", file)),
   ]));
   assertPatchManifestContentMatchesFiles(manifest, contentByFile);
+  if (manifest.pool_carries) assertPoolCarryManifestContent(manifest, readFileSync(join(root, manifest.pool_carries.manifest)));
   return manifest;
 }
 
