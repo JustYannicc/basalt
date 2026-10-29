@@ -1387,10 +1387,10 @@ index 0000000..cd5b642
 +}
 diff --git a/internal/cluster/diagnostics_privacy_postgres.go b/internal/cluster/diagnostics_privacy_postgres.go
 new file mode 100644
-index 0000000..22e1b2f
+index 0000000..4223542
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_postgres.go
-@@ -0,0 +1,405 @@
+@@ -0,0 +1,407 @@
 +package cluster
 +
 +import (
@@ -1779,11 +1779,13 @@ index 0000000..22e1b2f
 +			)`, guard.triggerName, guard.table).Scan(&exists).Error; errCheck != nil {
 +				return errCheck
 +			}
-+			if exists {
-+				continue
-+			}
++			// Refresh the function even when the trigger already exists. A rolling
++			// upgrade must not keep a prior privacy projection under the same name.
 +			if errFunction := tx.Exec(guard.functionSQL).Error; errFunction != nil {
 +				return errFunction
++			}
++			if exists {
++				continue
 +			}
 +			if errTrigger := tx.Exec(guard.triggerSQL).Error; errTrigger != nil {
 +				return errTrigger

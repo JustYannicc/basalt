@@ -101,6 +101,14 @@ test("privacy upgrade purges released failure content and rejects future old-wri
       payload=payload::jsonb || jsonb_build_object('api_key',${quote(key.key)},'session_id',${quote(prompt)},'fail',jsonb_build_object('body',${quote(prompt)}))
       where id=${Number(rows[0]!.id)}`);
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 }, "mixed-version writes remain sanitized");
+    // A database can already have a trigger from an earlier candidate. The
+    // next boot must replace its function body while retaining the trigger.
+    fixture.diagnostics.sql(`create or replace function home_diagnostics_metadata_only_usage_v1()
+      returns trigger language plpgsql as $$ begin
+        new.session_id := ''; new.payload := new.payload - 'session_id'; return new;
+      end $$;`);
+    await fixture.replaceImage(candidate);
+    await fixture.diagnostics.waitForPrivacy();
     // The old writer and the query must agree on every canonical UUID shape.
     for (const session of ["7c9a1f40-209d-1b83-8f9c-eaef07268439", "7c9a1f40-209d-5b83-8f9c-eaef07268439",
       "7c9a1f40-209d-6b83-8f9c-eaef07268439", "00000000-0000-0000-0000-000000000000"]) {
