@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pathlib
-import json
 import signal
 import subprocess
 import sys
@@ -29,36 +28,13 @@ from .pool_contract import (
     require_tmpfs,
 )
 from .readiness import Readiness, start_ready_server
+from .child_signals import privacy_audit_line, safe_child_output_line
 
 
 HOME_BINARY = "/usr/local/bin/cliproxy-home"
 NODE_BINARY = "/usr/local/bin/cliproxy-node"
 BOOTSTRAP_MARKER = "database config is empty; run with -import first"
 STARTUP_TIMEOUT_SECONDS = 180
-
-
-def privacy_audit_line(name: str, line: str) -> str | None:
-    """Allow only the startup audit's counts."""
-    marker = "POOL_PRIVACY_AUDIT "
-    if name != "home" or marker not in line:
-        return None
-    try:
-        # Logrus quotes and escapes a JSON message in its text format.
-        if 'msg="' in line:
-            line = json.JSONDecoder().raw_decode(line.split("msg=", 1)[1])[0]
-        elif line.startswith("{"):
-            line = json.loads(line).get("msg", "")
-        if not isinstance(line, str) or marker not in line:
-            return None
-        value = json.JSONDecoder().raw_decode(line.split(marker, 1)[1])[0]
-    except (ValueError, TypeError):
-        return None
-    fields = {"usage_rows", "purged_rows", "active_key_count", "matched_active_key_copies", "deleted_key_count", "unknown_key_count"}
-    if not isinstance(value, dict) or set(value) != fields:
-        return None
-    if any(type(value[key]) is not int or value[key] < 0 for key in fields):
-        return None
-    return marker + json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 class Child:
@@ -92,7 +68,7 @@ class Child:
             if BOOTSTRAP_MARKER in line:
                 self.config_empty.set()
             # Provider errors can contain full responses. Do not forward them.
-            safe = privacy_audit_line(self.name, line)
+            safe = safe_child_output_line(self.name, line)
             if safe is not None:
                 print(safe, flush=True)
 

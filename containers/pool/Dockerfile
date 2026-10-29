@@ -8,7 +8,7 @@ RUN python3 fetch_sources.py --destination /source
 FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS source-build
 ARG TARGETARCH
 COPY --from=source-fetch /source /source
-RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/respserver/push ./internal/respserver -run TestDiagnosticsPrivacy -count=1 && \
+RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/respserver/push ./internal/respserver ./cmd/home -run TestDiagnosticsPrivacy -count=1 && \
     cd /source/node && go test -p=2 -mod=readonly ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps -run MetadataOnly -count=1
 RUN mkdir -p /out/home /out/node && \
     cd /source/home && \
@@ -35,6 +35,7 @@ RUN apk add --no-cache ca-certificates tzdata \
 WORKDIR /opt/pool
 COPY __init__.py /opt/pool/__init__.py
 COPY supervisor.py /opt/pool/supervisor.py
+COPY child_signals.py /opt/pool/child_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY readiness.py /opt/pool/readiness.py
 COPY healthcheck.py /opt/pool/healthcheck.py

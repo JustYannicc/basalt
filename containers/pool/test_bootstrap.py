@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import threading
 import unittest
+from contextlib import redirect_stdout
+from types import SimpleNamespace
+from typing import Any, cast
 
 from .pool_contract import (
     bootstrap_yaml,
@@ -12,10 +17,35 @@ from .pool_contract import (
     pool_config_patch,
 )
 from .readiness import Readiness
-from .supervisor import privacy_audit_line
+from .child_signals import (
+    HOME_INIT_FAILURE_CATEGORIES,
+    HOME_INIT_FAILURE_MARKER,
+    MAX_HOME_SIGNAL_INTEGER,
+    privacy_audit_line,
+    safe_child_output_line,
+)
+
+from .supervisor import Child
+
+class FakeStream:
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = iter(lines)
+
+    def readline(self, size: int) -> str:
+        return next(self._lines, "")
 
 
 class BootstrapContractTests(unittest.TestCase):
+    def read_child_output(self, name: str, lines: list[str]) -> list[str]:
+        child = object.__new__(Child)
+        child.name = name
+        child.config_empty = threading.Event()
+        child.process = cast(Any, SimpleNamespace(stdout=FakeStream(lines)))
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            child._read_output()
+        return captured.getvalue().splitlines()
+
     def test_cluster_dsn_is_quoted_without_changing_uri_options(self) -> None:
         dsn = (
             "postgresql://pool:fixture@db.example/pool"
@@ -76,6 +106,151 @@ class BootstrapContractTests(unittest.TestCase):
         audit.pop("content")
         audit["active_key_ids"] = [2]
         self.assertIsNone(privacy_audit_line("home", "POOL_PRIVACY_AUDIT " + json.dumps(audit)))
+
+    def test_read_output_forwards_raw_and_logrus_privacy_signals(self) -> None:
+        audit = {
+            "usage_rows": 5,
+            "purged_rows": 4,
+            "active_key_count": 1,
+            "matched_active_key_copies": 10,
+            "deleted_key_count": 0,
+            "unknown_key_count": 0,
+        }
+        progress = {"batches": 2, "rows_updated": 7}
+        retry = {"attempt": 3, "retry_after_seconds": 12}
+        audit_message = "POOL_PRIVACY_AUDIT " + json.dumps(audit)
+        retry_message = "POOL_PRIVACY_RETRY " + json.dumps(retry)
+        text_wrapped = (
+            'time="2026-10-29T12:00:00Z" level=info msg='
+            + json.dumps(audit_message)
+            + ' raw_token="text-token-sentinel"'
+        )
+        json_wrapped = json.dumps(
+            {
+                "time": "2026-10-29T12:00:00Z",
+                "level": "info",
+                "msg": retry_message,
+                "provider_response": "json-content-sentinel",
+                "raw_token": "json-token-sentinel",
+            }
+        )
+
+        output = self.read_child_output(
+            "home",
+            [
+                "POOL_PRIVACY_PROGRESS " + json.dumps(progress) + "\n",
+                json_wrapped + "\n",
+                text_wrapped + "\n",
+            ],
+        )
+
+        self.assertEqual(
+            output,
+            [
+                'POOL_PRIVACY_PROGRESS {"batches":2,"rows_updated":7}',
+                'POOL_PRIVACY_RETRY {"attempt":3,"retry_after_seconds":12}',
+                (
+                    "POOL_PRIVACY_AUDIT "
+                    '{"active_key_count":1,"deleted_key_count":0,'
+                    '"matched_active_key_copies":10,"purged_rows":4,'
+                    '"unknown_key_count":0,"usage_rows":5}'
+                ),
+            ],
+        )
+        joined = "\n".join(output)
+        self.assertNotIn("sentinel", joined)
+
+    def test_read_output_rejects_untrusted_or_malformed_content(self) -> None:
+        sentinel = "provider-content-sentinel raw-token-sentinel"
+        invalid_lines = [
+            f"provider error {sentinel}\n",
+            (
+                'POOL_PRIVACY_PROGRESS {"batches":1,"rows_updated":2,'
+                f'"error":"{sentinel}"}}\n'
+            ),
+            'POOL_PRIVACY_PROGRESS {"batches":true,"rows_updated":2}\n',
+            'POOL_PRIVACY_PROGRESS {"batches":1.0,"rows_updated":2}\n',
+            'POOL_PRIVACY_RETRY {"attempt":"2","retry_after_seconds":4}\n',
+            'POOL_PRIVACY_PROGRESS {"batches":1,"rows_updated":-2}\n',
+            (
+                'POOL_PRIVACY_PROGRESS {"batches":1,"batches":2,'
+                '"rows_updated":2}\n'
+            ),
+            (
+                'POOL_PRIVACY_RETRY {"attempt":1,'
+                f'"error":"{sentinel}"}}\n'
+            ),
+            (
+                'POOL_PRIVACY_AUDIT {"usage_rows":1,"purged_rows":0,'
+                '"active_key_count":0,"matched_active_key_copies":0,'
+                '"deleted_key_count":0,"unknown_key_count":0,'
+                f'"token":"{sentinel}"}}\n'
+            ),
+            (
+                '{"level":"error","msg":"POOL_PRIVACY_RETRY '
+                '{\\"attempt\\":2,\\"retry_after_seconds\\":4,'
+                f'\\"raw_token\\":\\"{sentinel}\\"}}",'
+                f'"raw_token":"{sentinel}"}}\n'
+            ),
+        ]
+
+        output = self.read_child_output("home", invalid_lines)
+
+        self.assertEqual(output, [])
+        self.assertNotIn(sentinel, "\n".join(output))
+        self.assertIsNone(
+            safe_child_output_line(
+                "home",
+                f'POOL_PRIVACY_PROGRESS {{"batches":1,"rows_updated":{MAX_HOME_SIGNAL_INTEGER + 1}}}',
+            )
+        )
+        maximum = safe_child_output_line(
+            "home",
+            f'POOL_PRIVACY_PROGRESS {{"batches":{MAX_HOME_SIGNAL_INTEGER},"rows_updated":0}}',
+        )
+        self.assertIsNotNone(maximum)
+
+    def test_read_output_maps_home_startup_errors_to_one_hot_counts(self) -> None:
+        failures = {
+            "database": "failed to open database: db-driver-sentinel",
+            "runtime": "failed to init runtime: provider-error-sentinel",
+            "listener": "failed to listen on 0.0.0.0:8327: address-sentinel",
+            "cluster": "failed to initialize cluster coordinator: cluster-sentinel",
+        }
+        log_lines = [
+            'time="2026-10-29T12:00:00Z" level=error msg='
+            + json.dumps(message)
+            + "\n"
+            for message in failures.values()
+        ]
+        log_lines.extend(
+            [
+                'time="2026-10-29T12:00:00Z" level=error msg='
+                + json.dumps("database config is empty; run with -import first")
+                + "\n",
+                'time="2026-10-29T12:00:00Z" level=error msg='
+                + json.dumps("provider failed: arbitrary-error-sentinel")
+                + "\n",
+            ]
+        )
+
+        output = self.read_child_output("home", log_lines)
+
+        self.assertEqual(len(output), len(failures))
+        for line, expected_category in zip(output, failures):
+            self.assertTrue(line.startswith(HOME_INIT_FAILURE_MARKER))
+            counts = json.loads(line[len(HOME_INIT_FAILURE_MARKER) :])
+            self.assertEqual(set(counts), set(HOME_INIT_FAILURE_CATEGORIES))
+            self.assertTrue(all(type(value) is int for value in counts.values()))
+            self.assertEqual(counts[expected_category], 1)
+            self.assertEqual(sum(counts.values()), 1)
+        joined = "\n".join(output)
+        self.assertNotIn("sentinel", joined)
+        self.assertIsNone(
+            safe_child_output_line(
+                "node", 'time="..." level=error msg="failed to open database: x"'
+            )
+        )
 
     def test_readiness_payload_contains_only_boot_identity(self) -> None:
         readiness = Readiness("fixture-management-key")

@@ -213,6 +213,11 @@ export class SharingFixture {
       headers: { Authorization: `Bearer ${this.managementKey}` }, signal: AbortSignal.timeout(3_000),
     })).ok, "replacement privacy image readiness", this.readinessTimeoutMs);
   }
+  async crashAndReplace(image: string): Promise<void> {
+    docker(["kill", "--signal", "KILL", `${this.name}-pool`], this.operationTimeoutMs);
+    await this.replaceImage(image);
+  }
+
   async fetchHome(input: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);
     headers.set("X-Management-Key", this.managementKey);

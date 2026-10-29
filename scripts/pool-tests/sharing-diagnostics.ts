@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 function output(args: string[], input?: string): string {
   const result = spawnSync("docker", args, { input, encoding: "utf8", timeout: 30_000 });
@@ -21,6 +22,25 @@ export class FixtureDiagnostics {
   sql(query: string): string {
     return output(["exec", "-i", `${this.name}-postgres`, "psql", "-X", "-v", "ON_ERROR_STOP=1",
       "-U", "fixture_admin", "-d", "basalt_pool", "-At"], query).trim();
+  }
+
+  statementTimesOut(query: string): boolean {
+    const result = spawnSync("docker", ["exec", "-i", `${this.name}-postgres`, "psql", "-X", "-v", "ON_ERROR_STOP=1",
+      "-v", "VERBOSITY=sqlstate", "-U", "fixture_admin", "-d", "basalt_pool", "-At"], {
+      input: `begin; set local statement_timeout='30s'; set local application_name='home-privacy-maintenance'; ${query}`,
+      encoding: "utf8", timeout: 40_000,
+    });
+    return result.status === 3 && /57014/.test(result.stderr);
+  }
+
+  async waitForPrivacy(timeout = 90_000): Promise<void> {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if (this.sql("select count(*) from home_data_migration where completed=false or audit_marker_emitted=false") === "0" &&
+        this.sql("select count(*) from home_data_migration") !== "0") return;
+      await delay(200);
+    }
+    assert.fail("Privacy cleanup did not complete within the fixture budget");
   }
 
   async scan(secrets: readonly string[]): Promise<{ database: number; files: number; logs: number }> {

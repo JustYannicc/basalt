@@ -67,6 +67,7 @@ test("privacy upgrade purges released failure content and rejects future old-wri
     console.log("PASS: released Home reproduces diagnostic exposure; no content printed");
 
     await fixture.replaceImage(candidate);
+    await fixture.diagnostics.waitForPrivacy();
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 });
     const retained = await records();
     assert.equal(retained.length, oldRows.length, "purge preserves usage counts");

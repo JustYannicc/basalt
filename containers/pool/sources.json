@@ -9,7 +9,7 @@
         {
           "identity": "cliproxy-home-metadata-only-diagnostics",
           "file": "cliproxy-home-v1.1.6-metadata-only.patch",
-          "sha256": "f56d340c53895425395d35116fcd0f6565aa05753a41cb144391cec6e90a4bc8",
+          "sha256": "a8892a68a32e606c1fe55901032c166a74f9ffbe46a11425cb0b2cf32c1d8639",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
