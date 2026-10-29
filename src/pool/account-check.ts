@@ -4,10 +4,11 @@ import type { HomeClient, PoolHome } from "./control.ts";
 import { fail, object, unavailable } from "./json.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 
-export async function checkAccount(home: PoolHome, client: HomeClient, collection: QuotaCollection, id: string, signal: AbortSignal): Promise<Account> {
-  const ids = new Set((await home.membership()).members.map((member) => member.auth_id));
+export async function checkAccount(home: PoolHome, client: HomeClient, collection: QuotaCollection, id: string, callerSignal: AbortSignal): Promise<Account> {
+  const signal = AbortSignal.any([callerSignal, AbortSignal.timeout(12_000)]);
+  const ids = new Set((await home.membership(signal)).members.map((member) => member.auth_id));
   if (!ids.has(id)) return fail(404, "not_found", "This subscription was removed from the pool.");
-  const [files, reading] = await Promise.all([home.credentials(), collection.read(id, signal)]);
+  const [files, reading] = await Promise.all([home.credentials(signal), collection.read(id, signal)]);
   const account = accountsView(files, reading ? [reading] : [], new Set([id]))[0];
   if (!account) return fail(404, "not_found", "This subscription was removed from the pool.");
   const file = files.find((file) => file.id === id)!;

@@ -18,6 +18,7 @@ import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 import { checkAccount } from "./account-check.ts";
+import { homeResponse } from "./home-response.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
@@ -203,7 +204,7 @@ export class HomeClient {
   private clock: () => number;
   constructor(fetchHome: HomeDependencies["home"], clock: () => number = Date.now) { this.fetchHome = fetchHome; this.clock = clock; }
   async response(path: string, init?: RequestInit): Promise<Response> {
-    try { return await this.fetchHome(`${management}${path}`, init); } catch { return unavailable(); }
+    try { return await homeResponse(() => this.fetchHome(`${management}${path}`, init), init?.signal); } catch { return unavailable(); }
   }
   async data(path: string, init?: RequestInit): Promise<Json> {
     const response = await this.response(path, init);
@@ -216,8 +217,8 @@ export class HomeClient {
       return object(value) ? value : unavailable();
     } catch { return unavailable(); }
   }
-  async allPoolGroups(): Promise<Group[]> {
-    const groups = rows((await this.data("/channel-groups")).channel_groups).flatMap((row) => {
+  async allPoolGroups(signal?: AbortSignal): Promise<Group[]> {
+    const groups = rows((await this.data("/channel-groups", { signal })).channel_groups).flatMap((row) => {
       if (typeof row.channel_name !== "string" || !row.channel_name.startsWith(poolGroupPrefix)) return [];
       if (!positiveId(row.id)) return unavailable();
       return [{ id: row.id, channel_name: row.channel_name }];
@@ -226,14 +227,14 @@ export class HomeClient {
     for (const group of groups) this.groupCache.set(group.channel_name, [...(this.groupCache.get(group.channel_name) ?? []), group]);
     return groups;
   }
-  async poolGroups(name: string): Promise<Group[]> {
-    return this.groupCache.get(name) ?? (await this.allPoolGroups()).filter((group) => group.channel_name === name);
+  async poolGroups(name: string, signal?: AbortSignal): Promise<Group[]> {
+    return this.groupCache.get(name) ?? (await this.allPoolGroups(signal)).filter((group) => group.channel_name === name);
   }
   invalidateGroups(): void { this.groupCache.clear(); }
-  async members(groups: Group[]): Promise<Member[]> {
+  async members(groups: Group[], signal?: AbortSignal): Promise<Member[]> {
     try {
       return (await mapBounded(groups, async (group) =>
-        rows((await this.data(`/channel-group-details?channel_group_id=${group.id}`)).channel_group_details).map((row) => {
+        rows((await this.data(`/channel-group-details?channel_group_id=${group.id}`, { signal })).channel_group_details).map((row) => {
           if (!positiveId(row.id) || row.channel_group_id !== group.id || !text(row.auth_id)) return unavailable();
           return { id: row.id, channel_group_id: group.id, auth_id: row.auth_id as string };
         }))).flat();
@@ -323,20 +324,20 @@ export class PoolHome {
     return { groups, members: all.members.filter((member) => ids.has(member.channel_group_id)) };
   }
   async allMembership(): Promise<Membership> { return this.client.allMembership(); }
-  async credentials(): Promise<Json[]> { return rows((await this.client.data("/credentials")).files); }
+  async credentials(signal?: AbortSignal): Promise<Json[]> { return rows((await this.client.data("/credentials", { signal })).files); }
   async status(state: string): Promise<Json> { return this.client.signInStatus(state); }
   async cancel(state: string): Promise<boolean> {
     const result = await this.client.data(`/oauth/session?state=${encodeURIComponent(state)}`, { method: "DELETE" });
     if (typeof result.cancelled !== "boolean") return unavailable();
     return result.cancelled;
   }
-  async membership(): Promise<Membership> {
-    const groups = await this.client.poolGroups(this.name);
-    try { return { groups, members: await this.client.members(groups) }; }
+  async membership(signal?: AbortSignal): Promise<Membership> {
+    const groups = await this.client.poolGroups(this.name, signal);
+    try { return { groups, members: await this.client.members(groups, signal) }; }
     catch (error) {
       if (!(error instanceof ControlFailure) || error.status !== 404) throw error;
-      const fresh = (await this.client.allPoolGroups()).filter((group) => group.channel_name === this.name);
-      return { groups: fresh, members: await this.client.members(fresh) };
+      const fresh = (await this.client.allPoolGroups(signal)).filter((group) => group.channel_name === this.name);
+      return { groups: fresh, members: await this.client.members(fresh, signal) };
     }
   }
   async add(ids: string[], known?: Membership): Promise<void> {

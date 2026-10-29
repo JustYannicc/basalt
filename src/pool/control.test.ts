@@ -152,7 +152,7 @@ class FakeHome {
 function state(start: SignInStarted): string {
   return (JSON.parse(Buffer.from(start.session.split(".")[1]!, "base64url").toString()) as { state: string }).state;
 }
-interface Options { pool?: string; owner?: boolean; token?: string; body?: unknown; raw?: string; method?: string }
+interface Options { pool?: string; owner?: boolean; token?: string; body?: unknown; raw?: string; method?: string; signal?: AbortSignal }
 async function fixture(audience: readonly string[] = []) {
   const home = new FakeHome();
   const storage = new MemoryStorage();
@@ -167,6 +167,7 @@ async function fixture(audience: readonly string[] = []) {
     if (!tokens.has(pool)) tokens.set(pool, await signPoolToken(signingKey, { pool, owner: "fake-owner", organization: "fake-org" }));
     return new Request(`https://pool.example/pool/v1${path}`, {
       method: options.method ?? (options.body !== undefined || options.raw !== undefined ? "POST" : "GET"),
+      signal: options.signal,
       headers: { Authorization: `Bearer ${options.token ?? tokens.get(pool)}`, "x-signalbox-caller": options.owner === false ? "fake-member" : "fake-owner" },
       body: options.raw ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
     });
@@ -271,6 +272,32 @@ for (const [name, blocked, upstream, expected] of [["refused refresh", true, 401
     assert.equal(response.status, 200);
     const body = await response.text(); assert.ok(!body.includes("private"));
     assert.equal(subscriptionFailure(JSON.parse(body) as Account, f.deps.now().getTime()), expected);
+  });
+}
+
+for (const step of ["membership", "credentials", "quota", "runtime"] as const) {
+  test(`a canceled health check does not wait for hung Home ${step}`, async () => {
+    const f = await fixture();
+    f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+    if (step === "runtime") f.home.files.set("a", { ...f.home.files.get("a"), status: "error" });
+    const entered = deferred<void>(), release = deferred<void>();
+    const controller = new AbortController();
+    f.home.override = async (path, init) => {
+      const held = step === "membership" ? path.endsWith("/channel-groups") : step === "credentials" ? path.endsWith("/credentials")
+        : step === "quota" ? path.endsWith("/quota/credentials/a") : path.endsWith("/model-states");
+      if (held) {
+        assert.ok(init?.signal, "every Home read gets the check's deadline");
+        entered.resolve(); await release.promise;
+      }
+      if (path.endsWith("/quota/credentials/a")) return Response.json({ credential: { credential_id: "a" }, windows: [],
+        collection: { status: "success", freshness: "fresh", observed_at: f.deps.now().toISOString() } });
+      return undefined;
+    };
+    const checking = f.call("/accounts/a/collect", { method: "POST", signal: controller.signal });
+    await entered.promise;
+    controller.abort();
+    try { await withoutWaitingForGate(checking); await error(await checking, "backend_unavailable", 503); }
+    finally { release.resolve(); await checking; }
   });
 }
 
