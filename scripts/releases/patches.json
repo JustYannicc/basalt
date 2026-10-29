@@ -316,7 +316,7 @@
     {
       "identity": "executor-instant-navigation",
       "file": "0034-instant-navigation.patch",
-      "content_sha256": "318f44432951f021b390e24a38658d7605dc75fe4251ef31862b77e4b8c85273",
+      "content_sha256": "bf5b130dbc9e6664417ab8ba9051d80489934574b3f1377fe4f45a3f85aaf50a",
       "kind": "upstream",
       "upstream_pull_request": 2437,
       "database_sensitive": false,
