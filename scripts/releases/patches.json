@@ -303,6 +303,15 @@
       "upstream_pull_request": 2432,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-bounded-cloud-migrations",
+      "file": "0033-bounded-cloud-migrations.patch",
+      "content_sha256": "88656203a69fae047addeda65eb57441993152bc58f607f550a1a3b616e111f0",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
     }
   ]
 }
