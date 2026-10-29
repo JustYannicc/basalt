@@ -158,7 +158,7 @@ test("strict OTLP output contains only safe spans and fixed resource labels", as
   }
 });
 
-test("direct Sentry trace mode avoids the Cloudflare platform trace destination", async () => {
+test("direct Sentry trace mode keeps redacted platform logs and avoids the platform trace destination", async () => {
   const telemetry = await load("apps/hosted/cloud/src/infrastructure/telemetry.ts");
   const { AlchemyContext } = requireCloud("alchemy/AlchemyContext");
   const { Stage } = requireCloud("alchemy/Stage");
@@ -173,5 +173,12 @@ test("direct Sentry trace mode avoids the Cloudflare platform trace destination"
       AXIOM_TOKEN: "synthetic-axiom-token",
     } }))),
   ));
-  assert.deepEqual(result, {});
+  // Only native logs, without query strings: no platform traces, trace destination or tail consumer.
+  assert.deepEqual(result, {
+    observability: {
+      enabled: true,
+      redactQueryString: true,
+      logs: { enabled: true, invocationLogs: true, persist: true },
+    },
+  });
 });

@@ -7,7 +7,7 @@ import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, Effect } from "effect";
 import { apiPathsExpression } from "./src/browser-check.ts";
-import { telemetryBindings } from "./src/telemetry/deployment.ts";
+import { telemetryBindings, workerObservability } from "./src/telemetry/deployment.ts";
 import { retain } from "alchemy/RemovalPolicy";
 import { adopt } from "alchemy/AdoptPolicy";
 import { appHosting, brand, deployment } from "./brand.ts";
@@ -141,6 +141,7 @@ export default Alchemy.Stack(
       },
       workersDev: false,
       compatibility: { date: "2026-09-08" },
+      observability: workerObservability,
     });
     // The public home and legal pages at the zone's apex. Previews share the zone, so only
     // production owns its apex.
@@ -157,6 +158,7 @@ export default Alchemy.Stack(
         domain: { name: brand.zone, redirects: [`www.${brand.zone}`] },
         workersDev: false,
         compatibility: { date: "2026-09-08" },
+        observability: workerObservability,
       });
     const router = yield* Cloudflare.Worker("Router", {
       main: new URL("./src/router.ts", import.meta.url).pathname,
@@ -167,6 +169,7 @@ export default Alchemy.Stack(
       ...(preview === undefined && appHosting.enabled ? { routes: [{ pattern: `*.${appHosting.zone}/*` }] } : {}),
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+      observability: workerObservability,
       env: {
         DASHBOARD_HOST: host,
         TOOLS_SERVICE: api,

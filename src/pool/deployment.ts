@@ -3,7 +3,7 @@ import * as Output from "alchemy/Output";
 import { Config, Effect, Option } from "effect";
 import { fileURLToPath } from "node:url";
 import { poolDatabaseInfrastructure } from "./database.ts";
-import { telemetryBindings } from "../telemetry/deployment.ts";
+import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 
 // Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
 // https://developers.cloudflare.com/containers/concepts/placement/
@@ -31,6 +31,7 @@ export const poolWorker = Effect.gen(function* () {
     workersDev: false,
     compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
     crons: ["*/5 * * * *"],
+    observability: workerObservability,
     env: {
       PoolContainer: image,
       POOL_DATABASE_URL: databaseUrl,
