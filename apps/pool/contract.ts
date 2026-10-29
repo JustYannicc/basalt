@@ -66,6 +66,14 @@ export interface Account {
   readonly freshness: ReadingFreshness;
   /** True when the last attempt to read limits failed, even if older readings remain. */
   readonly readingFailed: boolean;
+  /** A current runtime credential refusal, kept separate from quota exhaustion or routing cooldown. */
+  readonly credentialFailure?: "unauthorized" | "unavailable";
+  /** Home's last collection outcome, without diagnostic messages or response data. */
+  readonly collection?: {
+    readonly status: string | null;
+    readonly errorCode: string | null;
+    readonly lastAttemptAt: string | null;
+  };
   /** ISO time the backend reads it again, or null. */
   readonly nextReadAt: string | null;
   /** The soonest reset across all of the account's windows, or null. */

@@ -96,9 +96,9 @@ test("only a failed reading shows a warning badge, within host limits", () => {
 });
 
 test("pool refusals map to the host's check failures", () => {
-  assert.equal(checkFailure("unauthorized"), "unauthorized");
-  assert.equal(checkFailure("missing"), "unauthorized");
-  assert.equal(checkFailure("not_found"), "unauthorized");
+  assert.equal(checkFailure("unauthorized"), "unavailable");
+  assert.equal(checkFailure("missing"), "rejected");
+  assert.equal(checkFailure("not_found"), "rejected");
   assert.equal(checkFailure("not_owner"), "forbidden");
   assert.equal(checkFailure("busy"), "rate_limited");
   assert.equal(checkFailure("backend_unavailable"), "unavailable");

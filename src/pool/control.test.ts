@@ -5,6 +5,8 @@ import { attributionStorageKey, PoolControl, type ControlStorage } from "./attri
 import { handleControl, HomeClient } from "./control.ts";
 import providers from "./providers.json" with { type: "json" };
 import { signPoolToken } from "./token.ts";
+import { subscriptionFailure } from "../../apps/pool/account-health.ts";
+import type { Account } from "../../apps/pool/contract.ts";
 
 const signingKey = "ab".repeat(32);
 const provider = providers[0]!.id;
@@ -151,12 +153,12 @@ function state(start: SignInStarted): string {
   return (JSON.parse(Buffer.from(start.session.split(".")[1]!, "base64url").toString()) as { state: string }).state;
 }
 interface Options { pool?: string; owner?: boolean; token?: string; body?: unknown; raw?: string; method?: string }
-async function fixture() {
+async function fixture(audience: readonly string[] = []) {
   const home = new FakeHome();
   const storage = new MemoryStorage();
   const productEvents: [string, string][] = [];
   let time = Date.parse("2026-01-01T00:00:00.000Z");
-  const deps = { signingKey, previousSigningKey: undefined as string | undefined, home: home.fetch, now: () => new Date(time),
+  const deps = { signingKey, previousSigningKey: undefined as string | undefined, home: home.fetch, now: () => new Date(time), audience: async () => audience,
     onProductEvent: (event: string, accountId: string) => productEvents.push([event, accountId]) };
   let control = new PoolControl(storage, deps);
   const tokens = new Map<string, string>();
@@ -193,6 +195,84 @@ async function error(response: Response, code: string, status = 400) {
   assert.equal((await response.json() as Row).error, code);
 }
 async function status(response: Response, expected: SignInStatus) { assert.equal(response.status, 200); assert.deepEqual(await response.json(), expected); }
+
+test("an account check forces a scoped Home collection and returns its completed reading", async () => {
+  const f = await fixture();
+  f.home.addFile("checked"); f.home.addGroup("pool-a", 10, ["checked"]);
+  let collected = false;
+  f.home.override = (path, init) => {
+    if (path.endsWith("/quota/collect")) {
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), { credential_ids: ["checked"] });
+      collected = true;
+      return Response.json({ accepted: 1, running: true }, { status: 202 });
+    }
+    if (path.endsWith("/quota/credentials/checked")) return Response.json({
+      credential: { credential_id: "checked" }, windows: [], reset_credits: null,
+      collection: { status: collected ? "success" : "idle", freshness: collected ? "fresh" : "never",
+        observed_at: collected ? f.deps.now().toISOString() : null,
+        last_attempt_at: collected ? f.deps.now().toISOString() : null },
+    });
+    return undefined;
+  };
+  const response = await f.call("/accounts/checked/collect", { method: "POST" });
+  assert.equal(response.status, 200, await response.clone().text());
+  const value = await response.json() as Row;
+  assert.equal(value.id, "checked"); assert.equal(value.freshness, "fresh");
+  assert.equal(collected, true);
+  await error(await f.call("/accounts/other/collect", { method: "POST" }), "not_found", 404);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 1);
+});
+
+test("members may check only their current pool's accounts", async () => {
+  const denied = await fixture();
+  await error(await denied.call("/accounts/a/collect", { method: "POST", owner: false }), "not_owner", 403);
+  assert.equal(denied.home.calls.length, 0);
+  const f = await fixture(["fake-member"]);
+  f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+  f.home.override = (path) => path.endsWith("/quota/credentials/a") ? Response.json({
+    credential: { credential_id: "a" }, windows: [],
+    collection: { status: "success", freshness: "fresh", observed_at: f.deps.now().toISOString() },
+  }) : undefined;
+  assert.equal((await f.call("/accounts/a/collect", { method: "POST", owner: false })).status, 200);
+  await error(await f.call("/accounts/a/collect", { method: "POST", owner: false, pool: "pool-b" }), "not_found", 404);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 0);
+});
+
+test("a failed collection exposes only its known error code, with no diagnostic data", async () => {
+  const f = await fixture();
+  f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+  f.home.override = (path) => path.endsWith("/quota/credentials/a") ? Response.json({
+    credential: { credential_id: "a" }, windows: [],
+    collection: { status: "failed", freshness: "never", last_attempt_at: f.deps.now().toISOString(),
+      error: { code: "UPSTREAM_AUTH_REJECTED", message: "private-provider-response", request_id: "private-id" } },
+  }) : undefined;
+  const response = await f.call("/accounts/a/collect", { method: "POST" });
+  const body = await response.text();
+  assert.equal(response.status, 200); assert.ok(!body.includes("private"));
+  assert.deepEqual((JSON.parse(body) as Row).collection, { status: "failed", errorCode: "UPSTREAM_AUTH_REJECTED", lastAttemptAt: f.deps.now().toISOString() });
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 0);
+});
+
+for (const [name, blocked, upstream, expected] of [["refused refresh", true, 401, "unauthorized"],
+  ["transient refresh", true, 503, "unavailable"], ["quota cooldown", false, 429, null]] as const) {
+  test(`a fresh quota cannot hide a ${name}`, async () => {
+    const f = await fixture();
+    f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+    f.home.files.set("a", { ...f.home.files.get("a"), unavailable: true, status: blocked ? "error" : "active" });
+    f.home.override = (path) => {
+      if (path.endsWith("/quota/credentials/a")) return Response.json({ credential: { credential_id: "a" }, windows: [],
+        collection: { status: "success", freshness: "fresh", observed_at: f.deps.now().toISOString() } });
+      if (path.endsWith("/credentials/a/model-states")) return Response.json({ credential: { credential_id: "a", refresh_blocked: blocked,
+        last_error: { upstream: { status: upstream, body: "private-provider-response" } } } });
+      return undefined;
+    };
+    const response = await f.call("/accounts/a/collect", { method: "POST" });
+    assert.equal(response.status, 200);
+    const body = await response.text(); assert.ok(!body.includes("private"));
+    assert.equal(subscriptionFailure(JSON.parse(body) as Account, f.deps.now().getTime()), expected);
+  });
+}
 
 test("invalid and absent pool tokens never contact Home", async () => {
   const f = await fixture();

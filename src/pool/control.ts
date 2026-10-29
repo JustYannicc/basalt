@@ -16,6 +16,8 @@ import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
 import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
+import type { QuotaCollection } from "./quota-collection.ts";
+import { checkAccount } from "./account-check.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
@@ -30,6 +32,8 @@ export interface HomeDependencies {
   now?: () => Date;
   /** Keep best-effort work alive after a response without holding the attribution queue. */
   defer?: (work: Promise<void>) => void;
+  /** Current pool audience projected by the host's existing access adapter. */
+  audience?: (pool: string) => Promise<readonly string[]>;
 }
 /** Only the operations the routes need. Read-only requests pass null explicitly. */
 export interface ControlAttribution {
@@ -56,6 +60,7 @@ export interface ControlDependencies extends HomeDependencies {
   attribution: ControlAttribution | null;
   client?: HomeClient;
   added?: (ids: string[]) => void;
+  collection?: QuotaCollection;
 }
 export interface Session {
   pool: string;
@@ -433,6 +438,15 @@ async function sessionFor(ctx: RouteContext, opaque = ctx.url.searchParams.get("
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
+  "POST /accounts/:id/collect": async (ctx) => {
+    const caller = text(ctx.request.headers.get(callerHeader));
+    if (!ctx.isOwner && (!caller || !(await ctx.deps.audience?.(ctx.pool))?.includes(caller)))
+      return fail(403, "not_owner", "Only people with access to this pool can check its accounts.");
+    let id: string;
+    try { id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length, -"/collect".length)); }
+    catch { return fail(404, "not_found", "This account does not exist."); }
+    return json(await checkAccount(ctx.home, ctx.client, ctx.deps.collection ?? unavailable(), id, ctx.request.signal));
+  },
   "GET /pool": async ({ home, isOwner }) => json(await home.view(isOwner)),
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
@@ -530,14 +544,16 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
   const url = new URL(request.url);
   const path = url.pathname.slice(base.length);
-  const routePath = /^\/accounts\/[^/]+\/export$/.test(path) ? "/accounts/:id/export"
+  const routePath = /^\/accounts\/[^/]+\/collect$/.test(path) ? "/accounts/:id/collect"
+    : /^\/accounts\/[^/]+\/export$/.test(path) ? "/accounts/:id/export"
     : /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
   const routeKey = `${request.method} ${routePath}`;
   const route = url.pathname.startsWith(`${base}/`) ? routes[routeKey] : undefined;
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
-  if (routeKey !== "GET /pool" && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
-  const isRead = routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
+  const collect = routeKey === "POST /accounts/:id/collect";
+  if (routeKey !== "GET /pool" && !collect && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  const isRead = collect || routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
   return { claims, url, route, routeKey, isOwner, isRead };
 }
 

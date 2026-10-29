@@ -25,11 +25,23 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
       freshness: freshness === "fresh" || freshness === "stale" ? freshness : "never",
       // Partial collections still have usable windows (profile or reset metadata may have failed).
       readingFailed: (collection?.status ?? reading?.collection_status) === "failed",
+      collection: {
+        status: text(collection?.status ?? reading?.collection_status),
+        errorCode: collectionError(collection?.error ?? reading?.error),
+        lastAttemptAt: text(collection?.last_attempt_at ?? reading?.last_attempt_at),
+      },
       nextReadAt: text(collection?.next_probe_at ?? reading?.next_probe_at),
       earliestResetAt: text(reading?.earliest_reset_at),
       bankedResets: bankedResets(raw?.reset_credits),
     };
   }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+function collectionError(value: unknown): string | null {
+  if (!object(value) || !text(value.code)) return null;
+  return ["UPSTREAM_AUTH_REJECTED", "AUTH_TOKEN_UNAVAILABLE", "UPSTREAM_RATE_LIMITED", "UPSTREAM_UNAVAILABLE",
+    "PROVIDER_UNAVAILABLE", "AUTH_RESOLVE_FAILED", "UPSTREAM_RESPONSE_INVALID", "PROVIDER_UNSUPPORTED",
+    "SNAPSHOT_PERSIST_FAILED"].includes(String(value.code)) ? String(value.code) : "UNKNOWN";
 }
 
 function mainAllowance(window: Json, provider: string): boolean {
