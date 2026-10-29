@@ -375,6 +375,15 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-app-query-authorization",
+      "file": "0039-app-query-authorization.patch",
+      "content_sha256": "c1905c1fd28109cbbcf8b7e807ec3078a5e18a18260ca5cb72fa0d8a9844b86f",
+      "kind": "upstream",
+      "upstream_pull_request": 2453,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
