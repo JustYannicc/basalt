@@ -19,7 +19,9 @@ export async function readAccess(request: Request, signingKey: string, previous:
   if (value.action === "audience") {
     if (!Array.isArray(value.pools) || !value.pools.every((pool) => object(pool)
       && text(pool.pool) && text(pool.owner) && text(pool.organization) && typeof pool.name === "string"
-      && Array.isArray(pool.users) && pool.users.every((user) => text(user)))) return unauthorized();
+      && Array.isArray(pool.users) && pool.users.every((user) => text(user))
+      && (pool.authorization === undefined || (pool.authorization === "executor-app-v1"
+        && Array.isArray(pool.managers) && pool.managers.every((user) => text(user)))))) return unauthorized();
     if (new Set(value.pools.map((pool) => pool.pool)).size !== value.pools.length) return unauthorized();
   } else if (value.action === "pool-deleted") {
     if (!text(value.pool)) return unauthorized();

@@ -7,6 +7,8 @@ import { HomeClient } from "./control.ts";
 import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
+import { requirePoolUse } from "./authorization.ts";
+import { failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
@@ -136,6 +138,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
     if (pathname === accessPath) return this.computers.access(request);
+    if (isControlPath(pathname)) {
+      try {
+        await requirePoolUse(request, {
+          signingKey: this.env.POOL_APP_SIGNING_KEY,
+          previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+          permissions: (pool, user) => this.computers.permissions(pool, user),
+        });
+      } catch (error) { return failureResponse(error); }
+    }
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
     if (pathname === summaryPath) return this.usage.handle(request);

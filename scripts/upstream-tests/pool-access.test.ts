@@ -55,6 +55,44 @@ test("shareApp sends signed post-write audiences inside its transaction; worker 
   );
 });
 
+test("native pool handoff follows app groups and keeps management independent of use", async () => {
+  await fixture(({ sql, changes, hook, transaction }) =>
+    Effect.gen(function* () {
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+      yield* sql`insert into hosted_groups (id, organization_id, name) values ('g-native', ${organization}, 'Pool users')`;
+      yield* sql`insert into hosted_group_members values ('g-native', 'm-guest')`;
+      yield* share(sql, "groups", ["g-native"]);
+      const first = changes.at(-1).pools[0];
+      assert.equal(first.authorization, "executor-app-v1");
+      assert.deepEqual(first.users, ["guest"]);
+      assert.deepEqual(first.managers, ["other", "owner"]);
+      yield* transaction(Effect.gen(function* () {
+        yield* sql`delete from hosted_group_members where group_id = 'g-native'`;
+        yield* hook.appAccessChanged({ organization, apps: [pool] });
+      }));
+      assert.deepEqual(changes.at(-1).pools[0].users, []);
+      assert.deepEqual(changes.at(-1).pools[0].managers, ["other", "owner"]);
+    }),
+  );
+});
+
+test("native pool membership removal omits use and management without changing the stored audience", async () => {
+  await fixture(({ sql, changes, hook }) =>
+    Effect.gen(function* () {
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+      yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
+      const before = yield* sql`select * from hosted_app_access where id = ${pool}`;
+      yield* hook.memberRemoving({ organization, member: "m-other" });
+      assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "owner"]);
+      assert.deepEqual(changes.at(-1).pools[0].managers, ["owner"]);
+      assert.deepEqual(yield* sql`select * from hosted_app_access where id = ${pool}`, before);
+      assert.equal((yield* sql`select * from member where id = 'm-other'`).length, 1);
+    }),
+  );
+});
+
 test("member removal projects the audience without its membership and refuses a failed acknowledgement", async () => {
   const { organizationAccessHooks } = await load(
     "apps/hosted/cloud/src/implementation/access-hooks.ts",

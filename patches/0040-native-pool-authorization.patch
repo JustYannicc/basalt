@@ -1,0 +1,212 @@
+diff --git a/apps/hosted/server/src/implementation/app-policy.ts b/apps/hosted/server/src/implementation/app-policy.ts
+new file mode 100644
+index 0000000..d223c5d
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/app-policy.ts
+@@ -0,0 +1,33 @@
++import { AppId } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++import { GroupId } from "../contracts/groups.ts";
++import { Principal } from "../contracts/auth.ts";
++import { AccessRevision, AppAccess, type AppAudience } from "../contracts/resource-access.ts";
++import type { ResourceAuthority } from "./resource-policy.ts";
++
++export const AppPolicy = Schema.Struct({
++  app: AppId,
++  creator: Schema.NullOr(Principal.fields.userId),
++  audience: Schema.Literals(["private", "groups", "everyone"]),
++  revision: AccessRevision,
++  groups: Schema.Array(GroupId),
++  granted: Schema.Boolean,
++});
++
++export const appAccessOf = (found: typeof AppPolicy.Type, actor: ResourceAuthority) => {
++  const audience: typeof AppAudience.Type =
++    found.audience === "groups"
++      ? { kind: "groups", groups: found.groups }
++      : { kind: found.audience };
++  return {
++    app: found.app,
++    creator: found.creator,
++    audience,
++    revision: found.revision,
++    canManage: actor.role !== "member" || found.creator === actor.user,
++    canUse:
++      found.audience === "private"
++        ? found.creator === actor.user
++        : found.audience === "everyone" || found.granted,
++  } satisfies typeof AppAccess.Type;
++};
+diff --git a/apps/hosted/server/src/implementation/application-audience.ts b/apps/hosted/server/src/implementation/application-audience.ts
+new file mode 100644
+index 0000000..3b28427
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/application-audience.ts
+@@ -0,0 +1,55 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { Principal } from "../contracts/auth.ts";
++import { GroupMemberId } from "../contracts/groups.ts";
++import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
++import { AppPolicy, appAccessOf } from "./app-policy.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++const MemberPolicy = Schema.Struct({
++  ...AppPolicy.fields,
++  member: GroupMemberId,
++  user: Principal.fields.userId,
++  role: OrganizationRole,
++});
++
++/** External access projections use the same decision as an authenticated app request. */
++export const applicationAudiences = (
++  organization: OrganizationId,
++  apps: readonly AppId[],
++  removing?: GroupMemberId,
++) =>
++  Effect.gen(function* () {
++    if (apps.length === 0) return [];
++    const sql = yield* policyDatabase;
++    const rows = yield* sql`select p.id as app, p.creator_id as creator, p.audience, p.revision,
++      array(select g.group_id from hosted_app_groups g where g.app_id = p.id order by g.group_id) as groups,
++      m.id as member, m."userId" as "user", m.role,
++      exists(select 1 from hosted_app_groups g
++        join hosted_group_members gm on gm.group_id = g.group_id
++        where g.app_id = p.id and gm.member_id = m.id) as granted
++      from hosted_app_access p
++      join member m on m."organizationId" = p.organization_id
++      where p.organization_id = ${organization} and ${sql.in("p.id", apps)}
++        and m.id is distinct from ${removing ?? null}
++      order by p.id, m."userId"`;
++    const policies = yield* Schema.decodeUnknownEffect(Schema.Array(MemberPolicy))(rows);
++    return apps.map((app) => {
++      const users: string[] = [];
++      const managers: string[] = [];
++      for (const policy of policies) {
++        if (policy.app !== app) continue;
++        const access = appAccessOf(policy, {
++          organization,
++          user: policy.user,
++          member: policy.member,
++          role: policy.role,
++        });
++        if (access.canUse) users.push(policy.user);
++        if (access.canManage) managers.push(policy.user);
++      }
++      return { app, users, managers };
++    });
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
+diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
+index 86e037d..2067d84 100644
+--- a/apps/hosted/server/src/implementation/pool-access-hook.ts
++++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
+@@ -1,16 +1,20 @@
+ /** Synchronize pool audiences before an access change becomes authoritative. */
+-import { StorageError, type HostAccessLifecycle } from "@executor-js/sdk/core";
++import { AppId, StorageError, type HostAccessLifecycle } from "@executor-js/sdk/core";
+ import { Clock, Effect, Option, Redacted, Schedule, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+ import { accessPath, accessPrefix, accessTtl, type AccessChange } from "./pool-access-contract.ts";
+ import { signEnvelope } from "./pool-token.ts";
++import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
++import { OrganizationId } from "../contracts/organization.ts";
++import { applicationAudiences } from "./application-audience.ts";
+ 
+ const Pool = Schema.Struct({
+-  pool: Schema.String,
++  pool: AppId,
+   owner: Schema.String,
+   organization: Schema.String,
+   name: Schema.String,
++  authorization: Schema.NullOr(Schema.String),
+   users: Schema.Array(Schema.String),
+ });
+ 
+@@ -56,7 +60,8 @@ export const poolAccessLifecycle = (
+       const sql = yield* SqlClient.SqlClient;
+       // JSON expands only this organization's recorded pools; deleted apps stay deleted.
+       const rows = yield* sql`select app.id as pool, entry.key as owner, o.id as organization,
+-        app.name, array(select distinct users.id from (
++        app.name, entry.value ->> 'authorization' as authorization,
++        array(select distinct users.id from (
+           select entry.key as id union select m."userId" from member m
+           where m."organizationId" = o.id
+           and ((access.audience = 'private' and access.creator_id = m."userId")
+@@ -71,7 +76,29 @@ export const poolAccessLifecycle = (
+         join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+         join hosted_app_access access on access.id = app.id and access.organization_id = o.id
+         where o.id = ${organization} ${apps === undefined ? sql`` : sql`and ${sql.in("app.id", apps)}`}`;
+-      return yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++      const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++      const organizationId = yield* Schema.decodeUnknownEffect(OrganizationId)(organization);
++      const member =
++        removing === undefined
++          ? undefined
++          : yield* Schema.decodeUnknownEffect(GroupMemberId)(removing);
++      const access = yield* applicationAudiences(
++        organizationId,
++        found.filter((pool) => pool.authorization === "executor-app-v1").map((pool) => pool.pool),
++        member,
++      ).pipe(Effect.provideService(GroupDatabase, Effect.succeed(sql)));
++      return found.map((pool) => {
++        const { authorization, ...legacy } = pool;
++        // Existing grants change only after the reviewed inventory authorizes this pool's handoff.
++        if (authorization !== "executor-app-v1") return legacy;
++        const policy = access.find((entry) => entry.app === pool.pool);
++        return {
++          ...legacy,
++          users: policy?.users ?? [],
++          managers: policy?.managers ?? [],
++          authorization,
++        };
++      });
+     }).pipe(Effect.catch(() => new StorageError()));
+ 
+   const audience = (organization: string, apps?: readonly string[], removing?: string) =>
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index 55cd660..3819d75 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -27,6 +27,7 @@ import {
+   type AppAudience,
+   type SharedAudience,
+ } from "../contracts/resource-access.ts";
++import { AppPolicy, appAccessOf } from "./app-policy.ts";
+ 
+ /** A concrete client remains owned by this invocation (Cloud) or host process (self-host). */
+ export const policyDatabase = Effect.flatten(GroupDatabase).pipe(
+@@ -69,31 +70,6 @@ export const lockCurrentActor = Effect.gen(function* () {
+   return yield* membership((yield* CurrentOrganization).organization, yield* CurrentUserId, true);
+ });
+ 
+-const AppPolicy = Schema.Struct({
+-  app: AppId,
+-  creator: Schema.NullOr(Principal.fields.userId),
+-  audience: Schema.Literals(["private", "groups", "everyone"]),
+-  revision: AccessRevision,
+-  groups: Schema.Array(GroupId),
+-  granted: Schema.Boolean,
+-});
+-const appAccessOf = (found: typeof AppPolicy.Type, actor: ResourceAuthority) => {
+-  const audience: typeof AppAudience.Type =
+-    found.audience === "groups"
+-      ? { kind: "groups", groups: found.groups }
+-      : { kind: found.audience };
+-  return {
+-    app: found.app,
+-    creator: found.creator,
+-    audience,
+-    revision: found.revision,
+-    canManage: actor.role !== "member" || found.creator === actor.user,
+-    canUse:
+-      found.audience === "private"
+-        ? found.creator === actor.user
+-        : found.audience === "everyone" || found.granted,
+-  } satisfies typeof AppAccess.Type;
+-};
+ /** Resolve app policies in one read, retaining tenant and group checks for every row. */
+ export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
+   Effect.gen(function* () {

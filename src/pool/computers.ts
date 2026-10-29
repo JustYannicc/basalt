@@ -88,12 +88,15 @@ export class Computers {
       && computer.user === intent.user && computer.removalPending))
       return fail(503, "backend_unavailable", "Removing access from this computer didn't finish. Ask the owner to retry, or try again later.");
   }
-  /** Everyone who can use the pool, owner included, as the directory last heard it. */
+  /** The host's use audience. Native management roles do not add use access. */
   async audience(pool: string): Promise<string[]> {
     return this.run(async () => {
       const entry = (await PoolDirectory.load(this.deps.storage, this.now())).entry(pool);
-      return entry ? [...new Set([entry.owner, ...entry.users])] : [];
+      return entry ? [...new Set(entry.authorization === "executor-app-v1" ? entry.users : [entry.owner, ...entry.users])] : [];
     });
+  }
+  async permissions(pool: string, user: string) {
+    return this.run(async () => (await PoolDirectory.load(this.deps.storage, this.now())).permissions(pool, user));
   }
   async access(request: Request): Promise<Response> {
     try {

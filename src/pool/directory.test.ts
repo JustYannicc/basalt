@@ -194,3 +194,52 @@ test("provisioning continues after one failure and counts only successful creati
   assert.deepEqual((await entry(f)).pending, ["failed-member"]);
   assert.deepEqual((await entry(f)).provisioned, ["working-member"]);
 });
+
+test("native audiences keep pool choices stable and never turn management into use", async () => {
+  const f = fixture();
+  const change = { action: "audience" as const, pools: [{ ...pool, users: [member],
+    authorization: "executor-app-v1" as const, managers: [owner] }] };
+  assert.equal((await f.access(change)).status, 200);
+  assert.equal((await f.context(owner)).status, 403);
+  const setup = await f.intent(member);
+  const choices = await f.action("computers", member, setup);
+  assert.equal(choices.status, 200);
+  assert.deepEqual((await choices.json() as { pools: unknown }).pools,
+    [{ id: pool.pool, name: pool.name, mine: false }]);
+  const directory = await PoolDirectory.load(f.storage, f.now());
+  assert.deepEqual(directory.permissions(pool.pool, owner), { canUse: false, canManage: true });
+  assert.deepEqual(directory.permissions(pool.pool, member), { canUse: true, canManage: false });
+  f.advance(accessGrace + setupTtl + 1);
+  await f.expire();
+  f.restart();
+  assert.equal((await f.context(owner)).status, 403);
+  assert.equal((await f.context(member)).status, 200);
+});
+
+test("a retained audience writer can revoke native use but cannot restore a denied grant", async () => {
+  const f = fixture();
+  assert.equal((await f.access({ action: "audience", pools: [{ ...pool, users: [member],
+    authorization: "executor-app-v1", managers: [owner] }] })).status, 200);
+  f.advance(1);
+  assert.equal((await f.access(audience([owner, member, "new-person"]))).status, 200);
+  assert.deepEqual((await entry(f)).users, [member]);
+  assert.equal((await f.context(owner)).status, 403);
+  assert.equal((await f.context("new-person")).status, 403);
+  f.advance(1);
+  assert.equal((await f.access(audience([owner]))).status, 200);
+  f.restart();
+  assert.deepEqual((await entry(f)).users, []);
+  assert.equal((await f.context(member)).status, 403);
+});
+
+test("native pool deletion stays denied after setup tombstones expire", async () => {
+  const f = fixture();
+  assert.equal((await f.access({ action: "audience", pools: [{ ...pool,
+    authorization: "executor-app-v1", managers: [owner] }] })).status, 200);
+  assert.equal((await f.access({ action: "pool-deleted", pool: pool.pool })).status, 200);
+  f.advance(accessGrace + setupTtl + 1);
+  await f.expire();
+  f.restart();
+  assert.equal((await f.context(owner)).status, 403);
+  assert.equal((await f.context(member)).status, 403);
+});
