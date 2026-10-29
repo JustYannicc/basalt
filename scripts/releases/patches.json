@@ -316,7 +316,7 @@
     {
       "identity": "executor-instant-navigation",
       "file": "0034-instant-navigation.patch",
-      "content_sha256": "318f44432951f021b390e24a38658d7605dc75fe4251ef31862b77e4b8c85273",
+      "content_sha256": "85fcdde2c06d28ffe063020c881d0b32ee65fe11cf976471b67a91bc806822ee",
       "kind": "upstream",
       "upstream_pull_request": 2437,
       "database_sensitive": false,
@@ -328,6 +328,15 @@
       "content_sha256": "198807d457e3f14605ec13ce09adeecc79afaae2642106fca76508cb4989da59",
       "kind": "upstream",
       "upstream_pull_request": 2439,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-redacted-worker-logs",
+      "file": "0036-redacted-worker-logs.patch",
+      "content_sha256": "a76d1c62982f4005dd29f0f1719ed0dd003d93ae928fe0e88fcaab19c44190e7",
+      "kind": "upstream",
+      "upstream_pull_request": 2446,
       "database_sensitive": false,
       "workflow_sensitive": false
     },

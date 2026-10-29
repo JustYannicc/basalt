@@ -1,0 +1,116 @@
+diff --git a/apps/hosted/cloud/src/edge.ts b/apps/hosted/cloud/src/edge.ts
+index ee4cfb8..8df62e5 100644
+--- a/apps/hosted/cloud/src/edge.ts
++++ b/apps/hosted/cloud/src/edge.ts
+@@ -15,6 +15,7 @@ import { Marketing } from "./infrastructure/marketing-worker.ts";
+ import { Edge } from "./infrastructure/edge-worker.ts";
+ import { testStageEdgeRoutes } from "./infrastructure/role-hosts.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
++import { platformObservability } from "./infrastructure/telemetry.ts";
+ 
+ /** The stage's telemetry paths (`site-telemetry.ts`), which v1 lists for production. */
+ const SiteTelemetry = Schema.fromJsonString(
+@@ -42,6 +43,7 @@ export default Edge.make(
+         (yield* sentryBindings).errorTunnel,
+       ),
+       ...(yield* testStageEdgeRoutes),
++      ...(yield* platformObservability),
+     };
+   }),
+   Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+index b292743..c89c57a 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-outbound.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
+@@ -14,6 +14,7 @@ import {
+ } from "@executor-js/sdk/workerd";
+ import { type AppEgressFailed, egressFailure } from "../implementation/app-egress.ts";
+ import { cloudSentry, reportCloudFailure } from "../implementation/error-reporting.ts";
++import { platformObservability } from "./telemetry.ts";
+ 
+ export const AppOutbound = Effect.gen(function* () {
+   if (globalThis.__ALCHEMY_RUNTIME__) return yield* Cloudflare.Worker.ref("AppOutbound");
+@@ -31,6 +32,7 @@ export const AppOutbound = Effect.gen(function* () {
+         return fetch(request);
+       }
+     };`,
++    ...(yield* platformObservability),
+   });
+ });
+ 
+diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+index eedea4a..2799d3b 100644
+--- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
++++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+@@ -126,6 +126,22 @@ export const telemetryResources = Effect.gen(function* () {
+   return Option.some({ names, traces, logs, metrics, ingest });
+ });
+ 
++/**
++ * Native invocation logs with query strings removed: request URLs can carry unsubscribe links,
++ * sign-in codes and the searches apps send through their outbound Worker.
++ */
++const platformLogs = {
++  enabled: true,
++  redactQueryString: true,
++  logs: { enabled: true, invocationLogs: true, persist: true },
++};
++
++/** Props for a Worker that keeps only its native logs, with no tail consumer or trace export. */
++export const platformObservability = Effect.gen(function* () {
++  if ((yield* AlchemyContext).dev) return {};
++  return { observability: platformLogs };
++});
++
+ /**
+  * Export invocation summaries and supplementary platform spans, joined by Ray ID.
+  * Tail delivery supplies timings independently of native trace sampling.
+@@ -138,10 +154,10 @@ export const cloudObservability = Effect.gen(function* () {
+   if (direct.configured) {
+     // Cloudflare platform spans may contain raw URLs and addresses. Direct Sentry mode exports
+     // only the Effect spans after packages/telemetry/src/isolate.ts applies strict allowlisting.
+-    return {};
++    return { observability: platformLogs };
+   }
+   const resources = yield* telemetryResources;
+-  if (Option.isNone(resources)) return {};
++  if (Option.isNone(resources)) return { observability: platformLogs };
+   const { names, traces, ingest } = resources.value;
+   const destination = yield* Cloudflare.Workers.ObservabilityDestination("PlatformTraces", {
+     name: `executor-next-${stage}-platform-traces`,
+@@ -155,9 +171,7 @@ export const cloudObservability = Effect.gen(function* () {
+   return {
+     tailConsumers: [yield* InvocationTelemetry],
+     observability: {
+-      enabled: true,
+-      redactQueryString: true,
+-      logs: { enabled: true, invocationLogs: true, persist: true },
++      ...platformLogs,
+       traces: {
+         enabled: true,
+         headSamplingRate: 1,
+diff --git a/apps/hosted/cloud/src/invocation-telemetry.ts b/apps/hosted/cloud/src/invocation-telemetry.ts
+index 112e2ce..f10ffef 100644
+--- a/apps/hosted/cloud/src/invocation-telemetry.ts
++++ b/apps/hosted/cloud/src/invocation-telemetry.ts
+@@ -2,7 +2,11 @@
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import { Effect } from "effect";
+ import { InvocationTelemetry } from "./infrastructure/invocation-telemetry.ts";
+-import { cloudTelemetry, telemetryBindings } from "./infrastructure/telemetry.ts";
++import {
++  cloudTelemetry,
++  platformObservability,
++  telemetryBindings,
++} from "./infrastructure/telemetry.ts";
+ import { recordInvocations } from "./implementation/invocation-summary.ts";
+ 
+ export default InvocationTelemetry.make(
+@@ -14,6 +18,7 @@ export default InvocationTelemetry.make(
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+       env: yield* telemetryBindings,
+       // No tail consumer or native trace export here: the receiver must not observe itself.
++      ...(yield* platformObservability),
+     };
+   }),
+   Effect.gen(function* () {
