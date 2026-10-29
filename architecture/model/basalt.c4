@@ -38,6 +38,12 @@ model {
       metadata { code ".upstream/apps/hosted/cloud" }
     }
 
+    site = module "Public site" {
+      #basalt #v1
+      description "Home, privacy, terms and legal notice at the zone apex (signalbox.run), rendered from the brand configuration in a separate Worker. Static pages with no scripts, forms or third-party requests."
+      metadata { code "src/site" }
+    }
+
     catalog = module "Connector catalog" {
       #basalt #v1
       description "Read-only feed in a separate Worker. Merges the official catalog with published additions. No person credentials. Carried apps pin the prepared host framework and declare each operation's approval. Messaging app source combines frozen public source, a contributed personal user-token patch, and a separate exact host-framework pin. Its registration manifest, app grant and hosted client request matching user scopes and omit the tokens.basic scope rejected at registration. Its queries never require approval; mutations always require approval, including side effects exposed as GET. Community publication remains on hold until the owner selects a publisher scope and the chosen host supports the strict nested-grant option and passes its behavior checks. It substitutes trusted tenant configuration only when tenant and hosted OAuth client settings are complete. The visual collaboration package requests only board read/write scopes and excludes organization and team administration tools. Personal account permissions still apply. Sources stay outside the tools API Worker."
@@ -163,12 +169,17 @@ model {
   basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
   basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
   basalt.catalog -[sync]-> basalt.brandConfig "read connector copy brand"
+  basalt.site -[sync]-> basalt.brandConfig "read site copy, operator and links"
+  basalt.site -[sync]-> basalt.clientAssets "serve brand logo and fonts"
+  basalt.site -[sync]-> basalt.router "link Sign in to the app host"
+  basalt.deployment -[sync]-> basalt.site "provision apex site Worker"
   basalt.deployment -[sync]-> basalt.catalog "provision read-only feed Worker"
   basalt.build -[sync]-> basalt.catalog "read catalog configuration"
   basalt.router -[sync]-> basalt.brandConfig "read brand configuration"
   basalt.deployment -[sync]-> basalt.brandConfig "read deployment configuration"
   basalt.deployment -[sync]-> basalt.telemetry "resolve optional telemetry deployment settings"
   basalt.build -[sync]-> basalt.brandConfig "read build configuration"
+  basalt.build -[sync]-> basalt.site "render the home page volcano to the page's timing"
   basalt.build -[sync]-> basalt.deployment "read deployment settings"
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
   basalt.releaseUpdates -[sync]-> basalt.pool "read pool control contract"
