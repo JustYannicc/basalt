@@ -312,6 +312,15 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-instant-navigation",
+      "file": "0034-instant-navigation.patch",
+      "content_sha256": "318f44432951f021b390e24a38658d7605dc75fe4251ef31862b77e4b8c85273",
+      "kind": "upstream",
+      "upstream_pull_request": 2437,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ]
 }

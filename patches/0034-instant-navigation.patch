@@ -1,0 +1,569 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/router.tsx b/apps/hosted/cloud/web/src/implementation/router.tsx
+index ca287ac..3fc97d0 100644
+--- a/apps/hosted/cloud/web/src/implementation/router.tsx
++++ b/apps/hosted/cloud/web/src/implementation/router.tsx
+@@ -1,6 +1,7 @@
+ import { CloudPagePending } from "./components/page-pending.tsx";
+ import { PageError } from "@executor-js/hosted-web/route-fallbacks";
+ import { dashboardRegistry } from "@executor-js/dashboard-start/registry";
++import { organizationRouteReads } from "@executor-js/hosted-web/organization";
+ import { createRouter } from "@tanstack/react-router";
+ import { cloudServerValues, serverDocument } from "./document.ts";
+ import { routeTree } from "./routeTree.gen.ts";
+@@ -16,7 +17,7 @@ export const getRouter = () => {
+       routeTree,
+       defaultPreload: "intent",
+       defaultPendingComponent: CloudPagePending,
+-      defaultPendingMs: 100,
++      defaultPendingMs: 0,
+       defaultPendingMinMs: 0,
+       defaultErrorComponent: PageError,
+       scrollRestoration: true,
+@@ -27,6 +28,7 @@ export const getRouter = () => {
+         </Registry>
+       ),
+     }),
++    organizationRouteReads,
+   );
+ };
+ 
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+index a41ef72..09194f1 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+@@ -1,10 +1,11 @@
+ import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { createFileRoute } from "@tanstack/react-router";
+-import { AccountsPage } from "@executor-js/hosted-web/pages/accounts";
++import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
+ 
+ /** Hosted account inventory. */
+ export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
+   validateSearch: parseAccountsSearch,
++  staticData: { organizationReads: accountsPageReads },
+   component: Page,
+ });
+ 
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+index 3244f94..42e7e89 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+@@ -1,5 +1,6 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { ApprovalsPage } from "@executor-js/hosted-web/pages/approvals";
++import { ApprovalsPage, approvalsPageReads } from "@executor-js/hosted-web/pages/approvals";
+ export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
+   component: ApprovalsPage,
++  staticData: { organizationReads: approvalsPageReads },
+ });
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx
+index ca6700c..cfd609f 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.connect.tsx
+@@ -1,4 +1,7 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { ConnectPage } from "@executor-js/hosted-web/pages/connect";
++import { ConnectPage, connectPageReads } from "@executor-js/hosted-web/pages/connect";
+ 
+-export const Route = createFileRoute("/org/$organizationSlug/connect")({ component: ConnectPage });
++export const Route = createFileRoute("/org/$organizationSlug/connect")({
++  component: ConnectPage,
++  staticData: { organizationReads: connectPageReads },
++});
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
+index 23a0519..56905d4 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
+@@ -1,5 +1,8 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { GroupsPage } from "@executor-js/hosted-web/pages/groups";
++import { GroupsPage, groupsPageReads } from "@executor-js/hosted-web/pages/groups";
+ 
+ /** Group directory shared by hosted products. */
+-export const Route = createFileRoute("/org/$organizationSlug/groups/")({ component: GroupsPage });
++export const Route = createFileRoute("/org/$organizationSlug/groups/")({
++  component: GroupsPage,
++  staticData: { organizationReads: groupsPageReads },
++});
+diff --git a/apps/hosted/self-host/web/src/implementation/router.tsx b/apps/hosted/self-host/web/src/implementation/router.tsx
+index f91cacf..600e14a 100644
+--- a/apps/hosted/self-host/web/src/implementation/router.tsx
++++ b/apps/hosted/self-host/web/src/implementation/router.tsx
+@@ -2,6 +2,7 @@ import { PagePending } from "@executor-js/hosted-web/page-pending";
+ import { PageError } from "@executor-js/hosted-web/route-fallbacks";
+ import { hostedServerValues } from "@executor-js/hosted-web/document";
+ import { dashboardRegistry } from "@executor-js/dashboard-start/registry";
++import { organizationRouteReads } from "@executor-js/hosted-web/organization";
+ import { createRouter } from "@tanstack/react-router";
+ import { serverDocument } from "./document.ts";
+ import { signInInitialValues } from "../contracts/auth.ts";
+@@ -19,13 +20,14 @@ export const getRouter = () => {
+       routeTree,
+       defaultPreload: "intent",
+       defaultPendingComponent: PagePending,
+-      defaultPendingMs: 100,
++      defaultPendingMs: 0,
+       defaultPendingMinMs: 0,
+       defaultErrorComponent: PageError,
+       scrollRestoration: true,
+       scrollToTopSelectors: ["main"],
+       Wrap,
+     }),
++    organizationRouteReads,
+   );
+ };
+ 
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+index a41ef72..09194f1 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
+@@ -1,10 +1,11 @@
+ import { parseAccountsSearch } from "@executor-js/hosted-web/contracts/navigation";
+ import { createFileRoute } from "@tanstack/react-router";
+-import { AccountsPage } from "@executor-js/hosted-web/pages/accounts";
++import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
+ 
+ /** Hosted account inventory. */
+ export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
+   validateSearch: parseAccountsSearch,
++  staticData: { organizationReads: accountsPageReads },
+   component: Page,
+ });
+ 
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+index 3244f94..42e7e89 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
+@@ -1,5 +1,6 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { ApprovalsPage } from "@executor-js/hosted-web/pages/approvals";
++import { ApprovalsPage, approvalsPageReads } from "@executor-js/hosted-web/pages/approvals";
+ export const Route = createFileRoute("/org/$organizationSlug/approvals/")({
+   component: ApprovalsPage,
++  staticData: { organizationReads: approvalsPageReads },
+ });
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx
+index ca6700c..cfd609f 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.connect.tsx
+@@ -1,4 +1,7 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { ConnectPage } from "@executor-js/hosted-web/pages/connect";
++import { ConnectPage, connectPageReads } from "@executor-js/hosted-web/pages/connect";
+ 
+-export const Route = createFileRoute("/org/$organizationSlug/connect")({ component: ConnectPage });
++export const Route = createFileRoute("/org/$organizationSlug/connect")({
++  component: ConnectPage,
++  staticData: { organizationReads: connectPageReads },
++});
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
+index 23a0519..56905d4 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.groups.index.tsx
+@@ -1,5 +1,8 @@
+ import { createFileRoute } from "@tanstack/react-router";
+-import { GroupsPage } from "@executor-js/hosted-web/pages/groups";
++import { GroupsPage, groupsPageReads } from "@executor-js/hosted-web/pages/groups";
+ 
+ /** Group directory shared by hosted products. */
+-export const Route = createFileRoute("/org/$organizationSlug/groups/")({ component: GroupsPage });
++export const Route = createFileRoute("/org/$organizationSlug/groups/")({
++  component: GroupsPage,
++  staticData: { organizationReads: groupsPageReads },
++});
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+index a861a5c..8e3cfd5 100644
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -1,5 +1,5 @@
+ import { usePreload } from "@executor-js/ui/dashboard/context";
+-import { useGuardedPreload } from "@executor-js/dashboard-start/registry";
++import { type RouteReads, useGuardedPreload } from "@executor-js/dashboard-start/registry";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+ import {
+   OrganizationSlug,
+@@ -8,7 +8,7 @@ import {
+   organizationSlugMaxLength,
+ } from "@executor-js/hosted-server/organization";
+ import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
+-import { type Atom, AsyncResult } from "effect/reactivity";
++import { Atom, AsyncResult } from "effect/reactivity";
+ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
+ import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+ import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
+@@ -255,17 +255,42 @@ function ResumeOrganization({
+   );
+ }
+ 
++/** The reference the mounted organization boundary keys its reads by, for reads started early. */
++const queryReferenceAtom = Atom.make<OrganizationReference | undefined>(undefined).pipe(
++  Atom.keepAlive,
++);
++
++/**
++ * Reads stay keyed by the retained reference while the route's reference names the same verified
++ * organization, such as the slug a resumed ID is rewritten to; any other destination uses its own.
++ */
++const queryReference = (
++  route: OrganizationReference,
++  retained: OrganizationReference | undefined,
++  target: (reference: OrganizationReference) => OrganizationId | undefined,
++) => {
++  if (retained === undefined || retained === route) return route;
++  const retainedTarget = target(retained);
++  return retainedTarget !== undefined && retainedTarget === target(route) ? retained : route;
++};
++
+ /** Keep query keys unchanged when verified aliases identify the same organization. */
+ function useOrganizationQueryReference(routeReference: OrganizationReference) {
+   const [retained, setRetained] = useState(routeReference);
+   const retainedTarget = useAtomValue(organizationTargetAtom(retained));
+   const routeTarget = useAtomValue(organizationTargetAtom(routeReference));
+-  const sameOrganization =
+-    routeReference === retained || (retainedTarget !== undefined && retainedTarget === routeTarget);
+-  const reference = sameOrganization ? retained : routeReference;
++  const reference = queryReference(routeReference, retained, (candidate) =>
++    candidate === retained ? retainedTarget : routeTarget,
++  );
+   // A different or unknown destination resets before children render. A canonical
+   // URL replacement keeps the existing atoms and their in-flight requests.
+   if (reference !== retained) setRetained(reference);
++  const setQueryReference = useAtomSet(queryReferenceAtom);
++  // A boundary mounted later starts from its URL again, so the mirror lasts only as long as this one.
++  useEffect(() => {
++    setQueryReference(reference);
++    return () => setQueryReference(undefined);
++  }, [reference, setQueryReference]);
+   return reference;
+ }
+ 
+@@ -288,6 +313,21 @@ declare module "@tanstack/react-router" {
+   }
+ }
+ 
++/** The reads an organization page declares, for the router to start ahead of its render. */
++export const organizationRouteReads: RouteReads = ({ staticData, params }, get) => {
++  if (staticData.organizationReads === undefined) return [];
++  return Option.match(Schema.decodeUnknownOption(OrganizationReference)(params.organizationSlug), {
++    onNone: () => [],
++    onSome: (route) =>
++      staticData.organizationReads?.(
++        queryReference(route, get(queryReferenceAtom), (reference) =>
++          get(organizationTargetAtom(reference)),
++        ),
++        params,
++      ) ?? [],
++  });
++};
++
+ /** The API refused this user the organization, as opposed to failing to answer. */
+ const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
+   AsyncResult.isFailure(access) &&
+diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
+index 2a3ff58..39b330e 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
+@@ -12,9 +12,19 @@ import { Button } from "@executor-js/ui/components/button";
+ import { Link } from "@tanstack/react-router";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+-import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
++import {
++  type OrganizationPageReads,
++  useOrganizationDetails,
++  useOrganizationRoute,
++} from "../components/organization.tsx";
+ import { OAuthClientsDialog } from "./oauth-clients.tsx";
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
++
++/** The organization's account directory. */
++export const accountsPageReads: OrganizationPageReads = (organization) => [
++  resourceDirectoryAtom(organization),
++];
++
+ /**
+  * Personal and shared credentials use one list. Administrators also manage the organization's
+  * OAuth clients from here, since those clients only exist to connect accounts.
+diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
+index cc100f2..0dc8705 100644
+--- a/apps/hosted/web/src/implementation/pages/approvals.tsx
++++ b/apps/hosted/web/src/implementation/pages/approvals.tsx
+@@ -3,8 +3,14 @@ import { ApprovalsPage as SharedApprovalsPage } from "@executor-js/ui/dashboard/
+ import { BrowserApprovalCard } from "@executor-js/ui/dashboard/browser-approval";
+ import { pendingApprovalsAtom, scheduledReviewAtoms } from "../../contracts/schedules.ts";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+-import { useOrganizationRoute } from "../components/organization.tsx";
++import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { ScheduledApprovalFrame } from "../components/page-pending.tsx";
++
++/** Runs waiting for a decision. */
++export const approvalsPageReads: OrganizationPageReads = (organization) => [
++  pendingApprovalsAtom(organization),
++];
++
+ /** Pending runs are reviewed by a signed-in human through the product's normal auth boundary. */
+ export function ApprovalsPage() {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
+index 8f4b598..c4db6c9 100644
+--- a/apps/hosted/web/src/implementation/pages/connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect.tsx
+@@ -7,7 +7,7 @@ import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
+ import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { productServerName } from "@executor-js/utils/product-brand";
+-import { useOrganizationRoute } from "../components/organization.tsx";
++import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ import { connectionToolListAtom } from "../../contracts/apps.ts";
+@@ -90,6 +90,13 @@ function ComputerSetup({ href }: { readonly href: string }) {
+   );
+ }
+ 
++/** Installed apps, MCP connections and connected agents. */
++export const connectPageReads: OrganizationPageReads = (organization) => [
++  resourceInventoryAtom(organization),
++  mcpConnectionsAtom(organization),
++  mcpAgentsAtom(organization),
++];
++
+ /** The member's full-access URL, scoped connections and connected agents for this organization. */
+ export function ConnectPage() {
+   const origins = useResourceOrigins();
+diff --git a/apps/hosted/web/src/implementation/pages/groups.tsx b/apps/hosted/web/src/implementation/pages/groups.tsx
+index dfbede9..9cd3d11 100644
+--- a/apps/hosted/web/src/implementation/pages/groups.tsx
++++ b/apps/hosted/web/src/implementation/pages/groups.tsx
+@@ -26,7 +26,7 @@ import {
+ } from "@executor-js/ui/components/dialog";
+ import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+ import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
+-import { useOrganizationRoute } from "../components/organization.tsx";
++import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/groups.ts";
+@@ -36,6 +36,9 @@ import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+ 
++/** The organization's groups. */
++export const groupsPageReads: OrganizationPageReads = (organization) => [groupsAtom(organization)];
++
+ /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
+ export function GroupsPage({ id }: { readonly id?: string }) {
+   const { organization } = useOrganizationRoute();
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 07066aa..6eeae66 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -4694,6 +4694,16 @@ export const scenarios = plan({
+       local: na("This journey checks hosted app metadata requests."),
+     },
+   },
++  navigationIntentReads: {
++    fixtures: "actors",
++    file: "navigation-intent.spec.ts",
++    title: "Hovering an app link reads the app before the click, and opening it reuses that read",
++    targets: {
++      "self-host": scheduled,
++      cloud: sourceStorageCloud,
++      local: na("Local pages are not organization routes, which declare these reads."),
++    },
++  },
+   organizationIcon: {
+     fixtures: "actors",
+     file: "organization-icon.spec.ts",
+diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
+new file mode 100644
+index 0000000..ce4601c
+--- /dev/null
++++ b/e2e/tests/navigation-intent.spec.ts
+@@ -0,0 +1,97 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import type { Page, Request } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++import { appsManifest } from "../support/apps-release.ts";
++
++/** Whether a request reads this app's record, batched with other reads or on its own. */
++const readsApp = (request: Request, app: string) => {
++  const path = new URL(request.url()).pathname;
++  if (request.method() === "GET")
++    return new RegExp(`^/api/organizations/[^/]+/apps/${app}$`).test(path);
++  const batch = request.postData() ?? "";
++  return (
++    path === "/api/dashboard/batch" &&
++    batch.includes(`"group":"apps","endpoint":"get"`) &&
++    batch.includes(app)
++  );
++};
++
++layer(HostedLive, { excludeTestServices: true })("Navigation intent", (it) => {
++  it.effect(scenarios.navigationIntentReads.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Intent example ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: `
++import { defineApp, query, object, router } from "apps";
++export default defineApp({}, async () => ({
++  tools: router({
++    hello: query({ description: "A simple greeting", input: object({}) }, async () => "Hello"),
++  })
++}));`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
++            Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++            Effect.orDie,
++          ),
++        );
++        yield* browser.login(actors.owner);
++        const appsPath = `/org/${actors.organization.slug}/apps`;
++        const link = (page: Page) => page.getByRole("main").getByRole("link", { name: app.name });
++        yield* browser.use("Open the app list", (page) => page.goto(appsPath));
++        yield* browser.use("Wait for the app's link", (page) => link(page).waitFor());
++        const reads: Request[] = [];
++        yield* browser.use("Watch for reads of the app", (page) => {
++          page.on("request", (request) => {
++            if (readsApp(request, app.id)) reads.push(request);
++          });
++          return Promise.resolve();
++        });
++        // Hovering shows intent: the app is read while the list is still open.
++        yield* browser.use("Hover the app's link", (page) =>
++          Promise.all([
++            page
++              .waitForRequest((request) => readsApp(request, app.id))
++              .then((read) => read.response()),
++            link(page).hover(),
++          ]),
++        );
++        expect(
++          yield* browser.use("Read the current path", (page) =>
++            Promise.resolve(new URL(page.url()).pathname),
++          ),
++        ).toBe(appsPath);
++        expect(reads).toHaveLength(1);
++        // Opening the app renders it from that read instead of reading it again.
++        yield* browser.use("Open the app", (page) => link(page).click());
++        // The tools preview reads the app's tools after the page mounts, so any read of the app
++        // the page started itself has been sent by the time it shows.
++        yield* browser.use("Wait for the app's tools", (page) =>
++          page.getByRole("main").getByText("A simple greeting").first().waitFor(),
++        );
++        expect(reads).toHaveLength(1);
++      }),
++    ),
++  );
++});
+diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
+index 567d471..0f3ec8c 100644
+--- a/packages/dashboard-start/src/implementation/registry.tsx
++++ b/packages/dashboard-start/src/implementation/registry.tsx
+@@ -7,7 +7,7 @@
+  * stream only once the check succeeds (`useGuardedPreload`).
+  */
+ import { RegistryContext, scheduleTask, useAtomValue } from "@effect/atom-react";
+-import type { AnyRouter } from "@tanstack/react-router";
++import type { AnyRouter, ParsedLocation, StaticDataRouteOption } from "@tanstack/react-router";
+ import { Cause } from "effect";
+ import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
+ import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
+@@ -359,6 +359,46 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
+   };
+ };
+ 
++/** The reads a matched route declares, from its static data, params and current values. */
++export type RouteReads = (
++  match: {
++    readonly staticData: StaticDataRouteOption;
++    readonly params: Readonly<Record<string, unknown>>;
++  },
++  get: <A>(atom: Atom.Atom<A>) => A,
++) => ReadonlyArray<Atom.Atom<unknown>>;
++
++/**
++ * Long enough for a slow read to answer. After that the page that uses a read holds it, and a
++ * read whose page never opened, such as one for a link only hovered, follows its own retention.
++ */
++const prefetchHold = 10_000;
++
++/**
++ * Start the reads a destination's routes declare when a link shows intent and the router
++ * preloads it, or when a navigation to it begins. They then run alongside the page's code, and
++ * during a hovered link's wait, instead of after the page renders. Starting a read only asks for
++ * it: the page still renders at once, from the retained value or its loading state.
++ */
++const prefetchRouteReads = (
++  router: AnyRouter,
++  registry: AtomRegistry.AtomRegistry,
++  reads: RouteReads,
++) => {
++  const start = (location: ParsedLocation) => {
++    const get = <A,>(atom: Atom.Atom<A>) => registry.get(atom);
++    for (const atom of router.matchRoutes(location).flatMap((match) => reads(match, get)))
++      setTimeout(registry.mount(atom), prefetchHold);
++  };
++  const preload = router.preloadRoute;
++  router.preloadRoute = (options) => {
++    // The router narrows its own preload options this way before it builds their location.
++    start(router.buildLocation(options as Parameters<typeof router.buildLocation>[0]));
++    return preload(options);
++  };
++  router.subscribe("onBeforeLoad", ({ toLocation }) => start(toLocation));
++};
++
+ /**
+  * Create the registry for one router. `initialValues` are values known before rendering, such as
+  * browser entry data or a server-verified session. `connect` joins it to Start's streaming.
+@@ -375,9 +415,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
+   const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
+   return {
+     registry,
+-    connect: <R extends AnyRouter>(router: R): R => {
+-      if (guards === undefined) hydrateAtoms(router, registry);
+-      else streamAtoms(router, registry, () => view.dispose(), guards);
++    /** A server render starts its reads with the document; `reads` starts them in the browser. */
++    connect: <R extends AnyRouter>(router: R, reads?: RouteReads): R => {
++      if (guards === undefined) {
++        hydrateAtoms(router, registry);
++        if (reads !== undefined) prefetchRouteReads(router, registry, reads);
++      } else streamAtoms(router, registry, () => view.dispose(), guards);
+       return router;
+     },
+     Wrap: ({ children }: { readonly children: ReactNode }) => (
+diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
+index 7bc172b..76e2064 100644
+--- a/packages/ui/src/contracts/refresh.ts
++++ b/packages/ui/src/contracts/refresh.ts
+@@ -18,7 +18,7 @@ const pageFocus = Atom.readable((get) => {
+ });
+ 
+ /** A page opened again within this time shows its retained value without another read. */
+-const retention: Duration.Input = "5 minutes";
++const retention: Duration.Input = "30 minutes";
+ /** Older retained values are shown while they are read again in the background. */
+ const freshness: Duration.Input = "30 seconds";
+ 
