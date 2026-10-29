@@ -108,7 +108,8 @@ export class PoolUsage {
       return this.ledger.summary(pool, { owner, caller, canManage, members: [], days, now, cap: () => cap });
     }
     const people = [...new Set([owner, ...members])];
-    const caps = await readCaps(this.deps.client, pool, people.filter((person) => person !== owner));
+    const capped = [...new Set([caller, ...people])].filter((person) => person !== owner);
+    const caps = await readCaps(this.deps.client, pool, capped);
     return this.ledger.summary(pool, { owner, caller, canManage, members: people, days, now, cap: (member) => caps.get(member) ?? null });
   }
 

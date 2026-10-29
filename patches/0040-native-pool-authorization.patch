@@ -33,10 +33,10 @@ index 4d34ed7..4bf0364 100644
        // Better Auth calls this for the creator too. Only its create endpoint owns that exception.
 diff --git a/apps/hosted/cloud/src/implementation/organization-access-request.ts b/apps/hosted/cloud/src/implementation/organization-access-request.ts
 new file mode 100644
-index 0000000..c978069
+index 0000000..568d5c3
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/organization-access-request.ts
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,39 @@
 +import { withOrganizationAccessLock } from "@executor-js/hosted-server/pool-access-hook";
 +import { Effect, Option, Schema } from "effect";
 +
@@ -44,9 +44,12 @@ index 0000000..c978069
 +const membershipWrites = ["update-member-role", "remove-member", "leave"];
 +
 +/** The host lends its locked transaction through the entire native membership write. */
-+export const withOrganizationAccessRequest = <A, E, R>(
++export const withOrganizationAccessRequest = <A, E, R, Drain>(
 +  request: Request,
-+  operation: (transaction: boolean) => Effect.Effect<A, E, R>,
++  operation: {
++    readonly run: (transaction: boolean) => Effect.Effect<A, E, R>;
++    readonly settled: Effect.Effect<void, never, Drain>;
++  },
 +) =>
 +  Effect.gen(function* () {
 +    const path = new URL(request.url).pathname;
@@ -54,7 +57,7 @@ index 0000000..c978069
 +      request.method !== "POST" ||
 +      !membershipWrites.some((name) => path.endsWith(`/organization/${name}`))
 +    )
-+      return yield* operation(false);
++      return yield* operation.run(false);
 +    const body = yield* Effect.tryPromise(async () => {
 +      const copy = request.clone();
 +      const type = copy.headers.get("content-type")?.toLowerCase() ?? "";
@@ -65,27 +68,38 @@ index 0000000..c978069
 +        : copy.json();
 +    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 +    const decoded = Schema.decodeUnknownOption(target)(body);
-+    if (Option.isNone(decoded)) return yield* operation(false);
++    if (Option.isNone(decoded)) return yield* operation.run(false);
 +    // Auth's explicit-target guard validates this same organization before any membership write.
 +    // Native Promise work can finish after its caller disconnects. Keep the lock until it settles.
 +    return yield* withOrganizationAccessLock(
 +      decoded.value.organizationId,
-+      operation(true).pipe(Effect.uninterruptible),
++      operation.run(true).pipe(Effect.ensuring(operation.settled), Effect.uninterruptible),
 +    );
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
-index 8d5472c..18b25b0 100644
+index 8d5472c..904d54e 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
-@@ -195,6 +195,7 @@ interface AuthInvocation {
+@@ -15,6 +15,7 @@ import {
+   Option,
+   Schema,
+   Scope,
++  Semaphore,
+   Tracer,
+ } from "effect";
+ import { SqlClient, SqlError } from "effect/sql";
+@@ -195,6 +196,10 @@ interface AuthInvocation {
    readonly work: InvocationWork;
    readonly context: Context.Context<never>;
    readonly parent: Option.Option<Tracer.AnySpan>;
-+  readonly transaction?: Effect.Success<SqlClient.SqlClient["reserve"]>;
++  readonly transaction?: {
++    readonly connection: Effect.Success<SqlClient.SqlClient["reserve"]>;
++    readonly gate: Semaphore.Semaphore;
++  };
  }
  
  /**
-@@ -283,8 +284,14 @@ const arrayLiteral = (values: ReadonlyArray<unknown>): string =>
+@@ -283,8 +288,14 @@ const arrayLiteral = (values: ReadonlyArray<unknown>): string =>
      })
      .join(",")}}`;
  
@@ -101,7 +115,7 @@ index 8d5472c..18b25b0 100644
    /**
     * Possibly inside a transaction Better Auth began: from `begin` until a `commit` or
     * `rollback` succeeds.
-@@ -297,7 +304,7 @@ class ReservedConnection implements DatabaseConnection {
+@@ -297,7 +308,7 @@ class ReservedConnection implements DatabaseConnection {
    constructor(
      private readonly connection: Effect.Success<SqlClient.SqlClient["reserve"]>,
      private readonly owner: AuthInvocation,
@@ -110,7 +124,42 @@ index 8d5472c..18b25b0 100644
    ) {
      this.released = new Promise((resolve) => {
        this.settle = resolve;
-@@ -347,7 +354,7 @@ class ReservedConnection implements DatabaseConnection {
+@@ -305,11 +316,31 @@ class ReservedConnection implements DatabaseConnection {
+   }
+ 
+   executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
++    const connection = this.connection;
++    const execute = Effect.suspend(() =>
++      connection.executeRaw(query.sql, query.parameters.map(textParameter)),
++    );
++    const savepoint = `${this.savepoint}_statement`;
++    // Native rate limiting recovers 23505 by reading the winner's row. PostgreSQL must first
++    // leave the failed statement, without rolling back the membership transaction around it.
++    const operation =
++      this.borrowed && InsertQueryNode.is(query.query) && queryTable(query.query) === rateLimitTable
++        ? Effect.uninterruptibleMask((restore) =>
++            Effect.gen(function* () {
++              yield* connection.executeRaw(`savepoint ${savepoint}`, []);
++              const result = yield* Effect.exit(restore(execute));
++              if (Exit.isFailure(result))
++                yield* connection.executeRaw(`rollback to savepoint ${savepoint}`, []);
++              yield* connection.executeRaw(`release savepoint ${savepoint}`, []);
++              return Exit.isFailure(result) ? yield* Effect.failCause(result.cause) : result.value;
++            }),
++          )
++        : execute;
++    // Checkouts share the borrowed connection; another native query cannot enter its savepoint.
++    const serialized = this.owner.transaction?.gate.withPermits(1)(operation) ?? operation;
+     return runDriver(
+       this.owner,
+-      Effect.suspend(() =>
+-        this.connection.executeRaw(query.sql, query.parameters.map(textParameter)),
+-      ).pipe(
++      serialized.pipe(
+         // Each query already records `auth.sql.timing`; the native wire span would repeat it.
+         Effect.withTracerEnabled(false),
+         // Reject with the server's error fields (`code`, `constraint`), as node-postgres does.
+@@ -347,7 +378,7 @@ class ReservedConnection implements DatabaseConnection {
    /** Return the connection to the pool. */
    private readonly close: Effect.Effect<void> = Effect.suspend(() => {
      this.owner.work.checkouts.delete(this);
@@ -119,7 +168,7 @@ index 8d5472c..18b25b0 100644
    }).pipe(Effect.ensuring(Effect.sync(() => this.settle())));
  
    /**
-@@ -364,6 +371,7 @@ class ReservedConnection implements DatabaseConnection {
+@@ -364,6 +395,7 @@ class ReservedConnection implements DatabaseConnection {
     * pool. Once the invocation abandoned its work, it finishes the connection itself.
     */
    release(): Promise<void> {
@@ -127,7 +176,7 @@ index 8d5472c..18b25b0 100644
      if (this.owner.work.abandoned) return Promise.resolve();
      return Effect.runPromise(this.transaction ? this.discard : this.close);
    }
-@@ -375,6 +383,7 @@ class ReservedConnection implements DatabaseConnection {
+@@ -375,6 +407,7 @@ class ReservedConnection implements DatabaseConnection {
     * not succeed, the connection is given up rather than lent to another borrower.
     */
    finish(deadline: CleanupDeadline): Effect.Effect<void> {
@@ -135,7 +184,7 @@ index 8d5472c..18b25b0 100644
      if (!this.transaction) return this.close;
      return deadline
        .within(Effect.exit(this.connection.executeRaw("rollback", [])), {
-@@ -396,15 +405,23 @@ class ReservedConnection implements DatabaseConnection {
+@@ -396,15 +429,23 @@ class ReservedConnection implements DatabaseConnection {
   */
  const transactionControl = (connection: DatabaseConnection, sql: string, opens: boolean) => {
    if (opens && connection instanceof ReservedConnection) connection.transaction = true;
@@ -162,16 +211,16 @@ index 8d5472c..18b25b0 100644
   */
  const invocationDriver: Driver = {
    init: () => Promise.resolve(),
-@@ -413,6 +430,8 @@ const invocationDriver: Driver = {
+@@ -413,6 +454,8 @@ const invocationDriver: Driver = {
      return runDriver(
        owner,
        Effect.gen(function* () {
 +        if (owner.transaction !== undefined)
-+          return new ReservedConnection(owner.transaction, owner, undefined);
++          return new ReservedConnection(owner.transaction.connection, owner, undefined);
          // A reservation the invocation does not end itself stays open until the pool has shut
          // down, so the pool closes it rather than lending it again.
          const scope = yield* Scope.fork(owner.reservations.scope, "sequential");
-@@ -561,8 +580,16 @@ export interface AuthDatabaseService {
+@@ -561,8 +604,16 @@ export interface AuthDatabaseService {
     * uses this event's socket and its timing spans become children of the caller.
     */
    readonly bind: Effect.Effect<<A>(run: () => A) => A, never, RuntimeContext>;
@@ -188,7 +237,7 @@ index 8d5472c..18b25b0 100644
  export class AuthDatabase extends Context.Service<AuthDatabase, AuthDatabaseService>()(
    "executor/cloud/AuthDatabase",
  ) {}
-@@ -629,22 +656,38 @@ const authDatabase = Layer.effect(
+@@ -629,22 +680,40 @@ const authDatabase = Layer.effect(
          return { sql, reservations, work };
        }),
      );
@@ -206,15 +255,17 @@ index 8d5472c..18b25b0 100644
 +        const transaction = yield* Effect.serviceOption(sql.transactionService);
 +        if (borrowTransaction && Option.isNone(transaction))
 +          return yield* Effect.die(new Error("Auth membership write requires a host transaction"));
++        const borrowed =
++          borrowTransaction && Option.isSome(transaction)
++            ? { connection: transaction.value[0], gate: yield* Semaphore.make(1) }
++            : undefined;
 +        const owner: AuthInvocation = {
 +          sql,
 +          reservations,
 +          work,
 +          context,
 +          parent,
-+          ...(borrowTransaction && Option.isSome(transaction)
-+            ? { transaction: transaction.value[0] }
-+            : {}),
++          ...(borrowed === undefined ? {} : { transaction: borrowed }),
 +        };
          return <A>(run: () => A) =>
            invocation.run(owner, () => {
@@ -234,7 +285,7 @@ index 8d5472c..18b25b0 100644
    }),
  );
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index e3b5647..8474693 100644
+index e3b5647..899ad2a 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
 @@ -2,6 +2,7 @@ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook
@@ -264,7 +315,7 @@ index e3b5647..8474693 100644
          membersAdded: (organization) =>
            runCallback(
              withSql(
-@@ -322,16 +328,30 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -322,16 +328,31 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
      const requestHandler = Effect.gen(function* () {
        const request = yield* HttpServerRequest.HttpServerRequest;
        const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
@@ -282,25 +333,26 @@ index e3b5647..8474693 100644
 +          return yield* SqlClient.SqlClient;
 +        }),
        );
-+      const response = yield* withOrganizationAccessRequest(web, (transaction) =>
-+        Effect.gen(function* () {
-+          const [instance, bind] = yield* Effect.all([
-+            native,
-+            transaction ? database.bindTransaction : database.bind,
-+          ]).pipe(Effect.provide(RuntimeContext.phantom));
-+          routes ??= routeTemplates(authEndpointTemplates(instance.api));
-+          yield* routes.record(new URL(web.url).pathname);
-+          const context = yield* Effect.context<
-+            RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
-+          >();
-+          // Better Auth returns API errors as responses; it rejects only on defects.
-+          const response = yield* Effect.promise((signal) =>
-+            callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
-+          );
-+          if (transaction) yield* database.settled.pipe(Effect.provide(RuntimeContext.phantom));
-+          return response;
-+        }),
-+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
++      const response = yield* withOrganizationAccessRequest(web, {
++        settled: database.settled.pipe(Effect.provide(RuntimeContext.phantom)),
++        run: (transaction) =>
++          Effect.gen(function* () {
++            const [instance, bind] = yield* Effect.all([
++              native,
++              transaction ? database.bindTransaction : database.bind,
++            ]).pipe(Effect.provide(RuntimeContext.phantom));
++            routes ??= routeTemplates(authEndpointTemplates(instance.api));
++            yield* routes.record(new URL(web.url).pathname);
++            const context = yield* Effect.context<
++              RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
++            >();
++            // Better Auth returns API errors as responses; it rejects only on defects.
++            const response = yield* Effect.promise((signal) =>
++              callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
++            );
++            return response;
++          }),
++      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
        if (response.body === null) return HttpServerResponse.fromWeb(response);
        // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
        // the request's cleanup, including Better Auth queries the request left running.
@@ -668,6 +720,80 @@ index 55cd660..a7a5fb0 100644
  /** Resolve app policies in one read, retaining tenant and group checks for every row. */
  export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
    Effect.gen(function* () {
+diff --git a/e2e/tests/cloud-auth-rate-limit.spec.ts b/e2e/tests/cloud-auth-rate-limit.spec.ts
+index 0dabd38..ed4115a 100644
+--- a/e2e/tests/cloud-auth-rate-limit.spec.ts
++++ b/e2e/tests/cloud-auth-rate-limit.spec.ts
+@@ -201,6 +201,35 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) =>
+   const forgetTokenCount = (locks: Effect.Success<typeof cloudLocks>) =>
+     locks.run({ sql: `delete from "rateLimit" where key like '%|/oauth2/token'` });
+ 
++  const membershipRequest = (organizationId: string) =>
++    Effect.gen(function* () {
++      const target = yield* Target,
++        http = yield* HttpClient.HttpClient;
++      const origin = targetHosts(target).browser;
++      const traceId = randomBytes(16).toString("hex");
++      const status = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const request = yield* HttpClientRequest.post(
++            `${origin}/api/auth/organization/update-member-role`,
++          ).pipe(
++            HttpClientRequest.setHeaders({
++              origin,
++              traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01`,
++            }),
++            HttpClientRequest.bodyJson({
++              organizationId,
++              memberId: "synthetic-member",
++              role: "member",
++            }),
++          );
++          const response = yield* http.execute(request);
++          yield* response.text;
++          return response.status;
++        }),
++      ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
++      return { traceId, status };
++    });
++
+   it.effect(scenarios.cloudAuthRateLimitRace.title, (context) =>
+     withCase(
+       context,
+@@ -233,6 +262,33 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) =>
+             reported,
+           }),
+         );
++        yield* locks.run({
++          sql: `delete from "rateLimit" where key like '%|/organization/update-member-role'`,
++        });
++        const membership = yield* heldTable("share");
++        const native = yield* Effect.forkChild(
++          Effect.all(
++            [membershipRequest("org-rate-limit-a"), membershipRequest("org-rate-limit-b")],
++            { concurrency: 2 },
++          ),
++        );
++        yield* membership.blocked(`insert into "rateLimit"`, 2);
++        yield* membership.locks.release;
++        const denied = yield* Fiber.join(native);
++        // Distinct organization locks still share one address/path rate-limit row. Both requests
++        // must reach native authentication after the losing insert recovers in its transaction.
++        expect(denied.map(({ status }) => status)).toEqual([401, 401]);
++        const nativeTraces = new Set(denied.map(({ traceId }) => traceId));
++        const faults = (yield* sentryExceptions).filter(
++          ({ trace }) => trace !== undefined && nativeTraces.has(trace),
++        );
++        expect(faults).toEqual([]);
++        yield* Effect.flatMap(Evidence, (evidence) =>
++          evidence.json("membership-rate-limit-race.json", {
++            statuses: denied.map(({ status }) => status),
++            reported: faults,
++          }),
++        );
+       }),
+     ),
+   );
 diff --git a/e2e/tests/groups.spec.ts b/e2e/tests/groups.spec.ts
 index a61e305..dd73456 100644
 --- a/e2e/tests/groups.spec.ts

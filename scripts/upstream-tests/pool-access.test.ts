@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Deferred, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Redacted, Schema } from "effect";
 import {
   fixture,
   load,
@@ -134,13 +134,13 @@ for (const encoding of ["json", "form", "multipart"]) test(`concurrent audience 
       method: "POST", ...(encoding === "json" ? { headers: { "content-type": "application/json" } } : {}),
       body: encoding === "json" ? JSON.stringify(fields) : encoding === "form" ? new URLSearchParams(fields) : form,
     });
-    const role = withOrganizationAccessRequest(request, () => Effect.gen(function* () {
+    const role = withOrganizationAccessRequest(request, { settled: Effect.void, run: () => Effect.gen(function* () {
       yield* hook.memberRoleChanging({ organization, member: "m-other", role: "member" });
       yield* Deferred.succeed(projected, undefined);
       yield* Deferred.await(competing);
       yield* Effect.yieldNow;
       yield* sql`update member set role = 'member' where id = 'm-other'`;
-    }));
+    }) });
     const projection = Effect.gen(function* () {
       yield* Deferred.await(projected);
       yield* Deferred.succeed(competing, undefined);
@@ -151,6 +151,42 @@ for (const encoding of ["json", "form", "multipart"]) test(`concurrent audience 
     assert.deepEqual(changes[0].pools[0].managers, ["owner"]);
     assert.deepEqual(changes[1].pools[0].managers, ["owner"]);
     assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "member" }]);
+  }));
+});
+
+test("a rejected native handler drains background writes before returning its borrowed transaction", async () => {
+  const { withOrganizationAccessRequest } = await load("apps/hosted/cloud/src/implementation/organization-access-request.ts");
+  await fixture(({ sql }) => Effect.gen(function* () {
+    const draining = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let background = Promise.resolve();
+    const request = new Request("https://host.example.test/api/auth/organization/update-member-role", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ organizationId: organization, memberId: "m-other", role: "member" }),
+    });
+    const call = withOrganizationAccessRequest(request, {
+      run: () => Effect.gen(function* () {
+        const context = yield* Effect.context<never>();
+        return yield* Effect.promise(async () => {
+          background = Effect.runPromise(Deferred.await(release).pipe(
+            Effect.andThen(sql`update member set role = 'member' where id = 'm-other'`),
+            Effect.asVoid, Effect.provideContext(context),
+          ));
+          throw new Error("Native handler rejected after starting background work");
+        });
+      }),
+      settled: Deferred.succeed(draining, undefined).pipe(Effect.andThen(Effect.promise(() => background))),
+    });
+    const fiber = yield* Effect.forkChild(Effect.exit(call));
+    yield* Effect.gen(function* () {
+      yield* Effect.raceFirst(
+        Deferred.await(draining),
+        Fiber.join(fiber).pipe(Effect.andThen(Effect.sync(() => assert.fail("Transaction returned before native background work drained")))),
+      );
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* Fiber.join(fiber))._tag, "Failure");
+      assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+    }).pipe(Effect.ensuring(Deferred.succeed(release, undefined).pipe(Effect.andThen(Effect.promise(() => background)))));
   }));
 });
 
