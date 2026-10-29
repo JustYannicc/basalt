@@ -80,12 +80,13 @@ function AccountRow({
   const [removing, setRemoving] = useState(false);
   const badge = stateBadge[account.state];
   const windows = orderedWindows(account.windows);
+  const label = account.label || `${providerName(providers, account.provider)} account`;
   return (
     <li className="group grid gap-3 border-b border-border px-1 py-4 last:border-b-0 sm:grid-cols-[minmax(0,15rem)_1fr] sm:gap-8">
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate font-medium" title={account.label}>
-            {account.label}
+          <span className="truncate font-medium" title={label}>
+            {label}
           </span>
           {badge && <Badge tone={badge.tone}>{badge.text}</Badge>}
         </div>

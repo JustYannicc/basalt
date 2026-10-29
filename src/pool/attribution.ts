@@ -1,6 +1,7 @@
 import { controlBasePath as base, type SignInFlow, type SignInStatus } from "../../apps/pool/contract.ts";
 import { type ControlAttribution, type HomeDependencies, HomeClient, authorizeControl, handleControl, type Membership, PoolHome, type Session, signInTtlMs } from "./control.ts";
 import { BackendFailure, fail, failureResponse, rows, text, unavailable } from "./json.ts";
+import { Contributions, type ContributionAudience } from "./contributions.ts";
 import providers from "./providers.json" with { type: "json" };
 
 export const attributionStorageKey = "pool-control-v1";
@@ -35,8 +36,8 @@ interface ProviderLock {
   callbackRetry?: boolean;
   callbackResent?: boolean;
 }
-interface TrackedSession { session: Session; accountId?: string; result?: SignInStatus; pendingIds?: string[] }
-interface PendingUpload { pool: string; id: string; upload: string; assigned?: boolean }
+interface TrackedSession { session: Session; owner?: string; accountId?: string; result?: SignInStatus; pendingIds?: string[] }
+interface PendingUpload { pool: string; id: string; upload: string; assigned?: boolean; addedBy?: string }
 interface AttributionState {
   version?: 2;
   locks: Record<string, ProviderLock>;
@@ -52,6 +53,7 @@ export class PoolControl implements ControlAttribution {
   private storage: ControlStorage;
   private deps: HomeDependencies;
   private client: HomeClient;
+  private contributions: Contributions;
   private state!: AttributionState;
   private loaded = false;
   private dirty = false;
@@ -67,6 +69,7 @@ export class PoolControl implements ControlAttribution {
     this.storage = storage;
     this.deps = deps;
     this.client = new HomeClient(deps.home);
+    this.contributions = new Contributions(storage, this.client, () => this.now());
   }
   private now(): number { return this.deps.now?.().getTime() ?? Date.now(); }
   private changed(alarm = false): void { this.dirty = true; this.alarmDirty ||= alarm; }
@@ -167,7 +170,7 @@ export class PoolControl implements ControlAttribution {
     const deadline = Date.now() + callbackWaitMs;
     try {
       const { routeKey, isRead } = await authorizeControl(request, this.deps.signingKey, this.deps.previousSigningKey);
-      if (isRead) return handleControl(request, { ...this.deps, client: this.client, attribution: null });
+      if (isRead) return handleControl(request, { ...this.deps, client: this.client, attribution: null, contributors: (pool) => this.contributors(pool) });
       const callback = routeKey === "POST /sign-ins/callback";
       for (;;) {
         const result = await this.run(async () => {
@@ -183,6 +186,18 @@ export class PoolControl implements ControlAttribution {
         if (!await this.wait(result.value.released, deadline - Date.now())) return result.value.response;
       }
     } catch (error) { return failureResponse(error); }
+  }
+  contributors(pool: string) { return this.contributions.contributors(pool); }
+  contributed(pool: string, id: string, caller?: string) { return this.contributions.owns(pool, id, caller); }
+  departedContribution(pool: string, id: string, owner: string): Promise<boolean> {
+    return this.contributions.departed(pool, id, owner);
+  }
+  completedContributionRemoval(pool: string, id: string, owner: string): Promise<boolean> {
+    return this.contributions.completedRemoval(pool, id, owner);
+  }
+  forgetContribution(pool: string, id: string, owner: string) { return this.contributions.forget(pool, id, owner); }
+  async reconcileContributions(audiences: readonly ContributionAudience[], deletedPerson?: string): Promise<void> {
+    await this.run(() => this.contributions.reconcile(audiences, deletedPerson));
   }
   async expire(): Promise<void> {
     const result = await this.run(async () => {
@@ -203,7 +218,7 @@ export class PoolControl implements ControlAttribution {
       if (lock.state && !lock.cancelBlocked) {
         const tracked = this.state.sessions[lock.state];
         if (tracked) {
-          const home = new PoolHome(client, tracked.session.pool, this.added, this.deps.onProductEvent, tracked.accountId);
+          const home = new PoolHome(client, tracked.session.pool, this.added, this.deps.onProductEvent, tracked.owner ?? tracked.accountId);
           try {
             const result = await this.resolveStatus(home, tracked.session);
             if (result.status !== "waiting") continue;
@@ -300,7 +315,7 @@ export class PoolControl implements ControlAttribution {
     if (unknown) return this.busy(unknown[0]);
     for (const tracked of Object.values(this.state.sessions)) {
       if (tracked.session.pool !== pool) continue;
-      await this.cancel(new PoolHome(home, pool, this.added), tracked.session);
+      await this.cancel(new PoolHome(home, pool, this.added, this.deps.onProductEvent, tracked.owner ?? tracked.accountId), tracked.session);
       delete this.state.sessions[tracked.session.state];
       this.changed();
     }
@@ -308,10 +323,10 @@ export class PoolControl implements ControlAttribution {
     await this.save(); // A device exchange may start in Home's next call.
   }
   async discard(provider: string): Promise<void> { this.unlock(provider); }
-  async started(session: Session, accountId: string): Promise<void> {
+  async started(session: Session, accountId: string, owner?: string): Promise<void> {
     const lock = this.state.locks[session.provider];
     if (!lock || lock.pool !== session.pool) return unavailable();
-    this.state.sessions[session.state] = { session, accountId };
+    this.state.sessions[session.state] = { session, accountId, owner };
     if (session.flow === "device") {
       lock.state = session.state;
       lock.flow = "device";
@@ -432,10 +447,11 @@ export class PoolControl implements ControlAttribution {
     const all = await home.allMembership();
     const own = home.ownMembership(all);
     const ownGroups = new Set(own.groups.map((group) => group.id));
+    const contributions = await this.contributions.ownership(home.pool);
     return {
       own,
-      assigned: new Set([...this.state.assigned, ...all.members.map((member) => member.auth_id)]),
-      other: new Set(all.members.filter((member) => !ownGroups.has(member.channel_group_id)).map((member) => member.auth_id)),
+      assigned: new Set([...this.state.assigned, ...all.members.map((member) => member.auth_id), ...contributions.assigned]),
+      other: new Set([...contributions.other, ...all.members.filter((member) => !ownGroups.has(member.channel_group_id)).map((member) => member.auth_id)]),
     };
   }
   private conflicts(ids: string[], ownership: Awaited<ReturnType<PoolControl["ownership"]>>): boolean {
@@ -446,14 +462,14 @@ export class PoolControl implements ControlAttribution {
     // Finish this pool's saved upload before allowing another one to create a credential.
     for (const [pendingKey, pending] of Object.entries(this.state.uploads ?? {})) {
       if (pending.pool !== home.pool) continue;
-      await this.uploaded(home, pending.id, pending.upload, pendingKey);
+      await this.uploaded(home, pending.id, pending.upload, pendingKey, pending.addedBy);
       if (pendingKey === key) return pending.id;
     }
     return undefined;
   }
-  async uploaded(home: PoolHome, id: string, upload: string, key: string): Promise<void> {
+  async uploaded(home: PoolHome, id: string, upload: string, key: string, caller?: string): Promise<void> {
     const uploads = this.state.uploads ??= {};
-    const pending = uploads[key] ??= { pool: home.pool, id, upload };
+    const pending = uploads[key] ??= { pool: home.pool, id, upload, addedBy: caller };
     this.changed();
     await this.save(); // Never repeat the credential POST after Home returned its id.
     const ownership = await this.ownership(home);
@@ -467,7 +483,7 @@ export class PoolControl implements ControlAttribution {
     pending.assigned = true;
     await this.assigned([id]);
     await this.uploadFinished(upload);
-    await home.add([id], ownership.own);
+    await this.contributions.add(home, [id], pending.addedBy, ownership.own);
     this.unassign([id]);
     delete uploads[key];
     this.changed();
@@ -501,7 +517,7 @@ export class PoolControl implements ControlAttribution {
     tracked.pendingIds = ids;
     this.changed();
     await this.assigned(ids);
-    await home.add(ids, ownership.own);
+    await this.contributions.add(home, ids, tracked.accountId, ownership.own);
     this.unassign(ids);
     const result: SignInStatus = { status: "connected", accountId: ids[0] ?? null };
     await this.finished(session, result);

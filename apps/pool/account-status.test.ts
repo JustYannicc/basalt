@@ -32,8 +32,9 @@ test("a pool account reads as its plan, availability and usage windows", () => {
     },
     status: {
       badges: [
+        // The plan stays private to editors and the holder; availability is shared.
         { label: "Plus", tone: "neutral" },
-        { label: "Available", tone: "good" },
+        { label: "Available", tone: "good", identity: false },
       ],
       meters: [
         { label: "5 hours", remaining: 0.4, resetsAt: "2030-01-02T03:04:05.123Z" },
@@ -61,7 +62,7 @@ test("the status stays within the host's display limits", () => {
     },
     sites,
   ).status;
-  assert.deepEqual(status.badges, [{ label: "Needs attention", tone: "bad" }]);
+  assert.deepEqual(status.badges, [{ label: "Needs attention", tone: "bad", identity: false }]);
   assert.equal(status.meters.length, 4);
   assert.deepEqual(status.meters[0], { label: "Usage", remaining: 0 });
   assert.equal(status.meters[1]!.remaining, 1);
@@ -74,7 +75,7 @@ test("windows read shortest first, and an active account shows no note", () => {
   const status = accountStatus({ ...account, message: "fine", windows: [...account.windows].reverse() }, sites).status;
   assert.deepEqual(status.meters.map((meter) => meter.label), ["5 hours", "Weekly"]);
   assert.deepEqual(status.stats, []);
-  assert.deepEqual(accountStatus({ ...account, state: "disabled" }, sites).status.badges.at(-1), { label: "Paused", tone: "warning" });
+  assert.deepEqual(accountStatus({ ...account, state: "disabled" }, sites).status.badges.at(-1), { label: "Paused", tone: "warning", identity: false });
 });
 
 test("reset credits use the five-hour meter, with expiry or a bounded fallback badge", () => {

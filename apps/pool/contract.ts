@@ -2,8 +2,8 @@
 // Base path: `/pool/v1` on the public host.
 // Every request carries `Authorization: Bearer <pool token>`.
 // Requests made for a person carry `X-Signalbox-Caller: <tools-service user id>`.
-// Changes (starting a sign-in, pasting a callback, uploading a login file,
-// polling a sign-in status, removing an account) are refused with 403 `not_owner` unless the caller owns the pool.
+// Any identified caller may connect subscriptions. Only their contributor or the pool owner
+// may remove them. Other control mutations and exact-request usage remain owner-only.
 
 export const controlBasePath = "/pool/v1";
 export const callerHeader = "x-signalbox-caller";
@@ -53,8 +53,10 @@ export interface BankedResets {
 
 export interface Account {
   readonly id: string;
+  /** Tools-service user id of the contributor; null for legacy accounts. */
+  readonly addedBy?: string | null;
   readonly provider: string;
-  /** The account's email or the backend's label for it. */
+  /** The account's email or backend label; empty when hidden from this caller. */
   readonly label: string;
   readonly plan: string | null;
   readonly state: AccountState;

@@ -5,6 +5,7 @@ import { isMemberId, maxMembers, type PoolUsage } from "./pool-usage.ts";
 import { ComputerHome, digest } from "./computer-home.ts";
 import { boundPools, publicView, type ComputerStorage, type Registry, type StoredComputer } from "./computer-registry.ts";
 export type { ComputerStorage } from "./computer-registry.ts";
+import type { ContributionAudience } from "./contributions.ts";
 import { PoolDirectory } from "./directory.ts";
 import { readAccess } from "./access.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
@@ -15,6 +16,7 @@ import { markSetupCompleted, observePendingUsage, type UsageObservationEvent } f
 
 interface Dependencies {
   storage: ComputerStorage; home: ComputerHome; signingKey: string; previousSigningKey?: string;
+  contributions?: (audiences: readonly ContributionAudience[], deletedPerson?: string) => Promise<void>;
   origin?: string; now?: () => number; onProductEvent?: ProductEventCallback; usage?: Pick<PoolUsage, "summary" | "setCap">;
 }
 const storageKey = "computer-registry-v1";
@@ -100,7 +102,7 @@ export class Computers {
       const change = await readAccess(request, this.deps.signingKey, this.deps.previousSigningKey, this.now());
       return await this.run(async (registry) => {
         const directory = await PoolDirectory.load(this.deps.storage, this.now());
-        return json(await directory.apply(change, registry, this.deps.home, this.now(), () => this.save(registry)));
+        return json(await directory.apply(change, registry, this.deps.home, this.now(), () => this.save(registry), this.deps.contributions));
       });
     } catch (error) { return failureResponse(error); }
   }

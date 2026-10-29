@@ -75,7 +75,7 @@ model {
 
     pool = module "Pool app" {
       #basalt #v1 #deep
-      description "One private app instance per person per organization, run by the tools service. Accounts, Usage and Computers screens; Usage shows tokens and API-equivalent cost per model over 30 days, the whole pool for the owner and only the caller's own for anyone else. Computers requests a signed setup intent from the pool Worker and opens the root /setup page. App screens embed on isolated opaque same-site origins; live routing acceptance is pending."
+      description "One private app instance per person per organization, run by the tools service. Accounts, Usage and Computers screens; Usage shows tokens and API-equivalent cost per model over 30 days, the whole pool for the owner and only the caller's own for anyone else. Computers requests a signed setup intent from the pool Worker and opens the root /setup page. Its subscriptions requirement is contributed: anyone who can use the pool adds their own subscriptions on the Accounts tab and removes the ones they added; the owner removes any. The tools service enforces it, and the pool Worker records who added each subscription and allows removal only by them or the owner. App screens embed on isolated opaque same-site origins; live routing acceptance is pending."
       metadata { code "apps/pool"; libraries "apps|react|react-dom"; bindings "ctx=basalt.router" }
     }
 

@@ -59,7 +59,7 @@ const subscription = defineProvider({
   } as Readonly<Record<string, InteractiveMethod>>,
 });
 
-const requirements = { app: { accounts: { pool, subscriptions: subscription.many() } } };
+const requirements = { app: { accounts: { pool, subscriptions: subscription.many().contributed() } } };
 type Context = QueryContext<typeof requirements>;
 // Connect steps run before every slot is filled, so the pool's own account may be missing there.
 type Caller = Context | ConnectContext<typeof requirements>;
@@ -116,11 +116,11 @@ export const usage = query(
 
 export const addLoginFile = mutation(
   {
-    description: "Connect a subscription from a login file the pool backend exported",
+    description: "Pool owner only: connect a subscription from an exported login file. Members use Accounts → Connect new account.",
     approval: never(),
     input: object({ file: json() }),
   },
-  async (ctx: Context, { file }) => control<LoginFileAdded>(ctx, "/login-files", { method: "POST", body: file }),
+  async (ctx: Context, { file }) => control<LoginFileAdded>(ctx, "/login-files/tool", { method: "POST", body: file }),
 );
 
 export const removeAccount = mutation(
@@ -167,7 +167,7 @@ const sessionPath = (session: string) => `?session=${encodeURIComponent(session)
 
 export default defineApp(requirements, {
   tools: router({ view, usage, addLoginFile, removeAccount, computerContext }),
-  // The pool Worker refuses every step unless the caller owns the pool.
+  // The tools service authorizes contribution; the Worker records and checks the caller.
   connect: {
     subscriptions: {
       start: async (ctx, { method }) => {

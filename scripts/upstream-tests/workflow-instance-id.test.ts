@@ -17,6 +17,7 @@ const { catalogAppJobPrefix } = await load("apps/hosted/server/src/contracts/cat
 const { poolRotationJobPrefix } = await load("apps/hosted/server/src/contracts/pool-defaults.ts");
 const uuid = "00000000-0000-4000-8000-000000000001";
 const catalogJob = `${catalogAppJobPrefix}${"a".repeat(40)}:${uuid}`;
+const departureJob = `contributed-departure-${uuid}`;
 const poolJob = `${poolRotationJobPrefix}${"b".repeat(64)}:${uuid}`;
 const valid = (id: string) => /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/.test(id) && id.length <= 100 && !/[\r\n]/.test(id);
 
@@ -88,6 +89,8 @@ for (const encrypted of [false, true]) test(`retained colon jobs dispatch and re
         id text primary key, kind text not null, status text not null default 'queued',
         available_at timestamptz not null default now(), updated_at timestamptz not null default now())`;
       yield* sql`insert into hosted_provisioning (id, kind) values (${catalogJob}, 'member'), (${poolJob}, 'member'), (${`team-${uuid}`}, 'team')`;
+      yield* sql`create table hosted_contributed_departure_jobs (id text primary key, status text not null default 'queued')`;
+      yield* sql`insert into hosted_contributed_departure_jobs (id) values (${departureJob})`;
       const dispatch = dispatchProvisioning((job: string) => Effect.sync(() => { installs.push(job); })).pipe(
         Effect.provideService(GroupDatabase, Effect.succeed(sql)),
         Effect.provideService(WorkerEnvironment, { Provisioning: binding }),
@@ -103,6 +106,8 @@ for (const encrypted of [false, true]) test(`retained colon jobs dispatch and re
         assert.deepEqual(request.params, { id: job }, "the handler receives the original job ID");
         assert.equal(request.mode, encrypted ? "encrypted" : "legacy");
       }
+      assert.equal(calls.length, 3, "departures never enter provisioning workflows");
+      assert.equal((yield* sql`select status from hosted_contributed_departure_jobs where id = ${departureJob}`)[0].status, "queued");
       assert.deepEqual(installs, [`team-${uuid}`]);
       const [running] = yield* sql`select id, status from hosted_provisioning where id = ${catalogJob}`;
       assert.deepEqual(running, { id: catalogJob, status: "running" });

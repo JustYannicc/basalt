@@ -1,5 +1,6 @@
 import type { PoolChoice } from "../../apps/pool/ui/computer-types.ts";
 import { accessGrace, type AccessApplied, type AccessEnvelope, type PoolAudience } from "./access-contract.ts";
+import type { ContributionAudience } from "./contributions.ts";
 import type { ComputerHome } from "./computer-home.ts";
 import { boundPools, type ComputerStorage, type Registry, type StoredComputer } from "./computer-registry.ts";
 import { fail, object, text } from "./json.ts";
@@ -8,6 +9,7 @@ import type { PoolClaims } from "./token.ts";
 
 interface PoolEntry extends Omit<PoolAudience, "users"> {
   users: string[]; at: number; pending: string[]; provisioned?: string[]; refuseBefore?: number; deleted?: boolean;
+  contributionRemovals?: Record<string, number>;
   ownerSource?: "token" | "audience" | "own";
 }
 interface DirectoryState {
@@ -101,9 +103,10 @@ export class PoolDirectory {
   }
   private confirmsPending(pool: string, user: string, at: number, registry: Registry): boolean {
     // A failed member removal can roll back before grace expires. Deletions still refuse it.
+    const contributionAt = this.entry(pool)?.contributionRemovals?.[key(user)];
     return at >= Math.max(this.entry(pool)?.refuseBefore ?? -Infinity, this.state.people[key(user)] ?? -Infinity)
-      && Object.values(registry).some((computer) => computer.removalPending && computer.user === user
-        && boundPools(computer).includes(pool) && at > (computer.removalAt ?? Infinity));
+      && ((contributionAt !== undefined && at > contributionAt) || Object.values(registry).some((computer) => computer.removalPending && computer.user === user
+        && boundPools(computer).includes(pool) && at > (computer.removalAt ?? Infinity)));
   }
   private async recover(computer: StoredComputer, home: ComputerHome, now: number): Promise<boolean> {
     const pools = boundPools(computer);
@@ -133,7 +136,7 @@ export class PoolDirectory {
     return true;
   }
   async apply(change: AccessEnvelope, registry: Registry, home: ComputerHome, now: number,
-    saveRegistry: () => Promise<unknown>): Promise<AccessApplied> {
+    saveRegistry: () => Promise<unknown>, contributions?: (audiences: readonly ContributionAudience[], deletedPerson?: string) => Promise<void>): Promise<AccessApplied> {
     for (const computer of Object.values(registry)) {
       if (computer.removalPending && computer.removalAt === undefined)
         computer.removalAt = Math.max(-1, ...boundPools(computer).map((pool) => this.entry(pool)?.at ?? -1));
@@ -150,11 +153,17 @@ export class PoolDirectory {
         const projected = [...new Set([audience.owner, ...audience.users])];
         const users = projected.filter((user) => old?.users.includes(user) || this.allowed(audience.pool, user, change.at)
           || this.confirmsPending(audience.pool, user, change.at, registry));
-        for (const user of old?.users ?? []) if (!projected.includes(user)) this.refuse(audience.pool, user, now);
+        const contributionRemovals = { ...old?.contributionRemovals };
+        for (const user of old?.users ?? []) if (!projected.includes(user)) {
+          this.refuse(audience.pool, user, now);
+          // Contribution recovery does not depend on the person having a computer.
+          if (contributions) contributionRemovals[key(user)] = change.at;
+        }
+        for (const user of users) delete contributionRemovals[key(user)];
         const pending = new Set(old?.pending ?? []);
         for (const user of users) if (user !== audience.owner && !old?.provisioned?.includes(user)) pending.add(user);
         this.state.pools[key(audience.pool)] = { ...audience, users, at: change.at, provisioned: old?.provisioned ?? [],
-          pending: [...pending].filter((user) => users.includes(user)), refuseBefore: old?.refuseBefore, ownerSource: "audience" };
+          contributionRemovals, pending: [...pending].filter((user) => users.includes(user)), refuseBefore: old?.refuseBefore, ownerSource: "audience" };
         selected.add(audience.pool);
         for (const computer of Object.values(registry)) {
           if (!boundPools(computer).includes(audience.pool) || users.includes(computer.user)) continue;
@@ -173,6 +182,7 @@ export class PoolDirectory {
           selected.add(pool.pool);
           continue;
         }
+        if (pool.ownerSource === "audience" && pool.users.includes(change.user)) selected.add(pool.pool);
         pool.users = pool.users.filter((user) => user !== change.user);
         pool.pending = pool.pending.filter((user) => user !== change.user);
         pool.provisioned = pool.provisioned?.filter((user) => user !== change.user);
@@ -181,6 +191,10 @@ export class PoolDirectory {
       for (const computer of Object.values(registry)) if (computer.user === change.user) remove.add(computer);
     }
     await this.save(); // Refusals survive every backend failure, but expire after old intents do.
+    // Selected entries have a signed full audience or were deleted. Setup
+    // context only establishes individual access, never the full audience.
+    await contributions?.([...selected].map((id) => ({ pool: id, users: this.entry(id)!.users })),
+      change.action === "person-deleted" ? change.user : undefined);
     for (const computer of remove) {
       if (computer.state === "revoked" || (computer.state === "removed" && !computer.removalPending)) continue;
       if (!computer.removalPending) computer.beforeRemoval = { state: computer.state, link: computer.link };
@@ -211,6 +225,12 @@ export class PoolDirectory {
       await saveRegistry();
     }
     if (change.action === "person-deleted") revoked += await home.deletePerson(change.user);
+    // A failed access change keeps early rollback authority. Once it succeeds, ordinary
+    // re-shares must respect the existing grace window against in-flight projections.
+    if (contributions) {
+      for (const pool of selected) delete this.entry(pool)!.contributionRemovals;
+      await this.save();
+    }
     const provisioned = await this.provisionPending(home, selected);
     return { revoked, provisioned };
   }

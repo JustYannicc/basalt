@@ -5,7 +5,7 @@ import { AccountList } from "./accounts.tsx";
 import { productName } from "../deployment.ts";
 import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 
-/** Where the owner connects and removes subscriptions: the host's own Accounts tab for this app. */
+/** Where people connect and remove their subscriptions: the host's own Accounts tab for this app. */
 const connectHint = "Connect subscriptions from this app's Accounts tab: choose Connect new account under Subscription.";
 import { duration, lastReading } from "./usage.ts";
 import { Computers } from "./computers.tsx";
@@ -144,9 +144,7 @@ export function App({ api }: { api: PoolApi }) {
         ) : (
           <>
             <p className="mb-2 text-sm text-muted-foreground text-pretty">
-              {view.isOwner
-                ? connectHint
-                : "Shared with you. You use its accounts without seeing their credentials; only the pool's owner can add or remove them."}
+              {connectHint} Anyone in this pool can add subscriptions and remove their own. The pool's owner can remove any account.
             </p>
             <AccountList
               accounts={view.accounts}
@@ -173,12 +171,10 @@ function Empty({ view }: { view: PoolView }) {
     <div className="grid justify-items-start gap-4 rounded-lg border border-dashed border-input px-6 py-10 sm:px-10">
       <div className="grid max-w-[34rem] gap-1.5">
         <h2 className="text-base font-semibold tracking-[-0.015em]">
-          {view.isOwner ? "Connect your first subscription" : "This pool has no accounts yet"}
+          Connect your first subscription
         </h2>
         <p className="text-sm text-muted-foreground text-pretty">
-          {view.isOwner
-            ? `Requests through this pool use the subscriptions you connect, and each one's limits and resets show on this page.${offered ? ` You can connect ${offered}.` : ""} ${connectHint}`
-            : "Its owner hasn't connected a subscription. Accounts show up here once they do."}
+          {`Requests through this pool use the subscriptions its members connect, and each one's limits and resets show on this page.${offered ? ` You can connect ${offered}.` : ""} ${connectHint}`}
         </p>
       </div>
     </div>

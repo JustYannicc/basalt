@@ -19,6 +19,8 @@ async function fixture(provider = "claude") {
     files: [{ id, provider, type: provider }, { id: foreignId, provider, type: provider }] as Row[],
     raw: ` { "type": "${provider}", "access_token": "fixture-secret", "nested": { "preserve": true } }\n`,
     download: undefined as (() => Response | Promise<Response>) | undefined,
+    contributor: undefined as string | undefined,
+    contributionReads: 0,
     storageAccesses: 0,
   };
   const calls: { path: string; init?: RequestInit }[] = [];
@@ -42,8 +44,19 @@ async function fixture(provider = "claude") {
     }
     throw new Error("Unexpected fixture Home request");
   };
-  const touchedStorage = async (): Promise<never> => { state.storageAccesses++; throw new Error("Export must not access attribution storage"); };
-  const storage: ControlStorage = { get: touchedStorage, put: touchedStorage, getAlarm: touchedStorage, setAlarm: touchedStorage };
+  let allowRead = false;
+  const readStorage = async <T>(key: string): Promise<T | undefined> => {
+    if (key === "pool-contributions-v1") {
+      state.contributionReads++;
+      return { accounts: state.contributor === undefined ? {} : {
+        [JSON.stringify([pool, id])]: { pool, id, addedBy: state.contributor },
+      }, audiences: {}, deletedPeople: [] } as T;
+    }
+    if (!allowRead) return touchedStorage();
+    return undefined;
+  };
+  const touchedStorage = async (): Promise<never> => { state.storageAccesses++; throw new Error("Export must only read contribution records"); };
+  const storage: ControlStorage = { get: readStorage, put: touchedStorage, getAlarm: touchedStorage, setAlarm: touchedStorage };
   const control = new PoolControl(storage, { signingKey, home });
   const token = await signPoolToken(signingKey, { pool, owner, organization });
   async function call(route = path, options: { token?: string | null; caller?: string | null; method?: string } = {}) {
@@ -52,6 +65,7 @@ async function fixture(provider = "claude") {
     const caller = options.caller === undefined ? owner : options.caller;
     if (bearer !== null) headers.set("authorization", `Bearer ${bearer}`);
     if (caller !== null) headers.set("x-signalbox-caller", caller);
+    allowRead = route === "/pool";
     const response = await control.handle(new Request(`https://pool.invalid/pool/v1${route}`, { headers, method: options.method }));
     assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(state.storageAccesses, 0);
@@ -89,7 +103,31 @@ test("export rejects missing, invalid, and tampered tokens and non-owner callers
   for (const token of [null, "fake", parts.join(".")]) await error(await f.call(path, { token }), 401, "unauthorized");
   for (const caller of [null, "other-owner"]) await error(await f.call(path, { caller }), 403, "not_owner");
   assert.equal(f.calls.length, 0);
+  assert.equal(f.state.contributionReads, 0);
 });
+
+for (const provider of ["claude", "codex"]) {
+  test(`${provider} export allows only the owner to export owner-added and legacy accounts`, async () => {
+    const f = await fixture(provider);
+    const route = `/accounts/${id}/export?provider=${provider}`;
+    for (const contributor of [undefined, owner, "fixture-member"]) {
+      f.state.contributor = contributor;
+      for (const caller of ["fixture-member", "other-member", null]) {
+        await error(await f.call(route, { caller }), 403, "not_owner");
+      }
+      const before = downloads(f.calls).length;
+      const response = await f.call(route);
+      if (contributor === "fixture-member") {
+        await error(response, 403, "not_owner");
+        assert.equal(downloads(f.calls).length, before);
+      } else {
+        assert.equal(response.status, 200);
+        assert.equal(await response.text(), f.state.raw);
+        assert.equal(downloads(f.calls).length, before + 1);
+      }
+    }
+  });
+}
 
 test("export scopes membership to the signed pool and matches the canonical account id only", async () => {
   const f = await fixture();
