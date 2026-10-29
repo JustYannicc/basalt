@@ -572,7 +572,7 @@ index 0000000..99d63bd
 +  );
 +});
 diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
-index 567d471..daeeb16 100644
+index 567d471..056e847 100644
 --- a/packages/dashboard-start/src/implementation/registry.tsx
 +++ b/packages/dashboard-start/src/implementation/registry.tsx
 @@ -7,7 +7,7 @@
@@ -584,7 +584,7 @@ index 567d471..daeeb16 100644
  import { Cause } from "effect";
  import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
  import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
-@@ -359,6 +359,59 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
+@@ -359,6 +359,61 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
    };
  };
  
@@ -597,8 +597,10 @@ index 567d471..daeeb16 100644
 +  atom: Atom.Atom<A>,
 +): A | undefined => {
 +  const node = registry.getNodes().get(nodeKey(atom));
++  // Reading a node that is not valid would compute it, which starts the read.
++  if (node === undefined || node.currentState() !== "valid") return undefined;
 +  // SAFETY: the registry stores each atom's node under that atom's key.
-+  return node === undefined ? undefined : (node.value() as A);
++  return node.value() as A;
 +};
 +
 +/** The reads a matched route declares, from its static data, params and current values. */
@@ -644,7 +646,7 @@ index 567d471..daeeb16 100644
  /**
   * Create the registry for one router. `initialValues` are values known before rendering, such as
   * browser entry data or a server-verified session. `connect` joins it to Start's streaming.
-@@ -375,9 +428,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
+@@ -375,9 +430,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
    const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
    return {
      registry,
