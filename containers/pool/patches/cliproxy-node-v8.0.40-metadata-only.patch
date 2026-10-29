@@ -1091,10 +1091,10 @@ index 5bb761e..9c25659 100644
  	m.mu.Lock()
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
 new file mode 100644
-index 0000000..0e038ba
+index 0000000..b15e09d
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only.go
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,209 @@
 +package usage
 +
 +import (
@@ -1116,12 +1116,7 @@ index 0000000..0e038ba
 +
 +// DiagnosticSessionID keeps only the canonical opaque identity used by usage lookup.
 +func DiagnosticSessionID(value string) string {
-+	canonical := session.NormalizeToCanonicalUUID(value)
-+	id, errParse := uuid.Parse(canonical)
-+	if errParse != nil || id.Variant() != uuid.RFC4122 || (id.Version() != 4 && id.Version() != 7 && id.Version() != 8) {
-+		return ""
-+	}
-+	return canonical
++	return session.NormalizeToCanonicalUUID(value)
 +}
 +
 +type selectedModelContextKey struct{}
@@ -1311,10 +1306,10 @@ index 0000000..0e038ba
 +}
 diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
 new file mode 100644
-index 0000000..fec77cd
+index 0000000..3e6a1a3
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only_test.go
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,215 @@
 +package usage
 +
 +import (
@@ -1500,14 +1495,30 @@ index 0000000..fec77cd
 +}
 +
 +func TestMetadataOnlyPreservesCanonicalSessionCorrelation(t *testing.T) {
-+	const sessionID = "7c9a1f40-209d-4b83-8f9c-eaef07268439"
-+	ctx := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{SessionID: "header:" + sessionID})
-+	clean, record := RedactForMetadataOnly(ctx, Record{})
-+	if record.SessionID != sessionID {
-+		t.Fatal("canonical import verification session was lost before the queue")
-+	}
-+	if internallogging.GetClientRequestMetadata(clean).SessionID != "" {
-+		t.Fatal("original request metadata survived queue detachment")
++	for _, sessionID := range []string{
++		"7c9a1f40-209d-1b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-3b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-4b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-5b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-6b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-7b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-8b83-8f9c-eaef07268439",
++		"00000000-0000-0000-0000-000000000000",
++	} {
++		t.Run(sessionID, func(t *testing.T) {
++			ctx := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{SessionID: "header:" + sessionID})
++			clean, record := RedactForMetadataOnly(ctx, Record{})
++			if record.SessionID != sessionID {
++				t.Fatal("canonical session was lost before the queue")
++			}
++			if internallogging.GetClientRequestMetadata(clean).SessionID != "" {
++				t.Fatal("original request metadata survived queue detachment")
++			}
++			_, repeated := RedactForMetadataOnly(clean, record)
++			if repeated.SessionID != sessionID {
++				t.Fatal("repeat projection lost the canonical session")
++			}
++		})
 +	}
 +	_, projected := RedactForMetadataOnly(context.Background(), Record{SessionID: "private-session-content-629"})
 +	if projected.SessionID == "" || projected.SessionID == "private-session-content-629" {

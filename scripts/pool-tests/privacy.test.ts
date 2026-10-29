@@ -7,7 +7,7 @@ import { HomeClient, PoolHome } from "../../src/pool/control.ts";
 import { SharingFixture, type HomeProvider } from "./sharing-fixture.ts";
 
 interface UsageRecord {
-  id: string; failed: boolean; status_code: number; provider: string; model: string; request_id: string;
+  id: string; session_id: string; failed: boolean; status_code: number; provider: string; model: string; request_id: string;
   client: { api_key_id: number; user_id: number };
   billing: { amount: number | null; matched_price_rule: string | null };
 }
@@ -100,6 +100,15 @@ test("privacy upgrade purges released failure content and rejects future old-wri
       payload=payload::jsonb || jsonb_build_object('api_key',${quote(key.key)},'session_id',${quote(prompt)},'fail',jsonb_build_object('body',${quote(prompt)}))
       where id=${Number(rows[0]!.id)}`);
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 }, "mixed-version writes remain sanitized");
+    // The old writer and the query must agree on every canonical UUID shape.
+    for (const session of ["7c9a1f40-209d-1b83-8f9c-eaef07268439", "7c9a1f40-209d-5b83-8f9c-eaef07268439",
+      "7c9a1f40-209d-6b83-8f9c-eaef07268439", "00000000-0000-0000-0000-000000000000"]) {
+      fixture.diagnostics.sql(`update usage set session_id=${quote(session)},
+        payload=payload::jsonb || jsonb_build_object('session_id',${quote(session)}) where id=${Number(rows[0]!.id)}`);
+      const found = await fixture.data<{ items: UsageRecord[] }>(`/usage/records?session_id=${session}&limit=200`);
+      assert.equal(found.items.length, 1, "old-writer UUID remains queryable");
+      assert.equal(found.items[0]!.session_id, session);
+    }
     await fixture.replaceImage(candidate);
     assert.equal((await records()).length, rows.length, "repeating the step does not drop or duplicate usage");
     assert.deepEqual(await billingSnapshot(), billingAfter, "reboot preserves the same priced charges and totals");

@@ -279,7 +279,7 @@ index 680fffb..3e06df6 100644
  		if errMigrate := migration.run(db); errMigrate != nil {
 diff --git a/internal/cluster/diagnostics_privacy.go b/internal/cluster/diagnostics_privacy.go
 new file mode 100644
-index 0000000..7883bbc
+index 0000000..77bf368
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy.go
 @@ -0,0 +1,353 @@
@@ -631,7 +631,7 @@ index 0000000..7883bbc
 +func diagnosticSessionID(value string) string {
 +	value = strings.TrimSpace(value)
 +	id, errParse := uuid.Parse(value)
-+	if errParse != nil || id.Variant() != uuid.RFC4122 || id.String() != strings.ToLower(value) || (id.Version() != 4 && id.Version() != 7 && id.Version() != 8) {
++	if errParse != nil || id.String() != strings.ToLower(value) {
 +		return ""
 +	}
 +	return id.String()
@@ -1282,7 +1282,7 @@ index 0000000..40f5b85
 +}
 diff --git a/internal/cluster/diagnostics_privacy_postgres.go b/internal/cluster/diagnostics_privacy_postgres.go
 new file mode 100644
-index 0000000..782906c
+index 0000000..22e1b2f
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_postgres.go
 @@ -0,0 +1,405 @@
@@ -1588,7 +1588,7 @@ index 0000000..782906c
 +    NEW.source := '';
 +    NEW.effort := '';
 +    v_text := COALESCE(NULLIF(btrim(v_raw->>'session_id'), ''), NULLIF(btrim(NEW.session_id), ''));
-+    IF lower(v_text) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[478][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN
++    IF lower(v_text) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
 +        NEW.session_id := lower(v_text);
 +        NEW.payload := NEW.payload || jsonb_build_object('session_id', NEW.session_id);
 +    ELSE
@@ -1693,10 +1693,10 @@ index 0000000..782906c
 +}
 diff --git a/internal/cluster/diagnostics_privacy_test.go b/internal/cluster/diagnostics_privacy_test.go
 new file mode 100644
-index 0000000..e0217ca
+index 0000000..8cdb27f
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_test.go
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,265 @@
 +package cluster
 +
 +import (
@@ -1841,7 +1841,8 @@ index 0000000..e0217ca
 +		t.Fatal(errCreate)
 +	}
 +	body := "historical-response-sentinel-363"
-+	payload := `{"timestamp":"2026-10-28T12:00:00Z","provider":"openai","model":"gpt-4.1","api_key":"` + key.APIKey + `","failed":true,"fail":{"status_code":400,"body":"` + body + `"},"tokens":{"total_tokens":7}}`
++	const legacySession = "7c9a1f40-209d-1b83-8f9c-eaef07268439"
++	payload := `{"timestamp":"2026-10-28T12:00:00Z","session_id":"` + legacySession + `","provider":"openai","model":"gpt-4.1","api_key":"` + key.APIKey + `","failed":true,"fail":{"status_code":400,"body":"` + body + `"},"tokens":{"total_tokens":7}}`
 +	record, errAppend := NewRepository(db).AppendUsageWithRuntime(t.Context(), payload, UsageRuntimeMetadata{})
 +	if errAppend != nil {
 +		t.Fatal(errAppend)
@@ -1875,6 +1876,9 @@ index 0000000..e0217ca
 +	}
 +	if stored.TotalTokens != 7 || stored.FailStatusCode != 400 || stored.ID != record.ID {
 +		t.Fatal("purge changed counts or status")
++	}
++	if stored.SessionID != legacySession || stored.RootSessionID != legacySession {
++		t.Fatal("purge lost the canonical historical session")
 +	}
 +	assertPrivateBytesAbsent(t, stored, key.APIKey, body)
 +	assertPrivateBytesAbsent(t, logs.String(), key.APIKey, body)
@@ -1932,14 +1936,26 @@ index 0000000..e0217ca
 +func TestDiagnosticsPrivacyPreservesCanonicalSessionLookup(t *testing.T) {
 +	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
 +	db := privacyTestDB(t)
-+	const sessionID = "7c9a1f40-209d-4b83-8f9c-eaef07268439"
-+	record, errAppend := NewRepository(db).AppendUsageWithRuntime(t.Context(), `{"timestamp":"2026-10-29T12:00:00Z","session_id":"`+sessionID+`","failed":false}`, UsageRuntimeMetadata{})
-+	if errAppend != nil {
-+		t.Fatal(errAppend)
-+	}
-+	var count int64
-+	if errCount := db.Model(&UsageRecord{}).Where("session_id = ?", sessionID).Count(&count).Error; errCount != nil || count != 1 || record.SessionID != sessionID {
-+		t.Fatal("canonical session lookup stopped finding usage")
++	for _, sessionID := range []string{
++		"7c9a1f40-209d-1b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-3b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-4b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-5b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-6b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-7b83-8f9c-eaef07268439",
++		"7c9a1f40-209d-8b83-8f9c-eaef07268439",
++		"00000000-0000-0000-0000-000000000000",
++	} {
++		t.Run(sessionID, func(t *testing.T) {
++			record, errAppend := NewRepository(db).AppendUsageWithRuntime(t.Context(), `{"timestamp":"2026-10-29T12:00:00Z","session_id":"`+sessionID+`","failed":false}`, UsageRuntimeMetadata{})
++			if errAppend != nil {
++				t.Fatal(errAppend)
++			}
++			var count int64
++			if errCount := db.Model(&UsageRecord{}).Where("session_id = ?", sessionID).Count(&count).Error; errCount != nil || count != 1 || record.SessionID != sessionID {
++				t.Fatal("canonical session lookup stopped finding usage")
++			}
++		})
 +	}
 +	raw, errSanitize := SanitizeUsagePayloadSecrets(`{"session_id":"private-client-session-text-289"}`)
 +	if errSanitize != nil || strings.Contains(raw, "private-client-session-text-289") {
