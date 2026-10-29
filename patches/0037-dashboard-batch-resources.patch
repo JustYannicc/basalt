@@ -2,7 +2,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/batch-execution.ts b/apps/host
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/batch-execution.ts
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,30 @@
 +import { dashboardBatchPath } from "@executor-js/dashboard-start/batch";
 +import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 +import { Context, Effect, Option, Scope } from "effect";
@@ -17,7 +17,11 @@ new file mode 100644
 +  Effect.gen(function* () {
 +    const request = yield* HttpServerRequest.HttpServerRequest;
 +    const url = HttpServerRequest.toURL(request);
-+    if (request.method !== "POST" || Option.isNone(url) || url.value.pathname !== dashboardBatchPath)
++    if (
++      request.method !== "POST" ||
++      Option.isNone(url) ||
++      url.value.pathname !== dashboardBatchPath
++    )
 +      return yield* handler;
 +    // Fork before the reads: their cleanup runs before these shared resources close.
 +    const scope = yield* Scope.fork(yield* Effect.scope, "sequential");
@@ -94,7 +98,7 @@ diff --git a/e2e/tests/cloud-dashboard-batch-resources.spec.ts b/e2e/tests/cloud
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/cloud-dashboard-batch-resources.spec.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,127 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Redacted, Schedule, Schema } from "effect";
 +import { HttpClient, HttpClientRequest } from "effect/http";
@@ -184,7 +188,9 @@ new file mode 100644
 +                const response = yield* client.execute(request);
 +                expect(response.status).toBe(200);
 +                const text = yield* response.text;
-+                const answers = yield* Effect.forEach(text.trim().split("\n"), decodeAnswer);
++                const answers = yield* Effect.forEach(text.trim().split("\n"), (line) =>
++                  decodeAnswer(line),
++                );
 +                expect(answers.map(({ id }) => id).sort((a, b) => a - b)).toEqual(
 +                  reads.map((_, id) => id),
 +                );
@@ -195,11 +201,13 @@ new file mode 100644
 +          { concurrency: "unbounded" },
 +        ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 +        for (const trace of traces) {
-+          // Resource initialization finishes before its read, so all eight read spans bound the count.
++          // Exports can arrive out of order; wait for the reads and both initialization spans.
 +          const spans = yield* telemetry.query(trace).pipe(
 +            Effect.flatMap((result) =>
 +              result.data.filter(({ span }) => span.operationName === "dashboard.batch.read")
-+                .length === reads.length
++                .length === reads.length &&
++              result.data.some(({ span }) => span.operationName === "runtime.cloud.database.initialize") &&
++              result.data.some(({ span }) => span.operationName === "runtime.cloud.executor.initialize")
 +                ? Effect.succeed(result.data)
 +                : Effect.fail(new Error("The completed batch trace has not reached Motel")),
 +            ),
