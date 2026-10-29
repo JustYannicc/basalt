@@ -72,13 +72,24 @@ test("privacy upgrade purges released failure content and rejects future old-wri
     assert.equal(retained.length, oldRows.length, "purge preserves usage counts");
     assert.ok(retained.every((row) => row.client.api_key_id === key.keyId && row.client.user_id === key.userId), "safe identity survives purge");
     assert.deepEqual(await billingSnapshot(), billingBefore, "purge preserves amounts, price snapshots, token totals and balances");
+    const newSuccess = await fixture.model(key.key, "privacy-priced-after-upgrade");
+    assert.equal(newSuccess.status, 200);
+    await newSuccess.text();
+    const successfulRows = await waitForCount(oldRows.length + 1, (items) => items.filter((row) => row.billing.amount === 0.02).length === 2);
+    assert.ok(successfulRows.some((row) => !row.failed && row.model === producer.model && row.client.api_key_id === key.keyId),
+      "Home-selected model and client identity survive new successful usage");
+    const billingAfter = await billingSnapshot();
+    assert.equal(billingAfter.amount, 0.04, "new successful request still uses its price rule");
+    for (const charge of billingBefore.charges) {
+      assert.deepEqual(billingAfter.charges.find((row) => row.id === charge.id), charge, "new charging preserves historical charges");
+    }
     const fingerprint = `sha256:${createHash("sha256").update(key.key).digest("hex")}`;
     assert.equal((await fetch(`${fixture.node}/v1/models`, { headers: { Authorization: `Bearer ${fingerprint}` } })).status, 401,
       "diagnostic identity is never an authentication credential");
     const failure = await fixture.model(key.key, "privacy-new", "fail");
     assert.equal(failure.status, 400);
     assert.ok((await failure.text()).includes(response));
-    const rows = await waitForCount(oldRows.length + 1);
+    const rows = await waitForCount(successfulRows.length + 1);
     assert.ok(rows.some((row) => row.failed && row.status_code === 400 && row.request_id && row.client.api_key_id === key.keyId));
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 });
 
@@ -91,7 +102,7 @@ test("privacy upgrade purges released failure content and rejects future old-wri
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 }, "mixed-version writes remain sanitized");
     await fixture.replaceImage(candidate);
     assert.equal((await records()).length, rows.length, "repeating the step does not drop or duplicate usage");
-    assert.deepEqual(await billingSnapshot(), billingBefore, "reboot preserves the same priced charges and totals");
+    assert.deepEqual(await billingSnapshot(), billingAfter, "reboot preserves the same priced charges and totals");
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 });
     console.log("PASS: upgrade, forced failure, mixed writer and repeated boot retain no diagnostic content or tokens");
   } finally {

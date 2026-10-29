@@ -677,10 +677,10 @@ index e1db297..5f6cfaa 100644
  	ginCtx := ginContextFrom(ctx)
 diff --git a/internal/runtime/executor/helps/metadata_only_test.go b/internal/runtime/executor/helps/metadata_only_test.go
 new file mode 100644
-index 0000000..abbe6c7
+index 0000000..9a56630
 --- /dev/null
 +++ b/internal/runtime/executor/helps/metadata_only_test.go
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,96 @@
 +package helps
 +
 +import (
@@ -693,6 +693,7 @@ index 0000000..abbe6c7
 +	"github.com/gin-gonic/gin"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 +	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 +)
 +
@@ -761,8 +762,23 @@ index 0000000..abbe6c7
 +		t.Fatalf("metadata-only mode stored deferred log state: %v", ginCtx.Keys)
 +	}
 +}
++
++func TestMetadataOnlyReporterPreservesHomeSelectedModel(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	auth := &cliproxyauth.Auth{ID: "home-selected-account"}
++	ctx := coreusage.WithSelectedModel(context.Background(), auth.ID, "fixture-home-selected-model")
++	reporter := NewUsageReporter(ctx, "home-provider", "fixture-home-selected-model", auth)
++	_, record := coreusage.RedactForMetadataOnly(ctx, reporter.buildRecord(coreusage.Detail{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}, false))
++	if record.Model != "fixture-home-selected-model" || record.Failed || record.Detail.TotalTokens != 3 {
++		t.Fatal("successful Home execution lost its selected model, outcome or tokens")
++	}
++	unknown := NewUsageReporter(ctx, "home-provider", "private-client-model", auth)
++	if unknown.model != "" {
++		t.Fatal("client model text bypassed the Home selection")
++	}
++}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index 6a2b951..afc3477 100644
+index 6a2b951..4ea78ad 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
 @@ -16,6 +16,7 @@ import (
@@ -807,7 +823,7 @@ index 6a2b951..afc3477 100644
 +		}
 +	}
 +	if metadataOnly {
-+		if !usage.RegisteredModel(provider, authID, model) {
++		if !usage.DiagnosticModelAllowed(ctx, provider, authID, model) {
 +			model = ""
 +		}
 +		apiKey = ""
@@ -969,6 +985,79 @@ index 6a2b951..afc3477 100644
  		if payload := jsonPayload(line); len(payload) > 0 {
  			if model, _ := extractClaudeResponseModelEvent(payload); model != "" {
  				b.responseModel = model
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+index 77871d2..24714ca 100644
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -8,6 +8,7 @@ import (
+ 	"time"
+ 
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
+ 	"github.com/tidwall/sjson"
+ )
+ 
+@@ -310,7 +311,15 @@ func homeExecutionAttemptContext(ctx context.Context, selection *HomeDispatchSel
+ 	if selection == nil {
+ 		return nil, func() {}, fmt.Errorf("Home dispatch selection is nil")
+ 	}
+-	return selection.AttemptContext(ctx)
++	ctx, release, errBind := selection.AttemptContext(ctx)
++	if errBind != nil {
++		return ctx, release, errBind
++	}
++	if auth := selection.CloneAuth(); auth != nil {
++		model := canonicalHomeConcurrencyModelKey(auth.Attributes[homeUpstreamModelAttributeKey])
++		ctx = usage.WithSelectedModel(ctx, auth.ID, model)
++	}
++	return ctx, release, nil
+ }
+ 
+ func wrapHomeStream(ctx context.Context, result *cliproxyexecutor.StreamResult, selection *HomeDispatchSelection, releaseAttempt func()) *cliproxyexecutor.StreamResult {
+diff --git a/sdk/cliproxy/auth/home_execution_paths_test.go b/sdk/cliproxy/auth/home_execution_paths_test.go
+index e45b9b0..a09c50b 100644
+--- a/sdk/cliproxy/auth/home_execution_paths_test.go
++++ b/sdk/cliproxy/auth/home_execution_paths_test.go
+@@ -1522,3 +1522,39 @@ func TestHomePrepareFailureResultPreservesRequestMetadata(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestMetadataOnlyHomeDispatchPreservesSelectedModel(t *testing.T) {
++	t.Setenv("CLIPROXY_DIAGNOSTICS_METADATA_ONLY", "1")
++	registry := executionregistry.New()
++	pending, errBegin := registry.BeginDispatch()
++	if errBegin != nil {
++		t.Fatal(errBegin)
++	}
++	scope, errInstall := registry.Install(pending, executionregistry.ScopeSpec{CredentialID: "home-only-credential", Model: "fixture-home-only-model"})
++	if errInstall != nil {
++		t.Fatal(errInstall)
++	}
++	selectedAuth := &Auth{ID: "home-only-credential", Provider: "home-only-provider", Attributes: map[string]string{homeUpstreamModelAttributeKey: "fixture-home-only-model"}}
++	selection, errSelection := newHomeDispatchSelection(selectedAuth, nil, "home-only-provider", scope)
++	if errSelection != nil {
++		t.Fatal(errSelection)
++	}
++	defer selection.End("test_finished")
++	ctx, release, errBind := homeExecutionAttemptContext(context.Background(), selection)
++	if errBind != nil {
++		t.Fatal(errBind)
++	}
++	defer release()
++	clean, record := coreusage.RedactForMetadataOnly(ctx, coreusage.Record{Provider: selection.Provider, AuthID: selectedAuth.ID, Model: "fixture-home-only-model"})
++	if record.Model != "fixture-home-only-model" {
++		t.Fatal("metadata-only usage lost the Home-selected model absent from the local registry")
++	}
++	_, arbitrary := coreusage.RedactForMetadataOnly(ctx, coreusage.Record{Provider: selection.Provider, AuthID: selectedAuth.ID, Model: "private-user-model-text"})
++	if arbitrary.Model != "" {
++		t.Fatal("a different client model bypassed the selected model boundary")
++	}
++	_, repeated := coreusage.RedactForMetadataOnly(clean, record)
++	if repeated.Model != record.Model {
++		t.Fatal("queued model changed on repeated sanitization")
++	}
++}
 diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
 index 5bb761e..9c25659 100644
 --- a/sdk/cliproxy/usage/manager.go
@@ -1002,10 +1091,10 @@ index 5bb761e..9c25659 100644
  	m.mu.Lock()
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
 new file mode 100644
-index 0000000..fdc5fb4
+index 0000000..9f1c7a5
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only.go
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,200 @@
 +package usage
 +
 +import (
@@ -1023,6 +1112,33 @@ index 0000000..fdc5fb4
 +)
 +
 +type metadataOnlySanitizedContextKey struct{}
++
++type selectedModelContextKey struct{}
++
++type selectedModel struct {
++	accountID string
++	model     string
++}
++
++// WithSelectedModel binds the model authorized by Home's credential selection.
++// Callers must supply the selected upstream model, never the client model text.
++func WithSelectedModel(ctx context.Context, accountID, model string) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, selectedModelContextKey{}, selectedModel{strings.TrimSpace(accountID), strings.TrimSpace(model)})
++}
++
++// DiagnosticModelAllowed accepts a local model or the model selected by Home.
++func DiagnosticModelAllowed(ctx context.Context, provider, accountID, model string) bool {
++	if ctx != nil {
++		if selected, ok := ctx.Value(selectedModelContextKey{}).(selectedModel); ok && selected.accountID != "" &&
++			selected.accountID == strings.TrimSpace(accountID) && selected.model != "" && strings.EqualFold(selected.model, strings.TrimSpace(model)) {
++			return true
++		}
++	}
++	return RegisteredModel(provider, accountID, model)
++}
 +
 +// RegisteredModel reports whether model is present in the live registry for
 +// this account or provider. User supplied model text is omitted when it is not.
@@ -1105,7 +1221,7 @@ index 0000000..fdc5fb4
 +
 +	record.Provider = strings.TrimSpace(record.Provider)
 +	record.ExecutorType = strings.TrimSpace(record.ExecutorType)
-+	if RegisteredModel(record.Provider, record.AuthID, record.Model) {
++	if DiagnosticModelAllowed(ctx, record.Provider, record.AuthID, record.Model) {
 +		record.Model = strings.TrimSpace(record.Model)
 +	} else {
 +		record.Model = ""

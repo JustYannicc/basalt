@@ -25,7 +25,7 @@
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "cliproxy-node-v8.0.40-metadata-only.patch",
-          "sha256": "484fc1a88fac0096fd3b501ad464f453469d6db54040ab378e565ebe918ba90c",
+          "sha256": "80343d3426ce8b98b5d29ad8d94beb6bbd51c446fe72d16b20a11b4ad008b7c1",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
