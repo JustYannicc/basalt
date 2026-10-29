@@ -6,7 +6,7 @@ import { backendUserName } from "../../src/pool/backend-users.ts";
 import { capMessage, rewriteCapResponse } from "../../src/pool/cap-message.ts";
 import { readCap } from "../../src/pool/caps.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
-import { HomeClient, PoolHome } from "../../src/pool/control.ts";
+import { handleControl, HomeClient, PoolHome } from "../../src/pool/control.ts";
 import { PoolUsage, summaryPath } from "../../src/pool/pool-usage.ts";
 import { UsageLedger } from "../../src/pool/usage-summary.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
@@ -14,6 +14,7 @@ import { MemoryStorage, SharingFixture, type HomeProvider } from "./sharing-fixt
 
 interface Record {
   id: string; timestamp: string; provider: string; model: string;
+  credential: { credential_id: string | null };
   client: { api_key_id: number; user_id: number; username: string };
   tokens: { input_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; output_tokens: number; total_tokens: number };
   token_breakdown?: { quality: string; total_tokens: number; input: { uncached_tokens: number; cache_read_tokens: number; cache_write_tokens: number }; output: { total_tokens: number } };
@@ -65,6 +66,12 @@ function slices(result: Pick<UsageSummary, "total" | "models" | "days">, records
   }
 }
 
+function accounts(result: UsageSummary, records: Record[]) {
+  const ids = [...new Set(records.map((row) => row.credential.credential_id).filter((id): id is string => !!id))].sort();
+  assert.deepEqual(result.accounts, ids.map((account) => ({ account, ...total(records.filter((row) => row.credential.credential_id === account)) })),
+    "account slices match Home credential ids and only the caller's permitted records");
+}
+
 const signingKey = "ab".repeat(32), owner = "fixture-owner", a = "fixture-member-a", b = "fixture-member-b";
 test("real pinned Home/node: owner/member usage isolation, prices, second pool and cap enforcement", { timeout: 420_000 }, async () => {
   const fixture = new SharingFixture();
@@ -75,6 +82,29 @@ test("real pinned Home/node: owner/member usage isolation, prices, second pool a
     for (const [pool, provider] of [["pool-a", "fixture-p1"], ["pool-b", "fixture-p2"]]) {
       await new PoolHome(client, pool!).add([providers.find((row) => row.name === provider)!.keys[0]!.id]);
     }
+    // Config API keys are absent from /credentials. Use a disabled OAuth file for view proof.
+    await fixture.data("/credentials", "POST", { type: "codex", email: "fixture-limits@example.test", disabled: true,
+      access_token: "fixture-disabled-codex" });
+    const files = await fixture.data<{ files: { id: string; email?: string }[] }>("/credentials");
+    const fixtureId = files.files.find((row) => row.email === "fixture-limits@example.test")!.id;
+    await new PoolHome(client, "limits-fixture").add([fixtureId]);
+    const viewToken = await signPoolToken(signingKey, { pool: "limits-fixture", owner, organization: "fixture-org" });
+    const response = await handleControl(new Request("https://pool.example.test/pool/v1/pool", {
+      headers: { authorization: `Bearer ${viewToken}`, [callerHeader]: owner },
+    }), { signingKey, home: (path, init) => fixture.fetchHome(path, init), attribution: null });
+    assert.equal(response.status, 200, await response.clone().text());
+    const view = await response.json() as import("../../apps/pool/contract.ts").PoolView;
+    const account = view.accounts.find((row) => row.id === fixtureId)!;
+    const detail = await fixture.data<{ credential: { earliest_reset_at: string | null }; collection: { freshness: string; status: string; observed_at: string | null; next_probe_at: string | null }; reset_credits: null; windows: unknown[] }>(`/quota/credentials/${encodeURIComponent(fixtureId)}`);
+    assert.ok(account);
+    assert.equal(account.freshness, detail.collection.freshness);
+    assert.equal(account.readingFailed, detail.collection.status === "failed");
+    assert.equal(account.observedAt, detail.collection.observed_at);
+    assert.equal(account.nextReadAt, detail.collection.next_probe_at);
+    assert.equal(account.earliestResetAt, detail.credential.earliest_reset_at);
+    assert.equal(account.bankedResets, detail.reset_credits);
+    assert.deepEqual(account.windows, detail.windows);
+    console.log("PASS: fixture account limit metadata matches pinned Home detail, including never/unsupported");
     const keys = [await home.mint(owner, "pool-a", "owner-computer", owner), await home.mint(a, "pool-a", "member-a-computer", owner),
       await home.mint(b, "pool-a", "member-b-computer", owner), await home.mint(a, "pool-b", "own-computer", a)];
     assert.equal(new Set(keys.map((key) => key.userId)).size, 4);
@@ -121,7 +151,7 @@ test("real pinned Home/node: owner/member usage isolation, prices, second pool a
     const shared = rows.filter((row) => row.client.api_key_id !== keys[3]!.keyId);
     const poolSummary = await summary(owner);
     assert.equal(poolSummary.scope, "pool"); assert.equal(poolSummary.cap, null);
-    slices(poolSummary, shared);
+    slices(poolSummary, shared); accounts(poolSummary, shared);
     assert.deepEqual(poolSummary.members!.map((row) => row.member), [owner, a, b]);
     assert.ok(Object.hasOwn(poolSummary, "accountsNeeded"));
     for (const [index, person] of [owner, a, b].entries()) {
@@ -135,10 +165,11 @@ test("real pinned Home/node: owner/member usage isolation, prices, second pool a
       const result = await summary(person);
       assert.equal(result.scope, "you"); assert.equal(result.cap, null);
       assert.equal(Object.hasOwn(result, "members"), false); assert.equal(Object.hasOwn(result, "accountsNeeded"), false);
-      slices(result, own);
+      slices(result, own); accounts(result, own);
     }
     const ownPool = await summary(a, "pool-b");
     assert.equal(ownPool.scope, "pool"); slices(ownPool, rows.filter((row) => row.client.api_key_id === keys[3]!.keyId));
+    accounts(ownPool, rows.filter((row) => row.client.api_key_id === keys[3]!.keyId));
     console.log("PASS 2: totals, tokens, cost, models and days match Home by key; members and second pool stay isolated");
     await usage.setCap("pool-a", owner, a, 0.01);
     const cap = await until(() => readCap(client, a, "pool-a"), (cap) => cap !== null && cap.used >= 0.05) as Cap;
@@ -208,6 +239,7 @@ test("real Home: late landing, removed credentials, switched key attribution and
     const removed = await records(); assert.equal(removed.length, 2);
     await new UsageLedger(storage, client).sync(landedSync);
     const result = await ledger.summary("pool-a", options);
+    accounts(result, removed);
     assert.equal(result.total.requests, 2); assert.equal(result.total.unpriced, 1); assert.equal(result.total.cost, 0);
     assert.equal((await ledger.summary("pool-b", options)).total.requests, 0);
     const cold = new UsageLedger(new MemoryStorage(), client); await cold.sync(landedSync);

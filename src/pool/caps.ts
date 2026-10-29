@@ -1,6 +1,7 @@
 import { isWeeklyCap, type Cap } from "../../apps/pool/contract.ts";
 import { backendUserName } from "./backend-users.ts";
 import { ComputerHome } from "./computer-home.ts";
+import { mapBounded } from "./bounded.ts";
 import type { HomeClient } from "./control.ts";
 import { fail, post, rows, unavailable, type Json } from "./json.ts";
 
@@ -37,12 +38,10 @@ export async function readCaps(home: HomeClient, pool: string, people: readonly 
   const byName = new Map(users.map((user) => [user.username, user]));
   const unique = [...new Set(people)];
   // Bound Home's concurrent usage queries for large owner lists.
-  for (let start = 0; start < unique.length; start += 4) {
-    await Promise.all(unique.slice(start, start + 4).map(async (person) => {
-      const user = byName.get(await backendUserName(person, pool));
-      caps.set(person, !user || user.limit_7d_credits === null ? null : await capForUser(home, user));
-    }));
-  }
+  await mapBounded(unique, async (person) => {
+    const user = byName.get(await backendUserName(person, pool));
+    caps.set(person, !user || user.limit_7d_credits === null ? null : await capForUser(home, user));
+  });
   return caps;
 }
 

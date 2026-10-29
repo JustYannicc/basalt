@@ -7,7 +7,7 @@ const now = Date.parse("2026-10-23T12:00:00Z");
 const hours = (count: number) => count * 3_600_000;
 
 function window(overrides: Partial<UsageWindow>): UsageWindow {
-  return { id: "w", label: "Weekly", remainingRatio: 0.5, resetAt: null, windowSeconds: null, ...overrides };
+  return { id: "w", label: "Weekly", remainingRatio: 0.5, resetAt: null, windowSeconds: null, observedAt: null, ...overrides };
 }
 
 function account(overrides: Partial<Account>): Account {
@@ -20,6 +20,7 @@ function account(overrides: Partial<Account>): Account {
     message: null,
     windows: [],
     observedAt: null,
+    freshness: "never", readingFailed: false, nextReadAt: null, earliestResetAt: null, bankedResets: null,
     ...overrides,
   };
 }

@@ -66,7 +66,7 @@ export class PoolUsage {
       const readings = accountsView(files, quota, accounts).map((account) => {
         const raw = byId.get(account.id), windows = rows(raw?.primary_windows);
         const times = [Date.parse(account.observedAt ?? ""), ...windows.map((window) => Date.parse(text(window.observed_at) ?? ""))];
-        const valid = raw?.freshness === "fresh" && ["success", "partial"].includes(text(raw.collection_status) ?? "")
+        const valid = account.freshness === "fresh" && ["success", "partial"].includes(text(raw?.collection_status) ?? "")
           && windows.length > 0 && windows.every((window) => ["healthy", "low", "exhausted"].includes(text(window.status) ?? ""))
           && times.every((at) => Number.isFinite(at) && at <= now.getTime());
         return { ...account, observedAt: valid ? new Date(Math.min(...times)).toISOString() : null };

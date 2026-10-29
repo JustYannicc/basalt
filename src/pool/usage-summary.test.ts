@@ -83,7 +83,7 @@ test("UTC buckets, retention, null pricing and separate pools", async () => {
   await ledger.sync(new Date("2026-10-23T23:59:59.999Z")); await ledger.sync(now);
   const result = await ledger.summary("pool-a", options()); assert.deepEqual(result.days.map((day) => [day.day, day.requests]), [["2026-10-23", 1], ["2026-10-24", 1]]);
   assert.equal(result.total.cost, 0.25); assert.equal(result.total.unpriced, 1); assert.equal((await ledger.summary("pool-b", options())).total.cost, 7);
-  const chunks = new ChunkStorage(storage); assert.equal(await chunks.get("usage-v1:pool:pool-a:2026-09-23"), undefined); assert.ok(await chunks.get("usage-v1:pool:pool-a:2026-09-24"));
+  const chunks = new ChunkStorage(storage); assert.equal(await chunks.get("usage-v1:pool:pool-a:2026-09-23"), undefined); assert.ok(await chunks.get("usage-v2:model:pool-a:2026-09-24"));
   assert.equal((await ledger.summary("pool-a", options("owner", 1))).total.requests, 1);
   for (let i = 0; i < 31; i++) await new UsageLedger(storage, home).sync(now);
   assert.ok(![...storage.values.keys()].some((key) => key.startsWith("usage-v1:seen:2026-09-23")));
@@ -158,7 +158,7 @@ test("quiet reconciliation batches receipts, never reads old buckets and skips u
   home.records = await Promise.all(Array.from({ length: 31 }, (_, i) => record(`day-${i}`, new Date(now.getTime() - i * 86400000 - 60000).toISOString()))); await ledger.sync(now);
   storage.ops = []; await ledger.sync(now);
   assert.equal(storage.ops.filter((op) => op.kind.startsWith("put") || op.kind.startsWith("delete")).length, 0);
-  assert.ok(storage.ops.every((op) => op.keys.every((key) => !key.startsWith("usage-v1:pool:"))));
+  assert.ok(storage.ops.every((op) => op.keys.every((key) => !key.startsWith("usage-v2:model:"))));
   assert.ok(storage.ops.some((op) => op.kind === "getMany" && op.keys.length === 31));
   storage.ops = []; await ledger.sync(new Date(now.getTime() + 300000));
   const writes = storage.ops.filter((op) => op.kind.startsWith("put")).flatMap((op) => op.keys);
@@ -169,7 +169,7 @@ test("quiet reconciliation batches receipts, never reads old buckets and skips u
   storage.ops = []; const summary = await ledger.summary("pool-a", options("member-a"));
   assert.equal(summary.total.requests, 30);
   assert.ok(storage.ops.every((op) => op.kind === "getMany")); assert.equal(storage.ops.length, 2);
-  assert.ok(storage.ops.some((op) => op.keys.length === 31));
+  assert.ok(storage.ops.some((op) => op.keys.length === 61));
 });
 
 class TransactionMemory extends BatchedMemory {
@@ -244,7 +244,24 @@ for (const version of [undefined, 2, 3]) test(`legacy v${version} buckets and re
   }
   await ledger.sync(now); await ledger.sync(now);
   assert.equal((await ledger.summary("pool-a", options())).total.requests, 1);
-  assert.equal((await chunks.get<{ version: number }>("usage-v1:cursor"))!.version, 4);
+  assert.equal((await chunks.get<{ version: number }>("usage-v1:cursor"))!.version, 5);
+});
+
+test("v4 mixed buckets migrate to separate person-model and person-account totals", async () => {
+  const storage = new BatchedMemory(), home = new Home(), chunks = new ChunkStorage(storage);
+  const person = await digest("member-a");
+  await chunks.put("usage-v1:days", ["2026-10-24"]);
+  await chunks.put("usage-v1:seen:2026-10-24", { pools: ["pool-a"] });
+  await chunks.put("usage-v1:cursor", { version: 4, pools: ["pool-a"], readAt: now.toISOString() });
+  await chunks.put("usage-v1:pool:pool-a:2026-10-24", [
+    { person, account: "credential-a", provider: "provider-a", model: "model-a", requests: 2, tokens: { input: 2, cacheRead: 0, cacheWrite: 0, output: 0, total: 2 }, cost: 1, unpriced: 0 },
+    { person, account: "credential-b", provider: "provider-a", model: "model-a", requests: 3, tokens: { input: 3, cacheRead: 0, cacheWrite: 0, output: 0, total: 3 }, cost: 2, unpriced: 0 },
+  ]);
+  await new UsageLedger(storage, home).sync(now);
+  assert.deepEqual(await chunks.get("usage-v1:pool:pool-a:2026-10-24"), undefined);
+  assert.equal((await chunks.get<{ requests: number }[]>("usage-v2:model:pool-a:2026-10-24"))![0]!.requests, 5);
+  const accountTotals = (await chunks.get<{ account: string; requests: number }[]>("usage-v2:account:pool-a:2026-10-24"))!;
+  assert.deepEqual(accountTotals.map((bucket) => [bucket.account, bucket.requests]), [["credential-a", 2], ["credential-b", 3]]);
 });
 
 test("sustained eight requests per minute cannot starve fresh, late or retained reads", async () => {
@@ -324,4 +341,48 @@ test("one- and two-hour-late arrivals are counted within thirty minutes at every
     }
   }
   console.log(`LATE worstMinutes=${worst * 5}`); assert.equal(arrivals.size, 0);
+});
+
+
+test("owner and member account slices aggregate only their permitted records, across accounts and days", async () => {
+  const home = new Home(), ledger = new UsageLedger(new Memory(), home);
+  const amounts = [0.1, 0.2, 0.3, 9, 11];
+  home.records = await Promise.all(amounts.map((amount, i) => record(`account-${i}`, i === 0 ? "2026-10-23T11:00:00Z" : "2026-10-24T11:00:00Z",
+    i < 3 ? "member-a" : "member-b", "pool-a", amount)));
+  for (const [i, row] of home.records.entries()) (row.credential as Json).credential_id = i === 2 || i === 4 ? "credential-b" : "credential-pool-a";
+  await ledger.sync(now);
+  const owner = await ledger.summary("pool-a", options());
+  assert.deepEqual(owner.accounts.map((slice) => [slice.account, slice.requests, slice.cost, slice.tokens.total]),
+    [["credential-b", 2, 11.3, 240], ["credential-pool-a", 3, 9.3, 360]]);
+  const member = await ledger.summary("pool-a", options("member-a"));
+  assert.deepEqual(member.accounts.map((slice) => [slice.account, slice.requests, slice.cost, slice.tokens.total]),
+    [["credential-b", 1, 0.3, 120], ["credential-pool-a", 2, 0.3, 240]]);
+  assert.equal(member.total.cost, 0.6);
+  assert.deepEqual((await ledger.summary("pool-a", options("nobody"))).accounts, []);
+  assert.deepEqual((await ledger.summary("pool-a", options("member-a", 1))).accounts.map((slice) => [slice.account, slice.requests]),
+    [["credential-b", 1], ["credential-pool-a", 1]]);
+  assert.equal(Object.hasOwn(member, "members"), false);
+});
+
+test("legacy buckets remain in totals, never gain a guessed account or get rewritten by a quiet sync", async () => {
+  const storage = new BatchedMemory(), home = new Home(), ledger = new UsageLedger(storage, home);
+  home.records = [await record("legacy", "2026-10-23T11:00:00Z")];
+  await ledger.sync(now);
+  const chunks = new ChunkStorage(storage), key = "usage-v2:model:pool-a:2026-10-23";
+  const buckets = (await chunks.get<Json[]>(key))!;
+  await chunks.commit(new Map([[key, buckets]]), ["usage-v2:account:pool-a:2026-10-23"], "usage-v1:pending");
+  storage.ops = [];
+  await ledger.sync(now);
+  assert.equal(storage.ops.filter((op) => op.kind.startsWith("put") || op.kind.startsWith("delete")).length, 0);
+  for (const caller of ["owner", "member-a"]) {
+    const result = await ledger.summary("pool-a", options(caller));
+    assert.equal(result.total.requests, 1); assert.deepEqual(result.accounts, []);
+  }
+  home.records.push(await record("new", "2026-10-24T11:00:00Z"));
+  storage.ops = [];
+  await ledger.sync(now);
+  assert.ok(storage.ops.every((op) => !op.kind.startsWith("put") || !op.keys.includes(key)));
+  const result = await ledger.summary("pool-a", options("member-a"));
+  assert.equal(result.total.requests, 2); assert.equal(result.accounts[0]!.requests, 1);
+  assert.equal((await ledger.summary("pool-a", options("member-b"))).total.requests, 0);
 });

@@ -60,7 +60,7 @@ async function fixture() {
     throw new Error(`Unexpected Home read: ${path}`);
   });
   await new LimitHistory(storage, () => now).sample("pool-a", [{ id: "credential-a", provider: "fixture", state: "active", observedAt: now.toISOString(),
-    windows: [{ id: "weekly", label: "Weekly", remainingRatio: 0.5, resetAt: null, windowSeconds: 604800 }] }]);
+    windows: [{ id: "weekly", label: "Weekly", remainingRatio: 0.5, resetAt: null, windowSeconds: 604800, observedAt: now.toISOString() }] }]);
   const usage = new PoolUsage({ storage, client, signingKey, now: () => now,
     audience: async (pool) => { audienceCalls.push(pool); return pool === "pool-a" ? [owner, a, b, idle] : [a]; } });
   const token = await signPoolToken(signingKey, claims);
