@@ -95,9 +95,9 @@ test("privacy upgrade purges released failure content and rejects future old-wri
 
     // An old writer can run after a forward-only step commits and before rollout finishes.
     const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
-    fixture.diagnostics.sql(`update usage set api_key=${quote(key.key)}, fail_body=${quote(response)},
+    fixture.diagnostics.sql(`update usage set api_key=${quote(key.key)}, fail_body=${quote(response)}, session_id=${quote(prompt)},
       fail=jsonb_build_object('status_code',400,'body',${quote(response)}),
-      payload=payload::jsonb || jsonb_build_object('api_key',${quote(key.key)},'fail',jsonb_build_object('body',${quote(prompt)}))
+      payload=payload::jsonb || jsonb_build_object('api_key',${quote(key.key)},'session_id',${quote(prompt)},'fail',jsonb_build_object('body',${quote(prompt)}))
       where id=${Number(rows[0]!.id)}`);
     assert.deepEqual(await fixture.diagnostics.scan(secrets), { database: 0, files: 0, logs: 0 }, "mixed-version writes remain sanitized");
     await fixture.replaceImage(candidate);

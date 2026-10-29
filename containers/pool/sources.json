@@ -9,7 +9,7 @@
         {
           "identity": "cliproxy-home-metadata-only-diagnostics",
           "file": "cliproxy-home-v1.1.6-metadata-only.patch",
-          "sha256": "113f730d5624facdac9d3870952ba6f17855684526898fb6d590181417f2c9f0",
+          "sha256": "f8d27cc9e11a6cdb873f80599bbe810716f1e43099675582a8e83ba076d9cddd",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."
@@ -25,7 +25,7 @@
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "cliproxy-node-v8.0.40-metadata-only.patch",
-          "sha256": "80343d3426ce8b98b5d29ad8d94beb6bbd51c446fe72d16b20a11b4ad008b7c1",
+          "sha256": "f73f0e691aab4ab21e7bcbf26ff0e0129539de4c34441e7a01a052e3d4091ae1",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer and repeated-boot regressions before removing this carry."

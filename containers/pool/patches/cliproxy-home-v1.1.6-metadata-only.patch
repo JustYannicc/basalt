@@ -1,8 +1,8 @@
 diff --git a/docs/management/api.md b/docs/management/api.md
-index 37fad63..1ddb2a6 100644
+index 37fad63..a2bb896 100644
 --- a/docs/management/api.md
 +++ b/docs/management/api.md
-@@ -41,6 +41,25 @@ Home management state is stored in the database-backed cluster repository. When
+@@ -41,6 +41,29 @@ Home management state is stored in the database-backed cluster repository. When
  
  The route list below is the database-backed route set registered by `cmd/home` through `WithDatabaseManagement`.
  
@@ -14,6 +14,10 @@ index 37fad63..1ddb2a6 100644
 +logs and database writes. Usage keeps a SHA-256 key reference for attribution;
 +that reference cannot authenticate. Nodes sending a precomputed reference send
 +matching `api_key` and `api_key_fingerprint` fields.
++
++Canonical UUID session IDs remain available for exact request-to-usage lookup.
++Home drops free-form session text. Nodes project custom session text to an
++opaque UUID before diagnostics retain it. Parent session text is omitted.
 +
 +Startup runs the immutable `diagnostics_metadata_only_v1_1_6` data step in bounded
 +batches. It records counts and affected active key IDs before purging historical
@@ -29,10 +33,10 @@ index 37fad63..1ddb2a6 100644
  
  Management routes under `/v8/management/*` and `/v0/management/*` require a management key. The exception is `GET/POST /v8/management/oauth/callback`: it validates a pending OAuth `state` without the management-key middleware. Availability checks still apply, so a disabled Management API also disables the v8 callback.
 diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
-index 515ad4b..a060346 100644
+index 515ad4b..73352c2 100644
 --- a/docs/management/api_CN.md
 +++ b/docs/management/api_CN.md
-@@ -41,6 +41,22 @@ Home management state 存储在 database-backed cluster repository 中。如果
+@@ -41,6 +41,26 @@ Home management state 存储在 database-backed cluster repository 中。如果
  
  下面的 route 清单是 `cmd/home` 通过 `WithDatabaseManagement` 注册的 database-backed route set。
  
@@ -43,6 +47,10 @@ index 515ad4b..a060346 100644
 +移除失败响应正文、客户端请求头、未知 payload 字段和原始客户端密钥。
 +Usage 使用 SHA-256 密钥指纹关联客户端；该指纹不能用于认证。
 +节点发送预先计算的指纹时，`api_key` 与 `api_key_fingerprint` 必须一致。
++
++规范的 UUID 会话 ID 会保留，用于精确关联请求与 usage 记录。
++Home 会丢弃自由文本会话标识。节点在保留诊断数据之前，
++会将自定义会话文本转换成不透明 UUID。父会话文本会被移除。
 +
 +启动时，不可变的 `diagnostics_metadata_only_v1_1_6` 数据步骤会分批清理历史诊断数据。
 +清理前会记录计数和受影响的有效密钥 ID；重复启动会继续未完成的步骤。
@@ -271,10 +279,10 @@ index 680fffb..3e06df6 100644
  		if errMigrate := migration.run(db); errMigrate != nil {
 diff --git a/internal/cluster/diagnostics_privacy.go b/internal/cluster/diagnostics_privacy.go
 new file mode 100644
-index 0000000..6e9a42d
+index 0000000..7883bbc
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy.go
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,353 @@
 +package cluster
 +
 +import (
@@ -383,6 +391,9 @@ index 0000000..6e9a42d
 +	}
 +	if requestID := diagnosticRequestID(decodeJSONFieldString(fields, "request_id")); requestID != "" {
 +		projected["request_id"] = requestID
++	}
++	if sessionID := diagnosticSessionID(decodeJSONFieldString(fields, "session_id")); sessionID != "" {
++		projected["session_id"] = sessionID
 +	}
 +	if requestID := diagnosticRequestID(decodeJSONFieldString(fields, "upstream_request_id")); requestID != "" {
 +		projected["upstream_request_id"] = requestID
@@ -616,6 +627,15 @@ index 0000000..6e9a42d
 +	}
 +	return ""
 +}
++
++func diagnosticSessionID(value string) string {
++	value = strings.TrimSpace(value)
++	id, errParse := uuid.Parse(value)
++	if errParse != nil || id.Variant() != uuid.RFC4122 || id.String() != strings.ToLower(value) || (id.Version() != 4 && id.Version() != 7 && id.Version() != 8) {
++		return ""
++	}
++	return id.String()
++}
 diff --git a/internal/cluster/diagnostics_privacy_audit.go b/internal/cluster/diagnostics_privacy_audit.go
 new file mode 100644
 index 0000000..c78695b
@@ -765,7 +785,7 @@ index 0000000..c78695b
 +}
 diff --git a/internal/cluster/diagnostics_privacy_migration.go b/internal/cluster/diagnostics_privacy_migration.go
 new file mode 100644
-index 0000000..f491aea
+index 0000000..40f5b85
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_migration.go
 @@ -0,0 +1,491 @@
@@ -1112,9 +1132,9 @@ index 0000000..f491aea
 +		"auth_type":             diagnosticIdentifier(gjson.Get(payload, "auth_type").String(), 80),
 +		"auth_index":            diagnosticIdentifier(gjson.Get(payload, "auth_index").String(), 256),
 +		"request_id":            requestID,
-+		"session_id":            "",
++		"session_id":            diagnosticSessionID(gjson.Get(payload, "session_id").String()),
 +		"parent_session_id":     "",
-+		"root_session_id":       "",
++		"root_session_id":       diagnosticSessionID(gjson.Get(payload, "session_id").String()),
 +		"upstream_request_id":   upstreamRequestID,
 +		"event_type":            eventType,
 +		"cpa_node_id":           diagnosticIdentifier(gjson.Get(payload, "cpa_node_id").String(), 128),
@@ -1262,10 +1282,10 @@ index 0000000..f491aea
 +}
 diff --git a/internal/cluster/diagnostics_privacy_postgres.go b/internal/cluster/diagnostics_privacy_postgres.go
 new file mode 100644
-index 0000000..55047ec
+index 0000000..782906c
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_postgres.go
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,405 @@
 +package cluster
 +
 +import (
@@ -1567,9 +1587,15 @@ index 0000000..55047ec
 +    NEW.fail_body := '';
 +    NEW.source := '';
 +    NEW.effort := '';
-+    NEW.session_id := '';
++    v_text := COALESCE(NULLIF(btrim(v_raw->>'session_id'), ''), NULLIF(btrim(NEW.session_id), ''));
++    IF lower(v_text) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[478][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN
++        NEW.session_id := lower(v_text);
++        NEW.payload := NEW.payload || jsonb_build_object('session_id', NEW.session_id);
++    ELSE
++        NEW.session_id := '';
++    END IF;
 +    NEW.parent_session_id := '';
-+    NEW.root_session_id := '';
++    NEW.root_session_id := NEW.session_id;
 +    NEW.cpa_ip := '';
 +    NEW.cpa_port := 0;
 +    NEW.cpa_label := '';
@@ -1667,10 +1693,10 @@ index 0000000..55047ec
 +}
 diff --git a/internal/cluster/diagnostics_privacy_test.go b/internal/cluster/diagnostics_privacy_test.go
 new file mode 100644
-index 0000000..270c2f3
+index 0000000..e0217ca
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_test.go
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,249 @@
 +package cluster
 +
 +import (
@@ -1900,6 +1926,24 @@ index 0000000..270c2f3
 +	// Make the mode-off boundary explicit without wall-clock waits.
 +	if !record.Timestamp.Equal(time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)) {
 +		t.Fatal("timestamp changed")
++	}
++}
++
++func TestDiagnosticsPrivacyPreservesCanonicalSessionLookup(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	db := privacyTestDB(t)
++	const sessionID = "7c9a1f40-209d-4b83-8f9c-eaef07268439"
++	record, errAppend := NewRepository(db).AppendUsageWithRuntime(t.Context(), `{"timestamp":"2026-10-29T12:00:00Z","session_id":"`+sessionID+`","failed":false}`, UsageRuntimeMetadata{})
++	if errAppend != nil {
++		t.Fatal(errAppend)
++	}
++	var count int64
++	if errCount := db.Model(&UsageRecord{}).Where("session_id = ?", sessionID).Count(&count).Error; errCount != nil || count != 1 || record.SessionID != sessionID {
++		t.Fatal("canonical session lookup stopped finding usage")
++	}
++	raw, errSanitize := SanitizeUsagePayloadSecrets(`{"session_id":"private-client-session-text-289"}`)
++	if errSanitize != nil || strings.Contains(raw, "private-client-session-text-289") {
++		t.Fatal("free session text survived projection")
 +	}
 +}
 diff --git a/internal/cluster/models.go b/internal/cluster/models.go

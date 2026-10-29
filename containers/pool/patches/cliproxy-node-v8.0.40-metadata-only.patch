@@ -440,7 +440,7 @@ index 0000000..9f1640a
 +}
 diff --git a/internal/redisqueue/metadata_only_test.go b/internal/redisqueue/metadata_only_test.go
 new file mode 100644
-index 0000000..3acbfcc
+index 0000000..e4dfca7
 --- /dev/null
 +++ b/internal/redisqueue/metadata_only_test.go
 @@ -0,0 +1,138 @@
@@ -569,7 +569,7 @@ index 0000000..3acbfcc
 +			requireStringField(t, payload, field, "")
 +		}
 +		requireStringField(t, payload, "auth_type", "unknown")
-+		requireMissingField(t, payload, "session_id")
++		requireStringField(t, payload, "session_id", coreusage.DiagnosticSessionID(requestSecret))
 +		requireMissingField(t, payload, "parent_session_id")
 +		encoded, err := json.Marshal(payload)
 +		if err != nil {
@@ -778,7 +778,7 @@ index 0000000..9a56630
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index 6a2b951..4ea78ad 100644
+index 6a2b951..935e46e 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
 @@ -16,6 +16,7 @@ import (
@@ -831,7 +831,7 @@ index 6a2b951..4ea78ad 100644
 +		isNativeKey = false
 +		alias = ""
 +		baseURL = ""
-+		sessionID = ""
++		sessionID = usage.DiagnosticSessionID(sessionID)
 +		parentSessionID = ""
 +	}
  	traceID := usage.TraceIDFromContext(ctx)
@@ -1091,10 +1091,10 @@ index 5bb761e..9c25659 100644
  	m.mu.Lock()
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
 new file mode 100644
-index 0000000..9f1c7a5
+index 0000000..0e038ba
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only.go
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,214 @@
 +package usage
 +
 +import (
@@ -1109,9 +1109,20 @@ index 0000000..9f1c7a5
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
 +	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 +)
 +
 +type metadataOnlySanitizedContextKey struct{}
++
++// DiagnosticSessionID keeps only the canonical opaque identity used by usage lookup.
++func DiagnosticSessionID(value string) string {
++	canonical := session.NormalizeToCanonicalUUID(value)
++	id, errParse := uuid.Parse(canonical)
++	if errParse != nil || id.Variant() != uuid.RFC4122 || (id.Version() != 4 && id.Version() != 7 && id.Version() != 8) {
++		return ""
++	}
++	return canonical
++}
 +
 +type selectedModelContextKey struct{}
 +
@@ -1232,7 +1243,10 @@ index 0000000..9f1c7a5
 +	record.AuthType = safeAuthType(record.AuthType)
 +	record.AccessProvider = ""
 +	record.AccessTokenSHA256 = ""
-+	record.SessionID = ""
++	if record.SessionID == "" {
++		record.SessionID = internallogging.GetClientRequestMetadata(ctx).SessionID
++	}
++	record.SessionID = DiagnosticSessionID(record.SessionID)
 +	record.ParentSessionID = ""
 +	record.ReasoningEffort = ""
 +	record.ServiceTier = diagnostics.SafeServiceTier(record.ServiceTier)
@@ -1297,10 +1311,10 @@ index 0000000..9f1c7a5
 +}
 diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
 new file mode 100644
-index 0000000..67bbcb3
+index 0000000..fec77cd
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only_test.go
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,199 @@
 +package usage
 +
 +import (
@@ -1482,5 +1496,21 @@ index 0000000..67bbcb3
 +	_, bad := RedactForMetadataOnly(context.Background(), Record{ServiceTier: "private", ResponseServiceTier: "private"})
 +	if bad.ServiceTier != "" || bad.ResponseServiceTier != "" {
 +		t.Fatal("arbitrary tier retained")
++	}
++}
++
++func TestMetadataOnlyPreservesCanonicalSessionCorrelation(t *testing.T) {
++	const sessionID = "7c9a1f40-209d-4b83-8f9c-eaef07268439"
++	ctx := internallogging.WithClientRequestMetadata(context.Background(), internallogging.ClientRequestMetadata{SessionID: "header:" + sessionID})
++	clean, record := RedactForMetadataOnly(ctx, Record{})
++	if record.SessionID != sessionID {
++		t.Fatal("canonical import verification session was lost before the queue")
++	}
++	if internallogging.GetClientRequestMetadata(clean).SessionID != "" {
++		t.Fatal("original request metadata survived queue detachment")
++	}
++	_, projected := RedactForMetadataOnly(context.Background(), Record{SessionID: "private-session-content-629"})
++	if projected.SessionID == "" || projected.SessionID == "private-session-content-629" {
++		t.Fatal("custom session was not projected to an opaque identifier")
 +	}
 +}
