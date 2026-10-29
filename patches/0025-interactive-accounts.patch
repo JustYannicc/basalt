@@ -1360,10 +1360,10 @@ index 7fa5ad1..c60366b 100644
      ConnectionAccessInvalid: ({ reason }) =>
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
 new file mode 100644
-index 0000000..5b5f8f0
+index 0000000..0269e06
 --- /dev/null
 +++ b/e2e/support/interactive-account-backend.ts
-@@ -0,0 +1,259 @@
+@@ -0,0 +1,283 @@
 +/** A tiny credential custodian, reached by the fixture app over real HTTP. */
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
@@ -1371,6 +1371,7 @@ index 0000000..5b5f8f0
 +import { createServer } from "node:http";
 +
 +export const interactiveBackendKey = "synthetic-backend-key";
++export const interactiveBackendNextKey = "synthetic-backend-next-key";
 +const Input = Schema.Struct({
 +  step: Schema.Literals(["start", "status", "submit", "cancel", "remove"]),
 +  method: Schema.String,
@@ -1394,6 +1395,10 @@ index 0000000..5b5f8f0
 +  const refuseRemoval = yield* Ref.make(false);
 +  const refuseCancellation = yield* Ref.make(false);
 +  const removeRemaining = yield* Ref.make<number | undefined>(undefined);
++  // Each remove with the credential it carried and whether its reference was still known.
++  const removeCalls = yield* Ref.make<
++    readonly (Input & { readonly credential: string; readonly knownReference: boolean })[]
++  >([]);
 +  const removalGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const removalStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
 +  const submitGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
@@ -1405,10 +1410,24 @@ index 0000000..5b5f8f0
 +    "/connect",
 +    Effect.gen(function* () {
 +      const request = yield* HttpServerRequest.HttpServerRequest;
-+      if (request.headers.authorization !== `Bearer ${interactiveBackendKey}`)
++      const credential = request.headers.authorization ?? "";
++      if (
++        ![interactiveBackendKey, interactiveBackendNextKey].some(
++          (key) => credential === `Bearer ${key}`,
++        )
++      )
 +        return yield* HttpServerResponse.json({ error: "unauthorized" }, { status: 401 });
 +      const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Input)));
 +      yield* Ref.update(calls, (calls) => [...calls, input]);
++      if (input.step === "remove") {
++        const knownReference = [...(yield* Ref.get(sessions)).values()].some(
++          (session) => session.ref === input.ref,
++        );
++        yield* Ref.update(removeCalls, (calls) => [
++          ...calls,
++          { ...input, credential, knownReference },
++        ]);
++      }
 +      if (input.caller === "") return HttpServerResponse.empty({ status: 403 });
 +      if (input.step === "start") {
 +        const id = yield* Ref.updateAndGet(next, (value) => value + 1);
@@ -1514,6 +1533,10 @@ index 0000000..5b5f8f0
 +    refuseCancellation: (refuse: boolean) => Ref.set(refuseCancellation, refuse),
 +    refuseRemoval: (refuse: boolean) =>
 +      Ref.set(refuseRemoval, refuse).pipe(Effect.andThen(Ref.set(removeRemaining, undefined))),
++    removeCalls: Ref.get(removeCalls),
++    forgetReferences: Ref.getAndSet(sessions, new Map()).pipe(
++      Effect.map((current) => current.size),
++    ),
 +    refuseAfter: (successful: number) => Ref.set(removeRemaining, successful),
 +    holdRemoval: Effect.gen(function* () {
 +      const gate = yield* Deferred.make<void>(),
@@ -1561,6 +1584,7 @@ index 0000000..5b5f8f0
 +  withWorkflow = false,
 +  callbackUrl?: string,
 +  oauthOrigin?: string,
++  backendTokenField: "token" | "accessToken" = "token",
 +) => `import {
 +  defineApp, defineProvider, interactive, secrets, object, string, query, router, bearer, header,
 +  ${withWorkflow ? "mutation, workflow, appInterval, type MutationContext, type WorkflowContext," : ""}
@@ -1568,7 +1592,7 @@ index 0000000..5b5f8f0
 +  ${oauthOrigin === undefined ? "" : ", oauth2"}
 +} from "apps";
 +const backend = defineProvider({ name: "Credential backend", hosts: ${JSON.stringify([new URL(origin).host, ...(callbackUrl === undefined ? [] : [new URL(callbackUrl).host])])},
-+  auth: { key: secrets({ label: "Key", fields: object({ token: string()${callbackUrl === undefined ? "" : ", cookie: string()"} }), request: ${callbackUrl === undefined ? "({ token }) => bearer(token)" : "({ token, cookie }) => [bearer(token), header('cookie', cookie)]"} }) } });
++  auth: { key: secrets({ label: "Key", fields: object({ ${backendTokenField}: string()${callbackUrl === undefined ? "" : ", cookie: string()"} }), request: ${callbackUrl === undefined ? `({ ${backendTokenField} }) => bearer(${backendTokenField})` : `({ ${backendTokenField}, cookie }) => [bearer(${backendTokenField}), header('cookie', cookie)]`} }) } });
 +const acquired = defineProvider({ name: "Interactive account", hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
 +  device: interactive({ label: "Device code" }), paste: interactive({ label: "Paste address" }),
 +  expired: interactive({ label: "Expired" }), failure: interactive({ label: "Failure" }), slow: interactive({ label: "Slow" }),
@@ -1624,13 +1648,33 @@ index 0000000..5b5f8f0
 +  ${withWorkflow ? "workflows: { hold }, schedules: { tick: appInterval({ minutes: 1 }, tick, {}) }," : ""}
 +  connect: { identity: handlers, sharedIdentity: handlers } });`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ab997d0..caf168d 100644
+index 247f201..3693fc6 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7259,6 +7259,87 @@ export const scenarios = plan({
+@@ -7261,6 +7261,107 @@ export const scenarios = plan({
        local: na("This scenario uses hosted memberships, API keys and MCP."),
      },
    },
++  interactiveAccountVersionRemoval: {
++    fixtures: "actors",
++    file: "interactive-account-version-removal.spec.ts",
++    title: "interactive account removal uses current backend credentials after a provider change",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback backend through the shared hosted server."),
++      local: na("Uses hosted account deletion authority and links."),
++    },
++  },
++  interactiveAccountAcquiringVersionRemoval: {
++    fixtures: "actors",
++    file: "interactive-account-version-removal.spec.ts",
++    title: "interactive account removal runs the acquiring hook when the current version omits it",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback backend through the shared hosted server."),
++      local: na("Uses hosted account deletion authority and links."),
++    },
++  },
 +  interactiveAccountLifecycle: {
 +    fixtures: "actors",
 +    legacyStorage: true,
@@ -2707,6 +2751,386 @@ index 0000000..450a235
 +        expect((yield* api.request(actors.owner, "GET", cp(oauth.id))).body).toMatchObject({
 +          state: { status: "pending" },
 +        });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/interactive-account-target.spec.ts b/e2e/tests/interactive-account-target.spec.ts
+new file mode 100644
+index 0000000..96612fe
+--- /dev/null
++++ b/e2e/tests/interactive-account-target.spec.ts
+@@ -0,0 +1,119 @@
++/** An app-owned sign-in whose requirement changes mid-way answers with the connection conflict. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { Access } from "../support/hosted-app-accounts.ts";
++import {
++  interactiveAccountBackend,
++  interactiveAccountSource,
++  interactiveBackendKey,
++} from "../support/interactive-account-backend.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Links = Schema.Array(Schema.Struct({ requirement: Schema.String }));
++
++layer(HostedLive, { excludeTestServices: true })("Interactive account target", (it) => {
++  it.effect(scenarios.interactiveAccountTarget.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const backend = yield* interactiveAccountBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const source = interactiveAccountSource(backend.origin);
++        const files = [{ path: "index.ts", content: source }, appsManifest];
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Interactive target ${randomUUID().slice(0, 8)}`,
++          files,
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", path);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const access = yield* body(
++          Access,
++          yield* api.request(actors.owner, "GET", `${path}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        const backendConnection = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${path}/accounts/app/backend/connections`, {}),
++        );
++        const key = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${backendConnection.id}/submit`,
++          { method: "key", fields: { token: interactiveBackendKey } },
++        );
++        expect(key.status, JSON.stringify(key.body)).toBe(200);
++        accounts.push((yield* body(Resource, key)).id);
++
++        // Start a device sign-in for the app's own interactive requirement.
++        const pending = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${path}/accounts/app/sharedIdentity/connections`,
++            {},
++          ),
++        );
++        const interactive = `${prefix}/connections/${pending.id}/interactive`;
++        const started = yield* api.request(actors.owner, "POST", `${interactive}/start`, {
++          method: "device",
++        });
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++
++        // The first poll waits; the backend connects on the second, which it holds mid-call.
++        const first = yield* api.request(actors.owner, "GET", `${interactive}/status`);
++        expect(first.body).toEqual({ state: "waiting" });
++        const hold = yield* backend.holdStatus;
++        const finishing = yield* api
++          .request(actors.owner, "GET", `${interactive}/status`)
++          .pipe(Effect.forkChild);
++        yield* hold.started;
++        // The app changes the requirement's provider while the app's step is in flight.
++        const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [
++            {
++              path: "index.ts",
++              content: source.replace(
++                'name: "Interactive account"',
++                'name: "Interactive account renamed"',
++              ),
++            },
++            appsManifest,
++          ],
++        });
++        expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
++        yield* hold.release;
++        const last = yield* Fiber.join(finishing);
++        expect(last.status, JSON.stringify(last.body)).toBe(409);
++        expect(last.body).toMatchObject({ _tag: "AccountConnectionTargetChanged" });
++        const links = yield* body(
++          Links,
++          yield* api.request(actors.owner, "GET", `${path}/accounts/app`),
++        );
++        expect(links.filter((link) => link.requirement === "sharedIdentity")).toEqual([]);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/interactive-account-version-removal.spec.ts b/e2e/tests/interactive-account-version-removal.spec.ts
+new file mode 100644
+index 0000000..c556803
+--- /dev/null
++++ b/e2e/tests/interactive-account-version-removal.spec.ts
+@@ -0,0 +1,249 @@
++/** Removal preserves the acquiring hook and falls back when its backend no longer fits. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import {
++  accountLinks,
++  connectionsPath,
++  linkAccountResponse,
++  unlinkAccount,
++} from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import {
++  interactiveAccountBackend,
++  interactiveAccountSource,
++  interactiveBackendKey,
++  interactiveBackendNextKey,
++} from "../support/interactive-account-backend.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Struct({ backend: Schema.Struct({ provider: Schema.String }) }),
++  }),
++});
++const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++
++layer(HostedLive, { excludeTestServices: true })("Interactive account version removal", (it) => {
++  it.effect(scenarios.interactiveAccountVersionRemoval.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* interactiveAccountBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const files = (field: "token" | "accessToken") => [
++          {
++            path: "index.ts",
++            content: interactiveAccountSource(
++              backend.origin,
++              false,
++              false,
++              undefined,
++              undefined,
++              field,
++            ),
++          },
++          appsManifest,
++        ];
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Interactive removal after provider change",
++          files: files("token"),
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
++        );
++        const pending = (slot: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              connectionsPath(path, "app", slot),
++              {},
++            );
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            return yield* body(Resource, response);
++          });
++        const connectBackend = (field: string, token: string) =>
++          Effect.gen(function* () {
++            const connection = yield* pending("backend");
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/connections/${connection.id}/submit`,
++              {
++                method: "key",
++                fields: { [field]: token },
++              },
++            );
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            return yield* body(Resource, response);
++          });
++        const oldBackend = yield* connectBackend("token", interactiveBackendKey);
++        const acquire = Effect.gen(function* () {
++          const connection = yield* pending("sharedIdentity"),
++            interactive = `${prefix}/connections/${connection.id}/interactive`;
++          const started = yield* api.request(actors.owner, "POST", `${interactive}/start`, {
++            method: "paste",
++          });
++          expect(started.status, JSON.stringify(started.body)).toBe(200);
++          const response = yield* api.request(actors.owner, "POST", `${interactive}/submit`, {
++            value: "http://localhost:48765/done?code=synthetic",
++          });
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          return (yield* body(Connected, response)).account;
++        });
++        const account = yield* acquire,
++          alreadyGone = yield* acquire;
++        // A required credential field changes provider identity without needing host provisioning.
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: files("accessToken"),
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        const current = (yield* body(Schema.Struct({ app: App }), updated)).app;
++        expect(current.requirements.accounts.backend.provider).not.toBe(
++          app.requirements.accounts.backend.provider,
++        );
++        const newBackend = yield* connectBackend("accessToken", interactiveBackendNextKey);
++        const links = yield* accountLinks(actors.owner, path, "app");
++        expect(links).toContainEqual(["backend", newBackend.id]);
++        expect(links).not.toContainEqual(["backend", oldBackend.id]);
++        const incompatible = yield* linkAccountResponse(
++          actors.owner,
++          path,
++          "backend",
++          oldBackend.id,
++          "app",
++        );
++        expect(incompatible.status, JSON.stringify(incompatible.body)).toBe(422);
++        expect(incompatible.body).toMatchObject({
++          _tag: "RequirementMismatch",
++          reason: "provider",
++        });
++        const removals = backend.removeCalls;
++        expect(yield* removals).toHaveLength(0);
++        const remove = (id: string) =>
++          unlinkAccount(actors.owner, path, "sharedIdentity", id, "app");
++        yield* remove(account.id);
++        expect(yield* removals).toMatchObject([
++          {
++            method: "paste",
++            credential: `Bearer ${interactiveBackendNextKey}`,
++            knownReference: true,
++          },
++        ]);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account.id}`)).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${alreadyGone.id}`)).status,
++        ).toBe(200);
++        // The backend expires the other ref independently, and treats another remove as success.
++        expect(yield* backend.forgetReferences).toBe(1);
++        yield* remove(alreadyGone.id);
++        const calls = yield* removals;
++        expect(calls).toHaveLength(2);
++        expect(calls[1]).toMatchObject({
++          method: "paste",
++          credential: `Bearer ${interactiveBackendNextKey}`,
++          knownReference: false,
++        });
++        expect(calls[1]?.ref).not.toBe(calls[0]?.ref);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${alreadyGone.id}`)).status,
++        ).toBe(403);
++        expect(yield* accountLinks(actors.owner, path, "app")).toEqual([
++          ["backend", newBackend.id],
++        ]);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.interactiveAccountAcquiringVersionRemoval.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* interactiveAccountBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const source = interactiveAccountSource(backend.origin);
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Interactive removal retains acquiring hook",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed),
++          path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
++        );
++        const pending = (slot: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              connectionsPath(path, "app", slot),
++              {},
++            );
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            return yield* body(Resource, response);
++          });
++        const backendConnection = yield* pending("backend");
++        const key = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${backendConnection.id}/submit`,
++          { method: "key", fields: { token: interactiveBackendKey } },
++        );
++        expect(key.status, JSON.stringify(key.body)).toBe(200);
++        const backendAccount = yield* body(Resource, key);
++        const connection = yield* pending("sharedIdentity"),
++          interactive = `${prefix}/connections/${connection.id}/interactive`;
++        const started = yield* api.request(actors.owner, "POST", `${interactive}/start`, {
++          method: "paste",
++        });
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        const acquired = yield* api.request(actors.owner, "POST", `${interactive}/submit`, {
++          value: "http://localhost:48765/done?code=synthetic",
++        });
++        expect(acquired.status, JSON.stringify(acquired.body)).toBe(200);
++        const { account } = yield* body(Connected, acquired);
++        // Keep every provider definition and method; only the new version's hook disappears.
++        const withoutRemove = source.replace(/  remove: async[\s\S]*?\n  },\n/, "");
++        expect(withoutRemove).not.toBe(source);
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [{ path: "index.ts", content: withoutRemove }, appsManifest],
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        expect((yield* body(Schema.Struct({ app: App }), updated)).app.requirements).toEqual(
++          app.requirements,
++        );
++        const removals = backend.removeCalls;
++        expect(yield* removals).toHaveLength(0);
++        yield* unlinkAccount(actors.owner, path, "sharedIdentity", account.id, "app");
++        const calls = yield* removals;
++        expect(calls).toHaveLength(1);
++        expect(calls[0]).toMatchObject({
++          method: "paste",
++          credential: `Bearer ${interactiveBackendKey}`,
++          knownReference: true,
++        });
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account.id}`)).status,
++        ).toBe(403);
++        expect(yield* accountLinks(actors.owner, path, "app")).toEqual([
++          ["backend", backendAccount.id],
++        ]);
 +      }),
 +    ),
 +  );
@@ -9661,10 +10085,10 @@ index d2e8115..135f853 100644
        skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
 diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
 new file mode 100644
-index 0000000..2d6ded2
+index 0000000..2d1638a
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-accounts.ts
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,383 @@
 +/** Persisted interactive acquisition. Short claims serialize calls without holding SQL over HTTP. */
 +import { Clock, type Crypto, Effect, Schema } from "effect";
 +import { InteractiveStart, InteractiveStatus, type ConnectCommand } from "apps/contracts";
@@ -9691,7 +10115,7 @@ index 0000000..2d6ded2
 +  savingConnection,
 +  type ConnectionRow,
 +} from "./connection-state.ts";
-+import { storedApp } from "./apps.ts";
++import { storedApp, storedVersion } from "./apps.ts";
 +import {
 +  interactiveBinding,
 +  pendingInteractive,
@@ -9910,25 +10334,50 @@ index 0000000..2d6ded2
 +          );
 +          return Effect.void;
 +        }
-+        const accounts =
-+          input.accounts ??
-+          (yield* backgroundAccounts(db, lifecycle, {
-+            app: binding.app,
-+            version: binding.version,
-+            actor: yield* CurrentActor,
-+            connecting: binding.slot,
-+          }));
-+        const call = yield* prepareCall({
-+          owner: input.owner,
-+          accounts,
-+          acquisition: binding,
-+          command: {
-+            operation: "connect",
-+            slot: binding.slot,
-+            step: "remove",
-+            input: { method: binding.method, ref: binding.ref },
-+          },
-+        });
++        const prepare = (version: typeof binding.version) =>
++          Effect.gen(function* () {
++            const accounts =
++              input.accounts ??
++              (yield* backgroundAccounts(db, lifecycle, {
++                app: binding.app,
++                version,
++                actor: yield* CurrentActor,
++                connecting: binding.slot,
++              }));
++            return yield* prepareCall({
++              owner: input.owner,
++              accounts,
++              acquisition: { ...binding, version },
++              command: {
++                operation: "connect",
++                slot: binding.slot,
++                step: "remove",
++                input: { method: binding.method, ref: binding.ref },
++              },
++            });
++          });
++        // The acquiring version removes what it acquired. When it can no longer be prepared, e.g.
++        // another requirement's definition changed since and its linked account no longer fits the
++        // old one, the current version removes it, while it still acquires this method for the slot.
++        const call = yield* prepare(binding.version).pipe(
++          Effect.catch((error) =>
++            Effect.gen(function* () {
++              const current = yield* storedVersion(db, app).pipe(
++                Effect.catchTags({
++                  AppNotDeployed: () => Effect.succeed(undefined),
++                  VersionNotFound: () => Effect.succeed(undefined),
++                }),
++              );
++              return current !== undefined &&
++                current.id !== binding.version &&
++                Object.hasOwn(current.requirements.accounts, binding.slot) &&
++                current.requirements.accounts[binding.slot]?.definition.auth?.[binding.method]
++                  ?.type === "interactive"
++                ? yield* prepare(current.id)
++                : yield* Effect.fail(error);
++            }),
++          ),
++        );
 +        return Effect.asVoid(call);
 +      }),
 +    );
@@ -10495,10 +10944,10 @@ index 0000000..70c8aeb
 +};
 diff --git a/packages/sdk/src/implementation/interactive-runner.ts b/packages/sdk/src/implementation/interactive-runner.ts
 new file mode 100644
-index 0000000..18d730c
+index 0000000..dfcf8a0
 --- /dev/null
 +++ b/packages/sdk/src/implementation/interactive-runner.ts
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,203 @@
 +/** Run acquisition handlers through the ordinary app host, with current linked credentials. */
 +import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
 +import type { AccountInfo, ConnectCommand, InteractiveStatus } from "apps/contracts";
@@ -10520,6 +10969,25 @@ index 0000000..18d730c
 +
 +/** The limit includes credential resolution, app startup and the handler itself. */
 +export const interactiveStepMillis = 15_000;
++
++/**
++ * A failed remove reaches the person as one generic failure, so log the cause's kind for
++ * operators: its tag and reason only, never its values. A removal may still succeed with another
++ * version afterwards.
++ */
++const removeFailed = (command: ConnectCommand, version: string) => (error: unknown) => {
++  if (command.step !== "remove") return Effect.void;
++  const cause =
++    typeof error === "object" && error !== null ? (error as Record<string, unknown>) : {};
++  return Effect.logWarning("An interactive account's remove step failed").pipe(
++    Effect.annotateLogs({
++      slot: command.slot,
++      version,
++      error: typeof cause._tag === "string" ? cause._tag : "unknown",
++      ...(typeof cause.reason === "string" ? { reason: cause.reason } : {}),
++    }),
++  );
++};
 +
 +/** Resolve the retained handler and credentials before a local mutation can remove their rows. */
 +export const prepareInteractiveContext =
@@ -10585,10 +11053,12 @@ index 0000000..18d730c
 +          });
 +        }).pipe(
 +          Effect.timeout(interactiveStepMillis),
++          Effect.tapError(removeFailed(command, input.acquisition.version)),
 +          Effect.mapError(() => new InteractiveConnectionFailed({ reason: "step" })),
 +        );
 +    }).pipe(
 +      Effect.timeout(interactiveStepMillis),
++      Effect.tapError(removeFailed(input.command, input.acquisition.version)),
 +      Effect.mapError((error) =>
 +        Schema.is(StorageError)(error)
 +          ? error
@@ -12086,128 +12556,3 @@ index a25fc57..ba20ce4 100644
  };
  
  /**
-diff --git a/e2e/tests/interactive-account-target.spec.ts b/e2e/tests/interactive-account-target.spec.ts
-new file mode 100644
-index 0000000..96612fe
---- /dev/null
-+++ b/e2e/tests/interactive-account-target.spec.ts
-@@ -0,0 +1,119 @@
-+/** An app-owned sign-in whose requirement changes mid-way answers with the connection conflict. */
-+import { expect, layer } from "@effect/vitest";
-+import { Effect, Fiber, Schema } from "effect";
-+import { randomUUID } from "node:crypto";
-+import { Actors } from "../support/actors.ts";
-+import { Api, body } from "../support/api.ts";
-+import { appsManifest } from "../support/apps-release.ts";
-+import { HostedLive, withHostedCase } from "../support/case.ts";
-+import { App, Resource } from "../support/contracts.ts";
-+import { Access } from "../support/hosted-app-accounts.ts";
-+import {
-+  interactiveAccountBackend,
-+  interactiveAccountSource,
-+  interactiveBackendKey,
-+} from "../support/interactive-account-backend.ts";
-+import { scenarios } from "../test-plan.ts";
-+
-+const Links = Schema.Array(Schema.Struct({ requirement: Schema.String }));
-+
-+layer(HostedLive, { excludeTestServices: true })("Interactive account target", (it) => {
-+  it.effect(scenarios.interactiveAccountTarget.title, (context) =>
-+    withHostedCase(
-+      context,
-+      Effect.gen(function* () {
-+        const api = yield* Api,
-+          actors = yield* Actors;
-+        const backend = yield* interactiveAccountBackend;
-+        const prefix = `/api/organizations/${actors.organization.id}`;
-+        const source = interactiveAccountSource(backend.origin);
-+        const files = [{ path: "index.ts", content: source }, appsManifest];
-+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+          name: `Interactive target ${randomUUID().slice(0, 8)}`,
-+          files,
-+        });
-+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-+        const app = yield* body(App, deployed),
-+          path = `${prefix}/apps/${app.id}`;
-+        const accounts: string[] = [];
-+        yield* Effect.addFinalizer(() =>
-+          Effect.gen(function* () {
-+            yield* api.request(actors.owner, "DELETE", path);
-+            for (const account of accounts)
-+              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
-+          }).pipe(Effect.orDie),
-+        );
-+        const access = yield* body(
-+          Access,
-+          yield* api.request(actors.owner, "GET", `${path}/access`),
-+        );
-+        expect(
-+          (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
-+            revision: access.revision,
-+            audience: { kind: "everyone" },
-+          })).status,
-+        ).toBe(200);
-+        const backendConnection = yield* body(
-+          Resource,
-+          yield* api.request(actors.owner, "POST", `${path}/accounts/app/backend/connections`, {}),
-+        );
-+        const key = yield* api.request(
-+          actors.owner,
-+          "POST",
-+          `${prefix}/connections/${backendConnection.id}/submit`,
-+          { method: "key", fields: { token: interactiveBackendKey } },
-+        );
-+        expect(key.status, JSON.stringify(key.body)).toBe(200);
-+        accounts.push((yield* body(Resource, key)).id);
-+
-+        // Start a device sign-in for the app's own interactive requirement.
-+        const pending = yield* body(
-+          Resource,
-+          yield* api.request(
-+            actors.owner,
-+            "POST",
-+            `${path}/accounts/app/sharedIdentity/connections`,
-+            {},
-+          ),
-+        );
-+        const interactive = `${prefix}/connections/${pending.id}/interactive`;
-+        const started = yield* api.request(actors.owner, "POST", `${interactive}/start`, {
-+          method: "device",
-+        });
-+        expect(started.status, JSON.stringify(started.body)).toBe(200);
-+
-+        // The first poll waits; the backend connects on the second, which it holds mid-call.
-+        const first = yield* api.request(actors.owner, "GET", `${interactive}/status`);
-+        expect(first.body).toEqual({ state: "waiting" });
-+        const hold = yield* backend.holdStatus;
-+        const finishing = yield* api
-+          .request(actors.owner, "GET", `${interactive}/status`)
-+          .pipe(Effect.forkChild);
-+        yield* hold.started;
-+        // The app changes the requirement's provider while the app's step is in flight.
-+        const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
-+          files: [
-+            {
-+              path: "index.ts",
-+              content: source.replace(
-+                'name: "Interactive account"',
-+                'name: "Interactive account renamed"',
-+              ),
-+            },
-+            appsManifest,
-+          ],
-+        });
-+        expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
-+        yield* hold.release;
-+        const last = yield* Fiber.join(finishing);
-+        expect(last.status, JSON.stringify(last.body)).toBe(409);
-+        expect(last.body).toMatchObject({ _tag: "AccountConnectionTargetChanged" });
-+        const links = yield* body(
-+          Links,
-+          yield* api.request(actors.owner, "GET", `${path}/accounts/app`),
-+        );
-+        expect(links.filter((link) => link.requirement === "sharedIdentity")).toEqual([]);
-+      }),
-+    ),
-+  );
-+});
