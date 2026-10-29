@@ -12,6 +12,7 @@ import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { PoolUsage, summaryPath } from "./pool-usage.ts";
+import { timePoolRead } from "./read-timing.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
@@ -72,7 +73,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (container?.running && Date.now() < this.managementReadyUntil) return;
     if (!this.managementWarming) {
       this.managementWarming = (async () => {
-        await (await this.lifecycle).warm();
+        await timePoolRead("readiness", async () => (await this.lifecycle).warm());
         this.managementReadyUntil = Date.now() + 30_000;
       })().finally(() => { this.managementWarming = undefined; });
     }

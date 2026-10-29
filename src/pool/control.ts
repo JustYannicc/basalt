@@ -15,6 +15,7 @@ import {
 import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
 import { exportLoginFile } from "./login-export.ts";
+import { timePoolRead } from "./read-timing.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
@@ -356,12 +357,15 @@ export class PoolHome {
     }
   }
   async view(isOwner: boolean): Promise<PoolView> {
-    const ids = new Set((await this.membership()).members.map((member) => member.auth_id));
-    if (!ids.size) return { isOwner, providers, accounts: [] };
-    const [files, usage] = await Promise.all([
-      this.credentials(),
-      this.client.quota([...ids].sort(), true),
+    const membership = timePoolRead("membership", () => this.membership(), (value) => value.members.length);
+    const [members, files, usage] = await Promise.all([
+      membership,
+      timePoolRead("credentials", () => this.credentials(), (value) => value.length),
+      membership.then(({ members }) => timePoolRead("quota_detail", () => this.client.quota(
+        [...new Set(members.map((member) => member.auth_id))].sort(), true,
+      ), (value) => value.length)),
     ]);
+    const ids = new Set(members.members.map((member) => member.auth_id));
     return { isOwner, providers, accounts: accountsView(files, usage, ids) };
   }
   async usage(query: UsageQuery): Promise<UsageResponse> {
