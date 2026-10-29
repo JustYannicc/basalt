@@ -119,7 +119,7 @@ test("role demotion acknowledges the resulting native policy before the role cha
   }));
 });
 
-test("concurrent audience projection waits for the native membership write after its before-hook", async () => {
+for (const encoding of ["json", "form", "multipart"]) test(`concurrent audience projection waits for the native ${encoding} membership write after its before-hook`, async () => {
   const { withOrganizationAccessRequest } = await load("apps/hosted/cloud/src/implementation/organization-access-request.ts");
   await fixture(({ sql, changes, hook }) => Effect.gen(function* () {
     yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
@@ -127,9 +127,12 @@ test("concurrent audience projection waits for the native membership write after
     yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
     const projected = yield* Deferred.make<void>();
     const competing = yield* Deferred.make<void>();
+    const fields = { organizationId: organization, memberId: "m-other", role: "member" };
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
     const request = new Request("https://host.example.test/api/auth/organization/update-member-role", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ organizationId: organization, memberId: "m-other", role: "member" }),
+      method: "POST", ...(encoding === "json" ? { headers: { "content-type": "application/json" } } : {}),
+      body: encoding === "json" ? JSON.stringify(fields) : encoding === "form" ? new URLSearchParams(fields) : form,
     });
     const role = withOrganizationAccessRequest(request, () => Effect.gen(function* () {
       yield* hook.memberRoleChanging({ organization, member: "m-other", role: "member" });

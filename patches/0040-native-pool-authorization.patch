@@ -33,10 +33,10 @@ index 4d34ed7..4bf0364 100644
        // Better Auth calls this for the creator too. Only its create endpoint owns that exception.
 diff --git a/apps/hosted/cloud/src/implementation/organization-access-request.ts b/apps/hosted/cloud/src/implementation/organization-access-request.ts
 new file mode 100644
-index 0000000..5a01ad1
+index 0000000..c978069
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/organization-access-request.ts
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,36 @@
 +import { withOrganizationAccessLock } from "@executor-js/hosted-server/pool-access-hook";
 +import { Effect, Option, Schema } from "effect";
 +
@@ -55,9 +55,15 @@ index 0000000..5a01ad1
 +      !membershipWrites.some((name) => path.endsWith(`/organization/${name}`))
 +    )
 +      return yield* operation(false);
-+    const body = yield* Effect.tryPromise(() => request.clone().json()).pipe(
-+      Effect.catch(() => Effect.succeed(undefined)),
-+    );
++    const body = yield* Effect.tryPromise(async () => {
++      const copy = request.clone();
++      const type = copy.headers.get("content-type")?.toLowerCase() ?? "";
++      // Native auth accepts JSON and forms. Each encoding must take the same transaction path.
++      return type.includes("application/x-www-form-urlencoded") ||
++        type.includes("multipart/form-data")
++        ? Object.fromEntries(await copy.formData())
++        : copy.json();
++    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
 +    const decoded = Schema.decodeUnknownOption(target)(body);
 +    if (Option.isNone(decoded)) return yield* operation(false);
 +    // Auth's explicit-target guard validates this same organization before any membership write.
