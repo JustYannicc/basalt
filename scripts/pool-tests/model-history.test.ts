@@ -46,6 +46,10 @@ test("request history backfills explicitly, survives restarts and late commits, 
       [at, request, `sha256:${"a".repeat(64)}`]);
     };
     await add(db, randomUUID());
+    await db.query("UPDATE usage SET model=NULL WHERE id=1");
+    await db.query(`INSERT INTO billing_charge (id,usage_id,amount,matched_price_rule,price_snapshot,api_key_id,user_id)
+      VALUES ('fixture-charge',1,0.000123456789012345678,'fixture-price',
+        '{"input_price_per_million":2,"output_price_per_million":8,"cache_read_price_per_million":0.5,"cache_write_price_per_million":2.5,"request_price":0,"matched_service_tier":"*","min_input_tokens":0}',1,1)`);
     const before = await planHomeBackfill(db);
     assert.equal(before.rows, "1");
     assert.equal((await db.query("SELECT to_regclass('basalt_model_requests') AS relation")).rows[0].relation, null);
@@ -63,7 +67,8 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(result.records.length, 1);
     assert.equal(result.records[0]!.input_tokens, "100");
     assert.equal(result.records[0]!.reasoning_tokens, "3");
-    assert.equal(result.records[0]!.cost, null);
+    assert.equal(result.records[0]!.model, null);
+    assert.equal(result.records[0]!.cost, "0.000123456789012");
     assert.equal((await readRequests(db, { ...query, person: await digest("other-member") })).records.length, 0);
 
     await late.query("BEGIN");
@@ -86,6 +91,20 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await assert.rejects(db.query("TRUNCATE basalt_model_requests_0"), { code: "55000" });
     await migrateModelHistory(db);
     assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
+    await db.query("UPDATE api_key SET user_id=1");
+    const delayedRequest = randomUUID();
+    await late.query("BEGIN");
+    await add(late, delayedRequest);
+    for (let cycle = 0; cycle < 4; cycle++) {
+      await db.query(`INSERT INTO usage (timestamp,request_id,auth_index,provider,model,endpoint,api_key)
+        SELECT '2020-01-01T12:00:00Z'::timestamptz,'sweep-fixture-' || $1::text || '-' || n,
+          'fixture-account','fixture-provider','fixture-model','/v1/responses',$2 FROM generate_series(1,400) n`,
+      [cycle, `sha256:${"a".repeat(64)}`]);
+      await captureHomeRequests(db);
+      if (cycle === 0) await late.query("COMMIT");
+    }
+    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests WHERE request_id=$1", [delayedRequest])).rows[0].n, "1",
+      "a fixed sweep horizon wraps despite sustained traffic above its page rate");
   } finally {
     await late.query("ROLLBACK").catch(() => {});
     await late.end();

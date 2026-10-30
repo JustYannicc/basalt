@@ -31,7 +31,7 @@ export const historySchemaStatements = [
     timestamp timestamptz NOT NULL,
     timestamp_exact varchar(30) NOT NULL,
     pool varchar(16), person char(64), account char(64), client_key char(64),
-    request_id varchar(256), provider varchar(256), model varchar(256) NOT NULL,
+    request_id varchar(256), provider varchar(256), model varchar(256),
     endpoint varchar(256), api_type varchar(64), service_tier varchar(256),
     input_tokens bigint, output_tokens bigint, cache_read_tokens bigint, cache_write_tokens bigint,
     reasoning_tokens bigint, total_tokens bigint, latency_ms bigint,
@@ -64,6 +64,7 @@ export const historySchemaStatements = [
     backfill_id bigint NOT NULL,
     backfill_complete boolean NOT NULL DEFAULT false,
     sweep_id bigint NOT NULL,
+    sweep_upper bigint NOT NULL DEFAULT 0,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
   // Reject ordinary UPDATE/DELETE/TRUNCATE, including accidental cleanup through a parent table.

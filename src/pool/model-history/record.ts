@@ -11,7 +11,7 @@ export interface ModelRequest {
   clientKey: string | null;
   requestId: string | null;
   provider: string | null;
-  model: string;
+  model: string | null;
   endpoint: string | null;
   apiType: string | null;
   serviceTier: string | null;
@@ -90,8 +90,14 @@ export function amount(value: unknown): string | null {
     if (!Number.isFinite(value) || value < 0 || value > 1_000_000_000) return invalidHistory();
     value = value.toFixed(12);
   }
-  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,9})(?:\.[0-9]{1,12})?$/.test(value)) return invalidHistory();
-  return value;
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,15})(?:\.[0-9]{1,128})?$/.test(value)) return invalidHistory();
+  // Home's unconstrained decimal can expose float64 arithmetic digits. Round half up exactly
+  // once to the ledger's twelve fractional digits rather than blocking an entire capture batch.
+  const [whole, fraction = ""] = value.split(".");
+  let units = BigInt(whole!) * 1_000_000_000_000n + BigInt(fraction.slice(0, 12).padEnd(12, "0"));
+  if (fraction.length > 12 && Number(fraction[12]) >= 5) units++;
+  if (units >= 10n ** 28n) return invalidHistory();
+  return `${units / 1_000_000_000_000n}.${(units % 1_000_000_000_000n).toString().padStart(12, "0")}`;
 }
 
 const endpoints: Record<string, string> = {

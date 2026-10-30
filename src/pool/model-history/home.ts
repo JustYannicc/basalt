@@ -56,7 +56,7 @@ export async function homeRequest(raw: unknown, source: string): Promise<ModelRe
     id: await digest(JSON.stringify([source, sourceRecord])), source, sourceRecord, timestamp: at,
     pool: user?.pool ?? null, person: user?.person ?? null,
     account: await reference(source, "account", row.auth_index), clientKey: await reference(source, "key", row.key_id),
-    requestId, provider: identifier(row.provider), model: identifier(row.model, true)!,
+    requestId, provider: identifier(row.provider), model: identifier(row.model),
     ...endpointMetadata(row.endpoint), serviceTier: identifier(row.service_tier),
     inputTokens: counter(canonical ? row.accounting_input_tokens : row.input_tokens),
     outputTokens: counter(canonical ? row.accounting_output_tokens : row.output_tokens),
