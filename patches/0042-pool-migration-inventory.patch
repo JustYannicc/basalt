@@ -1,0 +1,189 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index 3509086..f787e13 100644
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -26,6 +26,7 @@ export const BackgroundJob = Schema.Literals([
+   "workflow-reconcile",
+   "billing-reconcile",
+   "agent-grant-expiry",
++  "pool-migration-inventory",
+ ]);
+ export type BackgroundJob = typeof BackgroundJob.Type;
+ 
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+new file mode 100644
+index 0000000..592eb22
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -0,0 +1,143 @@
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { Console, Effect, Schema } from "effect";
++import { createHash, randomUUID } from "node:crypto";
++
++// No caller supplies SQL or a selector. JSON projections stop at known identifier leaves.
++const queries = {
++  accounts: "select id, owner, provider, method from executor_accounts order by id limit 1001",
++  accountAccess: `select account_id, organization_id, creator_id, personal_user_id, kind, audience, revision
++    from hosted_account_access order by account_id limit 1001`,
++  accountGroups: `select organization_id, account_id, group_id from hosted_account_groups
++    order by account_id, group_id limit 1001`,
++  appAccess: `select id, organization_id, creator_id, audience, revision
++    from hosted_app_access order by id limit 1001`,
++  appGroups: `select organization_id, app_id, group_id from hosted_app_groups
++    order by app_id, group_id limit 1001`,
++  groups: "select id, organization_id, revision from hosted_groups order by id limit 1001",
++  groupMembers:
++    "select group_id, member_id from hosted_group_members order by group_id, member_id limit 1001",
++  members: `select id, "organizationId", "userId", role from member order by id limit 1001`,
++  links: `select app, requirement, subject, account, linked_by from hosted_app_account_links
++    order by app, requirement, subject nulls first, account limit 1001`,
++  connections: `select id, owner, provider, reconnect_account, revision,
++    state ->> 'status' as status, state #>> '{account,id}' as account,
++    state #>> '{interactive,method}' as acquisition_method,
++    state #>> '{interactive,app}' as acquisition_app,
++    state #>> '{interactive,version}' as acquisition_version,
++    state #>> '{interactive,ref}' as acquisition_ref,
++    target ->> 'app' as target_app, target ->> 'requirement' as target_requirement,
++    target ->> 'scope' as target_scope
++    from executor_account_connections order by id limit 1001`,
++  connectionAccess: `select connection_id, organization_id, creator_id,
++    destination ->> 'kind' as kind, destination #>> '{audience,kind}' as audience,
++    target ->> 'app' as target_app, target ->> 'requirement' as target_requirement,
++    target ->> 'scope' as target_scope
++    from hosted_connection_access order by connection_id limit 1001`,
++  connectionGroups: `select c.connection_id, g.value as group_id
++    from hosted_connection_access c cross join lateral
++      jsonb_array_elements_text(coalesce(c.destination #> '{audience,groups}', '[]'::jsonb)) g
++    order by c.connection_id, g.value limit 1001`,
++  workflowAccounts:
++    "select id, account, run from executor_workflow_accounts order by id limit 1001",
++  webhookAccounts:
++    "select id, account, subscription from executor_webhook_accounts order by id limit 1001",
++  webhooks:
++    "select id, app, owner, source_account, revision from executor_webhooks order by id limit 1001",
++  defaults: `select o.id as organization, p.key as person, p.value #>> '{}' as account
++    from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) p
++    order by o.id, p.key limit 1001`,
++  pools: `select o.id as organization, p.key as person, p.value ->> 'app' as app,
++    p.value ->> 'version' as version, p.value ->> 'account' as account
++    from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
++    order by o.id, p.key limit 1001`,
++} as const;
++
++const Rows = Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String)));
++class InventoryUnavailable extends Schema.TaggedError<InventoryUnavailable>()(
++  "InventoryUnavailable",
++  {},
++) {}
++
++/** A separate internal job never initializes the SDK or enters mutating data steps. */
++export const reportHostPoolInventory = Effect.gen(function* () {
++  const run = randomUUID();
++  const report = yield* Effect.gen(function* () {
++    const sql = yield* Effect.flatten(GroupDatabase);
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level repeatable read read only`;
++        yield* sql`set local statement_timeout = '3s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '5s'`;
++        const identity =
++          yield* sql`select current_database() as database, transaction_timestamp()::text as snapshot`;
++        if (identity[0]?.database !== "postgres" || typeof identity[0]?.snapshot !== "string") {
++          return yield* new InventoryUnavailable();
++        }
++        const sections: Record<string, typeof Rows.Type> = {};
++        for (const [section, query] of Object.entries(queries)) {
++          const rows = yield* sql
++            .unsafe(query)
++            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++          if (
++            rows.length > 1_000 ||
++            rows.some((row) =>
++              Object.values(row).some((value) => value !== null && value.length > 512),
++            )
++          ) {
++            return yield* new InventoryUnavailable();
++          }
++          sections[section] = rows;
++        }
++        const report = { snapshot: identity[0].snapshot, sections };
++        if (Buffer.byteLength(JSON.stringify(report)) > 120_000)
++          return yield* new InventoryUnavailable();
++        return report;
++      }),
++    );
++  }).pipe(
++    Effect.map((report) => ({ ok: true as const, report })),
++    Effect.catchCause(() => Effect.succeed({ ok: false as const })),
++  );
++  if (!report.ok) {
++    yield* Console.info(
++      JSON.stringify({
++        inventory: "host-v1",
++        run,
++        event: "end",
++        complete: false,
++        reason: "query_failed",
++        migrationGo: false,
++      }),
++    );
++    return;
++  }
++  const json = JSON.stringify(report.report);
++  const sha256 = createHash("sha256").update(json).digest("hex");
++  const chunks = Math.ceil(json.length / 8_000);
++  for (let index = 0; index < chunks; index++) {
++    yield* Console.info(
++      JSON.stringify({
++        inventory: "host-v1",
++        run,
++        event: "part",
++        index,
++        data: json.slice(index * 8_000, (index + 1) * 8_000),
++      }),
++    );
++  }
++  yield* Console.info(
++    JSON.stringify({
++      inventory: "host-v1",
++      run,
++      event: "end",
++      complete: true,
++      sha256,
++      chunks,
++      bytes: Buffer.byteLength(json),
++      coverage: Object.keys(queries),
++      excluded: ["home-state", "durable-object-state"],
++      migrationGo: false,
++    }),
++  );
++}).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index cda7ff0..94f0bef 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -17,6 +17,7 @@ import { cloudAppDomains } from "./infrastructure/app-domains.ts";
+ import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
+ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
++import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
+@@ -416,6 +417,7 @@ export default Api.make(
+       "app-domain-heartbeat",
+     );
+     yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
++    yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
+     const backgroundJobs = {
+       "organization-removal": organizationRemovals,
+       provisioning: dispatch,
+@@ -428,6 +430,7 @@ export default Api.make(
+       "workflow-reconcile": workflowReconcile,
+       "billing-reconcile": billingReconcile,
+       "agent-grant-expiry": agentGrantExpiry,
++      "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+     } satisfies Record<BackgroundJob, unknown>;
+ 
+     const egress = yield* cloudEgress;

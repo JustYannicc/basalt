@@ -366,6 +366,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-pool-migration-inventory",
+      "file": "0042-pool-migration-inventory.patch",
+      "content_sha256": "7f395744170edb665a3e58cf9de52a0c1ddaf211e5664f004f2762b6bb1a4fbc",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

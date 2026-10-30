@@ -123,7 +123,7 @@ jobs:
           docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy containers/pool
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
       - name: Check the pool runtime and database contracts
-        run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
+        run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts scripts/pool-tests/*.test.mjs
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
           POOL_TEST_IMAGE: basalt-1409-pool:test

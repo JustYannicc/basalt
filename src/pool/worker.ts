@@ -15,10 +15,12 @@ import { containerRequest } from "./container-request.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
+import { inventoryCron, reportPoolInventory } from "./inventory.ts";
+import { reportPoolStorage } from "./inventory-storage.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
-  PoolContainer: DurableObjectNamespace;
+  PoolContainer: DurableObjectNamespace<PoolContainer>;
   POOL_DATABASE_URL: string;
   POOL_MANAGEMENT_KEY: string;
   POOL_APP_SIGNING_KEY: string;
@@ -136,6 +138,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.usage.observe().catch((error: unknown) => console.error("Pool usage observation failed", error));
   }
 
+  async migrationInventory(): Promise<void> {
+    await reportPoolStorage(this.ctx.storage);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
     if (pathname === accessPath) return this.computers.access(request);
@@ -189,7 +195,12 @@ export default {
     }
     return singleton(env).fetch(request);
   },
-  async scheduled(_event: ScheduledEvent, env: PoolEnvironment) {
+  async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
+    if (event.cron === inventoryCron) {
+      await reportPoolInventory(env.POOL_DATABASE_URL);
+      await singleton(env).migrationInventory();
+      return;
+    }
     const response = await singleton(env).fetch("http://pool/__warm");
     if (!response.ok) throw new Error("Pool prewarming failed");
   },
