@@ -32,7 +32,7 @@ export const historySchemaStatements = [
     CHECK (cost >= 0),
     CHECK ((cost_basis = 'unpriced' AND cost IS NULL AND currency IS NULL)
       OR (cost_basis <> 'unpriced' AND cost IS NOT NULL AND currency IS NOT NULL)),
-    CHECK ((price_version IS NULL) = (price_snapshot IS NULL)),
+    CHECK (price_snapshot IS NULL OR price_version IS NOT NULL),
     CHECK (id ~ '^[0-9a-f]{64}$' AND source ~ '^[0-9a-f]{64}$' AND source_record ~ '^[0-9a-f]{64}$')
   ) PARTITION BY HASH (id)`,
   ...Array.from({ length: 16 }, (_, remainder) => `CREATE TABLE basalt_model_requests_${remainder}
