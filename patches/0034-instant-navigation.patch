@@ -294,7 +294,7 @@ index 2a3ff58..39b330e 100644
   * Personal and shared credentials use one list. Administrators also manage the organization's
   * OAuth clients from here, since those clients only exist to connect accounts.
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index 75ea7bb..951654b 100644
+index 75ea7bb..ac4f2c6 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -14,7 +14,7 @@ import {
@@ -371,7 +371,7 @@ index 75ea7bb..951654b 100644
  /** Views that read only the app. The others also read the inventory and the app's links. */
  const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
-@@ -143,12 +182,16 @@ export function AppDetailPage({
+@@ -143,12 +182,20 @@ export function AppDetailPage({
    const access = Option.getOrUndefined(authority.data);
    const canManage = access?.canManage === true,
      canUse = access?.canUse === true;
@@ -379,8 +379,12 @@ index 75ea7bb..951654b 100644
 +  // The settled Apps list already answers whether this caller has a screen here, so a page opened
 +  // from it shows its App tab on first paint. The page's own reads replace that answer as they land.
 +  const listed = useAtomValue(listedAppAtom(organization)(appId))?.entry;
-+  const screenRecord = app ?? listed?.app;
-+  const screenTab = appScreenTab(screenRecord, access ?? listed?.access, {
++  // A read that failed means the list may be stale (the app was deleted or unshared since), so its
++  // entry stops answering for that read.
++  const screenRecord = app ?? (AsyncResult.isFailure(query.result) ? undefined : listed?.app);
++  const screenAccess =
++    access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
++  const screenTab = appScreenTab(screenRecord, screenAccess, {
      app: AsyncResult.isFailure(query.result),
      access: AsyncResult.isFailure(authority.result),
    });
@@ -390,6 +394,22 @@ index 75ea7bb..951654b 100644
    // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
    // instead of showing Overview and switching once the screen turns up.
    const selectedView: AppView | undefined =
+@@ -195,11 +242,13 @@ export function AppDetailPage({
+       </Button>
+     </div>
+   );
+-  const pending = <AppDetailLoading view={selectedView} app={app} selectedTool={tool} />;
++  const pending = <AppDetailLoading view={selectedView} app={screenRecord} selectedTool={tool} />;
+   return (
+     <AppDetailLayout
+       key={appId}
+-      app={app}
++      // The list entry names the app and makes its tabs links on the first frame; actions and
++      // content still wait for the page's own reads.
++      app={screenRecord}
+       view={selectedView}
+       canInspectSource={canManage}
+       appScreen={screenTab}
 diff --git a/apps/hosted/web/src/implementation/pages/approvals.tsx b/apps/hosted/web/src/implementation/pages/approvals.tsx
 index cc100f2..0dc8705 100644
 --- a/apps/hosted/web/src/implementation/pages/approvals.tsx
@@ -882,10 +902,10 @@ index 28e1ee7..182bcdc 100644
      return (
        <InventoryPageSkeleton
 diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
-index 241c4e2..d83f676 100644
+index 241c4e2..3c689bb 100644
 --- a/e2e/tests/embedded-app-navigation.spec.ts
 +++ b/e2e/tests/embedded-app-navigation.spec.ts
-@@ -270,4 +270,71 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
+@@ -270,4 +270,75 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
      ),
    );
 
@@ -904,14 +924,17 @@ index 241c4e2..d83f676 100644
 +            .goto(`/org/${actors.organization.slug}/apps`)
 +            .then(() => link(page).getByText("App screen").waitFor()),
 +        );
-+        // Every read of the app itself waits, so only the list can answer what the page shows.
++        // Every read that could name the app or its access waits, including the organization's
++        // inventory, so only the list can answer what the page shows.
 +        const reads = yield* browser.use("Hold the app's own reads", (page) =>
 +          hold(
 +            page,
 +            (url) =>
 +              readOf(screen.app.id, "")(url) ||
 +              readOf(screen.app.id, "/access")(url) ||
-+              readOf(screen.app.id, "/ui")(url),
++              readOf(screen.app.id, "/ui")(url) ||
++              (url.pathname.startsWith("/api/organizations/") &&
++                url.pathname.endsWith("/inventory")),
 +          ),
 +        );
 +        yield* Effect.addFinalizer(() =>
@@ -943,10 +966,11 @@ index 241c4e2..d83f676 100644
 +                  page.evaluate(
 +                    () => (Reflect.get(window, "__appTabPending") as { pending: boolean }).pending,
 +                  ),
++                  page.locator("h1", { hasText: screen.app.name }).count(),
 +                ]),
 +              ),
 +          ),
-+        ).toEqual([["App"], false]);
++        ).toEqual([["App"], false, 1]);
 +        yield* browser.checkpoint("app-tab-from-list");
 +        yield* browser.use("Release the app's reads", () => reads.release());
 +        yield* browser.use("The screen shows its content", (page) =>

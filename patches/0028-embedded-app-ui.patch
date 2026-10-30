@@ -2976,7 +2976,7 @@ index 5b1087e..af872fa 100644
  const supported = (format: DisplayFormat): boolean => {
    try {
 diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
-index 8fce008..8e7f623 100644
+index 8fce008..c210943 100644
 --- a/packages/ui/src/implementation/dashboard/app-detail.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
 @@ -25,6 +25,7 @@ import { useProductBrand } from "../hooks/product-brand.ts";
@@ -3133,6 +3133,10 @@ index 8fce008..8e7f623 100644
 +                    </button>
 +                  </DisabledTooltip>
 +                );
++              const current =
++                view === section.view || (view === "history" && section.view === "source")
++                  ? "page"
++                  : undefined;
 +              return app ? (
 +                <BoundAppLink
                    key={section.view}
@@ -3140,11 +3144,7 @@ index 8fce008..8e7f623 100644
 +                  app={app.id}
 +                  view={section.view}
 +                  className={classes}
-+                  aria-current={
-+                    view === section.view || (view === "history" && section.view === "source")
-+                      ? "page"
-+                      : undefined
-+                  }
++                  aria-current={current}
                  >
 -                  <button type="button" disabled className={cn(classes, "opacity-50")}>
 -                    {content}
@@ -3153,7 +3153,7 @@ index 8fce008..8e7f623 100644
 +                  {content}
 +                </BoundAppLink>
 +              ) : (
-+                <span key={section.view} className={classes}>
++                <span key={section.view} className={classes} aria-current={current}>
 +                  {content}
 +                </span>
                );
