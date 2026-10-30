@@ -9,6 +9,39 @@ permissions:
   contents: read
 
 jobs:
+  host-managed-accounts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Build the isolated self-host test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify host-managed visibility and existing account behavior
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo"
+          --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-managed-accounts-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   pool-inventory:
     runs-on: ubuntu-latest
     timeout-minutes: 20
