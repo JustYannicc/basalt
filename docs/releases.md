@@ -92,3 +92,5 @@ The deployment model can be derived from [alchemy.run.ts](../alchemy.run.ts).
 Artifacts app-source repositories use a separate namespace that the stack creates with immutable EU jurisdiction before exposing the public router. Deploys reject an existing namespace outside the EU. App source and compiled builds are separate stores; both require their own EU configuration.
 
 Cloudflare Workflows have no configured EU jurisdiction. The carried patch encrypts step values, callback failure payloads and terminal results before journal persistence, and hashes checkpoint names. Workflow metadata still has no enforced EU placement. Inputs and final outputs are encrypted in Postgres separately. The legacy import workflow is disabled for this deployment.
+
+The Google own-client picker behavior is proposed in [upstream #2459](https://github.com/UsefulSoftwareCo/executor/pull/2459). Its current carry also adapts existing product-specific labels and a shared E2E helper, so it remains a manual-retirement overlay. Inclusion of the generic upstream change alone does not retire the complete carry.
