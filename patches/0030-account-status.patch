@@ -2643,10 +2643,10 @@ index 00000000..680fe1f8
 +});
 diff --git a/packages/apps/protocols/17.json b/packages/apps/protocols/17.json
 new file mode 100644
-index 00000000..2ac26479
+index 0000000..9cd9446
 --- /dev/null
 +++ b/packages/apps/protocols/17.json
-@@ -0,0 +1,4530 @@
+@@ -0,0 +1,4537 @@
 +{
 +  "protocol": 17,
 +  "previous": 16,
@@ -4503,14 +4503,14 @@ index 00000000..2ac26479
 +              {
 +                "name": "app",
 +                "type": {
-+                  "$shared": "52770e7f1954fc8f"
++                  "$shared": "98fba6045f3450bd"
 +                },
 +                "isOptional": false
 +              },
 +              {
 +                "name": "user",
 +                "type": {
-+                  "$shared": "52770e7f1954fc8f"
++                  "$shared": "98fba6045f3450bd"
 +                },
 +                "isOptional": false
 +              }
@@ -5178,14 +5178,14 @@ index 00000000..2ac26479
 +        {
 +          "name": "app",
 +          "type": {
-+            "$shared": "abbc8b00991f2d1a"
++            "$shared": "367380b8887768a8"
 +          },
 +          "isOptional": false
 +        },
 +        {
 +          "name": "user",
 +          "type": {
-+            "$shared": "abbc8b00991f2d1a"
++            "$shared": "367380b8887768a8"
 +          },
 +          "isOptional": true
 +        }
@@ -5209,6 +5209,17 @@ index 00000000..2ac26479
 +  ],
 +  "references": {},
 +  "shared": {
++    "045e1c2096545fa1": {
++      "_tag": "Union",
++      "types": [
++        {
++          "$shared": "9535a9ff3aa99e22"
++        },
++        {
++          "$shared": "aa2e038a7c1c8ed5"
++        }
++      ]
++    },
 +    "14bd4853b682e21b": {
 +      "_tag": "Objects",
 +      "propertySignatures": [
@@ -5431,54 +5442,6 @@ index 00000000..2ac26479
 +        },
 +        {
 +          "$shared": "7fa3e0fa96a362fd"
-+        }
-+      ]
-+    },
-+    "1eb7948a25cdb002": {
-+      "name": "provider",
-+      "type": {
-+        "$shared": "51a914c7e215513f"
-+      },
-+      "isOptional": false
-+    },
-+    "2506dacdbeac8d32": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "$shared": "48f855b5f0f69dca"
-+        },
-+        {
-+          "name": "cardinality",
-+          "type": {
-+            "_tag": "Union",
-+            "types": [
-+              {
-+                "_tag": "Literal",
-+                "literal": "one"
-+              },
-+              {
-+                "_tag": "Literal",
-+                "literal": "many"
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "health",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": true
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "interactiveHealth",
-+          "type": {
-+            "_tag": "Literal",
-+            "literal": true
-+          },
-+          "isOptional": true
 +        }
 +      ]
 +    },
@@ -5730,14 +5693,6 @@ index 00000000..2ac26479
 +        }
 +      ]
 +    },
-+    "31926112cf68f211": {
-+      "_tag": "Arrays",
-+      "rest": [
-+        {
-+          "$shared": "befd554c41fcf730"
-+        }
-+      ]
-+    },
 +    "3634cfd2d0b776b7": {
 +      "_tag": "Union",
 +      "types": [
@@ -5884,145 +5839,20 @@ index 00000000..2ac26479
 +        }
 +      ]
 +    },
-+    "48f855b5f0f69dca": {
-+      "name": "definition",
-+      "type": {
-+        "$shared": "51a914c7e215513f"
-+      },
-+      "isOptional": false
++    "367380b8887768a8": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "b028e7452473bf8e"
++        }
++      ]
 +    },
 +    "4ded759dcdba2403": {
 +      "_tag": "Arrays",
 +      "rest": [
 +        {
 +          "$shared": "3634cfd2d0b776b7"
-+        }
-+      ]
-+    },
-+    "51a914c7e215513f": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "name": "name",
-+          "type": {
-+            "_tag": "String",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isMinLength",
-+                  "payload": {
-+                    "minLength": 1
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "$shared": "583987dbe9786cc0"
-+        },
-+        {
-+          "name": "site",
-+          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [
-+              {
-+                "name": "label",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "origin",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "annotations": {
-+                        "message": "Expected an exact HTTP(S) origin, without a trailing slash"
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": false
-+              },
-+              {
-+                "name": "subdomainOf",
-+                "type": {
-+                  "_tag": "String",
-+                  "checks": [
-+                    {
-+                      "_tag": "Filter",
-+                      "representation": {
-+                        "id": "effect/schema/isMinLength",
-+                        "payload": {
-+                          "minLength": 1
-+                        }
-+                      }
-+                    }
-+                  ]
-+                },
-+                "isOptional": true
-+              }
-+            ],
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "annotations": {
-+                  "message": "The site template must be one label below subdomainOf."
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "hosts",
-+          "type": {
-+            "_tag": "Arrays",
-+            "rest": [
-+              {
-+                "_tag": "String",
-+                "checks": [
-+                  {
-+                    "_tag": "Filter",
-+                    "representation": {
-+                      "id": "effect/schema/isPattern",
-+                      "payload": {
-+                        "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
-+                        "flags": ""
-+                      }
-+                    }
-+                  }
-+                ]
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        }
-+      ]
-+    },
-+    "52770e7f1954fc8f": {
-+      "_tag": "Objects",
-+      "propertySignatures": [],
-+      "indexSignatures": [
-+        {
-+          "$shared": "e2f91da42e7791fc"
 +        }
 +      ]
 +    },
@@ -6512,6 +6342,279 @@ index 00000000..2ac26479
 +      },
 +      "isOptional": true
 +    },
++    "89103a4f7c97c2b6": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "name",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "583987dbe9786cc0"
++        },
++        {
++          "name": "site",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "label",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "origin",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "annotations": {
++                        "message": "Expected an exact HTTP(S) origin, without a trailing slash"
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "defaultOrigin",
++                "type": {
++                  "_tag": "Boolean"
++                },
++                "isOptional": true
++              },
++              {
++                "name": "subdomainOf",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ],
++            "checks": [
++              {
++                "_tag": "Filter",
++                "annotations": {
++                  "message": "The site template must be one label below subdomainOf."
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "hosts",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isPattern",
++                      "payload": {
++                        "source": "^(\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$",
++                        "flags": ""
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "937d2816c5d25fac": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "$shared": "d329d7db0371d785"
++        },
++        {
++          "name": "cardinality",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "one"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "many"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "health",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "interactiveHealth",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "9535a9ff3aa99e22": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "id",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isStartingWith",
++                  "payload": {
++                    "startsWith": "acc_"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 5
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "site",
++          "type": {
++            "_tag": "String"
++          },
++          "isOptional": true
++        },
++        {
++          "$shared": "eec6756d6816a8fe"
++        },
++        {
++          "name": "method",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "generation",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isInt",
++                  "payload": null
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "fields",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [],
++            "indexSignatures": [
++              {
++                "parameter": {
++                  "_tag": "String"
++                },
++                "type": {
++                  "_tag": "Declaration",
++                  "representation": {
++                    "id": "effect/schema/Json",
++                    "payload": null
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ]
++    },
++    "98fba6045f3450bd": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "c99ba9966cbc9984"
++        }
++      ]
++    },
 +    "a2253e3ac0fe9f19": {
 +      "_tag": "Objects",
 +      "propertySignatures": [],
@@ -6832,125 +6935,15 @@ index 00000000..2ac26479
 +        }
 +      ]
 +    },
-+    "abbc8b00991f2d1a": {
-+      "_tag": "Objects",
-+      "propertySignatures": [],
-+      "indexSignatures": [
++    "aa2e038a7c1c8ed5": {
++      "_tag": "Arrays",
++      "rest": [
 +        {
-+          "$shared": "e25f685aff0ab13e"
++          "$shared": "9535a9ff3aa99e22"
 +        }
 +      ]
 +    },
-+    "befd554c41fcf730": {
-+      "_tag": "Objects",
-+      "propertySignatures": [
-+        {
-+          "name": "id",
-+          "type": {
-+            "_tag": "String",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isStartingWith",
-+                  "payload": {
-+                    "startsWith": "acc_"
-+                  }
-+                }
-+              },
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isMinLength",
-+                  "payload": {
-+                    "minLength": 5
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "site",
-+          "type": {
-+            "_tag": "String"
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "$shared": "1eb7948a25cdb002"
-+        },
-+        {
-+          "name": "method",
-+          "type": {
-+            "_tag": "String",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isMinLength",
-+                  "payload": {
-+                    "minLength": 1
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        },
-+        {
-+          "name": "generation",
-+          "type": {
-+            "_tag": "Number",
-+            "checks": [
-+              {
-+                "_tag": "Filter",
-+                "representation": {
-+                  "id": "effect/schema/isInt",
-+                  "payload": null
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": true
-+        },
-+        {
-+          "name": "fields",
-+          "type": {
-+            "_tag": "Objects",
-+            "propertySignatures": [],
-+            "indexSignatures": [
-+              {
-+                "parameter": {
-+                  "_tag": "String"
-+                },
-+                "type": {
-+                  "_tag": "Declaration",
-+                  "representation": {
-+                    "id": "effect/schema/Json",
-+                    "payload": null
-+                  }
-+                }
-+              }
-+            ]
-+          },
-+          "isOptional": false
-+        }
-+      ]
-+    },
-+    "dc0c6f4d145d749d": {
-+      "_tag": "Union",
-+      "types": [
-+        {
-+          "$shared": "befd554c41fcf730"
-+        },
-+        {
-+          "$shared": "31926112cf68f211"
-+        }
-+      ]
-+    },
-+    "e25f685aff0ab13e": {
++    "b028e7452473bf8e": {
 +      "parameter": {
 +        "_tag": "String",
 +        "checks": [
@@ -6966,10 +6959,10 @@ index 00000000..2ac26479
 +        ]
 +      },
 +      "type": {
-+        "$shared": "dc0c6f4d145d749d"
++        "$shared": "045e1c2096545fa1"
 +      }
 +    },
-+    "e2f91da42e7791fc": {
++    "c99ba9966cbc9984": {
 +      "parameter": {
 +        "_tag": "String",
 +        "checks": [
@@ -6985,8 +6978,15 @@ index 00000000..2ac26479
 +        ]
 +      },
 +      "type": {
-+        "$shared": "2506dacdbeac8d32"
++        "$shared": "937d2816c5d25fac"
 +      }
++    },
++    "d329d7db0371d785": {
++      "name": "definition",
++      "type": {
++        "$shared": "89103a4f7c97c2b6"
++      },
++      "isOptional": false
 +    },
 +    "eaf2a9407a7920e9": {
 +      "_tag": "Objects",
@@ -7105,6 +7105,13 @@ index 00000000..2ac26479
 +      "type": {
 +        "$shared": "2c4cf701353666b1"
 +      }
++    },
++    "eec6756d6816a8fe": {
++      "name": "provider",
++      "type": {
++        "$shared": "89103a4f7c97c2b6"
++      },
++      "isOptional": false
 +    },
 +    "fab62e9a9a43aa6b": {
 +      "_tag": "Objects",
@@ -7297,13 +7304,14 @@ diff --git a/packages/apps/src/contracts/protocols/15.ts b/packages/apps/src/con
 index 2ecf5ad7..64e33fe0 100644
 --- a/packages/apps/src/contracts/protocols/15.ts
 +++ b/packages/apps/src/contracts/protocols/15.ts
-@@ -30,7 +30,8 @@ import {
+@@ -30,8 +30,9 @@ import {
  } from "../elicitation.ts";
  import { DeclaredEvents, EmittedEvents } from "../events.ts";
  import { FailureDetail, UpstreamError } from "../failure.ts";
--import { AccountCheckResult, OAuth2Config } from "../provider.ts";
-+import { AccountInfo, OAuth2Config } from "../provider.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountInfo } from "../provider.ts";
 +const AccountCheckResult = Schema.Struct({ accountInfo: Schema.optionalKey(AccountInfo) });
+ import { OAuth2Config } from "./oauth-15.ts";
  import { ProviderError } from "../provider-error.ts";
  import { RouterIcon } from "../router.ts";
  import { AppIcons } from "../icons.ts";
@@ -7312,7 +7320,7 @@ new file mode 100644
 index 00000000..a3be2672
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/16.ts
-@@ -0,0 +1,677 @@
+@@ -0,0 +1,692 @@
 +/**
 + * The host protocol this framework speaks: every message that crosses between a host and an app
 + * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
@@ -7329,7 +7337,8 @@ index 00000000..a3be2672
 + */
 +import { Schema } from "effect";
 +
-+import { ProviderSite } from "@executor-js/utils/account-site";
++import { HttpOrigin } from "@executor-js/utils/url-policy";
++import { matchesSingleLabelSite } from "@executor-js/utils/account-site";
 +import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
 +const frameworkProtocol = 16;
 +import {
@@ -7346,7 +7355,8 @@ index 00000000..a3be2672
 +} from "../elicitation.ts";
 +import { DeclaredEvents, EmittedEvents } from "../events.ts";
 +import { FailureDetail, UpstreamError } from "../failure.ts";
-+import { AccountInfo, OAuth2Config } from "../provider.ts";
++import { AccountInfo } from "../provider.ts";
++import { OAuth2Config } from "./oauth-16.ts";
 +const AccountCheckResult = Schema.Struct({ accountInfo: Schema.optionalKey(AccountInfo) });
 +import { ProviderError } from "../provider-error.ts";
 +import { RouterIcon } from "../router.ts";
@@ -7497,6 +7507,19 @@ index 00000000..a3be2672
 +    ...exposure,
 +  }),
 +]);
++
++/** Provider site rule frozen in protocol 16; later fields belong to a later protocol. */
++const ProviderSite = Schema.Struct({
++  label: Schema.NonEmptyString,
++  origin: HttpOrigin,
++  subdomainOf: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++}).check(
++  Schema.makeFilter(
++    (site) =>
++      site.subdomainOf === undefined || matchesSingleLabelSite(site.origin, site.subdomainOf),
++    { message: "The site template must be one label below subdomainOf." },
++  ),
++);
 +
 +/** A credential-free provider declaration with the hosts its credentials may be sent to. */
 +export const DeclaredProvider = Schema.Struct({
@@ -10314,3 +10337,265 @@ index 00000000..1de5b1c7
 +              secretValues(account.fields, found, minimum);
 +  return [...found].sort((a, b) => b.length - a.length);
 +};
+
+diff --git a/packages/apps/src/contracts/protocols/oauth-16.ts b/packages/apps/src/contracts/protocols/oauth-16.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-16.ts
+@@ -0,0 +1,124 @@
++/** OAuth declaration shape frozen for host protocol 16. */
++import { Schema } from "effect";
++import { HttpUrl } from "../schema.ts";
++
++const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++
++const tokenRequestOptions = {
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++const oauthOptions = {
++  ...tokenRequestOptions,
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++};
++
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
+diff --git a/packages/apps/src/contracts/protocols/oauth-17.ts b/packages/apps/src/contracts/protocols/oauth-17.ts
+new file mode 100644
+index 0000000..4da9e4e
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-17.ts
+@@ -0,0 +1,126 @@
++/** OAuth declaration shape frozen for host protocol 17; later fields belong to a later protocol. */
++import { Schema } from "effect";
++import { HttpUrl } from "../schema.ts";
++
++const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++export type OAuth2Config = typeof OAuth2Config.Type;
++const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++
++const tokenRequestOptions = {
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++const oauthOptions = {
++  ...tokenRequestOptions,
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++};
++
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);

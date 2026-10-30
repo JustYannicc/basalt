@@ -7711,7 +7711,7 @@ new file mode 100644
 index 0000000..2ecf5ad
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/15.ts
-@@ -0,0 +1,643 @@
+@@ -0,0 +1,658 @@
 +/**
 + * The host protocol this framework speaks: every message that crosses between a host and an app
 + * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
@@ -7727,7 +7727,8 @@ index 0000000..2ecf5ad
 + * imports them, so a change here never edits a released protocol.
 + */
 +import { Schema } from "effect";
-+import { ProviderSite } from "@executor-js/utils/account-site";
++import { HttpOrigin } from "@executor-js/utils/url-policy";
++import { matchesSingleLabelSite } from "@executor-js/utils/account-site";
 +import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
 +const frameworkProtocol = 15;
 +import {
@@ -7744,7 +7745,8 @@ index 0000000..2ecf5ad
 +} from "../elicitation.ts";
 +import { DeclaredEvents, EmittedEvents } from "../events.ts";
 +import { FailureDetail, UpstreamError } from "../failure.ts";
-+import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "../provider.ts";
++import { OAuth2Config } from "./oauth-15.ts";
 +import { ProviderError } from "../provider-error.ts";
 +import { RouterIcon } from "../router.ts";
 +import { AppIcons } from "../icons.ts";
@@ -7863,6 +7865,19 @@ index 0000000..2ecf5ad
 +    ...exposure,
 +  }),
 +]);
++
++/** Provider site rule frozen in protocol 15; later fields belong to a later protocol. */
++const ProviderSite = Schema.Struct({
++  label: Schema.NonEmptyString,
++  origin: HttpOrigin,
++  subdomainOf: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++}).check(
++  Schema.makeFilter(
++    (site) =>
++      site.subdomainOf === undefined || matchesSingleLabelSite(site.origin, site.subdomainOf),
++    { message: "The site template must be one label below subdomainOf." },
++  ),
++);
 +
 +/** A credential-free provider declaration with the hosts its credentials may be sent to. */
 +export const DeclaredProvider = Schema.Struct({
@@ -12563,3 +12578,133 @@ index a25fc57..ba20ce4 100644
  };
  
  /**
+
+diff --git a/packages/apps/src/contracts/protocols/oauth-15.ts b/packages/apps/src/contracts/protocols/oauth-15.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/oauth-15.ts
+@@ -0,0 +1,124 @@
++/** OAuth declaration shape frozen for host protocol 15. */
++import { Schema } from "effect";
++import { HttpUrl } from "../schema.ts";
++
++const OAuthClientAuth = Schema.Literals([
++  "none",
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++const OAuthSecretClientAuth = Schema.Literals([
++  "client_secret_post",
++  "client_secret_basic",
++  "client_secret_basic_raw",
++]);
++
++const reservedAuthorizationParams = [
++  "response_type",
++  "client_id",
++  "redirect_uri",
++  "state",
++  "scope",
++  "code_challenge",
++  "code_challenge_method",
++  "nonce",
++  "resource",
++  "request",
++  "request_uri",
++] as const;
++const reserved: ReadonlySet<string> = new Set(reservedAuthorizationParams);
++
++const OAuthAuthorizationParams = Schema.Record(Schema.String, Schema.String).check(
++  Schema.makeFilter((params) => Object.keys(params).every((key) => !reserved.has(key)), {
++    message: "Authorization parameters cannot replace protocol parameters such as state or scope.",
++  }),
++);
++
++const declaredAuthorizationQuery = Schema.makeFilter(
++  (config: {
++    readonly authorizationUrl: string;
++    readonly authorizationParams?: Readonly<Record<string, string>>;
++  }) => {
++    const keys = [...new URL(config.authorizationUrl).searchParams.keys()];
++    const owned = keys.filter((key) => reserved.has(key));
++    if (owned.length > 0)
++      return {
++        path: ["authorizationUrl"],
++        issue: `authorizationUrl cannot set protocol parameters: ${owned.join(", ")}.`,
++      };
++    const repeated = keys.filter((key) => Object.hasOwn(config.authorizationParams ?? {}, key));
++    if (repeated.length > 0)
++      return {
++        path: ["authorizationParams"],
++        issue: `Declare each parameter once; authorizationUrl already sets: ${repeated.join(", ")}.`,
++      };
++    return undefined;
++  },
++);
++
++const OAuthTokenRequestFormat = Schema.Literals(["form", "json"]);
++const OAuthTokenResponse = Schema.Struct({
++  path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
++  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
++});
++
++const tokenRequestOptions = {
++  scopeSeparator: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
++  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++};
++const oauthOptions = {
++  ...tokenRequestOptions,
++  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++  grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++  tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
++  confidentialTokenEndpointAuthMethod: Schema.optionalKey(OAuthSecretClientAuth),
++  resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++};
++
++export const OAuth2Config = Schema.Union([
++  Schema.Struct({
++    ...oauthOptions,
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  }),
++  Schema.Struct({
++    ...oauthOptions,
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    issuer: Schema.optionalKey(HttpUrl),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++  }).check(declaredAuthorizationQuery),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    discover: HttpUrl,
++    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    tokenUrl: Schema.optionalKey(Schema.Never),
++    revocationUrl: Schema.optionalKey(Schema.Never),
++    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++  }),
++  Schema.Struct({
++    grant: Schema.Literal("client_credentials"),
++    tokenUrl: HttpUrl,
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    scopes: Schema.Array(Schema.String),
++    ...tokenRequestOptions,
++    tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
++    authorizationUrl: Schema.optionalKey(Schema.Never),
++    discover: Schema.optionalKey(Schema.Never),
++    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
++  }),
++]);
