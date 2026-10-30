@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { accessPath } from "./access-contract.ts";
+import type { HomeApiKeyLookup } from "./model-auth.ts";
 
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -28,10 +29,17 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { default: worker, handlePoolWorkerRequest } = await import("./worker.ts");
+// Keep Workers platform types in tsconfig.worker.json, like model-usage.worker.test.ts.
+const workerModule = "./worker.ts";
+const { default: worker, handlePoolWorkerRequest }: {
+  default: { fetch(request: Request, env: object): Promise<Response> };
+  handlePoolWorkerRequest(
+    request: Request,
+    env: object,
+    lookupHomeApiKey?: HomeApiKeyLookup,
+  ): Promise<Response>;
+} = await import(workerModule);
 hooks.deregister();
-
-type WorkerEnvironment = Parameters<typeof handlePoolWorkerRequest>[1];
 
 function poolStub(connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool") {
   const calls = { lookups: 0, forwarded: [] as Request[] };
@@ -55,7 +63,7 @@ function poolStub(connectionString = "postgres://fixture:fixture@hyperdrive.inva
         };
       },
     },
-  } as unknown as WorkerEnvironment;
+  };
   return { env, calls };
 }
 
@@ -103,7 +111,7 @@ test("the exported Worker rejects bad credentials before controller lookup and p
 
 test("a missing Hyperdrive binding fails closed without using the direct container URL", async () => {
   const { env, calls } = poolStub();
-  delete env.POOL_AUTH_DATABASE;
+  Reflect.deleteProperty(env, "POOL_AUTH_DATABASE");
   let queries = 0;
   const response = await handlePoolWorkerRequest(
     new Request("https://pool.example/v1/models?key=valid-home-key"), env,
