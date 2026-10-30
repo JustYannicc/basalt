@@ -91,14 +91,16 @@ export function proveZendeskMcp({
       const tickets = tool(search.structuredContent?.items, "listTickets");
       const create = tool(search.structuredContent?.items, "createTicket");
       const supportUserSearch = yield* Effect.promise(() => client.callTool({ name: "search", arguments: {
-        query: "users.showCurrentUser",
+        query: `${flow.app.slug}.api.users.showCurrentUser`,
+        namespace: flow.app.slug, limit: 1,
       } }));
       assert.equal(supportUserSearch.isError, false, "Native MCP search failed for imported current-user read");
       const supportUser = supportUserSearch.structuredContent?.items?.find((entry) =>
         entry.kind === "query" && /showCurrentUser/i.test(entry.path),
       );
       const supportCreateSearch = yield* Effect.promise(() => client.callTool({ name: "search", arguments: {
-        query: "tickets.createTicket",
+        query: `${flow.app.slug}.api.tickets.createTicket`,
+        namespace: flow.app.slug, limit: 1,
       } }));
       assert.equal(supportCreateSearch.isError, false, "Native MCP search failed for imported ticket creation");
       const supportCreate = supportCreateSearch.structuredContent?.items?.find((entry) =>
