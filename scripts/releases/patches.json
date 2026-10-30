@@ -258,7 +258,7 @@
     {
       "identity": "executor-embedded-app-ui",
       "file": "0028-embedded-app-ui.patch",
-      "content_sha256": "2dac7bcd2e92bb4ffccb621e3b5483672f2ea0d6606d92f843b880958f88f778",
+      "content_sha256": "bd0b9dedae7c784d7ed7fb57ea258224cb48015e58f8e4a02aa996c97171d2dd",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -316,7 +316,7 @@
     {
       "identity": "executor-instant-navigation",
       "file": "0034-instant-navigation.patch",
-      "content_sha256": "85fcdde2c06d28ffe063020c881d0b32ee65fe11cf976471b67a91bc806822ee",
+      "content_sha256": "284f54120e9d4b49a353c0f959a5a8e23dc27e5098c2509d4547cac4a0fde8a8",
       "kind": "upstream",
       "upstream_pull_request": 2437,
       "database_sensitive": false,

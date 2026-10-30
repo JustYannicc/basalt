@@ -29,6 +29,8 @@ export const pool = {
   usage: () => read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
   remove: (id: string) =>
     read(client.mutate(mutationReference<typeof removeAccount>("removeAccount"), { id }, result<null>())),
+  /** Refreshes on an interval only while someone sees the page, including behind the host's other tabs. */
+  poll: client.poll,
 };
 
 export type PoolApi = typeof pool;

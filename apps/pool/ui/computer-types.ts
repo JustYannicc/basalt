@@ -78,6 +78,11 @@ export interface ComputersApi {
    * computer; its next request uses the new pool. Hosts that can't switch leave it out.
    */
   switchPool?: (computerId: string, pool: string) => Promise<ComputerResult<Computer>>;
+  /**
+   * Schedules the list's refresh while someone sees it. Without it the list refreshes while the
+   * browser tab is visible, which a page hidden behind its host's other tabs still is.
+   */
+  poll?: (refresh: () => void, interval: number) => () => void;
 }
 
 /** What a person reads for a pool: their own is "Your pool" whatever it's named. */

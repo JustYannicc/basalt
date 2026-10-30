@@ -28,23 +28,9 @@ function usePool(api: PoolApi) {
     }
   }, [api]);
   useEffect(() => {
-    let last = 0;
-    const refreshNow = () => {
-      last = Date.now();
-      void load();
-    };
-    refreshNow();
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") refreshNow();
-    }, refresh);
-    // Coming back to the tab refreshes, unless it just did.
-    const onVisible = () => document.visibilityState === "visible" && Date.now() - last > 15_000 && refreshNow();
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [load]);
+    void load();
+    return api.poll(() => void load(), refresh);
+  }, [api, load]);
   return { view, error, load };
 }
 
@@ -73,6 +59,7 @@ export function App({ api }: { api: PoolApi }) {
       return result;
     },
     revoke: async () => ({ ok: false, error: "unauthorized", message: "Open the computer's setup page to revoke it." }),
+    poll: api.poll,
   }), [api]);
 
   const remove = async (account: Account) => {
@@ -157,7 +144,7 @@ export function App({ api }: { api: PoolApi }) {
             />
           </>
         )}
-        {view !== undefined && <Usage load={api.usage} providers={view.providers} now={now} shareHref={shareHref} />}
+        {view !== undefined && <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />}
         <Computers api={computers} setup={{ kind: "link", href: () => setupHref ?? "#", manageHref: () => setupHref ?? "#" }} />
       </main>
 
