@@ -451,9 +451,9 @@
     {
       "identity": "executor-google-admin-shared-oauth",
       "file": "0039-google-admin-shared-oauth.patch",
-      "content_sha256": "0f4124d490eb041b8d22cbba0a1cabbc5f193e9097230dba96f8749a5411a514",
-      "kind": "overlay",
-      "upstream_pull_request": null,
+      "content_sha256": "e4743654a179ec198047f193226ee3d234b1d45b6e99ad17d0f953e6d2766f54",
+      "kind": "upstream",
+      "upstream_pull_request": 2460,
       "database_sensitive": false,
       "workflow_sensitive": false
     }

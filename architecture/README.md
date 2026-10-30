@@ -4,6 +4,8 @@ This directory holds the hand-written model. It shows Basalt's modules, outside-
 
 The catalog serves a site-aware repository collaboration package. Each account keeps one exact HTTPS instance origin for authorization, token exchange, refresh, health and API calls; reconnects cannot replace it. The public service keeps the hosted client, while self-managed origins use that instance's client or a token. Existing public-service accounts retain their IDs and implicit origin. Private-origin reachability requires an operator-controlled exact-origin exception. Synthetic runtime and UI checks cover these boundaries; live provider acceptance remains separate. The source verifier copies the provider table when rebuilding the generated pool app for that proof.
 
+The shared Google OAuth client allows the separate Google Admin app's 18 Admin SDK scopes while keeping identity-only defaults and ordinary Google consent requests unchanged. The build proof reads official catalog snapshots and public OIDC metadata, then checks client selection and mismatch refusal through the real self-host HTTP API with synthetic users. The source verifier includes the provider table when rebuilding the generated pool app. Live Workspace consent and API access remain acceptance work.
+
 - `spec.c4` defines the model vocabulary and styles.
 - `model/` defines Basalt and the relationships between its modules.
 - `views/` contains sparse current and planned overviews plus v1 workflows. Computer setup, observation and revocation live together in `views/workflows/computer-setup.c4`.

@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
-index 754f97247e7c38298f49736f828b4c6516a59440..b90fea9f11038cebb800a20306a24ca2f9cebb5a 100644
+index 754f972..b90fea9 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
 @@ -18,7 +18,7 @@ export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
@@ -50,10 +50,18 @@ index 754f97247e7c38298f49736f828b4c6516a59440..b90fea9f11038cebb800a20306a24ca2
    },
    {
 diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
-index 009fbd09ac450296e707e31328c4db96d66b33e6..c0499b94702dacde379852393a02b0e2f27c415b 100644
+index 009fbd0..4b0fe77 100644
 --- a/e2e/tests/credential-placement.spec.ts
 +++ b/e2e/tests/credential-placement.spec.ts
-@@ -1014,6 +1014,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -50,6 +50,7 @@ const Redirect = Schema.Struct({
+ const Setup = Schema.Struct({
+   mode: Schema.String,
+   scopes: Schema.Array(Schema.String),
++  tokenEndpointAuthMethod: Schema.optional(Schema.String),
+   firstParty: Schema.optional(Schema.Struct({ label: Schema.String })),
+   userScopes: Schema.optional(Schema.Array(Schema.String)),
+ });
+@@ -1014,6 +1015,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
            tokenUrl: "https://oauth2.googleapis.com/token",
          };
          const calendar = "https://www.googleapis.com/auth/calendar";
@@ -63,7 +71,7 @@ index 009fbd09ac450296e707e31328c4db96d66b33e6..c0499b94702dacde379852393a02b0e2
          /** Deploy a Google service asking for `scopes`, then start signing in and read setup. */
          const signIn = (key: string, scopes: readonly string[]) =>
            Effect.gen(function* () {
-@@ -1037,6 +1040,40 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1037,6 +1041,40 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
              );
              return { started, setup: yield* body(Setup, answered) };
            });
@@ -104,12 +112,19 @@ index 009fbd09ac450296e707e31328c4db96d66b33e6..c0499b94702dacde379852393a02b0e2
          const cleared = {
            EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
            EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
-@@ -1053,13 +1090,20 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1053,13 +1091,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
            EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
            EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
          });
 -        const [allowed, defaults, wider] = yield* Effect.all(
-+        const [allowed, defaults, wider, admin, adminEndpointMismatch, adminScopeMismatch] = yield* Effect.all(
++        const [
++          allowed,
++          defaults,
++          wider,
++          admin,
++          adminEndpointMismatch,
++          adminScopeMismatch,
++        ] = yield* Effect.all(
            [
              signIn("calendar", [calendar]),
              // A provider that asks for no scopes gets the client's defaults.
@@ -127,7 +142,7 @@ index 009fbd09ac450296e707e31328c4db96d66b33e6..c0499b94702dacde379852393a02b0e2
            ],
            { concurrency: "unbounded" },
          );
-@@ -1080,6 +1124,25 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+@@ -1080,6 +1132,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
            firstParty: { label: "Executor for Google" },
            scopes: ["openid", "email", "profile"],
          });
@@ -142,7 +157,9 @@ index 009fbd09ac450296e707e31328c4db96d66b33e6..c0499b94702dacde379852393a02b0e2
 +        const adminUrl = new URL((yield* body(Redirect, admin.started)).authorizationUrl);
 +        expect(adminUrl.origin + adminUrl.pathname).toBe(google.authorizationUrl);
 +        expect(adminUrl.searchParams.get("client_id")).toBe(clientId);
-+        expect(new Set((adminUrl.searchParams.get("scope") ?? "").split(" "))).toEqual(new Set(adminScopes));
++        expect(new Set((adminUrl.searchParams.get("scope") ?? "").split(" "))).toEqual(
++          new Set(adminScopes),
++        );
 +        expect(adminUrl.searchParams.get("access_type")).toBe("offline");
 +        expect(adminUrl.searchParams.get("prompt")).toBe("consent");
 +        for (const mismatch of [adminEndpointMismatch, adminScopeMismatch]) {
