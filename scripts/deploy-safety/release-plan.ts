@@ -69,6 +69,8 @@ export function liveCommitContaining(
 }
 
 export async function productionCommitContaining(candidate: string, repositoryRoot = trustedRepositoryRoot): Promise<string | undefined> {
+  // It decides whether a release goes ahead, so a hold stops it like every other release command.
+  assertNoReleaseHold();
   const ledger = await readDeploymentLedger(readLedgerEnvironment());
   const contains = gitContains(repositoryRoot);
   return liveCommitContaining(candidate, ledger, (ancestor, descendant) => {

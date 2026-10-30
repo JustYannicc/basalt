@@ -275,9 +275,16 @@ test("already-live writes the already_live output the release workflows gate on"
     assert.equal(already.output, "already_live=true\n");
     assert.match(already.stderr, /::notice::7{40} is already live/);
     assert.equal(run(live, true).output, "already_live=false\n");
-    const invalid = spawnSync(process.execPath, [fileURLToPath(new URL("./release.ts", import.meta.url)), "already-live", "--candidate", "main"], { encoding: "utf8" });
+    const release = fileURLToPath(new URL("./release.ts", import.meta.url));
+    const invalid = spawnSync(process.execPath, [release, "already-live", "--candidate", "main"], { encoding: "utf8" });
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /full commit SHA/);
+    const held = spawnSync(process.execPath, ["--import", preload, release, "already-live", "--candidate", live], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, GITHUB_TOKEN: "fixture-token", GITHUB_REPOSITORY: "owner/repo", PRODUCTION_RELEASE_HOLD: "restoring" },
+    });
+    assert.equal(held.status, 1);
+    assert.match(held.stderr, /on hold: PRODUCTION_RELEASE_HOLD is set/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

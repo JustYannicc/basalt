@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { sha } from "../releases/fixtures.test-helpers.ts";
-import { mainCandidateOutputLines, newerMainCandidate, validateMainCandidate, type MainCandidateFetch } from "./main-candidate.ts";
+import { mainCandidateOutputLines, newerMainCandidate, runMainCandidateCli, validateMainCandidate, type MainCandidateFetch } from "./main-candidate.ts";
 
 const head = sha("a");
 const other = sha("b");
@@ -27,10 +30,16 @@ function github(
 
 const passing = { head_sha: head, event: "push", conclusion: "success", path: ".github/workflows/ci.yml" };
 
+/** The Check-run filter a request asked GitHub for, without paging. */
+function checkQuery(url: string): Record<string, string> {
+  const { per_page: _, ...filter } = Object.fromEntries(new URL(url).searchParams);
+  return filter;
+}
+
 test("the current main head with a passing push Check is a manual release candidate", async () => {
   const fetcher = github(head, [passing]);
   assert.deepEqual(await validateMainCandidate("owner/basalt", "token", head, undefined, fetcher), { head });
-  assert.match(fetcher.urls[1]!, /head_sha=a{40}&event=push&branch=main&status=completed/);
+  assert.deepEqual(checkQuery(fetcher.urls[1]!), { head_sha: head, event: "push", branch: "main", status: "completed" });
   assert.ok(!fetcher.urls.some((url) => url.includes("/compare/")));
   assert.equal(mainCandidateOutputLines({ head }), `head=${head}\n`);
 });
@@ -40,7 +49,7 @@ test("a candidate main has moved past is still a manual release candidate", asyn
   const fetcher = github(newer, [passing]);
   assert.deepEqual(await validateMainCandidate("owner/basalt", "token", newer, head, fetcher), { head });
   assert.ok(fetcher.urls.some((url) => url.includes(`/compare/${head}...${newer}?`)));
-  assert.match(fetcher.urls.find((url) => url.includes("/ci.yml/runs?"))!, /head_sha=a{40}&event=push/);
+  assert.deepEqual(checkQuery(fetcher.urls.find((url) => url.includes("/ci.yml/runs?"))!), { head_sha: head, event: "push", branch: "main", status: "completed" });
   assert.deepEqual(await validateMainCandidate("owner/basalt", "token", newer, head.toUpperCase(), github(newer, [passing], undefined, "identical")), { head });
   assert.deepEqual(await validateMainCandidate("owner/basalt", "token", head, head, github(head, [passing], undefined, "behind")), { head });
 });
@@ -98,9 +107,11 @@ function mainAfter(after: string[], checks: Record<string, string | undefined> =
     const pulls = pathname.match(/\/commits\/([a-f0-9]{40})\/pulls$/);
     if (pulls) return Response.json([{ head: { ref: updates.includes(pulls[1]!) ? "release-updates/tools-1.2.3" : "fix/user-agent" } }]);
     if (pathname.endsWith("/actions/workflows/ci.yml/runs")) {
-      const commit = searchParams.get("head_sha")!;
-      const conclusion = commit in checks ? checks[commit] : "success";
-      return Response.json({ workflow_runs: conclusion ? [{ ...passing, head_sha: commit, conclusion }] : [] });
+      const conclusion = (commit: string) => commit in checks ? checks[commit] : "success";
+      const commit = searchParams.get("head_sha");
+      // Without a commit, the walk asks once for main's latest passing runs, newest first.
+      const listed = commit ? [commit] : [...order].reverse().filter((each) => conclusion(each) === "success");
+      return Response.json({ workflow_runs: listed.flatMap((each) => conclusion(each) ? [{ ...passing, head_sha: each, conclusion: conclusion(each) }] : []) });
     }
     return new Response(null, { status: 404 });
   };
@@ -130,4 +141,36 @@ test("the candidate itself is released when nothing newer on main qualifies", as
   assert.ok(!atHead.urls.some((url) => url.includes("/compare/")));
   await assert.rejects(newest(mainAfter([n1]), n3), /main does not contain the release candidate/);
   await assert.rejects(newest(mainAfter([n1]), "main"), /full commit SHA/);
+});
+
+test("the CLI writes the head release-main checks out and the newer commit Deploy hands off", async (t) => {
+  t.mock.method(process.stdout, "write", () => true);
+  const root = mkdtempSync(join(tmpdir(), "basalt-main-candidate-"));
+  try {
+    let runs = 0;
+    const cli = async (mode: string | undefined, fetcher: MainCandidateFetch, env: Record<string, string> = {}) => {
+      const output = join(root, `output-${runs++}`);
+      writeFileSync(output, "");
+      await runMainCandidateCli({ GITHUB_TOKEN: "token", GITHUB_REF: "refs/heads/main", GITHUB_REPOSITORY: "owner/basalt", GITHUB_OUTPUT: output, ...env }, mode, fetcher);
+      return readFileSync(output, "utf8");
+    };
+    const candidate = { MAIN_RELEASE_CANDIDATE: head };
+    const pending = mainAfter([n1, n2], { [n2]: undefined });
+    assert.equal(await cli("newer", pending, candidate), `newer=${n1}\n`);
+    // One look at main's passing Checks covers the whole walk.
+    assert.equal(pending.urls.filter((url) => url.includes("/ci.yml/runs?")).length, 1);
+    assert.equal(await cli("newer", mainAfter([n1], { [n1]: "failure" }), candidate), "newer=\n");
+    assert.equal(await cli("newest", mainAfter([n1, n2], { [n2]: undefined }), candidate), `head=${n1}\n`);
+    assert.equal(await cli("newest", mainAfter([n1], {}, [n1]), candidate), `head=${head}\n`);
+    // Without a candidate, release-main still releases exactly the checked-out main head.
+    assert.equal(await cli("newest", mainAfter([n1]), { MAIN_RELEASE_CHECKOUT: n1 }), `head=${n1}\n`);
+    await assert.rejects(cli("newest", mainAfter([n1]), { MAIN_RELEASE_CHECKOUT: head }), /not the current main head/);
+    // The deploy job rechecks exactly the backed-up commit, never a newer one.
+    assert.equal(await cli(undefined, mainAfter([n1]), { ...candidate, MAIN_RELEASE_REQUIRE_CANDIDATE: "true" }), `head=${head}\n`);
+    await assert.rejects(cli(undefined, mainAfter([n1]), { MAIN_RELEASE_REQUIRE_CANDIDATE: "true" }), /release candidate is missing/);
+    await assert.rejects(cli("newer", mainAfter([n1])), /release candidate is missing/);
+    await assert.rejects(cli("latest", mainAfter([n1]), candidate), /usage: main-candidate\.ts \[newest\|newer\]/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

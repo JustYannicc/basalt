@@ -156,9 +156,9 @@ jobs:
       RELEASE_CANDIDATE_SHA: ${{ needs.deploy.outputs.newer || github.event.workflow_run.head_sha }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      # Hands off even when main has moved on, so a busy main can't defer every release to a newer head. Releases run
-      # one at a time in deploy-production, and GitHub keeps one pending run per group: a new one replaces it, whatever
-      # commit either carries. Manual release of main makes that safe: it releases the newest passing main commit that
+      # Hands off right away rather than waiting for a newer commit's own Deploy run, which a busy main can defer
+      # forever. Releases run one at a time in deploy-production, and GitHub keeps one pending run per group: a new one
+      # replaces it, whatever commit either carries. Manual release of main makes that safe: it releases the newest passing main commit that
       # contains its candidate, and never one production already contains. Release-update heads are refused here too
       # so Deploy itself fails.
       - name: Hand releases to Manual release of main
