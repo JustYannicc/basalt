@@ -84,11 +84,23 @@ export default defineApp({ user: { accounts: { service } } }, { tools: router({
       assert.ok((await access.innerText()).includes(selected.host), "Safety text must name the selected site");
       assert.equal((await access.innerText()).includes(template.host), false, "Safety text must not name the template host");
       await page.screenshot({ path: join(directory, `${screenshotPrefix}-byo-after-setup-failure.png`), animations: "disabled" });
-      const start = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/oauth/start"));
+      // Read the unchanged response before the app navigates to its authorization URL.
+      const start = Promise.withResolvers();
+      await page.route("**/connections/*/oauth/start", async (route) => {
+        try {
+          const response = await route.fetch();
+          const body = await response.json();
+          start.resolve({ status: response.status(), body });
+          await route.fulfill({ response });
+        } catch (error) {
+          start.reject(error);
+          await route.abort();
+        }
+      }, { times: 1 });
       await connect.click();
-      const started = await start;
-      assert.equal(started.status(), 200, "Entered BYO must bypass failed optional discovery");
-      const authorization = new URL((await started.json()).authorizationUrl);
+      const started = await start.promise;
+      assert.equal(started.status, 200, "Entered BYO must bypass failed optional discovery");
+      const authorization = new URL(started.body.authorizationUrl);
       assert.equal(authorization.origin, selected.origin);
       assert.equal(authorization.pathname, "/ui/oauth/authorize");
       assert.equal(authorization.searchParams.get("client_id"), "synthetic-public-client");
