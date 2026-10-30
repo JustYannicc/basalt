@@ -1057,10 +1057,10 @@ index b1aac77fa..c5ca99d7f 100644
                ),
              );
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
-index 3e5f77054..927ab3683 100644
+index 3e5f77054..8d710ea0f 100644
 --- a/e2e/tests/product-brand.spec.ts
 +++ b/e2e/tests/product-brand.spec.ts
-@@ -56,6 +56,83 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+@@ -56,6 +56,101 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
            ),
          ).not.toMatch(executorName);
 +        // The configured privacy page is linked; terms are not configured, so no link shows.
@@ -1112,15 +1112,33 @@ index 3e5f77054..927ab3683 100644
 +        );
 +        yield* browser.use("The built-in app's page names the configured product", (page) =>
 +          page
-+            .getByRole("heading", { name: productBrand.name, exact: true })
-+            .first()
++            .getByRole("heading", { name: `${productBrand.name} overview`, exact: true })
 +            .waitFor({ state: "visible" }),
++        );
++        // Its skills load after the page; read the page once they have, and the `executor` skill
++        // shows under the product's MCP name.
++        yield* browser.use(
++          "The built-in app's skills are listed under the configured name",
++          (page) =>
++            page
++              .getByRole("region", { name: "App skills preview" })
++              .getByText(productBrand.server, { exact: true })
++              .waitFor({ state: "visible" }),
 +        );
 +        expect(
 +          yield* browser.use("Read the built-in app's page", (page) =>
 +            page.locator("main").innerText(),
 +          ),
 +        ).not.toMatch(executorName);
++        // Its skills tab, which owners can edit, lists the same skills under the configured name.
++        yield* browser.use("Open the built-in app's skills", (page) =>
++          page.goto(`${page.url().split("?")[0]}?view=skills`),
++        );
++        yield* browser.use("The skills tab lists the configured name", (page) =>
++          page
++            .getByRole("group", { name: productBrand.server, exact: true })
++            .waitFor({ state: "visible" }),
++        );
 +        // Its accounts tab names the provider people connect, with the configured name.
 +        yield* browser.use("Open the built-in app's accounts", (page) =>
 +          page.goto(`${page.url().split("?")[0]}?view=accounts`),
@@ -2077,10 +2095,16 @@ index 5329c62d9..5354ea919 100644
  const selectedIds = (selected: SelectedAccounts) =>
    Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value));
 diff --git a/packages/ui/src/contracts/product-brand.ts b/packages/ui/src/contracts/product-brand.ts
-index 1b2f12331..d5e8a4581 100644
+index 1b2f12331..d084fb2d9 100644
 --- a/packages/ui/src/contracts/product-brand.ts
 +++ b/packages/ui/src/contracts/product-brand.ts
-@@ -19,2 +19,24 @@ export const productBrandAtom = Atom.make<ProductBrand>(defaultProductBrand).pip
+@@ -3,4 +3,5 @@ import {
+   isDefaultProductBrand,
+   ProductBrand,
++  productServerName,
+ } from "@executor-js/utils/product-brand";
+ import { Atom } from "effect/reactivity";
+@@ -19,2 +20,49 @@ export const productBrandAtom = Atom.make<ProductBrand>(defaultProductBrand).pip
  /** The name as the dashboard's lowercase wordmark shows it beside the logo. */
  export const productWordmark = (brand: ProductBrand) => brand.name.toLowerCase();
 +
@@ -2098,6 +2122,31 @@ index 1b2f12331..d5e8a4581 100644
 +  app: { readonly name: string; readonly copiedFrom: { readonly name: string } | null },
 +  brand: ProductBrand,
 +) => (builtInApp(app) ? brand.name : app.name);
++
++/**
++ * How one of the built-in app's skills reads to people. Agents load its files as written, under
++ * the name Executor; the dashboard names the product instead, and calls the `executor` skill after
++ * the product's MCP server. Other apps' skills show as written.
++ */
++export const skillLabel = (
++  app: { readonly name: string; readonly copiedFrom: { readonly name: string } | null },
++  brand: ProductBrand,
++  skill: { readonly name: string; readonly description?: string },
++): { readonly name: string; readonly description?: string } =>
++  !builtInApp(app) || isDefaultProductBrand(brand)
++    ? skill
++    : {
++        name:
++          skill.name === productServerName(defaultProductBrand)
++            ? productServerName(brand)
++            : skill.name,
++        ...(skill.description === undefined
++          ? {}
++          : {
++              // A function keeps `$` in the product's name literal.
++              description: skill.description.replaceAll(defaultProductBrand.name, () => brand.name),
++            }),
++      };
 +
 +/**
 + * Where only an app's name is known, such as on an approval, the name Executor is the built-in
@@ -2247,6 +2296,35 @@ index 99918a155..e075817b4 100644
 +              <p className="text-sm text-muted-foreground">{appDisplayName(app, brand)}</p>
              ) : (
                <Skeleton className="h-5 w-36" />
+diff --git a/packages/ui/src/implementation/dashboard/app-overview-entries.tsx b/packages/ui/src/implementation/dashboard/app-overview-entries.tsx
+index 2a3476c48..1dcc34ed9 100644
+--- a/packages/ui/src/implementation/dashboard/app-overview-entries.tsx
++++ b/packages/ui/src/implementation/dashboard/app-overview-entries.tsx
+@@ -9,4 +9,6 @@ import { OverviewCardLoading } from "./app-loading.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { skillLabel } from "../../contracts/product-brand.ts";
+ 
+ /** Preview the actual skills and workflow descriptions, with entry points to their full views. */
+@@ -22,4 +24,5 @@ export function AppOverviewEntries<E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
++  const brand = useProductBrand();
+   return (
+     <>
+@@ -40,5 +43,10 @@ export function AppOverviewEntries<E>({
+               pending={<OverviewCardLoading label="Loading skills preview" descriptionLines={2} />}
+             >
+-              {(catalog) => <EntryList items={catalog.skills} empty="No skills yet" />}
++              {(catalog) => (
++                <EntryList
++                  items={catalog.skills.map((skill) => skillLabel(app, brand, skill))}
++                  empty="No skills yet"
++                />
++              )}
+             </QueryView>
+           )}
 diff --git a/packages/ui/src/implementation/dashboard/app-settings.tsx b/packages/ui/src/implementation/dashboard/app-settings.tsx
 index d63693364..e3d72b091 100644
 --- a/packages/ui/src/implementation/dashboard/app-settings.tsx
@@ -2274,13 +2352,13 @@ index d63693364..e3d72b091 100644
              </div>
              {renameAction}
 diff --git a/packages/ui/src/implementation/dashboard/app-skills.tsx b/packages/ui/src/implementation/dashboard/app-skills.tsx
-index dc2fda8a6..c5f2fa04e 100644
+index dc2fda8a6..c75587d98 100644
 --- a/packages/ui/src/implementation/dashboard/app-skills.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-skills.tsx
 @@ -32,4 +32,5 @@ import {
  import { SkillWorkspace } from "./skill-workspace.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
-+import { appDisplayName } from "../../contracts/product-brand.ts";
++import { appDisplayName, skillLabel } from "../../contracts/product-brand.ts";
  
  type Skill = AppSkillBundle["skills"][number];
 @@ -190,5 +191,5 @@ function SkillCatalog<E>({
@@ -2290,6 +2368,67 @@ index dc2fda8a6..c5f2fa04e 100644
 +              code={`Add skills to my ${brand.name} app ${JSON.stringify(appDisplayName(app, brand))} (app ID: ${app.id}). Review its source and tools, then write concise instructions for its main workflows in skills/<skill-name>/SKILL.md with valid name and description frontmatter. Deploy the updated app and verify that its skills are listed.`}
                label="Copy prompt"
                text="Copy prompt"
+@@ -215,24 +216,27 @@ function SkillCatalog<E>({
+         className="flex min-h-0 gap-1 overflow-auto border-b p-3 min-[900px]:block min-[900px]:border-b-0 min-[900px]:border-r"
+       >
+-        {catalog.skills.map((skill) => (
+-          <button
+-            type="button"
+-            key={skill.name}
+-            onClick={() => {
+-              if (skill.name !== current.name && leave()) setSelected(skill.name);
+-            }}
+-            aria-current={current.name === skill.name ? "true" : undefined}
+-            className="shrink-0 rounded-md px-3 py-2.5 text-left hover:bg-muted aria-[current=true]:bg-muted min-[900px]:w-full"
+-          >
+-            <span className="block break-words text-sm font-medium">{skill.name}</span>
+-            <span className="mt-1 hidden text-xs leading-5 text-muted-foreground min-[900px]:block">
+-              {skill.description}
+-            </span>
+-            <SkillSize
+-              contents={skill.files.map((item) => item.content)}
+-              className="mt-1 hidden text-[11px] min-[900px]:block"
+-            />
+-          </button>
+-        ))}
++        {catalog.skills.map((skill) => {
++          const label = skillLabel(app, brand, skill);
++          return (
++            <button
++              type="button"
++              key={skill.name}
++              onClick={() => {
++                if (skill.name !== current.name && leave()) setSelected(skill.name);
++              }}
++              aria-current={current.name === skill.name ? "true" : undefined}
++              className="shrink-0 rounded-md px-3 py-2.5 text-left hover:bg-muted aria-[current=true]:bg-muted min-[900px]:w-full"
++            >
++              <span className="block break-words text-sm font-medium">{label.name}</span>
++              <span className="mt-1 hidden text-xs leading-5 text-muted-foreground min-[900px]:block">
++                {label.description}
++              </span>
++              <SkillSize
++                contents={skill.files.map((item) => item.content)}
++                className="mt-1 hidden text-[11px] min-[900px]:block"
++              />
++            </button>
++          );
++        })}
+       </nav>
+       <SkillFiles
+@@ -269,4 +273,5 @@ function SkillFiles<E>({
+   readonly onCommitted: (result: Committed) => void;
+ }) {
++  const brand = useProductBrand();
+   const [file, setFile] = useState("SKILL.md");
+   const open = (next: string) => {
+@@ -298,5 +303,5 @@ function SkillFiles<E>({
+           onClick={() => open("SKILL.md")}
+         >
+-          {skill.name}
++          {skillLabel(app, brand, skill).name}
+         </button>
+         <span aria-hidden>/</span>
 diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/ui/src/implementation/dashboard/approvals.tsx
 index e5860c518..40b72a9aa 100644
 --- a/packages/ui/src/implementation/dashboard/approvals.tsx
@@ -2768,6 +2907,48 @@ index 3565f8901..feddd0627 100644
 +  readonly docsUrl: string | undefined;
    readonly brand: ReactNode;
    readonly navigation: ReactNode;
+diff --git a/packages/ui/src/implementation/dashboard/skill-workspace.tsx b/packages/ui/src/implementation/dashboard/skill-workspace.tsx
+index 7da126e7d..a7a14b8c1 100644
+--- a/packages/ui/src/implementation/dashboard/skill-workspace.tsx
++++ b/packages/ui/src/implementation/dashboard/skill-workspace.tsx
+@@ -29,4 +29,6 @@ import { SkillContent } from "./skill-content.tsx";
+ import { SkillSize } from "./skill-size.tsx";
+ import { skillDescription, splitSkillDocument } from "./skill-document.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { skillLabel } from "../../contracts/product-brand.ts";
+ 
+ interface Skill {
+@@ -55,4 +57,5 @@ export function SkillWorkspace<E>({
+   readonly onCommitted: (result: Committed) => void;
+ }) {
++  const brand = useProductBrand();
+   const [selection, setSelection] = useState<Selection>();
+   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+@@ -102,5 +105,5 @@ export function SkillWorkspace<E>({
+     <div className="sticky top-0 z-10 mb-6 flex min-h-12 flex-wrap items-center gap-3 border-b bg-background py-3 text-xs">
+       <div className="flex min-w-0 items-center gap-2 text-muted-foreground">
+-        <span>{current?.name}</span>
++        <span>{current === undefined ? undefined : skillLabel(app, brand, current).name}</span>
+         <span aria-hidden>/</span>
+         <span className="truncate text-foreground">
+@@ -126,6 +129,7 @@ export function SkillWorkspace<E>({
+           {skills.map((skill) => {
+             const expanded = !collapsed.has(skill.name);
++            const label = skillLabel(app, brand, skill).name;
+             return (
+-              <div key={skill.name} role="group" aria-label={skill.name} className="mb-2">
++              <div key={skill.name} role="group" aria-label={label} className="mb-2">
+                 <button
+                   type="button"
+@@ -152,6 +156,6 @@ export function SkillWorkspace<E>({
+                     aria-hidden
+                   />
+-                  <span className="min-w-0 flex-1 truncate" title={skill.name}>
+-                    {skill.name}
++                  <span className="min-w-0 flex-1 truncate" title={label}>
++                    {label}
+                   </span>
+                   {!skill.editable && (
 diff --git a/packages/utils/src/connection-failure.ts b/packages/utils/src/connection-failure.ts
 index 5664dcd85..74cee4dd1 100644
 --- a/packages/utils/src/connection-failure.ts
