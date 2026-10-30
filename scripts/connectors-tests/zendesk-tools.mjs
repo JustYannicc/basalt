@@ -30,7 +30,6 @@ assert.match(app.content, /tool\.kind === "mutation" \? always\(\) : undefined/,
 assert.match(app.content, /fetch: marketplaceFetch\(accountOrigin\(account\), fetch\)/,
   "Marketplace headers must be limited to the saved site origin");
 
-const upstream = join(root, ".upstream");
 const hosted = matchFirstPartyOAuth("zendesk", snapshot.files, upstream, firstPartyOAuthClientDefinitions);
 const requestedScopes = ["read", "write", "impersonate"];
 assert.deepEqual(hosted.defaultScopes, requestedScopes);
@@ -64,6 +63,8 @@ try {
     "The imported Support API must expose current-user reads");
   assert.ok(result.tools.some((tool) => tool.kind === "mutation" && /updateTicket/i.test(tool.path)),
     "The imported Support API must expose ticket updates as mutations");
+  assert.ok(result.tools.some((tool) => tool.kind === "mutation" && /createTicket/i.test(tool.path)),
+    "The imported Support API must expose ticket creation as a mutation");
   console.log(JSON.stringify({
     tools: result.tools.length,
     queries: result.tools.filter((tool) => tool.kind === "query").length,
