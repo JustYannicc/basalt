@@ -487,7 +487,7 @@
     {
       "identity": "executor-workflow-diagrams",
       "file": "0052-workflow-diagrams.patch",
-      "content_sha256": "662284f9751b3c081239be1c7d13b9ba64d92d89b9e01673fd85827f4860ada1",
+      "content_sha256": "6a783e527a7f4f4ccc7434630da0db5afee4af91155b1f09a15c47f512f96d5b",
       "kind": "upstream",
       "upstream_pull_request": 2466,
       "database_sensitive": false,

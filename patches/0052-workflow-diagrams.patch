@@ -408,10 +408,10 @@ index 0000000..d896b7d
 +});
 diff --git a/e2e/tests/workflow-diagram.spec.ts b/e2e/tests/workflow-diagram.spec.ts
 new file mode 100644
-index 0000000..9638965
+index 0000000..d2bbd23
 --- /dev/null
 +++ b/e2e/tests/workflow-diagram.spec.ts
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,239 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -646,6 +646,7 @@ index 0000000..9638965
 +          yield* browser.use("Members do not see the diagram", (page) => diagram(page).count()),
 +        ).toBe(0);
 +        expect(sourceReads).toEqual([]);
++        yield* browser.checkpoint("Members keep today's run history");
 +      }),
 +    ),
 +  );
@@ -1875,25 +1876,31 @@ index 0000000..c3efb7f
 +}
 diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx
 new file mode 100644
-index 0000000..6a121da
+index 0000000..1b777ba
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/workflow-diagram-section.tsx
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,104 @@
 +import type { App, Version } from "@executor-js/sdk";
 +import { Component, lazy, Suspense, useState, type ComponentType, type ReactNode } from "react";
 +import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 +import { Button } from "../components/button.tsx";
 +import { WorkflowDiagramLoading } from "./app-browser-loading.tsx";
++import { useHydrated } from "../hooks/hydrated.ts";
 +import { QueryView } from "./context.tsx";
 +import type { Crumb } from "./workflow-diagram.tsx";
 +
 +/**
-+ * The diagram above a workflow's runs. Its code, and the parser in it, load on demand; a failed load
-+ * or a source the diagram trips on stays inside this frame, so the run history never goes with it.
++ * The diagram above a workflow's runs. Its code, and the parser in it, load on demand in a browser
++ * after hydration, so a server build drops the import: every module a Worker uploads is compiled
++ * whenever one of its isolates starts. A failed load or a source the diagram trips on stays inside
++ * this frame, so the run history never goes with it.
 + */
 +
 +/** Starts loading the diagram's code. The module system keeps the loaded module for later calls. */
-+export const preloadWorkflowDiagram = () => import("./workflow-diagram.tsx");
++export const preloadWorkflowDiagram = () =>
++  import.meta.env.SSR
++    ? Promise.reject(new Error("The workflow diagram renders only in a browser"))
++    : import("./workflow-diagram.tsx");
 +
 +export function WorkflowDiagramSection<E>({
 +  app,
@@ -1914,6 +1921,7 @@ index 0000000..6a121da
 +  readonly onCrumb: (index: number) => void;
 +  readonly Failure: ComponentType<FailureProps<E>>;
 +}) {
++  const hydrated = useHydrated();
 +  // A new lazy component per attempt: React keeps a failed lazy load and would not ask again.
 +  const [attempt, setAttempt] = useState(0);
 +  const [Diagram, setDiagram] = useState(() => lazy(preloadWorkflowDiagram));
@@ -1923,29 +1931,33 @@ index 0000000..6a121da
 +      aria-label="Workflow diagram"
 +      className="@container mb-7 overflow-hidden rounded-lg border"
 +    >
-+      <QueryView query={source} Failure={Failure} pending={<WorkflowDiagramLoading />}>
-+        {(version) => (
-+          <DiagramBoundary
-+            key={attempt}
-+            retry={() => {
-+              setDiagram(() => lazy(preloadWorkflowDiagram));
-+              setAttempt(attempt + 1);
-+            }}
-+          >
-+            <Suspense fallback={<WorkflowDiagramLoading />}>
-+              <Diagram
-+                app={app}
-+                version={version}
-+                workflow={workflow}
-+                trail={trail}
-+                onOpenWorkflow={onOpenWorkflow}
-+                onShowWorkflow={onShowWorkflow}
-+                onCrumb={onCrumb}
-+              />
-+            </Suspense>
-+          </DiagramBoundary>
-+        )}
-+      </QueryView>
++      {!hydrated ? (
++        <WorkflowDiagramLoading />
++      ) : (
++        <QueryView query={source} Failure={Failure} pending={<WorkflowDiagramLoading />}>
++          {(version) => (
++            <DiagramBoundary
++              key={attempt}
++              retry={() => {
++                setDiagram(() => lazy(preloadWorkflowDiagram));
++                setAttempt(attempt + 1);
++              }}
++            >
++              <Suspense fallback={<WorkflowDiagramLoading />}>
++                <Diagram
++                  app={app}
++                  version={version}
++                  workflow={workflow}
++                  trail={trail}
++                  onOpenWorkflow={onOpenWorkflow}
++                  onShowWorkflow={onShowWorkflow}
++                  onCrumb={onCrumb}
++                />
++              </Suspense>
++            </DiagramBoundary>
++          )}
++        </QueryView>
++      )}
 +    </div>
 +  );
 +}
