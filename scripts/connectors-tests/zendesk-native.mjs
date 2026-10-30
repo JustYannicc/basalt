@@ -183,18 +183,27 @@ export function proveZendeskMcp({
 
     const agentPath = siteATool.path;
     const agentMarker = `Zendesk fixture ${siteAOwner.site.id}`;
-    yield* Effect.promise(() => proveInstalledClaude({
-      root,
-      directory,
-      origin: target.metadata.origin,
-      token: owner.key,
-      slug: siteAOwner.app.slug,
-      toolPath: agentPath,
-      marker: agentMarker,
-      taskPrompt: `Search the synthetic Zendesk app ${siteAOwner.app.slug}, call currentUser for my connected account, then reply connector-runtime-proof-ok.`,
-      toolInput: {},
-      searchQuery: siteAOwner.app.slug,
-    }));
-    record("installed-agent-native-tool-call", { site: "site-a", host: siteAOwner.site.host, toolPath: agentPath });
+    const skipInstalledClaude = process.env.CONNECTORS_PROOF_SKIP_CLAUDE === "1";
+    if (skipInstalledClaude) {
+      record("installed-agent-native-tool-call-skipped", { reason: "explicit-skip-claude" });
+    } else {
+      yield* Effect.promise(() => proveInstalledClaude({
+        root,
+        directory,
+        origin: target.metadata.origin,
+        token: owner.key,
+        slug: siteAOwner.app.slug,
+        toolPath: agentPath,
+        marker: agentMarker,
+        taskPrompt: `Search the synthetic Zendesk app ${siteAOwner.app.slug}, call currentUser for my connected account, then reply connector-runtime-proof-ok.`,
+        toolInput: {},
+        searchQuery: siteAOwner.app.slug,
+      }));
+      record("installed-agent-native-tool-call", { site: "site-a", host: siteAOwner.site.host, toolPath: agentPath });
+    }
+    return {
+      installedAgentNativeToolCall: !skipInstalledClaude,
+      installedAgentNativeToolCallSkipped: skipInstalledClaude,
+    };
   });
 }

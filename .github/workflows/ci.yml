@@ -133,6 +133,38 @@ jobs:
           name: dashboard-batch-profile
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
+  gitlab-connectors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Prepare the pinned synthetic runtime
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install Chromium for the account-site UI proof
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Exercise GitLab accounts against the real runtime
+        run: node scripts/check-connectors.ts
+        env:
+          CONNECTORS_PROOF_DIRECT: "1"
+          CONNECTORS_PROOF_SKIP_CLAUDE: "1"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitlab-account-site-ui
+          path: .generated/connectors-proof/run-*/gitlab-account-site-*.png
+          if-no-files-found: error
+          include-hidden-files: true
   check:
     runs-on: ubuntu-latest
     services:

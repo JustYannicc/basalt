@@ -1015,7 +1015,7 @@ index 0000000..4064cc9
 +/** void -> void. Closing the dialog cancels its server-held session. */
 +export const cancelInteractiveConnectionAtom = (key: Key) => actions(new ConnectionKey(key)).cancel;
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index 55fd0bf..dfe80e5 100644
+index 002a311..ea97a5f 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -118,6 +118,9 @@ export function AppAccounts({
@@ -1057,7 +1057,7 @@ index 55fd0bf..dfe80e5 100644
                <Button
                  variant="outline"
                  size="sm"
-@@ -424,6 +429,12 @@ function AppConnectionFields({
+@@ -448,6 +453,12 @@ function AppConnectionFields({
    );
    const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
    const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
@@ -1070,7 +1070,7 @@ index 55fd0bf..dfe80e5 100644
    const pending = useAtomValue(atoms.request);
    return (
      <HostedAccountForm<HostedOAuthSignIn & { readonly connection: AccountConnectionId }>
-@@ -436,6 +447,7 @@ function AppConnectionFields({
+@@ -460,6 +471,7 @@ function AppConnectionFields({
        initialMethod={form.method}
        submit={submit}
        start={start}
@@ -1648,10 +1648,10 @@ index 0000000..0269e06
 +  ${withWorkflow ? "workflows: { hold }, schedules: { tick: appInterval({ minutes: 1 }, tick, {}) }," : ""}
 +  connect: { identity: handlers, sharedIdentity: handlers } });`;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 247f201..3693fc6 100644
+index 71ad888..f11aadf 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7261,6 +7261,107 @@ export const scenarios = plan({
+@@ -7263,6 +7263,107 @@ export const scenarios = plan({
        local: na("This scenario uses hosted memberships, API keys and MCP."),
      },
    },
@@ -11394,7 +11394,7 @@ index f976201..ea5217f 100644
    });
  
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 2cdf75c..d30b97f 100644
+index 172dd25..6f79d23 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -36,6 +36,7 @@ import {
@@ -11527,7 +11527,7 @@ index 2cdf75c..d30b97f 100644
          );
          return { status: "completed" as const, account: saved };
        }
-@@ -2244,106 +2253,110 @@ export const makeOAuth = (
+@@ -2255,110 +2264,114 @@ export const makeOAuth = (
          ).pipe(Effect.flatMap((grant) => encrypt(attempt.account, grant)));
        const encryptedCredentials = yield* encrypt(attempt.account, fields);
        const ready = `ready_${yield* nextId}`;
@@ -11575,10 +11575,7 @@ index 2cdf75c..d30b97f 100644
 -            yield* query(() =>
 -              tx.updateMany("accounts", {
 -                where: (b) => b("id", "=", target.id),
--                set: { encryptedCredentials, credentialGeneration: generation },
--              }),
--            );
--          } else {
+-                set: {
 +      return yield* savingConnection(
 +        lifecycle,
 +        input.connection,
@@ -11626,7 +11623,11 @@ index 2cdf75c..d30b97f 100644
 +              yield* query(() =>
 +                tx.updateMany("accounts", {
 +                  where: (b) => b("id", "=", target.id),
-+                  set: { encryptedCredentials, credentialGeneration: generation },
++                  set: {
++                    encryptedCredentials,
++                    credentialGeneration: generation,
++                    site: target.site,
++                  },
 +                }),
 +              );
 +            } else {
@@ -11634,7 +11635,13 @@ index 2cdf75c..d30b97f 100644
 +                tx.create("accounts", {
 +                  ...saved,
 +                  site: saved.site ?? null,
-+                  encryptedCredentials,
+                   encryptedCredentials,
+-                  credentialGeneration: generation,
+-                  site: target.site,
+-                },
+-              }),
+-            );
+-          } else {
 +                  credentialGeneration: 0,
 +                }),
 +              );
@@ -11732,7 +11739,7 @@ index 2cdf75c..d30b97f 100644
        );
      });
  
-@@ -2367,7 +2380,10 @@ export const makeOAuth = (
+@@ -2382,7 +2395,10 @@ export const makeOAuth = (
        if (rejected !== undefined)
          yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
        // Secrets the user brought.
@@ -11744,7 +11751,7 @@ index 2cdf75c..d30b97f 100644
          return {
            fields: yield* credentials.decrypt(account.id, account.encryptedCredentials),
            firstParty: undefined,
-@@ -2813,7 +2829,11 @@ export const makeOAuth = (
+@@ -2828,7 +2844,11 @@ export const makeOAuth = (
    const usable = (account: StoredAccount, provider: ProviderDefinition) =>
      Effect.gen(function* () {
        yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);

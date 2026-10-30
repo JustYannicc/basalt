@@ -30,6 +30,7 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
           destination: { kind: "personal" },
           site: site.origin,
         }), 200, `Create ${flow.mode} Zendesk connection for ${site.id}`);
+      assert.equal(connection.target.site, site.origin, "Connection creation must freeze the requested site");
       flow.site = site;
       flow.app = app;
       flow.connection = connection;
@@ -37,6 +38,10 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
       flow.completePath = `${prefix}/connections/${connection.id}/oauth/complete`;
     }
 
+    assert.equal(new Set(users.map((flow) => flow.connection.id)).size, users.length,
+      "Each synthetic sign-in must have a distinct connection");
+    assert.equal(new Set([...clients.values()].map((client) => client.id)).size, fixtures.sites.length,
+      "Each site must have a distinct stored public client");
     const flowByKey = new Map();
     for (const flow of users) flowByKey.set(`${flow.siteId}:${flow.mode}`, flow);
 
@@ -58,6 +63,14 @@ export function proveZendeskOAuth({ Effect, request, checked, actors, prefix, ca
       const poisoned = yield* setup(flow, peer);
       assert.equal(poisoned.issuer, `${site.origin}/oauth/tokens`, "Caller query must not retarget the frozen connection site");
       const wrongOptions = yield* setup(flowByKey.get(`${peer.id}:public`), peer);
+      record("oauth-setup-peer-boundary", {
+        site: site.id,
+        peerSite: peer.id,
+        peerIssuerMatches: wrongOptions.issuer === `${peer.origin}/oauth/tokens`,
+        peerClientCount: wrongOptions.clients?.length,
+        ownClientOfferedToPeer: wrongOptions.clients?.some((client) => client.id === clients.get(site.id).id),
+      });
+      assert.equal(wrongOptions.issuer, `${peer.origin}/oauth/tokens`, "Peer setup must resolve its frozen site issuer");
       assert.equal(wrongOptions.clients.some((client) => client.id === clients.get(site.id).id), false,
         `OAuth setup for ${peer.id} must not offer ${site.id}'s stored client`);
       record("oauth-setup-client-isolated", {

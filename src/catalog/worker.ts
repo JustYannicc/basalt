@@ -1,6 +1,7 @@
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
+import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroBoards } from "./miro.ts";
 import { aws } from "./aws/index.ts";
@@ -40,6 +41,8 @@ export async function handleCatalog(
     return new Response(null, { status: 404 });
   if (relative === "apps/slack.json")
     return new Response(request.method === "HEAD" ? null : JSON.stringify(slackSource), { headers });
+  if (relative === "apps/gitlab.json")
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(gitlabSource), { headers });
   if (relative === "apps/miro.json")
     return new Response(request.method === "HEAD" ? null : JSON.stringify(miroSource), { headers });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
@@ -58,7 +61,10 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(withMiroBoards(withSlackUserAuth(await response.json() as Feed)), additions))
+      ? JSON.stringify(mergeFeed(
+          withMiroBoards(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
+          additions,
+        ))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {

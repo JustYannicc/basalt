@@ -14,7 +14,8 @@ type ConnectorsProofInput = {
 
 async function run(command: string, args: string[], cwd: string, log: string, home: string, heavy = false): Promise<string> {
   const environment = { PATH: process.env.PATH ?? "", HOME: home, TMPDIR: join(home, "tmp"),
-    LANG: "en_US.UTF-8", NO_COLOR: "1", CONNECTORS_PROTECTED_HOME: homedir() };
+    LANG: "en_US.UTF-8", NO_COLOR: "1", CONNECTORS_PROTECTED_HOME: homedir(),
+    CONNECTORS_PROOF_SKIP_CLAUDE: process.env.CONNECTORS_PROOF_SKIP_CLAUDE ?? "" };
   // The slot coordinator uses the machine-wide queue; its actual child receives only this private environment.
   const child = spawn(heavy ? join(homedir(), ".local/bin/heavy-slot") : command,
     heavy ? ["/usr/bin/env", "-i", ...Object.entries(environment).map(([key, value]) => `${key}=${value}`), command, ...args] : args, {
@@ -27,7 +28,28 @@ async function run(command: string, args: string[], cwd: string, log: string, ho
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   const code = await new Promise<number | null>((done, fail) => { child.once("error", fail); child.once("close", done); });
   await writeFile(log, JSON.stringify({ code, stdout, stderr }), { mode: 0o600 });
-  if (code !== 0) throw new Error("Connector proof stage failed; private diagnostics retained in the run directory.");
+  if (code !== 0) {
+    let reported = false;
+    for (const line of stderr.split(/\r?\n/)) {
+      if (line.startsWith("CONNECTORS_BROWSER_FAILURE ")) {
+        try {
+          const reason: unknown = JSON.parse(line.slice("CONNECTORS_BROWSER_FAILURE ".length));
+          if (typeof reason === "string" && reason.length <= 1500)
+            console.error(`CONNECTORS_BROWSER_FAILURE ${JSON.stringify(reason)}`);
+        } catch { /* Ignore malformed diagnostic lines. */ }
+      }
+      if (/^CONNECTORS_PROOF_FAILURE phase=[a-z-]+ kind=[a-z-]+ at=(?:[a-z0-9-]+\.mjs:[0-9]+|unknown)$/.test(line)) {
+        console.error(line);
+        reported = true;
+      }
+    }
+    if (!reported) {
+      const kind = /Cannot find module|Cannot find package|ModuleNotFound|SyntaxError/.test(stderr)
+        ? "module-load" : /EACCES|EPERM/.test(stderr) ? "permission" : "process";
+      console.error(`CONNECTORS_PROOF_FAILURE phase=process-startup kind=${kind} at=unknown`);
+    }
+    throw new Error("Connector proof stage failed; private diagnostics retained in the run directory.");
+  }
   return stdout;
 }
 
@@ -57,6 +79,7 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   if (upstreamHead.trim() !== commit) throw new Error("Prepared upstream checkout does not match upstream.json.");
   // Reuse the installed browser binary, while Playwright creates its profile under the private HOME/TMPDIR.
   const { chromium } = createRequire(join(upstream, "package.json"))("playwright") as { chromium: { executablePath(): string } };
+  const useHeavySlot = process.env.CONNECTORS_PROOF_DIRECT !== "1";
   const browser = chromium.executablePath();
   await access(browser);
   const installation = join(directory, "provider");
@@ -64,7 +87,7 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   await writeFile(join(installation, "package.json"), JSON.stringify({ private: true }), { mode: 0o600 });
   await run("bun", ["add", "--cwd", installation,
     "--ignore-scripts", "@executor-js/emulate@0.14.2"],
-  root, join(directory, "install.json"), home, true);
+  root, join(directory, "install.json"), home, useHeavySlot);
   const packageRoot = join(installation, "node_modules/@executor-js/emulate");
   const metadata: { version: string; bin: string | Record<string, string> } = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   if (metadata.version !== "0.14.2") throw new Error("Wrong provider emulator version.");
@@ -72,11 +95,25 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   if (!entry) throw new Error("Published emulator CLI missing.");
   const output = await run("bun", [join(root, "scripts/connectors-tests/runtime.mjs"), root, upstream, directory,
     resolve(packageRoot, entry), browser, commit, candidate, JSON.stringify(patches)], upstream,
-  join(directory, "runtime.json"), home);
+  join(directory, "runtime.json"), home, useHeavySlot);
   const report = output.split(/\r?\n/).map((line) => {
     try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; }
-  }).find((value) => value?.installedClaude === true && value?.publishedGoogleEmulatorOAuth === true
+  }).find((value) =>
+    ((value?.installedClaude === true && value?.installedAgentNativeToolCall === true) ||
+      (process.env.CONNECTORS_PROOF_SKIP_CLAUDE === "1"
+        && value?.installedClaudeSkipped === true && value?.installedAgentNativeToolCallSkipped === true))
+    && value?.publishedGoogleEmulatorOAuth === true
     && value?.testAccountsProvisionedByPinnedCli === true
+    && value?.gitlabTwoOriginRuntime === true
+    && value?.gitlabHostedClientAtGitLabComOnly === true
+    && value?.gitlabLegacyAccountIdPreserved === true
+    && value?.gitlabLegacyDefaultSitePersisted === true
+    && value?.gitlabLegacyCanonicalDefaultOrigin === true
+    && value?.gitlabReconnectOriginLocked === true
+    && value?.gitlabPatAndOAuthAccounts === true
+    && value?.gitlabPrivateRedirectRefused === true
+    && value?.gitlabMutationApprovalPreserved === true
+    && value?.gitlabDefaultOriginUi === true
     && value?.zendeskNativeAuthorizationStart === true && value?.zendeskPeerConnectionDenials === 2
     && value?.hostedManagedClientAtExactAccountSite === true
     && value?.hostedManagedClientRotationAtExactAccountSite === true

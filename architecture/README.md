@@ -2,6 +2,8 @@
 
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
+The catalog serves a site-aware repository collaboration package. Each account keeps one exact HTTPS instance origin for authorization, token exchange, refresh, health and API calls; reconnects cannot replace it. The public service keeps the hosted client, while self-managed origins use that instance's client or a token. Existing public-service accounts retain their IDs and implicit origin. Private-origin reachability requires an operator-controlled exact-origin exception. Synthetic runtime and UI checks cover these boundaries; live provider acceptance remains separate. The source verifier copies the provider table when rebuilding the generated pool app for that proof.
+
 - `spec.c4` defines the model vocabulary and styles.
 - `model/` defines Basalt and the relationships between its modules.
 - `views/` contains sparse current and planned overviews plus v1 workflows. Computer setup, observation and revocation live together in `views/workflows/computer-setup.c4`.

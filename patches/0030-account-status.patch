@@ -9052,15 +9052,13 @@ index 437885e0..840a42d6 100644
  import { AccountSelectionInvalid } from "../contracts/apps.ts";
  import type { Account } from "../contracts/account.ts";
  import type { ResourceLifecycle } from "../contracts/executor.ts";
-@@ -40,6 +41,8 @@ export const captureConnectionTarget = (
+@@ -40,4 +41,6 @@ export const captureConnectionTarget = (
          app: app.id,
          requirement: target.requirement,
        });
 +    if (connectableMethods(requirement.definition).length === 0)
 +      return yield* new AccountProvisioned({ provider: requirement.provider });
      let site: StoredConnectionTarget["site"];
-     if (requirement.definition.site !== undefined) {
-       const selected = target.site ?? reconnectSite ?? undefined;
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
 index 135f8531..08edc5c1 100644
 --- a/packages/sdk/src/implementation/create.ts
