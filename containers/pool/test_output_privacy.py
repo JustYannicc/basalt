@@ -13,6 +13,7 @@ import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 from . import readiness, supervisor
@@ -22,13 +23,75 @@ from .pool_contract import StartupError
 RESPONSE_SENTINEL = "private-response-sentinel"
 TOKEN_SENTINEL = "private-token-sentinel"
 CLASS_SENTINEL = "PrivateExceptionSentinel"
+STARTUP_PHASE_NAMES = (
+    "home_boot",
+    "bootstrap_import",
+    "config_apply",
+    "node_launch",
+    "initial_health",
+)
+MAX_STARTUP_PHASE_MS = 86_400_000
+
+
+def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate startup phase field")
+        value[key] = item
+    return value
 
 
 class OutputPrivacyTests(unittest.TestCase):
-    def assert_closed_output(self, stdout: str, stderr: str, categories: list[int]) -> None:
+    def assert_startup_phases(self, stdout: str, expected: list[str]) -> None:
+        lines = stdout.splitlines()
+        self.assertEqual(len(lines), len(expected), "unexpected supervisor stdout line count")
+        observed = []
+        fields = ("phase", "start_ms", "end_ms", "duration_ms")
+        for line in lines:
+            try:
+                marker, payload = line.split(" ", 1)
+            except ValueError:
+                self.fail("supervisor stdout did not use the startup phase marker")
+            self.assertEqual(marker, "POOL_STARTUP_PHASE")
+            try:
+                record = json.loads(payload, object_pairs_hook=unique_json_object)
+            except (TypeError, ValueError):
+                self.fail("startup phase payload was not valid JSON")
+            self.assertIs(type(record), dict)
+            self.assertEqual(len(record), len(fields), "startup phase schema changed")
+            self.assertTrue(all(field in record for field in fields), "startup phase fields changed")
+            phase = record["phase"]
+            self.assertTrue(
+                type(phase) is str and phase in STARTUP_PHASE_NAMES,
+                "startup phase name was outside the closed enum",
+            )
+            measurements = [record[field] for field in fields[1:]]
+            self.assertTrue(
+                all(
+                    type(value) is int and 0 <= value <= MAX_STARTUP_PHASE_MS
+                    for value in measurements
+                ),
+                "startup phase measurements were outside the integer bound",
+            )
+            start_ms, end_ms, duration_ms = measurements
+            self.assertTrue(
+                end_ms >= start_ms and duration_ms == end_ms - start_ms,
+                "startup phase duration did not match its monotonic offsets",
+            )
+            observed.append(phase)
+        self.assertTrue(observed == expected, "startup phase sequence changed")
+
+    def assert_closed_output(
+        self,
+        stdout: str,
+        stderr: str,
+        categories: list[int],
+        startup_phases: list[str] | None = None,
+    ) -> None:
         for value in (RESPONSE_SENTINEL, TOKEN_SENTINEL, CLASS_SENTINEL):
             self.assertNotIn(value, stdout + stderr)
-        self.assertEqual(stdout, "")
+        self.assert_startup_phases(stdout, startup_phases or [])
         lines = stderr.splitlines()
         self.assertEqual(len(lines), len(categories))
         observed = []
@@ -89,7 +152,66 @@ class OutputPrivacyTests(unittest.TestCase):
         ):
             self.assertEqual(supervisor.main(), 1)
             self.assertEqual(health.call_count, 2)
-        self.assert_closed_output(stdout.getvalue(), stderr.getvalue(), [5])
+        self.assert_closed_output(
+            stdout.getvalue(),
+            stderr.getvalue(),
+            [5],
+            ["home_boot", "config_apply", "node_launch", "initial_health"],
+        )
+
+    def test_startup_phase_record_uses_bounded_monotonic_offsets(self) -> None:
+        from . import runtime_signals
+
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                runtime_signals.time,
+                "monotonic_ns",
+                side_effect=[1_000_000_000, 1_025_999_999],
+            ),
+            redirect_stdout(stdout),
+            self.assertRaises(StartupError),
+        ):
+            with runtime_signals.startup_phase(
+                runtime_signals.StartupPhase.HOME_BOOT,
+                950_000_000,
+            ):
+                raise StartupError(f"{RESPONSE_SENTINEL} {TOKEN_SENTINEL}")
+
+        output = stdout.getvalue()
+        self.assert_closed_output(output, "", [], ["home_boot"])
+        record = json.loads(output.split(" ", 1)[1])
+        self.assertEqual(
+            (record["start_ms"], record["end_ms"], record["duration_ms"]),
+            (50, 75, 25),
+        )
+
+    def test_startup_phase_rejects_invalid_or_unbounded_records(self) -> None:
+        from . import runtime_signals
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            runtime_signals.report_startup_phase(
+                cast(runtime_signals.StartupPhase, cast(object, "home_boot")),
+                0,
+                1,
+            )
+            runtime_signals.report_startup_phase(runtime_signals.StartupPhase.HOME_BOOT, True, 1)
+            runtime_signals.report_startup_phase(
+                runtime_signals.StartupPhase.HOME_BOOT,
+                0,
+                MAX_STARTUP_PHASE_MS + 1,
+            )
+            runtime_signals.report_startup_phase(runtime_signals.StartupPhase.HOME_BOOT, 2, 1)
+        self.assertEqual(stdout.getvalue(), "")
+
+        with (
+            patch.object(runtime_signals.time, "monotonic_ns", side_effect=OSError),
+            redirect_stdout(stdout),
+        ):
+            with runtime_signals.startup_phase(runtime_signals.StartupPhase.HOME_BOOT, 0):
+                pass
+        self.assertEqual(stdout.getvalue(), "")
 
     def test_http_handler_failure_cannot_print_response_token_or_address(self) -> None:
         class ExplodingHandler(readiness.ReadyHandler):
