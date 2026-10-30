@@ -396,5 +396,14 @@ try {
   const location = frame === null ? "unknown" : `${frame[1]}:${frame[2]}`;
   // Print only fixed categories and a source basename. Raw errors can contain credentials.
   console.error(`CONNECTORS_PROOF_FAILURE phase=${phase} kind=${kind} at=${location}`);
+  if (phase === "browser-launch") {
+    // This phase precedes actors and account credentials. Keep paths and URLs private too.
+    const reason = String(error?.message ?? error).split(/\r?\n/)
+      .filter((line) => /error|fatal|failed|closed|crashpad|required|cannot|sandbox|library|missing/i.test(line))
+      .slice(0, 8).join(" ")
+      .replace(/(?:https?:\/\/|\/)[^\s"'<>]+/g, "<path>")
+      .slice(0, 1500);
+    console.error(`CONNECTORS_BROWSER_FAILURE ${JSON.stringify(reason)}`);
+  }
   console.error("Connector runtime proof failed; private diagnostics retained."); process.exitCode = 1;
 }

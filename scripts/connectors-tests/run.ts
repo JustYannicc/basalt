@@ -31,6 +31,13 @@ async function run(command: string, args: string[], cwd: string, log: string, ho
   if (code !== 0) {
     let reported = false;
     for (const line of stderr.split(/\r?\n/)) {
+      if (line.startsWith("CONNECTORS_BROWSER_FAILURE ")) {
+        try {
+          const reason: unknown = JSON.parse(line.slice("CONNECTORS_BROWSER_FAILURE ".length));
+          if (typeof reason === "string" && reason.length <= 1500)
+            console.error(`CONNECTORS_BROWSER_FAILURE ${JSON.stringify(reason)}`);
+        } catch { /* Ignore malformed diagnostic lines. */ }
+      }
       if (/^CONNECTORS_PROOF_FAILURE phase=[a-z-]+ kind=[a-z-]+ at=(?:[a-z0-9-]+\.mjs:[0-9]+|unknown)$/.test(line)) {
         console.error(line);
         reported = true;
