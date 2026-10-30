@@ -361,7 +361,7 @@
     {
       "identity": "executor-google-byo-choice",
       "file": "0039-google-byo-choice.patch",
-      "content_sha256": "fc96bb32525bdaecca0d792b5b987b15287335f980c778b4176baba244897c4b",
+      "content_sha256": "4a86adee9605c41b1f282cc0797955da6fca1e142e4469632a3d0652a7d5c554",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

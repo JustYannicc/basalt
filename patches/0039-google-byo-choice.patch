@@ -14,7 +14,7 @@ diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/package
 -        return machine ? "New client credentials" : `Your own ${providerName} app (OAuth)`;
 +        return machine ? "New client credentials" : `Your own ${ownAppName} app (OAuth)`;
      }
-@@ -247,11 +247,14 @@
+@@ -247,11 +249,14 @@
        onPendingChange?.(false);
      });
    };
@@ -55,7 +55,7 @@ diff --git a/e2e/support/oauth-client-entry.ts b/e2e/support/oauth-client-entry.
 diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-recovery.spec.ts
 --- a/e2e/tests/oauth-client-recovery.spec.ts
 +++ b/e2e/tests/oauth-client-recovery.spec.ts
-@@ -60,7 +60,7 @@
+@@ -60,6 +60,6 @@
              {
                path: "index.ts",
                content: `import { defineApp, defineProvider, oauth2, router } from "apps";
@@ -63,7 +63,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +const service=defineProvider({name:"Gmail",auth:{oauth:oauth2({authorizationUrl:${JSON.stringify(issuer.origin + "/authorize")},tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
  export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
              },
-@@ -157,7 +157,7 @@
+@@ -157,6 +157,6 @@
              .then(() =>
                page
                  .getByRole("dialog")
@@ -71,7 +71,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +                .getByRole("button", { name: "Connect Gmail", exact: true })
                  .click(),
              ),
-@@ -185,7 +185,7 @@
+@@ -185,6 +185,6 @@
              .then(() =>
                page
                  .getByRole("dialog")
@@ -79,7 +79,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +                .getByRole("button", { name: "Connect Gmail", exact: true })
                  .click(),
              ),
-@@ -209,11 +209,11 @@
+@@ -209,10 +209,10 @@
                  .fill(` ${recoveryClients.original.clientSecret} `),
              )
              .then(() =>
@@ -92,7 +92,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +              linkedChoice(page, "Gmail", "Recovery account").waitFor({
                  state: "visible",
                }),
-@@ -278,28 +278,38 @@
+@@ -278,27 +278,37 @@
          yield* browser.use("Open the existing account for reconnection", (page) =>
            page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
          );
@@ -149,7 +149,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
          expect(
            (yield* api.request(
              actors.owner,
-@@ -308,15 +316,12 @@
+@@ -308,15 +318,12 @@
            )).status,
          ).toBe(200);
          yield* browser.use("Reopen the reconnect without the registered client", (page) =>
@@ -171,7 +171,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
          );
          yield* browser.checkpoint("Reconnect OAuth client options");
          yield* browser.use("The account's client can be replaced", (page) =>
-@@ -324,7 +327,7 @@
+@@ -324,6 +331,6 @@
              .getByRole("combobox", { name: "OAuth client" })
              .click()
              .then(() =>
@@ -179,7 +179,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +              page.getByRole("option", { name: "Your own Google app (OAuth)", exact: true }).click(),
              ),
          );
-@@ -335,7 +338,7 @@
+@@ -335,7 +342,7 @@
              .then(() => page.getByLabel("Client secret", { exact: true }).fill("wrong-secret"))
              .then(() =>
                page
@@ -188,7 +188,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
                  .click(),
              )
              .then(() =>
-@@ -362,7 +365,7 @@
+@@ -362,7 +369,7 @@
              )
              .then(() =>
                page
