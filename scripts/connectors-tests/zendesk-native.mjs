@@ -96,7 +96,7 @@ export function proveZendeskMcp({
       } }));
       assert.equal(supportUserSearch.isError, false, "Native MCP search failed for imported current-user read");
       const supportUser = supportUserSearch.structuredContent?.items?.find((entry) =>
-        entry.kind === "query" && /showCurrentUser/i.test(entry.path),
+        entry.path.endsWith(".api.users.showCurrentUser"),
       );
       const supportCreateSearch = yield* Effect.promise(() => client.callTool({ name: "search", arguments: {
         query: `${flow.app.slug}.api.tickets.createTicket`,
@@ -104,7 +104,7 @@ export function proveZendeskMcp({
       } }));
       assert.equal(supportCreateSearch.isError, false, "Native MCP search failed for imported ticket creation");
       const supportCreate = supportCreateSearch.structuredContent?.items?.find((entry) =>
-        entry.path !== create.path && entry.kind === "mutation" && /createTicket/i.test(entry.path),
+        entry.path !== create.path && entry.path.endsWith(".api.tickets.createTicket"),
       );
       assert.ok(supportUser, "Imported Support API must expose its current-user read");
       assert.ok(supportCreate, "Imported Support API must expose ticket creation as a mutation");
