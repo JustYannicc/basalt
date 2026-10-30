@@ -483,6 +483,15 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-workflow-diagrams",
+      "file": "0052-workflow-diagrams.patch",
+      "content_sha256": "662284f9751b3c081239be1c7d13b9ba64d92d89b9e01673fd85827f4860ada1",
+      "kind": "upstream",
+      "upstream_pull_request": 2466,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
