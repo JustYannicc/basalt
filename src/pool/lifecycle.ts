@@ -56,14 +56,17 @@ export class PoolLifecycle {
     try {
       const previousRevision = await this.storage.get<string>("revision");
       if (this.driver.running() && previousRevision !== this.revision) await this.driver.stop();
-      if (!this.driver.running()) this.driver.start();
+      if (!this.driver.running()) {
+        // Record the target before launch so retries can keep a running boot.
+        await this.storage.put("revision", this.revision);
+        this.driver.start();
+      }
       await this.driver.keepAlive(poolLifecycle.idleTimeoutMs);
       const deadline = this.clock.now() + poolLifecycle.startupTimeoutMs;
       while (this.clock.now() < deadline) {
         try {
           const status = await this.driver.status();
           if (!status.boot_id || !status.started_at) throw new Error("Missing pool runtime identity");
-          await this.storage.put("revision", this.revision);
           return status;
         } catch {
           if (!this.driver.running()) throw new Error("The pool exited during startup");
