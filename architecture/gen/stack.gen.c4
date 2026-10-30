@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "b40593fdb46ef80183a313c2ed3aa8462c8eae020190dbff80b5a1c25a27264f" }
+    metadata { bindings "2c37bbbbf05c9fd7c4e7a82030e23ee5d249b5452d3b8d25d8470c7343f5d07a" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -248,6 +248,11 @@ deployment {
       storage resource-a9cb94b268fa684a3dd66682aa60d53e10d404540387ac7879129c9d9c047e1c "Migration Role" {
         app = instanceOf databaseService {
           metadata { resource "resource-a9cb94b268fa684a3dd66682aa60d53e10d404540387ac7879129c9d9c047e1c" }
+        }
+      }
+      storage resource-ae1940a06e995c1b1716d2d0fbded4d59614dcd575c33c2d6da70a50c87d6a03 "Pool Model Database Connection" {
+        app = instanceOf databaseService {
+          metadata { resource "resource-ae1940a06e995c1b1716d2d0fbded4d59614dcd575c33c2d6da70a50c87d6a03" }
         }
       }
       storage resource-b54ed15a0aee795ccd57ee376d4787aecbcc971446c7fbcecc637019e478a1a8 "Database Connection" {
