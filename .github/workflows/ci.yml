@@ -255,6 +255,9 @@ jobs:
           print("All three previous-image output leaks reproduced; no setup errors")
           PY
       - run: npm run prepare:upstream
+      - name: Check carried host protocol records
+        working-directory: .upstream
+        run: bun run apps:protocols
       - name: Prove release updates, broken patches, rollback and preview cleanup gates
         run: |
           npm run check:releases
