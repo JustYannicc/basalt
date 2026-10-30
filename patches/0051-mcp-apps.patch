@@ -22,7 +22,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
  import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
  import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
  // Failures are logged as telemetry records them: tags and fixed sentences, never values.
-@@ -172,8 +180,17 @@
+@@ -171,8 +179,17 @@
        Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
      );
      const lifetime = yield* previewLifetime;
@@ -141,7 +141,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        yield* appUiAddressScheme,
        yield* appUiEmbedded,
      );
-@@ -236,11 +246,19 @@
+@@ -235,11 +245,19 @@
        withHostPipeline(
          Effect.gen(function* () {
            const request = yield* HttpServerRequest.HttpServerRequest;
@@ -344,7 +344,7 @@ diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/
        const scheduler = startScheduleWorker(executor, () => Effect.void, {
          ...defaultScheduleWorkerOptions,
          runner: "local",
-@@ -550,6 +557,9 @@
+@@ -549,6 +556,9 @@
          withHostPipeline(
            Effect.gen(function* () {
              const request = yield* HttpServerRequest.HttpServerRequest;
@@ -1210,6 +1210,28 @@ diff --git a/e2e/support/mcp-client.ts b/e2e/support/mcp-client.ts
              );
            });
          // Record methods, revisions and timing only. OAuth headers and tool arguments are excluded.
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -47,14 +47,16 @@
+ ];
+ 
+ /**
+- * Undo SDK 4.0.15 and 4.0.14 and label the database 4.0.13, as an upgrade from the version before
+- * app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
++ * Undo SDK 4.0.17 through 4.0.14 and label the database 4.0.13, as an upgrade from the version
++ * before app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
+  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
+  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
+  * accounts and runs after the SDK steps, so it is left to the caller: one that undoes it removes its
+  * ledger row and table.
+  */
+ export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
++  { sql: "DROP TABLE executor_app_views" },
++  { sql: "ALTER TABLE executor_accounts DROP COLUMN site" },
+   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
+   { sql: "DROP INDEX executor_schedules_app" },
+   { sql: "DROP INDEX executor_workflow_runs_scope_key" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
@@ -1274,6 +1296,30 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      targets: {
        "self-host": scheduled,
        cloud: na("Restarts a runner-owned product with optional client credentials."),
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -24,7 +24,7 @@
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.16" }]);
++        expect(version).toEqual([{ value: "4.0.17" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
+--- a/e2e/tests/app-accounts-upgrade.spec.ts
++++ b/e2e/tests/app-accounts-upgrade.spec.ts
+@@ -281,7 +281,7 @@
+       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
+       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
+     });
+-    expect(version).toEqual([{ value: "4.0.15" }]);
++    expect(version).toEqual([{ value: "4.0.17" }]);
+     expect(step).toEqual([{ name: "app_account_links" }]);
+     // The member's user link as it was, and the app link without a subject.
+     expect(linksAfter).toEqual([
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
@@ -1286,6 +1332,30 @@ diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
          });
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -628,7 +628,7 @@
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.15" }]);
++        expect(version).toEqual([{ value: "4.0.17" }]);
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+         );
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -132,7 +132,7 @@
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.15" }]);
++  expect(version).toEqual([{ value: "4.0.17" }]);
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
 diff --git a/e2e/tests/local-mcp-apps.spec.ts b/e2e/tests/local-mcp-apps.spec.ts
 new file mode 100644
 --- /dev/null
@@ -2249,6 +2319,58 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
                "skills",
              ]);
            }),
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.15" }]);
++        expect(version).toEqual([{ value: "4.0.17" }]);
+         expect(credentials).toEqual([
+           { client: ids.a },
+           { client: ids.a },
+diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage-migration-diagnostics.spec.ts
+--- a/e2e/tests/storage-migration-diagnostics.spec.ts
++++ b/e2e/tests/storage-migration-diagnostics.spec.ts
+@@ -1,5 +1,5 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, FileSystem } from "effect";
++import { Effect, FileSystem, Schema } from "effect";
+ import { TestLive, withCase } from "../support/case.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { Target } from "../support/platform.ts";
+@@ -13,15 +13,24 @@
+       Effect.gen(function* () {
+         const target = yield* Target;
+         const fs = yield* FileSystem.FileSystem;
++        const [current] = yield* legacyStorage([
++          { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++        ]);
++        const originalVersion = yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(
++          current?.[0]?.value,
++        );
++        yield* Effect.addFinalizer(() =>
++          legacyStorage([
++            {
++              sql: "UPDATE private_executor_settings SET value = $1 WHERE key = 'version'",
++              params: [originalVersion],
++            },
++          ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
++        );
+         // An interrupted upgrade can leave the column present while its journal needs repair.
+         yield* legacyStorage([
+           { sql: "UPDATE private_executor_settings SET value = '4.0.1' WHERE key = 'version'" },
+         ]);
+-        yield* Effect.addFinalizer(() =>
+-          legacyStorage([
+-            { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
+-          ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
+-        );
+         yield* serverControl("start", 500);
+         const log = yield* fs.readFileString(`${target.directory}/server.log`);
+         expect(log).toContain("StorageMigrationFailed");
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
