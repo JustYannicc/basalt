@@ -420,6 +420,24 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-shared-catalog-oauth-clients",
+      "file": "0045-shared-catalog-oauth-clients.patch",
+      "content_sha256": "5fb30ddb4e2fbbbe651b30b2631e09c2b89afc0aa652f2b5304f9cb38ef422e9",
+      "kind": "upstream",
+      "upstream_pull_request": 2458,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-shared-catalog-client-labels",
+      "file": "0046-shared-catalog-client-labels.patch",
+      "content_sha256": "7d3a03dd266831705274d85a20a74eac14c728269e83b37efe4a4b0f64d8a26e",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
