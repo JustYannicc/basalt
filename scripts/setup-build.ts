@@ -2,7 +2,6 @@ import { createRequire } from "node:module";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { brand } from "../brand.ts";
-import { feedbackScriptTag } from "../src/feedback/ui.ts";
 const require = createRequire(new URL("../.upstream/package.json", import.meta.url));
 const { build } = require("esbuild") as typeof import("esbuild");
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -37,4 +36,4 @@ const compiler = await compile(styles.outputFiles![0]!.text);
 writeFileSync(`${root}public/setup/main.css`, compiler.build(candidates));
 const titles = { setup: "Computer setup", share: "Share your pool" } as const;
 for (const page of Object.keys(pages) as (keyof typeof pages)[])
-  writeFileSync(`${root}public/${page}/index.html`, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${titles[page]}</title><link rel="icon" href="${brand.logo}"><link rel="stylesheet" href="/setup/main.css"><body><div id="root"></div><script type="module" src="/${page}/main.js"></script>${feedbackScriptTag}</body></html>`);
+  writeFileSync(`${root}public/${page}/index.html`, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${titles[page]}</title><link rel="icon" href="${brand.logo}"><link rel="stylesheet" href="/setup/main.css"><body><div id="root"></div><script type="module" src="/${page}/main.js"></script></body></html>`);

@@ -1,0 +1,1048 @@
+diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
+index e5542e8..2095073 100644
+--- a/apps/docs/content/run/self-host.mdx
++++ b/apps/docs/content/run/self-host.mdx
+@@ -32,6 +32,7 @@ These settings override the defaults:
+ | `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
+ | `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
+ | `EXECUTOR_PRODUCT_DOCS_URL`, `EXECUTOR_PRODUCT_PRIVACY_URL`, `EXECUTOR_PRODUCT_TERMS_URL` | no | Your own docs, privacy policy and terms. With another product name, a link you leave unset is not shown. |
++| `EXECUTOR_PRODUCT_FEEDBACK_URL` | no | Your own endpoint, absolute or a path on this origin, that receives feedback. With another product name, the dashboard sidebar offers a Feedback form that posts the message, the page path and, unless the person unticks them, a screenshot and recent redacted page errors and failed requests as JSON with the session cookie. |
+ | `EXECUTOR_PRODUCT_SOURCE_URL` | no | Where your deployment's source code is published, such as your fork. With another product name, the dashboard sidebar links it last, as GitHub for a github.com repository and as Source code otherwise; unset, it shows no source link. |
+ | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
+ | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
+diff --git a/apps/hosted/self-host/compose.yaml b/apps/hosted/self-host/compose.yaml
+index f24b821..9923bc8 100644
+--- a/apps/hosted/self-host/compose.yaml
++++ b/apps/hosted/self-host/compose.yaml
+@@ -37,6 +37,9 @@ services:
+       EXECUTOR_PRODUCT_PRIVACY_URL:
+       EXECUTOR_PRODUCT_TERMS_URL:
+       EXECUTOR_PRODUCT_SOURCE_URL:
++      # Your own endpoint that receives feedback from the dashboard; under another name the
++      # sidebar offers a feedback form that posts there.
++      EXECUTOR_PRODUCT_FEEDBACK_URL:
+       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
+       # document there, which authorization servers must be able to fetch over public HTTPS.
+       EXECUTOR_OAUTH_CLIENT_METADATA_URL:
+diff --git a/bun.lock b/bun.lock
+index db33d48..fc1169a 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -715,6 +715,7 @@
+         "mdast-util-from-markdown": "2.0.3",
+         "mdast-util-gfm": "3.1.0",
+         "micromark-extension-gfm": "3.0.0",
++        "modern-screenshot": "4.7.0",
+         "radix-ui": "1.6.7",
+         "react-markdown": "10.1.0",
+         "remark-gfm": "4.0.1",
+@@ -4102,6 +4103,8 @@
+ 
+     "mkdirp": ["mkdirp@0.5.6", "", { "dependencies": { "minimist": "^1.2.6" }, "bin": { "mkdirp": "bin/cmd.js" } }, "sha512-FP+p8RB8OWpF3YZBCrP5gtADmtXApB5AMLn+vdyA+PyxCjrCs00mjyUozssO33cwDeT3wNGdLxJ5M//YqtHAJw=="],
+ 
++    "modern-screenshot": ["modern-screenshot@4.7.0", "", {}, "sha512-9YxN+ddPSMMlhylOv25VHzXrl9u67QRxoh7+SEewGtgUw7t6hHTrjptSDJUSne9oG4Xk/h2cwG15nIt4Hc9ujg=="],
++
+     "modern-tar": ["modern-tar@0.8.5", "", {}, "sha512-snEhs+6G5Tjd4I7tLCDOaoln2RgE0bD19RzEKgvgK2hZ5VKy3MpLhLTZ2fWpXSTg4K2cyPwp+VHATFJhxfnOeA=="],
+ 
+     "motion": ["motion@12.43.0", "", { "dependencies": { "framer-motion": "^12.43.0", "tslib": "^2.4.0" }, "peerDependencies": { "@emotion/is-prop-valid": "*", "react": "^18.0.0 || ^19.0.0", "react-dom": "^18.0.0 || ^19.0.0" }, "optionalPeers": ["@emotion/is-prop-valid", "react", "react-dom"] }, "sha512-BQgQbSa9Hn3/mtbib0MK53y6JSANa+YKUKlaYnWzAVDH424RYQ5LVpV3pNiWH00BA2z4ojsSdMzqT7g2FQwjuQ=="],
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 061d775..a0658c9 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -82,6 +82,7 @@ export const productBrand = {
+   docs: "https://acme.example/docs",
+   privacy: "https://acme.example/privacy",
+   source: "https://github.com/acme/tools",
++  feedback: "/acme-feedback",
+ } as const;
+ /**
+  * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
+@@ -5021,7 +5022,8 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "cloud-app-query-auth.spec.ts",
+     appOrigin: true,
+-    title: "Cloud app queries read current authorization without deleting expired verification records",
++    title:
++      "Cloud app queries read current authorization without deleting expired verification records",
+     targets: {
+       cloud: managedCloud,
+       "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
+@@ -5912,6 +5914,7 @@ export const scenarios = plan({
+       EXECUTOR_PRODUCT_DOCS_URL: productBrand.docs,
+       EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
+       EXECUTOR_PRODUCT_SOURCE_URL: productBrand.source,
++      EXECUTOR_PRODUCT_FEEDBACK_URL: productBrand.feedback,
+     },
+     targets: {
+       "self-host": scheduled,
+diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+index bd9e33c..3ed28e2 100644
+--- a/e2e/tests/product-brand.spec.ts
++++ b/e2e/tests/product-brand.spec.ts
+@@ -82,12 +82,13 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+         );
+         expect(apps).not.toMatch(executorName);
+         // The sidebar links the configured docs and source in Executor's order, docs first and
+-        // the source last, and names a GitHub repository as such.
++        // the source last, names a GitHub repository as such, and offers the configured feedback
++        // endpoint between them.
+         expect(
+           yield* browser.use("Read the sidebar's resource links", (page) =>
+             page.locator(".sidebar-resource-links > *").allInnerTexts(),
+           ),
+-        ).toEqual(["Docs", "GitHub"]);
++        ).toEqual(["Docs", "Feedback", "GitHub"]);
+         expect(
+           yield* browser.use("Read the sidebar's GitHub link", (page) =>
+             page.getByRole("link", { name: "GitHub", exact: true }).getAttribute("href"),
+@@ -98,6 +99,58 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+             page.getByRole("link", { name: "Star on GitHub" }).count(),
+           ),
+         ).toBe(0);
++        // Feedback posts to the configured endpoint. A failed send keeps the text and says why;
++        // a send that succeeds closes the form and confirms it.
++        const feedback: unknown[] = [];
++        let feedbackStatus = 401;
++        yield* browser.use("Answer the configured feedback endpoint", (page) =>
++          page.route(`**${productBrand.feedback}`, (route) => {
++            feedback.push(route.request().postDataJSON());
++            return route.fulfill({ status: feedbackStatus });
++          }),
++        );
++        yield* browser.use("Open the feedback form", (page) =>
++          page.getByRole("button", { name: "Feedback", exact: true }).click(),
++        );
++        const feedbackField = `Feedback about ${productBrand.name}`;
++        yield* browser.use("Write feedback", (page) =>
++          page
++            .getByRole("textbox", { name: feedbackField, exact: true })
++            .fill("The apps list is slow."),
++        );
++        yield* browser.use("Send it with Enter while signed out", (page) =>
++          page.getByRole("textbox", { name: feedbackField, exact: true }).press("Enter"),
++        );
++        yield* browser.use("A signed-out send says so", (page) =>
++          page
++            .getByRole("alert")
++            .getByText("You're signed out. Sign in, then send again.", { exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("Read the kept feedback", (page) =>
++            page.getByRole("textbox", { name: feedbackField, exact: true }).inputValue(),
++          ),
++        ).toBe("The apps list is slow.");
++        feedbackStatus = 204;
++        yield* browser.use("Send it again", (page) =>
++          page.getByRole("button", { name: "Send", exact: true }).click(),
++        );
++        yield* browser.use("A sent message is confirmed", (page) =>
++          page.getByText("Feedback sent", { exact: true }).waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("The feedback form has closed", (page) =>
++            page.getByRole("textbox", { name: feedbackField, exact: true }).count(),
++          ),
++        ).toBe(0);
++        expect(feedback).toHaveLength(2);
++        expect(feedback[1]).toMatchObject({
++          message: "The apps list is slow.",
++          page: `/org/${actors.organization.slug}/apps`,
++          screenshot: { name: "screenshot.jpg", type: "image/jpeg" },
++          logs: expect.any(Array),
++        });
+         // The built-in app's own page and its account read under the configured name too.
+         yield* browser.use("Open the built-in app", (page) =>
+           page.getByRole("link", { name: new RegExp(`^Open ${productBrand.name}\\b`) }).click(),
+diff --git a/packages/ui/package.json b/packages/ui/package.json
+index 83f4d33..c500ce3 100644
+--- a/packages/ui/package.json
++++ b/packages/ui/package.json
+@@ -40,6 +40,7 @@
+     "mdast-util-from-markdown": "2.0.3",
+     "mdast-util-gfm": "3.1.0",
+     "micromark-extension-gfm": "3.0.0",
++    "modern-screenshot": "4.7.0",
+     "radix-ui": "1.6.7",
+     "react-markdown": "10.1.0",
+     "remark-gfm": "4.0.1",
+diff --git a/packages/ui/src/contracts/http.ts b/packages/ui/src/contracts/http.ts
+index 3aadafa..15756e7 100644
+--- a/packages/ui/src/contracts/http.ts
++++ b/packages/ui/src/contracts/http.ts
+@@ -14,6 +14,13 @@ const addressHost = HttpClient.mapRequest((request) =>
+   request.url.startsWith("/") ? HttpClientRequest.prependUrl(request, inProcessOrigin) : request,
+ );
+ 
++/**
++ * The page's fetch as it is when each request is made. Effect otherwise keeps the first one it
++ * reads, so a wrapper installed later, such as the feedback form's request log, would never see
++ * dashboard reads.
++ */
++const currentFetch: typeof globalThis.fetch = (input, init) => globalThis.fetch(input, init);
++
+ /**
+  * Effect's Fetch client with the runtime's `Fetch`: the browser's, or on the server the
+  * document's in-process fetch supplied by the dashboard atom runtime.
+@@ -23,7 +30,7 @@ export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> =
+     ? Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, addressHost)).pipe(
+         Layer.provide(FetchHttpClient.layer),
+       )
+-    : FetchHttpClient.layer;
++    : FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch)));
+ 
+ /** A deterministic key for a request, independent of property order. */
+ export const requestKey = (value: unknown): string => {
+diff --git a/packages/ui/src/implementation/components/toast.tsx b/packages/ui/src/implementation/components/toast.tsx
+new file mode 100644
+index 0000000..b6b8649
+--- /dev/null
++++ b/packages/ui/src/implementation/components/toast.tsx
+@@ -0,0 +1,74 @@
++"use client";
++
++import { useEffect } from "react";
++import { useAtomSet, useAtomValue } from "@effect/atom-react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
++import { Atom } from "effect/reactivity";
++
++interface Toast {
++  readonly id: string;
++  readonly title: string;
++  readonly description?: string;
++}
++
++const visibleMs = 4000;
++const toastsAtom = Atom.make<ReadonlyArray<Toast>>([]).pipe(Atom.keepAlive);
++
++/** Shows a toast that confirms something that already happened, then leaves on its own. */
++// A counter, not crypto.randomUUID: that exists only in secure contexts, and a self-host can be
++// served over plain HTTP. Toasts are only raised in the browser.
++const ids = { next: 0 };
++
++export function useToast() {
++  const set = useAtomSet(toastsAtom);
++  return (message: Omit<Toast, "id">) =>
++    set((toasts) => [...toasts, { id: String((ids.next += 1)), ...message }]);
++}
++
++function ToastItem({ toast }: { readonly toast: Toast }) {
++  const set = useAtomSet(toastsAtom);
++  useEffect(() => {
++    const timer = setTimeout(
++      () => set((toasts) => toasts.filter((item) => item.id !== toast.id)),
++      visibleMs,
++    );
++    return () => clearTimeout(timer);
++  }, [set, toast.id]);
++  return (
++    <div className="pointer-events-auto flex items-start gap-2.5 rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-md animate-in fade-in-0 slide-in-from-bottom-2 duration-200 motion-reduce:animate-none">
++      <HugeiconsIcon
++        icon={CheckmarkCircle02Icon}
++        strokeWidth={2}
++        aria-hidden
++        className="mt-px size-4 shrink-0"
++      />
++      <div className="grid gap-0.5">
++        <p className="font-medium">{toast.title}</p>
++        {toast.description !== undefined && (
++          <p className="text-muted-foreground">{toast.description}</p>
++        )}
++      </div>
++    </div>
++  );
++}
++
++/**
++ * Where toasts appear: bottom-right on wide screens, and above the Menu pill on phones. The region
++ * stays mounted, so screen readers announce each toast as it arrives.
++ */
++export function Toaster() {
++  const toasts = useAtomValue(toastsAtom);
++  return (
++    <div
++      data-slot="toaster"
++      role="status"
++      aria-live="polite"
++      className="pointer-events-none fixed z-[60] right-4 bottom-4 flex w-80 flex-col gap-2 max-[740px]:left-4 max-[740px]:w-auto max-[740px]:bottom-[calc(max(16px,_env(safe-area-inset-bottom))_+_56px)]"
++    >
++      {toasts.map((toast) => (
++        <ToastItem key={toast.id} toast={toast} />
++      ))}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/product-feedback.tsx b/packages/ui/src/implementation/dashboard/product-feedback.tsx
+new file mode 100644
+index 0000000..2e961f0
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/product-feedback.tsx
+@@ -0,0 +1,253 @@
++import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ImageNotFound01Icon, Message01Icon } from "@hugeicons/core-free-icons";
++import { Button } from "../components/button.tsx";
++import { Checkbox } from "../components/checkbox.tsx";
++import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
++import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
++import { Spinner } from "../components/spinner.tsx";
++import { Textarea } from "../components/textarea.tsx";
++import { useToast } from "../components/toast.tsx";
++import { useFeedbackScreenshot, type FeedbackScreenshot } from "../hooks/feedback-screenshot.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { installFeedbackLog, readFeedbackLog } from "../lib/feedback-log.ts";
++import {
++  feedbackFailure,
++  feedbackMessageMax,
++  sendFeedback,
++  toBase64,
++} from "../lib/feedback-submit.ts";
++import { useKeyboardInset } from "../hooks/keyboard-inset.ts";
++
++function Thumbnail({ enabled, screenshot }: { enabled: boolean; screenshot: FeedbackScreenshot }) {
++  let content: ReactNode;
++  if (enabled && screenshot.status === "ready")
++    content = (
++      <img
++        src={screenshot.url}
++        alt="Screenshot that will be attached"
++        className="size-full object-cover object-left-top"
++      />
++    );
++  else if (enabled && screenshot.status !== "failed") content = <Spinner className="size-3.5" />;
++  else
++    content = (
++      <HugeiconsIcon
++        icon={ImageNotFound01Icon}
++        strokeWidth={2}
++        size={16}
++        aria-label={enabled ? "Screenshot unavailable" : "No screenshot"}
++      />
++    );
++  return (
++    <div className="flex h-10 w-16 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-muted text-muted-foreground">
++      {content}
++    </div>
++  );
++}
++
++function Option(props: {
++  checked: boolean;
++  disabled: boolean;
++  onCheckedChange: (checked: boolean) => void;
++  children: ReactNode;
++}) {
++  return (
++    <label className="flex cursor-pointer items-center gap-2 text-sm max-[740px]:min-h-11">
++      <Checkbox
++        checked={props.checked}
++        disabled={props.disabled}
++        onCheckedChange={(checked) => props.onCheckedChange(checked === true)}
++      />
++      {props.children}
++    </label>
++  );
++}
++
++/**
++ * The sidebar's Feedback entry for a deployment with its own feedback endpoint. On wide screens it
++ * opens a popover above the entry; in the phone menu (`sheet`) it opens its own bottom sheet, where
++ * Enter adds a line. A screenshot of the page and recent logs attach unless unticked. What was
++ * typed stays when a send fails, and `onSent` runs after a send succeeds.
++ */
++export function ProductFeedback({
++  endpoint,
++  sheet = false,
++  onSent,
++}: {
++  readonly endpoint: string;
++  readonly sheet?: boolean;
++  readonly onSent?: (() => void) | undefined;
++}) {
++  // The sidebar renders with the dashboard, so logs are kept from page load onward.
++  installFeedbackLog();
++  const { name } = useProductBrand();
++  const [open, setOpen] = useState(false);
++  const [draft, setDraft] = useState("");
++  const [attachScreenshot, setAttachScreenshot] = useState(true);
++  const [attachLogs, setAttachLogs] = useState(true);
++  const [sending, setSending] = useState(false);
++  const [error, setError] = useState<string>();
++  const { screenshot, start, clear, resolve } = useFeedbackScreenshot();
++  const toast = useToast();
++  const field = useRef<HTMLTextAreaElement>(null);
++  const keyboardInset = useKeyboardInset(sheet && open);
++  const id = useId();
++
++  // Each open captures what is on screen right then; closing drops it.
++  const changeOpen = (next: boolean) => {
++    if (sending) return;
++    setOpen(next);
++    setError(undefined);
++    if (next && attachScreenshot) start();
++    else if (!next) clear();
++  };
++  const changeAttachScreenshot = (checked: boolean) => {
++    setAttachScreenshot(checked);
++    if (checked && open) start();
++    else if (!checked) clear();
++  };
++
++  const submit = async () => {
++    const message = draft.trim();
++    if (message.length === 0 || sending) return;
++    setSending(true);
++    setError(undefined);
++    const image = attachScreenshot ? await resolve() : null;
++    const status = await sendFeedback(endpoint, {
++      message,
++      page: location.pathname,
++      ...(image === null
++        ? {}
++        : {
++            screenshot: { name: "screenshot.jpg", type: image.type, data: await toBase64(image) },
++          }),
++      ...(attachLogs ? { logs: readFeedbackLog() } : {}),
++    });
++    setSending(false);
++    if (status >= 200 && status < 300) {
++      setDraft("");
++      setOpen(false);
++      clear();
++      toast({ title: "Feedback sent", description: "Thanks." });
++      onSent?.();
++      return;
++    }
++    setError(feedbackFailure(status, image !== null));
++    field.current?.focus();
++  };
++
++  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
++    // Safari ends composition before the Enter that confirms it, which then reads as key 229.
++    const composing = event.nativeEvent.isComposing || event.keyCode === 229;
++    if (sheet || event.key !== "Enter" || event.shiftKey || composing) return;
++    event.preventDefault();
++    void submit();
++  };
++
++  const form = (
++    <form
++      className="grid gap-3"
++      aria-busy={sending}
++      onSubmit={(event) => {
++        event.preventDefault();
++        void submit();
++      }}
++    >
++      <label htmlFor={`${id}-message`} id={`${id}-label`} className="text-sm font-medium">
++        Feedback about {name}
++      </label>
++      <Textarea
++        ref={field}
++        id={`${id}-message`}
++        value={draft}
++        readOnly={sending}
++        maxLength={feedbackMessageMax}
++        rows={4}
++        placeholder="Bug, idea, annoyance…"
++        aria-invalid={error !== undefined}
++        aria-describedby={
++          [sheet ? undefined : `${id}-hint`, error === undefined ? undefined : `${id}-error`]
++            .filter((part) => part !== undefined)
++            .join(" ") || undefined
++        }
++        className="resize-none"
++        onChange={(event) => {
++          setDraft(event.currentTarget.value);
++          setError(undefined);
++        }}
++        onKeyDown={onKeyDown}
++      />
++      <div className="flex items-center gap-3">
++        <Thumbnail enabled={attachScreenshot} screenshot={screenshot} />
++        <div className="grid gap-2">
++          <Option
++            checked={attachScreenshot}
++            disabled={sending}
++            onCheckedChange={changeAttachScreenshot}
++          >
++            Attach screenshot
++          </Option>
++          <Option checked={attachLogs} disabled={sending} onCheckedChange={setAttachLogs}>
++            Attach logs
++          </Option>
++        </div>
++      </div>
++      {error !== undefined && (
++        <p id={`${id}-error`} role="alert" className="text-sm text-destructive">
++          {error}
++        </p>
++      )}
++      <div className="flex items-center justify-between gap-2">
++        {!sheet && (
++          <p id={`${id}-hint`} className="text-xs text-muted-foreground">
++            Shift+Enter for a new line
++          </p>
++        )}
++        <Button
++          type="submit"
++          size="sm"
++          className="ml-auto"
++          loading={sending}
++          disabled={draft.trim().length === 0}
++        >
++          Send
++        </Button>
++      </div>
++    </form>
++  );
++
++  const trigger = (
++    <button type="button" title="Feedback" className="cursor-pointer hover:text-foreground">
++      <HugeiconsIcon icon={Message01Icon} strokeWidth={2} size={13} aria-hidden />
++      <span>Feedback</span>
++    </button>
++  );
++
++  if (sheet)
++    return (
++      <Dialog open={open} onOpenChange={changeOpen}>
++        <DialogTrigger asChild>{trigger}</DialogTrigger>
++        <DialogContent
++          showCloseButton={false}
++          aria-describedby={undefined}
++          overlayClassName="bg-black/20"
++          style={{ bottom: keyboardInset }}
++          className="top-auto bottom-0 left-0 translate-x-0 translate-y-0 w-full max-w-none sm:max-w-none gap-0 rounded-b-none rounded-t-[14px] border-b-0 p-[8px_16px_max(16px,_env(safe-area-inset-bottom))] max-h-[85dvh] overflow-y-auto data-[state=open]:slide-in-from-bottom-4 data-[state=closed]:slide-out-to-bottom-4 data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100"
++        >
++          <DialogTitle className="sr-only">Send feedback</DialogTitle>
++          <div className="mx-auto mb-3 h-1 w-9 rounded-full bg-border" aria-hidden />
++          {form}
++        </DialogContent>
++      </Dialog>
++    );
++
++  return (
++    <Popover open={open} onOpenChange={changeOpen}>
++      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
++      <PopoverContent side="top" align="start" className="w-80" aria-labelledby={`${id}-label`}>
++        {form}
++      </PopoverContent>
++    </Popover>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/shell.tsx b/packages/ui/src/implementation/dashboard/shell.tsx
+index feddd06..90a2090 100644
+--- a/packages/ui/src/implementation/dashboard/shell.tsx
++++ b/packages/ui/src/implementation/dashboard/shell.tsx
+@@ -10,9 +10,11 @@ import {
+   StarIcon,
+ } from "@hugeicons/core-free-icons";
+ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components/dialog.tsx";
++import { Toaster } from "../components/toast.tsx";
+ import { useMediaQuery } from "../hooks/media-query.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { isDefaultProductBrand, type ProductBrand } from "@executor-js/utils/product-brand";
++import { ProductFeedback } from "./product-feedback.tsx";
+ 
+ /** The public issue tracker, shared by the Feedback link and the support channels. */
+ export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
+@@ -74,21 +76,34 @@ const navigationClass =
+ const collapsedClass =
+   "[&_.sidebar-header]:justify-center [&_.wordmark]:hidden [&_nav_a]:justify-center [&_nav_a]:gap-0! [&_nav_a]:px-0! [&_nav_a]:h-9 [&_nav_a]:text-[0px]! [&_nav_a_>_span]:hidden [&_.sidebar-resource-links]:items-center [&_.sidebar-resource-links]:px-0 [&_.sidebar-resource-links_a]:w-full [&_.sidebar-resource-links_a]:justify-center [&_.sidebar-resource-links_a]:min-h-8 [&_.sidebar-resource-links_a_>_span]:hidden [&_.sidebar-resource-links_button]:w-full [&_.sidebar-resource-links_button]:justify-center [&_.sidebar-resource-links_button]:min-h-8 [&_.sidebar-resource-links_button_>_span]:hidden [&_.hosted-identity]:px-0 [&_.organization-trigger]:justify-center [&_.organization-trigger]:px-0 [&_.organization-name]:hidden [&_.organization-chevron]:hidden [&_.session-menu]:justify-center [&_.session-menu]:px-0 [&_.session-name]:hidden [&_.sidebar-version]:hidden";
+ 
+-/** Links and the optional support trigger share one compact style. */
++/**
++ * Links and the optional support trigger share one compact style. Under another name, a
++ * deployment's own feedback endpoint fills the support slot with its feedback form; `sheet` is the
++ * phone menu's copy, and `onFeedbackSent` closes that menu after a send.
++ */
+ function ResourceLinks({
+   docsUrl,
+   support,
++  sheet = false,
++  onFeedbackSent,
+ }: {
+   readonly docsUrl: string | undefined;
+   readonly support: ReactNode;
++  readonly sheet?: boolean;
++  readonly onFeedbackSent?: () => void;
+ }) {
+   const brand = useProductBrand();
++  const feedback = isDefaultProductBrand(brand) ? undefined : brand.feedback;
+   return (
+     <div className="sidebar-resource-links flex flex-col items-start gap-0.5 [padding:0_10px_8px] [&_a]:inline-flex [&_a]:items-center [&_a]:gap-1.5 [&_a]:text-[11px] [&_a]:min-h-6 [&_button]:inline-flex [&_button]:items-center [&_button]:gap-1.5 [&_button]:text-[11px] [&_button]:min-h-6 max-[740px]:[padding:4px_8px_8px] max-[740px]:[&_a]:min-h-10 max-[740px]:[&_a]:text-[13px] max-[740px]:[&_a]:gap-2 max-[740px]:[&_button]:min-h-10 max-[740px]:[&_button]:text-[13px] max-[740px]:[&_button]:gap-2">
+       {resources(docsUrl, brand).map((link) => (
+         <ResourceAnchor key={link.href} {...link} />
+       ))}
+-      {support}
++      {feedback === undefined ? (
++        support
++      ) : (
++        <ProductFeedback endpoint={feedback} sheet={sheet} onSent={onFeedbackSent} />
++      )}
+       {sourceLinks(brand).map((link) => (
+         <ResourceAnchor key={link.href} {...link} />
+       ))}
+@@ -209,11 +224,17 @@ export function DashboardShell({
+           <nav aria-label="Main navigation">{navigation}</nav>
+           {notice && <div className="sidebar-notice mt-3">{notice}</div>}
+           <div className="sidebar-utilities mt-3 [padding:12px_0_0] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
+-            <ResourceLinks docsUrl={docsUrl} support={support} />
++            <ResourceLinks
++              docsUrl={docsUrl}
++              support={support}
++              sheet
++              onFeedbackSent={() => setMenuOpen(false)}
++            />
+             {footer}
+           </div>
+         </DialogContent>
+       </Dialog>
++      <Toaster />
+     </div>
+   );
+ }
+diff --git a/packages/ui/src/implementation/hooks/feedback-screenshot.ts b/packages/ui/src/implementation/hooks/feedback-screenshot.ts
+new file mode 100644
+index 0000000..211a244
+--- /dev/null
++++ b/packages/ui/src/implementation/hooks/feedback-screenshot.ts
+@@ -0,0 +1,109 @@
++import { useCallback, useEffect, useRef, useState } from "react";
++import { untrackedFetch, withoutFeedbackLog } from "../lib/feedback-log.ts";
++
++/** Popovers, dialogs and toasts are left out, so the feedback form never shows in its own image. */
++const overlays = new Set(["popover-content", "dialog-content", "dialog-overlay", "toaster"]);
++const keep = (node: Node) =>
++  !(node instanceof HTMLElement && overlays.has(node.dataset.slot ?? ""));
++
++/** A blank pixel stands in for an image or font the capture can't load. */
++const blank = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
++
++/** Images the capture inlines; it reports them as blank rather than failing. */
++const fetchResource = (url: string) =>
++  untrackedFetch(url, { cache: "force-cache" })
++    .then((response) => (response.ok ? response.blob() : Promise.reject(new Error())))
++    .then(
++      (blob) =>
++        new Promise<string>((resolve, reject) => {
++          const reader = new FileReader();
++          reader.onload = () => resolve(String(reader.result));
++          reader.onerror = reject;
++          reader.readAsDataURL(blob);
++        }),
++    )
++    .catch(() => blank);
++
++/** Encoded bytes of an attached screenshot; a sharper capture over it retries at 1x. */
++export const feedbackScreenshotBytesMax = 1_500_000;
++
++/**
++ * Draws the visible page to a JPEG. `modern-screenshot` loads on first use, so pages that never
++ * open the form don't download it. Frames from other origins draw blank.
++ */
++async function capturePage(): Promise<Blob> {
++  const { domToBlob } = await import("modern-screenshot");
++  const capture = (scale: number) =>
++    domToBlob(document.body, {
++      type: "image/jpeg",
++      quality: 0.85,
++      width: window.innerWidth,
++      height: window.innerHeight,
++      scale,
++      backgroundColor: getComputedStyle(document.body).backgroundColor,
++      filter: keep,
++      fetchFn: fetchResource,
++      timeout: 10_000,
++    });
++  // Fonts and stylesheets load through the page's own fetch, so the request log pauses meanwhile
++  // and the capture stays out of the logs it may be sent with.
++  return withoutFeedbackLog(async () => {
++    const sharp = await capture(Math.min(window.devicePixelRatio || 1, 2));
++    if (sharp.size <= feedbackScreenshotBytesMax) return sharp;
++    const plain = await capture(1);
++    if (plain.size <= feedbackScreenshotBytesMax) return plain;
++    throw new Error("Screenshot too large");
++  });
++}
++
++export type FeedbackScreenshot =
++  | { readonly status: "idle" | "capturing" | "failed" }
++  | { readonly status: "ready"; readonly url: string };
++
++/**
++ * One page capture at a time. `start` captures what is on screen now, `clear` drops it, and
++ * `resolve` waits for a capture in flight so a quick send still carries it. A capture that
++ * finishes after `clear` or a newer `start` is discarded.
++ */
++export function useFeedbackScreenshot() {
++  const [screenshot, setScreenshot] = useState<FeedbackScreenshot>({ status: "idle" });
++  const session = useRef(0);
++  const pending = useRef<Promise<Blob | null> | null>(null);
++  const url = useRef<string | null>(null);
++
++  const release = useCallback(() => {
++    if (url.current !== null) URL.revokeObjectURL(url.current);
++    url.current = null;
++  }, []);
++
++  const clear = useCallback(() => {
++    session.current += 1;
++    pending.current = null;
++    release();
++    setScreenshot({ status: "idle" });
++  }, [release]);
++
++  const start = useCallback(() => {
++    const current = ++session.current;
++    release();
++    setScreenshot({ status: "capturing" });
++    pending.current = capturePage().then(
++      (blob) => {
++        if (current !== session.current) return null;
++        url.current = URL.createObjectURL(blob);
++        setScreenshot({ status: "ready", url: url.current });
++        return blob;
++      },
++      () => {
++        if (current === session.current) setScreenshot({ status: "failed" });
++        return null;
++      },
++    );
++  }, [release]);
++
++  const resolve = useCallback(() => pending.current ?? Promise.resolve(null), []);
++
++  useEffect(() => release, [release]);
++
++  return { screenshot, start, clear, resolve };
++}
+diff --git a/packages/ui/src/implementation/hooks/keyboard-inset.ts b/packages/ui/src/implementation/hooks/keyboard-inset.ts
+new file mode 100644
+index 0000000..2037da3
+--- /dev/null
++++ b/packages/ui/src/implementation/hooks/keyboard-inset.ts
+@@ -0,0 +1,20 @@
++import { useEffect, useState } from "react";
++
++/** How far the on-screen keyboard covers the bottom of the page while `active`, so a sheet can sit above it. */
++export function useKeyboardInset(active: boolean) {
++  const [inset, setInset] = useState(0);
++  useEffect(() => {
++    const viewport = window.visualViewport;
++    if (!active || !viewport) return;
++    const update = () =>
++      setInset(Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop));
++    update();
++    viewport.addEventListener("resize", update);
++    viewport.addEventListener("scroll", update);
++    return () => {
++      viewport.removeEventListener("resize", update);
++      viewport.removeEventListener("scroll", update);
++    };
++  }, [active]);
++  return inset;
++}
+diff --git a/packages/ui/src/implementation/lib/feedback-log.ts b/packages/ui/src/implementation/lib/feedback-log.ts
+new file mode 100644
+index 0000000..a674dee
+--- /dev/null
++++ b/packages/ui/src/implementation/lib/feedback-log.ts
+@@ -0,0 +1,196 @@
++/**
++ * Recent page errors and failed requests, kept in memory for the feedback form's "Attach logs".
++ * Entries are redacted as they are recorded, so no raw token, address or query string is held, and
++ * nothing leaves the page unless a person sends feedback with logs attached.
++ */
++
++/** One console error or one failed request. A request that never got a response has status 0. */
++export type FeedbackLogEntry =
++  | { readonly kind: "error"; readonly at: string; readonly message: string }
++  | {
++      readonly kind: "request";
++      readonly at: string;
++      readonly method: string;
++      readonly path: string;
++      /** Set when the request went to another origin, whose host is left out. */
++      readonly crossOrigin?: true;
++      readonly status: number;
++      readonly durationMs: number;
++    };
++
++const capacity = 50;
++const messageMax = 1000;
++const pathMax = 512;
++/** UTF-8 bytes of the entries a submission carries; the oldest beyond it are left out. */
++export const feedbackLogBytesMax = 16_384;
++
++/** Credentials, keys and addresses that can appear in error text, each replaced by its kind. */
++const secrets: ReadonlyArray<readonly [RegExp, (match: string, name?: string) => string]> = [
++  [
++    // An optional quote covers headers logged as JSON, such as {"cookie":"..."}.
++    /\b(authorization|proxy-authorization|cookie|set-cookie|x-api-key)\b["']?\s*[:=]\s*[^\n]*/gi,
++    (_, name) => `${name}: [redacted]`,
++  ],
++  [
++    /\b(password|passwd|secret|client[_-]?secret|api[_-]?key|access[_-]?token|refresh[_-]?token|token)\b["']?\s*[:=]\s*["']?[^\s"'&,;}]+/gi,
++    (_, name) => `${name}=[redacted]`,
++  ],
++  [/\b(bearer|basic)\s+[\w.~+/=-]{8,}/gi, (_, name) => `${name} [redacted]`],
++  [/\beyJ[\w-]*\.[\w-]*\.[\w-]*/g, () => "[jwt]"],
++  [
++    /\b(?:sk|pk|rk|sb|ghp|gho|ghu|ghs|ghr|glpat|github_pat|xox[abprs])[-_][\w-]{8,}/gi,
++    () => "[key]",
++  ],
++  [/[^\s@<>()[\]"'`,;:]+@[^\s@<>()[\]"'`,;:]+\.[a-z]{2,}/gi, () => "[email]"],
++  [/[\w.+-]+%40[\w.-]+\.[a-z]{2,}/gi, () => "[email]"],
++  [/\b[0-9a-f]{32,}\b/gi, () => "[hex]"],
++  // Long base64 runs that mix letters and digits; long words, slugs and paths stay readable.
++  [/[\w+-]{32,}={0,2}/g, (match) => (/\d/.test(match) && /[a-z]/i.test(match) ? "[token]" : match)],
++  [
++    /[A-Za-z\d+/]{40,}={0,2}/g,
++    (match) => (/\d/.test(match) && /[a-z]/.test(match) && /[A-Z]/.test(match) ? "[token]" : match),
++  ],
++];
++/** A URL or path keeps everything before its query string or fragment. */
++const queries = /((?:[a-z][a-z\d+.-]*:)?\/\/[^\s?#"'<>]+|\/[^\s?#"'<>]*)[?#][^\s"'<>]*/gi;
++
++/** Removes query strings, fragments, credentials, keys, emails and long tokens from `text`. */
++export const redactFeedbackText = (text: string) =>
++  secrets.reduce(
++    (result, [pattern, replace]) => result.replace(pattern, replace),
++    text.replace(queries, "$1"),
++  );
++
++const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
++
++/**
++ * Text and errors are kept; any other value is named by its type only, so logged objects, such as
++ * a response a decoder rejected, never carry their contents. Clipping first bounds the redaction.
++ */
++const describe = (value: unknown): string => {
++  if (typeof value === "string") return clip(value, messageMax);
++  if (value instanceof Error) {
++    const frames = (value.stack ?? "")
++      .split("\n")
++      .filter((line) => /^\s*at |@/.test(line))
++      .slice(0, 5);
++    return clip([`${value.name}: ${value.message}`, ...frames].join("\n"), messageMax);
++  }
++  return `[${value === null ? "null" : typeof value}]`;
++};
++
++const entries: FeedbackLogEntry[] = [];
++const push = (entry: FeedbackLogEntry) => {
++  entries.push(entry);
++  if (entries.length > capacity) entries.shift();
++};
++
++const recordError = (values: ReadonlyArray<unknown>) => {
++  try {
++    const message = redactFeedbackText(values.map(describe).join(" "));
++    push({ kind: "error", at: new Date().toISOString(), message: clip(message, messageMax) });
++  } catch {
++    // Recording must never throw into the page.
++  }
++};
++
++/**
++ * The page's own fetch from before recording wrapped it, set once recording starts, and how many
++ * callers have paused recording, such as a screenshot loading its fonts. Only a browser page
++ * records, so this is never shared between requests.
++ */
++const recording: { native?: typeof fetch; paused: number } = { paused: 0 };
++
++/** Fetches without recording, for the feedback form's own requests. */
++export const untrackedFetch: typeof fetch = (input, init) =>
++  (recording.native ?? fetch)(input, init);
++
++/** Runs `work` without recording the requests made meanwhile, such as a screenshot's fonts. */
++export async function withoutFeedbackLog<A>(work: () => Promise<A>): Promise<A> {
++  recording.paused += 1;
++  try {
++    return await work();
++  } finally {
++    recording.paused -= 1;
++  }
++}
++
++/**
++ * Starts recording console errors, uncaught errors, unhandled rejections, scripts and stylesheets
++ * that fail to load, and fetches that fail or answer 4xx/5xx. Idempotent.
++ */
++export function installFeedbackLog() {
++  if (typeof window === "undefined" || recording.native !== undefined) return;
++  const consoleError = console.error;
++  console.error = (...values: unknown[]) => {
++    recordError(values);
++    consoleError.apply(console, values);
++  };
++  window.addEventListener(
++    "error",
++    (event) => {
++      const target = event.target;
++      if (!(target instanceof Element))
++        return recordError(["Uncaught", event.error ?? event.message]);
++      // Images fail routinely, such as avatars; a missing script or stylesheet breaks the page.
++      if (target instanceof HTMLScriptElement || target instanceof HTMLLinkElement)
++        recordError([
++          `Failed to load ${target.localName}`,
++          target.getAttribute("src") ?? target.getAttribute("href"),
++        ]);
++    },
++    true,
++  );
++  window.addEventListener("unhandledrejection", (event) =>
++    recordError(["Unhandled rejection", event.reason]),
++  );
++  const native = window.fetch.bind(window);
++  recording.native = native;
++  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
++    const response = native(input, init);
++    if (recording.paused > 0) return response;
++    const url = URL.parse(input instanceof Request ? input.url : String(input), location.href);
++    // Only web requests are named; blob: and data: URLs carry no path worth reporting.
++    if (url === null || (url.protocol !== "https:" && url.protocol !== "http:")) return response;
++    const method = (
++      init?.method ?? (input instanceof Request ? input.method : "GET")
++    ).toUpperCase();
++    if (!/^[A-Z]{1,10}$/.test(method)) return response;
++    const crossOrigin = url.origin !== location.origin;
++    const at = new Date().toISOString();
++    const started = performance.now();
++    const failed = (status: number) =>
++      push({
++        kind: "request",
++        at,
++        method,
++        path: clip(redactFeedbackText(url.pathname), pathMax),
++        ...(crossOrigin ? { crossOrigin: true as const } : {}),
++        status,
++        durationMs: Math.round(performance.now() - started),
++      });
++    response.then(
++      (result) => {
++        if (result.status >= 400) failed(result.status);
++      },
++      (error: unknown) => {
++        // Navigation cancels in-flight queries; that is not a failure.
++        if (!(error instanceof DOMException && error.name === "AbortError")) failed(0);
++      },
++    );
++    return response;
++  };
++}
++
++/** The newest entries, oldest first, within `feedbackLogBytesMax`. */
++export function readFeedbackLog(): FeedbackLogEntry[] {
++  const encoder = new TextEncoder();
++  const kept: FeedbackLogEntry[] = [];
++  let bytes = 2;
++  for (const entry of [...entries].reverse()) {
++    bytes += encoder.encode(JSON.stringify(entry)).byteLength + 1;
++    if (bytes > feedbackLogBytesMax) break;
++    kept.unshift(entry);
++  }
++  return kept;
++}
+diff --git a/packages/ui/src/implementation/lib/feedback-submit.ts b/packages/ui/src/implementation/lib/feedback-submit.ts
+new file mode 100644
+index 0000000..e1fc687
+--- /dev/null
++++ b/packages/ui/src/implementation/lib/feedback-submit.ts
+@@ -0,0 +1,52 @@
++/** The feedback form's request to a deployment's own feedback endpoint. */
++import { untrackedFetch, type FeedbackLogEntry } from "./feedback-log.ts";
++
++/** The longest message the form accepts. */
++export const feedbackMessageMax = 4000;
++
++/**
++ * What the form posts to the deployment's feedback endpoint, as JSON with the session cookie.
++ * `page` is the path without its query string; `screenshot.data` is base64.
++ */
++export interface FeedbackSubmission {
++  readonly message: string;
++  readonly page: string;
++  readonly screenshot?: { readonly name: string; readonly type: string; readonly data: string };
++  readonly logs?: ReadonlyArray<FeedbackLogEntry>;
++}
++
++/** The bytes of `blob` as base64. */
++export const toBase64 = async (blob: Blob) => {
++  const bytes = new Uint8Array(await blob.arrayBuffer());
++  let text = "";
++  for (let index = 0; index < bytes.length; index += 0x8000)
++    text += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
++  return btoa(text);
++};
++
++/** Posts `submission`; the response status, or 0 when the request never got one. */
++export async function sendFeedback(endpoint: string, submission: FeedbackSubmission) {
++  try {
++    const response = await untrackedFetch(endpoint, {
++      method: "POST",
++      credentials: "same-origin",
++      headers: { "Content-Type": "application/json" },
++      body: JSON.stringify(submission),
++      signal: AbortSignal.timeout(30_000),
++    });
++    return response.status;
++  } catch {
++    return 0;
++  }
++}
++
++/** The one line the form shows for a failed send; `screenshot` says whether one was attached. */
++export const feedbackFailure = (status: number, screenshot: boolean) => {
++  if (status === 401 || status === 403) return "You're signed out. Sign in, then send again.";
++  if (status === 413)
++    return screenshot
++      ? "Screenshot too large. Untick it and send."
++      : "Logs too large. Untick them and send.";
++  if (status === 429) return "Too many in a row. Try again in a minute.";
++  return "Couldn't send. Try again.";
++};
+diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
+index 6ebe7ff..b0e5455 100644
+--- a/packages/utils/src/product-brand.ts
++++ b/packages/utils/src/product-brand.ts
+@@ -7,7 +7,8 @@ import { Config, Context, Effect, Schema } from "effect";
+  * `docs`, `privacy` and `terms` are the deployment's own pages behind those links. `source` is
+  * where its source code is published. `computerSetup` is the deployment's own page that sets up
+  * agents on a person's computer; the Connect page offers it ahead of the MCP setup only when it is
+- * set.
++ * set. `feedback` is the deployment's own endpoint that receives feedback from the dashboard; under
++ * another name the sidebar offers a feedback form that posts there.
+  */
+ export const ProductBrand = Schema.Struct({
+   name: Schema.NonEmptyString,
+@@ -17,6 +18,7 @@ export const ProductBrand = Schema.Struct({
+   terms: Schema.optional(Schema.NonEmptyString),
+   source: Schema.optional(Schema.NonEmptyString),
+   computerSetup: Schema.optional(Schema.NonEmptyString),
++  feedback: Schema.optional(Schema.NonEmptyString),
+ });
+ export type ProductBrand = typeof ProductBrand.Type;
+ 
+@@ -79,6 +81,7 @@ export const productBrandSettings = {
+   terms: "EXECUTOR_PRODUCT_TERMS_URL",
+   source: "EXECUTOR_PRODUCT_SOURCE_URL",
+   computerSetup: "EXECUTOR_COMPUTER_SETUP_URL",
++  feedback: "EXECUTOR_PRODUCT_FEEDBACK_URL",
+ } as const;
+ 
+ /**
+@@ -97,8 +100,9 @@ export const productBrandConfig = Effect.gen(function* () {
+     terms?: string;
+     source?: string;
+     computerSetup?: string;
++    feedback?: string;
+   } = {};
+-  for (const link of ["docs", "privacy", "terms", "source", "computerSetup"] as const) {
++  for (const link of ["docs", "privacy", "terms", "source", "computerSetup", "feedback"] as const) {
+     const value = yield* urlOrPath(
+       productBrandSettings[link],
+       yield* setting(productBrandSettings[link]),

@@ -6,6 +6,8 @@ import { catalog } from "../src/catalog/settings.ts";
 import { zendeskMarketplaceMetadata } from "../src/catalog/zendesk/metadata.ts";
 import { poolFrameworkVersion } from "./pool-app-bundle.ts";
 import { isSigningKey } from "../src/pool/token.ts";
+import { feedbackEndpoints } from "../src/feedback/ui.ts";
+import { validSentryDsn } from "../src/telemetry/sentry-target.ts";
 import { derivePreviewSecrets, previewKey } from "./release-preview/keys.ts";
 
 export const requiredSecrets = [
@@ -191,6 +193,8 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     EXECUTOR_PRODUCT_PRIVACY_URL: brand.links.privacy ?? undefined,
     EXECUTOR_PRODUCT_TERMS_URL: brand.links.terms ?? undefined,
     EXECUTOR_PRODUCT_SOURCE_URL: brand.links.source ?? undefined,
+    // The router's feedback host sends only to Sentry, so the sidebar offers the form only with it.
+    EXECUTOR_PRODUCT_FEEDBACK_URL: validSentryDsn(source.SENTRY_DSN) ? feedbackEndpoints.submit : undefined,
     AUTH_EMAIL_PROVISION_SUBDOMAIN: "false",
     GITHUB_CLIENT_ID: source.AUTH_GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: source.AUTH_GITHUB_CLIENT_SECRET,

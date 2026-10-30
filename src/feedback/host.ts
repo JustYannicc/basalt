@@ -1,8 +1,9 @@
 import { isAccountId } from "../telemetry/product.ts";
-import { errorCode, pageTemplate, recentErrors } from "../telemetry/privacy.ts";
-import { captureError, sendFeedback, validSentryDsn, type SentryEnv } from "../telemetry/sentry.ts";
+import { pageTemplate } from "../telemetry/privacy.ts";
+import { sendFeedback, type SentryEnv } from "../telemetry/sentry.ts";
 import { exact, object, readJson, telemetryResponse, TelemetryInputError } from "../telemetry/http.ts";
-import { feedbackLimits } from "./ui.ts";
+import { feedbackEndpoints, feedbackLimits } from "./ui.ts";
+import { feedbackLogs } from "./logs.ts";
 interface Service { fetch(request: Request): Promise<Response> }
 export interface FeedbackEnv extends SentryEnv { TOOLS_SERVICE: Service }
 
@@ -34,29 +35,18 @@ function screenshot(value: unknown): { name: string; type: string; data: string 
 
 export async function handleFeedback(request: Request, env: FeedbackEnv): Promise<Response> {
   try {
-    const path = new URL(request.url).pathname;
-    if (path === "/feedback/v1/status") return request.method === "GET"
-      ? Response.json({ enabled: validSentryDsn(env.SENTRY_DSN) }, { headers: { "Cache-Control": "no-store" } })
-      : telemetryResponse(405);
-    if (!["/feedback/v1/submit", "/feedback/v1/error"].includes(path)) return telemetryResponse(404);
+    if (new URL(request.url).pathname !== feedbackEndpoints.submit) return telemetryResponse(404);
     if (request.method !== "POST") return telemetryResponse(405);
     if (request.headers.get("origin") !== new URL(request.url).origin || request.headers.has("authorization")) return telemetryResponse(403);
-    const input = await readJson(request, path.endsWith("/error") ? 1024 : 2_830_000);
+    const input = await readJson(request, feedbackLimits.submitBodyBytesMax);
     const accountId = await account(request, env);
     if (!accountId) return telemetryResponse(401);
-    if (path.endsWith("/error")) {
-      exact(input, ["code", "page"]);
-      const code = errorCode(input.code);
-      if (!code) throw new TelemetryInputError(400);
-      await captureError(env, code, pageTemplate(input.page), accountId);
-      return telemetryResponse(204);
-    }
-    exact(input, ["message", "page", "screenshot", "errors"]);
+    exact(input, ["message", "page", "screenshot", "logs"]);
     if (typeof input.message !== "string" || !input.message.trim() || input.message.length > feedbackLimits.messageMax)
       throw new TelemetryInputError(400);
     const accepted = await sendFeedback(env, {
-      accountId, message: input.message, page: pageTemplate(input.page), errors: recentErrors(input.errors),
-      screenshot: screenshot(input.screenshot),
+      accountId, message: input.message, page: pageTemplate(input.page),
+      screenshot: screenshot(input.screenshot), logs: feedbackLogs(input.logs),
     });
     return telemetryResponse(accepted ? 204 : 503);
   } catch (error) { return telemetryResponse(error instanceof TelemetryInputError ? error.status : 503); }

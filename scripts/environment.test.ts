@@ -242,6 +242,7 @@ test("optional telemetry destinations never block the first deployment", () => {
   };
   const disabled = deployEnvironment(credentials);
   assert.equal(disabled.SENTRY_DSN, undefined);
+  assert.equal(disabled.EXECUTOR_PRODUCT_FEEDBACK_URL, undefined);
   assert.equal(disabled.POSTHOG_PROJECT_KEY, undefined);
   assert.equal(disabled.DO_NOT_TRACK, "1");
   assert.match(disabled.TELEMETRY_RELAY_KEY!, /^[a-f0-9]{64}$/);
@@ -252,6 +253,10 @@ test("optional telemetry destinations never block the first deployment", () => {
   assert.equal(configured.POSTHOG_PROJECT_KEY, "synthetic");
   assert.equal(configured.POSTHOG_HOST, "https://us.i.posthog.com");
   assert.equal(configured.DO_NOT_TRACK, "0");
+  // The sidebar's feedback form appears only where its submissions have a destination.
+  assert.equal(configured.EXECUTOR_PRODUCT_FEEDBACK_URL, undefined);
+  const sentry = deployEnvironment({ ...credentials, SENTRY_DSN: "https://synthetic@o0.ingest.de.sentry.io/1" });
+  assert.equal(sentry.EXECUTOR_PRODUCT_FEEDBACK_URL, "/feedback/v1/submit");
 });
 
 test("connector credentials are separate from sign-in and the feed belongs to this deployment", () => {
