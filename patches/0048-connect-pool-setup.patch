@@ -1,0 +1,1409 @@
+diff --git a/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
+new file mode 100644
+index 0000000..a439227
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/claude-desktop-setup.tsx
+@@ -0,0 +1,136 @@
++import { useState } from "react";
++import { Button } from "@executor-js/ui/components/button";
++import { AssistantGuideSteps, EndpointField } from "@executor-js/ui/dashboard/connect";
++import { PoolSelect } from "./computer-quick-setup.tsx";
++import { computerName, type PoolKey, type PoolSetup } from "./pool-setup.tsx";
++
++/*
++ * Claude Desktop runs on a pool through its third-party inference mode. That mode has no claude.ai
++ * account, so its connectors come from the same configuration: the deployment's MCP server with
++ * OAuth sign-in, never a stored token. Anthropic documents Import configuration only for files
++ * holding bootstrap keys, so the steps lead and the file is offered as untested.
++ */
++
++/** The fields the in-app configuration window writes, as its exported JSON config names them. */
++const desktopConfig = (issued: PoolKey, server: string, mcpUrl: string) => ({
++  inferenceProvider: "gateway",
++  inferenceGatewayBaseUrl: issued.baseUrl,
++  inferenceGatewayApiKey: issued.key,
++  inferenceGatewayAuthScheme: "bearer",
++  managedMcpServers: [{ name: server, transport: "http", url: mcpUrl, oauth: true }],
++});
++
++function download(name: string, value: unknown) {
++  const url = URL.createObjectURL(
++    new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json" }),
++  );
++  const link = Object.assign(document.createElement("a"), { href: url, download: name });
++  // Some browsers drop a download from a detached link or an already revoked URL.
++  document.body.append(link);
++  link.click();
++  link.remove();
++  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
++}
++
++const Ui = ({ children }: { readonly children: string }) => (
++  <span className="font-medium text-foreground">{children}</span>
++);
++
++export function ClaudeDesktopSetup({
++  setup,
++  server,
++  mcpUrl,
++}: {
++  readonly setup: PoolSetup;
++  /** The deployment's MCP server name, as the other guides use it. */
++  readonly server: string;
++  readonly mcpUrl: string;
++}) {
++  const [issued, setIssued] = useState<PoolKey>();
++  const [busy, setBusy] = useState(false);
++  const [problem, setProblem] = useState<string>();
++  const create = async () => {
++    setBusy(true);
++    setProblem(undefined);
++    try {
++      setIssued(await setup.issueKey(`${computerName()} · Claude Desktop`));
++    } catch (error) {
++      setProblem(setup.failure(error));
++    }
++    setBusy(false);
++  };
++  return (
++    <>
++      <div className="flex flex-wrap items-center gap-2">
++        <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">Models from</span>
++        <PoolSelect setup={setup} />
++        <Button size="sm" loading={busy} disabled={busy} onClick={() => void create()}>
++          {issued ? "Create another key" : "Create key"}
++        </Button>
++      </div>
++      {problem ? (
++        <p role="alert" className="mt-3 text-[13px] leading-5 text-destructive">
++          {problem}
++        </p>
++      ) : (
++        <p className="mt-3 text-[13px] leading-5 text-muted-foreground">
++          {issued
++            ? "Your key is shown only now. It's listed under Connected agents, where you can revoke it."
++            : "Creates a key for Claude Desktop on this computer, then shows the steps."}
++        </p>
++      )}
++      {issued && (
++        <>
++          <AssistantGuideSteps
++            className="mt-4"
++            guide={{
++              steps: [
++                <>
++                  In Claude Desktop, open <Ui>Help › Troubleshooting › Enable Developer Mode</Ui>,
++                  then <Ui>Developer › Configure Third-Party Inference</Ui>.
++                </>,
++                <>
++                  Under <Ui>Connection</Ui>, choose <Ui>Gateway</Ui> and paste this base URL.
++                  <EndpointField endpoint={issued.baseUrl} label="Copy base URL" />
++                </>,
++                <>
++                  Keep <Ui>Static API key</Ui> and the <Ui>Bearer</Ui> auth scheme, and paste this
++                  key. Leave model discovery on; your pool&rsquo;s models fill the picker.
++                  <EndpointField endpoint={issued.key} label="Copy key" />
++                </>,
++                <>
++                  Under <Ui>MCP servers</Ui>, add <Ui>{server}</Ui> as a Streamable HTTP server with
++                  this URL and OAuth sign-in.
++                  <EndpointField endpoint={mcpUrl} />
++                </>,
++                <>
++                  Click <Ui>Apply Changes</Ui>, then <Ui>Save & Restart</Ui>, and choose the
++                  third-party option at sign-in.
++                </>,
++              ],
++            }}
++          />
++          <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t pt-3">
++            <Button
++              variant="outline"
++              size="sm"
++              onClick={() =>
++                download("claude-desktop-config.json", desktopConfig(issued, server, mcpUrl))
++              }
++            >
++              Download setup file
++            </Button>
++            <span className="text-xs leading-5 text-muted-foreground">
++              Untested: load it with <Ui>Import configuration</Ui> in the same window instead of
++              steps 2 to 4.
++            </span>
++          </div>
++        </>
++      )}
++      <p className="mt-3 text-xs leading-5 text-muted-foreground">
++        Claude Desktop then runs on your pool in its third-party mode: chats stay on this computer,
++        with no claude.ai or mobile access, sharing or voice.
++      </p>
++    </>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+new file mode 100644
+index 0000000..36b483c
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/computer-quick-setup.tsx
+@@ -0,0 +1,93 @@
++import { Button } from "@executor-js/ui/components/button";
++import {
++  Select,
++  SelectContent,
++  SelectItem,
++  SelectTrigger,
++  SelectValue,
++} from "@executor-js/ui/components/select";
++import { Spinner } from "@executor-js/ui/components/spinner";
++import { poolLabel, type PoolSetup } from "./pool-setup.tsx";
++
++/** Which pool a new computer's models run on. */
++export function PoolSelect({ setup }: { readonly setup: PoolSetup }) {
++  const pools = setup.view?.pools ?? [];
++  return (
++    <Select value={setup.pool ?? ""} onValueChange={setup.setPool} disabled={!pools.length}>
++      <SelectTrigger size="sm" aria-label="Pool for models" className="w-44 text-xs">
++        <SelectValue placeholder="Your pool" />
++      </SelectTrigger>
++      <SelectContent>
++        {pools.map((pool) => (
++          <SelectItem key={pool.id} value={pool.id}>
++            {poolLabel(pool)}
++          </SelectItem>
++        ))}
++      </SelectContent>
++    </Select>
++  );
++}
++
++/** One live region, so screen readers hear every change, errors included. */
++function Status({ setup, hint }: { readonly setup: PoolSetup; readonly hint: string }) {
++  const pending = setup.pending;
++  return (
++    <p
++      aria-live="polite"
++      className={`mt-3 text-[13px] leading-5 ${setup.problem ? "text-destructive" : "text-muted-foreground"}`}
++    >
++      {setup.problem ??
++        (pending?.kind === "waiting" ? (
++          <span className="inline-flex items-center gap-2">
++            <Spinner className="size-3.5" />
++            Waiting for this computer…
++          </span>
++        ) : pending?.kind === "connected" ? (
++          <>
++            <span className="text-foreground">{pending.name}</span> is connected.
++          </>
++        ) : pending?.kind === "expired" ? (
++          "Link expired. Copy it again."
++        ) : (
++          hint
++        ))}
++    </p>
++  );
++}
++
++/** One-click setup for an agent that runs on this computer and reads the pool's model settings. */
++export function ComputerQuickSetup({
++  setup,
++  client,
++  runs = client,
++  note,
++}: {
++  readonly setup: PoolSetup;
++  readonly client: string;
++  /** What runs on the pool, when it reads better than the client's name. */
++  readonly runs?: string;
++  readonly note?: string;
++}) {
++  const minting = setup.pending?.kind === "minting";
++  return (
++    <>
++      <div className="flex flex-wrap items-center gap-2">
++        <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">Models from</span>
++        <PoolSelect setup={setup} />
++        <Button
++          size="sm"
++          loading={minting}
++          disabled={minting}
++          onClick={() => void setup.copyPrompt()}
++        >
++          Copy setup prompt
++        </Button>
++      </div>
++      <Status
++        setup={setup}
++        hint={`Paste it into ${client} on this computer. It adds your tools and runs ${runs} on your pool.`}
++      />
++      {note && <p className="mt-1 text-xs leading-5 text-muted-foreground">{note}</p>}
++    </>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/computer-rows.tsx b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
+new file mode 100644
+index 0000000..c318096
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
+@@ -0,0 +1,210 @@
++import { useState, type ReactNode } from "react";
++import { Button } from "@executor-js/ui/components/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@executor-js/ui/components/dialog";
++import {
++  DropdownMenuItem,
++  DropdownMenuRadioGroup,
++  DropdownMenuRadioItem,
++  DropdownMenuSeparator,
++  DropdownMenuSub,
++  DropdownMenuSubContent,
++  DropdownMenuSubTrigger,
++} from "@executor-js/ui/components/dropdown-menu";
++import { Input } from "@executor-js/ui/components/input";
++import { LocalTime, shortMoment } from "@executor-js/ui/components/local-time";
++import { AccountActionsMenu } from "@executor-js/ui/dashboard/account-actions";
++import {
++  type Computer,
++  isConnected,
++  poolLabel,
++  post,
++  remove,
++  type PoolSetup,
++} from "./pool-setup.tsx";
++
++/** The person's computers, as rows in the connected-agents list; none means no rows at all. */
++export const computerRows = (setup: PoolSetup): ReactNode[] =>
++  (setup.view?.computers ?? [])
++    .filter((computer) => !computer.revokedAt && computer.state !== "revoked" && !computer.lapsed)
++    .map((computer) => <ComputerRow key={computer.id} setup={setup} computer={computer} />);
++
++function ComputerRow({
++  setup,
++  computer,
++}: {
++  readonly setup: PoolSetup;
++  readonly computer: Computer;
++}) {
++  const pools = setup.view?.pools ?? [];
++  const [dialog, setDialog] = useState<"rename" | "revoke">();
++  const [name, setName] = useState(computer.name);
++  const [busy, setBusy] = useState(false);
++  const [problem, setProblem] = useState<string>();
++  const id = encodeURIComponent(computer.id);
++  const run = async (work: (intent: string) => Promise<unknown>, closes = true) => {
++    setBusy(true);
++    setProblem(undefined);
++    const error = await setup.act(work);
++    setBusy(false);
++    if (error) setProblem(error);
++    else if (closes) setDialog(undefined);
++  };
++  const copyUndo = () =>
++    navigator.clipboard
++      .writeText(setup.view?.undoPrompt ?? "")
++      .catch(() => setProblem("Couldn't copy the undo prompt."));
++  return (
++    <li className="flex items-center gap-4 px-1 py-3">
++      <div className="min-w-0 flex-1">
++        <p className="truncate text-[13px] font-medium">{computer.name}</p>
++        <p className="mt-0.5 truncate text-xs text-muted-foreground">
++          {poolLabel(pools.find(({ id: pool }) => pool === computer.poolId))}
++          {computer.tools === false ? " · Models" : " · Tools and models"}
++          {computer.state === "removed" || computer.removedAt ? (
++            " · No access to this pool"
++          ) : isConnected(computer) ? (
++            <>
++              {" · Set up "}
++              <LocalTime value={computer.createdAt} options={shortMoment} />
++            </>
++          ) : (
++            " · Waiting for its first request"
++          )}
++        </p>
++        {problem && !dialog && (
++          <p role="alert" className="mt-1 text-xs text-destructive">
++            {problem}
++          </p>
++        )}
++      </div>
++      <AccountActionsMenu account={{ label: computer.name }}>
++        <DropdownMenuItem
++          onSelect={() => {
++            setName(computer.name);
++            setProblem(undefined);
++            setDialog("rename");
++          }}
++        >
++          Rename
++        </DropdownMenuItem>
++        {pools.length > 1 && (
++          <DropdownMenuSub>
++            <DropdownMenuSubTrigger>Pool</DropdownMenuSubTrigger>
++            <DropdownMenuSubContent>
++              <DropdownMenuRadioGroup
++                value={computer.poolId}
++                onValueChange={(pool) =>
++                  void run((intent) => post(`computers/${id}/pool`, { intent, pool }), false)
++                }
++              >
++                {pools.map((pool) => (
++                  <DropdownMenuRadioItem key={pool.id} value={pool.id}>
++                    {poolLabel(pool)}
++                  </DropdownMenuRadioItem>
++                ))}
++              </DropdownMenuRadioGroup>
++            </DropdownMenuSubContent>
++          </DropdownMenuSub>
++        )}
++        {computer.tools !== false && (
++          <DropdownMenuItem onSelect={() => void copyUndo()}>Copy undo prompt</DropdownMenuItem>
++        )}
++        <DropdownMenuSeparator />
++        <DropdownMenuItem
++          variant="destructive"
++          onSelect={() => {
++            setProblem(undefined);
++            setDialog("revoke");
++          }}
++        >
++          Revoke
++        </DropdownMenuItem>
++      </AccountActionsMenu>
++      <Dialog
++        open={dialog !== undefined}
++        onOpenChange={(open) => !open && !busy && setDialog(undefined)}
++      >
++        <DialogContent>
++          {dialog === "rename" ? (
++            <form
++              onSubmit={(event) => {
++                event.preventDefault();
++                void run((intent) => post(`computers/${id}/name`, { intent, name }));
++              }}
++            >
++              <DialogHeader>
++                <DialogTitle>Rename {computer.name}</DialogTitle>
++                <DialogDescription>Only you see this name.</DialogDescription>
++              </DialogHeader>
++              <Input
++                className="mt-4"
++                aria-label="Computer name"
++                value={name}
++                maxLength={60}
++                onChange={(event) => setName(event.target.value)}
++              />
++              {problem && (
++                <p role="alert" className="mt-2 text-xs text-destructive">
++                  {problem}
++                </p>
++              )}
++              <DialogFooter className="mt-4">
++                <Button
++                  type="button"
++                  variant="outline"
++                  disabled={busy}
++                  onClick={() => setDialog(undefined)}
++                >
++                  Cancel
++                </Button>
++                <Button type="submit" loading={busy} disabled={busy || !name.trim()}>
++                  Save
++                </Button>
++              </DialogFooter>
++            </form>
++          ) : (
++            <>
++              <DialogHeader>
++                <DialogTitle>Revoke {computer.name}?</DialogTitle>
++                <DialogDescription>
++                  {computer.tools === false
++                    ? "Its next request fails."
++                    : "Its next request fails. To clean up its files, run the undo prompt on that computer."}
++                </DialogDescription>
++              </DialogHeader>
++              {problem && (
++                <p role="alert" className="text-xs text-destructive">
++                  {problem}
++                </p>
++              )}
++              <DialogFooter>
++                <Button variant="outline" disabled={busy} onClick={() => setDialog(undefined)}>
++                  Cancel
++                </Button>
++                <Button
++                  variant="destructive"
++                  loading={busy}
++                  disabled={busy}
++                  onClick={() =>
++                    void run((intent) =>
++                      remove(`computers/${id}?intent=${encodeURIComponent(intent)}`),
++                    )
++                  }
++                >
++                  Revoke computer
++                </Button>
++              </DialogFooter>
++            </>
++          )}
++        </DialogContent>
++      </Dialog>
++    </li>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
+index 17ef904..276862f 100644
+--- a/apps/hosted/web/src/implementation/pages/connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect.tsx
+@@ -1,10 +1,15 @@
+ import { Link } from "@tanstack/react-router";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Code } from "@executor-js/ui/dashboard/code";
+-import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
++import {
++  AssistantGuideExtensionsProvider,
++  McpInstallInstructions,
++} from "@executor-js/ui/dashboard/connect";
+ import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
+ import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
+ import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { productServerName } from "@executor-js/utils/product-brand";
+ import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
+@@ -18,6 +23,13 @@ import {
+ } from "../../contracts/mcp-connections.ts";
+ import { useDocumentationUrl } from "../documentation.ts";
+ import { useResourceOrigins } from "../resource-origin.ts";
++import { useMemo } from "react";
++import { ClaudeLogo } from "@executor-js/ui/dashboard/assistant-logos";
++import { ClaudeDesktopSetup } from "./claude-desktop-setup.tsx";
++import { ComputerQuickSetup } from "./computer-quick-setup.tsx";
++import { PoolEndpoint } from "./pool-endpoint.tsx";
++import { computerRows } from "./computer-rows.tsx";
++import { usePoolSetup } from "./pool-setup.tsx";
+ 
+ /** Headless setup: a personal access token against this organization's own addresses. */
+ function PersonalTokenSetup({
+@@ -28,10 +40,11 @@ function PersonalTokenSetup({
+   readonly mcpOrigin: string;
+ }) {
+   const { organization, slug, id } = useOrganizationRoute();
++  const brand = useProductBrand();
+   const mcp = JSON.stringify(
+     {
+       mcpServers: {
+-        executor: {
++        [productServerName(brand)]: {
+           type: "http",
+           url: `${mcpOrigin}/org/${encodeURIComponent(slug)}/mcp`,
+           headers: { Authorization: "Bearer <YOUR_PAT>" },
+@@ -78,6 +91,52 @@ export function ConnectPage() {
+   const mcpOrigin = origins.mcp[0];
+   const { organization } = useOrganizationRoute();
+   const docs = useDocumentationUrl() ?? null;
++  const setup = usePoolSetup();
++  const brand = useProductBrand();
++  // A stable value keeps the guides from re-rendering on every list refresh.
++  const extensions = useMemo(
++    () => ({
++      quickSetup: {
++        "claude-code": <ComputerQuickSetup setup={setup} client="Claude Code" />,
++        codex: (
++          <ComputerQuickSetup
++            setup={setup}
++            client="Codex"
++            runs="the Codex app and CLI"
++            note="You stay signed in to ChatGPT."
++          />
++        ),
++      },
++      // The built-in captures show Executor's name; these show Signalbox's, so only under that name.
++      screenshots:
++        brand.name !== "Signalbox"
++          ? {}
++          : Object.fromEntries(
++              (["claude", "chatgpt", "devin", "grok", "muse"] as const).map((id) => [
++                id,
++                `/brand/assistants/${id}.webp`,
++              ]),
++            ),
++      assistants: [
++        {
++          id: "claude-desktop",
++          name: "Claude Desktop",
++          logo: ClaudeLogo,
++          after: "claude" as const,
++          method: "Third-party inference",
++          link: { href: "https://claude.com/download", label: "Download Claude Desktop" },
++          content: (
++            <ClaudeDesktopSetup
++              setup={setup}
++              server={productServerName(brand)}
++              mcpUrl={`${mcpOrigin}/mcp`}
++            />
++          ),
++        },
++      ],
++    }),
++    [brand, mcpOrigin, setup],
++  );
+   return (
+     <ScopedConnectionsPage
+       key={organization}
+@@ -92,14 +151,22 @@ export function ConnectPage() {
+           query={mcpAgentsAtom(organization)}
+           revoke={revokeMcpAgentAtom(organization)}
+           Failure={HostedFailure}
+-        />
++        >
++          {computerRows(setup)}
++        </ConnectedAgents>
+       }
+       installation={
+-        <McpInstallInstructions
+-          endpoint={`${mcpOrigin}/mcp`}
+-          docs={docs}
+-          token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={mcpOrigin} />}
+-        />
++        // Only the person's own setup gets the pool; a scoped connection keeps the built-in guides.
++        <AssistantGuideExtensionsProvider value={extensions}>
++          <McpInstallInstructions
++            endpoint={`${mcpOrigin}/mcp`}
++            docs={docs}
++            token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={mcpOrigin} />}
++            tabs={[
++              { value: "pool", label: "Pool endpoint", content: <PoolEndpoint setup={setup} /> },
++            ]}
++          />
++        </AssistantGuideExtensionsProvider>
+       }
+       renderTools={({ app, names, onChange }) => (
+         <ConnectionToolPicker
+diff --git a/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx b/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx
+new file mode 100644
+index 0000000..3751f56
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx
+@@ -0,0 +1,71 @@
++import { useState } from "react";
++import { Button } from "@executor-js/ui/components/button";
++import { Code } from "@executor-js/ui/dashboard/code";
++import { EndpointField } from "@executor-js/ui/dashboard/connect";
++import { PoolSelect } from "./computer-quick-setup.tsx";
++import type { PoolKey, PoolSetup } from "./pool-setup.tsx";
++
++/** Any app or script reaches the pool's models directly: an OpenAI or Anthropic base URL and a key. */
++export function PoolEndpoint({ setup }: { readonly setup: PoolSetup }) {
++  const [issued, setIssued] = useState<PoolKey>();
++  const [busy, setBusy] = useState(false);
++  const [problem, setProblem] = useState<string>();
++  // The router serves the model gateway on the dashboard's own origin.
++  const baseUrl = issued?.baseUrl ?? window.location.origin;
++  const key = issued?.key ?? "<POOL_KEY>";
++  const create = async () => {
++    setBusy(true);
++    setProblem(undefined);
++    try {
++      setIssued(
++        await setup.issueKey(
++          `Pool key ${new Date().toLocaleDateString(undefined, { dateStyle: "medium" })}`,
++        ),
++      );
++    } catch (error) {
++      setProblem(setup.failure(error));
++    }
++    setBusy(false);
++  };
++  return (
++    <>
++      <p className="text-[13px] leading-5 text-muted-foreground">
++        Any app or script can use your pool&rsquo;s models. Point its OpenAI or Anthropic client at
++        this base URL with a pool key. For tools, use the MCP URL with a personal access token.
++      </p>
++      <div className="mt-3 flex flex-wrap items-center gap-2">
++        <span className="min-w-0 flex-1 text-[13px] text-muted-foreground">Models from</span>
++        <PoolSelect setup={setup} />
++        <Button size="sm" loading={busy} disabled={busy} onClick={() => void create()}>
++          {issued ? "Create another key" : "Create pool key"}
++        </Button>
++      </div>
++      {problem && (
++        <p role="alert" className="mt-2 text-[13px] leading-5 text-destructive">
++          {problem}
++        </p>
++      )}
++      <EndpointField className="mt-3" endpoint={baseUrl} label="Copy base URL" />
++      {issued && <EndpointField endpoint={issued.key} label="Copy pool key" />}
++      <p className="mt-3 text-xs text-muted-foreground">Most SDKs and tools read these:</p>
++      <div className="mt-2 overflow-hidden rounded-lg border">
++        <Code
++          code={[
++            `export OPENAI_BASE_URL=${baseUrl}/v1`,
++            `export OPENAI_API_KEY=${key}`,
++            `export ANTHROPIC_BASE_URL=${baseUrl}`,
++            `export ANTHROPIC_API_KEY=${key}`,
++          ].join("\n")}
++          path="pool.env"
++          lineNumbers={false}
++          copyable
++        />
++      </div>
++      <p className="mt-3 text-xs leading-5 text-muted-foreground">
++        {issued
++          ? "Your key is shown only now. It's listed under Connected agents, where you can revoke it."
++          : "Each key is listed under Connected agents, where you can revoke it."}
++      </p>
++    </>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+new file mode 100644
+index 0000000..f9ed88d
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+@@ -0,0 +1,287 @@
++import { useCallback, useEffect, useMemo, useRef, useState } from "react";
++
++/*
++ * The deployment's pool setup on the Connect page. Everything here talks to the deployment's own
++ * /setup/v1 routes on this origin with the signed-in session; keys reach this page only behind
++ * the one-time link the person pastes into their agent.
++ */
++
++export interface Computer {
++  readonly id: string;
++  readonly name: string;
++  readonly poolId: string;
++  readonly createdAt: string;
++  readonly state?: "issuing" | "active" | "revoking" | "revoked" | "removed";
++  readonly firstModelRequestAt: string | null;
++  readonly firstToolCallAt: string | null;
++  readonly revokedAt: string | null;
++  readonly removedAt?: string | null;
++  readonly tools?: boolean;
++  /** Its setup link lapsed unclaimed, so it can never be set up. */
++  readonly lapsed?: true;
++}
++export interface PoolChoice {
++  readonly id: string;
++  readonly name: string;
++  readonly mine: boolean;
++}
++interface ComputersView {
++  readonly computers: readonly Computer[];
++  readonly pools: readonly PoolChoice[];
++  readonly undoPrompt: string;
++}
++interface SetupLink {
++  readonly computerId: string;
++  readonly prompt: string;
++  readonly link: string;
++  readonly expiresAt: string;
++}
++/** A models-only key this page shows once, for clients the person configures by hand. */
++export interface PoolKey {
++  readonly key: string;
++  readonly baseUrl: string;
++}
++
++class SetupFailure extends Error {}
++
++const failure = (error: unknown) =>
++  error instanceof SetupFailure ? error.message : "Setup failed. Try again.";
++
++/** Intents last five minutes; renew a little early so a click never races the expiry. */
++const intentLife = 4 * 60_000;
++/** How long a setup link lasts, timed from its arrival here so the browser's clock never matters. */
++const linkLife = 5 * 60_000;
++/** A claimed computer may take a while to send its first request; stop watching after this. */
++const watchAfterClaim = 10 * 60_000;
++const pollEvery = 4000;
++
++async function send<T>(path: string, init?: RequestInit): Promise<T> {
++  let response: Response;
++  try {
++    response = await fetch(`/setup/v1/${path}`, { credentials: "same-origin", ...init });
++  } catch {
++    throw new SetupFailure("Setup couldn't be reached. Try again.");
++  }
++  const body: unknown = await response.json().catch(() => ({}));
++  const error =
++    typeof body === "object" && body !== null && "error" in body ? String(body.error) : "";
++  if (!response.ok) throw new SetupFailure(error || "Setup failed. Try again.");
++  return body as T;
++}
++
++export const post = <T,>(path: string, body: object) =>
++  send<T>(path, {
++    method: "POST",
++    headers: { "Content-Type": "application/json" },
++    body: JSON.stringify(body),
++  });
++export const remove = (path: string) => send(path, { method: "DELETE" });
++/** Revokes quietly: only for a computer nobody can claim any more. */
++const revoke = (id: string, intent: string) =>
++  remove(`computers/${encodeURIComponent(id)}?intent=${encodeURIComponent(intent)}`).catch(
++    () => undefined,
++  );
++
++/** The person's platform, as the default name of the computer they set up from this browser. */
++export function computerName(): string {
++  const platform = `${navigator.userAgent} ${navigator.platform}`;
++  if (/Mac/i.test(platform)) return "Mac";
++  if (/Win/i.test(platform)) return "Windows PC";
++  return "Linux computer";
++}
++
++export const poolLabel = (pool: PoolChoice | undefined) =>
++  !pool ? "Pool" : pool.mine ? "Your pool" : pool.name.trim() || "Shared pool";
++
++/** Green needs a model request and, unless the computer is models only, a tool call. */
++export function isConnected(computer: Computer): boolean {
++  if (computer.revokedAt || computer.state === "revoked" || computer.state === "removed")
++    return false;
++  return (
++    computer.firstModelRequestAt !== null &&
++    (computer.tools === false || computer.firstToolCallAt !== null)
++  );
++}
++
++export type Pending =
++  | { readonly kind: "minting" }
++  | { readonly kind: "waiting"; readonly computerId: string; readonly expiresAt: number }
++  | { readonly kind: "connected"; readonly name: string }
++  | { readonly kind: "expired"; readonly computerId: string };
++
++/** Shared state for the Connect page: one list, one pool choice and one setup in flight. */
++export function usePoolSetup() {
++  const intent = useRef<{ value: Promise<string>; at: number } | undefined>(undefined);
++  const [view, setView] = useState<ComputersView>();
++  const [pool, setPool] = useState<string>();
++  const [pending, setPending] = useState<Pending>();
++  const [problem, setProblem] = useState<string>();
++  const minting = useRef(false);
++
++  // One request at a time shares the intent; a failure is never cached.
++  const signed = useCallback(() => {
++    if (intent.current && Date.now() - intent.current.at < intentLife) return intent.current.value;
++    const value = send<{ intent: string }>("context").then((result) => result.intent);
++    intent.current = { value, at: Date.now() };
++    value.catch(() => {
++      if (intent.current?.value === value) intent.current = undefined;
++    });
++    return value;
++  }, []);
++
++  const cleared = useRef(new Set<string>());
++  const refresh = useCallback(async () => {
++    const current = await signed();
++    const next = await send<ComputersView>(`computers?intent=${encodeURIComponent(current)}`);
++    // A computer whose link lapsed unclaimed can never be set up; clear it from the list.
++    for (const computer of next.computers) {
++      if (!computer.lapsed || cleared.current.has(computer.id)) continue;
++      cleared.current.add(computer.id);
++      void revoke(computer.id, current);
++    }
++    setView((current) => (JSON.stringify(current) === JSON.stringify(next) ? current : next));
++    setPool((current) =>
++      current && next.pools.some(({ id }) => id === current)
++        ? current
++        : (next.pools.find((choice) => choice.mine)?.id ?? next.pools[0]?.id),
++    );
++    return next;
++  }, [signed]);
++
++  useEffect(() => {
++    // oxlint-disable-next-line react/set-state-in-effect -- loads the list from the setup service once
++    refresh().catch((error: unknown) => setProblem(failure(error)));
++  }, [refresh]);
++
++  // While a link is out, watch for its computer's first request, then stop. A hidden tab waits.
++  useEffect(() => {
++    if (pending?.kind !== "waiting") return;
++    let timer: number | undefined;
++    let live = true;
++    const tick = async () => {
++      if (!document.hidden) {
++        const next = await refresh().catch(() => undefined);
++        if (!live) return;
++        const computer = next?.computers.find(({ id }) => id === pending.computerId);
++        if (computer && isConnected(computer))
++          return setPending({ kind: "connected", name: computer.name });
++        // The server's word wins: a lapsed link, or a computer cleared before any request.
++        const gone =
++          computer?.lapsed === true ||
++          (computer?.state === "revoked" && computer.firstModelRequestAt === null);
++        const unclaimed = !computer || computer.state === "issuing";
++        if (gone || (Date.now() >= pending.expiresAt && unclaimed))
++          return setPending({ kind: "expired", computerId: pending.computerId });
++        if (Date.now() >= pending.expiresAt + watchAfterClaim) return setPending(undefined);
++      }
++      timer = window.setTimeout(() => void tick(), pollEvery);
++    };
++    timer = window.setTimeout(() => void tick(), pollEvery);
++    return () => {
++      live = false;
++      window.clearTimeout(timer);
++    };
++  }, [pending, refresh]);
++
++  /**
++   * Mints a computer on the chosen pool when the person copies, so the link's five minutes start
++   * then. Copying again mints afresh; an earlier link someone may have pasted stays valid until it
++   * lapses, and the list clears it after that.
++   */
++  const copyPrompt = useCallback(async () => {
++    if (minting.current) return;
++    minting.current = true;
++    setProblem(undefined);
++    const earlier =
++      pending?.kind === "waiting" || pending?.kind === "expired" ? pending : undefined;
++    setPending({ kind: "minting" });
++    const minted = (async () => {
++      const current = await signed();
++      const link = await post<SetupLink>("links", {
++        intent: current,
++        name: computerName(),
++        ...(pool && { pool }),
++      });
++      setPending({
++        kind: "waiting",
++        computerId: link.computerId,
++        expiresAt: Date.now() + linkLife,
++      });
++      void refresh().catch(() => undefined);
++      return link.prompt;
++    })();
++    try {
++      // Safari keeps the click's permission only for a clipboard write that starts right away.
++      await navigator.clipboard.write([
++        new ClipboardItem({
++          "text/plain": minted.then((text) => new Blob([text], { type: "text/plain" })),
++        }),
++      ]);
++    } catch {
++      try {
++        await navigator.clipboard.writeText(await minted);
++      } catch (error) {
++        setPending((current) => (current?.kind === "minting" ? earlier : current));
++        setProblem(
++          error instanceof SetupFailure
++            ? error.message
++            : "Couldn't copy the prompt. Click Copy setup prompt again.",
++        );
++      }
++    } finally {
++      minting.current = false;
++    }
++  }, [pending, pool, refresh, signed]);
++
++  /**
++   * Issues a models-only key on the chosen pool and claims its one-time link right here, for a
++   * client that has no agent to paste a prompt into. The key is listed and revocable like any
++   * computer.
++   */
++  const issueKey = useCallback(
++    async (name: string): Promise<PoolKey> => {
++      const link = await post<SetupLink>("links", {
++        intent: await signed(),
++        name,
++        tools: false,
++        ...(pool && { pool }),
++      });
++      let claimed: Response;
++      try {
++        claimed = await fetch(`${link.link}?format=json`, { credentials: "same-origin" });
++      } catch {
++        throw new SetupFailure("Setup couldn't be reached. Try again.");
++      }
++      const body = (await claimed.json().catch(() => ({}))) as {
++        credentials?: { modelKey?: unknown; modelUrl?: unknown };
++      };
++      const { modelKey, modelUrl } = body.credentials ?? {};
++      void refresh().catch(() => undefined);
++      if (!claimed.ok || typeof modelKey !== "string" || typeof modelUrl !== "string")
++        throw new SetupFailure("Couldn't create the key. Try again.");
++      return { key: modelKey, baseUrl: modelUrl };
++    },
++    [pool, refresh, signed],
++  );
++
++  /** Runs one change against the signed intent, then reloads; returns the error to show, if any. */
++  const act = useCallback(
++    async (work: (intent: string) => Promise<unknown>): Promise<string | undefined> => {
++      try {
++        await work(await signed());
++        await refresh();
++        return undefined;
++      } catch (error) {
++        return failure(error);
++      }
++    },
++    [refresh, signed],
++  );
++
++  // Stable while nothing changed, so a quiet poll re-renders nothing.
++  return useMemo(
++    () => ({ view, pool, setPool, pending, problem, copyPrompt, issueKey, act, failure }),
++    [view, pool, pending, problem, copyPrompt, issueKey, act],
++  );
++}
++export type PoolSetup = ReturnType<typeof usePoolSetup>;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 91721bb..2fe4d80 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8895,6 +8895,30 @@ export const scenarios = plan({
+       cloud: na("Hosted consent is covered by the organization Claude Code scenario."),
+     },
+   },
++  poolSetupConnect: {
++    fixtures: "actors",
++    file: "pool-setup-connect.spec.ts",
++    // The deployment's own name, as in production.
++    serverEnvironment: { EXECUTOR_PRODUCT_NAME: "Signalbox" },
++    title:
++      "Connect leads Claude Code and Codex with one-click pool setup and lists the person's computers",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The setup service is the deployment's own Worker; self-host covers the page."),
++      local: na("Local has no organization members or hosted Connect page."),
++    },
++  },
++  poolKeysConnect: {
++    fixtures: "actors",
++    file: "pool-setup-connect.spec.ts",
++    serverEnvironment: { EXECUTOR_PRODUCT_NAME: "Signalbox" },
++    title: "Claude Desktop and the pool endpoint show a pool key once with their setup",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The setup service is the deployment's own Worker; self-host covers the page."),
++      local: na("Local has no organization members or hosted Connect page."),
++    },
++  },
+   connectedAgents: {
+     fixtures: "actors",
+     file: "connected-agents.spec.ts",
+diff --git a/e2e/tests/mcp-connections.spec.ts b/e2e/tests/mcp-connections.spec.ts
+index c1d867c..ab473fa 100644
+--- a/e2e/tests/mcp-connections.spec.ts
++++ b/e2e/tests/mcp-connections.spec.ts
+@@ -563,6 +563,14 @@ return { first, second };`,
+           .request(actors.owner, "GET", `${prefix}/mcp-connections`)
+           .pipe(Effect.flatMap((response) => body(Schema.Array(ConnectionView), response)));
+         yield* browser.login(actors.owner);
++        // The deployment shows its own captures, which its router serves beside the dashboard.
++        yield* browser.use("Serve the deployment's captures", (page) =>
++          page.route("**/brand/assistants/**", (route) =>
++            route.fulfill({
++              path: `../public/brand/assistants/${new URL(route.request().url()).pathname.split("/").pop()}`,
++            }),
++          ),
++        );
+         yield* browser.use("Open Connections", (page) =>
+           page.goto(`/org/${actors.organization.slug}/connect`),
+         );
+@@ -572,6 +580,10 @@ return { first, second };`,
+         yield* browser.use("Choose Codex", (page) =>
+           page.getByRole("button", { name: "Codex", exact: true }).click(),
+         );
++        // The deployment leads Codex with one-click setup; the built-in steps sit one click away.
++        yield* browser.use("Show the manual steps", (page) =>
++          page.getByText("Show manual steps", { exact: true }).click(),
++        );
+         yield* browser.use("Allow clipboard access", (page) =>
+           page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
+         );
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+new file mode 100644
+index 0000000..38b7730
+--- /dev/null
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -0,0 +1,366 @@
++/**
++ * The deployment's pool setup sits on Connect beside the built-in guides: Claude Code and Codex
++ * lead with one click while their steps stay one click away, every other assistant keeps its own
++ * guide, and the person's computers join the connected agents. The setup service is the
++ * deployment's own Worker, so the scenario stands in for it with a small fake.
++ */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import type { Page, Route } from "playwright";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++
++interface FakeComputer {
++  id: string;
++  name: string;
++  poolId: string;
++  createdAt: string;
++  state: string;
++  firstModelRequestAt: string | null;
++  firstToolCallAt: string | null;
++  revokedAt: string | null;
++  tools: boolean;
++  lapsed?: true;
++}
++
++/** The setup service's routes, enough for the page: one person, two pools and their computers. */
++function setupService() {
++  const computers: FakeComputer[] = [
++    {
++      id: "existing",
++      name: "Work laptop",
++      poolId: "team",
++      createdAt: "2026-10-20T09:00:00.000Z",
++      state: "active",
++      firstModelRequestAt: "2026-10-20T09:01:00.000Z",
++      firstToolCallAt: "2026-10-20T09:02:00.000Z",
++      revokedAt: null,
++      tools: true,
++    },
++    {
++      id: "lapsed",
++      name: "Old Mac",
++      poolId: "own",
++      createdAt: "2026-10-20T08:00:00.000Z",
++      state: "issuing",
++      firstModelRequestAt: null,
++      firstToolCallAt: null,
++      revokedAt: null,
++      tools: true,
++      lapsed: true,
++    },
++  ];
++  const calls: { method: string; path: string; body: Record<string, unknown> }[] = [];
++  let minted = 0;
++  const reply = (route: Route, body: unknown, status = 200) =>
++    route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
++  const handle = (route: Route) => {
++    const request = route.request();
++    const path = new URL(request.url()).pathname.replace("/setup/v1/", "");
++    const body = (request.postDataJSON() ?? {}) as Record<string, unknown>;
++    calls.push({ method: request.method(), path, body });
++    if (path === "context") return reply(route, { intent: "signed-intent" });
++    if (path === "computers")
++      return reply(route, {
++        computers,
++        pools: [
++          { id: "own", name: "", mine: true },
++          { id: "team", name: "Team pool", mine: false },
++        ],
++        undoPrompt: "Undo the setup on this computer.",
++      });
++    if (path === "links") {
++      minted += 1;
++      const computer: FakeComputer = {
++        id: `new-${minted}`,
++        name: String(body.name),
++        poolId: String(body.pool),
++        createdAt: new Date().toISOString(),
++        state: "issuing",
++        firstModelRequestAt: null,
++        firstToolCallAt: null,
++        revokedAt: null,
++        tools: body.tools !== false,
++      };
++      computers.unshift(computer);
++      return reply(route, {
++        computer,
++        computerId: computer.id,
++        prompt: "Set up the deployment for Claude Code and Codex on this computer.",
++        link: `${new URL(request.url()).origin}/setup/claim/fake-${computer.id}`,
++        expiresAt: new Date(Date.now() + 300_000).toISOString(),
++      });
++    }
++    const [, id, action] = /^computers\/([^/]+)(?:\/(\w+))?$/.exec(path) ?? [];
++    const computer = computers.find((item) => item.id === id);
++    if (!computer) return reply(route, { error: "Setup route not found." }, 404);
++    if (action === "name") computer.name = String(body.name);
++    if (action === "pool") computer.poolId = String(body.pool);
++    if (request.method() === "DELETE") {
++      computer.state = "revoked";
++      computer.revokedAt = new Date().toISOString();
++      return reply(route, { success: true });
++    }
++    return reply(route, { computer });
++  };
++  /** The pasted prompt ran on the computer: its first model request and tool call arrive. */
++  const arrive = () => {
++    const computer = computers.find((item) => item.id === `new-${minted}`);
++    if (!computer) return;
++    computer.state = "active";
++    computer.firstModelRequestAt = new Date().toISOString();
++    computer.firstToolCallAt = new Date().toISOString();
++  };
++  /** The one-time link a page claims itself, for a key it shows once. */
++  const claim = (route: Route) =>
++    reply(route, {
++      version: 1,
++      credentials: {
++        modelUrl: new URL(route.request().url()).origin,
++        modelKey: "sk-fake-pool-key",
++      },
++    });
++  /** The deployment's own captures, served from the files it ships. */
++  const capture = (route: Route) =>
++    route.fulfill({
++      path: `../public/brand/assistants/${new URL(route.request().url()).pathname.split("/").pop()}`,
++    });
++  return { handle, claim, capture, arrive, calls };
++}
++
++/** Resolves once the element's own transitions end, so a checkpoint shows it at rest. */
++const settled = (element: Element) =>
++  Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished));
++
++const guide = (page: Page, name: string) => page.getByRole("article", { name: `${name} setup` });
++const rows = (page: Page) =>
++  page.getByRole("region", { name: "Connected agents" }).getByRole("listitem");
++
++layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) => {
++  it.effect(scenarios.poolSetupConnect.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser;
++        const service = setupService();
++        yield* browser.login(actors.owner);
++        yield* browser.use("Show the dashboard in dark mode", (page) =>
++          page.emulateMedia({ colorScheme: "dark" }),
++        );
++        yield* browser.use("Allow the clipboard", (page) =>
++          page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
++        );
++        yield* browser.use("Stand in for the setup service", (page) =>
++          page.route("**/setup/v1/**", service.handle),
++        );
++        yield* browser.use("Serve the deployment's captures", (page) =>
++          page.route("**/brand/assistants/**", service.capture),
++        );
++        yield* browser.use("Open Connect", (page) =>
++          page.goto(`/org/${actors.organization.slug}/connect`),
++        );
++        expect(
++          yield* browser.use("Claude's capture shows the deployment's name", (page) =>
++            guide(page, "Claude").getByRole("img").getAttribute("src"),
++          ),
++        ).toBe("/brand/assistants/claude.webp");
++        yield* browser.use("Claude keeps its own guide", (page) =>
++          guide(page, "Claude").getByRole("link", { name: "Open Claude connectors" }).waitFor(),
++        );
++        yield* browser.checkpoint("Claude's guide is unchanged");
++
++        yield* browser.use("Choose Cursor", (page) =>
++          page.getByRole("button", { name: "Cursor", exact: true }).click(),
++        );
++        expect(
++          yield* browser.use("Cursor has no pool setup", (page) =>
++            guide(page, "Cursor").getByRole("button", { name: "Copy setup prompt" }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.use("Choose Claude Code", (page) =>
++          page.getByRole("button", { name: "Claude Code", exact: true }).click(),
++        );
++        yield* browser.use("One click leads", (page) =>
++          guide(page, "Claude Code").getByRole("button", { name: "Copy setup prompt" }).waitFor(),
++        );
++        yield* browser.checkpoint("Claude Code: one-click setup");
++        yield* browser.use("Show the manual steps", (page) =>
++          guide(page, "Claude Code").getByText("Show manual steps").click(),
++        );
++        yield* browser.use("The built-in steps are all there", (page) =>
++          guide(page, "Claude Code").getByText("from your terminal.", { exact: false }).waitFor(),
++        );
++        yield* browser.checkpoint("Claude Code: manual steps");
++
++        yield* browser.use("Open the pool picker", (page) =>
++          guide(page, "Claude Code").getByRole("combobox", { name: "Pool for models" }).click(),
++        );
++        yield* browser.use("Pick the team pool", (page) =>
++          page.getByRole("option", { name: "Team pool" }).click(),
++        );
++        yield* browser.use("Copy the setup prompt", (page) =>
++          guide(page, "Claude Code").getByRole("button", { name: "Copy setup prompt" }).click(),
++        );
++        yield* browser.use("It waits for the computer", (page) =>
++          page.getByText("Waiting for this computer…").waitFor(),
++        );
++        const links = service.calls.filter((call) => call.path === "links");
++        expect(links).toHaveLength(1);
++        expect(links[0]?.body).toMatchObject({ intent: "signed-intent", pool: "team" });
++        expect(
++          yield* browser.use("The prompt is on the clipboard", (page) =>
++            page.evaluate(() => navigator.clipboard.readText()),
++          ),
++        ).toContain("Set up the deployment");
++        yield* browser.checkpoint("Claude Code: waiting for this computer");
++        yield* browser.use("Copy again", (page) =>
++          guide(page, "Claude Code").getByRole("button", { name: "Copy setup prompt" }).click(),
++        );
++        yield* browser.use("It waits for the new computer", (page) =>
++          page.getByText("Waiting for this computer…").waitFor(),
++        );
++        // A link someone may already have pasted stays valid until it lapses.
++        expect(service.calls.some((call) => call.path === "computers/new-1")).toBe(false);
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
++        service.arrive();
++        yield* browser.use("It turns connected", (page) =>
++          guide(page, "Claude Code").getByText("is connected.").waitFor({ timeout: 15_000 }),
++        );
++        yield* browser.checkpoint("Claude Code: connected");
++
++        yield* browser.use("Choose Codex", (page) =>
++          page.getByRole("button", { name: "Codex", exact: true }).click(),
++        );
++        yield* browser.use("Codex says the sign-in stays", (page) =>
++          guide(page, "Codex").getByText("You stay signed in to ChatGPT.").waitFor(),
++        );
++        yield* browser.checkpoint("Codex: one-click setup");
++
++        yield* browser.use("Computers join the connected agents", (page) =>
++          rows(page).filter({ hasText: "Work laptop" }).filter({ hasText: "Team pool" }).waitFor(),
++        );
++        yield* browser.use("Open a computer's menu", (page) =>
++          page.getByRole("button", { name: "Manage Work laptop" }).click(),
++        );
++        yield* browser.use("The menu offers every action", (page) =>
++          page.getByRole("menuitem", { name: "Copy undo prompt" }).waitFor(),
++        );
++        yield* browser.use("The menu finishes opening", (page) =>
++          page.getByRole("menu").evaluate(settled),
++        );
++        yield* browser.checkpoint("A computer's menu");
++        yield* browser.use("Choose Rename", (page) =>
++          page.getByRole("menuitem", { name: "Rename" }).click(),
++        );
++        yield* browser.use("Type a new name", (page) =>
++          page.getByRole("textbox", { name: "Computer name" }).fill("Studio Mac"),
++        );
++        yield* browser.use("Save the name", (page) =>
++          page.getByRole("button", { name: "Save" }).click(),
++        );
++        yield* browser.use("The row shows the new name", (page) =>
++          rows(page).filter({ hasText: "Studio Mac" }).waitFor(),
++        );
++        yield* browser.use("Open the renamed computer's menu", (page) =>
++          page.getByRole("button", { name: "Manage Studio Mac" }).click(),
++        );
++        yield* browser.use("Choose Revoke", (page) =>
++          page.getByRole("menuitem", { name: "Revoke" }).click(),
++        );
++        yield* browser.use("The confirmation names the computer", (page) =>
++          page.getByRole("dialog").getByText("Revoke Studio Mac?").waitFor(),
++        );
++        yield* browser.use("The menu is gone", (page) =>
++          page.getByRole("menu").waitFor({ state: "detached" }),
++        );
++        yield* browser.use("The confirmation finishes opening", (page) =>
++          page.getByRole("dialog").evaluate(settled),
++        );
++        yield* browser.checkpoint("Revoke a computer");
++        yield* browser.use("Confirm revoking", (page) =>
++          page.getByRole("button", { name: "Revoke computer" }).click(),
++        );
++        yield* browser.use("The computer leaves the list", (page) =>
++          rows(page).filter({ hasText: "Studio Mac" }).waitFor({ state: "detached" }),
++        );
++        expect(service.calls.map((call) => `${call.method} ${call.path}`)).toEqual(
++          expect.arrayContaining([
++            "DELETE computers/lapsed",
++            "POST computers/existing/name",
++            "DELETE computers/existing",
++          ]),
++        );
++      }),
++    ),
++  );
++
++  it.effect(scenarios.poolKeysConnect.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser;
++        const service = setupService();
++        yield* browser.login(actors.owner);
++        yield* browser.use("Show the dashboard in dark mode", (page) =>
++          page.emulateMedia({ colorScheme: "dark" }),
++        );
++        yield* browser.use("Stand in for the setup service", (page) =>
++          page.route("**/setup/v1/**", service.handle),
++        );
++        yield* browser.use("Stand in for one-time links", (page) =>
++          page.route("**/setup/claim/**", service.claim),
++        );
++        yield* browser.use("Open Connect", (page) =>
++          page.goto(`/org/${actors.organization.slug}/connect`),
++        );
++        yield* browser.use("Choose Claude Desktop", (page) =>
++          page.getByRole("button", { name: "Claude Desktop", exact: true }).click(),
++        );
++        yield* browser.use("Its limits are stated up front", (page) =>
++          guide(page, "Claude Desktop").getByText("third-party mode", { exact: false }).waitFor(),
++        );
++        yield* browser.checkpoint("Claude Desktop: before a key");
++        yield* browser.use("Create a key", (page) =>
++          guide(page, "Claude Desktop").getByRole("button", { name: "Create key" }).click(),
++        );
++        yield* browser.use("The steps show the key once", (page) =>
++          guide(page, "Claude Desktop").getByText("sk-fake-pool-key").waitFor(),
++        );
++        const desktop = service.calls.filter((call) => call.path === "links");
++        expect(desktop).toHaveLength(1);
++        expect(desktop[0]?.body).toMatchObject({ tools: false, pool: "own" });
++        expect(String(desktop[0]?.body.name)).toContain("Claude Desktop");
++        yield* browser.checkpoint("Claude Desktop: steps with the key");
++        const file = yield* browser.use("Download the setup file", (page) =>
++          Promise.all([
++            page.waitForEvent("download"),
++            guide(page, "Claude Desktop")
++              .getByRole("button", { name: "Download setup file" })
++              .click(),
++          ]).then(([download]) => download.suggestedFilename()),
++        );
++        expect(file).toBe("claude-desktop-config.json");
++
++        yield* browser.use("Open the pool endpoint", (page) =>
++          page.getByRole("tab", { name: "Pool endpoint" }).click(),
++        );
++        yield* browser.use("Any client is invited", (page) =>
++          page.getByText("Any app or script can use your pool", { exact: false }).waitFor(),
++        );
++        yield* browser.checkpoint("Pool endpoint: before a key");
++        yield* browser.use("Create a pool key", (page) =>
++          page.getByRole("button", { name: "Create pool key" }).click(),
++        );
++        yield* browser.use("The example carries the key", (page) =>
++          page.getByText("export OPENAI_API_KEY=sk-fake-pool-key").waitFor(),
++        );
++        yield* browser.checkpoint("Pool endpoint: key and example");
++        expect(service.calls.filter((call) => call.path === "links")).toHaveLength(2);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+index 3ed28e2..87ea0d5 100644
+--- a/e2e/tests/product-brand.spec.ts
++++ b/e2e/tests/product-brand.spec.ts
+@@ -259,6 +259,10 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+             .getByRole("heading", { name: `Add ${productBrand.name} to Claude Code`, exact: true })
+             .waitFor({ state: "visible" }),
+         );
++        // The deployment leads Claude Code with one-click setup; the built-in steps sit one click away.
++        yield* browser.use("Show the manual steps", (page) =>
++          page.getByText("Show manual steps", { exact: true }).click(),
++        );
+         const claudeCode = yield* browser.use("Read the Claude Code guide", (page) =>
+           page.locator("main").innerText(),
+         );

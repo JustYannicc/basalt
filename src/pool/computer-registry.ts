@@ -22,6 +22,8 @@ export const publicView = (computer: StoredComputer): Computer => ({
   state: computer.state, firstModelRequestAt: computer.firstModelRequestAt,
   firstToolCallAt: computer.firstToolCallAt, revokedAt: computer.revokedAt, removedAt: computer.removedAt ?? null,
   tools: hasTools(computer),
+  // Unclaimed with its link gone: nobody can ever set it up, so the page may clear it.
+  ...computer.state === "issuing" && !computer.link && { lapsed: true },
 });
 
 /** A models-only computer has no tools token. */

@@ -16,7 +16,12 @@ views {
       Setup works on the caller's own pool or one shared with them; see the sharing workflows. A link may
       name any pool in the caller's choices, checked the same way as switching, and may skip the tools PAT
       for a models-only computer, which turns green on its first model request. People rename their own
-      computers through a signed rename action.
+      computers through a signed rename action. On the tools gateway's Connect page, the coding-agent
+      guides lead with a one-click setup prompt that calls the same /setup/v1 routes from the dashboard
+      origin, keep their built-in steps behind an expander, and list the caller's computers among the
+      connected agents. The desktop chat guide and the pool endpoint tab mint a models-only computer and
+      claim its one-time link in the browser, so the key shows once on that page; the desktop client's
+      tools come from its own managed MCP entry with OAuth sign-in, not a stored token.
       Private pool actions carry an action-bound signature and a 30-second expiry.
       The model gateway owns the registry in the existing pool controller, generates a model key and
       registers it to the user's backend record with a nonempty pool channel-group list. Both credentials

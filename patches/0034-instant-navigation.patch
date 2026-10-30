@@ -26,7 +26,7 @@ index ca287ac..3fc97d0 100644
 +    organizationRouteReads,
    );
  };
-
+ 
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
 index a41ef72..09194f1 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
@@ -36,14 +36,14 @@ index a41ef72..09194f1 100644
  import { createFileRoute } from "@tanstack/react-router";
 -import { AccountsPage } from "@executor-js/hosted-web/pages/accounts";
 +import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
-
+ 
  /** Hosted account inventory. */
  export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
    validateSearch: parseAccountsSearch,
 +  staticData: { organizationReads: accountsPageReads },
    component: Page,
  });
-
+ 
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
 index 3244f94..42e7e89 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
@@ -64,7 +64,7 @@ index ca6700c..cfd609f 100644
  import { createFileRoute } from "@tanstack/react-router";
 -import { ConnectPage } from "@executor-js/hosted-web/pages/connect";
 +import { ConnectPage, connectPageReads } from "@executor-js/hosted-web/pages/connect";
-
+ 
 -export const Route = createFileRoute("/org/$organizationSlug/connect")({ component: ConnectPage });
 +export const Route = createFileRoute("/org/$organizationSlug/connect")({
 +  component: ConnectPage,
@@ -78,7 +78,7 @@ index 23a0519..56905d4 100644
  import { createFileRoute } from "@tanstack/react-router";
 -import { GroupsPage } from "@executor-js/hosted-web/pages/groups";
 +import { GroupsPage, groupsPageReads } from "@executor-js/hosted-web/pages/groups";
-
+ 
  /** Group directory shared by hosted products. */
 -export const Route = createFileRoute("/org/$organizationSlug/groups/")({ component: GroupsPage });
 +export const Route = createFileRoute("/org/$organizationSlug/groups/")({
@@ -112,7 +112,7 @@ index f91cacf..600e14a 100644
 +    organizationRouteReads,
    );
  };
-
+ 
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
 index a41ef72..09194f1 100644
 --- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.accounts.index.tsx
@@ -122,14 +122,14 @@ index a41ef72..09194f1 100644
  import { createFileRoute } from "@tanstack/react-router";
 -import { AccountsPage } from "@executor-js/hosted-web/pages/accounts";
 +import { AccountsPage, accountsPageReads } from "@executor-js/hosted-web/pages/accounts";
-
+ 
  /** Hosted account inventory. */
  export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
    validateSearch: parseAccountsSearch,
 +  staticData: { organizationReads: accountsPageReads },
    component: Page,
  });
-
+ 
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
 index 3244f94..42e7e89 100644
 --- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.approvals.index.tsx
@@ -150,7 +150,7 @@ index ca6700c..cfd609f 100644
  import { createFileRoute } from "@tanstack/react-router";
 -import { ConnectPage } from "@executor-js/hosted-web/pages/connect";
 +import { ConnectPage, connectPageReads } from "@executor-js/hosted-web/pages/connect";
-
+ 
 -export const Route = createFileRoute("/org/$organizationSlug/connect")({ component: ConnectPage });
 +export const Route = createFileRoute("/org/$organizationSlug/connect")({
 +  component: ConnectPage,
@@ -164,13 +164,45 @@ index 23a0519..56905d4 100644
  import { createFileRoute } from "@tanstack/react-router";
 -import { GroupsPage } from "@executor-js/hosted-web/pages/groups";
 +import { GroupsPage, groupsPageReads } from "@executor-js/hosted-web/pages/groups";
-
+ 
  /** Group directory shared by hosted products. */
 -export const Route = createFileRoute("/org/$organizationSlug/groups/")({ component: GroupsPage });
 +export const Route = createFileRoute("/org/$organizationSlug/groups/")({
 +  component: GroupsPage,
 +  staticData: { organizationReads: groupsPageReads },
 +});
+diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
+index 9d2862b..a0687fb 100644
+--- a/apps/hosted/web/src/contracts/resource-access.ts
++++ b/apps/hosted/web/src/contracts/resource-access.ts
+@@ -1,5 +1,6 @@
+ /** Sharing state and mutations are keyed by organization and resource, with confirmed updates. */
+ import { hydrated } from "@executor-js/ui/contracts/http";
++import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
+ import { Data, Effect } from "effect";
+@@ -61,6 +62,20 @@ export const resourceDirectoryAtom = (
+   organization: OrganizationReference,
+   view: "available" | "managed" = "available",
+ ) => directory(new DirectoryKey({ organization, view }));
++/**
++ * This caller's settled Apps list entry for an app, read without starting the list. Opening an
++ * app without the list loaded has none.
++ */
++export const listedAppAtom = Atom.family((organization: OrganizationReference) =>
++  Atom.family((app: AppId) =>
++    Atom.readable((get) => {
++      const listed = loadedValue(get.registry, resourceDirectoryAtom(organization));
++      if (listed === undefined || !AsyncResult.isSuccess(listed)) return undefined;
++      const entry = listed.value.apps.find((item) => item.app.id === app);
++      return entry === undefined ? undefined : { entry, accounts: listed.value.accounts };
++    }),
++  ),
++);
+ /** Per-app authority and sharing. */
+ export const appAccessAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+   appAccess(new AppKey(key));
 diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
 index a861a5c..795102e 100644
 --- a/apps/hosted/web/src/implementation/components/organization.tsx
@@ -203,7 +235,7 @@ index a861a5c..795102e 100644
 @@ -255,17 +257,42 @@ function ResumeOrganization({
    );
  }
-
+ 
 +/** The reference the mounted organization boundary keys its reads by, for reads started early. */
 +const queryReferenceAtom = Atom.make<OrganizationReference | undefined>(undefined).pipe(
 +  Atom.keepAlive,
@@ -245,11 +277,11 @@ index a861a5c..795102e 100644
 +  }, [reference, setQueryReference]);
    return reference;
  }
-
+ 
 @@ -288,6 +315,21 @@ declare module "@tanstack/react-router" {
    }
  }
-
+ 
 +/** The reads an organization page declares, for the router to start ahead of its render. */
 +export const organizationRouteReads: RouteReads = ({ staticData, params }, get) => {
 +  if (staticData.organizationReads === undefined) return [];
@@ -268,6 +300,131 @@ index a861a5c..795102e 100644
  /** The API refused this user the organization, as opposed to failing to answer. */
  const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
    AsyncResult.isFailure(access) &&
+diff --git a/apps/hosted/web/src/implementation/components/page-pending.tsx b/apps/hosted/web/src/implementation/components/page-pending.tsx
+index 28e1ee7..182bcdc 100644
+--- a/apps/hosted/web/src/implementation/components/page-pending.tsx
++++ b/apps/hosted/web/src/implementation/components/page-pending.tsx
+@@ -3,6 +3,13 @@ import { useHydrated } from "@executor-js/ui/hooks/hydrated";
+ import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
++import { appScreenTab, type AppScreenTab } from "@executor-js/ui/dashboard/app-detail";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { AppId } from "@executor-js/sdk";
++import { useAtomValue } from "@effect/atom-react";
++import { Schema } from "effect";
++import { listedAppAtom } from "../../contracts/resource-access.ts";
++import { useOptionalOrganizationRoute } from "./organization.tsx";
+ import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
+ import { parseAppSearch } from "../../contracts/navigation.ts";
+ import { Link, useLocation } from "@tanstack/react-router";
+@@ -99,6 +106,72 @@ export function UnknownPagePending({ fullScreen = false }: { readonly fullScreen
+   );
+ }
+ 
++interface AppPageProps {
++  readonly app: string;
++  readonly organizationSlug: string;
++  readonly setup: boolean;
++  readonly search: Record<string, unknown>;
++}
++
++/**
++ * An app page loading inside its organization. Opened from the settled Apps list, its App tab and
++ * default view come from that list; otherwise the default waits for the page to know whether the
++ * app has a screen.
++ */
++function AppPagePending(props: AppPageProps) {
++  const organization = useOptionalOrganizationRoute()?.organization;
++  return organization === undefined || !Schema.is(AppId)(props.app) ? (
++    <AppPending {...props} screen="pending" />
++  ) : (
++    <ListedAppPending {...props} app={props.app} organization={organization} />
++  );
++}
++
++function ListedAppPending(
++  props: AppPageProps & { readonly app: AppId; readonly organization: OrganizationReference },
++) {
++  const listed = useAtomValue(listedAppAtom(props.organization)(props.app))?.entry;
++  return (
++    <AppPending
++      {...props}
++      screen={listed === undefined ? "pending" : appScreenTab(listed.app, listed.access)}
++    />
++  );
++}
++
++function AppPending({
++  organizationSlug,
++  setup,
++  search,
++  screen,
++}: AppPageProps & { readonly screen: AppScreenTab }) {
++  const selected = parseAppSearch(search);
++  return (
++    <AppDetailPending
++      view={
++        setup
++          ? "accounts"
++          : (selected.view ??
++            (selected.tool !== undefined
++              ? "tools"
++              : screen === "present"
++                ? "app"
++                : screen === "absent"
++                  ? "overview"
++                  : undefined))
++      }
++      appScreen={screen}
++      actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
++      selectedTool={setup ? undefined : selected.tool}
++      back={
++        <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
++          Apps
++        </Link>
++      }
++    />
++  );
++}
++
+ /**
+  * Lazy pages load inside the existing organization layout with the destination's content shape.
+  * Each shape is the page's own loading state, so the page replaces it without moving. Nothing is
+@@ -116,27 +189,15 @@ export function PagePending({
+   if (root !== "org" || organizationSlug === undefined) return <UnknownPagePending fullScreen />;
+   // Older setup links open the app's Accounts view. Sign-in can still return to one, so this
+   // shape shows until the server redirects it there.
+-  if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup")) {
+-    const selected = parseAppSearch(search);
++  if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup"))
+     return (
+-      <AppDetailPending
+-        // Without a view, the default waits for the page to know whether the app has a screen.
+-        view={
+-          action === "setup"
+-            ? "accounts"
+-            : (selected.view ?? (selected.tool === undefined ? undefined : "tools"))
+-        }
+-        appScreen="pending"
+-        actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
+-        selectedTool={action === "setup" ? undefined : selected.tool}
+-        back={
+-          <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
+-            Apps
+-          </Link>
+-        }
++      <AppPagePending
++        app={item}
++        organizationSlug={organizationSlug}
++        setup={action === "setup"}
++        search={search}
+       />
+     );
+-  }
+   if (page === "apps" && item === undefined)
+     return (
+       <InventoryPageSkeleton
 diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
 index 2a3ff58..39b330e 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts.tsx
@@ -320,7 +477,7 @@ index 75ea7bb..ac4f2c6 100644
  import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
 +import type { OrganizationReference } from "@executor-js/hosted-server/organization";
-
+ 
  /** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
  export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
 @@ -83,9 +84,47 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params)
@@ -330,7 +487,7 @@ index 75ea7bb..ac4f2c6 100644
 +      listedAppReads(organization)(app),
      ],
    });
-
+ 
 +/**
 + * The overview's tools, skills, workflows and source reads wait for the app and its links. When
 + * the Apps list already holds this app, its version, access and linked accounts start them with
@@ -370,7 +527,7 @@ index 75ea7bb..ac4f2c6 100644
 +
  /** Views that read only the app. The others also read the inventory and the app's links. */
  const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
-
+ 
 @@ -143,12 +182,20 @@ export function AppDetailPage({
    const access = Option.getOrUndefined(authority.data);
    const canManage = access?.canManage === true,
@@ -431,22 +588,22 @@ index cc100f2..0dc8705 100644
  export function ApprovalsPage() {
    const { organization, slug: organizationSlug } = useOrganizationRoute();
 diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
-index 8f4b598..c4db6c9 100644
+index 2030dc5..17ef904 100644
 --- a/apps/hosted/web/src/implementation/pages/connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect.tsx
-@@ -7,7 +7,7 @@ import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
+@@ -5,7 +5,7 @@ import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
+ import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
+ import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
  import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
- import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
- import { productServerName } from "@executor-js/utils/product-brand";
 -import { useOrganizationRoute } from "../components/organization.tsx";
 +import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
  import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
  import { connectionToolListAtom } from "../../contracts/apps.ts";
-@@ -90,6 +90,13 @@ function ComputerSetup({ href }: { readonly href: string }) {
+@@ -65,6 +65,13 @@ function PersonalTokenSetup({
    );
  }
-
+ 
 +/** Installed apps, MCP connections and connected agents. */
 +export const connectPageReads: OrganizationPageReads = (organization) => [
 +  resourceInventoryAtom(organization),
@@ -473,7 +630,7 @@ index dfbede9..9cd3d11 100644
 @@ -36,6 +36,9 @@ import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/
  import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
  import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
-
+ 
 +/** The organization's groups. */
 +export const groupsPageReads: OrganizationPageReads = (organization) => [groupsAtom(organization)];
 +
@@ -481,10 +638,10 @@ index dfbede9..9cd3d11 100644
  export function GroupsPage({ id }: { readonly id?: string }) {
    const { organization } = useOrganizationRoute();
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 4c7c9c2..60e72ff 100644
+index 964edb1..d845546 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4694,6 +4694,17 @@ export const scenarios = plan({
+@@ -4695,6 +4695,17 @@ export const scenarios = plan({
        local: na("This journey checks hosted app metadata requests."),
      },
    },
@@ -502,7 +659,7 @@ index 4c7c9c2..60e72ff 100644
    organizationIcon: {
      fixtures: "actors",
      file: "organization-icon.spec.ts",
-@@ -4939,6 +4950,27 @@ export const scenarios = plan({
+@@ -4940,6 +4951,27 @@ export const scenarios = plan({
        local: na("Local does not host app origins."),
      },
    },
@@ -530,6 +687,86 @@ index 4c7c9c2..60e72ff 100644
    appUiApiDocument: {
      fixtures: "actors",
      managementApps: ["owner"],
+diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
+index 241c4e2..3c689bb 100644
+--- a/e2e/tests/embedded-app-navigation.spec.ts
++++ b/e2e/tests/embedded-app-navigation.spec.ts
+@@ -270,4 +270,75 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
+     ),
+   );
+ 
++  it.effect(scenarios.embeddedAppTabFromList.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser;
++        const screen = yield* deploy("Listed screen fixture", screenFiles);
++        yield* browser.login(actors.owner);
++        const link = (page: Page) =>
++          page.getByRole("link", { name: `Open ${screen.app.name}`, exact: true });
++        yield* browser.use("Open the settled Apps list", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps`)
++            .then(() => link(page).getByText("App screen").waitFor()),
++        );
++        // Every read that could name the app or its access waits, including the organization's
++        // inventory, so only the list can answer what the page shows.
++        const reads = yield* browser.use("Hold the app's own reads", (page) =>
++          hold(
++            page,
++            (url) =>
++              readOf(screen.app.id, "")(url) ||
++              readOf(screen.app.id, "/access")(url) ||
++              readOf(screen.app.id, "/ui")(url) ||
++              (url.pathname.startsWith("/api/organizations/") &&
++                url.pathname.endsWith("/inventory")),
++          ),
++        );
++        yield* Effect.addFinalizer(() =>
++          browser.use("Release the app's reads", () => reads.release()).pipe(Effect.orDie),
++        );
++        yield* browser.use("Record whether the App tab ever waits", (page) =>
++          page.evaluate(() => {
++            const seen = { pending: false };
++            new MutationObserver(() => {
++              if (document.querySelector('[aria-label="Checking for an app screen"]'))
++                seen.pending = true;
++            }).observe(document.body, { childList: true, subtree: true });
++            Reflect.set(window, "__appTabPending", seen);
++          }),
++        );
++        yield* browser.use("Open the app from the list", (page) =>
++          link(page)
++            .click()
++            .then(() => reads.requested),
++        );
++        expect(
++          yield* browser.use("App is present and selected while the app's reads wait", (page) =>
++            tab(page, "App")
++              .and(page.locator('[aria-current="page"]'))
++              .waitFor()
++              .then(() =>
++                Promise.all([
++                  selected(page),
++                  page.evaluate(
++                    () => (Reflect.get(window, "__appTabPending") as { pending: boolean }).pending,
++                  ),
++                  page.locator("h1", { hasText: screen.app.name }).count(),
++                ]),
++              ),
++          ),
++        ).toEqual([["App"], false, 1]);
++        yield* browser.checkpoint("app-tab-from-list");
++        yield* browser.use("Release the app's reads", () => reads.release());
++        yield* browser.use("The screen shows its content", (page) =>
++          page.frameLocator("iframe").getByRole("heading", { name: "Screen fixture" }).waitFor(),
++        );
++        expect(yield* browser.use("App stays selected", selected)).toEqual(["App"]);
++      }),
++    ),
++  );
+ });
 diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
 new file mode 100644
 index 0000000..99d63bd
@@ -640,6 +877,45 @@ index 0000000..99d63bd
 +    ),
 +  );
 +});
+diff --git a/packages/dashboard-start/package.json b/packages/dashboard-start/package.json
+index ae72537..8c6137a 100644
+--- a/packages/dashboard-start/package.json
++++ b/packages/dashboard-start/package.json
+@@ -9,6 +9,7 @@
+     "./shell": "./src/implementation/shell.tsx",
+     "./api": "./src/contracts/api.ts",
+     "./registry": "./src/implementation/registry.tsx",
++    "./loaded-value": "./src/implementation/loaded-value.ts",
+     "./in-process": "./src/implementation/in-process.ts",
+     "./page": "./src/implementation/page.ts",
+     "./document-api": "./src/contracts/document.ts",
+diff --git a/packages/dashboard-start/src/implementation/loaded-value.ts b/packages/dashboard-start/src/implementation/loaded-value.ts
+new file mode 100644
+index 0000000..97d1d73
+--- /dev/null
++++ b/packages/dashboard-start/src/implementation/loaded-value.ts
+@@ -0,0 +1,21 @@
++/** Reading what a registry already holds, without JSX, so plain TypeScript modules can import it. */
++import { Atom, type AtomRegistry } from "effect/reactivity";
++
++/** The key a registry stores an atom's node under. */
++export const nodeKey = (atom: Atom.Atom<unknown>) =>
++  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
++
++/**
++ * The value `atom` holds if something already read it, without starting a read. A read can act on
++ * data another page loaded, such as the list it was opened from, at no cost when there is none.
++ */
++export const loadedValue = <A>(
++  registry: AtomRegistry.AtomRegistry,
++  atom: Atom.Atom<A>,
++): A | undefined => {
++  const node = registry.getNodes().get(nodeKey(atom));
++  // Reading a node that is not valid would compute it, which starts the read.
++  if (node === undefined || node.currentState() !== "valid") return undefined;
++  // SAFETY: the registry stores each atom's node under that atom's key.
++  return node.value() as A;
++};
 diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
 index 567d471..1fbabf1 100644
 --- a/packages/dashboard-start/src/implementation/registry.tsx
@@ -654,13 +930,13 @@ index 567d471..1fbabf1 100644
  import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
  import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 +import { nodeKey } from "./loaded-value.ts";
-
+ 
  interface DehydratedAtoms {
    readonly initial: ReadonlyArray<Hydration.DehydratedAtom>;
 @@ -28,9 +29,6 @@ const pendingResult = (value: unknown) =>
   */
  const renderDeadline = 10_000;
-
+ 
 -const nodeKey = (atom: Atom.Atom<unknown>) =>
 -  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
 -
@@ -670,7 +946,7 @@ index 567d471..1fbabf1 100644
 @@ -359,6 +357,46 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
    };
  };
-
+ 
 +/** The reads a matched route declares, from its static data, params and current values. */
 +export type RouteReads = (
 +  match: {
@@ -736,286 +1012,10 @@ index 7bc172b..76e2064 100644
 +++ b/packages/ui/src/contracts/refresh.ts
 @@ -18,7 +18,7 @@ const pageFocus = Atom.readable((get) => {
  });
-
+ 
  /** A page opened again within this time shows its retained value without another read. */
 -const retention: Duration.Input = "5 minutes";
 +const retention: Duration.Input = "30 minutes";
  /** Older retained values are shown while they are read again in the background. */
  const freshness: Duration.Input = "30 seconds";
-
-diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
-index 9d2862b..a0687fb 100644
---- a/apps/hosted/web/src/contracts/resource-access.ts
-+++ b/apps/hosted/web/src/contracts/resource-access.ts
-@@ -1,5 +1,6 @@
- /** Sharing state and mutations are keyed by organization and resource, with confirmed updates. */
- import { hydrated } from "@executor-js/ui/contracts/http";
-+import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
- import { revalidated } from "@executor-js/ui/contracts/refresh";
- import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
- import { Data, Effect } from "effect";
-@@ -61,6 +62,20 @@ export const resourceDirectoryAtom = (
-   organization: OrganizationReference,
-   view: "available" | "managed" = "available",
- ) => directory(new DirectoryKey({ organization, view }));
-+/**
-+ * This caller's settled Apps list entry for an app, read without starting the list. Opening an
-+ * app without the list loaded has none.
-+ */
-+export const listedAppAtom = Atom.family((organization: OrganizationReference) =>
-+  Atom.family((app: AppId) =>
-+    Atom.readable((get) => {
-+      const listed = loadedValue(get.registry, resourceDirectoryAtom(organization));
-+      if (listed === undefined || !AsyncResult.isSuccess(listed)) return undefined;
-+      const entry = listed.value.apps.find((item) => item.app.id === app);
-+      return entry === undefined ? undefined : { entry, accounts: listed.value.accounts };
-+    }),
-+  ),
-+);
- /** Per-app authority and sharing. */
- export const appAccessAtom = (key: { organization: OrganizationReference; app: AppId }) =>
-   appAccess(new AppKey(key));
-diff --git a/apps/hosted/web/src/implementation/components/page-pending.tsx b/apps/hosted/web/src/implementation/components/page-pending.tsx
-index 28e1ee7..182bcdc 100644
---- a/apps/hosted/web/src/implementation/components/page-pending.tsx
-+++ b/apps/hosted/web/src/implementation/components/page-pending.tsx
-@@ -3,6 +3,13 @@ import { useHydrated } from "@executor-js/ui/hooks/hydrated";
- import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
- import { Skeleton } from "@executor-js/ui/components/skeleton";
- import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
-+import { appScreenTab, type AppScreenTab } from "@executor-js/ui/dashboard/app-detail";
-+import type { OrganizationReference } from "@executor-js/hosted-server/organization";
-+import { AppId } from "@executor-js/sdk";
-+import { useAtomValue } from "@effect/atom-react";
-+import { Schema } from "effect";
-+import { listedAppAtom } from "../../contracts/resource-access.ts";
-+import { useOptionalOrganizationRoute } from "./organization.tsx";
- import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
- import { parseAppSearch } from "../../contracts/navigation.ts";
- import { Link, useLocation } from "@tanstack/react-router";
-@@ -99,6 +106,72 @@ export function UnknownPagePending({ fullScreen = false }: { readonly fullScreen
-   );
- }
-
-+interface AppPageProps {
-+  readonly app: string;
-+  readonly organizationSlug: string;
-+  readonly setup: boolean;
-+  readonly search: Record<string, unknown>;
-+}
-+
-+/**
-+ * An app page loading inside its organization. Opened from the settled Apps list, its App tab and
-+ * default view come from that list; otherwise the default waits for the page to know whether the
-+ * app has a screen.
-+ */
-+function AppPagePending(props: AppPageProps) {
-+  const organization = useOptionalOrganizationRoute()?.organization;
-+  return organization === undefined || !Schema.is(AppId)(props.app) ? (
-+    <AppPending {...props} screen="pending" />
-+  ) : (
-+    <ListedAppPending {...props} app={props.app} organization={organization} />
-+  );
-+}
-+
-+function ListedAppPending(
-+  props: AppPageProps & { readonly app: AppId; readonly organization: OrganizationReference },
-+) {
-+  const listed = useAtomValue(listedAppAtom(props.organization)(props.app))?.entry;
-+  return (
-+    <AppPending
-+      {...props}
-+      screen={listed === undefined ? "pending" : appScreenTab(listed.app, listed.access)}
-+    />
-+  );
-+}
-+
-+function AppPending({
-+  organizationSlug,
-+  setup,
-+  search,
-+  screen,
-+}: AppPageProps & { readonly screen: AppScreenTab }) {
-+  const selected = parseAppSearch(search);
-+  return (
-+    <AppDetailPending
-+      view={
-+        setup
-+          ? "accounts"
-+          : (selected.view ??
-+            (selected.tool !== undefined
-+              ? "tools"
-+              : screen === "present"
-+                ? "app"
-+                : screen === "absent"
-+                  ? "overview"
-+                  : undefined))
-+      }
-+      appScreen={screen}
-+      actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
-+      selectedTool={setup ? undefined : selected.tool}
-+      back={
-+        <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
-+          Apps
-+        </Link>
-+      }
-+    />
-+  );
-+}
-+
- /**
-  * Lazy pages load inside the existing organization layout with the destination's content shape.
-  * Each shape is the page's own loading state, so the page replaces it without moving. Nothing is
-@@ -116,27 +189,15 @@ export function PagePending({
-   if (root !== "org" || organizationSlug === undefined) return <UnknownPagePending fullScreen />;
-   // Older setup links open the app's Accounts view. Sign-in can still return to one, so this
-   // shape shows until the server redirects it there.
--  if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup")) {
--    const selected = parseAppSearch(search);
-+  if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup"))
-     return (
--      <AppDetailPending
--        // Without a view, the default waits for the page to know whether the app has a screen.
--        view={
--          action === "setup"
--            ? "accounts"
--            : (selected.view ?? (selected.tool === undefined ? undefined : "tools"))
--        }
--        appScreen="pending"
--        actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
--        selectedTool={action === "setup" ? undefined : selected.tool}
--        back={
--          <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
--            Apps
--          </Link>
--        }
-+      <AppPagePending
-+        app={item}
-+        organizationSlug={organizationSlug}
-+        setup={action === "setup"}
-+        search={search}
-       />
-     );
--  }
-   if (page === "apps" && item === undefined)
-     return (
-       <InventoryPageSkeleton
-diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
-index 241c4e2..3c689bb 100644
---- a/e2e/tests/embedded-app-navigation.spec.ts
-+++ b/e2e/tests/embedded-app-navigation.spec.ts
-@@ -270,4 +270,75 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
-     ),
-   );
-
-+  it.effect(scenarios.embeddedAppTabFromList.title, (context) =>
-+    withHostedCase(
-+      context,
-+      Effect.gen(function* () {
-+        const actors = yield* Actors,
-+          browser = yield* Browser;
-+        const screen = yield* deploy("Listed screen fixture", screenFiles);
-+        yield* browser.login(actors.owner);
-+        const link = (page: Page) =>
-+          page.getByRole("link", { name: `Open ${screen.app.name}`, exact: true });
-+        yield* browser.use("Open the settled Apps list", (page) =>
-+          page
-+            .goto(`/org/${actors.organization.slug}/apps`)
-+            .then(() => link(page).getByText("App screen").waitFor()),
-+        );
-+        // Every read that could name the app or its access waits, including the organization's
-+        // inventory, so only the list can answer what the page shows.
-+        const reads = yield* browser.use("Hold the app's own reads", (page) =>
-+          hold(
-+            page,
-+            (url) =>
-+              readOf(screen.app.id, "")(url) ||
-+              readOf(screen.app.id, "/access")(url) ||
-+              readOf(screen.app.id, "/ui")(url) ||
-+              (url.pathname.startsWith("/api/organizations/") &&
-+                url.pathname.endsWith("/inventory")),
-+          ),
-+        );
-+        yield* Effect.addFinalizer(() =>
-+          browser.use("Release the app's reads", () => reads.release()).pipe(Effect.orDie),
-+        );
-+        yield* browser.use("Record whether the App tab ever waits", (page) =>
-+          page.evaluate(() => {
-+            const seen = { pending: false };
-+            new MutationObserver(() => {
-+              if (document.querySelector('[aria-label="Checking for an app screen"]'))
-+                seen.pending = true;
-+            }).observe(document.body, { childList: true, subtree: true });
-+            Reflect.set(window, "__appTabPending", seen);
-+          }),
-+        );
-+        yield* browser.use("Open the app from the list", (page) =>
-+          link(page)
-+            .click()
-+            .then(() => reads.requested),
-+        );
-+        expect(
-+          yield* browser.use("App is present and selected while the app's reads wait", (page) =>
-+            tab(page, "App")
-+              .and(page.locator('[aria-current="page"]'))
-+              .waitFor()
-+              .then(() =>
-+                Promise.all([
-+                  selected(page),
-+                  page.evaluate(
-+                    () => (Reflect.get(window, "__appTabPending") as { pending: boolean }).pending,
-+                  ),
-+                  page.locator("h1", { hasText: screen.app.name }).count(),
-+                ]),
-+              ),
-+          ),
-+        ).toEqual([["App"], false, 1]);
-+        yield* browser.checkpoint("app-tab-from-list");
-+        yield* browser.use("Release the app's reads", () => reads.release());
-+        yield* browser.use("The screen shows its content", (page) =>
-+          page.frameLocator("iframe").getByRole("heading", { name: "Screen fixture" }).waitFor(),
-+        );
-+        expect(yield* browser.use("App stays selected", selected)).toEqual(["App"]);
-+      }),
-+    ),
-+  );
- });
-diff --git a/packages/dashboard-start/package.json b/packages/dashboard-start/package.json
-index ae72537..8c6137a 100644
---- a/packages/dashboard-start/package.json
-+++ b/packages/dashboard-start/package.json
-@@ -9,6 +9,7 @@
-     "./shell": "./src/implementation/shell.tsx",
-     "./api": "./src/contracts/api.ts",
-     "./registry": "./src/implementation/registry.tsx",
-+    "./loaded-value": "./src/implementation/loaded-value.ts",
-     "./in-process": "./src/implementation/in-process.ts",
-     "./page": "./src/implementation/page.ts",
-     "./document-api": "./src/contracts/document.ts",
-diff --git a/packages/dashboard-start/src/implementation/loaded-value.ts b/packages/dashboard-start/src/implementation/loaded-value.ts
-new file mode 100644
-index 0000000..97d1d73
---- /dev/null
-+++ b/packages/dashboard-start/src/implementation/loaded-value.ts
-@@ -0,0 +1,21 @@
-+/** Reading what a registry already holds, without JSX, so plain TypeScript modules can import it. */
-+import { Atom, type AtomRegistry } from "effect/reactivity";
-+
-+/** The key a registry stores an atom's node under. */
-+export const nodeKey = (atom: Atom.Atom<unknown>) =>
-+  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
-+
-+/**
-+ * The value `atom` holds if something already read it, without starting a read. A read can act on
-+ * data another page loaded, such as the list it was opened from, at no cost when there is none.
-+ */
-+export const loadedValue = <A>(
-+  registry: AtomRegistry.AtomRegistry,
-+  atom: Atom.Atom<A>,
-+): A | undefined => {
-+  const node = registry.getNodes().get(nodeKey(atom));
-+  // Reading a node that is not valid would compute it, which starts the read.
-+  if (node === undefined || node.currentState() !== "valid") return undefined;
-+  // SAFETY: the registry stores each atom's node under that atom's key.
-+  return node.value() as A;
-+};
+ 

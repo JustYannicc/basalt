@@ -10,11 +10,12 @@ export type { SetupEnv } from "./session.ts";
 function computerSummary(value: unknown): Record<string, unknown> {
   const input = record(value);
   const fields = ["id", "name", "poolId", "state", "createdAt", "firstModelRequestAt", "firstToolCallAt", "revokedAt", "removedAt"];
-  if (!text(input.id, 512) || (input.tools !== undefined && typeof input.tools !== "boolean"))
+  if (!text(input.id, 512) || (input.tools !== undefined && typeof input.tools !== "boolean")
+    || (input.lapsed !== undefined && input.lapsed !== true))
     throw new SetupError(502, "Setup service returned an invalid computer.");
   if (fields.some((key) => key in input && input[key] !== null && !text(input[key])))
     throw new SetupError(502, "Setup service returned an invalid computer.");
-  return { ...Object.fromEntries(fields.filter((key) => key in input).map((key) => [key, input[key]])), ...input.tools !== undefined && { tools: input.tools } };
+  return { ...Object.fromEntries(fields.filter((key) => key in input).map((key) => [key, input[key]])), ...input.tools !== undefined && { tools: input.tools }, ...input.lapsed && { lapsed: true } };
 }
 
 const validName = (value: unknown) => computerName(value) !== undefined;
@@ -141,7 +142,7 @@ function linkResponse(request: Request, result: Record<string, unknown>): Respon
   const origin = new URL(request.url).origin;
   const link = `${origin}/setup/claim/${result.token}`;
   return json({
-    computer: computerSummary(result.computer), computerId: record(result.computer).id,
+    computer: computerSummary(result.computer), computerId: record(result.computer).id, link,
     prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+, delete the file, and tell me what it changed.`,
     ...commands(origin, ["--link", link]), undoPrompt: undo(origin), expiresAt: result.expiresAt,
   });

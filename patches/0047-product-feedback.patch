@@ -46,7 +46,7 @@ index db33d48..fc1169a 100644
  
      "motion": ["motion@12.43.0", "", { "dependencies": { "framer-motion": "^12.43.0", "tslib": "^2.4.0" }, "peerDependencies": { "@emotion/is-prop-valid": "*", "react": "^18.0.0 || ^19.0.0", "react-dom": "^18.0.0 || ^19.0.0" }, "optionalPeers": ["@emotion/is-prop-valid", "react", "react-dom"] }, "sha512-BQgQbSa9Hn3/mtbib0MK53y6JSANa+YKUKlaYnWzAVDH424RYQ5LVpV3pNiWH00BA2z4ojsSdMzqT7g2FQwjuQ=="],
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 061d775..a0658c9 100644
+index fc9cb52..91721bb 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -82,6 +82,7 @@ export const productBrand = {
@@ -57,7 +57,7 @@ index 061d775..a0658c9 100644
  } as const;
  /**
   * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
-@@ -5021,7 +5022,8 @@ export const scenarios = plan({
+@@ -5062,7 +5063,8 @@ export const scenarios = plan({
      fixtures: "actors",
      file: "cloud-app-query-auth.spec.ts",
      appOrigin: true,
@@ -67,7 +67,7 @@ index 061d775..a0658c9 100644
      targets: {
        cloud: managedCloud,
        "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
-@@ -5912,6 +5914,7 @@ export const scenarios = plan({
+@@ -5953,6 +5955,7 @@ export const scenarios = plan({
        EXECUTOR_PRODUCT_DOCS_URL: productBrand.docs,
        EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
        EXECUTOR_PRODUCT_SOURCE_URL: productBrand.source,
@@ -1006,43 +1006,50 @@ index 0000000..e1fc687
 +  return "Couldn't send. Try again.";
 +};
 diff --git a/packages/utils/src/product-brand.ts b/packages/utils/src/product-brand.ts
-index 6ebe7ff..b0e5455 100644
+index 7bf45d0..2ba7822 100644
 --- a/packages/utils/src/product-brand.ts
 +++ b/packages/utils/src/product-brand.ts
-@@ -7,7 +7,8 @@ import { Config, Context, Effect, Schema } from "effect";
+@@ -5,7 +5,9 @@ import { Config, Context, Effect, Schema } from "effect";
+  * What a deployment calls itself in its pages, emails, OAuth client metadata and MCP server
+  * description. `logo` is a square image URL, absolute or a path on the deployment's own origin.
   * `docs`, `privacy` and `terms` are the deployment's own pages behind those links. `source` is
-  * where its source code is published. `computerSetup` is the deployment's own page that sets up
-  * agents on a person's computer; the Connect page offers it ahead of the MCP setup only when it is
-- * set.
-+ * set. `feedback` is the deployment's own endpoint that receives feedback from the dashboard; under
-+ * another name the sidebar offers a feedback form that posts there.
+- * where its source code is published.
++ * where its source code is published. `feedback` is the deployment's own endpoint that receives
++ * feedback from the dashboard; under another name the sidebar offers a feedback form that posts
++ * there.
   */
  export const ProductBrand = Schema.Struct({
    name: Schema.NonEmptyString,
-@@ -17,6 +18,7 @@ export const ProductBrand = Schema.Struct({
+@@ -14,6 +16,7 @@ export const ProductBrand = Schema.Struct({
+   privacy: Schema.optional(Schema.NonEmptyString),
    terms: Schema.optional(Schema.NonEmptyString),
    source: Schema.optional(Schema.NonEmptyString),
-   computerSetup: Schema.optional(Schema.NonEmptyString),
 +  feedback: Schema.optional(Schema.NonEmptyString),
  });
  export type ProductBrand = typeof ProductBrand.Type;
  
-@@ -79,6 +81,7 @@ export const productBrandSettings = {
+@@ -75,6 +78,7 @@ export const productBrandSettings = {
+   privacy: "EXECUTOR_PRODUCT_PRIVACY_URL",
    terms: "EXECUTOR_PRODUCT_TERMS_URL",
    source: "EXECUTOR_PRODUCT_SOURCE_URL",
-   computerSetup: "EXECUTOR_COMPUTER_SETUP_URL",
 +  feedback: "EXECUTOR_PRODUCT_FEEDBACK_URL",
  } as const;
  
  /**
-@@ -97,8 +100,9 @@ export const productBrandConfig = Effect.gen(function* () {
-     terms?: string;
-     source?: string;
-     computerSetup?: string;
+@@ -87,8 +91,14 @@ export const productBrandConfig = Effect.gen(function* () {
+     productBrandSettings.logo,
+     (yield* setting(productBrandSettings.logo)) ?? defaultProductBrand.logo,
+   );
+-  const links: { docs?: string; privacy?: string; terms?: string; source?: string } = {};
+-  for (const link of ["docs", "privacy", "terms", "source"] as const) {
++  const links: {
++    docs?: string;
++    privacy?: string;
++    terms?: string;
++    source?: string;
 +    feedback?: string;
-   } = {};
--  for (const link of ["docs", "privacy", "terms", "source", "computerSetup"] as const) {
-+  for (const link of ["docs", "privacy", "terms", "source", "computerSetup", "feedback"] as const) {
++  } = {};
++  for (const link of ["docs", "privacy", "terms", "source", "feedback"] as const) {
      const value = yield* urlOrPath(
        productBrandSettings[link],
        yield* setting(productBrandSettings[link]),

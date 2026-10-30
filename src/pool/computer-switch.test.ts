@@ -255,3 +255,16 @@ test("a person renames only their own computer, to a valid name", async () => {
   assert.equal((await rename(owner, await f.intent(owner), "Mine now")).status, 404);
   assert.equal((await f.registry())[created.computer.id]!.name, "Work laptop");
 });
+
+test("an unclaimed computer is marked lapsed once its link expires, and never after a claim", async () => {
+  const f = fixture();
+  const waiting = await f.create(member, pool, false);
+  const claimed = await f.create(member, pool, true);
+  const list = async () => (await (await f.action("computers", member, await f.intent())).json() as { computers: Computer[] }).computers;
+  const lapsed = (computers: Computer[], id: string) => computers.find((computer) => computer.id === id)?.lapsed;
+  assert.equal(lapsed(await list(), waiting.computer.id), undefined);
+  f.advance(5 * 60_000 + 1);
+  const later = await list();
+  assert.equal(lapsed(later, waiting.computer.id), true);
+  assert.equal(lapsed(later, claimed.computer.id), undefined);
+});
