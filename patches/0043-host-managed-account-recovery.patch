@@ -139,7 +139,7 @@ index 0000000..c57c335
 +      ),
 +    );
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index d42314c..09e6f02 100644
+index d42314c..a789e0f 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -24,8 +24,8 @@ import {
@@ -214,7 +214,7 @@ index d42314c..09e6f02 100644
        { concurrency: 8 },
      )).flat();
 +    const recovery =
-+      scope === "app"
++      scope === "app" && requirement === "pool"
 +        ? yield* lockedChange(executor, { app: app.id, access: "manage" }, (sql, actor) =>
 +            Effect.gen(function* () {
 +              const current = yield* executor.apps.get({ owner, app: app.id });
@@ -306,10 +306,10 @@ index c09d28c..9d5196d 100644
  
 diff --git a/apps/hosted/server/src/implementation/pool-account-recovery.ts b/apps/hosted/server/src/implementation/pool-account-recovery.ts
 new file mode 100644
-index 0000000..3ea274c
+index 0000000..52ad760
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-account-recovery.ts
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,69 @@
 +import { StorageError } from "@executor-js/sdk/core";
 +import { Effect, Option, Schema } from "effect";
 +import type { HostManagedRecoveryInput } from "../contracts/host-managed-accounts.ts";
@@ -360,12 +360,19 @@ index 0000000..3ea274c
 +          and id not like ${poolRotationJobPrefix + "%"}
 +          and id not like ${catalogAppJobPrefix + "%"}
 +        order by available_at, id limit 1 for update`;
-+      if (pending.length === 0)
++      if (pending.length === 0) {
++        // Match the worker's maximum backoff before another view can retry exhausted setup.
++        const failed = yield* sql`select id from hosted_provisioning
++          where kind = 'member' and organization_id = ${organization} and user_id = ${owner}
++            and status = 'failed' and updated_at > now() - interval '5 minutes'
++            and id not like ${poolRotationJobPrefix + "%"}
++            and id not like ${catalogAppJobPrefix + "%"} limit 1`;
++        if (failed.length > 0) return undefined;
 +        yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
 +          values ('member', ${organization}, ${owner}, now())`;
-+      else
++      } else
 +        yield* sql`update hosted_provisioning set available_at = least(available_at, now()), updated_at = now()
-+          where id = ${pending[0]!.id}`;
++          where id = ${pending[0]!.id} and attempts = 0`;
 +      return "restoring" as const;
 +    }).pipe(
 +      Effect.catchTags({
@@ -587,10 +594,10 @@ index b0fa511..6350bb3 100644
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
        APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 061d775..f5e65fc 100644
+index cafa7c4..8ba48fe 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -5021,7 +5021,8 @@ export const scenarios = plan({
+@@ -5042,7 +5042,8 @@ export const scenarios = plan({
      fixtures: "actors",
      file: "cloud-app-query-auth.spec.ts",
      appOrigin: true,
@@ -600,7 +607,7 @@ index 061d775..f5e65fc 100644
      targets: {
        cloud: managedCloud,
        "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
-@@ -7593,6 +7594,17 @@ export const scenarios = plan({
+@@ -7614,6 +7615,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account checks and rows."),
      },
    },
@@ -981,10 +988,10 @@ index 830b354..f1314eb 100644
    );
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 new file mode 100644
-index 0000000..824c276
+index 0000000..a880fac
 --- /dev/null
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,281 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient } from "effect/http";
@@ -1032,11 +1039,19 @@ index 0000000..824c276
 +        );
 +        const owner = session.user.id;
 +        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
++        const cron = Effect.scoped(
++          http
++            .get(
++              `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++            )
++            .pipe(Effect.flatMap((response) => response.text)),
++        );
 +        const pending = () =>
 +          rows(
 +            `select id, status, (available_at <= now()) as ready
 +        from hosted_provisioning where organization_id = $1 and user_id = $2
-+          and kind = 'member' and status in ('queued', 'running')`,
++          and kind = 'member' and status in ('queued', 'running')
++          and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'`,
 +            [actors.organization.id, owner],
 +          );
 +        // Existing setup must finish before the scenario damages its own recorded binding.
@@ -1145,21 +1160,63 @@ index 0000000..824c276
 +        values ($1, 'member', $2, $3, now() + interval '1 day')`,
 +          [job, actors.organization.id, owner],
 +        );
++        yield* evidence.step(
++          "Reads preserve retry backoff and do not restart a recent failed repair",
++          Effect.gen(function* () {
++            yield* rows(`update hosted_provisioning set attempts = 3 where id = $1`, [job]);
++            const start = () =>
++              rows(`select available_at::text as start from hosted_provisioning where id = $1`, [
++                job,
++              ]);
++            const before = yield* start();
++            expect((yield* choices()).recovery).toBe("restoring");
++            expect(yield* start()).toEqual(before);
++            yield* rows(
++              `update hosted_provisioning set status = 'failed', attempts = 8, updated_at = now()
++                where id = $1`,
++              [job],
++            );
++            expect((yield* choices()).recovery).toBeUndefined();
++            expect(yield* pending()).toEqual([]);
++            yield* rows(
++              `update hosted_provisioning set status = 'queued', attempts = 0,
++                available_at = now() + interval '1 day' where id = $1`,
++              [job],
++            );
++          }),
++        );
++        // Provisioning locks this metadata before it repairs a link. Reads stay live while the
++        // fixture holds it, so their pending state cannot race the normal worker's completion.
++        yield* database.hold({
++          sql: "select id from organization where id = $1 for no key update",
++          params: [actors.organization.id],
++        });
++        yield* Effect.addFinalizer(() => database.release);
 +        const [before] = yield* rows(
 +          `select count(*)::int as count from executor_accounts
 +        where owner = 'organization:' || $1`,
 +          [actors.organization.id],
 +        );
 +        yield* evidence.step(
-+          "Concurrent editor reads accelerate one existing job without minting an account",
++          "Concurrent editor reads keep one queued repair without minting an account",
 +          Effect.gen(function* () {
++            expect((yield* choices()).recovery).toBe("restoring");
++            yield* cron;
++            expect((yield* pending()).find((entry) => entry.id === job)?.status).toBe("running");
 +            const reads = yield* Effect.all(Array.from({ length: 8 }, choices), { concurrency: 8 });
 +            for (const read of reads) {
 +              expect(read.recovery).toBe("restoring");
 +              expect(read.accounts).toEqual([]);
 +            }
 +            const queued = yield* pending();
-+            expect(queued).toEqual([{ id: job, status: "queued", ready: true }]);
++            yield* evidence.json("pending-jobs.json", { repairs: queued });
++            expect(queued.some((entry) => entry.id === job)).toBe(true);
++            // A dispatched job can be running, with one queued successor for a repair it passed.
++            expect(
++              queued.filter((entry) => entry.status === "queued").length,
++              JSON.stringify(queued),
++            ).toBeLessThanOrEqual(1);
++            expect(queued.length).toBeLessThanOrEqual(2);
 +            const [after] = yield* rows(
 +              `select count(*)::int as count from executor_accounts
 +            where owner = 'organization:' || $1`,
@@ -1184,13 +1241,8 @@ index 0000000..824c276
 +                .waitFor(),
 +            );
 +            yield* browser.checkpoint("The host is restoring the missing pool account");
-+            yield* Effect.scoped(
-+              http
-+                .get(
-+                  `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
-+                )
-+                .pipe(Effect.flatMap((response) => response.text)),
-+            );
++            yield* database.release;
++            yield* cron;
 +            const restored = yield* choices().pipe(
 +              Effect.flatMap((value) =>
 +                value.accounts.length === 1 ? Effect.succeed(value) : Effect.fail(new Pending()),
