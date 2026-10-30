@@ -61,6 +61,8 @@ test("logical database persists across runtime-role rotation and excludes unrela
     workerUrl.pathname = `/${poolDatabase.name}`;
     workerUrl.search = "";
     assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["unknown-key", "active-key"]), true);
+    assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["active-key", "\0"]), true);
+    await assert.rejects(hasActiveHomeApiKey(workerUrl.toString(), ["\0", "active-key"]), { code: "22021" });
     assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["revoked-key"]), false);
     assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["' OR TRUE --"]), false);
 

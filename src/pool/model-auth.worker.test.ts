@@ -14,9 +14,11 @@ const hooks = registerHooks({
         export default { Client: class {
           constructor(options) { this.unavailable = options.connectionString === 'postgres://unavailable'; }
           on() {}
+          connection = { stream: { destroy() {} } };
           async connect() { if (this.unavailable) throw new Error('database unavailable'); }
           async query(_text, values) {
-            return { rows: [{ active: Array.isArray(values?.[0]) && values[0].includes('valid-home-key') }] };
+            if (values[0].includes(String.fromCharCode(0))) throw new Error('invalid text encoding');
+            return { rows: [{ active: values[0] === 'valid-home-key' }] };
           }
           async end() {}
         } };
@@ -65,6 +67,12 @@ test("the exported Worker rejects bad credentials before controller lookup and p
     { request: new Request("https://pool.example/v1/models?key=%20valid-home-key%20"), status: 202 },
     { request: new Request("https://pool.example/v1/models?key=valid-home-key"), status: 503, unavailable: true },
     { request: new Request("https://pool.example/v1/models?key=valid-home-key"), status: 202 },
+    {
+      request: new Request("https://pool.example/v1/models?auth_token=%00", {
+        headers: { Authorization: "Bearer valid-home-key" },
+      }), status: 202,
+    },
+    { request: new Request("https://pool.example/v1/models?key=%00&auth_token=valid-home-key"), status: 503 },
     { request: new Request("https://pool.example/v1/models?auth_token=valid-home-key"), status: 202 },
     ...["Bearer valid-home-key", "bEaReR valid-home-key", "valid-home-key"].map((Authorization) => ({
       request: new Request("https://pool.example/v1/models", { headers: { Authorization } }), status: 202,

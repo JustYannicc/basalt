@@ -9,21 +9,33 @@ const pgFixture = {
   options: [] as Record<string, unknown>[],
   queries: [] as { text: string; values: unknown[] }[],
   ended: 0,
+  destroyed: 0,
+  hangClose: false,
+  hangConnect: false,
+  activeKeys: undefined as string[] | undefined,
 };
 Reflect.set(globalThis, "__basaltPgFixture", pgFixture);
 
 const pgStub = `
   const fixture = globalThis.__basaltPgFixture;
   export default { Client: class {
+    connection = { stream: { destroy() { fixture.destroyed += 1; } } };
     constructor(options) { fixture.options.push(options); }
     on() {}
-    async connect() { if (fixture.connectError) throw fixture.connectError; }
+    async connect() {
+      if (fixture.hangConnect) return new Promise(() => {});
+      if (fixture.connectError) throw fixture.connectError;
+    }
     async query(text, values) {
       fixture.queries.push({ text, values });
       if (fixture.queryError) throw fixture.queryError;
-      return { rows: [{ active: fixture.active }] };
+      if (values[0].includes(String.fromCharCode(0))) throw new Error('invalid text encoding');
+      return { rows: [{ active: fixture.activeKeys ? fixture.activeKeys.includes(values[0]) : fixture.active }] };
     }
-    async end() { fixture.ended += 1; }
+    async end() {
+      fixture.ended += 1;
+      if (fixture.hangClose) return new Promise(() => {});
+    }
   } };
 `;
 const pgModule = `data:text/javascript,${encodeURIComponent(pgStub)}`;
@@ -43,6 +55,10 @@ function resetPgFixture(): void {
   pgFixture.options.length = 0;
   pgFixture.queries.length = 0;
   pgFixture.ended = 0;
+  pgFixture.destroyed = 0;
+  pgFixture.hangClose = false;
+  pgFixture.hangConnect = false;
+  pgFixture.activeKeys = undefined;
 }
 
 test("Home model API-key candidates include every supported transport in order", () => {
@@ -98,6 +114,7 @@ test("Bearer extraction uses Home's Unicode whitespace rule", () => {
 test("Home model-key lookup uses a parameterized active-row query and bounded timeouts", async () => {
   resetPgFixture();
   const connectionString = "postgres://fixture:fixture@database.invalid/basalt_pool";
+  pgFixture.activeKeys = ["active-key"];
 
   assert.equal(await hasActiveHomeApiKey(connectionString, ["wrong-key", "active-key"]), true);
   assert.deepEqual(pgFixture.options, [{
@@ -106,10 +123,10 @@ test("Home model-key lookup uses a parameterized active-row query and bounded ti
     query_timeout: 2_500,
     statement_timeout: 2_500,
   }]);
-  assert.equal(pgFixture.queries.length, 1);
-  assert.match(pgFixture.queries[0]!.text, /api_key = ANY\(\$1::text\[\]\)/);
+  assert.equal(pgFixture.queries.length, 2);
+  assert.match(pgFixture.queries[0]!.text, /api_key = \$1/);
   assert.match(pgFixture.queries[0]!.text, /deleted_at IS NULL/);
-  assert.deepEqual(pgFixture.queries[0]!.values, [["wrong-key", "active-key"]]);
+  assert.deepEqual(pgFixture.queries.map((query) => query.values), [["wrong-key"], ["active-key"]]);
   assert.equal(pgFixture.ended, 1);
 });
 
@@ -125,10 +142,36 @@ test("Home model-key lookup surfaces connection and query failures", async () =>
   resetPgFixture();
   pgFixture.connectError = new Error("connect failed");
   await assert.rejects(hasActiveHomeApiKey("postgres://fixture", ["key"]), /connect failed/);
-  assert.equal(pgFixture.ended, 0);
+  assert.equal(pgFixture.ended, 1);
 
   pgFixture.connectError = undefined;
   pgFixture.queryError = new Error("query failed");
   await assert.rejects(hasActiveHomeApiKey("postgres://fixture", ["key"]), /query failed/);
-  assert.equal(pgFixture.ended, 1);
+  assert.equal(pgFixture.ended, 2);
 });
+
+test("the first active candidate wins before a later malformed PostgreSQL text value", async () => {
+  resetPgFixture();
+  pgFixture.activeKeys = ["active-key"];
+  assert.equal(await hasActiveHomeApiKey("postgres://fixture", ["active-key", "\0"]), true);
+  assert.deepEqual(pgFixture.queries.map((query) => query.values), [["active-key"]]);
+  await assert.rejects(hasActiveHomeApiKey("postgres://fixture", ["\0", "active-key"]), /invalid text encoding/);
+});
+
+for (const phase of ["connect", "cleanup"]) {
+  test(`the total lookup deadline force-closes stalled ${phase}`, async (t) => {
+    resetPgFixture();
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    pgFixture.hangConnect = phase === "connect";
+    pgFixture.hangClose = phase === "cleanup";
+    const work = hasActiveHomeApiKey("postgres://fixture", ["active-key"]);
+    const rejected = assert.rejects(work, /authentication deadline/);
+    // Drain the successful connect and query before exercising stalled cleanup.
+    for (let step = 0; step < 8; step += 1) await Promise.resolve();
+    t.mock.timers.tick(6_000);
+    await rejected;
+    assert.equal(pgFixture.destroyed, 1);
+    assert.equal(pgFixture.ended, phase === "cleanup" ? 1 : 0);
+    t.mock.timers.reset();
+  });
+}

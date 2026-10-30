@@ -2,6 +2,7 @@ import pg from "pg";
 
 const connectionTimeoutMs = 2_500;
 const queryTimeoutMs = 2_500;
+const lookupTimeoutMs = 6_000;
 
 export interface HomeApiKeyCandidates {
   readonly supplied: boolean;
@@ -51,7 +52,7 @@ function trimSpace(value: string): string {
   return value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 }
 
-/** Looks up any active Home API key with one parameterized query eligible for the unique api_key index. */
+/** Home stops at its first active candidate; later malformed values must not spoil that match. */
 export async function hasActiveHomeApiKey(
   connectionString: string,
   candidates: readonly string[],
@@ -68,19 +69,38 @@ export async function hasActiveHomeApiKey(
   // A request owns this connection; query/connect promises carry errors to the caller.
   client.on("error", () => {});
 
-  let connected = false;
+  let expired = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      // pg@8.16.3's graceful end can wait on a half-open connection.
+      try { client.connection.stream.destroy(); } catch { /* Still refuse the timed-out lookup. */ }
+      reject(new Error("Pool authentication deadline exceeded"));
+    }, lookupTimeoutMs);
+  });
+  const query = async () => {
+    try {
+      await client.connect();
+      for (const candidate of candidates) {
+        if (expired) throw new Error("Pool authentication deadline exceeded");
+        const result = await client.query<{ active: boolean }>(
+          `SELECT EXISTS (
+            SELECT 1 FROM api_key
+            WHERE api_key = $1 AND deleted_at IS NULL
+          ) AS active`,
+          [candidate],
+        );
+        if (result.rows[0]?.active === true) return true;
+      }
+      return false;
+    } finally {
+      await client.end();
+    }
+  };
   try {
-    await client.connect();
-    connected = true;
-    const result = await client.query<{ active: boolean }>(
-      `SELECT EXISTS (
-        SELECT 1 FROM api_key
-        WHERE api_key = ANY($1::text[]) AND deleted_at IS NULL
-      ) AS active`,
-      [[...candidates]],
-    );
-    return result.rows[0]?.active === true;
+    return await Promise.race([query(), deadline]);
   } finally {
-    if (connected) await client.end();
+    clearTimeout(timer);
   }
 }
