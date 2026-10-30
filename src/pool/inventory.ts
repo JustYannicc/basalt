@@ -1,4 +1,4 @@
-import pg from "pg";
+import type pg from "pg";
 import { poolDatabase } from "./database-settings.ts";
 import { privacyReceipt } from "./privacy-receipt.ts";
 import { inventoryFailure, inventoryRecord } from "./inventory-record.ts";
@@ -74,6 +74,7 @@ export async function reportPoolInventory(connectionString: string): Promise<voi
     if (url.pathname !== `/${poolDatabase.name}` || url.searchParams.get("sslmode") !== "verify-full") {
       throw new Error("Invalid inventory database");
     }
+    const { default: pg } = await import("pg");
     client = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000, query_timeout: 4_000 });
     client.on("error", () => {});
     await client.connect();
