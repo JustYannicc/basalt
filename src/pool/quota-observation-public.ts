@@ -27,7 +27,7 @@ function label(window: QuotaWindowObservation): string {
 export function publicQuotaObservation(value: QuotaObservation): PoolAccountObservation | null {
   const observedAt = instant(value.observedAt);
   if (observedAt === undefined) return null;
-  const windows = value.windows.flatMap((window) => {
+  const windows = value.windows.flatMap<PoolAccountObservation["observation"]["windows"][number]>((window) => {
     const id = bounded(window.id), unit = bounded(window.currency ?? window.unit), at = instant(window.observedAt);
     if (id === undefined || unit === undefined || at === undefined) return [];
     const mode = window.period.mode ?? window.mode;
