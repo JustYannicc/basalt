@@ -10,13 +10,23 @@ const hooks = registerHooks({
       shortCircuit: true,
     };
     if (specifier === "pg") return {
-      url: "data:text/javascript,export default { Client: class { on() {} async connect() {} async query(_text, values) { return { rows: [{ active: Array.isArray(values?.[0]) && values[0].includes('valid-home-key') }] }; } async end() {} } }",
+      url: `data:text/javascript,${encodeURIComponent(`
+        export default { Client: class {
+          constructor(options) { this.unavailable = options.connectionString === 'postgres://unavailable'; }
+          on() {}
+          async connect() { if (this.unavailable) throw new Error('database unavailable'); }
+          async query(_text, values) {
+            return { rows: [{ active: Array.isArray(values?.[0]) && values[0].includes('valid-home-key') }] };
+          }
+          async end() {}
+        } };
+      `)}`,
       shortCircuit: true,
     };
     return next(specifier, context);
   },
 });
-const { handlePoolWorkerRequest } = await import("./worker.ts");
+const { default: worker, handlePoolWorkerRequest } = await import("./worker.ts");
 hooks.deregister();
 
 type WorkerEnvironment = Parameters<typeof handlePoolWorkerRequest>[1];
@@ -45,6 +55,43 @@ function poolStub() {
   } as unknown as WorkerEnvironment;
   return { env, calls };
 }
+
+test("the exported Worker rejects bad credentials before controller lookup and preserves valid requests", async () => {
+  const cases: { request: Request; status: number; unavailable?: boolean }[] = [
+    { request: new Request("https://pool.example/v1/models"), status: 401 },
+    { request: new Request("https://pool.example/v1/models?key=invalid-home-key"), status: 401 },
+    { request: new Request("https://pool.example/v1/models?key=revoked-home-key"), status: 401 },
+    { request: new Request("https://pool.example/v1/models?key=%20valid-home-key%20"), status: 401 },
+    { request: new Request("https://pool.example/v1/models?key=valid-home-key"), status: 503, unavailable: true },
+    { request: new Request("https://pool.example/v1/models?key=valid-home-key"), status: 202 },
+    { request: new Request("https://pool.example/v1/models?auth_token=valid-home-key"), status: 202 },
+    ...["Bearer valid-home-key", "bEaReR valid-home-key", "valid-home-key"].map((Authorization) => ({
+      request: new Request("https://pool.example/v1/models", { headers: { Authorization } }), status: 202,
+    })),
+    ...["X-Goog-Api-Key", "X-Api-Key"].map((header) => ({
+      request: new Request("https://pool.example/v1/models", { headers: { [header]: "valid-home-key" } }), status: 202,
+    })),
+    {
+      request: new Request("https://pool.example/v1/chat/completions?key=invalid-home-key", {
+        method: "POST", body: "unchanged model request",
+        headers: { Authorization: "Bearer wrong-key", "X-Api-Key": "valid-home-key" },
+      }),
+      status: 202,
+    },
+  ];
+  for (const { request, status, unavailable } of cases) {
+    const { env, calls } = poolStub();
+    if (unavailable) env.POOL_DATABASE_URL = "postgres://unavailable";
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, status);
+    assert.equal(calls.lookups, status === 202 ? 1 : 0);
+    assert.equal(calls.forwarded.length, status === 202 ? 1 : 0);
+    if (status === 202) {
+      assert.equal(calls.forwarded[0], request);
+      if (request.method === "POST") assert.equal(await calls.forwarded[0]!.text(), "unchanged model request");
+    }
+  }
+});
 
 test("missing model keys return 401 before the Worker obtains the pool Durable Object", async () => {
   const { env, calls } = poolStub();
