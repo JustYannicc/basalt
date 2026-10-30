@@ -93,6 +93,38 @@ test("signed access changes reach the computer queue before generic pool-token c
   assert.equal(denied.status, 401);
 });
 
+test("native pool use is required before control, setup and usage can reach Home", async () => {
+  const signingKey = "ab".repeat(32);
+  const claims = { pool: "fake-pool", owner: "fake-owner", organization: "fake-org" };
+  const entry = { ...claims, name: "Pool", users: ["fake-member"], managers: ["fake-owner"],
+    authorization: "executor-app-v1", ownerSource: "audience", pending: [], at: Date.now() };
+  const values = new Map<string, unknown>([["pool-directory-v1", {
+    pools: { [JSON.stringify(claims.pool)]: entry }, refusals: {}, people: {}, refusalsVersion: 2,
+  }]]);
+  const worker = new PoolContainer({ container: {}, storage: {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+  } }, {
+    POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
+    POOL_MANAGEMENT_KEY: "fake-management-key", POOL_APP_SIGNING_KEY: signingKey, POOL_IMAGE_HASH: "fake-image",
+  });
+  const token = await signPoolToken(signingKey, claims);
+  for (const caller of ["fake-owner", "fake-stranger", undefined]) {
+    for (const path of ["/pool/v1/pool", "/pool/v1/setup-context", "/pool/v1/usage/summary?days=7"]) {
+      const response = await worker.fetch(new Request(`https://pool.example${path}`, {
+        headers: { Authorization: `Bearer ${token}`, ...(caller ? { "x-signalbox-caller": caller } : {}) },
+      }));
+      assert.equal(response.status, 403, `${caller ?? "anonymous"} ${path}: ${await response.text()}`);
+    }
+  }
+  const allowed = await worker.fetch(new Request("https://pool.example/pool/v1/setup-context", {
+    headers: { Authorization: `Bearer ${token}`, "x-signalbox-caller": "fake-member" },
+  }));
+  assert.equal(allowed.status, 200, await allowed.clone().text());
+  const value = await allowed.json() as { pools: unknown };
+  assert.deepEqual(value.pools, [{ id: claims.pool, name: "Pool", mine: false }]);
+});
+
 test("management calls share readiness for 30 seconds and rewarm when the container stops", async (t) => {
   const signingKey = "ab".repeat(32);
   const token = await signPoolToken(signingKey, { pool: "fake-pool", owner: "fake-owner", organization: "fake-org" });

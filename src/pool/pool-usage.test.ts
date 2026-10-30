@@ -20,7 +20,7 @@ class Memory implements UsageStorage {
   async delete(key: string) { this.values.delete(key); }
 }
 
-async function fixture() {
+async function fixture(permissions?: (pool: string, user: string) => Promise<{ canUse: boolean; canManage: boolean } | undefined>, audience = [owner, a, b, idle]) {
   const storage = new Memory();
   const calls: string[] = [], audienceCalls: string[] = [];
   const specs = [
@@ -62,8 +62,8 @@ async function fixture() {
   });
   await new LimitHistory(storage, () => now).sample("pool-a", [{ id: "credential-a", provider: "fixture", state: "active", observedAt: now.toISOString(),
     windows: [{ id: "weekly", label: "Weekly", remainingRatio: 0.5, resetAt: null, windowSeconds: 604800, observedAt: now.toISOString() }] }]);
-  const usage = new PoolUsage({ storage, client, signingKey, now: () => now,
-    audience: async (pool) => { audienceCalls.push(pool); return pool === "pool-a" ? [owner, a, b, idle] : [a]; } });
+  const usage = new PoolUsage({ storage, client, signingKey, now: () => now, permissions,
+    audience: async (pool) => { audienceCalls.push(pool); return pool === "pool-a" ? audience : [a]; } });
   const token = await signPoolToken(signingKey, claims);
   async function request(caller: string | null = a, query = "", init: RequestInit = {}) {
     const headers = new Headers({ authorization: `Bearer ${token}` });
@@ -123,6 +123,31 @@ test("interleaved members on the same models and days see only their own usage a
   const empty = await f.summary(idle);
   assert.deepEqual(empty.total, slice(0, 0));
   assert.deepEqual(empty.models, []); assert.deepEqual(empty.days, []); assert.equal(empty.cap, null);
+});
+
+test("native managers see pool totals with their own cap, and demotion immediately restores personal filtering", async () => {
+  let canUse = true, canManage = true;
+  const f = await fixture(async () => ({ canUse, canManage }));
+  const manager = await f.summary(a);
+  assert.equal(manager.scope, "pool");
+  assert.deepEqual(manager.total, slice(127, 7));
+  assert.equal(manager.cap?.weekly, 5);
+  assert.equal(manager.members?.find((person) => person.member === a)?.cap?.weekly, 5);
+  assert.deepEqual(manager.accountsNeeded?.map((advice) => advice.provider), ["fixture"]);
+  canManage = false;
+  own(await f.summary(a), 34, 8);
+  canUse = false;
+  assert.equal((await f.request(a)).status, 403);
+  assert.equal((await f.request(owner)).status, 403);
+});
+
+test("a manager beyond the member-detail limit keeps their own cap", async () => {
+  const audience = [...Array.from({ length: 500 }, (_, index) => `person-${index}`), a];
+  const f = await fixture(async () => ({ canUse: true, canManage: true }), audience);
+  const result = await f.summary(a);
+  assert.equal(result.scope, "pool");
+  assert.deepEqual(result.cap, { weekly: 5, used: 1, remaining: 4, resetAt: "2026-10-26T00:00:00Z" });
+  assert.equal(result.members?.some((member) => member.member === a), false);
 });
 
 test("owning pool B cannot elevate membership on A or include B's records; queries cannot choose owner scope", async () => {

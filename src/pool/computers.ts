@@ -88,12 +88,15 @@ export class Computers {
       && computer.user === intent.user && computer.removalPending))
       return fail(503, "backend_unavailable", "Removing access from this computer didn't finish. Ask the owner to retry, or try again later.");
   }
-  /** Everyone who can use the pool, owner included, as the directory last heard it. */
+  /** The host's use audience. Native management roles do not add use access. */
   async audience(pool: string): Promise<string[]> {
     return this.run(async () => {
       const entry = (await PoolDirectory.load(this.deps.storage, this.now())).entry(pool);
-      return entry ? [...new Set([entry.owner, ...entry.users])] : [];
+      return entry ? [...new Set(entry.authorization === "executor-app-v1" ? entry.users : [entry.owner, ...entry.users])] : [];
     });
+  }
+  async permissions(pool: string, user: string) {
+    return this.run(async () => (await PoolDirectory.load(this.deps.storage, this.now())).permissions(pool, user));
   }
   async access(request: Request): Promise<Response> {
     try {
@@ -193,15 +196,19 @@ export class Computers {
   private async ownerUsage(action: "usage" | "cap", intent: SetupIntent, user: string, payload: Record<string, unknown>): Promise<Response> {
     const usage = this.deps.usage;
     if (!usage) return fail(404, "not_found", "This setup endpoint does not exist.");
-    if (intent.owner !== user) return fail(403, "unauthorized", "Only the pool's owner can see each person's usage or set caps.");
-    await this.run(async (registry) => this.check(await PoolDirectory.load(this.deps.storage, this.now()), registry, intent));
+    await this.run(async (registry) => {
+      const directory = await PoolDirectory.load(this.deps.storage, this.now());
+      this.check(directory, registry, intent);
+      const canManage = directory.permissions(intent.pool, user)?.canManage ?? intent.owner === user;
+      if (!canManage) return fail(403, "unauthorized", "Only a pool manager can see each person's usage or set caps.");
+    });
     if (action === "cap") {
       if (payload.weekly !== null && !isWeeklyCap(payload.weekly)) return fail(400, "invalid_query", "Enter a weekly cap between $0.01 and $100,000, in whole cents.");
       await usage.setCap(intent.pool, intent.owner, String(payload.member ?? ""), payload.weekly);
       return json(null);
     }
     const members = Array.isArray(payload.members) ? payload.members.filter(isMemberId).slice(0, maxMembers) : [];
-    return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members));
+    return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members, true));
   }
   private async create(registry: Registry, intent: SetupIntent, input: Record<string, unknown>): Promise<Response> {
     const name = text(input.name)?.trim();

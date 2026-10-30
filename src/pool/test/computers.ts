@@ -4,6 +4,7 @@ import { accessPrefix, accessTtl, type AccessChange } from "../access-contract.t
 import { ComputerHome } from "../computer-home.ts";
 import { backendUserName } from "../backend-users.ts";
 import { Computers } from "../computers.ts";
+import type { PoolUsage } from "../pool-usage.ts";
 import { HomeClient } from "../control.ts";
 import type { ComputerStorage, Registry } from "../computer-registry.ts";
 import { signEnvelope, signPoolToken, type PoolClaims } from "../token.ts";
@@ -20,7 +21,7 @@ export class Memory implements ComputerStorage {
   async put(key: string, value: unknown) { this.values.set(key, structuredClone(value)); }
 }
 
-export function fixture() {
+export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
   const storage = new Memory();
   let time = Date.parse("2026-01-01T00:00:00Z");
   const server = {
@@ -86,7 +87,7 @@ export function fixture() {
     throw new Error(`Unexpected Home request: ${method} ${endpoint}`);
   }), onProductEvent);
   home.observed = async () => null;
-  const make = () => new Computers({ storage, home, signingKey, previousSigningKey: previousKey, now: () => time, origin: "https://setup.example", onProductEvent });
+  const make = () => new Computers({ storage, home, signingKey, previousSigningKey: previousKey, now: () => time, origin: "https://setup.example", onProductEvent, usage });
   let computers = make();
   async function context(user = member, claims: PoolClaims = pool) {
     const token = await signPoolToken(signingKey, claims);

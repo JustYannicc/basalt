@@ -6,9 +6,10 @@ import { fail, object, text } from "./json.ts";
 import { setupTtl, type SetupIntent } from "./setup-links.ts";
 import type { PoolClaims } from "./token.ts";
 
-interface PoolEntry extends Omit<PoolAudience, "users"> {
+interface PoolEntry extends Omit<PoolAudience, "users" | "authorization" | "managers"> {
   users: string[]; at: number; pending: string[]; provisioned?: string[]; refuseBefore?: number; deleted?: boolean;
   ownerSource?: "token" | "audience" | "own";
+  authorization?: PoolAudience["authorization"]; managers?: readonly string[];
 }
 interface DirectoryState {
   pools: Record<string, PoolEntry>; refusals: Record<string, number>; people: Record<string, number>; refusalsVersion?: 2;
@@ -44,9 +45,18 @@ export class PoolDirectory {
   check(intent: SetupIntent) {
     if (!this.allowed(intent.pool, intent.user, intent.expiresAt - setupTtl))
       return fail(403, "unauthorized", "Access to this pool was removed. Open setup again from an available pool.");
+    const entry = this.entry(intent.pool);
+    if (entry?.authorization === "executor-app-v1" && !entry.users.includes(intent.user))
+      return fail(403, "unauthorized", "This pool is not available to you.");
+  }
+  permissions(pool: string, user: string) {
+    const entry = this.entry(pool);
+    if (entry?.authorization !== "executor-app-v1") return undefined;
+    return { canUse: entry.users.includes(user), canManage: entry.managers?.includes(user) === true };
   }
   async learn(claims: PoolClaims, user: string) {
     const existing = this.entry(claims.pool);
+    if (existing?.authorization === "executor-app-v1") return;
     if (!existing || !existing.ownerSource || existing.ownerSource === "own") {
       // Unverified metadata must not keep its claimed owner or membership after trusted claims arrive.
       this.state.pools[key(claims.pool)] = { ...claims, name: existing?.name ?? "", users: [user],
@@ -62,6 +72,7 @@ export class PoolDirectory {
     if (!pool?.trim() || !organization?.trim() || !this.allowed(pool, user, now)) return;
     const existing = this.entry(pool);
     if (existing && (existing.owner !== user || existing.organization !== organization)) return;
+    if (existing?.authorization === "executor-app-v1") return;
     if (!existing) this.state.pools[key(pool)] = { pool, organization, owner: user,
       name: "", users: [user], at: -1, pending: [], ownerSource: "own" };
     else if (!existing.users.includes(user)) existing.users = [...existing.users, user];
@@ -69,7 +80,8 @@ export class PoolDirectory {
   }
   choices(user: string, issuedAt: number, own: PoolClaims): PoolChoice[] {
     const pools = Object.values(this.state.pools).filter((pool) =>
-      (pool.owner === user || pool.users.includes(user) || pool.pool === own.pool) && this.allowed(pool.pool, user, issuedAt));
+      (pool.users.includes(user) || (pool.authorization !== "executor-app-v1"
+        && (pool.owner === user || pool.pool === own.pool))) && this.allowed(pool.pool, user, issuedAt));
     if (!this.entry(own.pool) && this.allowed(own.pool, user, issuedAt))
       return [...pools.map((pool) => ({ id: pool.pool, name: pool.name, mine: pool.owner === user })), { id: own.pool, name: "", mine: own.owner === user }];
     return pools.map((pool) => ({ id: pool.pool, name: pool.name, mine: pool.owner === user }));
@@ -97,7 +109,8 @@ export class PoolDirectory {
     }
     this.state.pools[key(pool)] = { pool, owner: old?.owner ?? "", organization: old?.organization ?? "",
       name: old?.name ?? "", users: [], at: Math.max(at, old?.at ?? -1), pending: [],
-      refuseBefore: Math.max(old?.refuseBefore ?? 0, now + accessGrace), ownerSource: old?.ownerSource };
+      refuseBefore: Math.max(old?.refuseBefore ?? 0, now + accessGrace), ownerSource: old?.ownerSource,
+      ...(old?.authorization === "executor-app-v1" ? { authorization: old.authorization, managers: [] } : {}) };
   }
   private confirmsPending(pool: string, user: string, at: number, registry: Registry): boolean {
     // A failed member removal can roll back before grace expires. Deletions still refuse it.
@@ -147,7 +160,10 @@ export class PoolDirectory {
         if (old && change.at < old.at) continue;
         // A projection computed during removal must not restore the person or pool.
         if (change.at < (old?.refuseBefore ?? -Infinity)) continue;
-        const projected = [...new Set([audience.owner, ...audience.users])];
+        // A retained writer may revoke access, but cannot restore a grant the native policy denied.
+        const legacy = old?.authorization === "executor-app-v1" && audience.authorization === undefined;
+        const projected = [...new Set(legacy ? audience.users.filter((user) => old.users.includes(user))
+          : audience.authorization === "executor-app-v1" ? audience.users : [audience.owner, ...audience.users])];
         const users = projected.filter((user) => old?.users.includes(user) || this.allowed(audience.pool, user, change.at)
           || this.confirmsPending(audience.pool, user, change.at, registry));
         for (const user of old?.users ?? []) if (!projected.includes(user)) this.refuse(audience.pool, user, now);
@@ -155,6 +171,10 @@ export class PoolDirectory {
         for (const user of users) if (user !== audience.owner && !old?.provisioned?.includes(user)) pending.add(user);
         this.state.pools[key(audience.pool)] = { ...audience, users, at: change.at, provisioned: old?.provisioned ?? [],
           pending: [...pending].filter((user) => users.includes(user)), refuseBefore: old?.refuseBefore, ownerSource: "audience" };
+        if (legacy) {
+          this.state.pools[key(audience.pool)]!.authorization = old.authorization;
+          this.state.pools[key(audience.pool)]!.managers = old.managers;
+        }
         selected.add(audience.pool);
         for (const computer of Object.values(registry)) {
           if (!boundPools(computer).includes(audience.pool) || users.includes(computer.user)) continue;
@@ -176,6 +196,7 @@ export class PoolDirectory {
         pool.users = pool.users.filter((user) => user !== change.user);
         pool.pending = pool.pending.filter((user) => user !== change.user);
         pool.provisioned = pool.provisioned?.filter((user) => user !== change.user);
+        if (pool.managers) pool.managers = pool.managers.filter((user) => user !== change.user);
         this.refuse(pool.pool, change.user, now);
       }
       for (const computer of Object.values(registry)) if (computer.user === change.user) remove.add(computer);

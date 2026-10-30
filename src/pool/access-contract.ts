@@ -23,13 +23,17 @@ export const accessGrace = 60_000;
 export interface PoolAudience {
   /** The pool app's id; the `pool` claim of its pool token. */
   readonly pool: string;
-  /** The pool's owner; always allowed, whether listed or not. */
+  /** The pool's recorded owner. Use and management follow the projected policy. */
   readonly owner: string;
   readonly organization: string;
   /** The app's display name, such as "Ada's pool". */
   readonly name: string;
-  /** Tools-service user ids with use access after the change, owner included. */
+  /** Tools-service user ids with use access after the change. */
   readonly users: readonly string[];
+  /** Absent on assertions from a retained host. */
+  readonly authorization?: "executor-app-v1";
+  /** Native app managers, independent of the use audience. Required for the native policy. */
+  readonly managers?: readonly string[];
 }
 
 export type AccessChange =

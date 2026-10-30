@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Redacted, Schema } from "effect";
 import {
   fixture,
   load,
@@ -53,6 +53,141 @@ test("shareApp sends signed post-write audiences inside its transaction; worker 
       assert.deepEqual(changes.at(-1).pools[0].users, ["owner"]);
     }),
   );
+});
+
+test("native pool handoff follows app groups and keeps management independent of use", async () => {
+  await fixture(({ sql, changes, hook, transaction }) =>
+    Effect.gen(function* () {
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+      yield* sql`insert into hosted_groups (id, organization_id, name) values ('g-native', ${organization}, 'Pool users')`;
+      yield* sql`insert into hosted_group_members values ('g-native', 'm-guest')`;
+      yield* share(sql, "groups", ["g-native"]);
+      const first = changes.at(-1).pools[0];
+      assert.equal(first.authorization, "executor-app-v1");
+      assert.deepEqual(first.users, ["guest"]);
+      assert.deepEqual(first.managers, ["other", "owner"]);
+      yield* transaction(Effect.gen(function* () {
+        yield* sql`delete from hosted_group_members where group_id = 'g-native'`;
+        yield* hook.appAccessChanged({ organization, apps: [pool] });
+      }));
+      assert.deepEqual(changes.at(-1).pools[0].users, []);
+      assert.deepEqual(changes.at(-1).pools[0].managers, ["other", "owner"]);
+    }),
+  );
+});
+
+test("native pool membership removal omits use and management without changing the stored audience", async () => {
+  await fixture(({ sql, changes, hook }) =>
+    Effect.gen(function* () {
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+      yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
+      const before = yield* sql`select * from hosted_app_access where id = ${pool}`;
+      yield* hook.memberRemoving({ organization, member: "m-other" });
+      assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "owner"]);
+      assert.deepEqual(changes.at(-1).pools[0].managers, ["owner"]);
+      assert.deepEqual(yield* sql`select * from hosted_app_access where id = ${pool}`, before);
+      assert.equal((yield* sql`select * from member where id = 'm-other'`).length, 1);
+    }),
+  );
+});
+
+test("role demotion acknowledges the resulting native policy before the role changes", async () => {
+  const { organizationAccessHooks } = await load("apps/hosted/cloud/src/implementation/access-hooks.ts");
+  await fixture(({ sql, changes, hook, fail }) => Effect.gen(function* () {
+    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+    yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
+    const callbacks = organizationAccessHooks({
+      memberRemoving: async () => {}, membersAdded: async () => {}, userDeleting: async () => {},
+      memberRoleChanging: (organization: string, member: string, role: string) => Effect.runPromise(
+        hook.memberRoleChanging({ organization, member, role }).pipe(Effect.provideService(SqlClient, sql)),
+      ),
+    });
+    const demote = () => Effect.tryPromise(() => callbacks.beforeUpdateMemberRole({
+      newRole: "member", member: { id: "m-other" }, organization: { id: organization },
+    }));
+    yield* demote();
+    assert.deepEqual(changes.at(-1).pools[0].users, ["guest", "other", "owner"]);
+    assert.deepEqual(changes.at(-1).pools[0].managers, ["owner"]);
+    assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+    fail();
+    const result = yield* Effect.exit(demote().pipe(Effect.andThen(sql`update member set role = 'member' where id = 'm-other'`)));
+    assert.equal(result._tag, "Failure");
+    assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+  }));
+});
+
+for (const encoding of ["json", "form", "multipart"]) test(`concurrent audience projection waits for the native ${encoding} membership write after its before-hook`, async () => {
+  const { withOrganizationAccessRequest } = await load("apps/hosted/cloud/src/implementation/organization-access-request.ts");
+  await fixture(({ sql, changes, hook }) => Effect.gen(function* () {
+    yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+      '{basaltPools,owner,authorization}', '"executor-app-v1"'::jsonb)::text where id = ${organization}`;
+    yield* sql`update hosted_app_access set audience = 'everyone' where id = ${pool}`;
+    const projected = yield* Deferred.make<void>();
+    const competing = yield* Deferred.make<void>();
+    const fields = { organizationId: organization, memberId: "m-other", role: "member" };
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
+    const request = new Request("https://host.example.test/api/auth/organization/update-member-role", {
+      method: "POST", ...(encoding === "json" ? { headers: { "content-type": "application/json" } } : {}),
+      body: encoding === "json" ? JSON.stringify(fields) : encoding === "form" ? new URLSearchParams(fields) : form,
+    });
+    const role = withOrganizationAccessRequest(request, { settled: Effect.void, run: () => Effect.gen(function* () {
+      yield* hook.memberRoleChanging({ organization, member: "m-other", role: "member" });
+      yield* Deferred.succeed(projected, undefined);
+      yield* Deferred.await(competing);
+      yield* Effect.yieldNow;
+      yield* sql`update member set role = 'member' where id = 'm-other'`;
+    }) });
+    const projection = Effect.gen(function* () {
+      yield* Deferred.await(projected);
+      yield* Deferred.succeed(competing, undefined);
+      yield* hook.appAccessChanged({ organization });
+    });
+    yield* Effect.all([role, projection], { concurrency: "unbounded" });
+    assert.equal(changes.length, 2);
+    assert.deepEqual(changes[0].pools[0].managers, ["owner"]);
+    assert.deepEqual(changes[1].pools[0].managers, ["owner"]);
+    assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "member" }]);
+  }));
+});
+
+test("a rejected native handler drains background writes before returning its borrowed transaction", async () => {
+  const { withOrganizationAccessRequest } = await load("apps/hosted/cloud/src/implementation/organization-access-request.ts");
+  await fixture(({ sql }: { sql: Sql.SqlClient }) => Effect.gen(function* () {
+    const draining = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let background = Promise.resolve();
+    const request = new Request("https://host.example.test/api/auth/organization/update-member-role", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ organizationId: organization, memberId: "m-other", role: "member" }),
+    });
+    const call = withOrganizationAccessRequest(request, {
+      run: () => Effect.gen(function* () {
+        const context = yield* Effect.context<never>();
+        return yield* Effect.promise(async () => {
+          background = Effect.runPromise(Deferred.await(release).pipe(
+            Effect.andThen(sql`update member set role = 'member' where id = 'm-other'`),
+            Effect.asVoid, Effect.provideContext(context),
+          ));
+          throw new Error("Native handler rejected after starting background work");
+        });
+      }),
+      settled: Deferred.succeed(draining, undefined).pipe(Effect.andThen(Effect.promise(() => background))),
+    });
+    const fiber = yield* Effect.forkChild(Effect.exit(call));
+    yield* Effect.gen(function* () {
+      yield* Effect.raceFirst(
+        Deferred.await(draining),
+        Fiber.join(fiber).pipe(Effect.andThen(Effect.sync(() => assert.fail("Transaction returned before native background work drained")))),
+      );
+      yield* Deferred.succeed(release, undefined);
+      assert.equal((yield* Fiber.join(fiber))._tag, "Failure");
+      assert.deepEqual(yield* sql`select role from member where id = 'm-other'`, [{ role: "admin" }]);
+    }).pipe(Effect.ensuring(Deferred.succeed(release, undefined).pipe(Effect.andThen(Effect.promise(() => background)))));
+  }));
 });
 
 test("member removal projects the audience without its membership and refuses a failed acknowledgement", async () => {

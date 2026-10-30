@@ -357,6 +357,15 @@
       "upstream_pull_request": 2456,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-native-pool-authorization",
+      "file": "0040-native-pool-authorization.patch",
+      "content_sha256": "d2ec3e2337adf9e3c22e44f22f9f952a81f2850cbfa49df6ea1a64ce814d823d",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
