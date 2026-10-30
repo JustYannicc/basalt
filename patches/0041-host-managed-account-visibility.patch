@@ -522,23 +522,27 @@ index 96a575a..732386a 100644
      fixtures: "actors",
      legacyStorage: true,
 diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
-index f9bf3e3..fc9ce41 100644
 --- a/e2e/tests/executor-key-account.spec.ts
 +++ b/e2e/tests/executor-key-account.spec.ts
-@@ -75,12 +75,18 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+@@ -75,12 +75,20 @@
            yield* browser.use("Open Executor's accounts", (page) =>
              page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
            );
 -          yield* browser.use("The Accounts tab shows this user's linked managed account", (page) =>
-+          // The managed key is the host's credential: it fills the requirement without a row.
-+          yield* browser.use("The Accounts tab says the managed key is set up for this user", (page) =>
-             page
+-            page
 -              .getByRole("list", { name: "Executor accounts", exact: true })
 -              .getByRole("radio", { name: account.label, exact: true, checked: true })
-+              .getByRole("region", { name: "Executor", exact: true })
-+              .getByText("Set up automatically", { exact: true })
-               .waitFor(),
-           );
+-              .waitFor(),
+-          );
++          // The managed key is the host's credential: it fills the requirement without a row.
++          yield* browser.use(
++            "The Accounts tab says the managed key is set up for this user",
++            (page) =>
++              page
++                .getByRole("region", { name: "Executor", exact: true })
++                .getByText("Set up automatically", { exact: true })
++                .waitFor(),
++          );
 +          expect(
 +            yield* browser.use("The managed key is not offered as a sign-in", (page) =>
 +              page.getByRole("radio", { name: account.label, exact: true }).count(),
@@ -547,7 +551,7 @@ index f9bf3e3..fc9ce41 100644
            yield* browser.use("Return to the app list", (page) =>
              page.getByRole("link", { name: "Back to apps", exact: true }).click(),
            );
-@@ -91,7 +97,8 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+@@ -91,7 +99,8 @@
            const card = yield* browser.use("The card agrees with the Accounts tab", (page) =>
              page.getByRole("link", { name: "Open Executor", exact: true }).innerText(),
            );
@@ -557,7 +561,7 @@ index f9bf3e3..fc9ce41 100644
            expect(card).not.toContain("Needs account");
            // Add app knows the default app is installed, so its Executor row offers Open, not Add.
            yield* browser.use("Open Add app", (page) =>
-@@ -126,62 +133,37 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+@@ -126,62 +135,39 @@
              const directory = yield* body(
                Schema.Struct({
                  apps: Schema.Array(
@@ -569,8 +573,10 @@ index f9bf3e3..fc9ce41 100644
 +                      Schema.Array(Schema.Struct({ account: Schema.String })),
 +                    ),
 +                  }),
++                ),
++                accounts: Schema.Array(
++                  Schema.Struct({ account: Schema.Struct({ id: Schema.String }) }),
                  ),
-+                accounts: Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
                }),
                yield* api.request(actor, "GET", `${prefix}/resources?view=${view}`),
              );
@@ -637,10 +643,9 @@ index f9bf3e3..fc9ce41 100644
                    .getByRole("link", { name: "Open Executor", exact: true })
 diff --git a/e2e/tests/host-managed-accounts.spec.ts b/e2e/tests/host-managed-accounts.spec.ts
 new file mode 100644
-index 0000000..9e652a0
 --- /dev/null
 +++ b/e2e/tests/host-managed-accounts.spec.ts
-@@ -0,0 +1,297 @@
+@@ -0,0 +1,302 @@
 +/**
 + * People's account lists leave out the host's own credentials: a method declared `provisioned`,
 + * a default access key, or one the host's provisioning records prove. Labels prove nothing, and
@@ -827,12 +832,17 @@ index 0000000..9e652a0
 +          Promise.all([
 +            page.locator("main").getByText("Pool access (retired)", { exact: true }).count(),
 +            page.locator("main").getByText("Pool access", { exact: true }).count(),
-+            page.locator("main").getByText(/^Your .+ access$/).count(),
++            page
++              .locator("main")
++              .getByText(/^Your .+ access$/)
++              .count(),
 +          ]),
 +        );
 +        expect(rows).toEqual([1, 0, 0]);
 +
-+        yield* browser.use("Open Apps", (page) => page.goto(`/org/${actors.organization.slug}/apps`));
++        yield* browser.use("Open Apps", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps`),
++        );
 +        const card = yield* browser.use("Read the pool card", (page) =>
 +          page.getByRole("link", { name: /^Open Synthetic pool/ }).innerText(),
 +        );
@@ -939,10 +949,53 @@ index 0000000..9e652a0
 +  );
 +});
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
-index 589b022..e6a32e8 100644
 --- a/e2e/tests/product-brand.spec.ts
 +++ b/e2e/tests/product-brand.spec.ts
-@@ -127,8 +127,17 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+@@ -103,10 +103,16 @@
+         );
+         yield* browser.use("The built-in app's page names the configured product", (page) =>
+           page
+-            .getByRole("heading", { name: productBrand.name, exact: true })
+-            .first()
+-            .waitFor({ state: "visible" }),
+-        );
++            .getByRole("heading", { name: `${productBrand.name} overview`, exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("Read the built-in app's heading", (page) =>
++            page
++              .getByRole("heading", { name: `${productBrand.name} overview`, exact: true })
++              .innerText(),
++          ),
++        ).toBe(productBrand.name);
+         expect(
+           yield* browser.use("Read the built-in app's page", (page) =>
+             page.locator("main").innerText(),
+@@ -116,9 +122,19 @@
+         yield* browser.use("Open the built-in app's accounts", (page) =>
+           page.goto(`${page.url().split("?")[0]}?view=accounts`),
+         );
+-        yield* browser.use("The provider shows the configured name", (page) =>
+-          page.getByText(productBrand.name, { exact: true }).first().waitFor({ state: "visible" }),
+-        );
++        yield* browser.use("Automatic access names the configured provider", (page) =>
++          page
++            .getByRole("region", { name: productBrand.name, exact: true })
++            .getByText("Set up automatically", { exact: true })
++            .waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("The managed key is not offered as a sign-in", (page) =>
++            page
++              .getByRole("radio", { name: `Your ${productBrand.name} access`, exact: true })
++              .count(),
++          ),
++        ).toBe(0);
+         expect(
+           yield* browser.use("Read the built-in app's accounts", (page) =>
+             page.locator("main").innerText(),
+@@ -127,8 +143,21 @@
          yield* browser.use("Open accounts", (page) =>
            page.goto(`${origin}/org/${actors.organization.slug}/accounts`),
          );
@@ -954,7 +1007,11 @@ index 589b022..e6a32e8 100644
 +        );
 +        const inventory = yield* body(
 +          Schema.Struct({ accounts: Schema.Array(Schema.Struct({ label: Schema.String })) }),
-+          yield* api.request(actors.owner, "GET", `/api/organizations/${actors.organization.id}/inventory`),
++          yield* api.request(
++            actors.owner,
++            "GET",
++            `/api/organizations/${actors.organization.id}/inventory`,
++          ),
 +        );
 +        expect(inventory.accounts.map((account) => account.label)).toContain(
 +          `Your ${productBrand.name} access`,

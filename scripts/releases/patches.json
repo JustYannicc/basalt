@@ -370,7 +370,7 @@
     {
       "identity": "basalt-host-managed-account-visibility",
       "file": "0041-host-managed-account-visibility.patch",
-      "content_sha256": "7721f9a9e50f1f1a2301a841d9e155a28b8b1fbdfed4444d9b940b38bc8e398a",
+      "content_sha256": "105634254ca849e9b55514e9354b1ecdee09d5d5136d9e16ffb04f18e67ae5e1",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
