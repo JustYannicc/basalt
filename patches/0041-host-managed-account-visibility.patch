@@ -949,19 +949,13 @@ new file mode 100644
 +  );
 +});
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+index 8d710ea..bd9e33c 100644
 --- a/e2e/tests/product-brand.spec.ts
 +++ b/e2e/tests/product-brand.spec.ts
-@@ -103,10 +103,16 @@
+@@ -107,6 +107,13 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+             .getByRole("heading", { name: `${productBrand.name} overview`, exact: true })
+             .waitFor({ state: "visible" }),
          );
-         yield* browser.use("The built-in app's page names the configured product", (page) =>
-           page
--            .getByRole("heading", { name: productBrand.name, exact: true })
--            .first()
--            .waitFor({ state: "visible" }),
--        );
-+            .getByRole("heading", { name: `${productBrand.name} overview`, exact: true })
-+            .waitFor({ state: "visible" }),
-+        );
 +        expect(
 +          yield* browser.use("Read the built-in app's heading", (page) =>
 +            page
@@ -969,22 +963,21 @@ diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
 +              .innerText(),
 +          ),
 +        ).toBe(productBrand.name);
-         expect(
-           yield* browser.use("Read the built-in app's page", (page) =>
-             page.locator("main").innerText(),
-@@ -116,9 +122,19 @@
+         // Its skills load after the page; read the page once they have, and the `executor` skill
+         // shows under the product's MCP name.
+         yield* browser.use(
+@@ -135,9 +142,19 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
          yield* browser.use("Open the built-in app's accounts", (page) =>
            page.goto(`${page.url().split("?")[0]}?view=accounts`),
          );
 -        yield* browser.use("The provider shows the configured name", (page) =>
 -          page.getByText(productBrand.name, { exact: true }).first().waitFor({ state: "visible" }),
--        );
 +        yield* browser.use("Automatic access names the configured provider", (page) =>
 +          page
 +            .getByRole("region", { name: productBrand.name, exact: true })
 +            .getByText("Set up automatically", { exact: true })
 +            .waitFor({ state: "visible" }),
-+        );
+         );
 +        expect(
 +          yield* browser.use("The managed key is not offered as a sign-in", (page) =>
 +            page
@@ -995,7 +988,7 @@ diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
          expect(
            yield* browser.use("Read the built-in app's accounts", (page) =>
              page.locator("main").innerText(),
-@@ -127,8 +143,21 @@
+@@ -146,8 +163,21 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
          yield* browser.use("Open accounts", (page) =>
            page.goto(`${origin}/org/${actors.organization.slug}/accounts`),
          );
