@@ -99,8 +99,9 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
   const report = output.split(/\r?\n/).map((line) => {
     try { return JSON.parse(line) as Record<string, unknown>; } catch { return undefined; }
   }).find((value) =>
-    (value?.installedClaude === true ||
-      (process.env.CONNECTORS_PROOF_SKIP_CLAUDE === "1" && value?.installedClaudeSkipped === true))
+    ((value?.installedClaude === true && value?.installedAgentNativeToolCall === true) ||
+      (process.env.CONNECTORS_PROOF_SKIP_CLAUDE === "1"
+        && value?.installedClaudeSkipped === true && value?.installedAgentNativeToolCallSkipped === true))
     && value?.publishedGoogleEmulatorOAuth === true
     && value?.testAccountsProvisionedByPinnedCli === true
     && value?.gitlabTwoOriginRuntime === true

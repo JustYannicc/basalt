@@ -19,7 +19,7 @@ export function proveZendeskNative({
     const { users, flowByKey } = yield* proveZendeskOAuth({
       Effect, request, checked, actors, prefix, callback, fixtures, catalog, record,
     });
-    yield* proveZendeskMcp({
+    const nativeProof = yield* proveZendeskMcp({
       Effect, request, checked, actors, directory, prefix, target, root, upstream, fixtures, catalog, users, flowByKey, record, step,
     });
     const observations = fixtures.observations();
@@ -62,7 +62,7 @@ export function proveZendeskNative({
       failures: fixtures.failures(),
     }, null, 2)}\n`, { mode: 0o600 }));
     const report = {
-      checks: 100,
+      checks: nativeProof.installedAgentNativeToolCall ? 100 : 99,
       zendeskNativeAuthorizationStart: true,
       storedPublicClientSelectedAtBothSites: true,
       confidentialByoSelectedAtBothSites: true,
@@ -78,7 +78,7 @@ export function proveZendeskNative({
       hostedManagedClientRotationAtExactAccountSite: true,
       hostedManagedClientPeerHostPlacementDenied: true,
       zendeskTicketCreateApprovalPreserved: true,
-      installedAgentNativeToolCall: true,
+      ...nativeProof,
       hostedZendeskClientRegistrationProven: false,
       liveZendeskConsentProven: false,
     };
