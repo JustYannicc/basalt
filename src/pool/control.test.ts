@@ -209,7 +209,7 @@ test("only GET pool is available to a non-owner; empty reads create nothing", as
   for (const [path, method] of [["/sign-ins", "POST"], ["/sign-ins", "DELETE"], ["/sign-ins/status", "GET"], ["/sign-ins/callback", "POST"], ["/login-files", "POST"], ["/accounts/fake", "DELETE"]]) {
     await error(await f.call(path!, { method, owner: false }), "not_owner", 403);
   }
-  assert.deepEqual(f.home.calls.map((call) => call.path), ["/v8/management/channel-groups"]);
+  assert.deepEqual(f.home.calls.map((call) => call.path), ["/v8/management/channel-groups", "/v8/management/credentials"]);
 });
 
 test("unknown routes and lookalike boundaries return not_found", async () => {
@@ -461,7 +461,7 @@ for (const kind of ["network", "500", "401", "403", "malformed"] as const) {
     f.home.override = () => { if (kind === "network") throw new Error("private diagnostic"); return new Response(kind === "malformed" ? "not JSON" : "private diagnostic", { status: kind === "malformed" ? 200 : Number(kind) }); };
     const response = await f.call("/pool");
     await error(response, "backend_unavailable", 503);
-    assert.equal(f.home.calls.length, 1);
+    assert.deepEqual(f.home.calls.map((call) => call.path), ["/v8/management/channel-groups", "/v8/management/credentials"]);
   });
 }
 
@@ -670,6 +670,23 @@ test("attribution loads once, throttles poll persistence, and keeps only provide
   assert.equal(f.storage.puts, before.puts + 1);
   assert.equal(f.storage.gets, 1);
   assert.equal(f.storage.alarmReads, 1);
+});
+
+test("pool view starts credentials before membership finishes", async () => {
+  const f = await fixture();
+  f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+  const entered = deferred<void>(), release = deferred<void>(), credentials = deferred<void>();
+  f.home.override = async (path) => {
+    if (path.endsWith("/channel-groups")) { entered.resolve(); await release.promise; }
+    if (path.endsWith("/credentials")) credentials.resolve();
+    return undefined;
+  };
+  const reading = f.call("/pool");
+  await entered.promise;
+  try {
+    await withoutWaitingForGate(credentials.promise);
+    assert.ok(f.home.calls.some((call) => call.path.endsWith("/credentials")));
+  } finally { release.resolve(); await reading; }
 });
 
 test("pool view reads credentials and quota concurrently and reuses cached channel groups", async () => {

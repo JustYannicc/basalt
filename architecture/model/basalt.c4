@@ -283,7 +283,9 @@ model {
     description "The pool control API verifies the pool token and caller; scoped to the pool's channel group; owner-only changes."
   }
   basalt.poolController -[model]-> basalt.poolRuntime "inference on port 8317"
-  basalt.poolController -[sync]-> basalt.poolRuntime "management on port 8327"
+  basalt.poolController -[sync]-> basalt.poolRuntime "management on port 8327" {
+    description "Pool views overlap membership and credential reads, then read only the membership-scoped quota details with bounded concurrency. Operation timings record fixed names, durations and counts without Home response data; readiness warming is timed separately."
+  }
   basalt.poolController -[sync]-> basalt.poolRuntime "start or reuse; GET /ready on port 8318"
   basalt.modelGateway -[sync]-> basalt.poolRuntime "container port bindings"
   basalt.modelGateway -[model]-> basalt.pool "serve request" {
