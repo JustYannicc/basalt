@@ -9,7 +9,7 @@ import providers from "./providers.json" with { type: "json" };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (specifier === "cloudflare:workers") return {
-      url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }",
+      url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}",
       shortCircuit: true,
     };
     if (specifier === "pg") return {
@@ -21,11 +21,37 @@ const hooks = registerHooks({
 });
 // Keep Workers-only declarations out of the Node typecheck, like the runtime stub above.
 const workerModule = "./worker.ts";
-const { PoolContainer, default: poolWorker }: {
+const { PoolContainer, PoolOperations, default: poolWorker }: {
   PoolContainer: new (ctx: object, env: object) => { fetch(request: Request): Promise<Response>; alarm(): Promise<void> };
+  PoolOperations: { prototype: { fetch(this: { env: object }, request: Request): Promise<Response> } };
   default: { fetch(request: Request, env: object): Promise<Response> };
 } = await import(workerModule);
 hooks.deregister();
+
+test("operator calls require the named entrypoint and never enter the public pool routes", async () => {
+  const calls: unknown[] = [];
+  const plan = { total: 2, enabled: 1, pending: 1, writes: 2, digest: "a".repeat(64), limit: 50 };
+  const env = { PoolContainer: { jurisdiction(region: string) {
+    assert.equal(region, "eu");
+    return { getByName(name: string) {
+      assert.equal(name, "control-plane");
+      return { async migrateCodexWebSockets(approved: unknown) {
+        calls.push(approved);
+        return { ...plan, applied: approved ? 2 : 0, status: approved ? "complete" : "dry-run" };
+      } };
+    } };
+  } } };
+  const path = "https://pool.example/codex-websockets";
+  assert.equal((await poolWorker.fetch(new Request(path), env)).status, 404);
+  assert.equal(calls.length, 0);
+  const invoke = (request: Request) => PoolOperations.prototype.fetch.call({ env }, request);
+  assert.equal((await invoke(new Request(path))).status, 200);
+  const approved = { digest: plan.digest, pending: plan.pending };
+  assert.equal((await invoke(new Request(path, { method: "POST", body: JSON.stringify(approved) }))).status, 200);
+  assert.deepEqual(calls, [undefined, approved]);
+  assert.equal((await invoke(new Request(path, { method: "POST", body: '{}' }))).status, 400);
+  assert.equal(calls.length, 2);
+});
 
 test("the Durable Object alarm provisions pending pool members", async () => {
   const pool = { pool: "fake-pool", owner: "fake-owner", organization: "fake-org", name: "Pool",

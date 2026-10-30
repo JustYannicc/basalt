@@ -13,7 +13,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild" }
+      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild"; bindings "platform.env.POOL_OPERATIONS=basalt.modelGateway" }
     }
 
     deployment = module "Deployment" {
@@ -239,6 +239,7 @@ model {
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
+  basalt.build -[sync]-> basalt.modelGateway "POOL_OPERATIONS: dry run or apply an approved bounded provider credential transport update through the private entrypoint"
   basalt.build -[sync]-> basalt.toolsGateway "write the pool app bundle as a hash-named site asset; copy token signer and access contract; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
   basalt.build -[sync]-> basalt.setupHost "bundle the root share React page from shared pool UI"

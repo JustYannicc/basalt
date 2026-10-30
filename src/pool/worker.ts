@@ -1,4 +1,4 @@
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
 import type { ProductEventCallback } from "../setup/product-events.ts";
 import { isControlPath } from "../../apps/pool/contract.ts";
@@ -22,6 +22,7 @@ import { PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
+import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
@@ -148,6 +149,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
+  async migrateCodexWebSockets(approved?: Pick<CodexWebSocketPlan, "digest" | "pending">) {
+    await this.managementReady();
+    const container = this.ctx.container;
+    if (!container) throw new Error("Pool container unavailable");
+    const client = new HomeClient((path, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("X-Management-Key", this.env.POOL_MANAGEMENT_KEY);
+      return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
+    });
+    return migrateCodexWebSockets(client, approved);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
     if (pathname === accessPath) return this.computers.access(request);
@@ -219,6 +232,29 @@ export async function handlePoolWorkerRequest(
 
 function modelAuthResponse(status: 401 | 503, error: string): Response {
   return Response.json({ error }, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+/** Only a service binding that explicitly selects this named entrypoint can invoke it. */
+export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
+  async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname !== "/codex-websockets") return new Response(null, { status: 404 });
+    try {
+      let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
+      if (request.method === "POST") {
+        const value: unknown = await request.json();
+        if (!value || typeof value !== "object" || !("digest" in value) || !("pending" in value)
+          || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)
+          || typeof value.pending !== "number" || !Number.isSafeInteger(value.pending) || value.pending < 0)
+          return new Response(null, { status: 400 });
+        approved = { digest: value.digest, pending: value.pending };
+      } else if (request.method !== "GET") return new Response(null, { status: 405 });
+      return Response.json(await singleton(this.env).migrateCodexWebSockets(approved), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    } catch {
+      return new Response(null, { status: 503 });
+    }
+  }
 }
 
 export default {

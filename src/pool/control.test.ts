@@ -91,6 +91,12 @@ class FakeHome {
       }
       return Response.json({ files: [...this.files.values()] });
     }
+    if (endpoint === "/credentials/fields" && method === "PATCH") {
+      const file = this.files.get(String(body.id));
+      if (!file) return Response.json({}, { status: 404 });
+      file.websockets = body.websockets;
+      return Response.json({ status: "ok" });
+    }
     if (endpoint === "/quota/credentials") {
       const limit = Number(url.searchParams.get("limit") ?? 50);
       if (limit < 1 || limit > 200) return Response.json({ error: "INVALID_PAGINATION" }, { status: 400 });
@@ -394,6 +400,63 @@ test("future Home auth_ids and auth_id are added idempotently", async () => {
   // Each new account's usage is read once, when it joins the pool.
   const reads = f.home.calls.filter((call) => call.path === "/v8/management/credentials/quota/fetch");
   assert.deepEqual(reads.map((call) => JSON.parse(String(call.body)).auth_index).sort(), ["exact-a", "exact-b"]);
+});
+
+test("Codex sign-in retries its saved account after a failed WebSocket enablement", async () => {
+  const f = await fixture();
+  const started = await f.start("pool-a", "codex");
+  await f.callback(started);
+  f.home.addFile("codex-connected", "codex");
+  Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "codex-connected" });
+  f.home.override = (path) => {
+    if (!path.endsWith("/credentials/fields")) return undefined;
+    // Home can persist the flag and fail ReloadAuths before it acknowledges the patch.
+    f.home.files.get("codex-connected")!.websockets = true;
+    return Response.json({}, { status: 503 });
+  };
+  await error(await f.poll(started), "backend_unavailable", 503);
+  assert.equal(f.home.members.length, 0);
+  f.restart();
+  f.home.override = undefined;
+  await status(await f.poll(started), { status: "connected", accountId: "codex-connected" });
+  assert.equal(f.home.files.get("codex-connected")!.websockets, true);
+  assert.equal(f.home.members.length, 1);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/credentials/fields")).length, 2);
+});
+
+test("terminal Codex enablement failure releases ids before any membership write", async () => {
+  const f = await fixture();
+  const started = await f.start("pool-a", "codex");
+  await f.callback(started);
+  f.home.addFile("codex-expired", "codex");
+  Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "codex-expired" });
+  f.home.override = (path) => path.endsWith("/credentials/fields") ? Response.json({}, { status: 503 }) : undefined;
+  await error(await f.poll(started), "backend_unavailable", 503);
+  f.advance(12 * 60_000);
+  await f.expire();
+  f.restart();
+  const saved = f.storage.values.get(attributionStorageKey) as { assigned: string[] };
+  assert.deepEqual(saved.assigned, []);
+  assert.equal(f.home.members.length, 0);
+  f.home.override = undefined;
+  const retried = await f.start("pool-a", "codex");
+  Object.assign(f.home.sessions.get(state(retried))!, { status: "ok", auth_id: "codex-expired" });
+  await status(await f.poll(retried), { status: "connected", accountId: "codex-expired" });
+});
+
+test("Codex login-file retry enables transport without uploading another credential", async () => {
+  const f = await fixture();
+  f.home.override = (path) => path.endsWith("/credentials/fields") ? Response.json({}, { status: 503 }) : undefined;
+  const body = { type: "codex", access_token: "fixture-token", websockets: false };
+  await error(await f.call("/login-files", { body }), "backend_unavailable", 503);
+  assert.equal(f.home.files.size, 1);
+  assert.equal(f.home.members.length, 0);
+  f.restart();
+  f.home.override = undefined;
+  assert.equal((await f.call("/login-files", { body })).status, 200);
+  assert.equal(f.home.files.size, 1);
+  assert.equal([...f.home.files.values()][0]!.websockets, true);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/credentials") && call.method === "POST").length, 1);
 });
 
 test("a provider account connection emits durable pool and account events once for the signed caller", async () => {
