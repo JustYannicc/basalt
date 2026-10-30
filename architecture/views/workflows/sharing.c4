@@ -39,7 +39,7 @@ views {
     title "Workflows/Basalt/Pick a computer's pool"
     description """
       Source implementation; live acceptance is pending deployment and a second person.
-      The setup page lists the person's computers in every pool they can use. Picking a pool is one click:
+      Connect lists the person's computers in every pool they can use. Picking a pool is one click:
       the controller checks that the person can use it and re-points the computer's existing key to that
       pool's channel group with the guarded write that never sends an empty list. Nothing changes on the
       computer, and its next request uses the new pool.

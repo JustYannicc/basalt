@@ -41,7 +41,7 @@
   "include": [
     "apps/pool/**/*.ts",
     "apps/pool/**/*.tsx",
-    "src/setup/ui.tsx"
+    "src/setup/*.tsx"
   ],
   "exclude": [
     "apps/pool/**/*.test.ts"

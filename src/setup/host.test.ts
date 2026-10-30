@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openEnvelope } from "../pool/token.ts";
 import { signIntent, setupTtl } from "../pool/setup-links.ts";
-import { handleSetup, type SetupEnv } from "./host.ts";
+import { handleSetup, handleSetupPage, type SetupEnv } from "./host.ts";
 
 const origin = "https://setup.example";
 const secret = "ab".repeat(32);
@@ -515,4 +515,29 @@ test("a link the pool minted on another pool than chosen is refused", async () =
   const response = await f.create({ intent: "signed-selection", name: "Laptop", pool: "pool-2", tools: false });
   assert.equal(response.status, 502);
   assert.ok(!(await response.text()).includes("opaque-link-token"));
+});
+
+test("the old /setup page sends people to their own organization's Connect page", async () => {
+  const page = (f: ReturnType<typeof fixture>, init: RequestInit = {}) =>
+    handleSetupPage(new Request(`${origin}/setup`, { headers: { cookie: "executor-hosted.session_token=fake-cookie" }, ...init }), f.env);
+  const own = fixture({ tools: ({ path }) => path === "/api/auth/organization/list" ? json([
+    { id: "organization-2", slug: "team", metadata: "{}" },
+    { id: "organization-1", slug: "acme", metadata: JSON.stringify({ basaltPools: { "user-1": { app: "pool-1" } } }) },
+  ]) : undefined });
+  const found = await page(own);
+  assert.equal(found.status, 302);
+  assert.equal(found.headers.get("location"), "/org/acme/connect");
+  assert.equal(found.headers.get("cache-control"), "no-store");
+  const only = await page(fixture({ tools: ({ path }) => path === "/api/auth/organization/list" ? json([{ id: "organization-9", slug: "solo" }]) : undefined }));
+  assert.equal(only.headers.get("location"), "/org/solo/connect");
+  const down = await page(fixture({ tools: ({ path }) => path === "/api/auth/organization/list" ? json({}, 503) : undefined }));
+  assert.equal(down.headers.get("location"), "/");
+  const signedOut = fixture();
+  const login = await handleSetupPage(new Request(`${origin}/setup`), signedOut.env);
+  assert.equal(login.headers.get("location"), "/login?redirect=%2Fsetup");
+  assert.deepEqual(signedOut.calls, []);
+  assert.equal((await page(fixture(), { method: "POST" })).status, 405);
+  // A signed-in person whose session can't be used yet goes to the dashboard, never round a login loop.
+  const unverified = fixture({ tools: ({ path }) => path === "/api/auth/get-session" ? json({ user: { id: "user-1", emailVerified: false } }) : undefined });
+  assert.equal((await page(unverified)).headers.get("location"), "/");
 });

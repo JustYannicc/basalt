@@ -5,13 +5,11 @@ views {
     title "Workflows/Basalt/Set up a computer"
     description """
       Source implementation; live setup acceptance is pending deployment and real-client proof.
-      Connections opens the root /setup page directly. Without an intent, the screen requests
-      /setup/v1/context; the host verifies the native cookie session, finds the caller's own pool,
+      Connect's coding-agent guides request /setup/v1/context; the host verifies the native cookie session, finds the caller's own pool,
       checks its creator and queries its existing computerContext operation. The host verifies that
       returned intent's signature, caller and pool before returning it. This read creates no keys.
-      The pool app also requests a signed, expiring user-and-pool intent and opens the
-      root /setup page with it. The router serves the React screen as static assets; the screen reuses
-      apps/pool UI components. The HTTP host checks the native cookie session and creates a personal
+      The old root /setup page only redirects to the caller's own organization's Connect page. The HTTP
+      host checks the native cookie session and creates a personal
       tools PAT pinned to the organization holding the caller's own pool, also on a shared pool.
       Setup works on the caller's own pool or one shared with them; see the sharing workflows. A link may
       name any pool in the caller's choices, checked the same way as switching, and may skip the tools PAT
@@ -32,8 +30,8 @@ views {
     """
 
     include poolOwner, localClient, basalt.pool, basalt.router, basalt.setupHost, basalt.setupInstaller, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
-    poolOwner -> localClient "Connections: Set up this computer opens /setup"
-    localClient -> basalt.router "GET /setup/v1/context when no intent was supplied"
+    poolOwner -> localClient "Connect: Copy setup prompt"
+    localClient -> basalt.router "GET /setup/v1/context"
     basalt.router -> basalt.setupHost "resolve setup entry without credentials"
     basalt.setupHost -> basalt.toolsGateway "native session, organization list and pool creator; query computerContext"
     basalt.toolsGateway -> basalt.pool "run computerContext with the caller"
@@ -44,9 +42,6 @@ views {
     basalt.router <- basalt.modelGateway "signed setup context"
     basalt.pool <- basalt.router "setup context"
     basalt.setupHost <- basalt.toolsGateway "verify signed intent for caller and own pool; return intent only"
-    poolOwner -> localClient "open root /setup with intent"
-    localClient -> basalt.router "GET /setup; load static React screen"
-    localClient <- basalt.router "setup screen and static assets"
     localClient -> basalt.router "POST /setup/v1/links with intent, computer name and optional pool and tools choice"
     basalt.router -> basalt.setupHost "handle same-origin browser setup"
     basalt.setupHost -> basalt.toolsGateway "native cookie-auth get-session"

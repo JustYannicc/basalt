@@ -1,7 +1,7 @@
 import { isControlPath } from "../apps/pool/contract.ts";
 import { isPublicModelPath } from "./pool/lifecycle.ts";
 import { appHosting, brand } from "../brand.ts";
-import { handleSetup } from "./setup/host.ts";
+import { handleSetup, handleSetupPage } from "./setup/host.ts";
 import { handleShare } from "./setup/share.ts";
 import { observeToolCall } from "./setup/tool-observation.ts";
 import { handleFeedback } from "./feedback/host.ts";
@@ -182,6 +182,7 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (pathname.startsWith("/catalog/")) return env.CATALOG_SERVICE.fetch(request);
   if (pathname.startsWith("/feedback/v1/")) return handleFeedback(request, env);
   if (pathname.startsWith("/__telemetry/")) return handleRelay(request, env);
+  if (pathname === "/setup" || pathname === "/setup/") return handleSetupPage(request, env);
   if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/")) return handleSetup(request, {
     ...env,
     onProductEvent: (event, accountId) => {

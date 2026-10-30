@@ -320,11 +320,17 @@ test("unknown app subdomains return empty 404s without reaching any service", as
 test("product hosts keep dashboard, pool and static asset routing", async () => {
   const env: RouterEnv = {
     ...envWithToolsService(async () => new Response("dashboard")),
-    ASSETS: { fetch: async (request) => new URL(request.url).pathname === "/setup" ? new Response("setup asset") : new Response(null, { status: 404 }) },
+    ASSETS: { fetch: async (request) => new URL(request.url).pathname === "/brand/logo.png" ? new Response("brand asset") : new Response(null, { status: 404 }) },
     APP_UI_SERVICE: { fetch: async () => { throw new Error("product request reached app UI"); } },
   };
   assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/settings"), env)).text(), "dashboard");
-  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/setup"), env)).text(), "setup asset");
+  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/brand/logo.png"), env)).text(), "brand asset");
+  // The old setup page redirects; signed out, to sign-in.
+  for (const path of ["/setup", "/setup/", "/SETUP"]) {
+    const moved = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
+    assert.equal(moved.status, 302, path);
+    assert.equal(moved.headers.get("location"), "/login?redirect=%2Fsetup", path);
+  }
   assert.equal((await handleRequest(new Request("https://app.signalbox.run/v1/models"), env)).status, 202);
   const stage = { ...env, DASHBOARD_HOST: "app.fixture.invalid" };
   assert.equal(await (await handleRequest(new Request("https://app.fixture.invalid/settings"), stage)).text(), "dashboard");

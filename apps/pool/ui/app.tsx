@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Account, PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
@@ -8,9 +8,7 @@ import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 /** Where the owner connects and removes subscriptions: the host's own Accounts tab for this app. */
 const connectHint = "Connect subscriptions from this app's Accounts tab: choose Connect new account under Subscription.";
 import { duration, lastReading } from "./usage.ts";
-import { Computers } from "./computers.tsx";
 import { Usage } from "./usage-view.tsx";
-import type { ComputersApi } from "./computer-types.ts";
 
 const refresh = 60_000;
 
@@ -47,20 +45,19 @@ export function App({ api }: { api: PoolApi }) {
   const { view, error, load } = usePool(api);
   const now = useNow();
   const [removeError, setRemoveError] = useState<string>();
-  const [setupHref, setSetupHref] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
-  const computers = useMemo<ComputersApi>(() => ({
-    computers: async () => {
-      const result = await api.computerContext();
-      if (result.ok) {
-        setSetupHref(result.value.href);
-        setShareHref(result.value.shareHref);
-      }
-      return result;
-    },
-    revoke: async () => ({ ok: false, error: "unauthorized", message: "Open the computer's setup page to revoke it." }),
-    poll: api.poll,
-  }), [api]);
+  // Only the owner's context carries the share page; computers live on Connect. Its signed
+  // intent lasts five minutes, so it is renewed well before that.
+  useEffect(() => {
+    let live = true;
+    const read = () =>
+      void api.computerContext().then((result) => {
+        if (live && result.ok) setShareHref(result.value.shareHref);
+      });
+    read();
+    const timer = setInterval(read, 4 * 60_000);
+    return () => { live = false; clearInterval(timer); };
+  }, [api]);
 
   const remove = async (account: Account) => {
     setRemoveError(undefined);
@@ -145,7 +142,6 @@ export function App({ api }: { api: PoolApi }) {
           </>
         )}
         {view !== undefined && <Usage load={api.usage} poll={api.poll} providers={view.providers} now={now} shareHref={shareHref} />}
-        <Computers api={computers} setup={{ kind: "link", href: () => setupHref ?? "#", manageHref: () => setupHref ?? "#" }} />
       </main>
 
     </div>

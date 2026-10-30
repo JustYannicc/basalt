@@ -32,6 +32,12 @@ function poolChoices(value: unknown): Record<string, unknown>[] {
 }
 
 interface OwnPool { pool?: string; organization: string }
+/** Each person's own pool, as an organization's metadata points to it. Only a pointer. */
+function poolsOf(organization: Record<string, unknown>): Record<string, unknown> {
+  let metadata: unknown = organization.metadata;
+  if (typeof metadata === "string") { try { metadata = JSON.parse(metadata); } catch { metadata = undefined; } }
+  return record(record(metadata).basaltPools);
+}
 /**
  * The organization holding the person's own pool, and that pool when the tools service confirms they
  * created it, read with their own session. Tools are always theirs, never a pool's: a computer on a
@@ -44,9 +50,7 @@ async function ownPool(request: Request, env: SetupEnv, person: string): Promise
   const organizations: unknown = await response.json().catch(() => undefined);
   if (!Array.isArray(organizations)) throw new SetupError(502, "Could not find your own organization. Try again.");
   for (const organization of organizations.map(record)) {
-    let metadata: unknown = organization.metadata;
-    if (typeof metadata === "string") { try { metadata = JSON.parse(metadata); } catch { metadata = undefined; } }
-    const pools = record(record(metadata).basaltPools);
+    const pools = poolsOf(organization);
     const pool = Object.hasOwn(pools, person) ? record(pools[person]).app : undefined;
     if (!text(pool, 512) || !text(organization.id, 512)) continue;
     // Metadata is only a pointer. The tools service's own access record must say the person created it.
@@ -146,6 +150,28 @@ function linkResponse(request: Request, result: Record<string, unknown>): Respon
     prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+, delete the file, and tell me what it changed.`,
     ...commands(origin, ["--link", link]), undoPrompt: undo(origin), expiresAt: result.expiresAt,
   });
+}
+
+/**
+ * Setup moved onto Connect, so the old page sends people to their own organization's Connect
+ * page: the one holding their pool, else their only organization, else the dashboard.
+ */
+export async function handleSetupPage(request: Request, env: SetupEnv): Promise<Response> {
+  const go = (location: string) =>
+    new Response(null, { status: 302, headers: { ...security, Location: location } });
+  if (request.method !== "GET" && request.method !== "HEAD")
+    return json({ error: "Method not allowed." }, 405, { Allow: "GET, HEAD" });
+  let person: string;
+  // Only a missing session goes to sign-in; anything else would bounce straight back here.
+  try { person = await user(request, env); } catch (error) {
+    return go(error instanceof SetupError && error.status === 401 ? "/login?redirect=%2Fsetup" : "/");
+  }
+  const response = await native(request, env, "organization/list").catch(() => undefined);
+  const listed: unknown = response?.ok ? await response.json().catch(() => undefined) : undefined;
+  const organizations = Array.isArray(listed) ? listed.map(record) : [];
+  const target = organizations.find((organization) => Object.hasOwn(poolsOf(organization), person))
+    ?? (organizations.length === 1 ? organizations[0] : undefined);
+  return go(text(target?.slug, 200) ? `/org/${encodeURIComponent(target.slug)}/connect` : "/");
 }
 
 /** Only /setup/v1/* and /setup/claim/:token belong to this adapter. */
