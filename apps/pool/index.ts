@@ -1,8 +1,5 @@
 import {
-  bearer,
   defineApp,
-  defineProvider,
-  interactive,
   json,
   mutation,
   number,
@@ -10,19 +7,13 @@ import {
   ProviderError,
   query,
   type ConnectContext,
-  type InteractiveMethod,
   type QueryContext,
   router,
-  secrets,
   string,
 } from "apps";
 import { never } from "apps/operations/approval";
 import {
-  callerHeader,
-  controlBasePath,
   type Account,
-  type ControlError,
-  type ControlErrorCode,
   type LoginFileAdded,
   type PoolView,
   type SignInStarted,
@@ -31,71 +22,16 @@ import {
 } from "./contract.ts";
 import { accountStatus, checkFailure } from "./account-status.ts";
 import { subscriptionFailure } from "./account-health.ts";
-import { poolOrigin, productName } from "./deployment.ts";
 import { providers } from "./providers.ts";
 import { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity } from "./sign-in.ts";
+import { requirements } from "./requirements.ts";
+import { control, type Result } from "./control.ts";
+export type { Result } from "./control.ts";
+import { refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, useReset } from "./account-actions.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
 
-// The tools service links this account for everyone when it installs a pool.
-// Its token works for this one pool only; the pool Worker holds the backend's key.
-const pool = defineProvider({
-  name: `${productName} pool`,
-  hosts: [new URL(poolOrigin).host],
-  auth: {
-    token: secrets({
-      label: "Pool access",
-      provisioned: true,
-      fields: object({ token: string({ minLength: 1 }) }),
-      request: ({ token }) => bearer(token),
-    }),
-  },
-});
-
-// Each subscription the pool serves is an account here, connected from the app's Accounts tab.
-// One sign-in method per service the backend signs in, plus pasting a login file.
-const subscription = defineProvider({
-  name: "Subscription",
-  auth: {
-    ...Object.fromEntries(providers.map(({ id, name }) => [id, interactive({ label: name })])),
-    [loginFileMethod]: interactive({ label: "Login file" }),
-  } as Readonly<Record<string, InteractiveMethod>>,
-});
-
-const requirements = { app: { accounts: { pool, subscriptions: subscription.many() } } };
 type Context = QueryContext<typeof requirements>;
-// Connect steps run before every slot is filled, so the pool's own account may be missing there.
 type Caller = Context | ConnectContext<typeof requirements>;
-
-export type Result<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: ControlErrorCode; readonly message: string };
-
-async function control<T>(
-  ctx: Caller,
-  path: string,
-  init: { method?: string; body?: unknown } = {},
-): Promise<Result<T>> {
-  const pool = ctx.app.accounts.pool;
-  if (!pool) return { ok: false, error: "unauthorized", message: "This pool isn't linked to its access account." };
-  const headers: Record<string, string> = { ...pool.headers(), accept: "application/json" };
-  // The pool Worker decides what the caller may change. Without a caller, nothing changes.
-  const caller = ctx.user?.id;
-  if (caller) headers[callerHeader] = caller;
-  if (init.body !== undefined) headers["content-type"] = "application/json";
-  const response = await ctx.fetch(`${poolOrigin}${controlBasePath}${path}`, {
-    method: init.method ?? "GET",
-    headers,
-    ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    signal: ctx.signal,
-  });
-  const body: unknown = await response.json().catch(() => undefined);
-  if (response.ok) return { ok: true, value: body as T };
-  const failure = body as Partial<ControlError> | undefined;
-  if (typeof failure?.error === "string" && typeof failure.message === "string") {
-    return { ok: false, error: failure.error, message: failure.message };
-  }
-  return { ok: false, error: "backend_unavailable", message: "The pool didn't answer. Try again in a moment." };
-}
 
 export const view = query(
   { description: "This pool's accounts with their limit windows, reading freshness and banked resets, and the providers it can connect", input: object({}) },
@@ -168,7 +104,7 @@ const identified = (ctx: Caller, state: ConnectState): Promise<ConnectState> =>
 const sessionPath = (session: string) => `?session=${encodeURIComponent(session)}`;
 
 export default defineApp(requirements, {
-  tools: router({ view, usage, addLoginFile, removeAccount, computerContext }),
+  tools: router({ view, usage, addLoginFile, removeAccount, computerContext, refreshUsage, pauseAccount, resumeAccount, clearCooldown, resetCredits, useReset }),
   // The pool Worker refuses every step unless the caller owns the pool.
   connect: {
     subscriptions: {

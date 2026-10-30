@@ -39,21 +39,22 @@ export class QuotaCollection {
   private client: HomeClient;
   private now: () => number;
   private wait: NonNullable<Options["wait"]>;
-  private pending = new Map<string, { work: Promise<Json | null>; waits: boolean }>();
+  private pending = new Map<string, { work: Promise<Json | null>; waits: boolean; forced: boolean }>();
   constructor(storage: Storage, client: HomeClient, options: Options = {}) {
     this.storage = storage; this.client = client;
     this.now = options.now ?? Date.now; this.wait = options.wait ?? wait;
   }
-  read(id: string, callerSignal?: AbortSignal, awaitCompletion = true): Promise<Json | null> {
+  read(id: string, callerSignal?: AbortSignal, awaitCompletion = true, force = false): Promise<Json | null> {
     const pending = this.pending.get(id);
-    if (pending) return awaitCompletion && !pending.waits
-      ? pending.work.then(() => this.read(id, callerSignal, true)) : pending.work;
-    const work = this.collect(id, callerSignal, awaitCompletion).finally(() => {
+    if (pending) return (awaitCompletion && !pending.waits || force && !pending.forced)
+      ? pending.work.then(() => this.read(id, callerSignal, awaitCompletion, force)) : pending.work;
+    const work = this.collect(id, callerSignal, awaitCompletion, force).finally(() => {
       if (this.pending.get(id)?.work === work) this.pending.delete(id);
     });
-    this.pending.set(id, { work, waits: awaitCompletion });
+    this.pending.set(id, { work, waits: awaitCompletion, forced: force });
     return work;
   }
+  refresh(id: string, signal?: AbortSignal): Promise<Json | null> { return this.read(id, signal, true, true); }
   private async snapshot(id: string, signal: AbortSignal): Promise<Json | null> {
     try {
       const value = await this.client.data(`/quota/credentials/${encodeURIComponent(id)}`, { signal });
@@ -64,12 +65,12 @@ export class QuotaCollection {
       throw error;
     }
   }
-  private async collect(id: string, callerSignal: AbortSignal | undefined, awaitCompletion: boolean): Promise<Json | null> {
+  private async collect(id: string, callerSignal: AbortSignal | undefined, awaitCompletion: boolean, force: boolean): Promise<Json | null> {
     const timeout = AbortSignal.timeout(checkBudget);
     const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
     let value = await this.snapshot(id, signal);
-    if (!value || !needsQuotaCollection(value, this.now())) return value;
-    const collection = collectionOf(value);
+    if (!force && (!value || !needsQuotaCollection(value, this.now()))) return value;
+    const collection = value ? collectionOf(value) : {};
     const previous = instant(collection.last_attempt_at);
     const key = `quota-collect-v1:${await digest(id)}`;
     const requested = await this.storage.get<number>(key);
