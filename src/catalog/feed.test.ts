@@ -83,7 +83,11 @@ test("our connectors list like every other app, with no notice beside their desc
   for (const entry of result.apps) {
     assert.equal(entry.connectionNotices, undefined, entry.id);
     const source = feed.apps.find(app => app.id === entry.id);
-    if (source && entry.id !== "slack" && entry.id !== "miro") assert.deepEqual(entry.auth, source.auth);
+    if (entry.id === "gitlab") assert.deepEqual(entry.auth, [
+      { method: "oauth", kind: "oauth2", label: "OAuth 2.0" },
+      { method: "token", kind: "secrets", label: "Personal access token" },
+    ]);
+    else if (source && entry.id !== "slack" && entry.id !== "miro") assert.deepEqual(entry.auth, source.auth);
   }
 });
 

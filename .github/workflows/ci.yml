@@ -154,7 +154,7 @@ jobs:
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
       - name: Exercise GitLab accounts against the real runtime
-        run: npm run check-connectors
+        run: node scripts/check-connectors.ts
         env:
           CONNECTORS_PROOF_DIRECT: "1"
           CONNECTORS_PROOF_SKIP_CLAUDE: "1"
