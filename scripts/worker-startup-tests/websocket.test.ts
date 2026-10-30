@@ -25,6 +25,7 @@ export default { fetch(request) {
   if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') return new Response(null, { status: 426 });
   connections++;
   const [client, server] = Object.values(new WebSocketPair());
+  server.binaryType = 'arraybuffer';
   server.accept();
   server.send(JSON.stringify({ url: request.url, method: request.method,
     authorization: request.headers.get('Authorization'), key: request.headers.get('X-Api-Key'),
@@ -62,9 +63,11 @@ test("Responses WebSockets cross the built Router, auth gate and pool DO without
                 if (port !== 8317 || !request.url.startsWith('http://pool/')) throw new Error('Wrong container port or scheme');
                 return env.ORIGIN.fetch(request);
               } }; } };
-            this.pool = new PoolContainer({ container, storage: ctx.storage, waitUntil: work => ctx.waitUntil(work) }, env);
+            Object.defineProperty(ctx, 'container', { value: container });
+            this.pool = new PoolContainer(ctx, env);
           }
           fetch(request) { return this.pool.fetch(request); }
+          alarm() { return this.pool.alarm(); }
         }
         export default { fetch(request, env) {
           return handlePoolWorkerRequest(request, { ...env,
@@ -102,7 +105,7 @@ test("Responses WebSockets cross the built Router, auth gate and pool DO without
         Upgrade: "websocket", Authorization: "Bearer unrelated-codex-login", "X-Api-Key": "fixture-key",
         "OpenAI-Beta": "responses_websockets=2026-02-06", "x-codex-turn-state": `turn-${i}`,
       } });
-      assert.equal(response.status, 101);
+      assert.equal(response.status, 101, response.status === 101 ? undefined : await response.text());
       assert.equal(response.headers.get("x-codex-turn-state"), `turn-${i}`);
       const socket = response.webSocket;
       assert.ok(socket);
@@ -121,8 +124,10 @@ test("Responses WebSockets cross the built Router, auth gate and pool DO without
       assert.deepEqual(await Promise.all(received), [0, 1].map((i) => `${frame} ${i}`));
     }
     const binary = message(sockets[0]);
-    sockets[0].send(new Uint8Array([0, 255, 42]));
-    assert.deepEqual(new Uint8Array(await binary), new Uint8Array([0, 255, 42]));
+    sockets[0].send(new Uint8Array([0, 255, 42]).buffer);
+    const bytes = await binary;
+    assert.equal(Object.prototype.toString.call(bytes), "[object ArrayBuffer]", String(bytes));
+    assert.deepEqual(new Uint8Array(bytes), new Uint8Array([0, 255, 42]));
     const closed = new Promise<any>((resolve) => sockets[0].addEventListener("close", resolve, { once: true }));
     sockets[0].close(1000, "done");
     assert.equal((await closed).code, 1000);
