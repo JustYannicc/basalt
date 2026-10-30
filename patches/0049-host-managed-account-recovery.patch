@@ -564,10 +564,10 @@ index 3aba9e7..6d8566e 100644
      const checks = new Map(health.map((entry) => [entry.account, entry]));
      const display = [];
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 9f267e5..1023c0d 100644
+index 9f267e5..251df77 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -285,6 +285,11 @@ const notRunInCi: Partial<
+@@ -285,6 +285,16 @@ const notRunInCi: Partial<
      { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
    >
  > = {
@@ -576,9 +576,37 @@ index 9f267e5..1023c0d 100644
 +    reason:
 +      "The Basalt host-managed-accounts job runs it with an isolated synthetic pool signing key.",
 +  },
++  cloudPoolAccountEventualRepair: {
++    targets: ["cloud"],
++    reason:
++      "Explicit pool workflow integration uses an isolated synthetic signing key; CI checks durable queueing separately.",
++  },
    mcp: {
      targets: ["self-host", "cloud"],
      reason: "Needs a model API key, which CI does not hold.",
+diff --git a/e2e/support/actors.ts b/e2e/support/actors.ts
+index 57d109d..ac6131f 100644
+--- a/e2e/support/actors.ts
++++ b/e2e/support/actors.ts
+@@ -4,6 +4,7 @@ import { RequestFailed, SessionClients, body, type Session } from "./api.ts";
+ import { Target } from "./platform.ts";
+ import { Organization, Resource } from "./contracts.ts";
+ import { FixtureActors, FixtureActor, FixtureFailed, fixtureRequest } from "../sdk/fixtures.ts";
++import { scenarios, type TestPlan } from "../test-plan.ts";
+ 
+ /** Synthetic password is confined to the isolated self-host setup. */
+ export const password = "Synthetic-e2e-password-2026";
+@@ -144,6 +145,10 @@ export const createCloudScenarioActors = Effect.gen(function* () {
+     admin: yield* client("admin"),
+     member: yield* client("member"),
+   };
++  const plan: typeof TestPlan.Type | undefined = Object.values(scenarios).find(
++    (scenario) => scenario.title === target.scenarioLabel,
++  );
++  if (plan?.deferOnboarding === true) return actors;
+   // Trigger the normal product provisioning path for the synthetic identities.
+   yield* Effect.forEach(
+     [actors.owner, actors.admin, actors.member],
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 index b0fa511..6350bb3 100644
 --- a/e2e/support/cloud-environment.ts
@@ -594,18 +622,48 @@ index b0fa511..6350bb3 100644
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
        APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index cafa7c4..8ba48fe 100644
+index 2fe4d80..e717e06 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7614,6 +7615,17 @@ export const scenarios = plan({
+@@ -30,6 +30,8 @@ export const TestPlan = Schema.Struct({
+   file: Schema.String,
+   title: Schema.String,
+   fixtures: Schema.optional(Schema.Literals(["actors", "cli"])),
++  /** Queue fixtures defer onboarding before request finalizers can dispatch their jobs. */
++  deferOnboarding: Schema.optionalKey(Schema.Literal(true)),
+   appOrigin: Schema.optional(Schema.Literal(true)),
+   /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
+   legacyStorage: Schema.optional(Schema.Literal(true)),
+@@ -3046,7 +3048,8 @@ export const scenarios = plan({
+   catalogOAuthClients: {
+     fixtures: "actors",
+     file: "catalog-oauth-clients.spec.ts",
+-    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
++    title:
++      "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Restarts a runner-owned product with optional client credentials."),
+@@ -7637,6 +7640,28 @@ export const scenarios = plan({
        local: na("Exercises hosted account checks and rows."),
      },
    },
 +  cloudPoolAccountRecovery: {
 +    fixtures: "actors",
-+    managementApps: ["owner"],
++    deferOnboarding: true,
 +    file: "pool-account-recovery.spec.ts",
-+    title: "Cloud pool account recovery queues one owner job and repairs through the normal cron",
++    title: "Cloud pool account recovery queues one owner job and preserves permissions and backoff",
++    targets: {
++      "self-host": na("The Cloud host owns automatic pool setup."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The Cloud host owns automatic pool setup."),
++    },
++  },
++  cloudPoolAccountEventualRepair: {
++    fixtures: "actors",
++    managementApps: ["owner"],
++    file: "pool-account-repair.spec.ts",
++    title: "Cloud pool account eventual repair restores the link and preserves edited source",
 +    targets: {
 +      "self-host": na("The Cloud host owns automatic pool setup."),
 +      cloud: { status: "scheduled", runtime: "managed" },
@@ -978,13 +1036,12 @@ index 830b354..f1314eb 100644
    );
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 new file mode 100644
-index 0000000..ecfe1d1
+index 0000000..9662a70
 --- /dev/null
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,249 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Schedule, Schema } from "effect";
-+import { HttpClient } from "effect/http";
++import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
 +import { Api, body } from "../support/api.ts";
 +import { Actors } from "../support/actors.ts";
@@ -992,7 +1049,6 @@ index 0000000..ecfe1d1
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { cloudLocks } from "../support/cloud-locks.ts";
 +import { Evidence } from "../support/evidence.ts";
-+import { Target } from "../support/platform.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
@@ -1007,7 +1063,6 @@ index 0000000..ecfe1d1
 +export default defineApp({ app: { accounts: { pool } } }, {
 +  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
 +});`;
-+class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
 +
 +layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) => {
 +  it.effect(scenarios.cloudPoolAccountRecovery.title, (context) =>
@@ -1016,9 +1071,7 @@ index 0000000..ecfe1d1
 +      Effect.gen(function* () {
 +        const api = yield* Api,
 +          actors = yield* Actors,
-+          target = yield* Target,
 +          evidence = yield* Evidence,
-+          http = yield* HttpClient.HttpClient,
 +          database = yield* cloudLocks;
 +        const prefix = `/api/organizations/${actors.organization.id}`;
 +        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
@@ -1036,13 +1089,14 @@ index 0000000..ecfe1d1
 +          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
 +        );
 +        const owner = session.user.id;
-+        const cron = Effect.scoped(
-+          http
-+            .get(
-+              `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
-+            )
-+            .pipe(Effect.flatMap((response) => response.text)),
-+        );
++        const deferJobs = () =>
++          rows(
++            `update hosted_provisioning set available_at = now() + interval '1 day'
++            where organization_id = $1 and status = 'queued'`,
++            [actors.organization.id],
++          );
++        // Onboarding has not started these jobs. Keep them out of request-finalizer dispatch.
++        yield* deferJobs();
 +        const pending = () =>
 +          rows(
 +            `select id, status, attempts, (available_at <= now()) as ready,
@@ -1060,26 +1114,6 @@ index 0000000..ecfe1d1
 +          [deferred, actors.organization.id, owner],
 +        );
 +        yield* evidence.json("initial-provisioning.json", { jobs: yield* pending(), deferred });
-+        // A 30-second dispatch lease is still active setup. Only longer rollouts can wait.
-+        yield* pending().pipe(
-+          Effect.flatMap((jobs) =>
-+            jobs.some(
-+              (job) => job.status === "running" || job.attempts !== 0 || job.deferred !== true,
-+            )
-+              ? Effect.fail(new Pending())
-+              : Effect.void,
-+          ),
-+          Effect.retry({
-+            while: Schema.is(Pending),
-+            schedule: Schedule.spaced("250 millis"),
-+            times: 240,
-+          }),
-+          Effect.ensuring(
-+            Effect.gen(function* () {
-+              yield* evidence.json("settled-provisioning.json", { jobs: yield* pending() });
-+            }),
-+          ),
-+        );
 +        expect((yield* pending()).find((entry) => entry.id === deferred)).toEqual({
 +          id: deferred,
 +          status: "queued",
@@ -1115,6 +1149,7 @@ index 0000000..ecfe1d1
 +        yield* Effect.addFinalizer(() =>
 +          Effect.gen(function* () {
 +            // Removal must not mistake this synthetic app for the host's recorded pool.
++            yield* deferJobs();
 +            yield* restore();
 +            yield* api.request(actors.owner, "DELETE", path);
 +          }).pipe(Effect.orDie),
@@ -1157,6 +1192,7 @@ index 0000000..ecfe1d1
 +          }),
 +        );
 +        // The app's second version models an owner-edited pool. Repair must keep that source.
++        yield* deferJobs();
 +        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
 +          files: [
 +            { path: "index.ts", content: `${source}\n// Owner keeps this source.\n` },
@@ -1205,61 +1241,208 @@ index 0000000..ecfe1d1
 +        expect((yield* api.request(actors.member, "GET", `${path}/accounts/app/pool`)).status).toBe(
 +          403,
 +        );
-+        const history = () =>
-+          rows(
-+            `select id, status, attempts,
-+                (available_at > now() + interval '1 minute') as deferred
-+              from hosted_provisioning
-+              where organization_id = $1 and user_id = $2 and kind = 'member'
-+                and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'
-+              order by id`,
-+            [actors.organization.id, owner],
-+          );
-+        const previous = new Set((yield* history()).map((entry) => entry.id));
 +        const recovery = () =>
 +          rows(
-+            `select id, status, attempts from hosted_provisioning
-+              where id = $1 and kind = 'member' and organization_id = $2 and user_id = $3`,
-+            [job, actors.organization.id, owner],
++            `select id, status, attempts, (available_at <= now()) as ready
++            from hosted_provisioning where organization_id = $1 and user_id = $2
++              and kind = 'member' and status in ('queued', 'running')
++              and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'
++            order by id`,
++            [actors.organization.id, owner],
 +          );
 +        yield* evidence.step(
-+          "One editor read activates its owner job and the normal workflow repairs the link",
++          "Editor reads activate exactly one durable owner job without running it",
 +          Effect.gen(function* () {
-+            // The selected outbox ID stays stable even when request finalizers finish first.
-+            yield* choices();
-+            yield* cron;
-+            const repaired = yield* recovery().pipe(
-+              Effect.flatMap((jobs) => {
-+                expect(jobs.length, JSON.stringify(jobs)).toBeLessThanOrEqual(1);
-+                return jobs.length === 1 && jobs[0]?.status === "succeeded"
-+                  ? Effect.succeed(jobs)
-+                  : Effect.fail(new Pending());
-+              }),
++            expect(yield* recovery()).toEqual([
++              { id: job, status: "queued", attempts: 0, ready: false },
++            ]);
++            const results = yield* Effect.forEach(Array.from({ length: 8 }), () => choices(), {
++              concurrency: 4,
++            });
++            expect(results.every((result) => result.recovery === "restoring")).toBe(true);
++            const queued = yield* recovery();
++            expect(queued).toEqual([{ id: job, status: "queued", attempts: 0, ready: true }]);
++            const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", path));
++            expect(unchanged.activeVersion).toBe(current.activeVersion);
++            yield* rows(`delete from hosted_provisioning where id = $1`, [job]);
++            const inserted = yield* Effect.forEach(Array.from({ length: 8 }), () => choices(), {
++              concurrency: 4,
++            });
++            expect(inserted.every((result) => result.recovery === "restoring")).toBe(true);
++            const fresh = yield* recovery();
++            expect(fresh).toHaveLength(1);
++            expect(fresh[0]).toMatchObject({ status: "queued", attempts: 0, ready: true });
++            expect(fresh[0]?.id).not.toBe(job);
++            yield* Effect.forEach(Array.from({ length: 8 }), () => choices(), { concurrency: 4 });
++            expect(yield* recovery()).toEqual(fresh);
++            yield* evidence.json("pool-recovery-queue.json", {
++              accelerated: queued,
++              inserted: fresh,
++              sourcePreserved: true,
++              queuedByRead: true,
++              executionDeferred: true,
++            });
++          }),
++        );
++        yield* deferJobs();
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/pool-account-repair.spec.ts b/e2e/tests/pool-account-repair.spec.ts
+new file mode 100644
+index 0000000..f5f0a08
+--- /dev/null
++++ b/e2e/tests/pool-account-repair.spec.ts
+@@ -0,0 +1,155 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
++const Choices = Schema.Struct({
++  recovery: Schema.optionalKey(Schema.Literal("restoring")),
++  accounts: Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
++});
++const source = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const pool = defineProvider({ name: "Host pool", auth: {
++  token: secrets({ provisioned: true, label: "Pool access", fields: object({ token: string() }) }),
++} });
++export default defineApp({ app: { accounts: { pool } } }, {
++  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
++});`;
++class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
++
++layer(HostedLive, { excludeTestServices: true })("Pool account repair integration", (it) => {
++  it.effect(scenarios.cloudPoolAccountEventualRepair.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          evidence = yield* Evidence,
++          target = yield* Target,
++          http = yield* HttpClient.HttpClient,
++          database = yield* cloudLocks;
++        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
++        const deferJobs = () =>
++          rows(
++            `update hosted_provisioning set available_at = now() + interval '1 day'
++              where organization_id = $1 and status = 'queued'`,
++            [actors.organization.id],
++          );
++        // Normal onboarding installs the organization defaults that member repair requires.
++        yield* deferJobs();
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* deferJobs();
++            yield* rows(
++              `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb)
++                - 'basaltPools')::text where id = $1`,
++              [actors.organization.id],
++            );
++          }).pipe(Effect.orDie),
++        );
++        const session = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        );
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Repair integration fixture",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(created.status).toBe(200);
++        const app = yield* body(App, created);
++        const path = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* deferJobs();
++            yield* rows(
++              `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb)
++                - 'basaltPools')::text where id = $1`,
++              [actors.organization.id],
++            );
++            yield* api.request(actors.owner, "DELETE", path);
++          }).pipe(Effect.orDie),
++        );
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [
++            { path: "index.ts", content: `${source}\n// Owner keeps this source.\n` },
++            appsManifest,
++          ],
++        });
++        expect(updated.status).toBe(200);
++        const current = (yield* body(Schema.Struct({ app: App }), updated)).app;
++        expect(current.activeVersion).not.toBe(app.activeVersion);
++        yield* rows(
++          `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++            '{basaltPools}', $1::jsonb)::text where id = $2`,
++          [
++            JSON.stringify({ [session.user.id]: { app: app.id, version: app.activeVersion } }),
++            actors.organization.id,
++          ],
++        );
++        yield* rows(
++          `delete from hosted_provisioning where organization_id = $1 and user_id = $2
++            and kind = 'member' and status = 'queued'`,
++          [actors.organization.id, session.user.id],
++        );
++        const choices = () =>
++          api.request(actors.owner, "GET", `${path}/accounts/app/pool`).pipe(
++            Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++            Effect.flatMap((response) => body(Choices, response)),
++          );
++        expect((yield* choices()).recovery).toBe("restoring");
++        const jobs = () =>
++          rows(
++            `select id, kind, status, attempts, (available_at <= now()) as ready
++            from hosted_provisioning where organization_id = $1 order by id`,
++            [actors.organization.id],
++          );
++        yield* evidence.json("before-repair-dispatch.json", { jobs: yield* jobs() });
++        yield* evidence.step(
++          "One explicit workflow dispatch restores the public account link",
++          Effect.gen(function* () {
++            yield* Effect.scoped(
++              http
++                .get(
++                  `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++                )
++                .pipe(Effect.flatMap((response) => response.text)),
++            ).pipe(Effect.timeout("15 seconds"));
++            const restored = yield* choices().pipe(
++              Effect.flatMap((value) =>
++                value.recovery === undefined && value.accounts.length === 1
++                  ? Effect.succeed(value)
++                  : Effect.fail(new Pending()),
++              ),
 +              Effect.retry({
 +                while: Schema.is(Pending),
 +                schedule: Schedule.spaced("250 millis"),
-+                times: 240,
++                times: 60,
 +              }),
++              Effect.timeout("20 seconds"),
++              Effect.ensuring(
++                Effect.gen(function* () {
++                  yield* evidence.json("after-repair-dispatch.json", { jobs: yield* jobs() });
++                }),
++              ),
 +            );
-+            expect(repaired).toHaveLength(1);
-+            const restored = yield* choices();
-+            expect(restored.recovery).toBeUndefined();
-+            expect(restored.accounts).toHaveLength(1);
-+            // Rollouts enqueue unattempted member jobs 15 minutes ahead. Dispatch leases are 30s.
-+            const duplicates = (yield* history()).filter(
-+              (entry) =>
-+                !previous.has(entry.id) && !(entry.attempts === 0 && entry.deferred === true),
-+            );
-+            expect(duplicates).toEqual([]);
 +            const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", path));
 +            expect(unchanged.activeVersion).toBe(current.activeVersion);
-+            yield* evidence.json("pool-recovery.json", {
-+              job: repaired[0]?.id,
-+              repairs: repaired,
++            yield* evidence.json("pool-eventual-repair.json", {
 +              account: restored.accounts[0]?.account.id,
 +              sourcePreserved: true,
-+              queuedByRead: true,
-+              credentialCreatedByJob: true,
++              explicitDispatch: true,
 +            });
 +          }),
 +        );
