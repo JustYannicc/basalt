@@ -486,8 +486,8 @@
     },
     {
       "identity": "executor-mcp-apps",
-      "file": "0050-mcp-apps.patch",
-      "content_sha256": "af529d017256076a0c512f8dd71b459971b222e091522c193fdde984870fa031",
+      "file": "0051-mcp-apps.patch",
+      "content_sha256": "c06e24b00cd221dc5f9c70e757e5b0f5f5c72cb881d7e7d20e43bf3900c0f07e",
       "kind": "upstream",
       "upstream_pull_request": null,
       "database_sensitive": true,
