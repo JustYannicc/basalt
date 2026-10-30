@@ -240,7 +240,7 @@ export function proveGitLab({
       gitlabHostedClientAtGitLabComOnly: true,
       gitlabLegacyAccountIdPreserved: legacyMigration.accountIdPreserved,
       gitlabLegacyDefaultSitePersisted: legacyMigration.defaultSitePersisted,
-      gitlabLegacySyntheticDefaultOrigin: legacyMigration.syntheticDefaultOrigin,
+      gitlabLegacyCanonicalDefaultOrigin: legacyMigration.canonicalDefaultOrigin,
       gitlabReconnectOriginLocked: true,
       gitlabPatAndOAuthAccounts: true,
       gitlabPrivateRedirectRefused: true,

@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { adaptProviderAppFiles } from "./provider-source.mjs";
 
-/** Exercise the old and new catalog declarations against one external OAuth fixture. */
+/** Keep the GitLab.com site identity while the external OAuth fixture owns transport. */
 export function proveGitLabLegacy({ Effect, request, checked, actors, prefix, callback, catalog, fixtures, appsVersion, prove }) {
   return Effect.gen(function* () {
     const site = fixtures.site("legacy");
     const filesAtFixture = (files) => adaptProviderAppFiles(files, appsVersion, "gitlab").files.map(file =>
       ["index.ts", "openapi.ts"].includes(file.path) ? {
         ...file,
-        content: file.content.replaceAll("https://gitlab.com", site.origin)
+        content: file.content.replaceAll("https://gitlab.com/", site.origin + "/")
+          .replaceAll('const site = account.site ?? "https://gitlab.com";', `const site = ${JSON.stringify(site.origin)};`)
           .replaceAll('"gitlab.com"', JSON.stringify(site.host)),
       } : file);
     const deploy = (files, name) => request(actors.owner, "POST", prefix + "/apps/deploy", { name, files });
@@ -34,9 +35,11 @@ export function proveGitLabLegacy({ Effect, request, checked, actors, prefix, ca
     });
     const first = checked(yield* connect(old), 200, "Create legacy OAuth connection");
     const account = yield* complete(first, site.client);
+    assert.equal(account.method, "oauth");
     assert.equal(account.site ?? null, null);
     const current = checked(yield* deploy(filesAtFixture(catalog.source.files), "Default-site GitLab OAuth fixture"), 200, "Deploy the new default-site declaration");
     assert.equal(current.requirements.accounts.gitlab.provider, old.requirements.accounts.gitlab.provider);
+    assert.equal(current.requirements.accounts.gitlab.definition.site.origin, "https://gitlab.com");
     const before = fixtures.observations.length;
     const moved = yield* connect(current, account.id, fixtures.site("instance-a").origin);
     prove(moved.status === 422, "A site-less legacy account cannot reconnect away from its declared default");
@@ -46,9 +49,9 @@ export function proveGitLabLegacy({ Effect, request, checked, actors, prefix, ca
     const read = checked(yield* request(actors.owner, "GET", prefix + "/accounts/" + account.id), 200, "Read migrated legacy OAuth account");
     assert.equal(saved.id, account.id);
     assert.equal(read.account.id, account.id);
-    assert.equal(saved.site, site.origin);
-    assert.equal(read.account.site, site.origin);
-    prove(true, "A completed OAuth reconnect preserves the legacy account ID and persists the declared default site");
-    return { accountIdPreserved: true, defaultSitePersisted: true, syntheticDefaultOrigin: true };
+    assert.equal(saved.site, "https://gitlab.com");
+    assert.equal(read.account.site, "https://gitlab.com");
+    prove(true, "A completed OAuth reconnect preserves the legacy account ID and persists https://gitlab.com");
+    return { accountIdPreserved: true, defaultSitePersisted: true, canonicalDefaultOrigin: true };
   });
 }

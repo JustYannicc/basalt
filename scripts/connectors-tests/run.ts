@@ -107,6 +107,8 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
     && value?.gitlabTwoOriginRuntime === true
     && value?.gitlabHostedClientAtGitLabComOnly === true
     && value?.gitlabLegacyAccountIdPreserved === true
+    && value?.gitlabLegacyDefaultSitePersisted === true
+    && value?.gitlabLegacyCanonicalDefaultOrigin === true
     && value?.gitlabReconnectOriginLocked === true
     && value?.gitlabPatAndOAuthAccounts === true
     && value?.gitlabPrivateRedirectRefused === true
