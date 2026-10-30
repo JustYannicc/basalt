@@ -1,197 +1,83 @@
+diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
-@@ -1,20 +1,7 @@
--# Miro
-+# Miro boards
+@@ -1,20 +1,31 @@
+ # Miro
  
 -Miro boards and everything on them: boards and members, items (sticky notes, shapes, cards, text, images, documents, frames, embeds), connectors, tags, groups, mind maps, board exports, teams, and organization administration.
-+Connect your own Miro account and choose a team. This app uses only `boards:read` and `boards:write`, which Miro makes available on all plans. Your board permissions and team installation policies still apply. A host-managed OAuth client is the default; entering your own OAuth client or a team access token remains an advanced fallback.
++Miro boards and board content, groups, exports, teams and organization administration through the Miro REST API v2.
  
--## Interface
-+The tool surface covers boards, board membership and board content. Organization and team administration, board exports, audit logs, legal holds, SCIM, session resets and app-management APIs are excluded. Reads do not ask for approval; every mutation does.
+ ## Interface
  
 -OpenAPI, from Miro's official specification for the REST API v2 in [miroapp/api-clients](https://github.com/miroapp/api-clients/blob/39161f97cee3f887f5f67cf4a003ce93b3a6903b/packages/generator/spec.json), pinned to commit `39161f9` (the head of `main` on 2026-10-12) so the tool surface only changes with this package. Bump the SHA in `openapi.ts` to pick up new endpoints. All operations are served from `https://api.miro.com`. Every mutation asks for approval.
--
--## Auth
--
++The tools come from Miro's official [REST API specification](https://github.com/miroapp/api-clients/blob/39161f97cee3f887f5f67cf4a003ce93b3a6903b/packages/generator/spec.json), pinned to commit `39161f9`. The package removes only API paths that need a different credential family, the deprecated OAuth revoke path, and the malformed group-delete path. Every mutation asks for approval.
++
++## OAuth scopes
++
++The app and hosted OAuth client request the full set selected in the Miro Developer Hub:
++
++- `boards:read` and `boards:write` for board and board-content reads and changes.
++- `identity:read` and `identity:write` for the current user's profile.
++- `team:read` and `team:write` for current team information and team changes.
++- `microphone:listen`, `screen:record` and `webcam:record` for Web SDK capture in an iframe. This REST package does not use the Web SDK.
++- `auditlogs:read` and `sessions:delete` for Enterprise audit and session administration. Miro marks these scopes Enterprise-only.
++
++Enterprise API calls still depend on the team's plan and the caller's Company Admin role. The grant does not change a team's plan or the provider's role checks.
+ 
+ ## Auth
+ 
 -- **Access token** (`token`): create an app at [miro.com/app/settings/user-profile/apps](https://miro.com/app/settings/user-profile/apps), open it and use "Install app and get OAuth token" to get a token for your own team. Paste it into Executor.
 -- **OAuth 2.0** (`oauth`): use the same Miro app. In its settings add the redirect URI shown on Executor's connect page, then paste the client id and client secret there. Scopes requested: `boards:read`, `boards:write`, `organizations:read`, `organizations:teams:read`, `organizations:teams:write`. The organization scopes only work for Enterprise plans.
--
++Personal OAuth uses the host-managed client when it is configured. A custom OAuth client and an access token remain available under Advanced. Tokens belong to the person who authorizes them.
+ 
 -## Known gaps
--
++## Limits
+ 
 -- Enterprise-only endpoints (organizations, teams, board export, legal hold) fail on other plans.
 -- The spec's SCIM provisioning paths (`/Users`, `/Groups`, `/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas`) are removed: they need a SCIM credential, not an OAuth or app token. The Miro SCIM API (`https://miro.com/api`, API key) is a separate Enterprise product and is not covered.
 -- `DELETE /v2/boards/{board_id}/groups/{group_id}?` (groups.deleteGroup) is skipped (`operation_path`) because the spec path has a stray trailing `?`; use the ungrouping endpoints instead.
 -- `POST /v1/oauth/revoke` is removed: Miro's document calls it vulnerable and deprecated because the token goes in the URL. Use `POST /v2/oauth/revoke`. It sends no account credential: the token to revoke and its client ID and secret go in the request body.
 -- Miro's Web SDK and the Miro MCP server (`https://mcp.miro.com/`) are not used.
-+The app uses the official [Miro API specification](https://github.com/miroapp/api-clients/blob/39161f97cee3f887f5f67cf4a003ce93b3a6903b/packages/generator/spec.json) at a fixed commit. Its exclusion list is bound to that document. Miro's [scope matrix](https://developers.miro.com/reference/scopes) documents the plan boundary. This source does not use Miro's Web SDK or hosted MCP server.
++- SCIM provisioning paths need a separate SCIM credential, not an OAuth or app token, so this package omits `/Users`, `/Groups`, `/ServiceProviderConfig`, `/ResourceTypes` and `/Schemas`.
++- `DELETE /v2/boards/{board_id}/groups/{group_id}?` is omitted because the pinned spec contains a trailing `?` that the OpenAPI importer cannot route. The other ungrouping operations remain available.
++- The pinned spec calls `POST /v1/oauth/revoke` vulnerable and deprecated because it puts the token in the URL. The package keeps the body-based v2 revoke operation.
++- App metrics use Miro's Developer Hub app-management credential rather than the person's OAuth grant. The package retains the spec's credential-free metrics paths.
++- This package does not use Miro's Web SDK or hosted MCP server.
+diff --git a/index.ts b/index.ts
 --- a/index.ts
 +++ b/index.ts
-@@ -10,7 +10,7 @@
-   string,
-   withApprovals,
- } from "apps";
--import { always } from "apps/operations/approval";
-+import { always, never } from "apps/operations/approval";
- import { liveOpenapiRouter } from "apps/openapi";
- import { icons } from "./icon.js";
- import { options } from "./openapi.js";
-@@ -25,18 +25,12 @@
+@@ -25,7 +25,7 @@
        label: "Access token",
        fields: object({ token: string({ minLength: 1 }) }),
      }),
 -    // Miro has no client registration: the connect page asks for an app's client id and secret.
-+    // Use the host-managed client, or enter your own client under Advanced.
++    // The host-managed client is the default; a custom client stays available under Advanced.
      oauth: oauth2({
        authorizationUrl: "https://miro.com/oauth/authorize",
        tokenUrl: "https://api.miro.com/v1/oauth/token",
-       tokenEndpointAuthMethod: "client_secret_post",
--      scopes: [
--        "boards:read",
--        "boards:write",
+@@ -33,9 +33,15 @@
+       scopes: [
+         "boards:read",
+         "boards:write",
 -        "organizations:read",
 -        "organizations:teams:read",
 -        "organizations:teams:write",
--      ],
-+      scopes: ["boards:read", "boards:write"],
++        "identity:read",
++        "identity:write",
++        "microphone:listen",
++        "screen:record",
++        "team:read",
++        "team:write",
++        "webcam:record",
++        "auditlogs:read",
++        "sessions:delete",
+       ],
      }),
    },
-   async health({ account, fetch, signal }) {
-@@ -60,14 +54,14 @@
-         user?.accounts.miro ?? [],
-         (account) =>
-           withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
--            tool.kind === "mutation" ? always() : undefined,
-+            tool.kind === "mutation" ? always() : never(),
-           ),
-         { signal },
-       ),
-       {
-         title: "Miro",
-         description:
--          "Miro boards, items (sticky notes, shapes, cards, text, images, frames), connectors, tags, board members, teams and organization administration through the Miro REST API v2.",
-+          "Miro boards, items, connectors, tags and board members through the Miro REST API.",
-         icons,
-       },
-     ),
---- a/openapi.ts
-+++ b/openapi.ts
-@@ -1,36 +1,85 @@
- import type { OpenapiToolNamesOptions } from "apps/openapi";
- 
--// SCIM provisioning paths (/Users, /Groups, /ServiceProviderConfig, /ResourceTypes, /Schemas) need a
--// SCIM credential, not an OAuth or app token, so they are removed.
--const scimPaths = ["Users", "Users/{id}", "Groups", "Groups/{id}", "ServiceProviderConfig", "ResourceTypes", "ResourceTypes/{resource}", "Schemas", "Schemas/{uri}"];
-+// The pinned document has no per-operation OAuth scopes. Keep only board paths, excluding
-+// organization/team administration, exports, audit, SCIM, session resets and app management.
-+const excludedPaths = [
-+  "/v1/oauth/revoke",
-+  "/v1/oauth-token",
-+  "/v2/orgs/{org_id}/ai-interaction-logs",
-+  "/v2/audit/logs",
-+  "/v2/orgs/{org_id}/data-classification-settings",
-+  "/v2/orgs/{org_id}/teams/{team_id}/data-classification",
-+  "/v2/orgs/{org_id}/teams/{team_id}/data-classification-settings",
-+  "/v2/orgs/{org_id}/teams/{team_id}/boards/{board_id}/data-classification",
-+  "/v2/orgs/{org_id}/cases",
-+  "/v2/orgs/{org_id}/cases/{case_id}",
-+  "/v2/orgs/{org_id}/cases/{case_id}/legal-holds",
-+  "/v2/orgs/{org_id}/cases/{case_id}/export-jobs",
-+  "/v2/orgs/{org_id}/cases/{case_id}/legal-holds/{legal_hold_id}",
-+  "/v2/orgs/{org_id}/cases/{case_id}/legal-holds/{legal_hold_id}/content-items",
-+  "/v2/orgs/{org_id}/boards/export/jobs",
-+  "/v2/orgs/{org_id}/boards/export/jobs/{job_id}",
-+  "/v2/orgs/{org_id}/boards/export/jobs/{job_id}/results",
-+  "/v2/orgs/{org_id}/boards/export/jobs/{job_id}/status",
-+  "/v2/orgs/{org_id}/boards/export/jobs/{job_id}/tasks",
-+  "/v2/orgs/{org_id}/boards/export/jobs/{job_id}/tasks/{task_id}/export-link",
-+  "/v2/orgs/{org_id}/content-logs/items",
-+  "/v2/sessions/reset_all",
-+  "/Users",
-+  "/Users/{id}",
-+  "/Groups",
-+  "/Groups/{id}",
-+  "/ServiceProviderConfig",
-+  "/ResourceTypes",
-+  "/ResourceTypes/{resource}",
-+  "/Schemas",
-+  "/Schemas/{uri}",
-+  "/v2/orgs/{org_id}",
-+  "/v2/orgs/{org_id}/members",
-+  "/v2/orgs/{org_id}/members/{member_id}",
-+  "/v2-experimental/apps/{app_id}/metrics",
-+  "/v2-experimental/apps/{app_id}/metrics-total",
-+  "/v2/boards/{board_id}/groups/{group_id}?",
-+  "/v2/oauth/revoke",
-+  "/v2/orgs/{org_id}/teams/{team_id}/projects",
-+  "/v2/orgs/{org_id}/teams/{team_id}/projects/{project_id}",
-+  "/v2/orgs/{org_id}/teams/{team_id}/projects/{project_id}/settings",
-+  "/v2/orgs/{org_id}/teams/{team_id}/projects/{project_id}/members",
-+  "/v2/orgs/{org_id}/teams/{team_id}/projects/{project_id}/members/{member_id}",
-+  "/v2/orgs/{org_id}/teams",
-+  "/v2/orgs/{org_id}/teams/{team_id}",
-+  "/v2/orgs/{org_id}/teams/{team_id}/members",
-+  "/v2/orgs/{org_id}/teams/{team_id}/members/{member_id}",
-+  "/v2/orgs/{org_id}/default_teams_settings",
-+  "/v2/orgs/{org_id}/teams/{team_id}/settings",
-+  "/v2/orgs/{org_id}/groups",
-+  "/v2/orgs/{org_id}/groups/{group_id}",
-+  "/v2/orgs/{org_id}/groups/{group_id}/members",
-+  "/v2/orgs/{org_id}/groups/{group_id}/members/{member_id}",
-+  "/v2/orgs/{org_id}/groups/{group_id}/teams",
-+  "/v2/orgs/{org_id}/groups/{group_id}/teams/{team_id}",
-+  "/v2/orgs/{org_id}/teams/{team_id}/groups",
-+  "/v2/orgs/{org_id}/teams/{team_id}/groups/{group_id}",
-+  "/v2/orgs/{org_id}/boards/{board_id}/groups",
-+  "/v2/orgs/{org_id}/boards/{board_id}/groups/{group_id}",
-+  "/v2/orgs/{org_id}/projects/{project_id}/groups",
-+  "/v2/orgs/{org_id}/projects/{project_id}/groups/{group_id}"
-+];
- 
--// The spec declares one oauth2 scheme; both an access token and OAuth fill it as a bearer token.
- export const options = {
-   source: {
-     url: "https://raw.githubusercontent.com/miroapp/api-clients/39161f97cee3f887f5f67cf4a003ce93b3a6903b/packages/generator/spec.json",
-   },
-   allowedOrigin: "https://api.miro.com",
-   securitySchemes: { oAuth2AuthCode: { type: "http", scheme: "bearer" } },
--  // The document declares no security; send the account's credential on every operation.
-   fallbackSecurity: [{ oAuth2AuthCode: [] }],
-   methods: {
-     token: [{ scheme: "oAuth2AuthCode", field: "token", part: "value", prefix: "" }],
-     oauth: [{ scheme: "oAuth2AuthCode", field: "access_token", part: "value", prefix: "" }],
-   },
-   oauth: [],
--  patches: [
--    ...scimPaths.map((p) => ({
--      op: "remove" as const,
--      path: `/paths/${("/" + p).replace(/~/g, "~0").replace(/\//g, "~1")}`,
--    })),
--    // App metrics take an app management API token from Developer Hub, which neither method holds, so they get no
--    // credential (catalog/status/miro.json "credentialFree").
--    { op: "add" as const, path: "/paths/~1v2-experimental~1apps~1{app_id}~1metrics/get/security", value: [] },
--    { op: "add" as const, path: "/paths/~1v2-experimental~1apps~1{app_id}~1metrics-total/get/security", value: [] },
--    // The v2 revoke takes the token to revoke and its client's ID and secret in the body, so it gets no credential
--    // (catalog/status/miro.json "credentialFree").
--    { op: "add" as const, path: "/paths/~1v2~1oauth~1revoke/post/security", value: [] },
--    // Miro calls the v1 revoke vulnerable and deprecated (it takes the token in the URL) and points to /v2/oauth/revoke.
--    { op: "remove" as const, path: "/paths/~1v1~1oauth~1revoke" },
--  ],
-+  patches: excludedPaths.map((path) => ({
-+    op: "remove" as const,
-+    path: `/paths/${path.replace(/~/g, "~0").replace(/\//g, "~1")}`,
-+  })),
- } satisfies OpenapiToolNamesOptions;
+diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
-@@ -1,12 +1,12 @@
- {
-   "name": "@executor.sh/miro",
--  "description": "Miro boards, items, sticky notes, shapes, connectors, tags, members, teams and organization APIs.",
-+  "description": "Miro board content and membership, with board read/write scopes available on all plans.",
-   "private": true,
-   "type": "module",
-   "executor": {
+@@ -7,6 +7,6 @@
      "title": "Miro"
    },
    "dependencies": {

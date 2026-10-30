@@ -3,7 +3,7 @@ import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
-import { miroSource, withMiroBoards } from "./miro.ts";
+import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { aws } from "./aws/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
@@ -62,7 +62,7 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
       ? JSON.stringify(mergeFeed(
-          withMiroBoards(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
+          withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
           additions,
         ))
       : await response.text();

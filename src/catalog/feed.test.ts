@@ -97,7 +97,7 @@ test("notices from the official feed are dropped", () => {
   assert.equal(feed.apps[0]!.connectionNotices, undefined);
 });
 
-test("GitLab serves the site-aware source while Miro serves board-only OAuth", async () => {
+test("GitLab serves the site-aware source while Miro serves its full REST source", async () => {
   const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
     package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
   const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps));
