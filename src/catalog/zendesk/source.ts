@@ -8,8 +8,10 @@ const entry: FeedEntry = {
   package: snapshot.package,
   name: "Zendesk",
   description:
-    "Connect your own Zendesk user to list and read tickets; ticket creation requires approval.",
+    "Read the connected Zendesk user and tickets; every ticket creation requires approval.",
   auth: [{ method: "oauth", kind: "oauth2" }],
+  // Zendesk requires permission for third-party logos. Its Marketplace app-icon guidance
+  // separately forbids Zendesk marks in those app icons.
   icons: [],
   source: "apps/zendesk.json",
 };

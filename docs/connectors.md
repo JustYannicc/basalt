@@ -47,6 +47,8 @@ Zendesk stays available in the catalog without hosted credentials. Each account 
 
 Preserve existing public OAuth clients and confidential BYO clients through the native connection form. A pre-existing compatible public client lets a person sign in without creating a client or entering a secret. Advanced BYO remains available, but asking a person to register their own client does not meet site-plus-sign-in onboarding. If no compatible client is available for the selected site, the connection must report that provider limitation.
 
+A customer's own Zendesk OAuth client is only for that customer's own Zendesk account and is never shared across customers; we continue pursuing a separate global hosted client for cross-customer use.
+
 The optional hosted Zendesk client uses `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` and `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET`; neither selects a deployment tenant. An operator distributing a public integration must satisfy Zendesk's applicable registration, approval and request-metadata rules. The internal-company exception remains separate. Configured credentials alone do not prove registration eligibility or unrelated-company consent. The former `EXECUTOR_ZENDESK_SUBDOMAIN` setting is ignored and not forwarded.
 
 For an approved public integration, set the nonsecret Actions variables `ZENDESK_MARKETPLACE_ORGANIZATION_ID` and `ZENDESK_MARKETPLACE_APP_ID` to the IDs Zendesk assigns. The catalog adds them and the product name to API request headers, including health. Both IDs must be present or both absent; header injection is rejected. No placeholder IDs are sent. Token-endpoint header applicability and live registration remain unverified.
