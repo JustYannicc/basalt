@@ -23,6 +23,12 @@ export function recordValues(row: ModelRequest) {
       input: row.price.input, output: row.price.output, cacheRead: row.price.cacheRead, cacheWrite: row.price.cacheWrite,
       request: row.price.request, tier: row.price.tier, minInput: row.price.minInput,
       validFrom: row.price.validFrom, validTo: row.price.validTo,
+      billing: row.price.billing === null ? null : {
+        matchedRule: row.price.billing.matchedRule, provider: row.price.billing.provider, model: row.price.billing.model,
+        requestedTier: row.price.billing.requestedTier, responseTier: row.price.billing.responseTier,
+        tierSource: row.price.billing.tierSource, effectiveTier: row.price.billing.effectiveTier,
+        responseFallback: row.price.billing.responseFallback,
+      },
     },
     attribution: row.attribution,
   };

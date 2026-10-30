@@ -152,11 +152,14 @@ model {
     poolDatabase = store "Pool database" {
       #basalt #v1
       description """
-        Model request history lives in 16 fixed hash partitions with one global request identity.
+        Model request history lives in 16 fixed hash partitions with source-scoped Home usage IDs;
+        HTTP request traces are correlation metadata and may span several attempts.
         Explicit metadata projections retain tokens, timing, status, attribution and immutable price
         provenance forever. Row and statement triggers refuse UPDATE, DELETE and TRUNCATE. No history
         table has cascading foreign keys or a retention deadline. Operator commands install the
-        additive schema and approve a count-only historical backfill separately. Capture defaults
+        additive schema and approve a count-only historical backfill separately. Activation and capture
+        wait for Home's existing privacy history migration before freezing legacy attribution.
+        Billing snapshots retain matched rule and requested/response/effective tier provenance. Capture defaults
         off and cannot create its own activation cursor. Forward, historical and repeating sweep
         cursors commit with their request rows. Each sweep freezes its upper bound so sustained
         arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;

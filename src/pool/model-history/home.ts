@@ -24,7 +24,14 @@ export const homeHistorySelect = `SELECT u.id::text AS source_id,
     'cache_write_price_per_million', c.price_snapshot->'cache_write_price_per_million',
     'request_price', c.price_snapshot->'request_price',
     'matched_service_tier', c.price_snapshot->'matched_service_tier',
-    'min_input_tokens', c.price_snapshot->'min_input_tokens') AS price,
+    'min_input_tokens', c.price_snapshot->'min_input_tokens',
+    'provider', c.price_snapshot->'provider', 'model', c.price_snapshot->'model',
+    'requested_service_tier', c.price_snapshot->'requested_service_tier',
+    'response_service_tier', c.price_snapshot->'response_service_tier',
+    'service_tier_source', c.price_snapshot->'service_tier_source',
+    'effective_service_tier', c.price_snapshot->'effective_service_tier',
+    'response_tier_fallback', c.price_snapshot->'response_tier_fallback',
+    'matched_rule', c.matched_price_rule) AS price,
   COALESCE(c.api_key_id, k.id)::text AS key_id,
   a.username
   FROM usage u
@@ -38,9 +45,8 @@ export async function homeRequest(raw: unknown, source: string): Promise<ModelRe
   if (!sourceId || sourceId === "0" || typeof row.failed !== "boolean") return invalidHistory();
   const at = timestamp(row.timestamp);
   const requestId = identifier(row.request_id);
-  // Node gives each upstream attempt a UUID, including retries and additional model records.
-  // Home's auto-increment id is a fallback only for older rows without one.
-  const sourceRecord = await digest(JSON.stringify(requestId ? ["request", requestId] : ["usage", sourceId]));
+  // request_id is a shared HTTP trace. Home's persisted usage ID identifies each attempt.
+  const sourceRecord = await digest(JSON.stringify(["usage", sourceId]));
   const user = parseBackendUserName(row.username);
   const canonical = row.token_accounting_version === 2 && row.token_accounting_quality === "complete";
   const quality = canonical ? "complete" : row.token_accounting_quality === "inconsistent" ? "inconsistent"

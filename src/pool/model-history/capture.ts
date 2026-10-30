@@ -1,4 +1,5 @@
 import { digest } from "../backend-users.ts";
+import { requireHomePrivacyReady } from "./privacy.ts";
 import { counter, invalidHistory } from "./record.ts";
 import { homeHistorySelect, homeHistorySource, homeRequest } from "./home.ts";
 import type { HistoryDatabase } from "./schema.ts";
@@ -17,6 +18,7 @@ export async function captureHomeRequests(db: HistoryDatabase) {
     // Deployment cannot opt a database into collection. The operator first approves its
     // count-only dry run and creates this cursor through the activation command.
     if (!state) { await db.query("COMMIT"); return { state: "inactive" as const }; }
+    await requireHomePrivacyReady(db);
     const forward = counter(state.forward_id), sweep = counter(state.sweep_id), savedSweepUpper = counter(state.sweep_upper);
     const upper = counter(state.backfill_upper), backfill = counter(state.backfill_id);
     if (upper === null || backfill === null || forward === null || sweep === null || savedSweepUpper === null) return invalidHistory();

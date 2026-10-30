@@ -1,5 +1,6 @@
 import { digest } from "../backend-users.ts";
 import { counter, invalidHistory } from "./record.ts";
+import { homePrivacyReady, requireHomePrivacyReady } from "./privacy.ts";
 import { homeHistorySource } from "./home.ts";
 import type { HistoryDatabase } from "./schema.ts";
 
@@ -7,6 +8,7 @@ export interface BackfillPlan {
   source: string;
   upperId: string;
   rows: string;
+  privacyReady: boolean;
   firstAt: string | null;
   lastAt: string | null;
 }
@@ -22,8 +24,9 @@ export async function planHomeBackfill(db: HistoryDatabase): Promise<BackfillPla
     const row = result.rows[0];
     const upperId = counter(row?.upper_id), rows = counter(row?.rows);
     if (upperId === null || rows === null) return invalidHistory();
+    const privacyReady = await homePrivacyReady(db);
     await db.query("COMMIT");
-    return { source: await digest(homeHistorySource), upperId, rows,
+    return { privacyReady, source: await digest(homeHistorySource), upperId, rows,
       firstAt: typeof row?.first_at === "string" ? row.first_at : null,
       lastAt: typeof row?.last_at === "string" ? row.last_at : null };
   } catch (error) {
@@ -35,11 +38,12 @@ export async function planHomeBackfill(db: HistoryDatabase): Promise<BackfillPla
 /** An explicitly approved snapshot starts the historical cursor at zero. Repeat activation is inert. */
 export async function activateHomeBackfill(db: HistoryDatabase, plan: BackfillPlan): Promise<void> {
   const source = await digest(homeHistorySource);
-  if (plan.source !== source || counter(plan.upperId) === null || counter(plan.rows) === null) return invalidHistory();
+  if (plan.privacyReady !== true || plan.source !== source || counter(plan.upperId) === null || counter(plan.rows) === null) return invalidHistory();
   await db.query("BEGIN");
   try {
     await db.query("SET LOCAL lock_timeout = '500ms'");
     await db.query("SET LOCAL statement_timeout = '5s'");
+    await requireHomePrivacyReady(db);
     const actual = await db.query("SELECT COUNT(*)::text AS rows FROM usage WHERE id <= $1::bigint", [plan.upperId]);
     if (actual.rows[0]?.rows !== plan.rows) throw new Error("Home history changed; make a new dry-run report");
     await db.query(`INSERT INTO basalt_model_history_cursor (source,forward_id,backfill_upper,backfill_id,sweep_id)

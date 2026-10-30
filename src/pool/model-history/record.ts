@@ -43,6 +43,18 @@ export interface HistoryPrice {
   minInput: string;
   validFrom: string | null;
   validTo: string | null;
+  billing: HistoryBilling | null;
+}
+
+export interface HistoryBilling {
+  matchedRule: string | null;
+  provider: string | null;
+  model: string | null;
+  requestedTier: string | null;
+  responseTier: string | null;
+  tierSource: "request" | "response" | null;
+  effectiveTier: string | null;
+  responseFallback: boolean | null;
 }
 
 /** Deliberately fixed text: a parser failure must not echo an export or driver value. */
@@ -127,5 +139,22 @@ export function homePrice(raw: Record<string, unknown>): HistoryPrice {
   if (rates.some((rate) => rate === null)) return invalidHistory();
   return { input: rates[0]!, output: rates[1]!, cacheRead: rates[2]!, cacheWrite: rates[3]!,
     request: amount(raw.request_price) ?? "0", tier: raw.matched_service_tier === "*" ? "*" : identifier(raw.matched_service_tier),
-    minInput: counter(raw.min_input_tokens) ?? "0", validFrom: null, validTo: null };
+    minInput: counter(raw.min_input_tokens) ?? "0", validFrom: null, validTo: null,
+    billing: historyBilling({ matchedRule: raw.matched_rule, provider: raw.provider, model: raw.model,
+      requestedTier: raw.requested_service_tier, responseTier: raw.response_service_tier,
+      tierSource: raw.service_tier_source, effectiveTier: raw.effective_service_tier, responseFallback: raw.response_tier_fallback }) };
+}
+
+/** Closed billing dimensions only; no arbitrary snapshot fields are retained. */
+export function historyBilling(raw: Record<string, unknown>): HistoryBilling {
+  const tier = (value: unknown) => typeof value === "string" &&
+    ["auto", "default", "standard", "priority", "flex", "fast"].includes(value) ? value : null;
+  return {
+    matchedRule: typeof raw.matchedRule === "string" && /^[A-Za-z0-9][A-Za-z0-9_./:@+*\-]{0,1023}$/.test(raw.matchedRule)
+      ? raw.matchedRule : null,
+    provider: identifier(raw.provider), model: identifier(raw.model),
+    requestedTier: tier(raw.requestedTier), responseTier: tier(raw.responseTier), effectiveTier: tier(raw.effectiveTier),
+    tierSource: raw.tierSource === "request" || raw.tierSource === "response" ? raw.tierSource : null,
+    responseFallback: typeof raw.responseFallback === "boolean" ? raw.responseFallback : null,
+  };
 }

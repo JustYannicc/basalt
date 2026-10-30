@@ -6,6 +6,7 @@ import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
 import { migrateModelHistory } from "../../src/pool/model-history/schema.ts";
+import { historyObject } from "../../src/pool/model-history/record.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 
 const adminUrl = process.env.POOL_TEST_ADMIN_URL;
@@ -38,6 +39,8 @@ test("request history backfills explicitly, survives restarts and late commits, 
       price_snapshot jsonb,api_key_id bigint,user_id bigint)`);
     await db.query("CREATE TABLE api_key (id bigint,diagnostic_fingerprint text,user_id bigint)");
     await db.query('CREATE TABLE "user" (id bigint,username text)');
+    await db.query("CREATE TABLE home_data_migration (name text PRIMARY KEY,completed boolean NOT NULL)");
+    await db.query("INSERT INTO home_data_migration VALUES ('diagnostics_metadata_only_v1_1_6',false)");
     await db.query('INSERT INTO "user" VALUES (1,$1)', [await backendUserName("fixture-owner", "fixture-pool")]);
     await db.query("INSERT INTO api_key VALUES (1,$1,1)", [`sha256:${"a".repeat(64)}`]);
     const add = async (client: pg.Client, request: string, at = "2020-01-01T12:00:00.123456Z") => {
@@ -49,7 +52,7 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await db.query("UPDATE usage SET model=NULL WHERE id=1");
     await db.query(`INSERT INTO billing_charge (id,usage_id,amount,matched_price_rule,price_snapshot,api_key_id,user_id)
       VALUES ('fixture-charge',1,0.000123456789012345678,'fixture-price',
-        '{"input_price_per_million":2,"output_price_per_million":8,"cache_read_price_per_million":0.5,"cache_write_price_per_million":2.5,"request_price":0,"matched_service_tier":"*","min_input_tokens":0}',1,1)`);
+        '{"input_price_per_million":2,"output_price_per_million":8,"cache_read_price_per_million":0.5,"cache_write_price_per_million":2.5,"request_price":0,"matched_service_tier":"*","min_input_tokens":0,"provider":"fixture-provider","model":"fixture-priced-model","requested_service_tier":"priority","response_service_tier":"flex","service_tier_source":"response","effective_service_tier":"flex","response_tier_fallback":false}',1,1)`);
     const before = await planHomeBackfill(db);
     assert.equal(before.rows, "1");
     assert.equal((await db.query("SELECT to_regclass('basalt_model_requests') AS relation")).rows[0].relation, null);
@@ -57,7 +60,16 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await migrateModelHistory(db);
     assert.equal((await captureHomeRequests(db)).state, "inactive");
     assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "0");
-    await activateHomeBackfill(db, before);
+    assert.equal(before.privacyReady, false);
+    await assert.rejects(activateHomeBackfill(db, before));
+    await db.query("UPDATE home_data_migration SET completed=true");
+    const approved = await planHomeBackfill(db);
+    assert.equal(approved.privacyReady, true);
+    await db.query("UPDATE home_data_migration SET completed=false");
+    await assert.rejects(activateHomeBackfill(db, approved));
+    assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_history_cursor")).rows[0].n, "0");
+    await db.query("UPDATE home_data_migration SET completed=true");
+    await activateHomeBackfill(db, approved);
     const first = await captureHomeRequests(db);
     assert.equal(first.state, "active");
     assert.equal(first.state === "active" && first.backfillComplete, true);
@@ -69,6 +81,10 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(result.records[0]!.reasoning_tokens, "3");
     assert.equal(result.records[0]!.model, null);
     assert.equal(result.records[0]!.cost, "0.000123456789012");
+    assert.deepEqual(historyObject(result.records[0]!.price_snapshot).billing, {
+      matchedRule: "fixture-price", provider: "fixture-provider", model: "fixture-priced-model",
+      requestedTier: "priority", responseTier: "flex", tierSource: "response", effectiveTier: "flex", responseFallback: false,
+    });
     assert.equal((await readRequests(db, { ...query, person: await digest("other-member") })).records.length, 0);
 
     await late.query("BEGIN");
@@ -92,6 +108,22 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await migrateModelHistory(db);
     assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
     await db.query("UPDATE api_key SET user_id=1");
+    const sharedTrace = randomUUID();
+    await add(db, sharedTrace);
+    await add(db, sharedTrace);
+    await db.query(`UPDATE usage SET failed=true,fail_status_code=429 WHERE id=5`);
+    await db.query(`INSERT INTO billing_charge (id,usage_id,amount,matched_price_rule,price_snapshot,api_key_id,user_id)
+      SELECT 'retry-first-charge',4,amount,matched_price_rule,price_snapshot,1,1 FROM billing_charge WHERE usage_id=1`);
+    await db.query(`INSERT INTO billing_charge (id,usage_id,amount,matched_price_rule,price_snapshot,api_key_id,user_id)
+      SELECT 'second-charge',5,amount,'fixture-other-rule',price_snapshot ||
+        '{"response_service_tier":"priority","effective_service_tier":"priority","response_tier_fallback":true}'::jsonb,1,1
+      FROM billing_charge WHERE usage_id=1`);
+    await captureHomeRequests(db);
+    const attempts = (await db.query("SELECT id,price_version,failed FROM basalt_model_requests WHERE request_id=$1", [sharedTrace])).rows;
+    assert.equal(attempts.length, 2, "shared HTTP traces cannot collapse distinct usage IDs");
+    assert.equal(new Set(attempts.map((row) => row.id)).size, 2);
+    assert.equal(new Set(attempts.map((row) => row.price_version)).size, 2, "billing rule and effective tier are part of price identity");
+    assert.equal(attempts.filter((row) => row.failed === true).length, 1);
     const delayedRequest = randomUUID();
     await late.query("BEGIN");
     await add(late, delayedRequest);
