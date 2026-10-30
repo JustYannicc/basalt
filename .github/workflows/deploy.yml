@@ -84,15 +84,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-      # Check runs can finish out of order, so skip a commit production already has, and leave a commit a newer passing
-      # main commit contains to Manual release of main, which releases that newer one, instead of deploying it over it.
-      - name: Skip a candidate production already contains
-        id: live
-        run: node scripts/deploy-safety/release.ts already-live --candidate "$RELEASE_CANDIDATE_SHA"
+      # Check runs can finish out of order. A newer passing main commit that contains the candidate goes to Manual release
+      # of main instead of this one being deployed over it. That comes first: this run may have replaced the newer
+      # commit's pending Deploy run, so it must not stop just because the candidate is already live.
       - name: Find a newer passing main commit that contains the candidate
         id: newer
-        if: steps.live.outputs.already_live == 'false'
         run: MAIN_RELEASE_CANDIDATE="$RELEASE_CANDIDATE_SHA" node scripts/release-merge/main-candidate.ts newer
+      - name: Skip a commit production already contains
+        id: live
+        run: node scripts/deploy-safety/release.ts already-live --candidate "${NEWER:-$RELEASE_CANDIDATE_SHA}"
+        env:
+          NEWER: ${{ steps.newer.outputs.newer }}
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         uses: oven-sh/setup-bun@v2
         with:
@@ -137,6 +139,11 @@ jobs:
         if: steps.report.outputs.manual_required == 'true' && steps.report.outputs.deployable != 'true'
         run: |
           echo "::error::The latest production deployment is unresolved; reconcile it before another release"
+          exit 1
+      - name: Fail when the report doesn't say which release path it needs
+        if: steps.report.outputs.manual_required != 'true' && steps.report.outputs.manual_required != 'false' && steps.report.outcome == 'success'
+        run: |
+          echo "::error::The release report wrote no manual_required output, so neither release path can run"
           exit 1
 
   # No one approves releases, so a database or Workflow-identity release goes straight to the manual path, which takes

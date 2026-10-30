@@ -75,18 +75,23 @@ function deploySteps(): string[] {
   return workflow.slice(workflow.indexOf("\n  deploy:\n"), workflow.indexOf("\n  handoff:\n")).split(/\n      - /).slice(1);
 }
 
-test("Deploy skips a commit production already contains before anything else runs", () => {
+test("Deploy looks for a newer passing commit first, then skips whichever commit production already contains", () => {
   const steps = deploySteps();
   assert.match(steps[0]!, /^uses: actions\/checkout@v4\n/);
   assert.match(steps[1]!, /^uses: actions\/setup-node@v4\n/);
-  assert.match(steps[2]!, /\n        id: live\n        run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$RELEASE_CANDIDATE_SHA"$/);
-  assert.match(steps[3]!, /\n        id: newer\n        if: steps\.live\.outputs\.already_live == 'false'\n        run: MAIN_RELEASE_CANDIDATE="\$RELEASE_CANDIDATE_SHA" node scripts\/release-merge\/main-candidate\.ts newer$/);
+  // This run may have replaced the newer commit's pending Deploy run, so the newer commit is found unconditionally.
+  assert.match(steps[2]!, /^name: [^\n]+\n        id: newer\n        run: MAIN_RELEASE_CANDIDATE="\$RELEASE_CANDIDATE_SHA" node scripts\/release-merge\/main-candidate\.ts newer$/);
+  assert.match(steps[3]!, /^name: [^\n]+\n        id: live\n        run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$\{NEWER:-\$RELEASE_CANDIDATE_SHA\}"\n        env:\n          NEWER: \$\{\{ steps\.newer\.outputs\.newer \}\}$/);
   // Every check, the report and through it the deploy and the unresolved refusal wait on both.
   const gated = steps.slice(4, steps.findIndex((step) => /\n\s+id: report\n/.test(step)) + 1);
   assert.equal(gated.length, 13);
   for (const step of gated)
     assert.match(step, /^(?:(?:name|id): [^\n]+\n        )*if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == ''\n/, step);
-  for (const step of steps.slice(4 + gated.length)) assert.match(step, /\n        if: steps\.report\.outputs\./, step);
+  const after = steps.slice(4 + gated.length);
+  assert.equal(after.length, 3);
+  for (const step of after) assert.match(step, /\n        if: steps\.report\.outputs\./, step);
+  // A report that succeeds without saying which path it needs fails Deploy rather than releasing nothing.
+  assert.match(after[2]!, /\n        if: steps\.report\.outputs\.manual_required != 'true' && steps\.report\.outputs\.manual_required != 'false' && steps\.report\.outcome == 'success'\n        run: \|\n[^\n]*::error::[^\n]*\n\s+exit 1/);
 });
 
 test("the handoff releases this Check's commit, or a newer passing one, even when main has moved on", () => {
