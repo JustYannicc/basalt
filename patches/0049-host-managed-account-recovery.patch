@@ -564,7 +564,7 @@ index 3aba9e7..6d8566e 100644
      const checks = new Map(health.map((entry) => [entry.account, entry]));
      const display = [];
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 9f267e5..251df77 100644
+index 9f267e5..dc4b58b 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
 @@ -285,6 +285,16 @@ const notRunInCi: Partial<
@@ -579,7 +579,7 @@ index 9f267e5..251df77 100644
 +  cloudPoolAccountEventualRepair: {
 +    targets: ["cloud"],
 +    reason:
-+      "Explicit pool workflow integration uses an isolated synthetic signing key; CI checks durable queueing separately.",
++      "Manual integration depends on deferred workflow execution; CI checks durable queueing without starting workers.",
 +  },
    mcp: {
      targets: ["self-host", "cloud"],
@@ -622,7 +622,7 @@ index b0fa511..6350bb3 100644
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
        APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 2fe4d80..e717e06 100644
+index 2fe4d80..b81e94d 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -30,6 +30,8 @@ export const TestPlan = Schema.Struct({
@@ -634,17 +634,7 @@ index 2fe4d80..e717e06 100644
    appOrigin: Schema.optional(Schema.Literal(true)),
    /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
    legacyStorage: Schema.optional(Schema.Literal(true)),
-@@ -3046,7 +3048,8 @@ export const scenarios = plan({
-   catalogOAuthClients: {
-     fixtures: "actors",
-     file: "catalog-oauth-clients.spec.ts",
--    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
-+    title:
-+      "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
-     targets: {
-       "self-host": scheduled,
-       cloud: na("Restarts a runner-owned product with optional client credentials."),
-@@ -7637,6 +7640,28 @@ export const scenarios = plan({
+@@ -7637,6 +7639,28 @@ export const scenarios = plan({
        local: na("Exercises hosted account checks and rows."),
      },
    },
@@ -1291,10 +1281,10 @@ index 0000000..9662a70
 +});
 diff --git a/e2e/tests/pool-account-repair.spec.ts b/e2e/tests/pool-account-repair.spec.ts
 new file mode 100644
-index 0000000..f5f0a08
+index 0000000..4d2cf42
 --- /dev/null
 +++ b/e2e/tests/pool-account-repair.spec.ts
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,156 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient } from "effect/http";
@@ -1431,11 +1421,6 @@ index 0000000..f5f0a08
 +                times: 60,
 +              }),
 +              Effect.timeout("20 seconds"),
-+              Effect.ensuring(
-+                Effect.gen(function* () {
-+                  yield* evidence.json("after-repair-dispatch.json", { jobs: yield* jobs() });
-+                }),
-+              ),
 +            );
 +            const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", path));
 +            expect(unchanged.activeVersion).toBe(current.activeVersion);
@@ -1444,7 +1429,13 @@ index 0000000..f5f0a08
 +              sourcePreserved: true,
 +              explicitDispatch: true,
 +            });
-+          }),
++          }).pipe(
++            Effect.ensuring(
++              Effect.gen(function* () {
++                yield* evidence.json("after-repair-dispatch.json", { jobs: yield* jobs() });
++              }),
++            ),
++          ),
 +        );
 +      }),
 +    ),
