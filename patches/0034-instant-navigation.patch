@@ -641,10 +641,10 @@ index 0000000..99d63bd
 +  );
 +});
 diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
-index 567d471..056e847 100644
+index 567d471..1fbabf1 100644
 --- a/packages/dashboard-start/src/implementation/registry.tsx
 +++ b/packages/dashboard-start/src/implementation/registry.tsx
-@@ -7,7 +7,7 @@
+@@ -7,10 +7,11 @@
   * stream only once the check succeeds (`useGuardedPreload`).
   */
  import { RegistryContext, scheduleTask, useAtomValue } from "@effect/atom-react";
@@ -653,25 +653,24 @@ index 567d471..056e847 100644
  import { Cause } from "effect";
  import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
  import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
-@@ -359,6 +359,61 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
++import { nodeKey } from "./loaded-value.ts";
+
+ interface DehydratedAtoms {
+   readonly initial: ReadonlyArray<Hydration.DehydratedAtom>;
+@@ -28,9 +29,6 @@ const pendingResult = (value: unknown) =>
+  */
+ const renderDeadline = 10_000;
+
+-const nodeKey = (atom: Atom.Atom<unknown>) =>
+-  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
+-
+ /**
+  * Reads whose values the document carries only once a check succeeds. A server render that
+  * waits for a check before it renders a page can start the page's reads with the check; this
+@@ -359,6 +357,46 @@ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) =>
    };
  };
 
-+/**
-+ * The value `atom` holds if something already read it, without starting a read. A read can act on
-+ * data another page loaded, such as the list it was opened from, at no cost when there is none.
-+ */
-+export const loadedValue = <A,>(
-+  registry: AtomRegistry.AtomRegistry,
-+  atom: Atom.Atom<A>,
-+): A | undefined => {
-+  const node = registry.getNodes().get(nodeKey(atom));
-+  // Reading a node that is not valid would compute it, which starts the read.
-+  if (node === undefined || node.currentState() !== "valid") return undefined;
-+  // SAFETY: the registry stores each atom's node under that atom's key.
-+  return node.value() as A;
-+};
-+
 +/** The reads a matched route declares, from its static data, params and current values. */
 +export type RouteReads = (
 +  match: {
@@ -715,7 +714,7 @@ index 567d471..056e847 100644
  /**
   * Create the registry for one router. `initialValues` are values known before rendering, such as
   * browser entry data or a server-verified session. `connect` joins it to Start's streaming.
-@@ -375,9 +430,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
+@@ -375,9 +413,12 @@ export const dashboardRegistry = (initialValues: InitialValues) => {
    const guards = import.meta.env.SSR ? documentGuards(registry) : undefined;
    return {
      registry,
@@ -745,13 +744,13 @@ index 7bc172b..76e2064 100644
  const freshness: Duration.Input = "30 seconds";
 
 diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
-index 9d2862b..0fe7a34 100644
+index 9d2862b..a0687fb 100644
 --- a/apps/hosted/web/src/contracts/resource-access.ts
 +++ b/apps/hosted/web/src/contracts/resource-access.ts
 @@ -1,5 +1,6 @@
  /** Sharing state and mutations are keyed by organization and resource, with confirmed updates. */
  import { hydrated } from "@executor-js/ui/contracts/http";
-+import { loadedValue } from "@executor-js/dashboard-start/registry";
++import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
  import { revalidated } from "@executor-js/ui/contracts/refresh";
  import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
  import { Data, Effect } from "effect";
@@ -981,3 +980,42 @@ index 241c4e2..3c689bb 100644
 +    ),
 +  );
  });
+diff --git a/packages/dashboard-start/package.json b/packages/dashboard-start/package.json
+index ae72537..8c6137a 100644
+--- a/packages/dashboard-start/package.json
++++ b/packages/dashboard-start/package.json
+@@ -9,6 +9,7 @@
+     "./shell": "./src/implementation/shell.tsx",
+     "./api": "./src/contracts/api.ts",
+     "./registry": "./src/implementation/registry.tsx",
++    "./loaded-value": "./src/implementation/loaded-value.ts",
+     "./in-process": "./src/implementation/in-process.ts",
+     "./page": "./src/implementation/page.ts",
+     "./document-api": "./src/contracts/document.ts",
+diff --git a/packages/dashboard-start/src/implementation/loaded-value.ts b/packages/dashboard-start/src/implementation/loaded-value.ts
+new file mode 100644
+index 0000000..97d1d73
+--- /dev/null
++++ b/packages/dashboard-start/src/implementation/loaded-value.ts
+@@ -0,0 +1,21 @@
++/** Reading what a registry already holds, without JSX, so plain TypeScript modules can import it. */
++import { Atom, type AtomRegistry } from "effect/reactivity";
++
++/** The key a registry stores an atom's node under. */
++export const nodeKey = (atom: Atom.Atom<unknown>) =>
++  Atom.isSerializable(atom) ? atom[Atom.SerializableTypeId].key : atom;
++
++/**
++ * The value `atom` holds if something already read it, without starting a read. A read can act on
++ * data another page loaded, such as the list it was opened from, at no cost when there is none.
++ */
++export const loadedValue = <A>(
++  registry: AtomRegistry.AtomRegistry,
++  atom: Atom.Atom<A>,
++): A | undefined => {
++  const node = registry.getNodes().get(nodeKey(atom));
++  // Reading a node that is not valid would compute it, which starts the read.
++  if (node === undefined || node.currentState() !== "valid") return undefined;
++  // SAFETY: the registry stores each atom's node under that atom's key.
++  return node.value() as A;
++};
