@@ -71,7 +71,7 @@ export async function parseUsageImport(raw: unknown, owner: { pool: string; pers
     missingEndpoint: records.filter((row) => row.endpoint === null).length,
     missingLatency: records.filter((row) => row.latencyMs === null).length,
     missingPriceSnapshot: records.filter((row) => row.price === null).length,
-  };
+  } satisfies ParsedImport["report"];
   return {
     records, report, local: input.source === homeHistorySource, homeUsageIds,
     digest: await digest(JSON.stringify({ records, report, source: context.source, offset })),
