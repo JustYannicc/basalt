@@ -67,11 +67,14 @@ export async function poolInventorySnapshot(client: Pick<pg.Client, "query">) {
   }
 }
 
-export async function reportPoolInventory(connectionString: string): Promise<void> {
+export async function reportPoolInventory(database: { readonly connectionString: string } | undefined): Promise<void> {
   let client: pg.Client | undefined;
   try {
+    const connectionString = database?.connectionString;
+    if (!connectionString) throw new Error("Inventory database binding is missing");
     const url = new URL(connectionString);
-    if (url.pathname !== `/${poolDatabase.name}` || url.searchParams.get("sslmode") !== "verify-full") {
+    // The Hyperdrive resource verifies origin TLS; its Worker-facing URL has no sslmode.
+    if (url.pathname !== `/${poolDatabase.name}`) {
       throw new Error("Invalid inventory database");
     }
     const { default: pg } = await import("pg");

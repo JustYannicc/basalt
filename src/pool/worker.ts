@@ -227,7 +227,7 @@ export default {
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
     if (event.cron === inventoryCron) {
-      await reportPoolInventory(env.POOL_DATABASE_URL);
+      await reportPoolInventory(env.POOL_AUTH_DATABASE);
       await singleton(env).migrationInventory();
       return;
     }
