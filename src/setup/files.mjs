@@ -84,8 +84,9 @@ export async function configure({ home, env = {}, brand, credentials, undo = fal
       if (target.format === "toml") result.source = markToml(result.source, brand);
       files.push({ ...target, before, input: current, after: snapshot(result.source), changes: result.changes });
     }
+    // Restores run while the previous manifest still tracks those files, so an interruption stays undoable.
+    for (const file of restores) await atomic(file.path, file.snapshot);
     await atomic(manifestPath, snapshot(`${JSON.stringify({ id: brand.setup.id, files }, null, 2)}\n`));
     for (const file of files) await atomic(file.path, file.after);
-    for (const file of restores) await atomic(file.path, file.snapshot);
   } finally { await rmdir(lock); }
 }

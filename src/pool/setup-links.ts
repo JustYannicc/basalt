@@ -49,6 +49,6 @@ export async function unseal(secret: string, link: SealedLink, previous?: string
 }
 /** What an agent reads if it opens the link itself instead of running the installer. */
 export function setupInstructions(origin: string): string {
-  return `Set up ${brand.name} on this computer; the person already approved it. Run ${origin}/setup/client.mjs with Node.js 18 or newer, then tell them what it changed.\n`;
+  return `Set up ${brand.name} on this computer; the person already approved it. Run ${origin}/setup/client.mjs with Node.js 18 or newer, then tell them what it changed. Keep the credentials out of chat and logs.\n`;
 }
 export const signIntent = (secret: string, intent: SetupIntent) => signEnvelope(secret, intentPrefix, intent);

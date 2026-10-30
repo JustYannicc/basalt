@@ -225,6 +225,9 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
         user: payload.user, intent: input.intent, id: input.computerId,
       })));
       const response = await createLink(request, env, payload, own);
+      // An older pool Worker ignores the choice; never hand out a key on a pool nobody picked.
+      if (text(input.pool) && response.ok && record((await response.clone().json()).computer).poolId !== input.pool)
+        throw new SetupError(502, "Could not create the setup link on that pool. Try again.");
       if (response.ok) emitProductEvent(env.onProductEvent, "setup_started", person);
       return response;
     }
