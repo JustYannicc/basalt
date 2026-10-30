@@ -6,7 +6,7 @@ import { inventoryCron } from "./inventory.ts";
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (specifier === "cloudflare:workers") return {
-      url: "data:text/javascript,export class DurableObject {}",
+      url: "data:text/javascript,export class DurableObject {} export class WorkerEntrypoint {}",
       shortCircuit: true,
     };
     if (specifier === "pg") return {

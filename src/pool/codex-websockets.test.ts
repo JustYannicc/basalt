@@ -28,7 +28,7 @@ test("new Codex credentials enable and read back WebSockets without changing oth
   await enableNewCodexWebSockets(f.client, ["codex-new"], "codex");
   await enableNewCodexWebSockets(f.client, ["codex-new"], "codex");
   await enableNewCodexWebSockets(f.client, ["other"], "claude");
-  assert.deepEqual(f.writes, [{ id: "codex-new", websockets: true }]);
+  assert.deepEqual(f.writes, [0, 1].map(() => ({ id: "codex-new", websockets: true })));
   assert.equal(f.files[2]!.websockets, false);
   await assert.rejects(enableNewCodexWebSockets(f.client, ["other"], "codex"));
 });
@@ -39,7 +39,7 @@ test("a successful field-patch response without a true readback cannot complete 
   await assert.rejects(enableNewCodexWebSockets(f.client, ["codex-new"], "codex"));
 });
 
-test("existing-credential migration dry run has counts only and GO binds the exact pending set", async () => {
+test("existing-credential migration dry run has counts only and GO binds the exact selection", async () => {
   const f = fixture();
   const plan = await migrateCodexWebSockets(f.client);
   assert.equal(plan.status, "dry-run");
@@ -51,10 +51,19 @@ test("existing-credential migration dry run has counts only and GO binds the exa
   assert.equal(f.writes.length, 0);
   const applied = await migrateCodexWebSockets(f.client, plan);
   assert.equal(applied.status, "complete");
-  assert.equal(applied.applied, 1);
-  assert.deepEqual(f.writes, [{ id: "codex-new", websockets: true }]);
+  assert.equal(applied.applied, 2);
+  assert.equal(plan.writes, 2, "saved-true credentials also need an acknowledged runtime reload");
+  assert.deepEqual(f.writes, ["codex-new", "codex-ready"].map((id) => ({ id, websockets: true })));
   // Replaying an old GO cannot silently operate on a changed selection.
   await assert.rejects(migrateCodexWebSockets(f.client, plan));
+});
+
+test("large unrelated credential lists do not block a Codex connection or dry run", async () => {
+  const f = fixture();
+  f.files.push(...Array.from({ length: 1_001 }, (_, i) => ({ id: `other-${i}`, provider: "claude", websockets: false })));
+  await enableNewCodexWebSockets(f.client, ["codex-new"], "codex");
+  const plan = await migrateCodexWebSockets(f.client);
+  assert.deepEqual([plan.total, plan.pending, plan.writes], [2, 0, 2]);
 });
 
 test("migration stops at the first unconfirmed readback and refuses an oversized pass", async () => {

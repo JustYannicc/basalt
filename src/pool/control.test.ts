@@ -408,7 +408,12 @@ test("Codex sign-in retries its saved account after a failed WebSocket enablemen
   await f.callback(started);
   f.home.addFile("codex-connected", "codex");
   Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "codex-connected" });
-  f.home.override = (path) => path.endsWith("/credentials/fields") ? Response.json({}, { status: 503 }) : undefined;
+  f.home.override = (path) => {
+    if (!path.endsWith("/credentials/fields")) return undefined;
+    // Home can persist the flag and fail ReloadAuths before it acknowledges the patch.
+    f.home.files.get("codex-connected")!.websockets = true;
+    return Response.json({}, { status: 503 });
+  };
   await error(await f.poll(started), "backend_unavailable", 503);
   assert.equal(f.home.members.length, 0);
   f.restart();
@@ -416,6 +421,27 @@ test("Codex sign-in retries its saved account after a failed WebSocket enablemen
   await status(await f.poll(started), { status: "connected", accountId: "codex-connected" });
   assert.equal(f.home.files.get("codex-connected")!.websockets, true);
   assert.equal(f.home.members.length, 1);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/credentials/fields")).length, 2);
+});
+
+test("terminal Codex enablement failure releases ids before any membership write", async () => {
+  const f = await fixture();
+  const started = await f.start("pool-a", "codex");
+  await f.callback(started);
+  f.home.addFile("codex-expired", "codex");
+  Object.assign(f.home.sessions.get(state(started))!, { status: "ok", auth_id: "codex-expired" });
+  f.home.override = (path) => path.endsWith("/credentials/fields") ? Response.json({}, { status: 503 }) : undefined;
+  await error(await f.poll(started), "backend_unavailable", 503);
+  f.advance(12 * 60_000);
+  await f.expire();
+  f.restart();
+  const saved = f.storage.values.get(attributionStorageKey) as { assigned: string[] };
+  assert.deepEqual(saved.assigned, []);
+  assert.equal(f.home.members.length, 0);
+  f.home.override = undefined;
+  const retried = await f.start("pool-a", "codex");
+  Object.assign(f.home.sessions.get(state(retried))!, { status: "ok", auth_id: "codex-expired" });
+  await status(await f.poll(retried), { status: "connected", accountId: "codex-expired" });
 });
 
 test("Codex login-file retry enables transport without uploading another credential", async () => {

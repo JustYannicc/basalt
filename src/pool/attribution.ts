@@ -510,8 +510,11 @@ export class PoolControl implements ControlAttribution {
     }
     tracked.pendingIds = ids;
     this.changed();
+    if (session.provider === "codex") {
+      await this.save(); // Keep identified ids for retry without reserving a membership write yet.
+      await enableNewCodexWebSockets(this.client, ids, session.provider);
+    }
     await this.assigned(ids);
-    await enableNewCodexWebSockets(this.client, ids, session.provider);
     await home.add(ids, ownership.own);
     this.unassign(ids);
     const result: SignInStatus = { status: "connected", accountId: ids[0] ?? null };

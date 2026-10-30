@@ -1,4 +1,4 @@
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
 import type { ProductEventCallback } from "../setup/product-events.ts";
 import { isControlPath } from "../../apps/pool/contract.ts";
@@ -232,6 +232,29 @@ export async function handlePoolWorkerRequest(
 
 function modelAuthResponse(status: 401 | 503, error: string): Response {
   return Response.json({ error }, { status, headers: { "Cache-Control": "no-store" } });
+}
+
+/** Only a service binding that explicitly selects this named entrypoint can invoke it. */
+export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
+  async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname !== "/codex-websockets") return new Response(null, { status: 404 });
+    try {
+      let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
+      if (request.method === "POST") {
+        const value: unknown = await request.json();
+        if (!value || typeof value !== "object" || !("digest" in value) || !("pending" in value)
+          || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest)
+          || typeof value.pending !== "number" || !Number.isSafeInteger(value.pending) || value.pending < 0)
+          return new Response(null, { status: 400 });
+        approved = { digest: value.digest, pending: value.pending };
+      } else if (request.method !== "GET") return new Response(null, { status: 405 });
+      return Response.json(await singleton(this.env).migrateCodexWebSockets(approved), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    } catch {
+      return new Response(null, { status: 503 });
+    }
+  }
 }
 
 export default {

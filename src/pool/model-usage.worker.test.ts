@@ -5,7 +5,7 @@ import { test } from "node:test";
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (specifier === "cloudflare:workers") return {
-      url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }",
+      url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } } export class WorkerEntrypoint {}",
       shortCircuit: true,
     };
     if (specifier === "pg") return {
