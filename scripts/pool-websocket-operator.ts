@@ -54,7 +54,7 @@ export async function runPoolWebSocketOperator(options: Options, accountId: stri
     await writeFile(configPath, JSON.stringify({ name: "pool-websocket-operator", account_id: accountId,
       compatibility_date: "2026-09-08", services: [{ binding: "POOL_OPERATIONS", service: options.worker,
         entrypoint: "PoolOperations", remote: true }] }), { mode: 0o600 });
-    const open = connect ?? (async (configPath: string) => {
+    const open = connect ?? (async (configPath: string): Promise<Platform> => {
       const { getPlatformProxy } = createRequire(new URL("./startup-profiler/package.json", import.meta.url))("wrangler");
       return getPlatformProxy({ configPath, persist: false, remoteBindings: true });
     });
