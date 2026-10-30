@@ -6,6 +6,8 @@ import { LimitHistory } from "./limit-history.ts";
 import { verifyPoolToken } from "./token.ts";
 import type { UsageStorage } from "./usage-storage.ts";
 import { UsageLedger } from "./usage-summary.ts";
+import { mapBounded } from "./bounded.ts";
+import { needsQuotaCollection, type QuotaCollection } from "./quota-collection.ts";
 
 // Usage, cost and caps per pool. The owner sees everyone on their pool; anyone else gets only their
 // own numbers, filtered before anything is added up. Caps are the pool backend's spend limits.
@@ -26,6 +28,7 @@ interface Dependencies {
   /** Keeps a background sync alive after the response. */
   defer?: (work: Promise<void>) => void;
   now?: () => Date;
+  collection?: QuotaCollection;
 }
 
 export class PoolUsage {
@@ -59,6 +62,12 @@ export class PoolUsage {
     ]);
     const now = this.deps.now?.() ?? new Date();
     const byId = new Map(quota.map((reading) => [reading.credential_id, reading]));
+    if (this.deps.collection) {
+      await mapBounded([...ids].filter((id) => needsQuotaCollection(byId.get(id) ?? {}, now.getTime())), async (id) => {
+        try { await this.deps.collection!.read(id, undefined, false); }
+        catch { /* The next alarm retries within the persisted per-account cap. */ }
+      });
+    }
     for (const [pool, accounts] of pools) {
       // Home v1.1.6 internal/cluster/quota_snapshots.go:129-150,195-214,
       // 812-828,1034-1091 retains windows after failed/partial probes. An account

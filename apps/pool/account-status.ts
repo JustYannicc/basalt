@@ -78,10 +78,9 @@ export function accountStatus(account: Account, sites: readonly { readonly id: s
 /** How a pool refusal reads to the host's account check. */
 export function checkFailure(error: ControlErrorCode | "missing") {
   switch (error) {
-    case "unauthorized":
     case "not_found":
     case "missing":
-      return "unauthorized" as const;
+      return "rejected" as const;
     case "not_owner":
       return "forbidden" as const;
     case "busy":

@@ -7,6 +7,7 @@ import type { Json } from "./json.ts";
 import { LimitHistory, type UsageStorage } from "./limit-history.ts";
 import { PoolUsage, summaryPath } from "./pool-usage.ts";
 import { signPoolToken } from "./token.ts";
+import { QuotaCollection } from "./quota-collection.ts";
 
 const signingKey = "ab".repeat(32);
 const owner = "owner-a", a = "member-a", b = "member-b", idle = "member-idle";
@@ -195,4 +196,36 @@ test("alarm samples Home collection status and each primary window's observation
   assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 0);
   reading = raw(clock); await usage.observe();
   assert.equal((await history.advice("pool-a", clock))[0]!.hoursRead, 1 / 12);
+});
+
+test("the alarm forces an idle account's collection so later samples include its refill", async () => {
+  const storage = new Memory(); let clock = now, collects = 0;
+  let reading: Json = { credential_id: "a", observed_at: new Date(now.getTime() - 3_600_000).toISOString(),
+    freshness: "stale", collection_status: "success", primary_windows: [] };
+  const client = new HomeClient(async (path) => {
+    const route = new URL(path, "https://home.example.test").pathname.slice("/v8/management".length);
+    if (route === "/channel-groups") return Response.json({ channel_groups: [{ id: 1, channel_name: `${poolGroupPrefix}pool-a` }] });
+    if (route === "/channel-group-details") return Response.json({ channel_group_details: [{ id: 1, channel_group_id: 1, auth_id: "a" }] });
+    if (route === "/capabilities") return Response.json({});
+    if (route === "/usage/records") return Response.json({ items: [], total: 0 });
+    if (route === "/credentials") return Response.json({ files: [{ id: "a", provider: "codex" }] });
+    if (route === "/quota/credentials") return Response.json({ items: [reading] });
+    if (route === "/quota/credentials/a") return Response.json({ credential: reading, windows: reading.primary_windows });
+    if (route === "/quota/collect") {
+      collects++;
+      reading = { ...reading, observed_at: clock.toISOString(), freshness: "fresh", collection_status: "success",
+        last_attempt_at: clock.toISOString(), primary_windows: [{ id: "week", status: "healthy", remaining_ratio: 1,
+          window_seconds: 604800, observed_at: clock.toISOString() }] };
+      return Response.json({ accepted: 1, running: true }, { status: 202 });
+    }
+    throw new Error(path);
+  });
+  const collection = new QuotaCollection(storage, client, { now: () => clock.getTime() });
+  const usage = new PoolUsage({ storage, client, signingKey, audience: async () => [], now: () => clock, collection });
+  const history = new LimitHistory(storage);
+  await usage.observe();
+  assert.equal(collects, 1); assert.deepEqual(await history.advice("pool-a", clock), []);
+  clock = new Date(clock.getTime() + 300_000);
+  await usage.observe();
+  assert.equal(collects, 1); assert.equal((await history.advice("pool-a", clock))[0]!.accounts, 1);
 });

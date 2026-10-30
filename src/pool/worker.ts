@@ -53,6 +53,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      audience: (pool) => this.computers.audience(pool),
       defer: (work) => ctx.waitUntil(work), home, onProductEvent,
     });
     this.prices = new PriceUpkeep(new HomeClient(home), ctx.storage);
@@ -60,6 +61,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       storage: ctx.storage, client: new HomeClient(home),
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool), defer: (work) => ctx.waitUntil(work),
+      collection: this.control.collection,
     });
     this.computers = new Computers({
       storage: ctx.storage, home: new ComputerHome(new HomeClient(home), onProductEvent),

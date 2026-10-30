@@ -20,6 +20,7 @@ import { never } from "apps/operations/approval";
 import {
   callerHeader,
   controlBasePath,
+  type Account,
   type ControlError,
   type ControlErrorCode,
   type LoginFileAdded,
@@ -29,6 +30,7 @@ import {
   type UsageSummary,
 } from "./contract.ts";
 import { accountStatus, checkFailure } from "./account-status.ts";
+import { subscriptionFailure } from "./account-health.ts";
 import { poolOrigin, productName } from "./deployment.ts";
 import { providers } from "./providers.ts";
 import { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity } from "./sign-in.ts";
@@ -196,13 +198,12 @@ export default defineApp(requirements, {
         // A sign-in that already ended has nothing to cancel.
         if (method !== loginFileMethod) await control<null>(ctx, `/sign-ins${sessionPath(session)}`, { method: "DELETE" });
       },
-      // The Accounts tab's plan, availability and usage windows, as the pool last read them.
       check: async (ctx, { ref }) => {
-        const result = await control<PoolView>(ctx, "/pool");
+        const result = await control<Account>(ctx, `/accounts/${encodeURIComponent(ref)}/collect`, { method: "POST" });
         if (!result.ok) throw new ProviderError({ reason: checkFailure(result.error) });
-        const account = result.value.accounts.find((candidate) => candidate.id === ref);
-        if (!account) throw new ProviderError({ reason: checkFailure("missing") });
-        return accountStatus(account, providers);
+        const failure = subscriptionFailure(result.value);
+        if (failure) throw new ProviderError({ reason: failure });
+        return accountStatus(result.value, providers);
       },
       // Unlinking or deleting the account removes the subscription from the pool and its backend.
       remove: async (ctx, { ref }) => {

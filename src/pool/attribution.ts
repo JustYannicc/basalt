@@ -2,6 +2,7 @@ import { controlBasePath as base, type SignInFlow, type SignInStatus } from "../
 import { type ControlAttribution, type HomeDependencies, HomeClient, authorizeControl, handleControl, type Membership, PoolHome, type Session, signInTtlMs } from "./control.ts";
 import { BackendFailure, fail, failureResponse, rows, text, unavailable } from "./json.ts";
 import providers from "./providers.json" with { type: "json" };
+import { QuotaCollection } from "./quota-collection.ts";
 
 export const attributionStorageKey = "pool-control-v1";
 // Home's device waiters use 16 minutes; callback exchanges use 5 minutes.
@@ -49,6 +50,7 @@ interface LockSignal { released: Promise<void>; resolve: () => void }
 
 /** The one control-plane DO serializes attribution for every pool. Views stay outside it. */
 export class PoolControl implements ControlAttribution {
+  readonly collection: QuotaCollection;
   private storage: ControlStorage;
   private deps: HomeDependencies;
   private client: HomeClient;
@@ -66,7 +68,8 @@ export class PoolControl implements ControlAttribution {
   constructor(storage: ControlStorage, deps: HomeDependencies) {
     this.storage = storage;
     this.deps = deps;
-    this.client = new HomeClient(deps.home);
+    this.client = new HomeClient(deps.home, () => this.now());
+    this.collection = new QuotaCollection(storage, this.client, { now: () => this.now() });
   }
   private now(): number { return this.deps.now?.().getTime() ?? Date.now(); }
   private changed(alarm = false): void { this.dirty = true; this.alarmDirty ||= alarm; }
@@ -167,7 +170,7 @@ export class PoolControl implements ControlAttribution {
     const deadline = Date.now() + callbackWaitMs;
     try {
       const { routeKey, isRead } = await authorizeControl(request, this.deps.signingKey, this.deps.previousSigningKey);
-      if (isRead) return handleControl(request, { ...this.deps, client: this.client, attribution: null });
+      if (isRead) return handleControl(request, { ...this.deps, client: this.client, collection: this.collection, attribution: null });
       const callback = routeKey === "POST /sign-ins/callback";
       for (;;) {
         const result = await this.run(async () => {
