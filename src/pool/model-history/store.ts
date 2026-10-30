@@ -40,7 +40,7 @@ const typedColumns = `id char(64), source char(64), source_record char(64), time
   latency_ms bigint, failed boolean, status_code smallint, cost numeric(28,12), currency varchar(16),
   cost_basis varchar(32), price_version char(64), price_snapshot jsonb, attribution varchar(32)`;
 
-export async function existingRequests(db: HistoryDatabase, records: readonly ModelRequest[]): Promise<Set<string>> {
+export async function existingRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false): Promise<Set<string>> {
   if (records.length > historyBatchSize) throw new Error("Model usage batch exceeds its limit");
   if (!records.length) return new Set();
   const result = await db.query(`SELECT id, source, source_record, pool FROM basalt_model_requests WHERE id = ANY($1::text[])`,
@@ -49,20 +49,21 @@ export async function existingRequests(db: HistoryDatabase, records: readonly Mo
   for (const saved of result.rows) {
     const row = byId.get(String(saved.id))!;
     // A manager of one pool cannot claim another pool's retained record by reusing its request ID.
-    if (saved.source !== row.source || saved.source_record !== row.sourceRecord || saved.pool !== row.pool) throw new HistoryConflict();
+    if (saved.source !== row.source || saved.source_record !== row.sourceRecord
+      || !preserveOriginalAttribution && saved.pool !== row.pool) throw new HistoryConflict();
   }
   return new Set(result.rows.map((row) => String(row.id)));
 }
 
 /** The caller owns the transaction, including its source cursor or import receipt. */
-export async function insertRequests(db: HistoryDatabase, records: readonly ModelRequest[]): Promise<number> {
-  await existingRequests(db, records);
+export async function insertRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false): Promise<number> {
+  await existingRequests(db, records, preserveOriginalAttribution);
   if (!records.length) return 0;
   const result = await db.query(`INSERT INTO basalt_model_requests (${columns})
     SELECT ${columns} FROM jsonb_to_recordset($1::jsonb) AS incoming(${typedColumns})
     ON CONFLICT (id) DO NOTHING RETURNING id`, [JSON.stringify(records.map(recordValues))]);
   // Repeat the ownership check after ON CONFLICT waits for a concurrent import to commit.
-  await existingRequests(db, records);
+  await existingRequests(db, records, preserveOriginalAttribution);
   return result.rowCount ?? result.rows.length;
 }
 

@@ -74,6 +74,10 @@ test("request history backfills explicitly, survives restarts and late commits, 
     // Another connection models the next process; only the database cursor carries progress.
     await captureHomeRequests(late);
     assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
+    await db.query('INSERT INTO "user" VALUES (2,$1)', [await backendUserName("fixture-other", "other-pool")]);
+    await db.query("UPDATE api_key SET user_id=2");
+    await captureHomeRequests(late);
+    assert.equal((await readRequests(db, query)).records.length, 3, "a moved key cannot rewrite old attribution or poison the sweep");
     await captureHomeRequests(late);
     assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n, "3");
     await assert.rejects(db.query("DELETE FROM basalt_model_requests"), { code: "55000" });

@@ -23,7 +23,7 @@ export async function captureHomeRequests(db: HistoryDatabase) {
     let next = forward, seen = sweep, old = backfill, complete = state.backfill_complete === true, inserted = 0, scanned = 0;
     for (let page = 0; page < 2; page++) {
       const rows = (await db.query(`${homeHistorySelect} WHERE u.id > $1::bigint ORDER BY u.id LIMIT $2`, [next, historyBatchSize])).rows;
-      inserted += await insertRequests(db, await Promise.all(rows.map((row) => homeRequest(row, source))));
+      inserted += await insertRequests(db, await Promise.all(rows.map((row) => homeRequest(row, source))), true);
       scanned += rows.length;
       if (rows.length) next = counter(rows.at(-1)!.source_id)!;
       if (rows.length < historyBatchSize) break;
@@ -31,7 +31,7 @@ export async function captureHomeRequests(db: HistoryDatabase) {
     for (let page = 0; page < 2 && !complete; page++) {
       const rows = (await db.query(`${homeHistorySelect} WHERE u.id > $1::bigint AND u.id <= $2::bigint
         ORDER BY u.id LIMIT $3`, [old, upper, historyBatchSize])).rows;
-      inserted += await insertRequests(db, await Promise.all(rows.map((row) => homeRequest(row, source))));
+      inserted += await insertRequests(db, await Promise.all(rows.map((row) => homeRequest(row, source))), true);
       scanned += rows.length;
       if (rows.length) old = counter(rows.at(-1)!.source_id)!;
       complete = rows.length < historyBatchSize || old === upper;
@@ -40,7 +40,9 @@ export async function captureHomeRequests(db: HistoryDatabase) {
     // commits after the forward cursor passed it, however long that transaction took.
     const late = (await db.query(`${homeHistorySelect} WHERE u.id > $1::bigint AND u.id <= $2::bigint
       ORDER BY u.id LIMIT $3`, [seen, next, historyBatchSize])).rows;
-    inserted += await insertRequests(db, await Promise.all(late.map((row) => homeRequest(row, source))));
+    // A key may have moved since an uncharged row was captured. Keep the original attribution;
+    // re-reading Home's current key owner must neither rewrite the row nor stall capture.
+    inserted += await insertRequests(db, await Promise.all(late.map((row) => homeRequest(row, source))), true);
     scanned += late.length;
     seen = late.length < historyBatchSize ? "0" : counter(late.at(-1)!.source_id)!;
     await db.query(`UPDATE basalt_model_history_cursor SET forward_id=$2,sweep_id=$3,backfill_id=$4,
