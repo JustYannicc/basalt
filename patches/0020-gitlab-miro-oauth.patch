@@ -1,7 +1,7 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -150,6 +150,29 @@
+@@ -150,6 +150,41 @@
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    {
