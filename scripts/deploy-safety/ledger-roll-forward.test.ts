@@ -1,5 +1,4 @@
-// A release rolls forward over the single failed release since the last success when it contains
-// that release's commit. Anything else keeps the ledger unresolved for a person.
+// Same-SHA retries retain the first attempt's rollback point; different releases need a decision.
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ClassificationReport, ReleasePins } from "../releases/types.ts";
@@ -127,12 +126,71 @@ test("one failed release the next release contains is rolled forward over", asyn
   assert.equal(again.state, "ready");
 });
 
-test("a second failure since the last success stays unresolved for a person", async () => {
+test("same-SHA failures roll forward with the first attempt's rollback backup", async () => {
+  const first = failed();
+  const firstBackup = backupOf(transition(sha("1"), sha("2"), true));
+  const laterBackup = createRecordedBackup(transition(sha("1"), sha("2"), true), "main", "PS_10", true);
+  const retry: Row = {
+    ...failed(["in_progress", "error"]), id: 9,
+    payload: {
+      ...releasePayload(sha("1"), sha("2"), true),
+      backupName: laterBackup.name, backupMetadata: laterBackup.metadata,
+      rollForwardOf: sha("2"), rollbackBackup: firstBackup,
+    },
+  };
+  const rows = [retry, first, success()];
+  const next = releasing();
+  const ledger = await readDeploymentLedger(environment, fetcherFor(rows), next);
+  assert.equal(ledger.state, "ready");
+  if (ledger.state !== "ready") return;
+  assert.equal(ledger.superseded?.deploymentId, first.id);
+  assert.deepEqual(ledger.superseded?.payload, first.payload);
+  assert.deepEqual(next.calls, ["2<=3"]);
+  const report = transition(sha("1"), sha("3"), true);
+  const posted: Array<Record<string, unknown>> = [];
+  await beginReleaseDeployment(report, environment, fetcherFor(rows, posted), backupOf(report), releasing());
+  const recorded = posted[0]!.payload as DeploymentPayload;
+  assert.deepEqual(recorded.rollbackBackup, firstBackup);
+  assert.notEqual(recorded.rollbackBackup?.name, laterBackup.name);
+  assert.equal(recorded.rollForwardOf, sha("2"));
+  const succeeded: Row = { id: 10, sha: sha("3"), payload: recorded, history: ["in_progress", "success"] };
+  const after = await readDeploymentLedger(environment, fetcherFor([succeeded, ...rows]));
+  assert.deepEqual(releaseBackup(after), { ...firstBackup, rolledForwardOver: sha("2") });
+  await assert.rejects(beginReleaseDeployment(transition(sha("1"), sha("3")), environment,
+    fetcherFor(rows), undefined, releasing()), /would skip its backup or drain check/);
+  assert.equal((await readDeploymentLedger(environment, fetcherFor(rows), releasing([]))).state, "unresolved");
+});
+
+test("every same-SHA attempt must have failed without ever succeeding", async () => {
+  for (const history of [["in_progress"], ["pending"], ["queued"], [], ["inactive"], ["success", "failure"]]) {
+    const retry = { ...failed(), id: 9 };
+    const next = releasing();
+    const ledger = await readDeploymentLedger(environment, fetcherFor([retry, failed(history), success()]), next);
+    assert.equal(ledger.state, "unresolved", JSON.stringify(history));
+    assert.deepEqual(next.calls, []);
+  }
+});
+
+test("same-SHA retries cannot change the recorded base, pins or safety gates", async () => {
+  for (const original of [
+    failed(undefined, sha("2"), sha("5")),
+    { ...failed(), payload: releasePayload(sha("1"), sha("2"), false, true) },
+    { ...failed(), payload: { ...releasePayload(sha("1"), sha("2"), true), pins: { ...pins, tools: { commit: sha("f") } } } },
+    { ...failed(), payload: { ...releasePayload(sha("1"), sha("2"), true), kind: "rollback", rollbackOf: sha("2") } },
+  ]) {
+    const next = releasing();
+    const ledger = await readDeploymentLedger(environment, fetcherFor([{ ...failed(), id: 9 }, original, success()]), next);
+    assert.equal(ledger.state, "unresolved");
+    assert.deepEqual(next.calls, []);
+  }
+});
+
+test("a mixed-SHA failure chain stays unresolved for a person", async () => {
   const second: Row = { id: 9, sha: sha("3"), payload: releasePayload(sha("1"), sha("3")), history: ["in_progress", "failure"] };
   const next = releasing([sha("2"), sha("3")], sha("4"));
   const ledger = await readDeploymentLedger(environment, fetcherFor([second, failed(), success()]), next);
   assert.equal(ledger.state, "unresolved");
-  assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", /2 deployment records follow the last success/);
+  assert.match(ledger.state === "unresolved" ? ledger.supersedeRefusal ?? "" : "", /2 deployment records with different SHAs follow the last success/);
   assert.deepEqual(next.calls, [], "ancestry is never asked");
 });
 
