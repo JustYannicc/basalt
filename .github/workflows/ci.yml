@@ -200,6 +200,43 @@ jobs:
           path: .generated/connectors-proof/run-*/gitlab-account-site-*.png
           if-no-files-found: error
           include-hidden-files: true
+  mcp-apps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Check the packaged app renderer
+        working-directory: .upstream
+        run: bun run mcp:apps --check
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the renderer scenario's browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify captured views, source bindings and the packaged renderer
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name '^MCP Apps retain native|^MCP Apps preserve remote source|^MCP Apps render original|^App builds retain their selected npm framework' --workers 1
+      - name: Verify encrypted retention, concurrent limits and restart
+        working-directory: .upstream
+        run: bun run e2e:local --test-name '^Local MCP Apps survive' --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcp-apps-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/report/**
+          include-hidden-files: true
+          if-no-files-found: warn
   check:
     runs-on: ubuntu-latest
     services:
