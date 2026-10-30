@@ -69,6 +69,12 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET` | Optional hosted Atlassian 3LO secret, supplied with its client ID |
 | `EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID` | Optional hosted Slack Web API client, separate from Slack MCP |
 | `EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET` | Optional hosted Slack Web API secret |
+| `EXECUTOR_OAUTH_NOTION_CLIENT_ID` | Optional hosted Notion OAuth client |
+| `EXECUTOR_OAUTH_NOTION_CLIENT_SECRET` | Optional hosted Notion OAuth client secret |
+| `EXECUTOR_OAUTH_TODOIST_CLIENT_ID` | Optional hosted Todoist OAuth client |
+| `EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET` | Optional hosted Todoist OAuth client secret |
+| `EXECUTOR_OAUTH_TRELLO_CLIENT_ID` | Optional hosted Trello OAuth client |
+| `EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET` | Optional hosted Trello OAuth client secret |
 | `EXECUTOR_OAUTH_ZENDESK_CLIENT_ID` | Optional hosted Zendesk OAuth client |
 | `EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET` | Optional hosted Zendesk OAuth client secret |
 | `ZENDESK_MARKETPLACE_ORGANIZATION_ID` | Optional assigned publisher organization ID, paired with app ID |

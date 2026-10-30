@@ -1,0 +1,14 @@
+diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
+index 11e5db4..1e5d9e7 100644
+--- a/apps/hosted/server/src/implementation/first-party-oauth.ts
++++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
+@@ -438,7 +438,8 @@ export const firstPartyOAuthClients = (options: { readonly testDefinitions: bool
+         problems.push(`The ${definition.id} client's definition or client ID is invalid.`);
+         continue;
+       }
+-      const service = isZohoOAuthClient(definition.id)
++      const catalogClient = catalogOAuthClientDefinitions.some(({ id }) => id === definition.id);
++      const service = catalogClient || isZohoOAuthClient(definition.id)
+         ? definition.label.replace(/^Executor for /u, "")
+         : definition.id === "google"
+           ? "Google"

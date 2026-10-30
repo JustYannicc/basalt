@@ -139,6 +139,11 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     UNKNOWN_FUTURE_SECRET: "must-not-pass-through",
   });
 
+  for (const client of optionalConnectorClients) {
+    source[client.id] = "private-production-client";
+    source[client.secret] = "private-production-secret";
+  }
+
   const first = previewEnvironment(1419, source);
   const retry = previewEnvironment(1419, source);
   const sibling = previewEnvironment(1420, source);
@@ -159,6 +164,10 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   for (const key of ["PREVIEW_CLAUDE_AUTH_JSON", "PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON",
     "PREVIEW_CODEX_CLI_AUTH_JSON", "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET", "RELEASE_UPDATE_TOKEN", "UNKNOWN_FUTURE_SECRET"])
     assert.equal(first.deploy[key], undefined, key);
+  for (const client of optionalConnectorClients) {
+    assert.equal(first.deploy[client.id], undefined, client.id);
+    assert.equal(first.deploy[client.secret], undefined, client.secret);
+  }
   assert.equal(first.deploy.EXECUTOR_CATALOG_URL, `${first.origin}/catalog/index.json`);
   assert.match(first.deploy.TELEMETRY_RELAY_KEY!, /^[a-f0-9]{64}$/);
   assert.notEqual(first.deploy.TELEMETRY_RELAY_KEY, first.deploy.POOL_APP_SIGNING_KEY);
