@@ -63,10 +63,34 @@ test("dated API prices use the request date and preserve the selected immutable 
   const parsed = await parseUsageImport(input, owner), row = parsed.records[0]!;
   assert.equal(row.cost, "0.000252500000");
   assert.equal(row.currency, "USD");
-  assert.equal(row.price!.input, "2");
+  assert.equal(row.price!.input, "2.000000000000");
   assert.equal(row.costBasis, "historical-api-price");
   const currentOnly = await parseUsageImport({ ...input, prices: [{ ...price, validFrom: "2025-01-01T00:00:00Z", validTo: "2027-01-01T00:00:00Z" }] }, owner);
   assert.equal(currentOnly.records[0]!.cost, null);
   assert.notEqual((await parseUsageImport({ ...input, source: randomUUID() }, owner)).records[0]!.id, row.id);
   await assert.rejects(parseUsageImport({ ...input, prices: [price, price] }, owner));
+});
+
+test("unclassified and inconsistent token accounting never invents a known historical cost", async () => {
+  const price = { provider: "fixture-provider", model: "fixture-model", currency: "USD", tier: "*",
+    input: "2", output: "8", cacheRead: "0.5", cacheWrite: "2.5", request: "0",
+    validFrom: "2019-01-01T00:00:00Z", validTo: "2021-01-01T00:00:00Z" };
+  const cases = [
+    { ...home(0), token_breakdown_quality: "unclassified", input_tokens: 0, output_tokens: 0,
+      cached_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, total_tokens: 110 },
+    { ...home(0), token_breakdown_quality: "inconsistent", input_tokens: 100, output_tokens: 10,
+      cached_tokens: 20, cache_creation_tokens: 0, reasoning_tokens: 3, total_tokens: 999 },
+    { ...home(0), token_breakdown_total_tokens: 999 },
+    { ...home(0), token_breakdown_input_total_tokens: 0, token_breakdown_output_total_tokens: 0,
+      token_breakdown_input_cache_read_tokens: 0, token_breakdown_input_cache_write_tokens: 0,
+      token_breakdown_output_reasoning_tokens: 0 },
+    { ...home(0), token_breakdown_output_reasoning_tokens: 20 },
+    { ...home(0), token_breakdown_input_cache_read_tokens: 200 },
+  ];
+  for (const row of cases) {
+    const parsed = await parseUsageImport({ source, format: "home-v8-jsonl", data: JSON.stringify(row), prices: [price] }, owner);
+    assert.equal(parsed.records[0]!.cost, null);
+    assert.equal(parsed.records[0]!.costBasis, "unpriced");
+    assert.equal(parsed.report.unpriced, 1);
+  }
 });

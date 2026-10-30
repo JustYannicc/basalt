@@ -23,7 +23,7 @@ export async function importedHomeRequest(raw: unknown, context: ImportContext):
     id: await digest(JSON.stringify([source, sourceRecord])), source, sourceRecord, timestamp: at, pool, person,
     account: await reference(source, "account", row.credential_id ?? row.auth_index),
     clientKey: await reference(source, "key", row.api_key_id), requestId,
-    provider: identifier(row.provider), model: identifier(row.model, true)!,
+    provider: identifier(row.provider), model: identifier(row.model),
     ...endpointMetadata(row.endpoint), serviceTier: identifier(row.service_tier),
     inputTokens: counter(canonical ? row.token_breakdown_input_total_tokens : row.input_tokens),
     outputTokens: counter(canonical ? row.token_breakdown_output_total_tokens : row.output_tokens),

@@ -181,7 +181,9 @@ model {
         to a read-only dry run and requires a signed matching approval before inserting a batch.
         It stores neither exports nor prompts, raw keys, human labels or error text. Aggregate-only
         history stays explicitly unimportable. Historical API prices need a model/provider mapping
-        and dated rates; missing counters or rates leave cost unknown. Remote exports use fixed
+        and dated rates; only validated complete token breakdowns can receive a calculated price.
+        Local Home imports resolve authoritative request identity and attribution before the
+        signed approval, deduplicating against capture in either order. Remote exports use fixed
         read-only Home routes with offset pagination, never a consumable usage queue.
         Guards diagnostic usage and application-log inserts and updates from older writers.
         Application-log cleanup extends the existing privacy journal, including completed usage

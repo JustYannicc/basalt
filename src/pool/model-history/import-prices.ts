@@ -38,8 +38,12 @@ export async function importPrices(raw: unknown): Promise<ImportPrice[]> {
 }
 
 export function priceImportedRequest(row: ModelRequest, prices: readonly ImportPrice[]): ModelRequest {
-  if (row.cost !== null || row.failed || !row.provider || row.inputTokens === null || row.outputTokens === null
-    || row.cacheReadTokens === null || row.cacheWriteTokens === null) return row;
+  if (row.cost !== null || row.failed || row.tokenQuality !== "complete" || !row.provider || row.inputTokens === null || row.outputTokens === null
+    || row.cacheReadTokens === null || row.cacheWriteTokens === null || row.reasoningTokens === null
+    || row.totalTokens === null) return row;
+  if (BigInt(row.inputTokens) + BigInt(row.outputTokens) !== BigInt(row.totalTokens)
+    || BigInt(row.reasoningTokens) > BigInt(row.outputTokens)
+    || BigInt(row.cacheReadTokens) + BigInt(row.cacheWriteTokens) > BigInt(row.inputTokens)) return row;
   const candidates = prices.filter((price) => price.provider === row.provider && price.model === row.model
     && price.validFrom! <= row.timestamp && row.timestamp < price.validTo!
     && (price.tier === "*" || price.tier === row.serviceTier) && BigInt(price.minInput) <= BigInt(row.inputTokens!));

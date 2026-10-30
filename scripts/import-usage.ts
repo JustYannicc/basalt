@@ -17,7 +17,7 @@ interface ImportReport { version: 1; target: string; source: string; pages: Page
 
 async function main() {
   if (!values.target || !values["pool-token-file"] || !values.caller || !values.source)
-    throw new Error("Provide target, pool-token-file, caller and one stable source UUID");
+    throw new Error("Provide target, pool-token-file, caller and a stable source UUID or home-local-v1");
   const target = serviceOrigin(values.target);
   const token = await privateCredential(values["pool-token-file"]);
   const prices: unknown = values.prices ? JSON.parse(await readFile(values.prices, "utf8")) : undefined;
