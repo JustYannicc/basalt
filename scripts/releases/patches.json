@@ -424,7 +424,7 @@
     {
       "identity": "executor-shared-catalog-oauth-clients",
       "file": "0045-shared-catalog-oauth-clients.patch",
-      "content_sha256": "5fb30ddb4e2fbbbe651b30b2631e09c2b89afc0aa652f2b5304f9cb38ef422e9",
+      "content_sha256": "4e24a71943c3ea3417d6eb41ed0821402da6b2854e0d90ead953def680572bb9",
       "kind": "upstream",
       "upstream_pull_request": 2458,
       "database_sensitive": false,
