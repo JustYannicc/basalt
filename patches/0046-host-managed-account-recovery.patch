@@ -988,10 +988,10 @@ index 830b354..f1314eb 100644
    );
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 new file mode 100644
-index 0000000..eb8276a
+index 0000000..218da36
 --- /dev/null
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,310 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient } from "effect/http";
@@ -1057,7 +1057,8 @@ index 0000000..eb8276a
 +        );
 +        const pending = () =>
 +          rows(
-+            `select id, status, attempts, (available_at <= now()) as ready
++            `select id, status, attempts, (available_at <= now()) as ready,
++          (available_at > now() + interval '1 minute') as deferred
 +        from hosted_provisioning where organization_id = $1 and user_id = $2
 +          and kind = 'member' and status in ('queued', 'running')
 +          and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'`,
@@ -1071,14 +1072,11 @@ index 0000000..eb8276a
 +          [deferred, actors.organization.id, owner],
 +        );
 +        yield* evidence.json("initial-provisioning.json", { jobs: yield* pending(), deferred });
-+        // Finish active setup, while unattempted future rollouts keep their scheduled start.
++        // A 30-second dispatch lease is still active setup. Only longer rollouts can wait.
 +        yield* pending().pipe(
 +          Effect.flatMap((jobs) =>
 +            jobs.some(
-+              (job) =>
-+                job.status === "running" ||
-+                job.ready === true ||
-+                (typeof job.attempts === "number" && job.attempts > 0),
++              (job) => job.status === "running" || job.attempts !== 0 || job.deferred !== true,
 +            )
 +              ? Effect.fail(new Pending())
 +              : Effect.void,
@@ -1099,6 +1097,7 @@ index 0000000..eb8276a
 +          status: "queued",
 +          attempts: 0,
 +          ready: false,
++          deferred: true,
 +        });
 +        const [original] = yield* rows(
 +          `select coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)::text as pools
