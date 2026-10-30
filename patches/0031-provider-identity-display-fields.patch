@@ -289,7 +289,7 @@ index 6cdd555eb..a87b17fb3 100644
      copy: (input: Parameters<Executor["apps"]["copy"]>[0]) => copy(input),
      copyAs: (input: Parameters<Executor["apps"]["copyAs"]>[0]) => copy(input, input),
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index 1f8459aad..b36d280b8 100644
+index 2bb75d20f..c7777e0fb 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
 @@ -29,17 +29,80 @@ function canonical(value: Json): string {
@@ -324,9 +324,9 @@ index 1f8459aad..b36d280b8 100644
 +
  /**
 - * Equal JSON definitions, regardless of object key order, share a content-derived ID. Declared
-- * hosts are not part of it: each account records the hosts it was connected for, so an app that
+- * Hosts and site rules are excluded from identity; accounts keep their site and allowed hosts.
 - * declares other hosts still fills the slot, but sends credentials only where both allow.
-- * `shared` is the definition every app with this ID agrees on, without hosts.
+- * `shared` is the definition every app with this ID agrees on, without site or hosts.
 + * A field schema without the `title` and `description` forms show. Only annotations at schema
 + * positions go, so a field named `title` or `description` stays, as do types, formats, `required`
 + * and every other keyword that decides what a value is.
@@ -378,7 +378,7 @@ index 1f8459aad..b36d280b8 100644
 -    const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
 -      Effect.mapError(() => new StorageError()),
 -    );
--    const { hosts: _hosts, ...shared } = parsed;
+-    const { hosts: _hosts, site: _site, ...shared } = parsed;
 -    const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
 +    const content = yield* Schema.decodeUnknownEffect(JsonObject)(value).pipe(
        Effect.mapError(() => new StorageError()),
@@ -392,11 +392,11 @@ index 1f8459aad..b36d280b8 100644
 +
 +/**
 + * Equal JSON definitions, regardless of object key order, share a content-derived identity.
-+ * Declared hosts are not part of it: each account records the hosts it was connected for, so an
-+ * app that declares other hosts still fills the slot, but sends credentials only where both allow.
++ * Hosts and site rules stay out of identity; each account keeps its site and allowed hosts.
++ * Apps that declare other hosts still fill the slot; credentials stay within both policies.
 + * Display text is not part of it either (see `methodCredential`), so rewording a form keeps the
 + * provider and its accounts. `shared` is the definition every app with this identity agrees on,
-+ * without hosts; its display text is the last deploy's, so forms read it from the app version's
++ * without site or hosts; its display text is the last deploy's, so forms read it from the app version's
 + * own definition.
 + *
 + * `identity` is the ID a provider first stored now gets. `legacy` is the ID earlier versions
@@ -408,7 +408,7 @@ index 1f8459aad..b36d280b8 100644
 +    const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
 +      Effect.mapError(() => new StorageError()),
 +    );
-+    const { hosts: _hosts, ...shared } = parsed;
++    const { hosts: _hosts, site: _site, ...shared } = parsed;
 +    const identity = yield* contentId(withoutDisplay(shared), crypto);
 +    const legacy = yield* contentId(shared, crypto);
 +    return { identity, legacy, definition: parsed, shared };

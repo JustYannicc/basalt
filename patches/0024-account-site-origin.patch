@@ -305,19 +305,26 @@ index bb75f68..55fd0bf 100644
            ? methodsOf(requirement)
                .filter(([, auth]) => auth.type === "oauth2")
                .map(([method]) => (
-@@ -311,6 +314,11 @@ export function AppConnectionDialogContent({
+@@ -311,6 +314,18 @@ export function AppConnectionDialogContent({
      provider: { id: requirement.provider, definition: requirement.definition },
      redirectUri,
    }));
 +  const siteRule = form.provider.definition.site;
-+  const [site, setSite] = useState(account?.site ?? "");
-+  const [siteReady, setSiteReady] = useState(siteRule === undefined || account?.site !== undefined);
++  const [site, setSite] = useState(
++    account?.site ?? (siteRule?.defaultOrigin === true ? siteRule.origin : ""),
++  );
++  const [siteReady, setSiteReady] = useState(
++    siteRule === undefined || siteRule?.defaultOrigin === true || account?.site !== undefined,
++  );
 +  const oldAccountNeedsSite =
-+    account !== undefined && siteRule !== undefined && account.site === undefined;
++    account !== undefined &&
++    siteRule !== undefined &&
++    account.site === undefined &&
++    siteRule.defaultOrigin !== true;
    return (
      <>
        <ConnectionDialogHeader
-@@ -319,16 +327,58 @@ export function AppConnectionDialogContent({
+@@ -319,16 +334,75 @@ export function AppConnectionDialogContent({
          notice={account ? `Apps using ${account.label} will use the new credentials.` : undefined}
        />
        <ConnectionNotices provider={form.provider} notices={connectionNotices} />
@@ -331,9 +338,9 @@ index bb75f68..55fd0bf 100644
 -        onPendingChange={onPendingChange}
 -        onSaved={onSaved}
 -      />
-+      {siteRule !== undefined && account?.site !== undefined && (
++      {siteRule !== undefined && account !== undefined && !oldAccountNeedsSite && (
 +        <p className="text-sm text-muted-foreground">
-+          Site: <span className="font-medium text-foreground">{account.site}</span>. Reconnects keep
++          Site: <span className="font-medium text-foreground">{account.site ?? site}</span>. Reconnects keep
 +          this site; add another account to use a different one.
 +        </p>
 +      )}
@@ -363,7 +370,7 @@ index bb75f68..55fd0bf 100644
 +          </label>
 +          <p className="text-xs leading-relaxed text-muted-foreground">
 +            {siteRule.subdomainOf === undefined
-+              ? "Enter the public HTTPS origin for this account."
++              ? "Enter the exact HTTPS origin. Private hosts need deployment approval and reachability."
 +              : `Enter one site label under ${siteRule.subdomainOf}, or the full site origin.`}
 +          </p>
 +          <Button type="submit" className="w-full" disabled={site.trim() === ""}>
@@ -371,22 +378,39 @@ index bb75f68..55fd0bf 100644
 +          </Button>
 +        </form>
 +      ) : (
-+        <AppConnectionFields
-+          app={app}
-+          account={account}
-+          site={siteRule === undefined ? undefined : (account?.site ?? site)}
-+          scope={scope}
-+          slot={slot}
-+          form={form}
-+          checks={requirement.health === true}
-+          onPendingChange={onPendingChange}
-+          onSaved={onSaved}
-+        />
++        <>
++          {siteRule?.defaultOrigin === true && account === undefined && (
++            <div className="flex items-center justify-between gap-3">
++              <p className="text-sm text-muted-foreground">Using {site}</p>
++              <Button
++                type="button"
++                variant="ghost"
++                onClick={() => {
++                  setSite("");
++                  setSiteReady(false);
++                }}
++              >
++                Use another instance
++              </Button>
++            </div>
++          )}
++          <AppConnectionFields
++            app={app}
++            account={account}
++            site={siteRule === undefined ? undefined : (account?.site ?? site)}
++            scope={scope}
++            slot={slot}
++            form={form}
++            checks={requirement.health === true}
++            onPendingChange={onPendingChange}
++            onSaved={onSaved}
++          />
++        </>
 +      )}
      </>
    );
  }
-@@ -343,6 +393,7 @@ function AppConnectionFields({
+@@ -343,6 +417,7 @@ function AppConnectionFields({
    onSaved,
    checks,
    account,
@@ -394,7 +418,7 @@ index bb75f68..55fd0bf 100644
  }: {
    /** Set when replacing this account's credentials rather than adding an account. */
    readonly account?: AccountSummary | undefined;
-@@ -352,6 +403,7 @@ function AppConnectionFields({
+@@ -352,6 +427,7 @@ function AppConnectionFields({
    readonly scope: AccountScope;
    readonly slot: string;
    readonly form: ConnectionDialog;
@@ -402,7 +426,7 @@ index bb75f68..55fd0bf 100644
    readonly onPendingChange: (pending: boolean) => void;
    readonly onSaved: () => void;
  }) {
-@@ -367,16 +419,19 @@ function AppConnectionFields({
+@@ -367,16 +443,19 @@ function AppConnectionFields({
        requirement: slot,
        provider: form.provider.id,
        account: account?.id,
@@ -900,7 +924,7 @@ index 8e717cb..b011655 100644
    readonly app: AppId;
    /** The version whose discovery the page shows, read again once the account is linked. */
    readonly version: VersionId | null;
-@@ -41,7 +31,67 @@ export function AppAccountForm({
+@@ -41,7 +31,95 @@ export function AppAccountForm({
    readonly actions?: ReactNode;
    readonly onSaved: (account: Account) => void;
    readonly onPendingChange?: (pending: boolean) => void;
@@ -910,9 +934,18 @@ index 8e717cb..b011655 100644
 +/** Capture the site before mounting any pending connection or OAuth metadata query. */
 +export function AppAccountForm(props: AppAccountFormProps) {
 +  const rule = props.provider.definition.site;
-+  const [site, setSite] = useState(props.account?.site ?? "");
-+  const [ready, setReady] = useState(rule === undefined || props.account?.site !== undefined);
-+  if (rule !== undefined && props.account !== undefined && props.account.site === undefined)
++  const [site, setSite] = useState(
++    props.account?.site ?? (rule?.defaultOrigin === true ? rule.origin : ""),
++  );
++  const [ready, setReady] = useState(
++    rule === undefined || props.account?.site !== undefined || rule?.defaultOrigin === true,
++  );
++  if (
++    rule !== undefined &&
++    props.account !== undefined &&
++    props.account.site === undefined &&
++    rule.defaultOrigin !== true
++  )
 +    return (
 +      <p role="alert">
 +        This saved account has no site. Add a new account for the site you want to use.
@@ -941,7 +974,7 @@ index 8e717cb..b011655 100644
 +        </label>
 +        <p className="text-xs text-muted-foreground">
 +          {rule.subdomainOf === undefined
-+            ? "Enter the public HTTPS origin for this account."
++            ? "Enter the exact HTTPS origin. Private hosts need deployment approval and reachability."
 +            : `Enter one site label under ${rule.subdomainOf}, or the full site origin.`}
 +        </p>
 +        <Button type="submit" disabled={site.trim() === ""}>
@@ -949,7 +982,26 @@ index 8e717cb..b011655 100644
 +        </Button>
 +      </form>
 +    );
-+  return <BoundAppAccountForm {...props} site={rule === undefined ? undefined : site} />;
++  return (
++    <>
++      {rule?.defaultOrigin === true && props.account === undefined && (
++        <div className="flex items-center justify-between gap-3">
++          <p className="text-sm text-muted-foreground">Using {site}</p>
++          <Button
++            type="button"
++            variant="ghost"
++            onClick={() => {
++              setSite("");
++              setReady(false);
++            }}
++          >
++            Use another instance
++          </Button>
++        </div>
++      )}
++      <BoundAppAccountForm {...props} site={rule === undefined ? undefined : site} />
++    </>
++  );
 +}
 +
 +function BoundAppAccountForm({
@@ -969,7 +1021,7 @@ index 8e717cb..b011655 100644
    // One dialog is one attempt.
    const [atoms] = useState(() =>
      appConnectionAtoms({
-@@ -49,10 +99,12 @@ export function AppAccountForm({
+@@ -49,10 +127,12 @@ export function AppAccountForm({
        version,
        scope,
        requirement,
@@ -982,7 +1034,7 @@ index 8e717cb..b011655 100644
    const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
    const requestName = useAtomSet(accountToNameAtom);
    // A new account is named once saved; a reconnect keeps its name.
-@@ -64,6 +116,7 @@ export function AppAccountForm({
+@@ -64,6 +144,7 @@ export function AppAccountForm({
    return (
      <SharedAccountForm<Account, DashboardError>
        provider={provider}
@@ -4596,13 +4648,18 @@ index e2ccfcd..437885e 100644
  ) =>
    Effect.gen(function* () {
      const app = yield* storedApp(db, target);
-@@ -35,12 +40,43 @@ export const captureConnectionTarget = (
+@@ -35,12 +40,48 @@ export const captureConnectionTarget = (
          app: app.id,
          requirement: target.requirement,
        });
 +    let site: StoredConnectionTarget["site"];
 +    if (requirement.definition.site !== undefined) {
-+      const selected = target.site ?? reconnectSite ?? undefined;
++      const defaultSite =
++        requirement.definition.site.defaultOrigin === true
++          ? requirement.definition.site.origin
++          : undefined;
++      const pinnedSite = reconnectSite === null ? defaultSite : reconnectSite ?? undefined;
++      const selected = target.site ?? pinnedSite ?? defaultSite;
 +      if (selected === undefined)
 +        return yield* new AccountSiteInvalid({
 +          app: app.id,
@@ -4616,7 +4673,7 @@ index e2ccfcd..437885e 100644
 +          requirement: target.requirement,
 +          reason: "invalid",
 +        });
-+      if (reconnectSite != null && resolved !== reconnectSite)
++      if (pinnedSite !== undefined && resolved !== pinnedSite)
 +        return yield* new AccountSiteInvalid({
 +          app: app.id,
 +          requirement: target.requirement,
@@ -4640,7 +4697,7 @@ index e2ccfcd..437885e 100644
      };
      return { provider: requirement.provider, snapshot };
    });
-@@ -122,14 +158,20 @@ export const applyConnectionTarget = (
+@@ -122,14 +163,20 @@ export const applyConnectionTarget = (
        required === undefined ||
        required.provider !== provider ||
        required.provider !== account.provider ||
@@ -5419,6 +5476,26 @@ index 5527dbf..1f8459a 100644
  import { AuthMethodInvalid, ProviderDefinition } from "../contracts/provider.ts";
  import { ProviderId, StorageError, type Json } from "../contracts/shared.ts";
  import { JsonObject } from "../contracts/shared.ts";
+@@ -27,16 +30,16 @@
+ 
+ /**
+  * Equal JSON definitions, regardless of object key order, share a content-derived ID. Declared
+- * hosts are not part of it: each account records the hosts it was connected for, so an app that
++ * Hosts and site rules are excluded from identity; accounts keep their site and allowed hosts.
+  * declares other hosts still fills the slot, but sends credentials only where both allow.
+- * `shared` is the definition every app with this ID agrees on, without hosts.
++ * `shared` is the definition every app with this ID agrees on, without site or hosts.
+  */
+ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.Crypto) =>
+   Effect.gen(function* () {
+     const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
+       Effect.mapError(() => new StorageError()),
+     );
+-    const { hosts: _hosts, ...shared } = parsed;
++    const { hosts: _hosts, site: _site, ...shared } = parsed;
+     const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
+       Effect.mapError(() => new StorageError()),
+     );
 @@ -66,9 +69,11 @@ export const grantedHosts = (
  export const grantedDefinition = (
    definition: ProviderDefinition,
@@ -5845,7 +5922,7 @@ new file mode 100644
 index 0000000..66abcb0
 --- /dev/null
 +++ b/packages/utils/src/account-site.ts
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,123 @@
 +import { Option, Schema } from "effect";
 +import { HttpOrigin, parseDestination, type UrlPolicy } from "./url-policy.ts";
 +
@@ -5862,6 +5939,8 @@ index 0000000..66abcb0
 +export const ProviderSite = Schema.Struct({
 +  label: Schema.NonEmptyString,
 +  origin: HttpOrigin,
++  /** Use origin for new connections and legacy accounts that have no saved site. */
++  defaultOrigin: Schema.optionalKey(Schema.Boolean),
 +  subdomainOf: Schema.optionalKey(Schema.String.check(Schema.isMinLength(1))),
 +}).check(
 +  Schema.makeFilter(

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { mergeFeed, type Feed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
+import { gitlabSource } from "./gitlab.ts";
 import sourceSnapshot from "./zendesk/source.json" with { type: "json" };
 import sourceProvenance from "./zendesk/provenance.json" with { type: "json" };
 import { zendeskAddition } from "./zendesk/source.ts";
@@ -92,7 +93,7 @@ test("notices from the official feed are dropped", () => {
   assert.equal(feed.apps[0]!.connectionNotices, undefined);
 });
 
-test("GitLab keeps official source while Miro serves board-only OAuth", async () => {
+test("GitLab serves the site-aware source while Miro serves board-only OAuth", async () => {
   const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
     package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
   const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps));
@@ -102,7 +103,10 @@ test("GitLab keeps official source while Miro serves board-only OAuth", async ()
     assert.ok(entry);
     if (entry.id === "miro")
       assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
-    else assert.deepEqual(entry.auth, expected.auth);
+    else {
+      assert.deepEqual((entry.auth as { method: string }[]).map(method => method.method), ["oauth", "token"]);
+      assert.match(entry.description, /GitLab\.com or a self-managed instance/);
+    }
     assert.equal(entry.source, `apps/${entry.id}.json`);
     const document = JSON.stringify({ package: entry.package, files: [{ path: "index.ts", content: "official package bytes" }] });
     const source = await handleCatalog(new Request(`https://app.signalbox.run/catalog/${entry.source}`), async input => {
@@ -113,7 +117,10 @@ test("GitLab keeps official source while Miro serves board-only OAuth", async ()
       const carried = await source.json() as { package: string; files: { path: string }[] };
       assert.equal(carried.package, "@executor.sh/miro");
       assert.ok(carried.files.some(file => file.path === "openapi.ts"));
-    } else assert.equal(await source.text(), document);
+    } else {
+      assert.deepEqual(await source.json(), gitlabSource);
+      assert.ok(gitlabSource.files.find(file => file.path === "index.ts")?.content.includes("account.site"));
+    }
   }
 });
 

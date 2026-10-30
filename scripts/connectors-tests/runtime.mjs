@@ -20,6 +20,8 @@ import { SessionClients } from "../../.upstream/e2e/support/api.ts";
 import { lockedNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { proveInstalledClaude } from "./native-claude.mjs";
+import { gitlabHostedClient, startGitLabFixtures } from "./gitlab-fixture.mjs";
+import { loadGitLabCatalogSource, proveGitLab } from "./gitlab.mjs";
 import { startZendeskFixtures } from "./zendesk-fixture.mjs";
 import { startZendeskCatalogWorker, loadZendeskCatalogSource } from "./zendesk-catalog.mjs";
 import { provisionSelfHostActors } from "./test-accounts.mjs";
@@ -129,6 +131,10 @@ const program = Effect.gen(function* () {
     Effect.promise(() => startZendeskFixtures({ marketplaceHeaders })),
     (fixtures) => Effect.promise(() => fixtures.stop()),
   );
+  const gitlabFixtures = yield* Effect.acquireRelease(
+    Effect.promise(startGitLabFixtures),
+    (fixtures) => Effect.promise(() => fixtures.stop()),
+  );
   const catalogWorker = yield* Effect.acquireRelease(
     Effect.promise(() => startZendeskCatalogWorker({ root, upstream, directory, marketplace })),
     (worker) => Effect.promise(() => worker.stop()),
@@ -142,6 +148,10 @@ const program = Effect.gen(function* () {
     candidateSha,
     upstreamPin,
     carriedPatches,
+  }));
+  const gitlabCatalog = yield* Effect.promise(() => loadGitLabCatalogSource({
+    root,
+    catalogOrigin: catalogWorker.origin,
   }));
   const definition = {
     id: "connector-fixture", label: "Synthetic hosted Google",
@@ -176,11 +186,19 @@ const program = Effect.gen(function* () {
     authSecret,
     directory,
   }));
-  const allowedOrigins = [provider.origin, ...zendeskFixtures.sites.map(({ origin }) => origin)].sort();
+  const allowedOrigins = [
+    provider.origin,
+    ...zendeskFixtures.sites.map(({ origin }) => origin),
+    ...gitlabFixtures.sites
+      .filter(({ id }) => id !== "unapproved")
+      .map(({ origin }) => origin),
+  ].sort();
   const server = yield* startManagedServer(preparedTarget, "product", {
     BETTER_AUTH_SECRET: authSecret,
     EXECUTOR_NPM_REGISTRY: registry.url,
     EXECUTOR_OAUTH_CALLBACK_URL: callback,
+    EXECUTOR_OAUTH_GITLAB_CLIENT_ID: gitlabHostedClient.id,
+    EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: gitlabHostedClient.secret,
     EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([definition, zendeskDefinition]),
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_ID: "connector-fixture-client",
     EXECUTOR_OAUTH_CONNECTOR_FIXTURE_CLIENT_SECRET: "connector-fixture-secret",
@@ -218,9 +236,25 @@ const program = Effect.gen(function* () {
     Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches,
     target, root, upstream, fixtures: zendeskFixtures, catalog, step,
   });
+  const gitlabProof = yield* proveGitLab({
+    Effect, request, checked, actors, prefix, target, upstream, callback,
+    catalog: gitlabCatalog, fixtures: gitlabFixtures, mcp, call,
+    record: (operation, detail = {}) => appendFileSync(
+      join(directory, "gitlab-proof.jsonl"),
+      JSON.stringify({ operation, ...detail }) + "\n",
+      { mode: 0o600 },
+    ),
+  });
   const uiProof = yield* proveAccountSiteUi({
     Effect, request, checked, actors, browser, directory, target, sites: zendeskFixtures.sites,
     cookies: Redacted.value(yield* actors.member.cookies),
+  });
+  const gitlabUiProof = yield* proveAccountSiteUi({
+    Effect, request, checked, actors, browser, directory, target, sites: gitlabFixtures.sites,
+    cookies: Redacted.value(yield* actors.member.cookies),
+    appName: "GitLab account site UI fixture",
+    defaultOrigin: true,
+    screenshotPrefix: "gitlab-account-site",
   });
   const app = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
     name: "Synthetic Gmail connector proof", files: [{ path: "index.ts", content: source(provider.origin) }, appsManifest],
@@ -290,13 +324,22 @@ const program = Effect.gen(function* () {
     check(linked.status === 403 || linked.status === 404, "Linking peer account denied");
   }
   step("same-organization-native-mcp-isolation-passed");
-  // Keep model and CLI processes outside the runtime's storage and credentials.
-  yield* Effect.promise(() => proveInstalledClaude({ root, directory, origin: target.metadata.origin, token: tokens[0], slug: app.slug, toolPath, marker: markers[0] }));
-  step("installed-claude-real-mcp-passed");
+  const skipInstalledClaude = process.env.CONNECTORS_PROOF_SKIP_CLAUDE === "1";
+  if (skipInstalledClaude) {
+    step("installed-claude-proof-skipped-in-ci");
+  } else {
+    // Keep model and CLI processes outside the runtime's storage and credentials.
+    yield* Effect.promise(() => proveInstalledClaude({
+      root, directory, origin: target.metadata.origin, token: tokens[0], slug: app.slug, toolPath, marker: markers[0],
+    }));
+    step("installed-claude-real-mcp-passed");
+  }
   return {
     ...zendeskProof,
+    ...gitlabProof,
     ...uiProof,
-    checks: 23 + zendeskProof.checks,
+    ...gitlabUiProof,
+    checks: 23 + zendeskProof.checks + gitlabProof.checks,
     sameOrganizationUsers: true,
     sharedHostedApp: true,
     privateAccountLinks: true,
@@ -306,7 +349,9 @@ const program = Effect.gen(function* () {
     zendeskNativeAuthorizationStart: true,
     zendeskPeerConnectionDenials: 2,
     zendeskProviderConsentCompleted: false,
-    installedClaude: true,
+    gitlabDefaultOriginUi: gitlabUiProof.defaultOriginSwitch === true,
+    installedClaude: !skipInstalledClaude,
+    installedClaudeSkipped: skipInstalledClaude,
     BasaltPoolAppAccess: false,
     productionOfficialGmailEndToEnd: false,
   };
