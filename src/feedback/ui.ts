@@ -1,76 +1,28 @@
 /**
- * The feedback button's contract. The browser half is the static, dependency-free
- * `public/feedback.js`; the router injects its tag into pages and the submit endpoint validates
- * against these limits, so all three read one copy.
+ * The dashboard feedback form's contract. The form ships with the dashboard (patch 0047) and posts
+ * to the submit endpoint, which validates against these limits.
  */
-export const feedbackScriptPath = "/feedback.js";
-/** Marks the tag, so a page that already carries it isn't given a second one. */
-export const feedbackScriptMarker = "data-signalbox-feedback";
-export const feedbackScriptTag = `<script src="${feedbackScriptPath}" defer ${feedbackScriptMarker}></script>`;
+export const feedbackEndpoints = { submit: "/feedback/v1/submit" } as const;
 
-export const feedbackEndpoints = { submit: "/feedback/v1/submit", error: "/feedback/v1/error" } as const;
-
-/** Every code the script sends. The server accepts these and nothing else. */
-export const feedbackErrorCodes = [
-  "script_error",
-  "unhandled_rejection",
-  "resource_error",
-  "http_5xx",
-  "feedback_submit_failed",
-] as const;
-export type FeedbackErrorCode = (typeof feedbackErrorCodes)[number];
+const messageMax = 4000;
+const screenshotBytesMax = 2 * 1024 * 1024;
+const logBytesMax = 16_384;
 
 export const feedbackLimits = {
-  messageMax: 4000,
+  messageMax,
   /** Decoded bytes. */
-  screenshotBytesMax: 2 * 1024 * 1024,
+  screenshotBytesMax,
   screenshotTypes: ["image/png", "image/jpeg"],
   errorsMax: 10,
+  /** Recent page errors and failed requests; the form keeps the newest within these. */
+  logEntriesMax: 50,
+  /** UTF-8 bytes of the logs as JSON. */
+  logBytesMax,
+  logMessageMax: 1024,
+  logPathMax: 1024,
+  /**
+   * A whole submission as JSON: the screenshot as base64, the message at four bytes a character
+   * and the logs, with room for keys and escaping.
+   */
+  submitBodyBytesMax: Math.ceil(screenshotBytesMax / 3) * 4 + messageMax * 4 + logBytesMax * 2 + 4096,
 } as const;
-
-interface RewriterInsert {
-  before(content: string, options: { html: boolean }): unknown;
-  append(content: string, options: { html: boolean }): unknown;
-}
-interface RewriterElement {
-  onEndTag(handler: (end: Pick<RewriterInsert, "before">) => void): void;
-}
-/** The slice of Workers' `HTMLRewriter` this needs. */
-export interface Rewriter {
-  on(selector: string, handlers: { element(element: RewriterElement): void }): Rewriter;
-  onDocument(handlers: { end(end: Pick<RewriterInsert, "append">): void }): Rewriter;
-  transform(response: Response): Response;
-}
-type RewriterClass = new () => Rewriter;
-
-/** Pages and error pages; a redirect or an empty body has nothing to show the button on. */
-function isPage(response: Response): boolean {
-  if (response.body === null || response.status < 200) return false;
-  if (response.status >= 300 && response.status < 400) return false;
-  return /^text\/html\b/i.test(response.headers.get("content-type") ?? "");
-}
-
-/**
- * Adds the feedback script before `</body>` of an HTML page, or at its end when the page never
- * closes its body. Other responses and pages that already carry the tag pass through unchanged.
- */
-export function injectFeedback(
-  response: Response,
-  HTMLRewriter: RewriterClass = (globalThis as { HTMLRewriter?: RewriterClass }).HTMLRewriter!,
-): Response {
-  if (!isPage(response)) return response;
-  let present = false;
-  return new HTMLRewriter()
-    .on(`script[${feedbackScriptMarker}]`, { element() { present = true; } })
-    .on("body", {
-      element(body) {
-        body.onEndTag((end) => {
-          if (present) return;
-          present = true;
-          end.before(feedbackScriptTag, { html: true });
-        });
-      },
-    })
-    .onDocument({ end(end) { if (!present) end.append(feedbackScriptTag, { html: true }); } })
-    .transform(response);
-}

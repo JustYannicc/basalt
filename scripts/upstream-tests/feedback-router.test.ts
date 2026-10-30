@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(new URL("../../.upstream/package.json", import.meta.url));
 const { build } = require("esbuild") as typeof import("esbuild");
 const { Miniflare } = require("miniflare") as typeof import("miniflare");
 
-test("bundled router injects every HTML response and routes web and agent feedback through one safe destination", async () => {
+test("bundled router leaves pages alone and routes web and agent feedback through one safe destination", async () => {
   const bundle = await build({
     stdin: {
       contents: 'import router from "./src/router.ts"; export default router;',
@@ -44,14 +43,15 @@ test("bundled router injects every HTML response and routes web and agent feedba
   try {
     for (const path of ["/login", "/org/fixture/apps", "/pricing"]) {
       const response = await mf.dispatchFetch(`https://example.invalid${path}`);
-      const html = await response.text();
-      assert.equal((html.match(/src="\/feedback.js"/g) ?? []).length, 1, path);
+      // The dashboard's own sidebar carries the feedback form; the router adds no script.
+      assert.doesNotMatch(await response.text(), /<script/, path);
     }
-    const setup = readFileSync(new URL("../../public/setup/index.html", import.meta.url), "utf8");
-    assert.equal((setup.match(/src="\/feedback.js"/g) ?? []).length, 1, "static setup page carries the same button script");
     const web = await mf.dispatchFetch("https://example.invalid/feedback/v1/submit", {
       method: "POST", headers: { "Content-Type": "application/json", Origin: "https://example.invalid", Cookie: "session=synthetic" },
-      body: JSON.stringify({ message: "Web fixture feedback", page: "/setup/claim/private?hidden=content", errors: [{ code: "script_error" }] }),
+      body: JSON.stringify({
+        message: "Web fixture feedback", page: "/setup/claim/private?hidden=content",
+        logs: [{ kind: "request", at: "2026-10-30T12:00:00.000Z", method: "GET", path: "/api/fixture?hidden=content", status: 502, durationMs: 9 }],
+      }),
     });
     assert.equal(web.status, 204, JSON.stringify({ delivered: delivered.map((entry) => ({ url: entry.url, bytes: entry.body.length })) }));
     const agent = await mf.dispatchFetch("https://example.invalid/__telemetry/v1/feedback", {
@@ -63,6 +63,7 @@ test("bundled router injects every HTML response and routes web and agent feedba
     assert.ok(delivered.every((entry) => entry.url === "https://o0.ingest.de.sentry.io/api/1/envelope/"));
     assert.ok(delivered.every((entry) => entry.body.includes('"type":"feedback"')));
     assert.match(delivered[0]!.body, /Web fixture feedback/);
+    assert.match(delivered[0]!.body, /"filename":"logs.json"[^\n]*\n\[\{"kind":"request"[^\n]*"path":"\/api\/fixture","status":502/);
     assert.match(delivered[1]!.body, /Agent fixture feedback/);
     assert.doesNotMatch(JSON.stringify(delivered), /not-exported|private\?|hidden=|email/);
     const analytics = await mf.dispatchFetch("https://example.invalid/__telemetry/v1/analytics", {

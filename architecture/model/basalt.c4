@@ -92,9 +92,9 @@ model {
 
     feedback = module "Feedback" {
       #basalt #v1 #deep
-      description "Browser feedback widget and same-origin host. The host verifies the caller through the tools service's native cookie session and submits accepted feedback through Telemetry."
+      description "Same-origin host for the dashboard sidebar's feedback form. The host verifies the caller through the tools service's native cookie session, checks the optional screenshot and redacts the optional page logs again within their caps, and submits accepted feedback through Telemetry."
       metadata {
-        code "src/feedback|public/feedback.js"
+        code "src/feedback"
         bindings "TOOLS_SERVICE=basalt.toolsGateway"
       }
     }
@@ -238,7 +238,6 @@ model {
   basalt.deployment -[sync]-> basalt.pool "import pool usage contract for acceptance"
   basalt.build -[sync]-> basalt.poolRuntime "build pool image"
   basalt.build -[sync]-> basalt.pool "bundle server tools and React screen"
-  basalt.build -[sync]-> basalt.feedback "bundle feedback UI"
   basalt.build -[sync]-> basalt.modelGateway "copy pool token signer; check provider catalog"
   basalt.build -[sync]-> basalt.toolsGateway "write the pool app bundle as a hash-named site asset; copy token signer and access contract; build patched apps framework for compiler"
   basalt.build -[sync]-> basalt.router "copy dashboard fonts to public/brand/fonts for cross-origin pool screens"
@@ -248,7 +247,8 @@ model {
   basalt.modelGateway -[sync]-> basalt.pool "import pool control and sign-in contracts"
   basalt.modelGateway -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
   basalt.router -[sync]-> basalt.setupHost "route /setup/v1/*, /setup/claim/* and /share/v1/*; observe real MCP tool calls"
-  basalt.router -[sync]-> basalt.feedback "serve feedback widget and host submission route"
+  basalt.router -[sync]-> basalt.feedback "route /feedback/v1/* to the submission host"
+  basalt.deployment -[sync]-> basalt.feedback "point the dashboard's feedback form at the submission route when diagnostics are configured"
   basalt.router -[sync]-> basalt.telemetry "record router telemetry and relay events"
   basalt.toolsGateway -[sync]-> basalt.router "optional authenticated analytics and feedback relay"
   basalt.feedback -[sync]-> basalt.toolsGateway "verify caller through native cookie session"

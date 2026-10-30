@@ -1,4 +1,5 @@
 /** Route labels are selected from constants, never copied from a caller's URL. */
+const dashboardSections = new Set(["apps", "connections", "accounts", "approvals", "groups", "settings", "connect"]);
 export function pageTemplate(value: unknown): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return "/other";
   const path = value.split(/[?#]/, 1)[0]!;
@@ -12,6 +13,12 @@ export function pageTemplate(value: unknown): string {
   if (/^\/api\//.test(path)) return "/api/:operation";
   if (/^\/organizations(?:\/|$)/.test(path)) return "/organizations/:id";
   if (/^\/apps(?:\/|$)/.test(path)) return "/apps/:id";
+  // Dashboard pages name their section, never the organization.
+  const dashboard = /^\/org\/[^/]+(?:\/([a-z-]+))?/.exec(path);
+  if (dashboard) {
+    const section = dashboard[1];
+    return section !== undefined && dashboardSections.has(section) ? `/org/:slug/${section}` : "/org/:slug";
+  }
   if (/^\/feedback\/v1\//.test(path)) return "/feedback/v1/:action";
   return "/other";
 }

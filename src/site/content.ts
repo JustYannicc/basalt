@@ -67,7 +67,7 @@ const privacy: LegalPage = {
       p: "When a request fails, the pool backend currently keeps the provider's error response, which can include content, together with the key that made the request. We are removing these copies.",
     },
     {
-      p: "**Feedback.** If you or your agent send feedback, we receive the message, the page you were on, recent error codes and any screenshot you choose to attach.",
+      p: "**Feedback.** If you or your agent send feedback, we receive the message and the kind of page you were on. Unless you untick them, feedback from the dashboard also includes a screenshot of the page and recent error messages and failed-request details, such as path and status, but never what the requests contained.",
     },
     {
       p: "We don't log what your tools read or return. A tool call waiting for your approval is stored encrypted until you answer it, and deleted after it expires if you don't. Otherwise tool data is kept only where you or an app save it, such as a workflow's history.",

@@ -5,7 +5,6 @@ import { handleSetup } from "./setup/host.ts";
 import { handleShare } from "./setup/share.ts";
 import { observeToolCall } from "./setup/tool-observation.ts";
 import { handleFeedback } from "./feedback/host.ts";
-import { injectFeedback } from "./feedback/ui.ts";
 import { handleRelay, type RelayEnv } from "./telemetry/relay.ts";
 import { captureProduct } from "./telemetry/product.ts";
 import { traceRequest, type TraceEnv } from "./telemetry/traces.ts";
@@ -236,11 +235,10 @@ export async function handleRequest(request: Request, env: RouterEnv, context?: 
     : await routeRequest(request, env, context);
   const url = new URL(request.url);
   if (url.hostname !== (env.DASHBOARD_HOST ?? brand.host)) return response;
-  const rendered = tracing ? injectFeedback(response) : response;
   // Only the tools service's auth route may retain its explicit same-origin exception.
   if (url.pathname === "/app-auth" && response.headers.get("content-security-policy") === "frame-ancestors 'self'" && response.headers.get("x-frame-options") === "SAMEORIGIN")
-    return rendered;
-  return denyFraming(rendered);
+    return response;
+  return denyFraming(response);
 }
 
 export default { fetch: handleRequest };

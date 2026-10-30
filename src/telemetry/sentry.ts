@@ -12,12 +12,14 @@ export interface FeedbackInput {
   page: string;
   errors?: Array<{ code: string }>;
   screenshot?: { type: string; data: string; name: string };
+  /** Page log entries, already validated and redacted by the feedback host. */
+  logs?: readonly object[] | undefined;
 }
 
-interface ScreenshotAttachment {
+interface Attachment {
   readonly bytes: Uint8Array;
-  readonly contentType: "image/png" | "image/jpeg";
-  readonly filename: "screenshot.png" | "screenshot.jpg";
+  readonly contentType: "image/png" | "image/jpeg" | "application/json";
+  readonly filename: "screenshot.png" | "screenshot.jpg" | "logs.json";
 }
 
 const encoder = new TextEncoder();
@@ -38,7 +40,7 @@ function withinFeedbackLimit(value: string): boolean {
   return true;
 }
 
-function decodeScreenshot(value: FeedbackInput["screenshot"]): ScreenshotAttachment | undefined | null {
+function decodeScreenshot(value: FeedbackInput["screenshot"]): Attachment | undefined | null {
   if (value === undefined) return undefined;
   if (value === null || typeof value !== "object") return null;
   const contentType = value.type;
@@ -81,12 +83,12 @@ function combine(parts: readonly Uint8Array[]): Uint8Array {
   return result;
 }
 
-/** Build one feedback/error envelope with UTF-8 byte lengths and optional raw image bytes. */
+/** Build one feedback/error envelope with UTF-8 byte lengths and optional raw attachments. */
 function envelope(
   id: string,
   type: "event" | "feedback",
   payload: Record<string, unknown>,
-  attachment?: ScreenshotAttachment,
+  attachments: readonly Attachment[] = [],
 ): Uint8Array {
   const item = encoder.encode(JSON.stringify(payload));
   const parts: Uint8Array[] = [
@@ -95,7 +97,7 @@ function envelope(
     item,
     encoder.encode("\n"),
   ];
-  if (attachment) {
+  for (const attachment of attachments) {
     append(parts, `${JSON.stringify({
       type: "attachment",
       length: attachment.bytes.byteLength,
@@ -130,7 +132,7 @@ async function postEnvelope(env: SentryEnv, body: Uint8Array): Promise<boolean> 
   }
 }
 
-/** Send explicit feedback text and an optional bounded screenshot, with no automatic PII. */
+/** Send explicit feedback text, an optional bounded screenshot and redacted page logs, with no automatic PII. */
 export async function sendFeedback(env: SentryEnv, input: FeedbackInput): Promise<boolean> {
   if (
     !validSentryDsn(env.SENTRY_DSN) || !isAccountId(input.accountId) ||
@@ -151,7 +153,10 @@ export async function sendFeedback(env: SentryEnv, input: FeedbackInput): Promis
       basalt: { recent_error_codes: recentErrors(input.errors).map(({ code }) => code) },
     },
   };
-  return postEnvelope(env, envelope(id, "feedback", payload, screenshot ?? undefined));
+  const attachments: Attachment[] = screenshot ? [screenshot] : [];
+  if (input.logs?.length)
+    attachments.push({ bytes: encoder.encode(JSON.stringify(input.logs)), contentType: "application/json", filename: "logs.json" });
+  return postEnvelope(env, envelope(id, "feedback", payload, attachments));
 }
 
 /** Capture a fixed error code without serializing an exception, stack, response, or request. */

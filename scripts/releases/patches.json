@@ -438,6 +438,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-product-feedback",
+      "file": "0047-product-feedback.patch",
+      "content_sha256": "01289e0bcdec2945e29d629b505408005f69c316c92dfd17b6ef4fdac5e6f484",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

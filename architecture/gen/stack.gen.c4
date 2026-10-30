@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "2c37bbbbf05c9fd7c4e7a82030e23ee5d249b5452d3b8d25d8470c7343f5d07a" }
+    metadata { bindings "56cae7e185519428be529e813050691958d10edab36e1b7e126e9251f534cb5b" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
