@@ -22,6 +22,7 @@ export const poolWorker = Effect.gen(function* () {
     instanceType: "lite",
     maxInstances: 1,
     constraints: euPlacement,
+    observability: { logs: { enabled: true } },
   });
   const application = yield* image.Application;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.

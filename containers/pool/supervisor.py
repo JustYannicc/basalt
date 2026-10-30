@@ -29,6 +29,7 @@ from .pool_contract import (
 )
 from .readiness import Readiness, start_ready_server
 from .child_signals import privacy_audit_line, safe_child_output_line
+from .runtime_signals import FailureCategory, install_error_handlers, report_failure
 
 
 HOME_BINARY = "/usr/local/bin/cliproxy-home"
@@ -140,6 +141,7 @@ def main() -> int:
     readiness = None
     stop = threading.Event()
     original_signals: dict[int, Any] = {}
+    category = FailureCategory.CONFIGURATION
     try:
         management_key = env_required("POOL_MANAGEMENT_KEY")
         database_url = env_required("POOL_DATABASE_URL")
@@ -157,6 +159,7 @@ def main() -> int:
             original_signals[signum] = signal.signal(signum, request_stop)
 
         atomic_write(ROOT / "cluster.yaml", cluster_yaml(database_url))
+        category = FailureCategory.HOME_STARTUP
         home_child = Child(
             "home",
             [HOME_BINARY, "-addr", "0.0.0.0:8327"],
@@ -184,6 +187,7 @@ def main() -> int:
                 raise StartupError("Home did not load the imported configuration")
 
         apply_pool_config(management_key, allow_remote)
+        category = FailureCategory.NODE_STARTUP
         node_id, home_jwt = create_node_jwt(management_key)
         node_child = Child(
             "node",
@@ -193,6 +197,7 @@ def main() -> int:
         )
         children.append(node_child)
 
+        category = FailureCategory.INITIAL_HEALTH
         deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
         while not stop.is_set() and time.monotonic() < deadline:
             for child in children:
@@ -210,6 +215,7 @@ def main() -> int:
         if not readiness.snapshot()[0]:
             raise StartupError("Home and node did not become healthy before timeout")
 
+        category = FailureCategory.RUNTIME
         while not stop.wait(2):
             for child in children:
                 exit_code = child.process.poll()
@@ -220,11 +226,8 @@ def main() -> int:
                     )
             readiness.set_ready(check_services(management_key, node_id))
         return 0
-    except StartupError as error:
-        print(f"[pool] {error}", file=sys.stderr, flush=True)
-        return 1
-    except Exception as error:
-        print(f"[pool] startup failed ({type(error).__name__})", file=sys.stderr, flush=True)
+    except Exception:
+        report_failure(category)
         return 1
     finally:
         if readiness is not None:
@@ -240,4 +243,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    install_error_handlers()
     sys.exit(main())

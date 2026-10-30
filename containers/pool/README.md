@@ -49,6 +49,22 @@ The pool builds Home and its node from the exact release source commits. <code>s
 
 Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The effective configuration enables commercial mode and disables request logging, debug output and file logging. The supervisor drops arbitrary child output. It forwards validated privacy progress, retry and final audit counts, plus fixed startup and maintenance failure counts. Derived-column, cache-read and token-accounting backfill failures emit <code>POOL_HOME_MAINTENANCE_FAILURE</code> with one closed numeric category set. It never forwards error text or key IDs.
 
+The stack enables container log observability with this image. Home's allowed count markers go to stdout; node output is suppressed. The Python supervisor and readiness server emit only <code>POOL_RUNTIME_FAILURE {"category":N,"count":1}</code> to stderr. They never print exception messages, exception class names, tracebacks or client addresses. The same projection handles uncaught main-thread, child-reader-thread and finalizer failures.
+
+| Category | Failure location |
+| --- | --- |
+| 1 | Configuration and memory-backed storage setup |
+| 2 | Home startup, initial import or configuration |
+| 3 | Node enrollment or launch |
+| 4 | Initial Home and node health check |
+| 5 | Running child process or health check |
+| 6 | Uncaught main-thread failure, including cleanup |
+| 7 | Uncaught thread failure |
+| 8 | Readiness HTTP handler |
+| 9 | An exception Python cannot propagate, such as a finalizer failure |
+
+CI injects response and token sentinels into supervisor failures and a real readiness HTTP request, then checks both stdout and stderr. A subprocess exercises the actual entrypoint's thread, finalizer and cleanup failure hooks. The same supervisor and HTTP regressions must fail against the previous image source without setup errors.
+
 Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint cannot authenticate a request. The credential store still keeps the live key that authentication needs. Provider response bodies, prompts, completions, authentication headers and raw client keys are excluded from usage diagnostics. Only closed billing tiers and validated numeric quota measurements survive alongside usage counters.
 
 Application logs use the same privacy mode. The node emits a fixed <code>POOL_APP_LOG {"count":1}</code> line with a closed severity, timestamp and validated generated request ID before queuing a log. It never formats or forwards the original message or its attached fields. Home independently projects older nodes' payloads before console output and storage. Application-log addresses and arbitrary request IDs are removed. A PostgreSQL guard applies the same projection to inserts and updates from older writers.

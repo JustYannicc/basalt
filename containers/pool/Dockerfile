@@ -37,6 +37,7 @@ WORKDIR /opt/pool
 COPY __init__.py /opt/pool/__init__.py
 COPY supervisor.py /opt/pool/supervisor.py
 COPY child_signals.py /opt/pool/child_signals.py
+COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY readiness.py /opt/pool/readiness.py
 COPY healthcheck.py /opt/pool/healthcheck.py
