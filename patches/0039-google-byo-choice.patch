@@ -1,6 +1,19 @@
 diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 --- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+@@ -151,3 +151,5 @@
+ }) {
+   const brand = useProductBrand();
++  const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
++  const ownAppName = googleProvider ? "Google" : providerName;
+   const choices =
+@@ -229,5 +231,5 @@
+       case "automatic":
+         return `${brand.name} (automatic)`;
+       case "manual":
+-        return machine ? "New client credentials" : `Your own ${providerName} app (OAuth)`;
++        return machine ? "New client credentials" : `Your own ${ownAppName} app (OAuth)`;
+     }
 @@ -247,11 +247,14 @@
        onPendingChange?.(false);
      });
@@ -10,7 +23,7 @@ diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/package
 -  // the account's client, so replacing it is always an Advanced option.
 +  // Google exposes its BYO choice beside a shared or current client, including during reconnect.
 +  const googleOwnClientChoice =
-+    /\bgoogle\b/i.test(providerName) &&
++    googleProvider &&
 +    choices.some((offered) => offered.kind === "manual") &&
 +    choices.some((offered) => offered.kind !== "manual");
    const prominent =
@@ -20,6 +33,13 @@ diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/package
    const clientSelect =
      choice === undefined || choices.length < 2 ? undefined : (
        <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+@@ -317,5 +322,5 @@
+         }}
+       />
+-      Use your own {providerName} app for this account
++      Use your own {ownAppName} app for this account
+     </label>
+   );
 diff --git a/e2e/support/oauth-client-entry.ts b/e2e/support/oauth-client-entry.ts
 --- a/e2e/support/oauth-client-entry.ts
 +++ b/e2e/support/oauth-client-entry.ts
@@ -40,7 +60,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
                path: "index.ts",
                content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 -const service=defineProvider({name:"Recoverable OAuth",auth:{oauth:oauth2({authorizationUrl:${JSON.stringify(issuer.origin + "/authorize")},tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
-+const service=defineProvider({name:"Google",auth:{oauth:oauth2({authorizationUrl:${JSON.stringify(issuer.origin + "/authorize")},tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
++const service=defineProvider({name:"Gmail",auth:{oauth:oauth2({authorizationUrl:${JSON.stringify(issuer.origin + "/authorize")},tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
  export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
              },
 @@ -157,7 +157,7 @@
@@ -48,7 +68,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
                page
                  .getByRole("dialog")
 -                .getByRole("button", { name: "Connect Recoverable OAuth", exact: true })
-+                .getByRole("button", { name: "Connect Google", exact: true })
++                .getByRole("button", { name: "Connect Gmail", exact: true })
                  .click(),
              ),
 @@ -185,7 +185,7 @@
@@ -56,7 +76,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
                page
                  .getByRole("dialog")
 -                .getByRole("button", { name: "Connect Recoverable OAuth", exact: true })
-+                .getByRole("button", { name: "Connect Google", exact: true })
++                .getByRole("button", { name: "Connect Gmail", exact: true })
                  .click(),
              ),
 @@ -209,11 +209,11 @@
@@ -64,12 +84,12 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
              )
              .then(() =>
 -              page.getByRole("button", { name: "Connect Recoverable OAuth", exact: true }).click(),
-+              page.getByRole("button", { name: "Connect Google", exact: true }).click(),
++              page.getByRole("button", { name: "Connect Gmail", exact: true }).click(),
              )
              .then(() => nameConnectedAccount(page, "Recovery account"))
              .then(() =>
 -              linkedChoice(page, "Recoverable OAuth", "Recovery account").waitFor({
-+              linkedChoice(page, "Google", "Recovery account").waitFor({
++              linkedChoice(page, "Gmail", "Recovery account").waitFor({
                  state: "visible",
                }),
 @@ -278,28 +278,38 @@
@@ -88,7 +108,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +          yield* browser.use("A Google reconnect exposes client choices up front", (page) => {
 +            const clients = page.getByRole("combobox", { name: "OAuth client" });
 +            return page
-+              .getByRole("button", { name: "Reconnect Google", exact: true })
++              .getByRole("button", { name: "Reconnect Gmail", exact: true })
 +              .waitFor({ state: "visible" })
 +              .then(() => clients.waitFor({ state: "visible" }))
 +              .then(() => clients.count());
@@ -164,7 +184,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
              .then(() =>
                page
 -                .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
-+                .getByRole("button", { name: "Reconnect Google", exact: true })
++                .getByRole("button", { name: "Reconnect Gmail", exact: true })
                  .click(),
              )
              .then(() =>
@@ -173,7 +193,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
              .then(() =>
                page
 -                .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
-+                .getByRole("button", { name: "Reconnect Google", exact: true })
++                .getByRole("button", { name: "Reconnect Gmail", exact: true })
                  .click(),
              )
              .then(() =>
