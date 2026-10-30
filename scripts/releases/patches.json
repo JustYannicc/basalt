@@ -411,6 +411,15 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-shell-migration-order",
+      "file": "0044-shell-migration-order.patch",
+      "content_sha256": "6d41d3365c9bad9ac8732636581bb2e607f468c91e11f674773c6989a37b1548",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

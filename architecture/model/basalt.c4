@@ -17,6 +17,7 @@ model {
     }
 
     deployment = module "Deployment" {
+      description "Dashboard and marketing shells wait for successful database migrations before updating, so a failed migration leaves the running shell and its browser assets on the same build. Local development keeps its ordinary build path."
       metadata {
         code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/pool-database-provisioning.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|scripts/preview|scripts/preview-auth|scripts/deploy-safety|src/pool/deployment.ts|src/pool/database.ts|src/pool/worker-database.ts|src/browser-check.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
         bindings "stageRouter=basalt.router|this.stageRouter=basalt.router|controlPlane=deploymentProvider"
