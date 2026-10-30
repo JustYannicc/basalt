@@ -207,7 +207,7 @@ export function proveGitLab({
         event.method === "POST" && event.path === "/api/v4/projects",
       ).length;
       const write = yield* Effect.promise(() => call(client, "call", {
-        calls: { path: mutation.path, input: { accountId: item.account.id, input: { name: "Synthetic approval check" } } },
+        calls: { path: mutation.path, input: { accountId: item.account.id, input: { body: { name: "Synthetic approval check" } } } },
       }));
       assert.notEqual(write.isError, true, "The approval request must be a successful MCP response");
       assert.equal(write.structuredContent?.status, "approval-required");
