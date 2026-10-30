@@ -19,7 +19,7 @@ For existing installations, use the [cutover runbook](cutover.md) and its owner-
 | `/mcp`             | Tools gateway, with upstream authentication                         |
 | `/v1` and `/v1/*`  | Model gateway, with the pool backend's client-key authentication    |
 | `/pool/v1/*`       | Pool control API for pool apps, with a signed per-pool token        |
-| `/setup`           | Computer setup page, using the tools service's browser session     |
+| `/setup`           | Redirects to the person's Connect page, where setup now lives      |
 | `/setup/v1/*`      | Computer list, setup links, per-computer pool switch and paired credential revocation |
 | `/share`           | Share page for a pool's owner, using the tools service's browser session |
 | `/share/v1/*`      | The pool's people, invitations by email or link, removal, each person's usage and their cap |
