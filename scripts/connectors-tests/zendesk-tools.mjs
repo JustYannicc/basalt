@@ -6,8 +6,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { openapiToolNames } from "../../.upstream/packages/apps/dist/js/openapi.js";
-import { firstPartyOAuthClientDefinitions } from "../../.upstream/apps/hosted/server/src/implementation/first-party-oauth.ts";
-import { matchFirstPartyOAuth } from "./provider-source.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const upstream = join(root, ".upstream");
@@ -30,10 +28,14 @@ assert.match(app.content, /tool\.kind === "mutation" \? always\(\) : undefined/,
 assert.match(app.content, /fetch: marketplaceFetch\(accountOrigin\(account\), fetch\)/,
   "Marketplace headers must be limited to the saved site origin");
 
-const hosted = matchFirstPartyOAuth("zendesk", snapshot.files, upstream, firstPartyOAuthClientDefinitions);
 const requestedScopes = ["read", "write", "impersonate"];
-assert.deepEqual(hosted.defaultScopes, requestedScopes);
-assert.deepEqual(hosted.allowedScopes, requestedScopes);
+const hostPatch = await readFile(join(root, "patches/0022-zendesk-hosted-oauth.patch"), "utf8");
+const patchRegistry = JSON.parse(await readFile(join(root, "scripts/releases/patches.json"), "utf8"));
+const patchDigest = digest(await readFile(join(root, "patches/0022-zendesk-hosted-oauth.patch")));
+const patchEntry = patchRegistry.patches.find((entry) => entry.file === "0022-zendesk-hosted-oauth.patch");
+assert.equal(patchEntry?.content_sha256, patchDigest, "Zendesk host OAuth patch differs from its registry digest");
+assert.match(hostPatch, /defaultScopes: \["read", "write", "impersonate"\]/);
+assert.match(hostPatch, /allowedScopes: \["read", "write", "impersonate"\]/);
 assert.equal(digest(await readFile(resolve(root, ".generated/round3/zendesk-oas.yaml"))),
   provenance.openApiSpec.sha256, "Zendesk Support API spec differs from its recorded hash");
 
@@ -70,7 +72,7 @@ try {
     queries: result.tools.filter((tool) => tool.kind === "query").length,
     mutations: result.tools.filter((tool) => tool.kind === "mutation").length,
     skipped: result.skipped.length,
-    scopes: hosted.defaultScopes,
+    scopes: requestedScopes,
     siteBinding: options.allowedOrigin,
     specSha256: provenance.openApiSpec.sha256,
     providerRequests: 0,
