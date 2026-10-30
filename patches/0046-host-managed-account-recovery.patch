@@ -988,10 +988,10 @@ index 830b354..f1314eb 100644
    );
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 new file mode 100644
-index 0000000..a880fac
+index 0000000..eb8276a
 --- /dev/null
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,311 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient } from "effect/http";
@@ -1033,12 +1033,21 @@ index 0000000..a880fac
 +          http = yield* HttpClient.HttpClient,
 +          database = yield* cloudLocks;
 +        const prefix = `/api/organizations/${actors.organization.id}`;
++        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
++        // This case owns the lab, and no pool Worker receives its cleanup notification.
++        // Register before setup can fail, while the database fixture is still available.
++        yield* Effect.addFinalizer(() =>
++          rows(
++            `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb)
++              - 'basaltPools')::text where id = $1`,
++            [actors.organization.id],
++          ).pipe(Effect.orDie),
++        );
 +        const session = yield* body(
 +          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
 +          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
 +        );
 +        const owner = session.user.id;
-+        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
 +        const cron = Effect.scoped(
 +          http
 +            .get(
@@ -1048,21 +1057,49 @@ index 0000000..a880fac
 +        );
 +        const pending = () =>
 +          rows(
-+            `select id, status, (available_at <= now()) as ready
++            `select id, status, attempts, (available_at <= now()) as ready
 +        from hosted_provisioning where organization_id = $1 and user_id = $2
 +          and kind = 'member' and status in ('queued', 'running')
 +          and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'`,
 +            [actors.organization.id, owner],
 +          );
-+        // Existing setup must finish before the scenario damages its own recorded binding.
++        // Pool rollouts use ordinary member jobs delayed by 15 minutes, without a special prefix.
++        const deferred = randomUUID();
++        yield* rows(
++          `insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++            values ($1, 'member', $2, $3, now() + interval '15 minutes')`,
++          [deferred, actors.organization.id, owner],
++        );
++        yield* evidence.json("initial-provisioning.json", { jobs: yield* pending(), deferred });
++        // Finish active setup, while unattempted future rollouts keep their scheduled start.
 +        yield* pending().pipe(
-+          Effect.flatMap((jobs) => (jobs.length === 0 ? Effect.void : Effect.fail(new Pending()))),
++          Effect.flatMap((jobs) =>
++            jobs.some(
++              (job) =>
++                job.status === "running" ||
++                job.ready === true ||
++                (typeof job.attempts === "number" && job.attempts > 0),
++            )
++              ? Effect.fail(new Pending())
++              : Effect.void,
++          ),
 +          Effect.retry({
 +            while: Schema.is(Pending),
 +            schedule: Schedule.spaced("250 millis"),
 +            times: 240,
 +          }),
++          Effect.ensuring(
++            Effect.gen(function* () {
++              yield* evidence.json("settled-provisioning.json", { jobs: yield* pending() });
++            }),
++          ),
 +        );
++        expect((yield* pending()).find((entry) => entry.id === deferred)).toEqual({
++          id: deferred,
++          status: "queued",
++          attempts: 0,
++          ready: false,
++        });
 +        const [original] = yield* rows(
 +          `select coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)::text as pools
 +        from organization where id = $1`,
@@ -1093,13 +1130,6 @@ index 0000000..a880fac
 +            // Removal must not mistake this synthetic app for the host's recorded pool.
 +            yield* restore();
 +            yield* api.request(actors.owner, "DELETE", path);
-+            // This case owns the whole lab. Its pool Worker is outside this scenario, so clear
-+            // the synthetic registry before fixture teardown would notify that absent service.
-+            yield* rows(
-+              `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb)
-+                - 'basaltPools')::text where id = $1`,
-+              [actors.organization.id],
-+            );
 +          }).pipe(Effect.orDie),
 +        );
 +        const record = (value: unknown) =>
