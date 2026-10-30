@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { appendFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
@@ -125,7 +125,15 @@ const program = Effect.gen(function* () {
   step("provider-emulator");
   const provider = yield* Effect.acquireRelease(Effect.promise(emulator), (server) => Effect.promise(server.stop));
   step("browser-launch");
-  const browser = yield* Effect.acquireRelease(Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })), (browser) => Effect.promise(() => browser.close()));
+  // Chromium's Linux singleton socket cannot fit under the private run's long TMPDIR.
+  const browserTemporary = yield* Effect.acquireRelease(
+    Effect.promise(() => mkdtemp(join(process.platform === "linux" ? "/tmp" : directory, "basalt-browser-"))),
+    (temporary) => Effect.promise(() => rm(temporary, { recursive: true, force: true })),
+  );
+  const browser = yield* Effect.acquireRelease(Effect.promise(() => chromium.launch({
+    headless: true, executablePath: browserExecutable,
+    env: { ...process.env, TMPDIR: browserTemporary },
+  })), (browser) => Effect.promise(() => browser.close()));
   step("published-emulator-ready");
   step("self-host-environment");
   const base = yield* startEnvironment({ target: "self-host", headless: true });
@@ -399,9 +407,10 @@ try {
   if (phase === "browser-launch") {
     // This phase precedes actors and account credentials. Keep paths and URLs private too.
     const reason = String(error?.message ?? error).split(/\r?\n/)
-      .filter((line) => /error|fatal|failed|closed|crashpad|required|cannot|sandbox|library|missing/i.test(line))
+      .filter((line) => !/<launching>/.test(line))
+      .filter((line) => /\[err\]|process did exit|error|fatal|failed|closed|crashpad|required|cannot|sandbox|library|missing/i.test(line))
+      .map((line) => line.replace(/(?:https?:\/\/|\/)[^\s"'<>]+/g, "<path>").slice(0, 350))
       .slice(0, 8).join(" ")
-      .replace(/(?:https?:\/\/|\/)[^\s"'<>]+/g, "<path>")
       .slice(0, 1500);
     console.error(`CONNECTORS_BROWSER_FAILURE ${JSON.stringify(reason)}`);
   }
