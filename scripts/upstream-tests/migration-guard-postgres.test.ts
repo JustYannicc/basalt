@@ -18,13 +18,13 @@ function databaseUrl() {
 }
 
 /** `node src/migrate.ts` as the deploy command runs it; resolves with its exit, stderr and duration. */
-function migrate(): Promise<{ status: number | null; stderr: string; seconds: number }> {
+function migrate(url = databaseUrl()): Promise<{ status: number | null; stderr: string; seconds: number }> {
   const started = Date.now();
   const child = spawn(process.execPath, ["src/migrate.ts"], {
     cwd: cloud,
     env: {
       PATH: process.env.PATH,
-      DATABASE_URL: databaseUrl(),
+      DATABASE_URL: url,
       BETTER_AUTH_URL: "http://localhost:3000",
       BETTER_AUTH_SECRET: "fixture-only-secret-0123456789abcdef0123",
       GOOGLE_CLIENT_ID: "fixture",
@@ -98,6 +98,43 @@ test("the migration job fails fast and names the step when live sessions hold it
     assert.equal(after.status, 0, after.stderr);
   } finally {
     await admin.query(`drop database if exists ${database} with (force)`);
+    await admin.end();
+  }
+});
+
+test("executor migration failures retain safe codes and versions without SQL or driver text", { skip: !local }, async () => {
+  const admin = new pg.Client({ connectionString: adminUrl });
+  await admin.connect();
+  const target = `${database}_diagnostics`;
+  await admin.query(`create database ${target}`);
+  const fixtureUrl = new URL(databaseUrl());
+  fixtureUrl.pathname = `/${target}`;
+  const fixture = new pg.Client({ connectionString: fixtureUrl.toString() });
+  try {
+    // Use the deploy entrypoint against this separate fixture database.
+    const first = await migrate(fixtureUrl.toString());
+    assert.equal(first.status, 0, first.stderr);
+    await fixture.connect();
+    await fixture.query("update private_executor_settings set value = '4.0.1' where key = 'version'");
+    await fixture.query(`create function reject_fixture_upgrade() returns event_trigger language plpgsql as $$
+      begin raise exception using errcode = 'P0001', message = 'SYNTHETIC_DRIVER_SECRET',
+        detail = 'SYNTHETIC_PARAMETER_SECRET'; end $$`);
+    await fixture.query("create event trigger reject_fixture_upgrade on ddl_command_start execute function reject_fixture_upgrade()");
+    const failed = await migrate(fixtureUrl.toString());
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, /migrate the executor tables/);
+    assert.match(failed.stderr, /executor version 4\.0\.2/);
+    assert.match(failed.stderr, /StorageMigrationFailed.*MigrationError.*SqlError/);
+    assert.match(failed.stderr, /SQLSTATE P0001/);
+    assert.doesNotMatch(failed.stderr, /SYNTHETIC_DRIVER_SECRET|SYNTHETIC_PARAMETER_SECRET|Failed to execute migration statement|ADD COLUMN/);
+    assert.equal((await fixture.query("select value from private_executor_settings where key = 'version'")).rows[0].value, "4.0.1");
+    await fixture.query("drop event trigger reject_fixture_upgrade");
+    await fixture.query("update private_executor_settings set value = '4.0.16' where key = 'version'");
+    const recovered = await migrate(fixtureUrl.toString());
+    assert.equal(recovered.status, 0, recovered.stderr);
+  } finally {
+    await fixture.end();
+    await admin.query(`drop database if exists ${target} with (force)`);
     await admin.end();
   }
 });
