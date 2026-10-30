@@ -57,7 +57,7 @@ export class PoolLifecycle {
       const previousRevision = await this.storage.get<string>("revision");
       if (this.driver.running() && previousRevision !== this.revision) await this.driver.stop();
       if (!this.driver.running()) {
-        // This identifies the launched boot, even while readiness is still pending.
+        // Record the target before launch so retries can keep a running boot.
         await this.storage.put("revision", this.revision);
         this.driver.start();
       }
