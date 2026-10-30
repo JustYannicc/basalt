@@ -1,6 +1,7 @@
 {
   "name": "basalt",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "prepare:upstream": "node scripts/prepare-upstream.ts",

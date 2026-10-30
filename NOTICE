@@ -1,0 +1,36 @@
+Signalbox
+Copyright 2026 Signalbox
+
+This repository is licensed under the Apache License, Version 2.0; see LICENSE.
+
+It carries code from the projects below, which remain under their own licenses.
+
+Executor
+https://github.com/UsefulSoftwareCo/executor
+Copyright (c) 2026 Rhys Sullivan
+MIT License; see licenses/executor.txt
+Carried in patches/ and src/catalog/atlassian/.
+
+Miro and Slack apps
+https://catalog.executor.sh
+No license is declared in the published packages.
+Carried in src/catalog/miro.published.json and src/catalog/slack.published.json,
+and with Basalt's changes in src/catalog/miro.json and src/catalog/slack.json.
+
+CLIProxyAPI
+https://github.com/router-for-me/CLIProxyAPI
+Copyright (c) 2025-2005.9 Luis Pater
+Copyright (c) 2025.9-present Router-For.ME
+MIT License; see licenses/cliproxyapi.txt
+Carried in containers/pool/patches/cliproxy-node-*.patch.
+
+CLIProxyAPIHome
+https://github.com/router-for-me/CLIProxyAPIHome
+Copyright (c) 2026.5-present Router-For.ME
+MIT License; see licenses/cliproxyapihome.txt
+Carried in containers/pool/patches/cliproxy-home-*.patch.
+
+EB Garamond
+https://github.com/octaviopardo/EBGaramond12
+Copyright 2017 The EB Garamond Project Authors
+SIL Open Font License, Version 1.1; see public/brand/serif/LICENSE.txt
