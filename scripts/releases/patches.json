@@ -404,6 +404,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-host-managed-account-recovery",
+      "file": "0043-host-managed-account-recovery.patch",
+      "content_sha256": "839ad1d3f2a74b4e8fbc75b876202ba1c75cf88cbb6b5a5888e1a3fcac6a81b0",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-safe-storage-migration-errors",
       "file": "0043-safe-storage-migration-errors.patch",
       "content_sha256": "05c136ab93e4f843e2d85d7d82562524957ca89786662406a5c0c362c0ede8a6",

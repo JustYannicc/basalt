@@ -62,6 +62,11 @@ jobs:
           bun run e2e:self-host --test-name
           "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants"
           --workers 1
+      - name: Verify recovery through Cloud's real provisioning queue
+        working-directory: .upstream
+        env:
+          BASALT_E2E_POOL_SETUP: "1"
+        run: bun run e2e:cloud --test-name '^Cloud pool account recovery' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -69,6 +74,7 @@ jobs:
           path: |
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   pool-inventory:
