@@ -1,5 +1,5 @@
 import { digest } from "../backend-users.ts";
-import { amount, counter, endpointMetadata, historyBilling, historyObject, identifier, invalidHistory, reference, timestamp, type ModelRequest } from "./record.ts";
+import { amount, counter, endpointMetadata, historyObject, identifier, invalidHistory, priceRule, reference, timestamp, type ModelRequest } from "./record.ts";
 
 export interface ImportContext { source: string; pool: string; person: string }
 
@@ -14,8 +14,8 @@ export async function importedHomeRequest(raw: unknown, context: ImportContext):
   const canonical = row.token_breakdown_schema_version === 2 && row.token_breakdown_quality === "complete";
   const priced = row.amount !== null && row.amount !== undefined && row.matched_price_rule !== "default:zero";
   const cost = priced ? amount(row.amount) : null;
-  // The export has a rule identity but no original rate snapshot. Preserve that limitation.
-  const priceVersion = cost === null ? null : await digest(JSON.stringify([source, historyBilling({ matchedRule: row.matched_price_rule }).matchedRule, at]));
+  // The rule survives independently; the export supplies no original rate or version snapshot.
+  const originalPriceRule = priceRule(row.matched_price_rule);
   const failureCode = counter(row.error_status_code);
   const code = row.failed && failureCode !== null && failureCode !== "0" ? failureCode : counter(row.upstream_status_code);
   const statusCode = code === null || code === "0" ? null : Number(code);
@@ -36,6 +36,6 @@ export async function importedHomeRequest(raw: unknown, context: ImportContext):
       : row.token_breakdown_quality === "unclassified" ? "unclassified" : "legacy",
     latencyMs: counter(row.latency_ms), failed: row.failed, statusCode,
     cost, currency: cost === null ? null : identifier(row.currency, true), costBasis: cost === null ? "unpriced" : "home-charge",
-    priceVersion, price: null, attribution: "import-owner",
+    originalPriceRule, priceVersion: null, price: null, attribution: "import-owner",
   };
 }

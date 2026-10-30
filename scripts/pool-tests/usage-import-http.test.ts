@@ -119,6 +119,15 @@ test("import requires a manager and matching dry run, deduplicates after restart
     const missing = await handleUsageImport(request({ ...localPayload,
       data: JSON.stringify({ ...JSON.parse(payload.data), request_id: randomUUID(), usage_id: 999999 }) }), access);
     assert.equal(missing.status, 400, "an explicit local source cannot invent an absent Home request");
+    const remoteRule = "fixture-provider:fixture-model:*:0";
+    await importBatch({ ...payload, data: JSON.stringify({ ...JSON.parse(payload.data), usage_id: 999,
+      amount: "0.00125", currency: "credits", matched_price_rule: remoteRule }) }, 1);
+    const remoteHistory = await (await history(owner)).json() as {
+      records: { original_price_rule: string | null; price_version: string | null; price_snapshot: unknown }[];
+    };
+    const originalRule = remoteHistory.records.find((row) => row.original_price_rule === remoteRule && row.price_snapshot === null);
+    assert.ok(originalRule);
+    assert.equal(originalRule.price_version, null);
     const foreignKey = "b".repeat(64), foreignId = randomUUID();
     await db.query('INSERT INTO "user" VALUES (2,$1)', [await backendUserName("foreign-member", "foreign-pool")]);
     await db.query("INSERT INTO api_key VALUES (2,$1,2)", [`sha256:${foreignKey}`]);

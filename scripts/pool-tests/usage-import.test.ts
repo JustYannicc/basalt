@@ -111,3 +111,17 @@ test("Home usage IDs preserve attempts sharing a trace and display status never 
   }
   await assert.rejects(parseUsageImport({ source, format: "home-v8-jsonl", data: JSON.stringify({ ...first, usage_id: null }) }, owner));
 });
+
+test("remote Home imports keep the original billing rule without inventing a rate version", async () => {
+  const first = { ...home(0), amount: "0.00125", currency: "credits", matched_price_rule: "fixture-provider:fixture-model:*:0" };
+  const second = { ...first, usage_id: 2, timestamp: "2020-01-02T12:00:00Z" };
+  const parsed = await parseUsageImport({ source, format: "home-v8-jsonl",
+    data: [first, second].map((row) => JSON.stringify(row)).join("\n") }, owner);
+  for (const row of parsed.records) {
+    assert.equal(row.originalPriceRule, first.matched_price_rule);
+    assert.equal(row.cost, "0.001250000000");
+    assert.equal(row.costBasis, "home-charge");
+    assert.equal(row.price, null);
+    assert.equal(row.priceVersion, null);
+  }
+});

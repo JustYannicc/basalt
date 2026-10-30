@@ -1,10 +1,10 @@
-import { amount, counter, historyBilling, historyObject, identifier, invalidHistory, timestamp, type ModelRequest } from "./record.ts";
+import { amount, counter, historyBilling, historyObject, identifier, invalidHistory, priceRule, timestamp, type ModelRequest } from "./record.ts";
 
 // Ledger values are decoded explicitly so replay uses the immutable row, including attribution.
 export const retainedProjection = `id,source,source_record,timestamp_exact,pool,person,account,client_key,
   request_id,provider,model,endpoint,api_type,service_tier,input_tokens::text,output_tokens::text,
   cache_read_tokens::text,cache_write_tokens::text,reasoning_tokens::text,total_tokens::text,
-  token_quality,latency_ms::text,failed,status_code,cost::text,currency,cost_basis,price_version,price_snapshot,attribution`;
+  token_quality,latency_ms::text,failed,status_code,cost::text,currency,cost_basis,price_version,original_price_rule,price_snapshot,attribution`;
 
 export function retainedRequest(row: Record<string, unknown>): ModelRequest {
   const quality = row.token_quality, basis = row.cost_basis, attribution = row.attribution;
@@ -28,7 +28,7 @@ export function retainedRequest(row: Record<string, unknown>): ModelRequest {
     reasoningTokens: counter(row.reasoning_tokens), totalTokens: counter(row.total_tokens),
     tokenQuality: quality, latencyMs: counter(row.latency_ms), failed: row.failed,
     statusCode: row.status_code === null ? null : Number(row.status_code), cost: amount(row.cost),
-    currency: identifier(row.currency), costBasis: basis, priceVersion: identifier(row.price_version), attribution,
+    currency: identifier(row.currency), costBasis: basis, originalPriceRule: priceRule(row.original_price_rule), priceVersion: identifier(row.price_version), attribution,
     price: price ? { input: rates[0]!, output: rates[1]!, cacheRead: rates[2]!, cacheWrite: rates[3]!, request: rates[4]!,
       tier: price.tier === "*" ? "*" : identifier(price.tier), minInput: counter(price.minInput)!,
       validFrom: price.validFrom === null ? null : timestamp(price.validFrom),

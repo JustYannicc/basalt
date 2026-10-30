@@ -49,7 +49,7 @@ export async function legacySnapshot(raw: unknown, context: ImportContext, selec
           inputTokens: counts[0]!, outputTokens: counts[1]!, cacheReadTokens: counts[2]!, cacheWriteTokens: null,
           reasoningTokens: counts[3]!, totalTokens: counts[4]!, tokenQuality: "legacy", latencyMs: null,
           failed: row.failed, statusCode: null, cost: null, currency: null, costBasis: "unpriced",
-          priceVersion: null, price: null, attribution: "import-owner",
+          originalPriceRule: null, priceVersion: null, price: null, attribution: "import-owner",
         });
       }
     }
