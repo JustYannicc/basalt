@@ -61,11 +61,11 @@ try {
   });
   assert.equal(result.skipped.length, 0, "Every operation in Zendesk's Support API document must compile");
   assert.ok(result.tools.length > 500, "The full Support API must be exposed, not only convenience wrappers");
-  assert.ok(result.tools.some((tool) => /showCurrentUser/i.test(tool.path)),
+  assert.ok(result.tools.some((tool) => tool.path === "/api/v2/users/me" && tool.kind === "query"),
     "The imported Support API must expose current-user reads");
-  assert.ok(result.tools.some((tool) => tool.kind === "mutation" && /updateTicket/i.test(tool.path)),
+  assert.ok(result.tools.some((tool) => tool.path === "/api/v2/tickets/{ticket_id}" && tool.kind === "mutation"),
     "The imported Support API must expose ticket updates as mutations");
-  assert.ok(result.tools.some((tool) => tool.kind === "mutation" && /createTicket/i.test(tool.path)),
+  assert.ok(result.tools.some((tool) => tool.path === "/api/v2/tickets" && tool.kind === "mutation"),
     "The imported Support API must expose ticket creation as a mutation");
   console.log(JSON.stringify({
     tools: result.tools.length,
