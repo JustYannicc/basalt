@@ -8,7 +8,7 @@ const source = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const home = (index: number) => ({
   usage_id: index + 1, request_id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
   timestamp: "2020-01-01T12:00:00.123456Z", provider: "fixture-provider", model: "fixture-model",
-  endpoint: "/v1/responses", failed: false, status_code: 200, api_key_id: 1, credential_id: "fixture-account",
+  endpoint: "/v1/responses", failed: false, status_code: 200, upstream_status_code: 200, api_key_id: 1, credential_id: "fixture-account",
   token_breakdown_schema_version: 2, token_breakdown_quality: "complete",
   token_breakdown_input_total_tokens: 100, token_breakdown_input_cache_read_tokens: 20,
   token_breakdown_input_cache_write_tokens: 5, token_breakdown_output_total_tokens: 10,
@@ -93,4 +93,21 @@ test("unclassified and inconsistent token accounting never invents a known histo
     assert.equal(parsed.records[0]!.costBasis, "unpriced");
     assert.equal(parsed.report.unpriced, 1);
   }
+});
+
+test("Home usage IDs preserve attempts sharing a trace and display status never fills unknown HTTP status", async () => {
+  const first = home(0), second = { ...home(1), request_id: first.request_id, failed: true,
+    upstream_status_code: 0, error_status_code: 429 };
+  const parsed = await parseUsageImport({ source, format: "home-v8-jsonl",
+    data: [first, second].map((row) => JSON.stringify(row)).join("\n") }, owner);
+  assert.equal(parsed.records.length, 2);
+  assert.notEqual(parsed.records[0]!.id, parsed.records[1]!.id);
+  assert.equal(parsed.records[0]!.requestId, parsed.records[1]!.requestId);
+  assert.equal(parsed.records[1]!.statusCode, 429);
+  for (const upstream_status_code of [undefined, null, 0]) {
+    const result = await parseUsageImport({ source, format: "home-v8-jsonl",
+      data: JSON.stringify({ ...first, upstream_status_code, status_code: 200 }) }, owner);
+    assert.equal(result.records[0]!.statusCode, null);
+  }
+  await assert.rejects(parseUsageImport({ source, format: "home-v8-jsonl", data: JSON.stringify({ ...first, usage_id: null }) }, owner));
 });

@@ -1,4 +1,4 @@
-import { amount, counter, historyObject, identifier, invalidHistory, timestamp, type ModelRequest } from "./record.ts";
+import { amount, counter, historyBilling, historyObject, identifier, invalidHistory, timestamp, type ModelRequest } from "./record.ts";
 
 // Ledger values are decoded explicitly so replay uses the immutable row, including attribution.
 export const retainedProjection = `id,source,source_record,timestamp_exact,pool,person,account,client_key,
@@ -32,6 +32,7 @@ export function retainedRequest(row: Record<string, unknown>): ModelRequest {
     price: price ? { input: rates[0]!, output: rates[1]!, cacheRead: rates[2]!, cacheWrite: rates[3]!, request: rates[4]!,
       tier: price.tier === "*" ? "*" : identifier(price.tier), minInput: counter(price.minInput)!,
       validFrom: price.validFrom === null ? null : timestamp(price.validFrom),
-      validTo: price.validTo === null ? null : timestamp(price.validTo) } : null,
+      validTo: price.validTo === null ? null : timestamp(price.validTo),
+      billing: price.billing === null ? null : historyBilling(historyObject(price.billing)) } : null,
   };
 }

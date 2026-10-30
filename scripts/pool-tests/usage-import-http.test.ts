@@ -65,6 +65,8 @@ test("import requires a manager and matching dry run, deduplicates after restart
       }), access);
     const own = await history(owner);
     assert.equal(own.status, 200);
+    const savedHistory = await own.clone().json() as { records: { status_code: number | null }[] };
+    assert.equal(savedHistory.records[0]!.status_code, null, "display status 200 does not invent recorded upstream status");
     const retained = await own.text();
     assert.match(retained, /fixture-model/);
     assert.doesNotMatch(retained, /fixture-response-sentinel/);
@@ -84,19 +86,24 @@ test("import requires a manager and matching dry run, deduplicates after restart
         assert.equal((await applied.json() as { inserted: number }).inserted, restart === 0 ? expected : 0);
       }
     };
+    const requestId = randomUUID();
     for (const captureFirst of [false, true]) {
-      const requestId = randomUUID();
-      await db.query(`INSERT INTO usage (timestamp,request_id,model,api_key,failed)
-        VALUES ('2020-01-01T12:00:00Z',$1,'fixture-model',$2,false)`, [requestId, `sha256:${"a".repeat(64)}`]);
+      const inserted = await db.query(`INSERT INTO usage (timestamp,request_id,model,api_key,failed)
+        VALUES ('2020-01-01T12:00:00Z',$1,'fixture-model',$2,false) RETURNING id::text`, [requestId, `sha256:${"a".repeat(64)}`]);
+      const usageId = String(inserted.rows[0].id);
+      await db.query(`INSERT INTO billing_charge (id,usage_id,amount,matched_price_rule,price_snapshot,api_key_id,user_id)
+        VALUES ($1,$2,0.000123456789012345678,'fixture-provider:fixture-model:*:0',
+          '{"input_price_per_million":2,"output_price_per_million":8,"cache_read_price_per_million":0.5,"cache_write_price_per_million":2.5,"request_price":0,"matched_service_tier":"*","min_input_tokens":0,"provider":"fixture-provider","model":"fixture-model","requested_service_tier":"priority","response_service_tier":"flex","service_tier_source":"response","effective_service_tier":"flex","response_tier_fallback":false}',1,1)`,
+        [randomUUID(), usageId]);
       if (captureFirst) await captureHomeRequests(db);
-      // Also exercise automatic reconciliation for an uploaded export's ordinary source UUID.
-      await importBatch({ ...payload, data: JSON.stringify({ ...JSON.parse(payload.data), request_id: requestId }) }, captureFirst ? 0 : 1);
+      const batch = { ...localPayload, data: JSON.stringify({ ...JSON.parse(payload.data), usage_id: usageId, request_id: requestId }) };
+      await importBatch(batch, captureFirst ? 0 : 1);
       if (!captureFirst) {
         await activateHomeBackfill(db, await planHomeBackfill(db));
         await captureHomeRequests(db);
       }
-      await importBatch({ ...localPayload, data: JSON.stringify({ ...JSON.parse(payload.data), request_id: requestId }) }, 0);
-      assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests WHERE request_id=$1", [requestId])).rows[0].n, "1");
+      await importBatch(batch, 0);
+      assert.equal((await db.query("SELECT count(*)::text AS n FROM basalt_model_requests WHERE request_id=$1", [requestId])).rows[0].n, captureFirst ? "2" : "1");
     }
     assert.equal((await (await history("member")).json() as { records: unknown[] }).records.length, 2,
       "local imports preserve the request's member instead of assigning the manager");
@@ -115,10 +122,10 @@ test("import requires a manager and matching dry run, deduplicates after restart
     const foreignKey = "b".repeat(64), foreignId = randomUUID();
     await db.query('INSERT INTO "user" VALUES (2,$1)', [await backendUserName("foreign-member", "foreign-pool")]);
     await db.query("INSERT INTO api_key VALUES (2,$1,2)", [`sha256:${foreignKey}`]);
-    await db.query(`INSERT INTO usage (timestamp,request_id,model,api_key,failed)
-      VALUES ('2020-01-01T12:00:00Z',$1,'fixture-model',$2,false)`, [foreignId, `sha256:${foreignKey}`]);
+    const foreign = await db.query(`INSERT INTO usage (timestamp,request_id,model,api_key,failed)
+      VALUES ('2020-01-01T12:00:00Z',$1,'fixture-model',$2,false) RETURNING id::text`, [foreignId, `sha256:${foreignKey}`]);
     const stolen = await handleUsageImport(request({ ...localPayload,
-      data: JSON.stringify({ ...JSON.parse(payload.data), request_id: foreignId }) }), access);
+      data: JSON.stringify({ ...JSON.parse(payload.data), usage_id: String(foreign.rows[0].id), request_id: foreignId }) }), access);
     assert.equal(stolen.status, 409, "local source resolution cannot claim another pool's request");
   } finally {
     await db.query(`DROP SCHEMA ${schema} CASCADE`);

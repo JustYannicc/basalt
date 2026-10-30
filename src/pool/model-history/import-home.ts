@@ -1,5 +1,5 @@
 import { digest } from "../backend-users.ts";
-import { amount, counter, endpointMetadata, historyObject, identifier, invalidHistory, reference, timestamp, type ModelRequest } from "./record.ts";
+import { amount, counter, endpointMetadata, historyBilling, historyObject, identifier, invalidHistory, reference, timestamp, type ModelRequest } from "./record.ts";
 
 export interface ImportContext { source: string; pool: string; person: string }
 
@@ -8,15 +8,16 @@ export async function importedHomeRequest(raw: unknown, context: ImportContext):
   const row = historyObject(raw), { source, pool, person } = context;
   if (typeof row.failed !== "boolean") return invalidHistory();
   const requestId = identifier(row.request_id), usageId = counter(row.usage_id);
-  if (!requestId && usageId === null) return invalidHistory();
-  const sourceRecord = await digest(JSON.stringify(requestId ? ["request", requestId] : ["usage", usageId]));
+  if (usageId === null || usageId === "0") return invalidHistory();
+  const sourceRecord = await digest(JSON.stringify(["usage", usageId]));
   const at = timestamp(row.timestamp);
   const canonical = row.token_breakdown_schema_version === 2 && row.token_breakdown_quality === "complete";
   const priced = row.amount !== null && row.amount !== undefined && row.matched_price_rule !== "default:zero";
   const cost = priced ? amount(row.amount) : null;
   // The export has a rule identity but no original rate snapshot. Preserve that limitation.
-  const priceVersion = cost === null ? null : await digest(JSON.stringify([source, identifier(row.matched_price_rule), at]));
-  const code = counter(row.status_code);
+  const priceVersion = cost === null ? null : await digest(JSON.stringify([source, historyBilling({ matchedRule: row.matched_price_rule }).matchedRule, at]));
+  const failureCode = counter(row.error_status_code);
+  const code = row.failed && failureCode !== null && failureCode !== "0" ? failureCode : counter(row.upstream_status_code);
   const statusCode = code === null || code === "0" ? null : Number(code);
   if (statusCode !== null && (statusCode < 100 || statusCode > 599)) return invalidHistory();
   return {

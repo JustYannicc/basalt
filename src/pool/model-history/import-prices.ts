@@ -30,7 +30,7 @@ export async function importPrices(raw: unknown): Promise<ImportPrice[]> {
     const price = {
       provider: identifier(value.provider, true)!, model: identifier(value.model, true)!, currency: "USD" as const,
       input: input!, output: output!, cacheRead: cacheRead!, cacheWrite: cacheWrite!, request: request!,
-      tier: value.tier === "*" ? "*" : identifier(value.tier), minInput: counter(value.minInput) ?? "0", validFrom, validTo,
+      tier: value.tier === "*" ? "*" : identifier(value.tier), minInput: counter(value.minInput) ?? "0", validFrom, validTo, billing: null,
     };
     prices.push({ ...price, version: await digest(JSON.stringify(price)) });
   }
