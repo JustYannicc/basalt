@@ -59,6 +59,8 @@ model {
     metadata { hosts "slack.com|mcp.slack.com" }
   }
   basalt.catalog -[sync]-> catalogSource "read official index and app sources"
+  basalt.build -[sync]-> catalogSource "read official workspace catalog snapshots for the OAuth proof"
+  basalt.build -[sync]-> connectorIdentity "read public workspace identity metadata for the OAuth proof"
   basalt.pool -[sync]-> providerLogos "provider logo URL in a subscription's identity, loaded by the browser"
   catalogSource -[sync]-> basalt.catalog "official index and unmodified app sources"
   basalt.catalog -[sync]-> basalt.toolsGateway "catalog entries and unmodified sources"

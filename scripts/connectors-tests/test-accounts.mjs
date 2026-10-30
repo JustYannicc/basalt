@@ -2,14 +2,18 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-const roles = [
-  ["owner", "zendesk-owner"],
-  ["admin", "zendesk-admin"],
-  ["member", "zendesk-member"],
-];
+const roles = ["owner", "admin", "member"];
 
-/** Provision private self-host actors with the pinned upstream testing CLI before its server starts. */
-export async function provisionSelfHostActors({ executable, upstream, target, authSecret, directory }) {
+/** Provision private self-host actors with the pinned testing CLI before the product starts. */
+export async function provisionSelfHostActors({
+  executable,
+  upstream,
+  target,
+  authSecret,
+  directory,
+  organization = "zendesk-native",
+  namePrefix = "zendesk",
+}) {
   const cli = join(upstream, "apps/hosted/testing/cli.ts");
   const outputDirectory = join(directory, "test-accounts");
   await mkdir(outputDirectory, { recursive: true, mode: 0o700 });
@@ -28,14 +32,15 @@ export async function provisionSelfHostActors({ executable, upstream, target, au
   let organizationSlug;
   const accounts = {};
 
-  for (const [role, name] of roles) {
+  for (const role of roles) {
+    const name = `${namePrefix}-${role}`;
     const output = join(outputDirectory, `${role}.json`);
     const log = join(outputDirectory, `${role}.log`);
     const child = spawn(executable, [
       cli,
       "--host", "self-host",
       "--name", name,
-      "--organization", "zendesk-native",
+      "--organization", organization,
       "--role", role,
       "--output", output,
     ], {
@@ -59,7 +64,7 @@ export async function provisionSelfHostActors({ executable, upstream, target, au
     const account = JSON.parse(await readFile(output, "utf8"));
     if (account.origin !== target.metadata.origin || account.role !== role
       || typeof account.userId !== "string" || typeof account.organizationId !== "string"
-      || account.organizationSlug !== "zendesk-native" || !Array.isArray(account.cookies)
+      || account.organizationSlug !== organization || !Array.isArray(account.cookies)
       || account.cookies.length === 0 || typeof account.headers?.cookie !== "string") {
       throw new Error(`Pinned hosted test-account CLI returned an invalid ${role} session.`);
     }

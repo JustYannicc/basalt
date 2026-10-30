@@ -106,6 +106,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
@@ -122,6 +124,33 @@ jobs:
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
         run: bun run e2e:self-host --test-name 'Rejected OAuth clients remain editable|^Google OAuth choices keep'
+      - name: Prove shared Google Admin OAuth selection through the pinned server
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          mkdir -p .generated/google-admin-snapshots
+          curl --fail --silent --show-error --location --user-agent 'Mozilla/5.0' https://catalog.executor.sh/apps/google.json \
+            --output .generated/google-admin-snapshots/google.json
+          curl --fail --silent --show-error --location --user-agent 'Mozilla/5.0' https://catalog.executor.sh/apps/google-admin.json \
+            --output .generated/google-admin-snapshots/google-admin.json
+          candidate_sha="$(git rev-parse HEAD)"
+          bun scripts/connectors-tests/google-admin.mjs \
+            . \
+            .generated/google-admin-snapshots \
+            .generated/google-admin-proof \
+            "$candidate_sha" \
+            "$BASE_SHA"
+      - name: Check the reviewed Google client through its native E2E scenario
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name '^The reviewed Google client follows' --workers 2
+      - name: Retain the Google Admin proof summary
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: google-admin-oauth-proof
+          path: .generated/google-admin-proof/**/google-admin-proof.json
+          include-hidden-files: true
+          if-no-files-found: warn
       - name: Compare the baseline and candidate through the real dashboard batch endpoint
         run: node scripts/profile-dashboard-batch.ts
       - name: Check Cloud resources stay within each dashboard batch request
