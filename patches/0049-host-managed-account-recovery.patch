@@ -597,16 +597,6 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index cafa7c4..8ba48fe 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -5042,7 +5042,8 @@ export const scenarios = plan({
-     fixtures: "actors",
-     file: "cloud-app-query-auth.spec.ts",
-     appOrigin: true,
--    title: "Cloud app queries read current authorization without deleting expired verification records",
-+    title:
-+      "Cloud app queries read current authorization without deleting expired verification records",
-     targets: {
-       cloud: managedCloud,
-       "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
 @@ -7614,6 +7615,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account checks and rows."),
      },
