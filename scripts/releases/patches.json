@@ -348,6 +348,15 @@
       "upstream_pull_request": 2451,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-app-publishing-switch",
+      "file": "0038-app-publishing-switch.patch",
+      "content_sha256": "bcdc420ca0f51d9ca77a2817a94a5ac8ea6d8cb9192dadba86bc91df558c9fec",
+      "kind": "upstream",
+      "upstream_pull_request": 2456,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
