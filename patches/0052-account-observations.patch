@@ -7187,3 +7187,15 @@ index ba20ce4b8..c2f0f7c41 100644
  };
  
  /**
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 04a87a384..4b5e84185 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -13,6 +13,7 @@
+     "./organization": "./src/contracts/organization.ts",
+     "./groups": "./src/contracts/groups.ts",
+     "./resource-access": "./src/contracts/resource-access.ts",
++    "./account-observations": "./src/contracts/account-observations.ts",
+     "./oauth-clients": "./src/contracts/oauth-clients.ts",
+     "./database": "./src/implementation/database.ts",
+     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
