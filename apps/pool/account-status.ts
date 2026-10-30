@@ -1,5 +1,5 @@
-// What the Accounts tab shows under a subscription: its plan, whether the pool can use it, and
-// how much of each usage window is left. Read from the pool's own view, never from the provider.
+// What the Accounts tab shows under a subscription: its plan, anything stopping the pool from using it,
+// and how much of each usage window is left. Read from the pool's own view, never from the provider.
 // Wording and window order match the pool's own screen.
 import type { Account, ControlErrorCode, UsageWindow } from "./contract.ts";
 import { identityOf } from "./sign-in.ts";
@@ -7,8 +7,9 @@ import { clamp, orderedWindows } from "./ui/usage.ts";
 
 type Tone = "neutral" | "good" | "warning" | "bad";
 
-const states: Record<Account["state"], { readonly label: string; readonly tone: Tone }> = {
-  active: { label: "Available", tone: "good" },
+// The host's check pill already says a healthy account works.
+const states: Record<Account["state"], { readonly label: string; readonly tone: Tone } | null> = {
+  active: null,
   disabled: { label: "Paused", tone: "warning" },
   unavailable: { label: "Unavailable", tone: "warning" },
   error: { label: "Needs attention", tone: "bad" },
@@ -38,7 +39,7 @@ function meter(window: UsageWindow) {
 
 function resetText(account: Account, now: Date): string | null {
   const resets = account.bankedResets;
-  if (!resets) return null;
+  if (!resets?.available) return null;
   const expiry = resets.nextExpiresAt === null ? null : instant(resets.nextExpiresAt);
   if (!expiry) return `${resets.available} banked reset${resets.available === 1 ? "" : "s"}`;
   const days = Math.max(0, Math.ceil((Date.parse(expiry) - now.getTime()) / 86_400_000));
@@ -52,12 +53,12 @@ export function accountStatus(account: Account, sites: readonly { readonly id: s
   const message = account.message === null || account.state === "active" ? "" : text(account.message, 128);
   const windows = orderedWindows(account.windows).slice(0, 4);
   const reset = resetText(account, now);
+  const state = states[account.state];
   const resetMeter = windows.findIndex((window) => window.windowSeconds === 18_000);
   const badges = [
     ...(plan ? [{ label: plan, tone: "neutral" as const }] : []),
-    states[account.state],
-    ...(account.readingFailed ? [{ label: "Usage reading failed", tone: "warning" as const }]
-      : account.freshness === "stale" ? [{ label: "Usage reading stale", tone: "warning" as const }] : []),
+    ...(state ? [state] : []),
+    ...(account.readingFailed ? [{ label: "Usage reading failed", tone: "warning" as const }] : []),
     ...(reset && resetMeter < 0 ? [{ label: text(reset, 96), tone: "neutral" as const }] : []),
   ].slice(0, 8);
   const meters = windows.map((window, index) => ({

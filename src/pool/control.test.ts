@@ -427,7 +427,7 @@ test("pool view filters global credentials and quotas, sorts ids and normalizes 
   f.home.addFile("a", provider, { unavailable: true }); f.home.addFile("u"); f.home.addFile("e", provider, { status: "error", status_message: "Needs sign-in" });
   f.home.quota = [{ credential_id: "z", plan: { name: "Example plan" }, observed_at: "2026-01-01T00:00:00Z", primary_windows: [
     { id: "high", label: "High", remaining_ratio: 2, reset_at: "2026-01-02T00:00:00Z", window_seconds: 3600 },
-    { id: "low", used_ratio: 2 }, { id: "unknown" }, { id: "unlimited", is_unlimited: true, remaining_ratio: 0, reset_at: "ignored" },
+    { id: "low", label: "Low", used_ratio: 2 }, { id: "unknown", label: "Unknown" }, { id: "unlimited", label: "Unlimited", is_unlimited: true, remaining_ratio: 0, reset_at: "ignored" },
   ] }, { credential_id: "foreign", plan: { name: "Private" } }];
   const view = await (await f.call("/pool")).json() as PoolView;
   assert.deepEqual(view.accounts.map((account) => [account.id, account.state]), [["a", "unavailable"], ["e", "error"], ["u", "active"], ["z", "disabled"]]);

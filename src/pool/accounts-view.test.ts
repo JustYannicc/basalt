@@ -24,7 +24,7 @@ test("Codex details retain 5h, weekly and real model families; capacity still re
   const result = view(detail({ windows: [
     window("codex-1-week", 604800, "account", null),
     window("codex-code-review-1-week", 604800, "model", "codex_code_review"),
-    { ...window("codex-bengalfox-1-week", 604800, "model", "codex_bengalfox"), remaining_ratio: 0.1 },
+    { ...window("codex-bengalfox-1-week", 604800, "model", "codex_bengalfox"), remaining_ratio: 0.1, label: "Spark" },
     window("codex-5-hour", 18000),
     window("codex-bengalfox-5-hour", 18000, "model", "codex_bengalfox"),
     window("codex-custom-1-week", 604800, "model", "codex_custom"),
@@ -38,6 +38,7 @@ test("Codex details retain 5h, weekly and real model families; capacity still re
     { status: "available", expires_at: null },
   ] } }));
   assert.deepEqual(result.windows.map((w) => w.id), ["codex-bengalfox-5-hour", "codex-5-hour", "codex-bengalfox-1-week", "codex-custom-1-week", "codex-1-week"]);
+  assert.deepEqual(result.windows.map((w) => w.label), ["5h", "5h", "Spark", "Weekly", "Weekly"]);
   assert.deepEqual(orderedWindows(result.windows), result.windows);
   assert.equal(capacity([result])[0]!.left, 0.8);
   assert.equal(result.windows.at(-1)!.windowSeconds, 604800);
@@ -54,6 +55,24 @@ test("Claude reset grants have a count with no individual credit list or known e
     reset_credits: { available_count: 4, credits: [] } }), "claude");
   assert.deepEqual(result.bankedResets, { available: 4, nextExpiresAt: null });
   assert.deepEqual(result.windows.map((w) => w.windowSeconds), [18000, 604800]);
+});
+
+test("unnamed windows use their duration and hide only when neither name nor duration is known", () => {
+  const windows = [
+    window("raw-five-hour-id", 18_000),
+    { ...window("raw-week-id", 604_800), label: "  " },
+    window("raw-month-id", 2_592_000),
+    window("raw-minute-id", 90),
+    { ...window("raw-named-id", 0), label: "Daily allowance", window_seconds: null },
+    { ...window("raw-unknown-id", 0), window_seconds: null },
+    window("raw-zero-id", 0),
+    window("raw-negative-id", -1),
+  ];
+  for (const reading of [detail({ windows }), { credential_id: "a", primary_windows: windows }]) {
+    const result = view(reading, "other");
+    assert.deepEqual(result.windows.map((w) => w.label), ["90s", "5h", "Weekly", "30d", "Daily allowance"]);
+    assert.ok(result.windows.every((w) => !w.label.startsWith("raw-")));
+  }
 });
 
 test("stale and failed readings keep last-known windows; partial is usable, never is explicit", () => {

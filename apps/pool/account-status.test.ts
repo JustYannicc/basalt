@@ -23,7 +23,7 @@ const account: Account = {
 };
 const sites = [{ id: "codex", site: "chatgpt.com" }];
 
-test("a pool account reads as its plan, availability and usage windows", () => {
+test("a healthy pool account reads as its plan and usage windows, with no state badge", () => {
   assert.deepEqual(accountStatus(account, sites), {
     accountInfo: {
       displayName: "person@example.test",
@@ -31,10 +31,7 @@ test("a pool account reads as its plan, availability and usage windows", () => {
       avatarUrl: "https://integrations.sh/logo/chatgpt.com?sz=64",
     },
     status: {
-      badges: [
-        { label: "Plus", tone: "neutral" },
-        { label: "Available", tone: "good" },
-      ],
+      badges: [{ label: "Plus", tone: "neutral" }],
       meters: [
         { label: "5 hours", remaining: 0.4, resetsAt: "2030-01-02T03:04:05.123Z" },
         { label: "Weekly", remaining: null },
@@ -77,17 +74,19 @@ test("windows read shortest first, and an active account shows no note", () => {
   assert.deepEqual(accountStatus({ ...account, state: "disabled" }, sites).status.badges.at(-1), { label: "Paused", tone: "warning" });
 });
 
-test("reset credits use the five-hour meter, with expiry or a bounded fallback badge", () => {
+test("reset credits use the five-hour meter, with expiry or a bounded fallback badge; zero shows nothing", () => {
   const codex = accountStatus({ ...account, bankedResets: { available: 2, nextExpiresAt: "2030-01-05T00:00:00Z" } }, sites, new Date("2030-01-02T00:00:00Z")).status;
   assert.equal(codex.meters[0]!.detail, "↻ 2 banked · next expires in 3 days");
   const claude = accountStatus({ ...account, provider: "claude", windows: [], bankedResets: { available: 2, nextExpiresAt: null } }, sites).status;
   assert.ok(claude.badges.some((badge) => badge.label === "2 banked resets"));
   assert.equal(claude.meters.length, 0);
+  const none = accountStatus({ ...account, bankedResets: { available: 0, nextExpiresAt: null } }, sites).status;
+  assert.equal(none.meters[0]!.detail, undefined);
+  assert.equal(accountStatus({ ...account, windows: [], bankedResets: { available: 0, nextExpiresAt: null } }, sites).status.badges.length, 1);
 });
 
-test("stale and failed readings show warning badges within host limits", () => {
-  const stale = accountStatus({ ...account, freshness: "stale" }, sites).status;
-  assert.ok(stale.badges.some((badge) => badge.label === "Usage reading stale" && badge.tone === "warning"));
+test("only a failed reading shows a warning badge, within host limits", () => {
+  assert.deepEqual(accountStatus({ ...account, freshness: "stale" }, sites).status.badges, [{ label: "Plus", tone: "neutral" }]);
   const failed = accountStatus({ ...account, readingFailed: true, freshness: "fresh" }, sites).status;
   assert.ok(failed.badges.some((badge) => badge.label === "Usage reading failed" && badge.tone === "warning"));
   const full = accountStatus({ ...account, readingFailed: true, bankedResets: { available: 2, nextExpiresAt: null } }, sites).status;
