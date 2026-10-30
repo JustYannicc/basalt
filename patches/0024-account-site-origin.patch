@@ -4941,7 +4941,7 @@ index 0000000..15b92e0
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index d4168d1..9029c00 100644
+index d4168d1..70e842e 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,7 +1,12 @@
@@ -5093,7 +5093,7 @@ index d4168d1..9029c00 100644
 +      definition: targetDefinition,
 +    }: {
 +      readonly skipOptionalMetadata?: boolean;
-+      readonly definition?: ProviderDefinition;
++      readonly definition?: ProviderDefinition | undefined;
 +    } = {},
 +  ) =>
      Effect.gen(function* () {
