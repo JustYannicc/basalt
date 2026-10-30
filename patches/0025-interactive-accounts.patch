@@ -7708,10 +7708,10 @@ index 74740a3..8783bd2 100644
 +export const frameworkProtocol = 16;
 diff --git a/packages/apps/src/contracts/protocols/15.ts b/packages/apps/src/contracts/protocols/15.ts
 new file mode 100644
-index 0000000..2ecf5ad
+index 00000000..ee93678d
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/15.ts
-@@ -0,0 +1,658 @@
+@@ -0,0 +1,715 @@
 +/**
 + * The host protocol this framework speaks: every message that crosses between a host and an app
 + * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
@@ -7727,8 +7727,6 @@ index 0000000..2ecf5ad
 + * imports them, so a change here never edits a released protocol.
 + */
 +import { Schema } from "effect";
-+import { HttpOrigin } from "@executor-js/utils/url-policy";
-+import { matchesSingleLabelSite } from "@executor-js/utils/account-site";
 +import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
 +const frameworkProtocol = 15;
 +import {
@@ -7745,7 +7743,6 @@ index 0000000..2ecf5ad
 +} from "../elicitation.ts";
 +import { DeclaredEvents, EmittedEvents } from "../events.ts";
 +import { FailureDetail, UpstreamError } from "../failure.ts";
-+import { AccountCheckResult } from "../provider.ts";
 +import { OAuth2Config } from "./oauth-15.ts";
 +import { ProviderError } from "../provider-error.ts";
 +import { RouterIcon } from "../router.ts";
@@ -7865,6 +7862,66 @@ index 0000000..2ecf5ad
 +    ...exposure,
 +  }),
 +]);
++
++/** Validation dependencies frozen with protocol 15. */
++
++const HttpUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    try {
++      const url = new URL(value);
++      return url.protocol === "https:" || url.protocol === "http:";
++    } catch {
++      return false;
++    }
++  }),
++);
++
++const HttpOrigin = Schema.String.check(
++  Schema.makeFilter(
++    (value) => {
++      const url = URL.parse(value);
++      return (
++        url !== null &&
++        (url.protocol === "http:" || url.protocol === "https:") &&
++        !url.hostname.includes("*") &&
++        url.origin === value
++      );
++    },
++    { message: "Expected an exact HTTP(S) origin, without a trailing slash" },
++  ),
++).pipe(Schema.brand("HttpOrigin"));
++
++const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
++
++const suffixHost = (value: string): string | undefined => {
++  const parsed = URL.parse(`https://${value}`);
++  return parsed !== null && parsed.hostname === value.toLowerCase() && parsed.port === ""
++    ? parsed.hostname
++    : undefined;
++};
++
++const matchesSingleLabelSite = (origin: string, suffix: string): boolean => {
++  const parsed = URL.parse(origin);
++  const domain = suffixHost(suffix);
++  if (parsed === null || domain === undefined) return false;
++  const suffixWithDot = `.${domain}`;
++  if (!parsed.hostname.endsWith(suffixWithDot)) return false;
++  const label = parsed.hostname.slice(0, -suffixWithDot.length);
++  return dnsLabel.test(label);
++};
++
++const displayText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(255));
++
++const AccountInfo = Schema.Struct({
++  externalId: Schema.optionalKey(displayText),
++  displayName: Schema.optionalKey(displayText),
++  username: Schema.optionalKey(displayText),
++  email: Schema.optionalKey(displayText),
++  avatarUrl: Schema.optionalKey(HttpUrl),
++  profileUrl: Schema.optionalKey(HttpUrl),
++});
++
++const AccountCheckResult = Schema.Struct({ accountInfo: Schema.optionalKey(AccountInfo) });
 +
 +/** Provider site rule frozen in protocol 15; later fields belong to a later protocol. */
 +const ProviderSite = Schema.Struct({
@@ -12581,12 +12638,23 @@ index a25fc57..ba20ce4 100644
 
 diff --git a/packages/apps/src/contracts/protocols/oauth-15.ts b/packages/apps/src/contracts/protocols/oauth-15.ts
 new file mode 100644
+index 00000000..2e588715
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/oauth-15.ts
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,134 @@
 +/** OAuth declaration shape frozen for host protocol 15. */
 +import { Schema } from "effect";
-+import { HttpUrl } from "../schema.ts";
++
++const HttpUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    try {
++      const url = new URL(value);
++      return url.protocol === "https:" || url.protocol === "http:";
++    } catch {
++      return false;
++    }
++  }),
++);
 +
 +const OAuthClientAuth = Schema.Literals([
 +  "none",
