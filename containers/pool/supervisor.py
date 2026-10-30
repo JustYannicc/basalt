@@ -29,7 +29,14 @@ from .pool_contract import (
 )
 from .readiness import Readiness, start_ready_server
 from .child_signals import privacy_audit_line, safe_child_output_line
-from .runtime_signals import FailureCategory, install_error_handlers, report_failure
+from .runtime_signals import (
+    FailureCategory,
+    StartupPhase,
+    install_error_handlers,
+    report_failure,
+    startup_phase,
+    try_monotonic_ns,
+)
 
 
 HOME_BINARY = "/usr/local/bin/cliproxy-home"
@@ -136,6 +143,7 @@ def terminate_children(children: list[Child]) -> None:
 
 
 def main() -> int:
+    supervisor_started_ns = try_monotonic_ns()
     children: list[Child] = []
     ready_server = None
     readiness = None
@@ -160,60 +168,66 @@ def main() -> int:
 
         atomic_write(ROOT / "cluster.yaml", cluster_yaml(database_url))
         category = FailureCategory.HOME_STARTUP
-        home_child = Child(
-            "home",
-            [HOME_BINARY, "-addr", "0.0.0.0:8327"],
-            child_environment("home", management_key),
-            ROOT,
-        )
-        children.append(home_child)
-        home_state = wait_for_home(home_child, management_key, stop)
-        if home_state == "stop":
-            return 0
-        if home_state == "empty":
-            home_child.process.wait()
-            import_initial_config(management_key, allow_remote)
+        with startup_phase(StartupPhase.HOME_BOOT, supervisor_started_ns):
             home_child = Child(
                 "home",
                 [HOME_BINARY, "-addr", "0.0.0.0:8327"],
                 child_environment("home", management_key),
                 ROOT,
             )
-            children[-1] = home_child
+            children.append(home_child)
             home_state = wait_for_home(home_child, management_key, stop)
+        if home_state == "stop":
+            return 0
+        if home_state == "empty":
+            with startup_phase(StartupPhase.BOOTSTRAP_IMPORT, supervisor_started_ns):
+                home_child.process.wait()
+                import_initial_config(management_key, allow_remote)
+            with startup_phase(StartupPhase.HOME_BOOT, supervisor_started_ns):
+                home_child = Child(
+                    "home",
+                    [HOME_BINARY, "-addr", "0.0.0.0:8327"],
+                    child_environment("home", management_key),
+                    ROOT,
+                )
+                children[-1] = home_child
+                home_state = wait_for_home(home_child, management_key, stop)
             if home_state == "stop":
                 return 0
             if home_state != "ready":
                 raise StartupError("Home did not load the imported configuration")
 
-        apply_pool_config(management_key, allow_remote)
+        with startup_phase(StartupPhase.CONFIG_APPLY, supervisor_started_ns):
+            apply_pool_config(management_key, allow_remote)
         category = FailureCategory.NODE_STARTUP
-        node_id, home_jwt = create_node_jwt(management_key)
-        node_child = Child(
-            "node",
-            [NODE_BINARY, "-home-disable-cluster-discovery"],
-            child_environment("node", management_key, home_jwt, readiness.boot_id),
-            ROOT / "node",
-        )
-        children.append(node_child)
+        with startup_phase(StartupPhase.NODE_ENROLLMENT, supervisor_started_ns):
+            node_id, home_jwt = create_node_jwt(management_key)
+            node_child = Child(
+                "node",
+                [NODE_BINARY, "-home-disable-cluster-discovery"],
+                child_environment("node", management_key, home_jwt, readiness.boot_id),
+                ROOT / "node",
+            )
+            children.append(node_child)
 
         category = FailureCategory.INITIAL_HEALTH
-        deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
-        while not stop.is_set() and time.monotonic() < deadline:
-            for child in children:
-                exit_code = child.process.poll()
-                if exit_code is not None:
-                    raise StartupError(
-                        f"{child.name} exited before the pool was healthy (exit {exit_code})"
-                    )
-            if check_services(management_key, node_id):
-                readiness.set_ready(True)
-                break
-            time.sleep(0.5)
-        if stop.is_set():
-            return 0
-        if not readiness.snapshot()[0]:
-            raise StartupError("Home and node did not become healthy before timeout")
+        with startup_phase(StartupPhase.INITIAL_HEALTH, supervisor_started_ns):
+            deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+            while not stop.is_set() and time.monotonic() < deadline:
+                for child in children:
+                    exit_code = child.process.poll()
+                    if exit_code is not None:
+                        raise StartupError(
+                            f"{child.name} exited before the pool was healthy (exit {exit_code})"
+                        )
+                if check_services(management_key, node_id):
+                    readiness.set_ready(True)
+                    break
+                time.sleep(0.5)
+            if stop.is_set():
+                return 0
+            if not readiness.snapshot()[0]:
+                raise StartupError("Home and node did not become healthy before timeout")
 
         category = FailureCategory.RUNTIME
         while not stop.wait(2):
