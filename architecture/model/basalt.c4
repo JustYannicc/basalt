@@ -298,6 +298,7 @@ model {
     #planned
   }
   basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
+  basalt.modelGateway -[sync]-> basalt.poolDatabase "read-only migration inventory without starting Home"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
   basalt.poolRuntime -[sync]-> priceCatalog "import API prices when the pool Worker asks"
 

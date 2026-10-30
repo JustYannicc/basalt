@@ -9,6 +9,36 @@ permissions:
   contents: read
 
 jobs:
+  pool-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Build the isolated Cloud test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the suite's browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify the inventory through the real Cloud cron and authenticated job
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name '^Cloud pool migration inventory' --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-inventory-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   dashboard-batch:
     runs-on: ubuntu-latest
     timeout-minutes: 20
