@@ -81,6 +81,30 @@ test("an unready container has a bounded wait and leaves a recovery alarm", asyn
   assert.equal(f.state().alarm, poolLifecycle.startupTimeoutMs + poolLifecycle.refreshMs);
 });
 
+for (const evicted of [false, true]) {
+  for (const rotated of [false, true]) {
+    test(`a slow boot survives a retry, eviction=${evicted}, rotation=${rotated}`, async () => {
+      const f = fixture();
+      if (rotated) await new PoolLifecycle(f.driver, f.storage, "release-old", f.clock).warm();
+      const readyStatus = f.driver.status;
+      let ready = false;
+      f.driver.status = async () => {
+        if (!ready) throw new Error("still booting");
+        return readyStatus();
+      };
+      const runtime = new PoolLifecycle(f.driver, f.storage, "release-new", f.clock);
+      await assert.rejects(runtime.warm(), /startup budget/);
+      const launching = f.state();
+      ready = true;
+      const retry = evicted ? new PoolLifecycle(f.driver, f.storage, "release-new", f.clock) : runtime;
+      const status = await retry.warm();
+      assert.equal(status.boot_id, `boot-${launching.starts}`);
+      assert.equal(f.state().starts, launching.starts, "retry must keep the boot already in progress");
+      assert.equal(f.state().stops, launching.stops, "readiness timeout must not trigger another destroy");
+    });
+  }
+}
+
 test("management and model traffic use separate listeners with exact path boundaries", () => {
   assert.equal(poolPort("/v1/responses"), 8317);
   assert.equal(poolPort("/messages"), 8317);
