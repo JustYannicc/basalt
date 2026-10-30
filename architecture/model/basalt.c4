@@ -180,9 +180,9 @@ model {
     metadata { hosts "dynamic"; sdks "upstream" }
   }
 
-  modelProviders = external "Model providers" {
+  modelProviders = adapter "Model providers" {
     #external
-    metadata { hosts "dynamic"; sdks "upstream" }
+    metadata { hosts "dynamic|chatgpt.com|api.anthropic.com"; sdks "upstream" }
   }
 
   priceCatalog = external "API price catalog" {
@@ -303,7 +303,7 @@ model {
   }
   basalt.poolController -[model]-> basalt.poolRuntime "inference on port 8317"
   basalt.poolController -[sync]-> basalt.poolRuntime "management on port 8327" {
-    description "Pool views overlap membership and credential reads, then read only the membership-scoped quota details with bounded concurrency. Operation timings record fixed names, durations and counts without Home response data; readiness warming is timed separately. Subscription checks and idle sampling share a persisted 30-minute forced-collection cap per account. Checks allow the owner or current pool audience and verify exact credential membership. A check's Home reads share a twelve-second deadline, including membership and credentials, and wait at most nine seconds for a completed collection."
+    description "Pool views overlap membership and credential reads, then read only the membership-scoped quota details with bounded concurrency. Operation timings record fixed names, durations and counts without Home response data; readiness warming is timed separately. Subscription checks and idle sampling share a persisted 30-minute forced-collection cap per account. Checks allow the owner or current pool audience and verify exact credential membership. A check's Home reads share a twelve-second deadline, including membership and credentials, and wait at most nine seconds for a completed collection. Current pool members can force capped quota collection. Owner-only pool app tools pause and resume routing and clear quota cooldowns. Banked-reset reads retain provider credit IDs, expiry and model provider use conditions. Reset redemption uses fixed provider URLs through Home token substitution; per-account queues and durable request receipts preserve uncertain outcomes and retry follow-up work without repeating a confirmed spend."
   }
   basalt.poolController -[sync]-> basalt.poolRuntime "start or reuse; GET /ready on port 8318" {
     description "The controller persists the desired launch revision after stopping an older boot and before starting its replacement. A readiness timeout or controller replacement preserves a running boot for that revision; a changed image or secret revision still replaces it. Readiness remains a separate bounded check. A failed revision write prevents launch, and a failed stop leaves the old revision recorded."
@@ -318,6 +318,7 @@ model {
   basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
   basalt.modelGateway -[sync]-> basalt.poolDatabase "read-only migration inventory without starting Home"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
+  basalt.modelGateway -[sync]-> modelProviders "read and redeem banked resets through Home token substitution"
   basalt.poolRuntime -[sync]-> priceCatalog "import API prices when the pool Worker asks"
 
   basalt.toolsGateway -[tool]-> basalt.pool "install and upgrade per member from the hash-checked site asset; link signed pool token" {

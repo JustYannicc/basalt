@@ -19,6 +19,7 @@ import { timePoolRead } from "./read-timing.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 import { checkAccount } from "./account-check.ts";
 import { homeResponse } from "./home-response.ts";
+import { accountActionPath, type AccountAction, type AccountActions } from "./account-actions.ts";
 
 import { BackendFailure, ControlFailure, fail, failureResponse, json, object, post, rows, text, unavailable, type Json } from "./json.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
@@ -62,6 +63,7 @@ export interface ControlDependencies extends HomeDependencies {
   client?: HomeClient;
   added?: (ids: string[]) => void;
   collection?: QuotaCollection;
+  actions?: AccountActions;
 }
 export interface Session {
   pool: string;
@@ -244,10 +246,10 @@ export class HomeClient {
         }))).flat();
     } catch (error) { this.invalidateGroups(); throw error; }
   }
-  async allMembership(): Promise<Membership> {
-    const groups = await this.allPoolGroups();
+  async allMembership(signal?: AbortSignal): Promise<Membership> {
+    const groups = await this.allPoolGroups(signal);
     // Home accepts an empty filter and returns the complete membership table.
-    const members = rows((await this.data("/channel-group-details")).channel_group_details).map((row) => {
+    const members = rows((await this.data("/channel-group-details", { signal })).channel_group_details).map((row) => {
       if (!positiveId(row.id) || !positiveId(row.channel_group_id) || !text(row.auth_id)) return unavailable();
       return { id: row.id, channel_group_id: row.channel_group_id, auth_id: row.auth_id as string };
     });
@@ -327,7 +329,7 @@ export class PoolHome {
     const ids = new Set(groups.map((group) => group.id));
     return { groups, members: all.members.filter((member) => ids.has(member.channel_group_id)) };
   }
-  async allMembership(): Promise<Membership> { return this.client.allMembership(); }
+  async allMembership(signal?: AbortSignal): Promise<Membership> { return this.client.allMembership(signal); }
   async credentials(signal?: AbortSignal): Promise<Json[]> { return rows((await this.client.data("/credentials", { signal })).files); }
   async status(state: string): Promise<Json> { return this.client.signInStatus(state); }
   async cancel(state: string): Promise<boolean> {
@@ -443,6 +445,8 @@ async function sessionFor(ctx: RouteContext, opaque = ctx.url.searchParams.get("
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
+  "POST /accounts/:id/action": async (ctx) => accountAction(ctx),
+  "GET /accounts/:id/resets": async (ctx) => accountAction(ctx),
   "POST /accounts/:id/collect": async (ctx) => {
     const caller = text(ctx.request.headers.get(callerHeader));
     if (!ctx.isOwner && (!caller || !(await ctx.deps.audience?.(ctx.pool))?.includes(caller)))
@@ -542,6 +546,21 @@ const routes: Record<string, Route> = {
   "GET /sign-ins/status": async (ctx) => json(await attribution(ctx).status(ctx.home, await sessionFor(ctx))),
 };
 
+async function accountAction(ctx: RouteContext): Promise<Response> {
+  const match = accountActionPath.exec(ctx.url.pathname.slice(base.length));
+  if (!match) return fail(404, "not_found", "This pool endpoint does not exist.");
+  if (match[2] === "refresh" && !ctx.isOwner) {
+    const caller = text(ctx.request.headers.get(callerHeader));
+    if (!caller || !(await ctx.deps.audience?.(ctx.pool))?.includes(caller)) {
+      return fail(403, "not_owner", "Only people with access to this pool can refresh its accounts.");
+    }
+  }
+  let id: string;
+  try { id = decodeURIComponent(match[1]!); }
+  catch { return fail(400, "invalid_query", "Provide a valid account id."); }
+  return (ctx.deps.actions ?? unavailable()).handle(ctx.home, id, match[2] as AccountAction, ctx.request);
+}
+
 /** Check the request before it can wait for, load or mutate attribution state. */
 export async function authorizeControl(request: Request, signingKey: string, previousSigningKey?: string) {
   const bearer = /^Bearer ([^\s]+)$/i.exec(request.headers.get("authorization") ?? "");
@@ -549,7 +568,9 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   if (!claims) return fail(401, "unauthorized", "A valid pool token is required.");
   const url = new URL(request.url);
   const path = url.pathname.slice(base.length);
-  const routePath = /^\/accounts\/[^/]+\/collect$/.test(path) ? "/accounts/:id/collect"
+  const action = accountActionPath.exec(path);
+  const routePath = action ? action[2] === "resets" ? "/accounts/:id/resets" : "/accounts/:id/action"
+    : /^\/accounts\/[^/]+\/collect$/.test(path) ? "/accounts/:id/collect"
     : /^\/accounts\/[^/]+\/export$/.test(path) ? "/accounts/:id/export"
     : /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
   const routeKey = `${request.method} ${routePath}`;
@@ -557,17 +578,18 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
   const collect = routeKey === "POST /accounts/:id/collect";
-  if (routeKey !== "GET /pool" && !collect && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  const refresh = action?.[2] === "refresh" && request.method === "POST";
+  if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
   const isRead = collect || routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
-  return { claims, url, route, routeKey, isOwner, isRead };
+  return { claims, url, route, routeKey, isOwner, isRead, isAccountAction: !!action };
 }
 
 export async function handleControl(request: Request, deps: ControlDependencies): Promise<Response> {
   try {
-    const { claims, url, route, isOwner, isRead } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
+    const { claims, url, route, isOwner, isRead, isAccountAction } = await authorizeControl(request, deps.signingKey, deps.previousSigningKey);
     const client = deps.client ?? new HomeClient(deps.home);
     const home = new PoolHome(client, claims.pool, deps.added, deps.onProductEvent, claims.owner);
-    if (!isRead) await (deps.attribution ?? unavailable()).expireLocked(client);
+    if (!isRead && !isAccountAction) await (deps.attribution ?? unavailable()).expireLocked(client);
     return await route({ request, url, deps, client, home, pool: claims.pool, accountId: claims.owner, isOwner, now: deps.now?.() ?? new Date() });
   } catch (error) { return failureResponse(error); }
 }
