@@ -156,7 +156,7 @@ for (const encoding of ["json", "form", "multipart"]) test(`concurrent audience 
 
 test("a rejected native handler drains background writes before returning its borrowed transaction", async () => {
   const { withOrganizationAccessRequest } = await load("apps/hosted/cloud/src/implementation/organization-access-request.ts");
-  await fixture(({ sql }) => Effect.gen(function* () {
+  await fixture(({ sql }: { sql: Sql.SqlClient }) => Effect.gen(function* () {
     const draining = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     let background = Promise.resolve();
