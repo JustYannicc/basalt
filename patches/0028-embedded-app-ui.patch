@@ -1112,7 +1112,7 @@ index c1dff4a..66bc9a3 100644
    `Path=/; SameSite=Lax${window.location.protocol === "https:" ? "; Secure" : ""}`;
 
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index e29dddf..cc07b13 100644
+index e29dddf..75ea7bb 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -49,7 +49,8 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
@@ -1133,15 +1133,14 @@ index e29dddf..cc07b13 100644
    const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
    const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
    const session = useAtomValue(sessionAtom);
-@@ -143,6 +143,24 @@ export function AppDetailPage({
+@@ -143,6 +143,23 @@ export function AppDetailPage({
    const access = Option.getOrUndefined(authority.data);
    const canManage = access?.canManage === true,
      canUse = access?.canUse === true;
-+  const screenTab = appScreenTab(
-+    app,
-+    access,
-+    AsyncResult.isFailure(authority.result) || AsyncResult.isFailure(query.result),
-+  );
++  const screenTab = appScreenTab(app, access, {
++    app: AsyncResult.isFailure(query.result),
++    access: AsyncResult.isFailure(authority.result),
++  });
 +  // Only callers who can use the app get its tab and its prewarmed frame.
 +  const screenApp = screenTab === "present" ? app : undefined;
 +  // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
@@ -1158,7 +1157,7 @@ index e29dddf..cc07b13 100644
    const accessPendingReason = AsyncResult.isFailure(authority.result)
      ? "App access could not be checked. Retry the access request."
      : "Checking app access…";
-@@ -185,6 +203,7 @@ export function AppDetailPage({
+@@ -185,6 +202,7 @@ export function AppDetailPage({
        app={app}
        view={selectedView}
        canInspectSource={canManage}
@@ -1166,7 +1165,7 @@ index e29dddf..cc07b13 100644
        sourceDisabledReason={sourceReason}
        back={
          <Link
-@@ -223,7 +242,34 @@ export function AppDetailPage({
+@@ -223,7 +241,34 @@ export function AppDetailPage({
          )
        }
      >
@@ -1202,7 +1201,7 @@ index e29dddf..cc07b13 100644
          <QueryResult
            result={allResults({ access: authority.result, current: query.result })}
            Failure={HostedFailure}
-@@ -305,7 +351,7 @@ export function AppDetailPage({
+@@ -305,7 +350,7 @@ export function AppDetailPage({
              );
            }}
          </QueryResult>
@@ -1211,7 +1210,7 @@ index e29dddf..cc07b13 100644
          <QueryResult
            result={allResults({
              access: authority.result,
-@@ -460,7 +506,7 @@ export function AppDetailPage({
+@@ -460,7 +505,7 @@ export function AppDetailPage({
              );
            }}
          </QueryResult>
@@ -1222,7 +1221,7 @@ index e29dddf..cc07b13 100644
  }
 diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 new file mode 100644
-index 0000000..864fdee
+index 0000000..fe3f39f
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
 @@ -0,0 +1,177 @@
@@ -1329,8 +1328,9 @@ index 0000000..864fdee
 +
 +/**
 + * A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError.
-+ * Each document that reports ready, including one its version watcher reloaded, then hears whether
-+ * the host shows it, so the app client can pause its polling while the frame sits behind other tabs.
++ * Each document that reports ready, including one its version watcher reloaded, and each app client
++ * that asks then hears whether the host shows it, so the client can pause its polling while the
++ * frame sits behind other tabs.
 + */
 +function AppFrame({
 +  url,
@@ -1352,12 +1352,11 @@ index 0000000..864fdee
 +  useEffect(() => {
 +    const timer = window.setTimeout(() => setState("failed"), 30000);
 +    const ready = (event: MessageEvent) => {
-+      if (
-+        event.origin !== new URL(url).origin ||
-+        event.source !== frame.current?.contentWindow ||
-+        event.data?.type !== "executor:app-ready"
-+      )
++      if (event.origin !== new URL(url).origin || event.source !== frame.current?.contentWindow)
 +        return;
++      // An app client asks when it starts, which may be after the document loaded.
++      if (event.data?.type === "executor:app-client") tell(frame.current, url, shown.current);
++      if (event.data?.type !== "executor:app-ready") return;
 +      window.clearTimeout(timer);
 +      setState("ready");
 +      tell(frame.current, url, shown.current);
@@ -2977,7 +2976,7 @@ index 5b1087e..af872fa 100644
  const supported = (format: DisplayFormat): boolean => {
    try {
 diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
-index 8fce008..cb8bae4 100644
+index 8fce008..8e7f623 100644
 --- a/packages/ui/src/implementation/dashboard/app-detail.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
 @@ -25,6 +25,7 @@ import { useProductBrand } from "../hooks/product-brand.ts";
@@ -3005,7 +3004,7 @@ index 8fce008..cb8bae4 100644
    skills: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
    workflows: "min-h-0 min-w-0 flex-1 overflow-auto",
    webhooks: "min-h-0 min-w-0 flex-1 overflow-auto",
-@@ -79,19 +83,45 @@ const contentClasses = {
+@@ -79,19 +83,52 @@ const contentClasses = {
    versions: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
  } as const;
 
@@ -3017,20 +3016,27 @@ index 8fce008..cb8bae4 100644
 +
 +/**
 + * The App tab exists for an app whose active version has a screen, for a caller who may use it.
-+ * Until the app and that access are known it holds its place; a failed read leaves it out.
++ * An app known to have no screen has none at once. Otherwise the tab holds its place until the
++ * app and that access are known; a failed read leaves it out.
 + */
 +export const appScreenTab = (
 +  app: { readonly activeVersion: string | null; readonly hasUi?: boolean | undefined } | undefined,
 +  access: { readonly canUse: boolean } | undefined,
-+  failed = false,
++  failed: { readonly app?: boolean; readonly access?: boolean } = {},
 +): AppScreenTab =>
-+  app === undefined || access === undefined
-+    ? failed
++  app === undefined
++    ? failed.app
 +      ? "absent"
 +      : "pending"
-+    : access.canUse && app.activeVersion !== null && app.hasUi !== false
-+      ? "present"
-+      : "absent";
++    : app.activeVersion === null || app.hasUi === false
++      ? "absent"
++      : access === undefined
++        ? failed.access
++          ? "absent"
++          : "pending"
++        : access.canUse
++          ? "present"
++          : "absent";
 +
  /** A stable app heading and linked section tabs frame each product's app details. */
  export function AppDetailLayout({
@@ -3052,7 +3058,7 @@ index 8fce008..cb8bae4 100644
    readonly sourceDisabledReason?: string | undefined;
    readonly back: ReactNode;
    readonly actions?: ReactNode;
-@@ -115,6 +145,7 @@ export function AppDetailLayout({
+@@ -115,6 +152,7 @@ export function AppDetailLayout({
                {app ? (
                  <BoundAppLink
                    app={app.id}
@@ -3060,7 +3066,7 @@ index 8fce008..cb8bae4 100644
                    aria-label={`${appDisplayName(app, brand)} overview`}
                    className="hover:underline"
                  >
-@@ -151,58 +182,71 @@ export function AppDetailLayout({
+@@ -151,58 +189,71 @@ export function AppDetailLayout({
            aria-label="App navigation"
            className="-mb-px flex gap-1 overflow-x-auto px-7 max-[740px]:px-4"
          >
@@ -3540,12 +3546,27 @@ index e57cae7..28e1ee7 100644
          actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
          selectedTool={action === "setup" ? undefined : selected.tool}
          back={
+diff --git a/e2e/tests/app-domain-status.spec.ts b/e2e/tests/app-domain-status.spec.ts
+index d1f3649..6751fa3 100644
+--- a/e2e/tests/app-domain-status.spec.ts
++++ b/e2e/tests/app-domain-status.spec.ts
+@@ -55,8 +55,9 @@ layer(HostedLive, { excludeTestServices: true })("App domain readiness", (it) =>
+             },
+           ),
+         );
++        // The header's domain status is under test; the App view would show it a second time.
+         yield* browser.use("Open the deployed app details", (page) =>
+-          page.goto(`/org/${actors.organization.slug}/apps/${app.id}`),
++          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=overview`),
+         );
+         yield* browser.use("Pending setup is visible", (page) =>
+           page.getByRole("status").filter({ hasText: "Preparing app domain…" }).waitFor(),
 diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
 new file mode 100644
-index 0000000..02d53ff
+index 0000000..241c4e2
 --- /dev/null
 +++ b/e2e/tests/embedded-app-navigation.spec.ts
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,273 @@
 +/** How the App tab appears, which tab opens, and what a prewarmed screen does behind other tabs. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
@@ -3723,13 +3744,21 @@ index 0000000..02d53ff
 +          yield* browser.use("An explicit view stays selected once the screen loads", selected),
 +        ).toEqual(["Overview"]);
 +
-+        yield* browser.use("Open the tool-only app", (page) =>
-+          page
-+            .goto(toolOnly.detail)
-+            .then(() => tab(page, "Overview").and(page.locator('[aria-current="page"]')).waitFor()),
++        // A tool-only app opens on Overview while its access is still unknown: its record alone
++        // says it has no screen, so its tab never holds a place.
++        const toolAccess = yield* browser.use("Hold the tool-only app's access", (page) =>
++          hold(page, readOf(toolOnly.app.id, "/access")),
++        );
++        yield* Effect.addFinalizer(() =>
++          browser.use("Release the tool-only hold", () => toolAccess.release()).pipe(Effect.orDie),
++        );
++        yield* openThroughBrowser("Open the tool-only app", toolOnly.detail);
++        yield* browser.use("Wait for the tool-only app's access read", () => toolAccess.requested);
++        yield* browser.use("The tool-only app opens on its overview", (page) =>
++          tab(page, "Overview").and(page.locator('[aria-current="page"]')).waitFor(),
 +        );
 +        expect(
-+          yield* browser.use("A tool-only app opens on its overview, without an App tab", (page) =>
++          yield* browser.use("A tool-only app never shows an App tab, pending or not", (page) =>
 +            Promise.all([
 +              tab(page, "App").count(),
 +              navigation(page).getByRole("status", { name: "Checking for an app screen" }).count(),
@@ -3737,6 +3766,7 @@ index 0000000..02d53ff
 +            ]),
 +          ),
 +        ).toEqual([0, 0, 0]);
++        yield* browser.use("Release the tool-only app's access", () => toolAccess.release());
 +      }),
 +    ),
 +  );
@@ -3811,10 +3841,10 @@ index 0000000..02d53ff
 +
 +});
 diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
-index 6ae3aac..8ce2d61 100644
+index 6ae3aac..ce7bcb2 100644
 --- a/packages/apps/src/implementation/ui-client.ts
 +++ b/packages/apps/src/implementation/ui-client.ts
-@@ -92,12 +92,39 @@ export const createAppClient = () => {
+@@ -92,12 +92,41 @@ export const createAppClient = () => {
        if (--pendingWrites === 0) window.removeEventListener("beforeunload", beforeUnload);
      });
    };
@@ -3842,6 +3872,8 @@ index 6ae3aac..8ce2d61 100644
 +  };
 +  window.addEventListener("message", onHostMessage);
 +  document.addEventListener("visibilitychange", activeChanged);
++  // The host answers with whether it shows this page; the request itself carries nothing.
++  if (window.parent !== window) window.parent.postMessage({ type: "executor:app-client" }, "*");
    const onHide = (event: PageTransitionEvent) => {
      if (!event.persisted) void dispose().catch((error) => console.error(error));
    };
@@ -3854,7 +3886,7 @@ index 6ae3aac..8ce2d61 100644
      optimistic.dispose();
      await runtime.dispose();
    };
-@@ -335,5 +362,47 @@ export const createAppClient = () => {
+@@ -335,5 +364,50 @@ export const createAppClient = () => {
      mutation: optimistic.mutation,
      /** Share a live query across mounts and reconcile optimistic changes against fresh server reads. */
      queryAtom: optimistic.queryAtom,
@@ -3882,8 +3914,11 @@ index 6ae3aac..8ce2d61 100644
 +        timer = active
 +          ? setTimeout(
 +              () => {
-+                run();
-+                schedule();
++                try {
++                  run();
++                } finally {
++                  schedule();
++                }
 +              },
 +              Math.max(0, last + interval - Date.now()),
 +            )

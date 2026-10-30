@@ -294,7 +294,7 @@ index 2a3ff58..39b330e 100644
   * Personal and shared credentials use one list. Administrators also manage the organization's
   * OAuth clients from here, since those clients only exist to connect accounts.
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index cc07b13..8a02141 100644
+index 75ea7bb..951654b 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -14,7 +14,7 @@ import {
@@ -371,21 +371,19 @@ index cc07b13..8a02141 100644
  /** Views that read only the app. The others also read the inventory and the app's links. */
  const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
-@@ -143,13 +182,17 @@ export function AppDetailPage({
+@@ -143,12 +182,16 @@ export function AppDetailPage({
    const access = Option.getOrUndefined(authority.data);
    const canManage = access?.canManage === true,
      canUse = access?.canUse === true;
+-  const screenTab = appScreenTab(app, access, {
 +  // The settled Apps list already answers whether this caller has a screen here, so a page opened
 +  // from it shows its App tab on first paint. The page's own reads replace that answer as they land.
 +  const listed = useAtomValue(listedAppAtom(organization)(appId))?.entry;
 +  const screenRecord = app ?? listed?.app;
-   const screenTab = appScreenTab(
--    app,
--    access,
-+    screenRecord,
-+    access ?? listed?.access,
-     AsyncResult.isFailure(authority.result) || AsyncResult.isFailure(query.result),
-   );
++  const screenTab = appScreenTab(screenRecord, access ?? listed?.access, {
+     app: AsyncResult.isFailure(query.result),
+     access: AsyncResult.isFailure(authority.result),
+   });
    // Only callers who can use the app get its tab and its prewarmed frame.
 -  const screenApp = screenTab === "present" ? app : undefined;
 +  const screenApp = screenTab === "present" ? screenRecord : undefined;
@@ -884,10 +882,10 @@ index 28e1ee7..182bcdc 100644
      return (
        <InventoryPageSkeleton
 diff --git a/e2e/tests/embedded-app-navigation.spec.ts b/e2e/tests/embedded-app-navigation.spec.ts
-index 02d53ff..eceed23 100644
+index 241c4e2..d83f676 100644
 --- a/e2e/tests/embedded-app-navigation.spec.ts
 +++ b/e2e/tests/embedded-app-navigation.spec.ts
-@@ -261,4 +261,71 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
+@@ -270,4 +270,71 @@ layer(HostedLive, { excludeTestServices: true })("Embedded app navigation", (it)
      ),
    );
 
