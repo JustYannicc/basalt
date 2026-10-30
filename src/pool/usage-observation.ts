@@ -1,3 +1,4 @@
+import { hasTools } from "./computer-registry.ts";
 export interface UsageObservationComputer {
   id: string;
   user: string;
@@ -10,6 +11,7 @@ export interface UsageObservationComputer {
   firstModelRequestEverAt?: string | null;
   modelObservationCheckedAt?: number;
   firstToolCallAt: string | null;
+  toolsKeyId?: string;
   setupCompletedAt?: string | null;
 }
 
@@ -57,7 +59,9 @@ export async function observePendingUsage(
 }
 
 export function markSetupCompleted(computer: UsageObservationComputer, now: () => number): boolean {
-  if (!computer.firstModelRequestAt || !computer.firstToolCallAt || computer.setupCompletedAt) return false;
+  // A models-only computer has no tools token, so its first model request completes setup.
+  const tools = !hasTools(computer) || computer.firstToolCallAt;
+  if (!computer.firstModelRequestAt || !tools || computer.setupCompletedAt) return false;
   computer.setupCompletedAt = new Date(now()).toISOString();
   return true;
 }

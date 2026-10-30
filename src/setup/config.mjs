@@ -47,9 +47,14 @@ export function remove(source, format, changes) {
   return encode(value, format);
 }
 
+/** A models-only setup has no tools pair. */
+export const hasTools = (credentials) => credentials?.toolsToken !== undefined || credentials?.toolsUrl !== undefined;
+
+/** Without tools there are no MCP entries, so ~/.claude.json stays untouched. */
 export function clientEntries(credentials, brand) {
   const name = brand.mcpServerName;
   const marker = { id: brand.setup.id, text: brand.setup.marker };
+  const tools = hasTools(credentials);
   return {
     claude: [
       [["env", "ANTHROPIC_BASE_URL"], credentials.modelUrl],
@@ -59,14 +64,14 @@ export function clientEntries(credentials, brand) {
       [["env", "API_TIMEOUT_MS"], "600000"],
       [[brand.setup.id], marker],
     ],
-    claudeMcp: [
+    claudeMcp: tools ? [
       [["mcpServers", name], { type: "http", url: credentials.toolsUrl, headers: { Authorization: `Bearer ${credentials.toolsToken}` } }],
       [[brand.setup.id], marker],
-    ],
+    ] : [],
     codex: [
       [["model_provider"], name],
       [["model_providers", name], { name: brand.name, base_url: `${credentials.modelUrl}/v1`, wire_api: "responses", requires_openai_auth: true, http_headers: { "X-Api-Key": credentials.modelKey } }],
-      [["mcp_servers", name], { url: credentials.toolsUrl, http_headers: { Authorization: `Bearer ${credentials.toolsToken}` } }],
+      ...tools ? [[["mcp_servers", name], { url: credentials.toolsUrl, http_headers: { Authorization: `Bearer ${credentials.toolsToken}` } }]] : [],
     ],
   };
 }

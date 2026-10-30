@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { backendUserName } from "./backend-users.ts";
 import { fixture, member, owner, pool } from "./test/computers.ts";
+import { markSetupCompleted } from "./usage-observation.ts";
 import type { Computer, PoolChoice } from "../../apps/pool/ui/computer-types.ts";
 
 test("non-owner context is pool-scoped while browser setup lists every personal computer and pool", async () => {
@@ -204,4 +205,53 @@ test("pool creation is credited to the pool's owner, whoever's mint or switch cr
   const switched = await f.action("switch", member, shared.intent, { id: shared.computer.id, pool: own.pool });
   assert.equal(switched.status, 200, await switched.clone().text());
   assert.deepEqual(f.events.filter(([event]) => event === "pool_created"), [["pool_created", owner], ["pool_created", member]]);
+});
+
+test("a link mints on any pool the person can use and refuses the rest", async () => {
+  const f = fixture();
+  const target = { ...pool, pool: "pool-b", name: "Second pool" };
+  await f.access({ action: "audience", pools: [pool, target] });
+  const intent = await f.intent();
+  const response = await f.action("links", member, intent, { name: "Laptop", pool: target.pool });
+  assert.equal(response.status, 200, await response.clone().text());
+  const { computer } = await response.json() as { computer: Computer };
+  assert.equal(computer.poolId, target.pool);
+  assert.equal((await f.registry())[computer.id]!.pool, target.pool);
+  const refused = await f.action("links", member, intent, { name: "Laptop", pool: "unavailable" });
+  assert.equal(refused.status, 403);
+  assert.equal(Object.keys(await f.registry()).length, 1);
+});
+
+test("a models-only computer carries no tools pair and revokes without one", async () => {
+  const f = fixture();
+  const intent = await f.intent();
+  const created = await f.action("links", member, intent, { name: "Laptop" });
+  assert.equal(created.status, 200, await created.clone().text());
+  const value = await created.json() as { computer: Computer; token: string };
+  assert.equal(value.computer.tools, false);
+  const claimed = await f.action("claim", member, undefined, { token: value.token, format: "json" });
+  const { credentials } = await claimed.json() as { credentials: Record<string, unknown> };
+  assert.deepEqual(Object.keys(credentials).sort(), ["modelKey", "modelUrl"]);
+  const revoked = await f.action("revoke", member, intent, { id: value.computer.id });
+  assert.deepEqual(await revoked.json(), { toolsKeyId: null });
+});
+
+test("a models-only computer completes setup on its first model request", () => {
+  const now = () => Date.parse("2026-01-01T00:00:00Z");
+  const base = { id: "c", user: member, pool: pool.pool, createdAt: "", boundAt: "", state: "active" as const,
+    firstModelRequestAt: "2026-01-01T00:00:00Z", firstToolCallAt: null };
+  assert.equal(markSetupCompleted({ ...base }, now), true);
+  assert.equal(markSetupCompleted({ ...base, toolsKeyId: "tools" }, now), false);
+});
+
+test("a person renames only their own computer, to a valid name", async () => {
+  const f = fixture();
+  const created = await f.create();
+  const rename = (user: string, intent: string, name: unknown) => f.action("rename", user, intent, { id: created.computer.id, name });
+  const renamed = await rename(member, created.intent, " Work laptop ");
+  assert.equal(renamed.status, 200, await renamed.clone().text());
+  assert.equal((await renamed.json() as Computer).name, "Work laptop");
+  assert.equal((await rename(member, created.intent, "x".repeat(61))).status, 400);
+  assert.equal((await rename(owner, await f.intent(owner), "Mine now")).status, 404);
+  assert.equal((await f.registry())[created.computer.id]!.name, "Work laptop");
 });

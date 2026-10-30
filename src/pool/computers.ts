@@ -9,7 +9,7 @@ import { PoolDirectory } from "./directory.ts";
 import { readAccess } from "./access.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
-import { readIntent, seal, setupInstructions, setupTtl, signIntent, unseal, type SetupIntent } from "./setup-links.ts";
+import { computerName, readIntent, seal, setupInstructions, setupTtl, signIntent, unseal, type SetupIntent } from "./setup-links.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 import { markSetupCompleted, observePendingUsage, type UsageObservationEvent } from "./usage-observation.ts";
 
@@ -18,6 +18,12 @@ interface Dependencies {
   origin?: string; now?: () => number; onProductEvent?: ProductEventCallback; usage?: Pick<PoolUsage, "summary" | "setCap">;
 }
 const storageKey = "computer-registry-v1";
+/** One of the pools this person can use, or a refusal. */
+function choosePool(pools: readonly { id: string }[], value: unknown): string {
+  if (typeof value !== "string" || !pools.some((pool) => pool.id === value))
+    return fail(403, "unauthorized", "This pool is not available to you.");
+  return value;
+}
 /** Separate from subscription attribution. Computer setup and access changes share this queue. */
 export class Computers {
   private deps: Dependencies;
@@ -165,7 +171,20 @@ export class Computers {
         switch (action) {
           case "validate": return json({ pool: intent.pool, organization: intent.organization, owner: intent.owner, name: directory.entry(intent.pool)?.name ?? "" });
           case "computers": return json({ computers: await this.listLocked(registry, user), pools });
-          case "links": return this.create(registry, intent, payload);
+          case "links": {
+            // A link may name any pool this person can use; it defaults to the intent's own pool.
+            const pool = choosePool(pools, payload.pool === undefined ? intent.pool : payload.pool);
+            if (pool !== intent.pool) this.check(directory, registry, { ...intent, pool });
+            return this.create(registry, { ...intent, pool, owner: directory.entry(pool)?.owner ?? intent.owner }, payload);
+          }
+          case "rename": {
+            const computer = this.own(registry, user, payload.id);
+            const name = computerName(payload.name);
+            if (!name) return fail(400, "invalid_session", "Name this computer using 1 to 60 characters.");
+            computer.name = name;
+            await this.save(registry);
+            return json(publicView(computer));
+          }
           case "refresh": {
             const computer = this.own(registry, user, payload.id);
             this.check(directory, registry, { ...intent, pool: computer.pool });
@@ -181,11 +200,10 @@ export class Computers {
           }
           case "switch": {
             const computer = this.own(registry, user, payload.id);
-            if (typeof payload.pool !== "string" || !pools.some((pool) => pool.id === payload.pool))
-              return fail(403, "unauthorized", "This pool is not available to you.");
-            for (const pool of new Set([...boundPools(computer), payload.pool]))
+            const target = choosePool(pools, payload.pool);
+            for (const pool of new Set([...boundPools(computer), target]))
               this.check(directory, registry, { ...intent, pool });
-            return this.switchPool(registry, computer, payload.pool, directory.entry(payload.pool)?.owner);
+            return this.switchPool(registry, computer, target, directory.entry(target)?.owner);
           }
           default: return fail(404, "not_found", "This setup endpoint does not exist.");
         }
@@ -211,13 +229,16 @@ export class Computers {
     return json(await usage.summary(intent.pool, intent.owner, user, usageDays, members, true));
   }
   private async create(registry: Registry, intent: SetupIntent, input: Record<string, unknown>): Promise<Response> {
-    const name = text(input.name)?.trim();
-    if (!name || name.length > 60 || /[\u0000-\u001f]/.test(name) || !text(input.toolsKeyId) || !text(input.toolsToken))
-      return fail(400, "invalid_session", "Name this computer using 1 to 60 characters.");
+    const name = computerName(input.name);
+    // Without a tools pair the computer gets models only; its tools connect through the MCP guide.
+    const tools = input.toolsKeyId !== undefined || input.toolsToken !== undefined;
+    if (!name) return fail(400, "invalid_session", "Name this computer using 1 to 60 characters.");
+    if (tools && (!text(input.toolsKeyId) || !text(input.toolsToken)))
+      return fail(400, "invalid_session", "The tools token for this computer is incomplete.");
     const computer: StoredComputer = {
       id: crypto.randomUUID(), name, user: intent.user, pool: intent.pool,
-      createdAt: new Date(this.now()).toISOString(), boundAt: new Date(this.now()).toISOString(),
-      state: "issuing", toolsKeyId: input.toolsKeyId as string, toolsHash: await digest(input.toolsToken as string),
+      createdAt: new Date(this.now()).toISOString(), boundAt: new Date(this.now()).toISOString(), state: "issuing",
+      ...tools && { toolsKeyId: input.toolsKeyId as string, toolsHash: await digest(input.toolsToken as string) },
       firstModelRequestAt: null, firstToolCallAt: null, revokedAt: null, removedAt: null,
     };
     registry[computer.id] = computer;
@@ -227,7 +248,8 @@ export class Computers {
     // Store the acknowledged id before any fallible encryption or response work.
     await this.save(registry);
     const { token, link } = await seal(this.deps.signingKey, {
-      modelUrl: this.origin(), modelKey: issued.key, toolsUrl: `${this.origin()}/mcp`, toolsToken: input.toolsToken as string,
+      modelUrl: this.origin(), modelKey: issued.key,
+      ...tools && { toolsUrl: `${this.origin()}/mcp`, toolsToken: input.toolsToken as string },
     }, this.now());
     computer.link = link;
     await this.save(registry);
@@ -250,7 +272,7 @@ export class Computers {
     await this.save(registry);
     const keys = computer.keyId ? [computer.keyId] : await this.deps.home.find(computer.id);
     for (const key of keys) await this.deps.home.revoke(key);
-    return json({ toolsKeyId: computer.toolsKeyId });
+    return json({ toolsKeyId: computer.toolsKeyId ?? null });
   }
   private async switchPool(registry: Registry, computer: StoredComputer, pool: string, owner?: string): Promise<Response> {
     if (computer.state !== "active" || computer.removalPending || !computer.keyId) return fail(409, "busy", "This computer cannot switch pools.");

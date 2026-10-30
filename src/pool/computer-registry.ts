@@ -4,7 +4,9 @@ import type { SealedLink } from "./setup-links.ts";
 export interface StoredComputer {
   id: string; name: string; user: string; pool: string; createdAt: string; boundAt: string;
   state: "issuing" | "active" | "revoking" | "revoked" | "removed";
-  keyId?: number; userId?: number; toolsKeyId: string; toolsHash: string;
+  keyId?: number; userId?: number;
+  /** Absent when the computer was set up for models only. */
+  toolsKeyId?: string; toolsHash?: string;
   firstModelRequestAt: string | null; firstToolCallAt: string | null; revokedAt: string | null;
   firstModelRequestEverAt?: string | null; modelObservationCheckedAt?: number; setupCompletedAt?: string | null;
   removedAt?: string | null; removalPending?: boolean; removalAt?: number; switching?: string[]; switchingTo?: string; link?: SealedLink;
@@ -19,7 +21,11 @@ export const publicView = (computer: StoredComputer): Computer => ({
   id: computer.id, name: computer.name, poolId: computer.pool, createdAt: computer.createdAt,
   state: computer.state, firstModelRequestAt: computer.firstModelRequestAt,
   firstToolCallAt: computer.firstToolCallAt, revokedAt: computer.revokedAt, removedAt: computer.removedAt ?? null,
+  tools: hasTools(computer),
 });
+
+/** A models-only computer has no tools token. */
+export const hasTools = (computer: { toolsKeyId?: string }): boolean => computer.toolsKeyId !== undefined;
 
 /** Include every destination whose backend write may have succeeded. */
 export const boundPools = (computer: StoredComputer): string[] =>

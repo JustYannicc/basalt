@@ -84,3 +84,34 @@ test("edits made between setup runs survive a later undo", async (t) => {
   assert.equal(restored.model, value.model);
   assert.equal(restored.env.ANTHROPIC_AUTH_TOKEN, undefined);
 });
+test("models only writes no MCP entry, leaves ~/.claude.json alone and drops a previous one", async (t) => {
+  const options = await fixture(t);
+  const paths = configPaths(options.home, options.env);
+  const models = { modelUrl: credentials.modelUrl, modelKey: credentials.modelKey };
+  const existing = '{"mcpServers":{"other":{"command":"other"}}}\n';
+  await mkdir(dirname(paths[1].path), { recursive: true });
+  await writeFile(paths[1].path, existing);
+  await configure({ ...options, credentials: models });
+  assert.equal(await readFile(paths[1].path, "utf8"), existing);
+  const codex = decode(await readFile(paths[2].path, "utf8"), "toml");
+  assert.equal(codex.model_providers.signalbox.http_headers["X-Api-Key"], credentials.modelKey);
+  assert.equal(codex.mcp_servers, undefined);
+  // A rerun after a setup with tools removes the tools entries it wrote.
+  await configure(options);
+  assert.ok(JSON.parse(await readFile(paths[1].path, "utf8")).mcpServers.signalbox);
+  await configure({ ...options, credentials: models });
+  assert.equal(JSON.parse(await readFile(paths[1].path, "utf8")).mcpServers.signalbox, undefined);
+  assert.equal(decode(await readFile(paths[2].path, "utf8"), "toml").mcp_servers?.signalbox, undefined);
+  assert.equal(await readFile(paths[1].path, "utf8"), existing);
+  await configure({ ...options, undo: true });
+  assert.equal(await readFile(paths[1].path, "utf8"), existing);
+});
+test("going models only removes a ~/.claude.json that setup created", async (t) => {
+  const options = await fixture(t);
+  const paths = configPaths(options.home, options.env);
+  await configure(options);
+  await configure({ ...options, credentials: { modelUrl: credentials.modelUrl, modelKey: credentials.modelKey } });
+  await assert.rejects(readFile(paths[1].path), { code: "ENOENT" });
+  await configure({ ...options, undo: true });
+  for (const file of paths) await assert.rejects(readFile(file.path), { code: "ENOENT" });
+});

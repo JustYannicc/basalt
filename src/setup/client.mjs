@@ -1,7 +1,8 @@
 import { homedir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { brand } from "../../brand.ts";
-import { configure } from "./files.mjs";
+import { configPaths, configure } from "./files.mjs";
+import { hasTools } from "./config.mjs";
 
 const args = process.argv.slice(2);
 const undo = args.length === 1 && args[0] === "--undo";
@@ -24,21 +25,35 @@ async function payload() {
   if (body.length > 64_000) throw new Error("The setup instructions are too large.");
   return JSON.parse(body);
 }
+/** What changed, for the agent to relay. Every file was backed up before it was written. */
+function done(data) {
+  const paths = Object.fromEntries(configPaths(homedir(), process.env).map((target) => [target.kind, target.path]));
+  const tools = hasTools(data.credentials);
+  const server = data.brand.mcpServerName;
+  return [
+    `${data.brand.name} setup is done. Each file was backed up first.`,
+    `- Claude Code (${paths.claude}): model gateway URL, key and model discovery.${tools ? ` The ${server} MCP server is in ${paths.claudeMcp}.` : ""}`,
+    `- Codex (${paths.codex}): the ${server} model provider${tools ? ` and MCP server` : ""}. Sign Codex into any ChatGPT account; account features follow that account's plan.`,
+    `Restart Claude Code and Codex, then send a message.${tools ? ` Ask for a tool search through ${server} to check the tools.` : ""}`,
+    "",
+  ].join("\n");
+}
 try {
   const data = undo ? null : await payload();
   if (data) {
     if (data.version !== 1 || data.brand?.setup?.id !== brand.setup.id) throw new Error("These setup instructions are not supported.");
     const credentials = data.credentials;
-    for (const name of ["modelKey", "toolsToken"])
+    const tools = hasTools(credentials);
+    for (const name of tools ? ["modelKey", "toolsToken"] : ["modelKey"])
       if (typeof credentials?.[name] !== "string" || !credentials[name] || /\s/.test(credentials[name])) throw new Error("Setup credentials are invalid.");
     endpoint(credentials.modelUrl);
-    endpoint(credentials.toolsUrl);
+    if (tools) endpoint(credentials.toolsUrl);
     if (new URL(credentials.modelUrl).pathname !== "/" || credentials.modelUrl.endsWith("/")) throw new Error("The model gateway must be an origin without a trailing slash.");
   }
   await configure({ home: homedir(), env: process.env, brand: data?.brand ?? brand, credentials: data?.credentials, undo });
   process.stdout.write(undo
     ? `${brand.name} setup removed. Backups restored; later unrelated edits kept. Restart your apps. To stop access, revoke the computer in your pool.\n`
-    : `${data.brand.name} setup is done. Restart Claude Code or Codex, send a message, and ask for a tool search through ${data.brand.mcpServerName}. Sign Codex into any ChatGPT account; account-side features follow its plan. The Claude desktop app is not covered.\n`);
+    : done(data));
 } catch {
   // Parser and filesystem errors can quote source lines containing a credential.
   process.stderr.write(`${brand.name} setup could not finish. Check the link, Node.js 18+, config syntax and file permissions. Existing backups are kept. Run --undo to recover an interrupted setup.\n`);
