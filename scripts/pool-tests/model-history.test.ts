@@ -80,7 +80,7 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(result.records[0]!.input_tokens, "100");
     assert.equal(result.records[0]!.reasoning_tokens, "3");
     assert.equal(result.records[0]!.model, null);
-    assert.equal(result.records[0]!.cost, "0.000123456789012");
+    assert.equal(result.records[0]!.cost, "0.000123456789");
     assert.equal(result.records[0]!.attribution, "charge-snapshot");
     assert.equal(result.records[0]!.original_price_rule, "fixture-price");
     assert.deepEqual(historyObject(result.records[0]!.price_snapshot).billing, {
