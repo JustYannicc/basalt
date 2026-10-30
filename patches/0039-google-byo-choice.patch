@@ -113,7 +113,8 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +              .then(() => clients.waitFor({ state: "visible" }))
 +              .then(() => clients.count());
 +          }),
-         ).toBe(1);
+-        ).toBe(0);
++        ).toBe(1);
 -        yield* browser.checkpoint("Reconnect with another client available");
 -        yield* browser.use("A reconnect keeps its account's client by default", (page) =>
 -          page
