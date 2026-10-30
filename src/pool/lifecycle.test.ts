@@ -105,6 +105,40 @@ for (const evicted of [false, true]) {
   }
 }
 
+test("a revision write failure refuses launch and permits a later retry", async () => {
+  const f = fixture();
+  const put = f.storage.put;
+  f.storage.put = async () => { throw new Error("storage unavailable"); };
+  const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+  await assert.rejects(runtime.warm(), /storage unavailable/);
+  assert.deepEqual(f.state(), { starts: 0, stops: 0, alarm: poolLifecycle.refreshMs });
+  f.storage.put = put;
+  assert.equal((await runtime.warm()).boot_id, "boot-1");
+});
+
+test("a failed destroy cannot relabel an old running boot as the new revision", async () => {
+  const f = fixture();
+  await new PoolLifecycle(f.driver, f.storage, "release-old", f.clock).warm();
+  const stop = f.driver.stop;
+  f.driver.stop = async () => { throw new Error("destroy failed"); };
+  await assert.rejects(new PoolLifecycle(f.driver, f.storage, "release-new", f.clock).warm(), /destroy failed/);
+  assert.equal(await f.storage.get("revision"), "release-old");
+  f.driver.stop = stop;
+  assert.equal((await new PoolLifecycle(f.driver, f.storage, "release-new", f.clock).warm()).boot_id, "boot-2");
+  assert.equal(f.state().stops, 1);
+});
+
+test("a launch failure before the process starts can be retried", async () => {
+  const f = fixture();
+  const start = f.driver.start;
+  f.driver.start = () => { throw new Error("launch failed"); };
+  const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+  await assert.rejects(runtime.warm(), /launch failed/);
+  assert.equal(f.state().starts, 0);
+  f.driver.start = start;
+  assert.equal((await runtime.warm()).boot_id, "boot-1");
+});
+
 test("management and model traffic use separate listeners with exact path boundaries", () => {
   assert.equal(poolPort("/v1/responses"), 8317);
   assert.equal(poolPort("/messages"), 8317);
