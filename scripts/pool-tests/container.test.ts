@@ -11,7 +11,7 @@ if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname
   throw new Error("POOL_TEST_ADMIN_URL must point to an isolated local test Postgres cluster");
 }
 
-const startupPhaseNames = ["home_boot", "bootstrap_import", "config_apply", "node_enrollment", "initial_health"] as const;
+const startupPhaseNames = ["home_boot", "bootstrap_import", "config_apply", "node_launch", "initial_health"] as const;
 const maxStartupPhaseMs = 86_400_000;
 
 function docker(args: string[]): string {
@@ -74,8 +74,8 @@ function assertStartupPhaseLogs(logs: string): void {
     phases.push(phase);
   }
 
-  const withoutBootstrap = ["home_boot", "config_apply", "node_enrollment", "initial_health"];
-  const withBootstrap = ["home_boot", "bootstrap_import", "home_boot", "config_apply", "node_enrollment", "initial_health"];
+  const withoutBootstrap = ["home_boot", "config_apply", "node_launch", "initial_health"];
+  const withBootstrap = ["home_boot", "bootstrap_import", "home_boot", "config_apply", "node_launch", "initial_health"];
   assert.ok(phases.join(",") === withoutBootstrap.join(",") || phases.join(",") === withBootstrap.join(","),
     "real image startup phases were missing or out of order");
 }

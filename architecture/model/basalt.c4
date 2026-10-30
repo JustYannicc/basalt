@@ -119,7 +119,7 @@ model {
         stack. For child output, the supervisor forwards only closed numeric maintenance signals.
         It emits one `POOL_STARTUP_PHASE` record per measured phase with the exact fields
         `phase`, `start_ms`, `end_ms`, and `duration_ms`. The phase enum is `home_boot`,
-        `bootstrap_import`, `config_apply`, `node_enrollment`, and `initial_health`. The integer
+        `bootstrap_import`, `config_apply`, `node_launch`, and `initial_health`. The integer
         offsets are bounded to 24 hours from supervisor `main()` entry and use a monotonic clock;
         duration equals end minus start. Its failures, readiness HTTP errors and uncaught
         exceptions still emit numeric categories on stderr, without exception text, class names,
@@ -128,8 +128,9 @@ model {
         database config ends the first wait early; the supervisor emits `bootstrap_import` and a
         second `home_boot`. The wait includes Home initialization before its readiness response.
         `bootstrap_import` appears only for an empty database config.
-        `config_apply` covers the fixed pool config patch. `node_enrollment` covers Home node-token
-        creation and node process launch. `initial_health` covers the Home and node health poll.
+        `config_apply` covers the fixed pool config patch. `node_launch` covers Home node-token
+        creation and node process launch. `initial_health` waits for Home and node health, including node initialization and mTLS
+        certificate enrollment after launch. Those parts are not timed separately.
         Image pull precedes the supervisor and is not measured. Home migration, privacy-guard and
         historical-purge timing is not emitted separately.
         Historical cleanup starts alongside Home listener handling in bounded

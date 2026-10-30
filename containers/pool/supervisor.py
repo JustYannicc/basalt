@@ -200,7 +200,7 @@ def main() -> int:
         with startup_phase(StartupPhase.CONFIG_APPLY, supervisor_started_ns):
             apply_pool_config(management_key, allow_remote)
         category = FailureCategory.NODE_STARTUP
-        with startup_phase(StartupPhase.NODE_ENROLLMENT, supervisor_started_ns):
+        with startup_phase(StartupPhase.NODE_LAUNCH, supervisor_started_ns):
             node_id, home_jwt = create_node_jwt(management_key)
             node_child = Child(
                 "node",

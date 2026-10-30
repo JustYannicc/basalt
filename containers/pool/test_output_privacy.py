@@ -27,7 +27,7 @@ STARTUP_PHASE_NAMES = (
     "home_boot",
     "bootstrap_import",
     "config_apply",
-    "node_enrollment",
+    "node_launch",
     "initial_health",
 )
 MAX_STARTUP_PHASE_MS = 86_400_000
@@ -156,7 +156,7 @@ class OutputPrivacyTests(unittest.TestCase):
             stdout.getvalue(),
             stderr.getvalue(),
             [5],
-            ["home_boot", "config_apply", "node_enrollment", "initial_health"],
+            ["home_boot", "config_apply", "node_launch", "initial_health"],
         )
 
     def test_startup_phase_record_uses_bounded_monotonic_offsets(self) -> None:

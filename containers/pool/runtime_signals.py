@@ -20,7 +20,7 @@ class StartupPhase(str, Enum):
     HOME_BOOT = "home_boot"
     BOOTSTRAP_IMPORT = "bootstrap_import"
     CONFIG_APPLY = "config_apply"
-    NODE_ENROLLMENT = "node_enrollment"
+    NODE_LAUNCH = "node_launch"
     INITIAL_HEALTH = "initial_health"
 
 
