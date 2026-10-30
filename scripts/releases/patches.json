@@ -359,6 +359,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-google-byo-choice",
+      "file": "0039-google-byo-choice.patch",
+      "content_sha256": "82dc827545398eaba0f2fedccae910ee5df37b40a3e9a572a2c865d041d3b1eb",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "basalt-native-pool-authorization",
       "file": "0040-native-pool-authorization.patch",
       "content_sha256": "d2ec3e2337adf9e3c22e44f22f9f952a81f2850cbfa49df6ea1a64ce814d823d",

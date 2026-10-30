@@ -90,6 +90,9 @@ jobs:
       - name: Install the scenario's browser engine
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
+      - name: Check Google BYO OAuth through the real self-host flow
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name 'Rejected OAuth clients remain editable, other failures retry without blaming the client, and replacements commit only after successful sign-in'
       - name: Compare the baseline and candidate through the real dashboard batch endpoint
         run: node scripts/profile-dashboard-batch.ts
       - name: Check Cloud resources stay within each dashboard batch request
