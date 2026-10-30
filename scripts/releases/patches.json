@@ -465,6 +465,15 @@
       "upstream_pull_request": 2460,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-app-frame-telemetry",
+      "file": "0051-app-frame-telemetry.patch",
+      "content_sha256": "54ffcee572f905d5b7c5fe3dcaba6e92ee3df6c3cc1bb0e3b7fff8bbc596b363",
+      "kind": "upstream",
+      "upstream_pull_request": 2463,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

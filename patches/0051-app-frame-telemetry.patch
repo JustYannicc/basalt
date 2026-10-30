@@ -1,0 +1,324 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 2fe4d80..fbb8a4f 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5461,6 +5461,17 @@ export const scenarios = plan({
+       local: na("This scenario uses hosted deploys and app authentication."),
+     },
+   },
++  appStartupTelemetry: {
++    fixtures: "actors",
++    file: "app-observability.spec.ts",
++    appOrigin: true,
++    title: "an app page holds its telemetry until its first result",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("This scenario uses hosted deploys and app authentication."),
++    },
++  },
+   appRetryTraces: {
+     fixtures: "actors",
+     file: "app-observability.spec.ts",
+diff --git a/e2e/tests/app-observability.spec.ts b/e2e/tests/app-observability.spec.ts
+index caa5393..3f77f50 100644
+--- a/e2e/tests/app-observability.spec.ts
++++ b/e2e/tests/app-observability.spec.ts
+@@ -483,6 +483,80 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
+       }),
+     ),
+   );
++  it.effect(scenarios.appStartupTelemetry.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const { browser, url } = yield* observedApp;
++        // Hold the first result for longer than the one-second export cadence.
++        yield* browser.use("Hold the first subscription for two seconds", (page) =>
++          page.route(
++            "**/_executor/api/subscribe",
++            (route) =>
++              new Promise((resolve) => setTimeout(resolve, 2_000)).then(() => route.continue()),
++            { times: 1 },
++          ),
++        );
++        const exports: {
++          readonly path: string;
++          readonly body: string;
++          readonly at: number;
++          readonly status: Promise<number | undefined>;
++        }[] = [];
++        let data: { readonly at: number; readonly exportsBefore: number } | undefined;
++        yield* browser.use("Watch telemetry exports and the first result", (page) => {
++          page.on("request", (request) => {
++            const path = new URL(request.url()).pathname;
++            if (path.startsWith("/_executor/api/telemetry/"))
++              exports.push({
++                path,
++                body: request.postData() ?? "",
++                at: Date.now(),
++                status: request.response().then(
++                  (response) => response?.status(),
++                  () => undefined,
++                ),
++              });
++          });
++          page.on("response", (response) => {
++            if (response.url().endsWith("/_executor/api/subscribe"))
++              data ??= { at: Date.now(), exportsBefore: exports.length };
++          });
++          return Promise.resolve();
++        });
++        // The page's ten-second hold limit starts after this.
++        const opened = Date.now();
++        yield* browser.use("Open the app", (page) => page.goto(url));
++        yield* browser.use("The held subscription displays data", (page) =>
++          page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
++        );
++        if (data === undefined) return yield* Effect.die("The first result arrived unobserved");
++        const arrived = data;
++        // Too slow a start could not tell the first result's release from the hold limit.
++        expect(arrived.at - opened).toBeLessThan(6_000);
++        // Nothing leaves while the page waits for its data.
++        expect(arrived.exportsBefore).toBe(0);
++        const commitBatch = yield* Effect.suspend(() => {
++          const found = exports.find(
++            (exported) =>
++              exported.path.endsWith("/traces") && exported.body.includes("ui.app.result.commit"),
++          );
++          return found === undefined
++            ? Effect.fail(new Error("The first result's telemetry has not been sent"))
++            : Effect.succeed(found);
++        }).pipe(
++          Effect.retry({ schedule: Schedule.spaced("100 millis") }),
++          Effect.timeout("8 seconds"),
++        );
++        // The first shown result released the hold, well before its ten-second limit.
++        expect(commitBatch.at - arrived.at).toBeLessThan(3_000);
++        const statuses = yield* browser.use("Telemetry exports are accepted", () =>
++          Promise.all(exports.map((exported) => exported.status)),
++        );
++        expect(statuses.every((status) => status === 202)).toBe(true);
++      }),
++    ),
++  );
+   it.effect(scenarios.appRetryTraces.title, (context) =>
+     withHostedCase(
+       context,
+diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
+index ce7bcb2..05b34c3 100644
+--- a/packages/apps/src/implementation/ui-client.ts
++++ b/packages/apps/src/implementation/ui-client.ts
+@@ -1,5 +1,9 @@
+ /** Browser transport uses native Effect HTTP and Atom; authors receive Promise calls and atoms. */
+-import { browserSettings, makeBrowserTelemetry } from "@executor-js/telemetry/browser";
++import {
++  BrowserTelemetry,
++  browserSettings,
++  makeBrowserTelemetry,
++} from "@executor-js/telemetry/browser";
+ import {
+   Cause,
+   Clock,
+@@ -72,9 +76,18 @@ const visibleResult = <E>(
+ 
+ /** A scoped page client. Host-injected context carries only the version, never credentials. */
+ export const createAppClient = () => {
++  // The page's telemetry waits for its first shown result, so exports don't compete with the
++  // page's own startup requests.
+   const { runtime, atoms } = makeBrowserTelemetry(
+     browserSettings("/_executor/api/telemetry", "executor-app-web"),
++    { holdUntilReady: "10 seconds" },
+   );
++  let shownFirstResult = false;
++  const firstResultShown = Effect.suspend(() => {
++    if (shownFirstResult) return Effect.void;
++    shownFirstResult = true;
++    return Effect.flatMap(BrowserTelemetry, (telemetry) => telemetry.ready);
++  });
+   const browser = atoms(Layer.empty);
+   const versionChanged = Effect.sync(() => {
+     window.dispatchEvent(new Event("executor:deployment-changed"));
+@@ -264,6 +277,7 @@ export const createAppClient = () => {
+                                   "browser.page.hidden": document.visibilityState === "hidden",
+                                 },
+                               }),
++                              Effect.andThen(firstResultShown),
+                             ),
+                           );
+                         },
+diff --git a/packages/telemetry/src/browser.ts b/packages/telemetry/src/browser.ts
+index e7a2ff9..9747d92 100644
+--- a/packages/telemetry/src/browser.ts
++++ b/packages/telemetry/src/browser.ts
+@@ -1,5 +1,15 @@
+ /** Browser-owned Effect telemetry, shared by Promise calls and Atom runtimes. */
+-import { Cause, Context, Deferred, Effect, FiberSet, Layer, Logger, ManagedRuntime } from "effect";
++import {
++  Cause,
++  Context,
++  Deferred,
++  type Duration,
++  Effect,
++  FiberSet,
++  Layer,
++  Logger,
++  ManagedRuntime,
++} from "effect";
+ import { FetchHttpClient } from "effect/http";
+ import { OtlpExporter } from "effect/observability";
+ import { Atom } from "effect/reactivity";
+@@ -20,23 +30,44 @@ export class BrowserTelemetry extends Context.Service<
+       event: { readonly type: "load" | "start"; readonly path: string } | { readonly type: "end" },
+     ) => Effect.Effect<void>;
+     readonly flush: Effect.Effect<void>;
++    /** The page shows its first content: exports held until then may start. */
++    readonly ready: Effect.Effect<void>;
+   }
+ >()("executor/BrowserTelemetry") {}
+ 
++/**
++ * `holdUntilReady` keeps a page's exports from competing with its own startup requests. Records
++ * are kept while held and leave once the page calls `ready`, hides or leaves, or the hold elapses.
++ */
++export type BrowserTelemetryOptions = { readonly holdUntilReady?: Duration.Input };
++
+ /** Install listeners for this page lifetime. Closing the Layer removes them and drains exporters. */
+-export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) =>
++export const browserTelemetryLayer = (
++  settings: Effect.Effect<TelemetryConfig>,
++  options: BrowserTelemetryOptions = {},
++) =>
+   Layer.unwrap(
+-    settings.pipe(
+-      Effect.map((config) =>
+-        Layer.effect(
++    Effect.all([settings, Deferred.make<void>()]).pipe(
++      Effect.map(([config, started]) => {
++        const ready = Deferred.succeed(started, undefined).pipe(Effect.asVoid);
++        const hold = options.holdUntilReady === undefined ? undefined : Deferred.await(started);
++        return Layer.effect(
+           BrowserTelemetry,
+           Effect.gen(function* () {
+             const flusher = yield* OtlpExporter.Flusher;
+             const run = yield* FiberSet.makeRuntime();
++            if (options.holdUntilReady !== undefined)
++              yield* Effect.sleep(options.holdUntilReady).pipe(
++                Effect.andThen(ready),
++                Effect.forkScoped,
++              );
++            // Exporters drain after this Layer closes; a held drain would wait out its deadline.
++            yield* Effect.addFinalizer(() => ready);
+             // `hidden` records whether the page was hidden at any point before the route resolved.
+             let navigation: { readonly done: Deferred.Deferred<void>; hidden: boolean } | undefined;
+             const performance = yield* observeBrowserPerformance;
+-            const flush = performance.flush.pipe(
++            const flush = ready.pipe(
++              Effect.andThen(performance.flush),
+               Effect.andThen(flusher.flush),
+               Effect.timeoutOption("2 seconds"),
+               Effect.asVoid,
+@@ -84,6 +115,7 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>)
+             );
+             return {
+               flush,
++              ready,
+               navigation: (event) =>
+                 Effect.sync(() => {
+                   if (event.type === "load") return;
+@@ -122,21 +154,24 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>)
+             };
+           }),
+         ).pipe(
+-          Layer.provideMerge(telemetryLayer(config, "process", Logger.consoleJson)),
++          Layer.provideMerge(telemetryLayer(config, "process", Logger.consoleJson, {}, hold)),
+           Layer.provide(
+             Layer.succeed(FetchHttpClient.RequestInit, {
+               keepalive: true,
+               credentials: "same-origin",
+             }),
+           ),
+-        ),
+-      ),
++        );
++      }),
+     ),
+   );
+ 
+ /** Share a memo map so the page and its Atom registries acquire one telemetry Layer. */
+-export const makeBrowserTelemetry = (settings: Effect.Effect<TelemetryConfig>) => {
+-  const layer = browserTelemetryLayer(settings);
++export const makeBrowserTelemetry = (
++  settings: Effect.Effect<TelemetryConfig>,
++  options: BrowserTelemetryOptions = {},
++) => {
++  const layer = browserTelemetryLayer(settings, options);
+   const memoMap = Layer.makeMemoMapUnsafe();
+   const runtime = ManagedRuntime.make(layer, { memoMap });
+   const atoms = Atom.context({ memoMap });
+diff --git a/packages/telemetry/src/layer.ts b/packages/telemetry/src/layer.ts
+index 2f8d316..6c878d3 100644
+--- a/packages/telemetry/src/layer.ts
++++ b/packages/telemetry/src/layer.ts
+@@ -1,5 +1,6 @@
+ /** Portable Effect exporters. The host owns scope and export lifetime. */
+ import { type Duration, Effect, Layer, Logger, Metric, Redacted } from "effect";
++import { HttpClient, type HttpClientError } from "effect/http";
+ import { telemetryHttpClient } from "./transport.ts";
+ import { spanAttributes } from "./span-attributes.ts";
+ import { OtlpLogger, OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/observability";
+@@ -13,16 +14,35 @@ import {
+ /** How long each signal's final flush may take when the scope closes. */
+ export type ShutdownTimeouts = Partial<Record<"traces" | "logs" | "metrics", Duration.Input>>;
+ 
++/**
++ * Each export waits for `hold` before its request starts, so the wait is not part of the
++ * collector's acknowledgement timeout. Exports queued meanwhile keep their records in order.
++ */
++const heldExports = (hold: Effect.Effect<void>) =>
++  Layer.effect(
++    HttpClient.HttpClient,
++    HttpClient.HttpClient.pipe(
++      Effect.map((client) =>
++        HttpClient.makeWith<never, never, HttpClientError.HttpClientError, never>(
++          (request) =>
++            Effect.flatMap(request, (request) => Effect.andThen(hold, client.execute(request))),
++          (request) => Effect.succeed(request),
++        ),
++      ),
++    ),
++  ).pipe(Layer.provide(telemetryHttpClient));
++
+ /**
+  * Build one tracer per runtime. Event mode defers export until Worker scope finalization.
+  * A signal's final flush gets three seconds unless `shutdownTimeouts` names its own bound; only
+- * the host that owns a destination knows it answers faster.
++ * the host that owns a destination knows it answers faster. `hold` delays exports, never records.
+  */
+ export const telemetryLayer = (
+   config: TelemetryConfig,
+   lifetime: "process" | "event" = "process",
+   logger: Logger.Logger<unknown, void> = Logger.withConsoleError(Logger.formatJson),
+   shutdownTimeouts: ShutdownTimeouts = {},
++  hold?: Effect.Effect<void>,
+ ) => {
+   const resource = {
+     serviceName: config.service,
+@@ -37,6 +57,8 @@ export const telemetryLayer = (
+     shutdownTimeout: shutdownTimeouts[name] ?? ("3 seconds" as const),
+   });
+   const console = Logger.layer([logger]);
++  const exportClient: Layer.Layer<HttpClient.HttpClient> =
++    hold === undefined ? telemetryHttpClient : heldExports(hold);
+   return Layer.mergeAll(
+     Layer.succeed(CurrentTelemetryConfig, config),
+     config.traces === undefined
+@@ -72,7 +94,7 @@ export const telemetryLayer = (
+           ),
+         ),
+   ).pipe(
+-    Layer.provide(telemetryHttpClient),
++    Layer.provide(exportClient),
+     // Export fibers capture services during construction. Their failure evidence
+     // must reach the host logger even after the remote log exporter is closed.
+     Layer.provide(console),
