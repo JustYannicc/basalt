@@ -9,6 +9,35 @@ permissions:
   contents: read
 
 jobs:
+  slack-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - name: Verify Slack health and retained accounts through the real server
+        run: |
+          mkdir -p .generated/slack-health
+          git show "${{ github.event.pull_request.base.sha || github.event.before }}:src/catalog/slack.json" > .generated/slack-before-health.json
+          bun e2e/slack-health.mjs .generated/slack-health/ci .generated/slack-before-health.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slack-health
+          path: |
+            .generated/slack-health/ci/report.json
+            .generated/slack-health/ci/partial-results.json
+            .generated/slack-health/ci/failure.txt
+          if-no-files-found: warn
   host-managed-accounts:
     runs-on: ubuntu-latest
     timeout-minutes: 20

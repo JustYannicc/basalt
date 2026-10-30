@@ -23,7 +23,8 @@
   "include": [
     "brand.ts",
     "scripts/**/*.ts",
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "e2e/**/*.ts"
   ],
   "exclude": [
     "src/pool/worker.ts",

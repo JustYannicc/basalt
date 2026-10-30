@@ -64,7 +64,7 @@ export async function runSlackProof({ root, upstream, commit, installDiagnostic 
   const browser = chromium.executablePath();
   await access(browser);
   const output = await run("bun", [
-    join(root, "scripts/slack-tests/runtime.mjs"), root, upstream, directory, browser,
+    join(root, "e2e/slack/runtime.mjs"), root, upstream, directory, browser,
     ...(installDiagnostic ? ["--install-diagnostic"] : []),
     ...(callbackDiagnostic ? ["--callback-diagnostic"] : []),
   ], upstream, join(directory, "runtime.json"), home);

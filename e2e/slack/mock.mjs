@@ -3,7 +3,6 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { handleCatalog } from "../../src/catalog/worker.ts";
 import { slackCatalogEntry } from "./catalog.mjs";
 
 const person = (id) => ({
@@ -55,13 +54,7 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
       const url = new URL(request.url ?? "/", origin);
       const path = url.pathname;
       if (request.method === "GET" && path === "/catalog/index.json") {
-        const result = await handleCatalog(new Request(url.href), async () =>
-          new Response(JSON.stringify(official), { status: 200, headers: { "content-type": "application/json" } }),
-        );
-        const payload = await result.arrayBuffer();
-        response.writeHead(result.status, Object.fromEntries(result.headers));
-        response.end(Buffer.from(payload));
-        return;
+        return output(response, 200, official);
       }
       if (request.method === "GET" && path === "/catalog/apps/slack.json") {
         requests.catalog.push({ path, package: appSource?.package });
@@ -154,6 +147,8 @@ export async function startSlackMock({ directory, source, vendorSpec, userScope,
         const user = person(actor);
         if (operation === "auth.test")
           return output(response, 200, { ok: true, user_id: user.id, user: user.name, team_id: "T000000001", team: "Example team", url: "https://example.test/" });
+        if (operation === "users.profile.get")
+          return output(response, 200, { ok: true, profile: { display_name: user.name, email: `${actor}@example.test`, image_192: "https://example.test/avatar.png" } });
         if (operation === "conversations.history") {
           if (channel !== "C000000001") return output(response, 200, { ok: false, error: "channel_not_found" });
           return output(response, 200, {
