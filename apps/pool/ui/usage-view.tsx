@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AccountsNeeded, Cap, Provider, UsageSummary } from "../contract.ts";
 import type { Result } from "../index.ts";
+import type { PoolApi } from "./api.ts";
 import { providerName } from "./accounts.tsx";
 import { Button, ExternalIcon, Problem } from "./controls.tsx";
 import { exactTime, percent, resetsIn } from "./usage.ts";
@@ -9,11 +10,13 @@ import { advice, columns, modelKey, cost, dayLabel, dayRange, format, rankModels
 // Usage, the way the prototype splits it: tokens and API-equivalent cost as separate views, per model
 // over time. The owner sees the whole pool; anyone else sees only their own requests on it.
 
+type Poll = PoolApi["poll"];
+
 // Series shades on the dashboard's monochrome scale; "Other" is the faintest.
 const shades = ["bg-foreground/85", "bg-foreground/55", "bg-foreground/35", "bg-foreground/20"];
 const otherShade = "bg-foreground/10";
 
-function useUsage(load: () => Promise<Result<UsageSummary>>) {
+function useUsage(load: () => Promise<Result<UsageSummary>>, poll: Poll) {
   const [summary, setSummary] = useState<UsageSummary>();
   const [error, setError] = useState<string>();
   const read = useCallback(async () => {
@@ -25,24 +28,25 @@ function useUsage(load: () => Promise<Result<UsageSummary>>) {
   }, [load]);
   useEffect(() => {
     void read();
-    const timer = setInterval(() => document.visibilityState === "visible" && void read(), 5 * 60_000);
-    return () => clearInterval(timer);
-  }, [read]);
+    return poll(() => void read(), 5 * 60_000);
+  }, [read, poll]);
   return { summary, error, read };
 }
 
 export function Usage({
   load,
+  poll,
   providers,
   now,
   shareHref,
 }: {
   load: () => Promise<Result<UsageSummary>>;
+  poll: Poll;
   providers: readonly Provider[];
   now: number;
   shareHref?: string;
 }) {
-  const { summary, error, read } = useUsage(load);
+  const { summary, error, read } = useUsage(load, poll);
   const [metric, setMetric] = useState<Metric>("tokens");
   const mine = summary?.scope === "you";
   return (

@@ -35,6 +35,7 @@ function useComputers(api: ComputersApi, watching: boolean, refreshKey?: number)
     void load();
   }, [load, refreshKey]);
   useEffect(() => {
+    if (api.poll) return api.poll(() => void load(), eager ? fast : slow);
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void load();
     }, eager ? fast : slow);
@@ -44,7 +45,7 @@ function useComputers(api: ComputersApi, watching: boolean, refreshKey?: number)
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [load, eager]);
+  }, [api, load, eager]);
   return { view, error, load };
 }
 
