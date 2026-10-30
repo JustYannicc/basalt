@@ -6,7 +6,7 @@ index 82df0ba6e..f5c46eca8 100644
  | `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
  | `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
 +| `EXECUTOR_PRODUCT_DOCS_URL`, `EXECUTOR_PRODUCT_PRIVACY_URL`, `EXECUTOR_PRODUCT_TERMS_URL` | no | Your own docs, privacy policy and terms. With another product name, a link you leave unset is not shown. |
-+| `EXECUTOR_PRODUCT_SOURCE_URL` | no | Where your deployment's source code is published, such as your fork. With another product name, the dashboard sidebar links it; unset, it shows no source link. |
++| `EXECUTOR_PRODUCT_SOURCE_URL` | no | Where your deployment's source code is published, such as your fork. With another product name, the dashboard sidebar links it last, as GitHub for a github.com repository and as Source code otherwise; unset, it shows no source link. |
  | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
  | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
 @@ -100,6 +102,7 @@ the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
@@ -465,22 +465,24 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index 89d68399e..8e38bbf5e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -80,4 +80,6 @@ export const productBrand = {
+@@ -80,4 +80,7 @@ export const productBrand = {
    logo: "/acme-tools.png",
    server: "acme-tools",
++  docs: "https://acme.example/docs",
 +  privacy: "https://acme.example/privacy",
-+  source: "https://git.acme.example/acme/tools",
++  source: "https://github.com/acme/tools",
  } as const;
  /**
-@@ -5713,4 +5715,5 @@ export const scenarios = plan({
+@@ -5713,4 +5716,5 @@ export const scenarios = plan({
      fixtures: "actors",
      file: "product-brand.spec.ts",
 +    managementApps: ["owner"],
      title:
        "a configured product name and logo replace Executor's in pages, consent, metadata and MCP",
-@@ -5718,4 +5721,6 @@ export const scenarios = plan({
+@@ -5718,4 +5722,7 @@ export const scenarios = plan({
        EXECUTOR_PRODUCT_NAME: productBrand.name,
        EXECUTOR_PRODUCT_LOGO_URL: productBrand.logo,
++      EXECUTOR_PRODUCT_DOCS_URL: productBrand.docs,
 +      EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
 +      EXECUTOR_PRODUCT_SOURCE_URL: productBrand.source,
      },
@@ -1055,10 +1057,10 @@ index b1aac77fa..c5ca99d7f 100644
                ),
              );
 diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
-index 3e5f77054..589b022a9 100644
+index 3e5f77054..927ab3683 100644
 --- a/e2e/tests/product-brand.spec.ts
 +++ b/e2e/tests/product-brand.spec.ts
-@@ -56,6 +56,82 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
+@@ -56,6 +56,83 @@ layer(HostedLive, { excludeTestServices: true })("Product brand", (it) => {
            ),
          ).not.toMatch(executorName);
 +        // The configured privacy page is linked; terms are not configured, so no link shows.
@@ -1087,15 +1089,16 @@ index 3e5f77054..589b022a9 100644
 +          page.locator("body").innerText(),
 +        );
 +        expect(apps).not.toMatch(executorName);
++        // The sidebar links the configured docs and source in Executor's order, docs first and
++        // the source last, and names a GitHub repository as such.
 +        expect(
-+          yield* browser.use("Count the sidebar's Docs links", (page) =>
-+            page.getByRole("link", { name: "Docs" }).count(),
++          yield* browser.use("Read the sidebar's resource links", (page) =>
++            page.locator(".sidebar-resource-links > *").allInnerTexts(),
 +          ),
-+        ).toBe(0);
-+        // The sidebar links the configured source, not Executor's own repository.
++        ).toEqual(["Docs", "GitHub"]);
 +        expect(
-+          yield* browser.use("Read the sidebar's source link", (page) =>
-+            page.getByRole("link", { name: "Source code", exact: true }).getAttribute("href"),
++          yield* browser.use("Read the sidebar's GitHub link", (page) =>
++            page.getByRole("link", { name: "GitHub", exact: true }).getAttribute("href"),
 +          ),
 +        ).toBe(productBrand.source);
 +        expect(
@@ -2664,16 +2667,23 @@ index 67d984779..d274b2a05 100644
                    <span className="block truncate text-xs text-muted-foreground">
                      {app === undefined
 diff --git a/packages/ui/src/implementation/dashboard/shell.tsx b/packages/ui/src/implementation/dashboard/shell.tsx
-index 3565f8901..b10aba13b 100644
+index 3565f8901..feddd0627 100644
 --- a/packages/ui/src/implementation/dashboard/shell.tsx
 +++ b/packages/ui/src/implementation/dashboard/shell.tsx
-@@ -6,4 +6,5 @@ import {
+@@ -1,9 +1,11 @@
+ import { useState, type ReactNode } from "react";
+-import { HugeiconsIcon } from "@hugeicons/react";
++import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+ import {
+   BookOpen01Icon,
++  GithubIcon,
+   Menu01Icon,
    Message01Icon,
    SidebarLeft01Icon,
 +  SourceCodeIcon,
    StarIcon,
  } from "@hugeicons/core-free-icons";
-@@ -11,13 +12,19 @@ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components
+@@ -11,13 +13,20 @@ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../components
  import { useMediaQuery } from "../hooks/media-query.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
 -import { isDefaultProductBrand } from "@executor-js/utils/product-brand";
@@ -2682,23 +2692,49 @@ index 3565f8901..b10aba13b 100644
  /** The public issue tracker, shared by the Feedback link and the support channels. */
  export const issuesUrl = "https://github.com/UsefulSoftwareCo/executor/issues";
  
--/** Executor's own feedback and source links appear only while the deployment presents Executor. */
++interface ResourceLink {
++  readonly label: string;
++  readonly href: string;
++  readonly icon: IconSvgElement;
++  readonly title?: string;
++}
++
+ /** Executor's own feedback and source links appear only while the deployment presents Executor. */
 -const resources = (docsUrl: string, executor: boolean) => [
 -  { label: "Docs", href: docsUrl, icon: BookOpen01Icon },
 -  ...(executor
-+/**
-+ * Executor's own feedback and source links appear only while the deployment presents Executor;
-+ * under another name, its own source link appears when it publishes one.
-+ */
-+const resources = (docsUrl: string | undefined, brand: ProductBrand) => [
++const resources = (docsUrl: string | undefined, brand: ProductBrand): ResourceLink[] => [
 +  ...(docsUrl === undefined ? [] : [{ label: "Docs", href: docsUrl, icon: BookOpen01Icon }]),
-+  ...(!isDefaultProductBrand(brand) && brand.source !== undefined
-+    ? [{ label: "Source code", href: brand.source, icon: SourceCodeIcon }]
-+    : []),
 +  ...(isDefaultProductBrand(brand)
      ? [
          { label: "Feedback", href: issuesUrl, icon: Message01Icon },
-@@ -50,11 +57,10 @@ function ResourceLinks({
+@@ -31,4 +40,25 @@ const resources = (docsUrl: string, executor: boolean) => [
+ ];
+ 
++/**
++ * Under another name, the deployment's own source link comes after the support slot, so the
++ * links read Docs, Feedback, GitHub as Executor's do. A GitHub repository is named as such; any
++ * other host, or a path on this origin, is plain source code.
++ */
++const sourceLinks = (brand: ProductBrand): ResourceLink[] => {
++  if (isDefaultProductBrand(brand) || brand.source === undefined) return [];
++  return URL.parse(brand.source)?.hostname.replace(/^www\./, "") === "github.com"
++    ? [{ label: "GitHub", href: brand.source, icon: GithubIcon, title: "Source code on GitHub" }]
++    : [{ label: "Source code", href: brand.source, icon: SourceCodeIcon }];
++};
++
++function ResourceAnchor({ label, href, icon, title = label }: ResourceLink) {
++  return (
++    <a href={href} target="_blank" rel="noopener noreferrer" title={title}>
++      <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
++      <span>{label}</span>
++    </a>
++  );
++}
++
+ /** Between the phone layout and a wide screen the rail starts collapsed and can be toggled. */
+ const mediumViewport = "(min-width: 741px) and (max-width: 1000px)";
+@@ -50,17 +80,17 @@ function ResourceLinks({
    support,
  }: {
 -  readonly docsUrl: string;
@@ -2706,13 +2742,24 @@ index 3565f8901..b10aba13b 100644
    readonly support: ReactNode;
  }) {
 -  const executor = isDefaultProductBrand(useProductBrand());
++  const brand = useProductBrand();
    return (
      <div className="sidebar-resource-links flex flex-col items-start gap-0.5 [padding:0_10px_8px] [&_a]:inline-flex [&_a]:items-center [&_a]:gap-1.5 [&_a]:text-[11px] [&_a]:min-h-6 [&_button]:inline-flex [&_button]:items-center [&_button]:gap-1.5 [&_button]:text-[11px] [&_button]:min-h-6 max-[740px]:[padding:4px_8px_8px] max-[740px]:[&_a]:min-h-10 max-[740px]:[&_a]:text-[13px] max-[740px]:[&_a]:gap-2 max-[740px]:[&_button]:min-h-10 max-[740px]:[&_button]:text-[13px] max-[740px]:[&_button]:gap-2">
 -      {resources(docsUrl, executor).map(({ label, href, icon }) => (
-+      {resources(docsUrl, useProductBrand()).map(({ label, href, icon }) => (
-         <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
-           <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
-@@ -83,6 +89,6 @@ export function DashboardShell({
+-        <a key={href} href={href} target="_blank" rel="noopener noreferrer" title={label}>
+-          <HugeiconsIcon icon={icon} strokeWidth={2} size={13} aria-hidden />
+-          <span>{label}</span>
+-        </a>
++      {resources(docsUrl, brand).map((link) => (
++        <ResourceAnchor key={link.href} {...link} />
+       ))}
+       {support}
++      {sourceLinks(brand).map((link) => (
++        <ResourceAnchor key={link.href} {...link} />
++      ))}
+     </div>
+   );
+@@ -83,6 +113,6 @@ export function DashboardShell({
    children,
  }: {
 -  /** The owning product chooses same-origin or public documentation. */
