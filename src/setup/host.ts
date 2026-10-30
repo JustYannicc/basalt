@@ -2,18 +2,22 @@ import {
   body, inputBody, json, native, pool, record, SetupError, security, text, user, type SetupEnv,
 } from "./session.ts";
 import { emitProductEvent } from "./product-events.ts";
-import { readIntent } from "../pool/setup-links.ts";
+import { brand } from "../../brand.ts";
+import { computerName, readIntent } from "../pool/setup-links.ts";
 export type { SetupEnv } from "./session.ts";
 
 /** Only public computer metadata can leave the browser endpoints. */
 function computerSummary(value: unknown): Record<string, unknown> {
   const input = record(value);
   const fields = ["id", "name", "poolId", "state", "createdAt", "firstModelRequestAt", "firstToolCallAt", "revokedAt", "removedAt"];
-  if (!text(input.id, 512)) throw new SetupError(502, "Setup service returned an invalid computer.");
+  if (!text(input.id, 512) || (input.tools !== undefined && typeof input.tools !== "boolean"))
+    throw new SetupError(502, "Setup service returned an invalid computer.");
   if (fields.some((key) => key in input && input[key] !== null && !text(input[key])))
     throw new SetupError(502, "Setup service returned an invalid computer.");
-  return Object.fromEntries(fields.filter((key) => key in input).map((key) => [key, input[key]]));
+  return { ...Object.fromEntries(fields.filter((key) => key in input).map((key) => [key, input[key]])), ...input.tools !== undefined && { tools: input.tools } };
 }
+
+const validName = (value: unknown) => computerName(value) !== undefined;
 /** Pool names are people's own labels; ids are app ids. Nothing else about a pool leaves. */
 function poolChoices(value: unknown): Record<string, unknown>[] {
   if (value === undefined) return [];
@@ -109,7 +113,9 @@ function undo(origin: string): string {
   return `Undo this computer's setup with Node.js 18 or newer. Run this command, which removes the marked entries and restores the backups: ${commands(origin, ["--undo"]).command}`;
 }
 
-async function createLink(request: Request, env: SetupEnv, payload: Record<string, unknown>, selection: Record<string, unknown>, own: OwnPool | undefined): Promise<Response> {
+async function createLink(request: Request, env: SetupEnv, payload: Record<string, unknown>, own: OwnPool | undefined): Promise<Response> {
+  // A models-only computer gets no tools token; its tools connect through the MCP guide instead.
+  if (payload.tools === false) return linkResponse(request, await body(await pool(request, env, "links", { ...payload, tools: undefined, ...own?.pool && { own } })));
   const organization = own?.organization;
   if (!organization) throw new SetupError(409, "Your own pool is still being set up. Try again in a minute.");
   const created = await native(request, env, "api-key/create", { name: payload.name, metadata: { organization } });
@@ -118,7 +124,7 @@ async function createLink(request: Request, env: SetupEnv, payload: Record<strin
   if (!text(key.id, 512)) throw new SetupError(502, "Could not create the tools token. Try again.");
   try {
     if (!text(key.key)) throw new SetupError(502, "Could not create the tools token. Try again.");
-    const result = await body(await pool(request, env, "links", { ...payload, ...own?.pool && { own }, toolsToken: key.key, toolsKeyId: key.id }));
+    const result = await body(await pool(request, env, "links", { ...payload, tools: undefined, ...own?.pool && { own }, toolsToken: key.key, toolsKeyId: key.id }));
     return linkResponse(request, result);
   } catch (error) {
     // Revoke the new personal token if the handoff fails.
@@ -136,7 +142,7 @@ function linkResponse(request: Request, result: Record<string, unknown>): Respon
   const link = `${origin}/setup/claim/${result.token}`;
   return json({
     computer: computerSummary(result.computer), computerId: record(result.computer).id,
-    prompt: `Set up Claude Code and Codex on this computer. Open ${link} for the one-time instructions and credentials. Back up each file first, preserve other settings, then apply the instructions without another confirmation. Tell me to restart and send a message when done. Requires Node.js 18 or newer.`,
+    prompt: `Set up ${brand.name} for Claude Code and Codex on this computer; I've already approved it. Download ${origin}/setup/client.mjs to a private temp file, run \`node <file> --link ${link}\` with Node 18+, delete the file, and tell me what it changed.`,
     ...commands(origin, ["--link", link]), undoPrompt: undo(origin), expiresAt: result.expiresAt,
   });
 }
@@ -153,7 +159,8 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     const claim = /^\/setup\/claim\/([A-Za-z0-9_-]{1,512})$/.exec(url.pathname);
     const computer = /^\/setup\/v1\/computers\/([A-Za-z0-9_-]{1,512})$/.exec(url.pathname);
     const switching = /^\/setup\/v1\/computers\/([A-Za-z0-9_-]{1,512})\/pool$/.exec(url.pathname);
-    const method = claim ? "GET" : url.pathname === "/setup/v1/links" || switching ? "POST"
+    const renaming = /^\/setup\/v1\/computers\/([A-Za-z0-9_-]{1,512})\/name$/.exec(url.pathname);
+    const method = claim ? "GET" : url.pathname === "/setup/v1/links" || switching || renaming ? "POST"
       : url.pathname === "/setup/v1/computers" ? "GET" : computer ? "DELETE" : null;
     if (!method) throw new SetupError(404, "Setup route not found.");
     if (request.method !== method) return json({ error: "Method not allowed." }, 405, { Allow: method });
@@ -183,11 +190,23 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
         }));
         return json({ computer: computerSummary(result) });
       }
+      if (renaming) {
+        if (Object.keys(input).some((key) => !["intent", "name"].includes(key)) || !validName(input.name))
+          throw new SetupError(400, "Choose a computer name of 1 to 60 characters.");
+        if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
+        const result = await body(await pool(request, env, "rename", {
+          user: await user(request, env), intent: input.intent, id: renaming[1], name: input.name,
+        }));
+        return json({ computer: computerSummary(result) });
+      }
       const refresh = input.computerId !== undefined;
-      if (Object.keys(input).some((key) => !["intent", "name", "computerId"].includes(key)) ||
+      if (Object.keys(input).some((key) => !["intent", "name", "computerId", "pool", "tools"].includes(key)) ||
         (refresh ? !text(input.computerId, 512) || !/^[A-Za-z0-9_-]+$/.test(input.computerId) || input.name !== undefined
-          : !text(input.name, 60) || !input.name.trim() || /[\u0000-\u001f\u007f]/.test(input.name)))
+          || input.pool !== undefined || input.tools !== undefined
+          : !validName(input.name)))
         throw new SetupError(400, "Choose a computer name of 1 to 60 characters.");
+      if (input.pool !== undefined && !text(input.pool, 512)) throw new SetupError(400, "Choose a pool for this computer.");
+      if (input.tools !== undefined && typeof input.tools !== "boolean") throw new SetupError(400, "Choose whether this computer gets tools.");
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
@@ -198,13 +217,17 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     const own: OwnPool | undefined = computer ? undefined
       : selection.owner === person && text(selection.pool, 512) && text(selection.organization, 512)
         ? { pool: selection.pool, organization: selection.organization }
-        : minting ? await ownPool(request, env, person) : await ownPoolIfAvailable(request, env, person);
+        // Only a tools token needs the organization; a models-only link works without it.
+        : minting && input.tools !== false ? await ownPool(request, env, person) : await ownPoolIfAvailable(request, env, person);
     const payload = { ...input, user: person, ...own?.pool && { own } };
     if (method === "POST") {
       if (input.computerId !== undefined) return linkResponse(request, await body(await pool(request, env, "refresh", {
         user: payload.user, intent: input.intent, id: input.computerId,
       })));
-      const response = await createLink(request, env, payload, selection, own);
+      const response = await createLink(request, env, payload, own);
+      // An older pool Worker ignores the choice; never hand out a key on a pool nobody picked.
+      if (text(input.pool) && response.ok && record((await response.clone().json()).computer).poolId !== input.pool)
+        throw new SetupError(502, "Could not create the setup link on that pool. Try again.");
       if (response.ok) emitProductEvent(env.onProductEvent, "setup_started", person);
       return response;
     }
@@ -215,8 +238,11 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     }
     const revoke = { ...payload, id: computer![1] };
     const result = await body(await pool(request, env, "revoke", revoke));
-    if (!text(result.toolsKeyId, 512)) throw new SetupError(502, "Could not revoke this computer. Try again.");
-    await deleteTools(request, env, result.toolsKeyId);
+    // A models-only computer has no tools token to delete.
+    if (result.toolsKeyId !== null) {
+      if (!text(result.toolsKeyId, 512)) throw new SetupError(502, "Could not revoke this computer. Try again.");
+      await deleteTools(request, env, result.toolsKeyId);
+    }
     await pool(request, env, "revoked", revoke);
     return json({ success: true });
   } catch (error) {

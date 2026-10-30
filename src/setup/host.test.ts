@@ -458,3 +458,59 @@ test("shell fallback executes the downloaded installer with --link and cleans up
     assert.equal(existsSync(ran.dir), false);
   } finally { await rm(temp, { recursive: true, force: true }); }
 });
+
+test("a models-only link mints no tools token and forwards the chosen pool", async () => {
+  const f = fixture({ pool: ({ path, input }) => path.endsWith("/links")
+    ? json({ computer: { ...computer, poolId: input.pool }, token: "opaque-link-token", expiresAt: new Date(Date.now() + 299_000).toISOString() })
+    : undefined });
+  const response = await f.create({ intent: "signed-selection", name: "Laptop", pool: "pool-2", tools: false });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/__setup/v1/links"]);
+  const links = f.calls[2]!.input;
+  assert.equal(links.pool, "pool-2");
+  assert.equal(links.tools, undefined);
+  assert.equal(links.toolsToken, undefined);
+  assert.equal(links.toolsKeyId, undefined);
+  assert.match((await response.json() as { prompt: string }).prompt, /--link https:\/\/setup.example\/setup\/claim\/opaque-link-token/);
+});
+
+test("links refuse a malformed pool or tools choice before any service call", async () => {
+  for (const input of [{ pool: "" }, { pool: 7 }, { tools: "no" }]) {
+    const f = fixture();
+    const response = await f.create({ intent: "signed-selection", name: "Laptop", ...input });
+    assert.equal(response.status, 400);
+    assert.deepEqual(f.calls, []);
+  }
+  const refresh = fixture();
+  const response = await refresh.create({ intent: "signed-selection", computerId: "computer-1", pool: "pool-2" });
+  assert.equal(response.status, 400);
+  assert.deepEqual(refresh.calls, []);
+});
+
+test("revoking a models-only computer skips the tools token delete", async () => {
+  const f = fixture({ pool: ({ path }) => path.endsWith("/revoke") ? json({ toolsKeyId: null }) : undefined });
+  const response = await f.request("/setup/v1/computers/computer-1?intent=signed-selection", { method: "DELETE" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/validate", "/__setup/v1/revoke", "/__setup/v1/revoked"]);
+});
+
+test("renaming is one signed request with a valid name", async () => {
+  const f = fixture({ pool: ({ path, input }) => path.endsWith("/rename") ? json({ ...computer, name: input.name, tools: false }) : undefined });
+  const rename = (name: unknown) => f.request("/setup/v1/computers/computer-1/name", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ intent: "signed-selection", name }),
+  });
+  const response = await rename("Work laptop");
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual(await response.json(), { computer: { ...computer, name: "Work laptop", tools: false } });
+  assert.deepEqual(f.calls.map((c) => c.path), ["/api/auth/get-session", "/__setup/v1/rename"]);
+  assert.equal(f.calls[1]!.input.id, "computer-1");
+  for (const name of ["", " ", "x".repeat(61), "bad\u0007name", 3]) assert.equal((await rename(name)).status, 400);
+  assert.equal(f.calls.length, 2);
+});
+
+test("a link the pool minted on another pool than chosen is refused", async () => {
+  const f = fixture();
+  const response = await f.create({ intent: "signed-selection", name: "Laptop", pool: "pool-2", tools: false });
+  assert.equal(response.status, 502);
+  assert.ok(!(await response.text()).includes("opaque-link-token"));
+});

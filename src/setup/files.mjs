@@ -62,9 +62,12 @@ export async function configure({ home, env = {}, brand, credentials, undo = fal
     }
     const entries = clientEntries(credentials, brand);
     const files = [];
+    const restores = [];
     for (const target of paths) {
       const current = await read(target.path);
       const old = previous?.files.find((file) => file.path === target.path);
+      // Nothing to write and nothing of ours to remove: leave the file untouched.
+      if (!entries[target.kind].length && !old) continue;
       let source = current ? Buffer.from(current.bytes, "base64").toString() : "";
       let before = current;
       if (old && (current?.bytes === old.after.bytes || current?.bytes === old.input?.bytes)) {
@@ -75,10 +78,14 @@ export async function configure({ home, env = {}, brand, credentials, undo = fal
         source = remove(source, target.format, old.changes);
         before = current ? snapshot(source, current.mode) : null;
       }
+      // A file we no longer write goes back to how it was without our entries, absent included.
+      if (!entries[target.kind].length) { restores.push({ path: target.path, snapshot: before }); continue; }
       const result = apply(source, target.format, entries[target.kind]);
       if (target.format === "toml") result.source = markToml(result.source, brand);
       files.push({ ...target, before, input: current, after: snapshot(result.source), changes: result.changes });
     }
+    // Restores run while the previous manifest still tracks those files, so an interruption stays undoable.
+    for (const file of restores) await atomic(file.path, file.snapshot);
     await atomic(manifestPath, snapshot(`${JSON.stringify({ id: brand.setup.id, files }, null, 2)}\n`));
     for (const file of files) await atomic(file.path, file.after);
   } finally { await rmdir(lock); }

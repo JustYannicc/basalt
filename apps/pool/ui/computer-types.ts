@@ -27,6 +27,8 @@ export interface Computer {
    * `removed`: the person lost access to its pool, so its model requests fail.
    */
   readonly state?: ComputerState;
+  /** False for a computer set up for models only. Absent from hosts that predate the choice. */
+  readonly tools?: boolean;
 }
 
 export type ComputerState = "issuing" | "active" | "revoking" | "revoked" | "removed";
@@ -111,8 +113,8 @@ export type SetupMode =
   | { readonly kind: "link"; readonly href: (computer: Computer | undefined) => string; readonly manageHref?: (computer: Computer) => string };
 
 /**
- * Green needs both: a real model request and a real tool call. Anything less is
- * still waiting, and the page says which half arrived. A revoke in flight is never green.
+ * Green needs a real model request and, unless it was set up for models only, a real tool call.
+ * Anything less is still waiting, and the page says which half arrived. A revoke in flight is never green.
  */
 export type ComputerStatus = "connected" | "model-only" | "tools-only" | "waiting" | "revoking" | "revoked" | "removed";
 
@@ -121,6 +123,8 @@ export function computerStatus(computer: Computer): ComputerStatus {
   if (computer.state === "revoking") return "revoking";
   if (computer.state === "removed" || computer.removedAt) return "removed";
   const model = computer.firstModelRequestAt !== null;
+  // A models-only computer never makes a tool call, so its model request is the whole proof.
+  if (computer.tools === false) return model ? "connected" : "waiting";
   const tools = computer.firstToolCallAt !== null;
   if (model && tools) return "connected";
   if (model) return "model-only";
