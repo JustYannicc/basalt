@@ -8,9 +8,11 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from . import readiness, supervisor
@@ -63,6 +65,31 @@ class OutputPrivacyTests(unittest.TestCase):
             private_error(f"{RESPONSE_SENTINEL} {TOKEN_SENTINEL}")
         )
         self.assert_closed_output(*output, [1])
+
+    def test_supervisor_post_readiness_runtime_failure_is_closed(self) -> None:
+        # Exercise main's phase transition after its startup dependencies succeed.
+        stdout, stderr = io.StringIO(), io.StringIO()
+        child = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
+        failure = StartupError(f"{RESPONSE_SENTINEL} Authorization: Bearer {TOKEN_SENTINEL}")
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(supervisor, "ROOT", pathlib.Path(root)),
+            patch.object(supervisor, "env_required", return_value=TOKEN_SENTINEL),
+            patch.object(supervisor, "require_tmpfs"),
+            patch.object(supervisor, "start_ready_server", return_value=None),
+            patch.object(supervisor, "child_environment", return_value={}),
+            patch.object(supervisor, "Child", return_value=child),
+            patch.object(supervisor, "wait_for_home", return_value="ready"),
+            patch.object(supervisor, "apply_pool_config"),
+            patch.object(supervisor, "create_node_jwt", return_value=("fixture-node", TOKEN_SENTINEL)),
+            patch.object(supervisor, "check_services", side_effect=[True, failure]) as health,
+            patch.object(supervisor, "terminate_children"),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            self.assertEqual(supervisor.main(), 1)
+            self.assertEqual(health.call_count, 2)
+        self.assert_closed_output(stdout.getvalue(), stderr.getvalue(), [5])
 
     def test_http_handler_failure_cannot_print_response_token_or_address(self) -> None:
         class ExplodingHandler(readiness.ReadyHandler):

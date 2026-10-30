@@ -63,7 +63,7 @@ The stack enables container log observability with this image. Home's allowed co
 | 8 | Readiness HTTP handler |
 | 9 | An exception Python cannot propagate, such as a finalizer failure |
 
-CI injects response and token sentinels into supervisor failures and a real readiness HTTP request, then checks both stdout and stderr. A subprocess exercises the actual entrypoint's thread, finalizer and cleanup failure hooks. The same supervisor and HTTP regressions must fail against the previous image source without setup errors.
+CI injects response and token sentinels into supervisor failures and a real readiness HTTP request, then checks both stdout and stderr. A subprocess exercises the actual entrypoint's thread, finalizer and cleanup failure hooks. The supervisor test also reaches readiness before injecting a running health-check failure. All three startup, runtime and HTTP regressions must fail against the previous image source without setup errors.
 
 Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint cannot authenticate a request. The credential store still keeps the live key that authentication needs. Provider response bodies, prompts, completions, authentication headers and raw client keys are excluded from usage diagnostics. Only closed billing tiers and validated numeric quota measurements survive alongside usage counters.
 

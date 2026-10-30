@@ -87,12 +87,13 @@ jobs:
           import unittest
           suite = unittest.defaultTestLoader.loadTestsFromNames([
               "containers.pool.test_output_privacy.OutputPrivacyTests.test_supervisor_startup_errors_are_closed",
+              "containers.pool.test_output_privacy.OutputPrivacyTests.test_supervisor_post_readiness_runtime_failure_is_closed",
               "containers.pool.test_output_privacy.OutputPrivacyTests.test_http_handler_failure_cannot_print_response_token_or_address",
           ])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if result.testsRun != 2 or result.errors or len(result.failures) != 2:
-              raise SystemExit("Expected exactly two privacy assertion failures against the previous image source")
-          print("Both previous-image output leaks reproduced; no setup errors")
+          if result.testsRun != 3 or result.errors or len(result.failures) != 3:
+              raise SystemExit("Expected exactly three privacy assertion failures against the previous image source")
+          print("All three previous-image output leaks reproduced; no setup errors")
           PY
       - run: npm run prepare:upstream
       - name: Prove release updates, broken patches, rollback and preview cleanup gates
