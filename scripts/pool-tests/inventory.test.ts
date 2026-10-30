@@ -82,7 +82,7 @@ test("connection failures publish only a closed private failure record", async (
   const original = console.info;
   console.info = (line: string) => records.push(line);
   try {
-    await reportPoolInventory("postgres://SYNTHETIC_LOGIN:SYNTHETIC_SECRET@localhost:1/wrong_database");
+    await reportPoolInventory({ connectionString: "postgres://SYNTHETIC_LOGIN:SYNTHETIC_SECRET@localhost:1/wrong_database" });
   } finally {
     console.info = original;
   }
