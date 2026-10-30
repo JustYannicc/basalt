@@ -19,8 +19,8 @@ model {
     deployment = module "Deployment" {
       description "Dashboard and marketing shells wait for successful database migrations before updating, so a failed migration leaves the running shell and its browser assets on the same build. Local development keeps its ordinary build path."
       metadata {
-        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/pool-database-provisioning.ts|scripts/model-history.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|scripts/preview|scripts/preview-auth|scripts/deploy-safety|src/pool/deployment.ts|src/pool/database.ts|src/pool/worker-database.ts|src/browser-check.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
-        bindings "stageRouter=basalt.router|this.stageRouter=basalt.router|controlPlane=deploymentProvider"
+        code "alchemy.run.ts|scripts/deploy.ts|scripts/ensure-artifacts.ts|scripts/ensure-pool-database.ts|scripts/pool-database-provisioning.ts|scripts/pool-history-operator.ts|scripts/environment.ts|scripts/smoke.ts|scripts/pool-acceptance.ts|scripts/pool-acceptance|scripts/preview|scripts/preview-auth|scripts/deploy-safety|src/pool/deployment.ts|src/pool/database.ts|src/pool/worker-database.ts|src/browser-check.ts|.github/workflows/deploy.yml|.github/workflows/pool-acceptance.yml"
+        bindings "stageRouter=basalt.router|this.stageRouter=basalt.router|controlPlane=deploymentProvider|platform.env.POOL_OPERATIONS=basalt.modelGateway"
         libraries "better-auth"
       }
     }
@@ -159,7 +159,10 @@ model {
         table has cascading foreign keys or a retention deadline. Operator commands install the
         additive schema and approve a count-only historical backfill separately. Activation and capture
         wait for Home's existing privacy history migration before freezing legacy attribution.
-        Billing snapshots retain matched rule and requested/response/effective tier provenance. Capture defaults
+        Billing snapshots retain matched rule and requested/response/effective tier provenance.
+        A named private operator entrypoint returns bounded catalog and count-only plans using
+        the Worker's database connection. Schema writes require explicit GO and matching hashes;
+        remote invocation retains a target-bound private plan and started receipt. Capture defaults
         off and cannot create its own activation cursor. Forward, historical and repeating sweep
         cursors commit with their request rows. Each sweep freezes its upper bound so sustained
         arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;
@@ -331,6 +334,7 @@ model {
   basalt.poolRuntime -[sync]-> basalt.poolDatabase "credentials, keys, usage and routing state"
   basalt.modelGateway -[sync]-> basalt.poolDatabase "read-only migration inventory without starting Home"
   basalt.modelGateway -[sync]-> basalt.poolDatabase "capture content-free request history and serve authorized history pages"
+  basalt.deployment -[sync]-> basalt.modelGateway "POOL_OPERATIONS: inspect the schema catalog and apply an explicitly approved additive schema"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
   basalt.modelGateway -[sync]-> modelProviders "read and redeem banked resets through Home token substitution"
   basalt.poolRuntime -[sync]-> priceCatalog "import API prices when the pool Worker asks"
