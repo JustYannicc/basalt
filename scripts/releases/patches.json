@@ -447,6 +447,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-google-admin-shared-oauth",
+      "file": "0039-google-admin-shared-oauth.patch",
+      "content_sha256": "0f4124d490eb041b8d22cbba0a1cabbc5f193e9097230dba96f8749a5411a514",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
