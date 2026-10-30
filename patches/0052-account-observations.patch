@@ -5010,10 +5010,10 @@ index 97feddf76..3172054f8 100644
 +export const frameworkProtocol = 18;
 diff --git a/packages/apps/src/contracts/protocols/17.ts b/packages/apps/src/contracts/protocols/17.ts
 new file mode 100644
-index 000000000..7e8f18be3
+index 000000000..1840ebd6f
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/17.ts
-@@ -0,0 +1,653 @@
+@@ -0,0 +1,654 @@
 +/**
 + * The host protocol this framework speaks: every message that crosses between a host and an app
 + * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
@@ -5047,7 +5047,8 @@ index 000000000..7e8f18be3
 +} from "../elicitation.ts";
 +import { DeclaredEvents, EmittedEvents } from "../events.ts";
 +import { FailureDetail, UpstreamError } from "../failure.ts";
-+import { AccountInfo, AccountStatus, OAuth2Config } from "../provider.ts";
++import { AccountInfo, AccountStatus } from "../provider.ts";
++import { OAuth2Config } from "./oauth-17.ts";
 +const AccountCheckResult = Schema.Struct({
 +  accountInfo: Schema.optionalKey(AccountInfo),
 +  status: Schema.optionalKey(AccountStatus),
