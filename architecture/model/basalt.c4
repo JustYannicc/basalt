@@ -69,6 +69,16 @@ model {
       }
     }
 
+    usageImportClient = adapter "Usage import client" {
+      description "Operator-supplied target origin and private pool-token file. Redirects are refused; only the usage import endpoint is called."
+      metadata { code "scripts/import-usage.ts"; bindings "globalThis=basalt.modelGateway" }
+    }
+
+    usageExportClient = adapter "Usage export client" {
+      description "Operator-supplied source origin and private management-key file. Reads fixed non-destructive export routes, checks page counts and refuses redirects."
+      metadata { code "scripts/usage-import-source.ts"; bindings "globalThis=historyExportService" }
+    }
+
     poolController = actor "Pool controller" {
       #basalt #v1
       metadata { jurisdiction "eu"; singleton "control-plane" }
@@ -167,6 +177,12 @@ model {
         cursors commit with their request rows. Each sweep freezes its upper bound so sustained
         arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;
         Home charges round half up to twelve decimal places without rejecting extra precision.
+        The import endpoint accepts paginated Home JSONL or legacy per-request snapshots, defaults
+        to a read-only dry run and requires a signed matching approval before inserting a batch.
+        It stores neither exports nor prompts, raw keys, human labels or error text. Aggregate-only
+        history stays explicitly unimportable. Historical API prices need a model/provider mapping
+        and dated rates; missing counters or rates leave cost unknown. Remote exports use fixed
+        read-only Home routes with offset pagination, never a consumable usage queue.
         Guards diagnostic usage and application-log inserts and updates from older writers.
         Application-log cleanup extends the existing privacy journal, including completed usage
         cleanups, with an indexed upper bound and atomic cursor/count commits for at most 100 rows. Its separate
@@ -335,6 +351,9 @@ model {
   basalt.modelGateway -[sync]-> basalt.poolDatabase "read-only migration inventory without starting Home"
   basalt.modelGateway -[sync]-> basalt.poolDatabase "capture content-free request history and serve authorized history pages"
   basalt.deployment -[sync]-> basalt.modelGateway "POOL_OPERATIONS: inspect the schema catalog and apply an explicitly approved additive schema"
+  basalt.usageImportClient -[sync]-> basalt.modelGateway "dry-run and apply bounded usage imports"
+  basalt.usageImportClient -[sync]-> basalt.usageExportClient "read private source files or export pages"
+  basalt.usageExportClient -[sync]-> basalt.modelGateway "use the shared import size and metadata validation contract"
   basalt.poolRuntime -[model]-> modelProviders "provider request"
   basalt.modelGateway -[sync]-> modelProviders "read and redeem banked resets through Home token substitution"
   basalt.poolRuntime -[sync]-> priceCatalog "import API prices when the pool Worker asks"
