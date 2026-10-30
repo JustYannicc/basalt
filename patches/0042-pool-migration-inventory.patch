@@ -12,7 +12,7 @@ index 3509086..f787e13 100644
  
 diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
 new file mode 100644
-index 0000000..592eb22
+index 0000000..953decb
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
 @@ -0,0 +1,143 @@
@@ -88,8 +88,8 @@ index 0000000..592eb22
 +        yield* sql`set local lock_timeout = '500ms'`;
 +        yield* sql`set local idle_in_transaction_session_timeout = '5s'`;
 +        const identity =
-+          yield* sql`select current_database() as database, transaction_timestamp()::text as snapshot`;
-+        if (identity[0]?.database !== "postgres" || typeof identity[0]?.snapshot !== "string") {
++          yield* sql`select current_setting('transaction_read_only') as read_only, transaction_timestamp()::text as snapshot`;
++        if (identity[0]?.read_only !== "on" || typeof identity[0]?.snapshot !== "string") {
 +          return yield* new InventoryUnavailable();
 +        }
 +        const sections: Record<string, typeof Rows.Type> = {};
@@ -187,3 +187,311 @@ index cda7ff0..94f0bef 100644
      } satisfies Record<BackgroundJob, unknown>;
  
      const egress = yield* cloudEgress;
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 10c748f..987f92f 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -103,7 +103,7 @@ const jobs = {
+     runner: 3,
+ 
+     pattern:
+-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
++      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 96a575a..7c6ff5d 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1913,6 +1913,17 @@ export const scenarios = plan({
+       local: na("Local runs its background jobs in its own server process."),
+     },
+   },
++  cloudPoolMigrationInventory: {
++    fixtures: "actors",
++    file: "pool-migration-inventory.spec.ts",
++    title:
++      "Cloud pool migration inventory stays private and read-only through the authenticated cron job",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The inventory is an internal Cloud job using the Cloud runtime database."),
++      local: na("The inventory is an internal Cloud job using the Cloud runtime database."),
++    },
++  },
+   cloudScheduleCoordinatorPlaced: {
+     fixtures: "actors",
+     file: "cloud-database-placement.spec.ts",
+diff --git a/e2e/tests/pool-migration-inventory.spec.ts b/e2e/tests/pool-migration-inventory.spec.ts
+new file mode 100644
+index 0000000..18617b0
+--- /dev/null
++++ b/e2e/tests/pool-migration-inventory.spec.ts
+@@ -0,0 +1,267 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Option, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { createHash, randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { provisionedSource } from "../support/provisioned-source.ts";
++import { logMessages } from "../support/data-steps.ts";
++import { writeRows } from "../support/cloud-rows.ts";
++
++const common = { inventory: Schema.Literal("host-v1"), run: Schema.String };
++const InventoryRecord = Schema.fromJsonString(
++  Schema.Union([
++    Schema.Struct({
++      ...common,
++      event: Schema.Literal("part"),
++      index: Schema.Int,
++      data: Schema.String,
++    }),
++    Schema.Struct({
++      ...common,
++      event: Schema.Literal("end"),
++      complete: Schema.Literal(true),
++      chunks: Schema.Int,
++      bytes: Schema.Int,
++      sha256: Schema.String,
++      coverage: Schema.Array(Schema.String),
++      migrationGo: Schema.Literal(false),
++    }),
++    Schema.Struct({
++      ...common,
++      event: Schema.Literal("end"),
++      complete: Schema.Literal(false),
++      reason: Schema.String,
++      migrationGo: Schema.Literal(false),
++    }),
++  ]),
++);
++const Snapshot = Schema.fromJsonString(
++  Schema.Struct({
++    snapshot: Schema.String,
++    sections: Schema.Record(
++      Schema.String,
++      Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
++    ),
++  }),
++);
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
++  }),
++});
++
++class ReportPending extends Schema.TaggedError<ReportPending>()("ReportPending", {}) {}
++
++const records = (log: string) =>
++  logMessages(log).pipe(
++    Effect.map((messages) =>
++      messages.flatMap((line) => {
++        const start = line.indexOf('{"inventory":"host-v1"');
++        return start < 0
++          ? []
++          : Option.toArray(Schema.decodeUnknownOption(InventoryRecord)(line.slice(start)));
++      }),
++    ),
++  );
++const nextReport = (log: string, seen: ReadonlySet<string>) =>
++  records(log).pipe(
++    Effect.flatMap((entries) => {
++      const end = entries.filter((entry) => entry.event === "end" && !seen.has(entry.run)).at(-1);
++      return end === undefined
++        ? Effect.fail(new ReportPending())
++        : Effect.succeed({ end, entries });
++    }),
++    Effect.retry({
++      while: (error) => Schema.is(ReportPending)(error),
++      schedule: Schedule.spaced("100 millis"),
++      times: 100,
++    }),
++  );
++
++layer(HostedLive, { excludeTestServices: true })("Pool migration inventory", (it) => {
++  it.effect(scenarios.cloudPoolMigrationInventory.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target,
++          evidence = yield* Evidence,
++          http = yield* HttpClient.HttpClient;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const log = `${target.directory}/cloud.log`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Inventory fixture",
++          files: [{ path: "index.ts", content: provisionedSource(false) }, appsManifest],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed),
++          appPath = `${prefix}/apps/${app.id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", appPath).pipe(Effect.orDie),
++        );
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${appPath}/accounts/user/service/connections`,
++            {},
++          ),
++        );
++        const label = `inventory-label-${randomUUID()}`;
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          {
++            method: "key",
++            label,
++            fields: { token: "fixture-host-key" },
++          },
++        );
++        expect(saved.status).toBe(200);
++        const account = (yield* body(Resource, saved)).id;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
++        );
++
++        yield* evidence.step(
++          "The report route refuses anonymous callers and wrong dispatch keys",
++          Effect.gen(function* () {
++            const anonymous = yield* api.session();
++            for (const headers of [{}, { authorization: "Bearer synthetic-wrong-key" }]) {
++              const refused = yield* api.request(
++                anonymous,
++                "POST",
++                "/api/internal/jobs/pool-migration-inventory",
++                undefined,
++                headers,
++              );
++              expect(refused.status).toBe(404);
++            }
++          }),
++        );
++
++        const trigger = Effect.gen(function* () {
++          const seen = new Set((yield* records(log)).map((entry) => entry.run));
++          yield* Effect.scoped(
++            http
++              .get(
++                `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("13 * * * *")}`,
++              )
++              .pipe(
++                Effect.flatMap((response) => {
++                  expect(response.status).toBe(200);
++                  return response.text;
++                }),
++              ),
++          );
++          return yield* nextReport(log, seen);
++        });
++        const complete = Effect.gen(function* () {
++          const { end, entries } = yield* trigger;
++          expect(end.event).toBe("end");
++          if (end.event !== "end") return yield* Effect.die("Missing inventory terminal record");
++          expect(end.complete, "The real cron must produce a complete read-only snapshot").toBe(
++            true,
++          );
++          if (!end.complete) return yield* Effect.die("Inventory did not complete");
++          const parts = entries
++            .filter((entry) => entry.event === "part")
++            .filter((entry) => entry.run === end.run)
++            .sort((left, right) => left.index - right.index);
++          expect(parts.map((part) => part.index)).toEqual(
++            Array.from({ length: end.chunks }, (_, index) => index),
++          );
++          const json = parts.map((part) => part.data).join("");
++          expect(Buffer.byteLength(json)).toBe(end.bytes);
++          expect(createHash("sha256").update(json).digest("hex")).toBe(end.sha256);
++          expect(json).not.toContain("fixture-host-key");
++          expect(json).not.toContain(label);
++          const snapshot = yield* Schema.decodeUnknownEffect(Snapshot)(json);
++          expect(snapshot.sections.accounts).toContainEqual(
++            expect.objectContaining({
++              id: account,
++              provider: app.requirements.accounts.service.provider,
++              method: "key",
++            }),
++          );
++          expect(snapshot.sections.connections).toContainEqual(
++            expect.objectContaining({
++              id: connection.id,
++              status: "completed",
++              account,
++              target_app: app.id,
++            }),
++          );
++          expect(snapshot.sections.links).toContainEqual(
++            expect.objectContaining({ account, app: app.id, requirement: "service" }),
++          );
++          expect(end.coverage).toContain("connectionAccess");
++          expect(end.migrationGo).toBe(false);
++          yield* evidence.json("inventory-delivery.json", {
++            run: end.run,
++            chunks: end.chunks,
++            sha256: end.sha256,
++          });
++        });
++        yield* evidence.step(
++          "The authenticated cron delivers only identifiers and policies with an intact terminal hash",
++          complete,
++        );
++
++        const malformed = `synthetic-private-method-${"x".repeat(520)}`;
++        yield* evidence.step(
++          "Malformed stored metadata produces only a closed failure record",
++          writeRows("sso-database.json", [
++            {
++              sql: "update executor_accounts set method = $1 where id = $2",
++              params: [malformed, account],
++            },
++          ]).pipe(
++            Effect.andThen(
++              Effect.gen(function* () {
++                const { end, entries } = yield* trigger;
++                expect(end.event).toBe("end");
++                expect(end).toMatchObject({
++                  event: "end",
++                  complete: false,
++                  reason: "query_failed",
++                  migrationGo: false,
++                });
++                expect(
++                  entries.filter((entry) => entry.run === end.run && entry.event === "part"),
++                ).toEqual([]);
++                expect(JSON.stringify(end)).not.toContain(malformed);
++              }),
++            ),
++            Effect.ensuring(
++              writeRows("sso-database.json", [
++                {
++                  sql: "update executor_accounts set method = $1 where id = $2",
++                  params: ["key", account],
++                },
++              ]).pipe(Effect.orDie),
++            ),
++          ),
++        );
++        yield* evidence.step(
++          "Restoring the retained account permits another complete report",
++          complete,
++        );
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
++        ).toBe(200);
++      }),
++    ),
++  );
++});

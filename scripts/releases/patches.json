@@ -370,7 +370,7 @@
     {
       "identity": "basalt-pool-migration-inventory",
       "file": "0042-pool-migration-inventory.patch",
-      "content_sha256": "7f395744170edb665a3e58cf9de52a0c1ddaf211e5664f004f2762b6bb1a4fbc",
+      "content_sha256": "7475f305eed74eefed98e45a7c9c073748c4aa6fb6c9b67d806f33a3cfa6acba",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
