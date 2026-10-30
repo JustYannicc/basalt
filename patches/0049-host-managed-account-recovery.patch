@@ -1,0 +1,1609 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+index c885f59..05d0168 100644
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -6,15 +6,21 @@ import {
+ } from "@executor-js/hosted-server";
+ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+-import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
+-import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
++import {
++  HostManagedAccountRecords,
++  HostManagedAccountRecovery,
++} from "@executor-js/hosted-server/host-managed-accounts";
++import {
++  poolAccessRecords,
++  poolAccountRecovery,
++} from "@executor-js/hosted-server/pool-access-provenance";
+ import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
+ import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
+ import { BlobStore } from "@executor-js/sdk/core";
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+ import { RuntimeContext } from "alchemy";
+ import type * as Cloudflare from "alchemy/Cloudflare";
+-import { Config, Context, Effect, Layer } from "effect";
++import { Config, Context, Effect, Layer, Option } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { cloudBuildAsset, loadCloudBuildRecord } from "../implementation/build-storage.ts";
+ import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+@@ -55,13 +61,15 @@ export const cloudProductServices = Effect.fn(function* (
+       Effect.flatMap((services) => work.pipe(Effect.provideContext(services))),
+       Effect.provide(RuntimeContext.phantom),
+     );
++  const poolKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+   const accessLifecycle = poolAccessLifecycle(
+-    yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++    poolKey,
+     (yield* cloudHosts.pipe(Effect.orDie)).browser,
+   );
+   const services = Layer.mergeAll(
+     Layer.succeed(AccessLifecycle, accessLifecycle),
+     Layer.succeed(HostManagedAccountRecords, poolAccessRecords),
++    Layer.succeed(HostManagedAccountRecovery, poolAccountRecovery(Option.isSome(poolKey))),
+     Layer.succeed(
+       HostedExecutor,
+       sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
+diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+index e097b16..1a4f5fc 100644
+--- a/apps/hosted/server/src/contracts/app-accounts.ts
++++ b/apps/hosted/server/src/contracts/app-accounts.ts
+@@ -124,6 +124,8 @@ export type AppAccountLink = typeof AppAccountLink.Type;
+ export const RequirementAccount = Schema.Struct({
+   account: Account,
+   linked: Schema.Boolean,
++  /** The caller's recorded default key, offered without its credential label. */
++  automatic: Schema.optionalKey(Schema.Literal(true)),
+ });
+ export type RequirementAccount = typeof RequirementAccount.Type;
+ 
+@@ -137,6 +139,8 @@ export const AppAccountRequirement = Schema.Struct({
+   provider: AccountRequirement.fields.provider,
+   cardinality: AccountRequirement.fields.cardinality,
+   accounts: Schema.Array(RequirementAccount),
++  /** The host accepted responsibility for a missing binding through its setup queue. */
++  recovery: Schema.optionalKey(Schema.Literal("restoring")),
+ });
+ export type AppAccountRequirement = typeof AppAccountRequirement.Type;
+ 
+diff --git a/apps/hosted/server/src/contracts/host-managed-accounts.ts b/apps/hosted/server/src/contracts/host-managed-accounts.ts
+index 53aa552..bfe9645 100644
+--- a/apps/hosted/server/src/contracts/host-managed-accounts.ts
++++ b/apps/hosted/server/src/contracts/host-managed-accounts.ts
+@@ -1,7 +1,7 @@
+ /** Host-specific records that prove an account is the host's own credential. */
+ import { Context, Effect } from "effect";
+ import type { SqlClient } from "effect/sql";
+-import type { Account, AccountId, StorageError } from "@executor-js/sdk/core";
++import type { Account, AccountId, App, StorageError } from "@executor-js/sdk/core";
+ import type { OrganizationId } from "./organization.ts";
+ 
+ export interface HostManagedAccountInput {
+@@ -20,3 +20,18 @@ export interface HostManagedAccountInput {
+ export const HostManagedAccountRecords = Context.Reference<
+   (input: HostManagedAccountInput) => Effect.Effect<readonly AccountId[], StorageError>
+ >("hosted/HostManagedAccountRecords", { defaultValue: () => () => Effect.succeed([]) });
++
++/** An editor's requirement read, inside the app's authorized link transaction. */
++export interface HostManagedRecoveryInput {
++  readonly sql: SqlClient.SqlClient;
++  readonly organization: OrganizationId;
++  readonly app: App;
++  readonly requirement: string;
++}
++
++/** A host may queue its setup job; the read never creates or replaces credentials. */
++export const HostManagedAccountRecovery = Context.Reference<
++  (input: HostManagedRecoveryInput) => Effect.Effect<"restoring" | undefined, StorageError>
++>("hosted/HostManagedAccountRecovery", {
++  defaultValue: () => () => Effect.succeed(undefined),
++});
+diff --git a/apps/hosted/server/src/contracts/resource-access.ts b/apps/hosted/server/src/contracts/resource-access.ts
+index cdaa6e7..7680748 100644
+--- a/apps/hosted/server/src/contracts/resource-access.ts
++++ b/apps/hosted/server/src/contracts/resource-access.ts
+@@ -142,7 +142,13 @@ export const ResourceDirectory = Schema.Struct({
+       appLinkedAccounts: Schema.Array(AccountId),
+       /** Host credentials linked for the caller, which satisfy requirements without being listed. */
+       hostManagedLinks: Schema.optionalKey(
+-        Schema.Array(Schema.Struct({ account: AccountId, provider: ProviderId })),
++        Schema.Array(
++          Schema.Struct({
++            account: AccountId,
++            provider: ProviderId,
++            problem: Schema.optionalKey(Schema.Literals(["reconnect", "unavailable"])),
++          }),
++        ),
+       ),
+     }),
+   ),
+diff --git a/apps/hosted/server/src/implementation/account-sign-in.ts b/apps/hosted/server/src/implementation/account-sign-in.ts
+new file mode 100644
+index 0000000..c57c335
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-sign-in.ts
+@@ -0,0 +1,15 @@
++import type { AccountId, Executor, OwnerId } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import type { LinkedAccountSignIn } from "../contracts/app-accounts.ts";
++
++/** Sign-in state without the credential fingerprint or saved fields. */
++export const linkedAccountSignIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
++  executor.accounts
++    .signIn({ owner, account })
++    .pipe(
++      Effect.map((state): LinkedAccountSignIn =>
++        state.state === "saved"
++          ? { state: "saved", reconnectAt: state.reconnectAt }
++          : { state: state.state },
++      ),
++    );
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index d42314c..a789e0f 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -24,8 +24,8 @@ import {
+   RequirementMismatch,
+   type AppAccountLink,
+   type AppAccountRequirement,
+-  type LinkedAccountSignIn,
+ } from "../contracts/app-accounts.ts";
++import { HostManagedAccountRecovery } from "../contracts/host-managed-accounts.ts";
+ import { ApiAuthentication, Authentication, CurrentUserId } from "../contracts/auth.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+@@ -36,7 +36,8 @@ import { canDeleteAccount, replacingAccounts } from "./interactive-retirement.ts
+ import { connectAccount, connectionUrl } from "./accounts.ts";
+ import { accountOAuthRedirectUri } from "./auth.ts";
+ import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
+-import { hostManagedAccounts } from "./host-managed-accounts.ts";
++import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
++import { linkedAccountSignIn } from "./account-sign-in.ts";
+ import {
+   policyDatabase,
+   requireAccountAccess,
+@@ -64,18 +65,6 @@ const LinkRecord = Schema.Struct({
+ });
+ type LinkRecord = typeof LinkRecord.Type;
+ 
+-/** A linked account's saved sign-in state, without its credentials fingerprint. */
+-const signIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
+-  executor.accounts
+-    .signIn({ owner, account })
+-    .pipe(
+-      Effect.map((state): LinkedAccountSignIn =>
+-        state.state === "saved"
+-          ? { state: "saved", reconnectAt: state.reconnectAt }
+-          : { state: state.state },
+-      ),
+-    );
+-
+ /**
+  * Links with each account, its sign-in and its checks by this app, in the records' order. A link
+  * whose account no longer exists, or belongs to another owner, is left out. Without `identity`, the
+@@ -112,7 +101,7 @@ const linkViews = (
+       ({ record, account }) => {
+         const checks = health.get(account.id);
+         return Effect.all([
+-          signIn(executor, owner, account.id),
++          linkedAccountSignIn(executor, owner, account.id),
+           executor[InteractiveHost].binding({ owner, account: account.id }),
+         ]).pipe(
+           Effect.map(([state, binding]): AppAccountLink[] => [
+@@ -203,9 +192,16 @@ const requirementView = (
+     });
+     const linkedIds = new Set(linkedAccounts.map((account) => account.id));
+     const unlinked = (yield* visibleAccounts(all)).filter((account) => !linkedIds.has(account.id));
+-    // Host credentials are never offered; the host links its own.
++    const { organization } = yield* CurrentOrganization;
++    const automatic =
++      scope === "user"
++        ? yield* defaultAccessAccount(yield* policyDatabase, organization, yield* caller)
++        : undefined;
+     const managed = yield* managedAmong(executor, unlinked);
+-    const candidates = unlinked.filter((account) => !managed.has(account.id));
++    const candidates = unlinked.filter(
++      (account) =>
++        !managed.has(account.id) || (account.id === automatic && account.method === "apiKey"),
++    );
+     const usable = (yield* Effect.forEach(
+       candidates,
+       (account) =>
+@@ -218,6 +214,21 @@ const requirementView = (
+           ),
+       { concurrency: 8 },
+     )).flat();
++    const recovery =
++      scope === "app" && requirement === "pool"
++        ? yield* lockedChange(executor, { app: app.id, access: "manage" }, (sql, actor) =>
++            Effect.gen(function* () {
++              const current = yield* executor.apps.get({ owner, app: app.id });
++              yield* scopedRequirement(current, scope, requirement);
++              return yield* (yield* HostManagedAccountRecovery)({
++                sql,
++                organization: actor.organization,
++                app: current,
++                requirement,
++              });
++            }),
++          )
++        : undefined;
+     return {
+       requirement,
+       scope,
+@@ -225,8 +236,15 @@ const requirementView = (
+       cardinality: required.cardinality,
+       accounts: [
+         ...linkedAccounts.map((account: Account) => ({ account, linked: true })),
+-        ...usable.map((account: Account) => ({ account, linked: false })),
++        ...usable.map((account: Account) => ({
++          account,
++          linked: false,
++          ...(account.id === automatic && account.method === "apiKey"
++            ? { automatic: true as const }
++            : {}),
++        })),
+       ],
++      ...(recovery === undefined ? {} : { recovery }),
+     } satisfies AppAccountRequirement;
+   });
+ 
+diff --git a/apps/hosted/server/src/implementation/host-managed-accounts.ts b/apps/hosted/server/src/implementation/host-managed-accounts.ts
+index f75f94f..ee8c1ab 100644
+--- a/apps/hosted/server/src/implementation/host-managed-accounts.ts
++++ b/apps/hosted/server/src/implementation/host-managed-accounts.ts
+@@ -4,9 +4,9 @@
+  */
+ import {
+   isProvisionedMethod,
++  AccountId,
+   StorageError,
+   type Account,
+-  type AccountId,
+   type Executor,
+ } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+@@ -15,9 +15,27 @@ import { HostManagedAccountRecords } from "../contracts/host-managed-accounts.ts
+ import { organizationOwner, type OrganizationId } from "../contracts/organization.ts";
+ 
+ const KeyAccounts = Schema.Array(
+-  Schema.Struct({ accounts: Schema.Record(Schema.String, Schema.String) }),
++  Schema.Struct({ accounts: Schema.Record(Schema.String, AccountId) }),
+ );
+ 
++/** Only the key setup recorded for this person can return as their automatic choice. */
++export const defaultAccessAccount = (
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  user: string,
++) =>
++  Effect.gen(function* () {
++    const [recorded] = yield* sql`select
++      coalesce(metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb) as accounts
++      from "organization" where id = ${organization}`.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(KeyAccounts)),
++      Effect.mapError(() => new StorageError()),
++    );
++    return recorded !== undefined && Object.hasOwn(recorded.accounts, user)
++      ? recorded.accounts[user]
++      : undefined;
++  });
++
+ /**
+  * The listed accounts the host manages: a method declared `provisioned`, a default access key
+  * organization setup recorded for a member, or one the host's own records prove. Labels are never
+diff --git a/apps/hosted/server/src/implementation/pool-access-provenance.ts b/apps/hosted/server/src/implementation/pool-access-provenance.ts
+index c09d28c..9d5196d 100644
+--- a/apps/hosted/server/src/implementation/pool-access-provenance.ts
++++ b/apps/hosted/server/src/implementation/pool-access-provenance.ts
+@@ -10,6 +10,7 @@ import { AccountId, StorageError } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import type { HostManagedAccountInput } from "../contracts/host-managed-accounts.ts";
+ import { organizationOwner } from "../contracts/organization.ts";
++export { poolAccountRecovery } from "./pool-account-recovery.ts";
+ 
+ const Proven = Schema.Array(Schema.Struct({ account: AccountId }));
+ 
+diff --git a/apps/hosted/server/src/implementation/pool-account-recovery.ts b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+new file mode 100644
+index 0000000..52ad760
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+@@ -0,0 +1,69 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Effect, Option, Schema } from "effect";
++import type { HostManagedRecoveryInput } from "../contracts/host-managed-accounts.ts";
++import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
++import { poolRotationJobPrefix } from "../contracts/pool-defaults.ts";
++import { usableAppLinks } from "./resource-policy.ts";
++import { PoolRecords } from "./pool-records.ts";
++
++/** Called under the app/link and organization access locks, so concurrent views share one job. */
++export const poolAccountRecovery =
++  (enabled: boolean) =>
++  ({ sql, organization, app, requirement }: HostManagedRecoveryInput) =>
++    Effect.gen(function* () {
++      const required = app.requirements.accounts[requirement];
++      if (
++        !enabled ||
++        requirement !== "pool" ||
++        app.activeVersion === null ||
++        required === undefined ||
++        required.scope !== "app" ||
++        required.cardinality !== "one" ||
++        required.definition.auth.token?.type !== "secrets"
++      )
++        return undefined;
++      const rows =
++        yield* sql`select coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) as pools
++        from organization where id = ${organization}`;
++      if (rows.length !== 1) return undefined;
++      // Setup decodes the whole map, so a malformed sibling would also prevent a repair.
++      const state = yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]).pipe(Effect.option);
++      if (Option.isNone(state)) return undefined;
++      const owners = Object.entries(state.value.pools).filter(([, pool]) => pool.app === app.id);
++      const owner = owners[0]?.[0];
++      if (owners.length !== 1 || owner === undefined) return undefined;
++      const members =
++        yield* sql`select m.id from member m join "user" person on person.id = m."userId"
++        where m."organizationId" = ${organization} and m."userId" = ${owner}
++          and m.role = 'owner' and person."emailVerified" = true`;
++      if (members.length !== 1) return undefined;
++      const linked = yield* sql`select a.id from ${usableAppLinks(sql, [app.id])}
++        and l.requirement = 'pool' and a.provider = ${required.provider} and a.method = 'token'
++        and p.kind = 'personal' and p.personal_user_id = ${owner} limit 1`;
++      if (linked.length > 0) return undefined;
++      // A running job may already have passed pool setup. Keep one queued successor.
++      const pending = yield* sql`select id from hosted_provisioning
++        where kind = 'member' and organization_id = ${organization} and user_id = ${owner}
++          and status = 'queued'
++          and id not like ${poolRotationJobPrefix + "%"}
++          and id not like ${catalogAppJobPrefix + "%"}
++        order by available_at, id limit 1 for update`;
++      if (pending.length === 0) {
++        // Match the worker's maximum backoff before another view can retry exhausted setup.
++        const failed = yield* sql`select id from hosted_provisioning
++          where kind = 'member' and organization_id = ${organization} and user_id = ${owner}
++            and status = 'failed' and updated_at > now() - interval '5 minutes'
++            and id not like ${poolRotationJobPrefix + "%"}
++            and id not like ${catalogAppJobPrefix + "%"} limit 1`;
++        if (failed.length > 0) return undefined;
++        yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
++          values ('member', ${organization}, ${owner}, now())`;
++      } else
++        yield* sql`update hosted_provisioning set available_at = least(available_at, now()), updated_at = now()
++          where id = ${pending[0]!.id} and attempts = 0`;
++      return "restoring" as const;
++    }).pipe(
++      Effect.catchTags({
++        SqlError: () => new StorageError(),
++      }),
++    );
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index f61649d..4e5ee58 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -1,9 +1,6 @@
+ /** One private pool app per verified organization owner. Compile before locking setup metadata. */
+ import { pinnedOnly } from "@executor-js/app-management/data-steps";
+ import {
+-  AccountId,
+-  AppId,
+-  VersionId,
+   StorageError,
+   StorageHost,
+   sourceFilesEqual,
+@@ -23,6 +20,7 @@ export { PoolAppSource } from "../contracts/pool-defaults.ts";
+ export { poolAppVersion, poolAppAssetPath } from "./pool-app-source.ts";
+ import { repairPoolAccount, poolTokenKeyVersion } from "./pool-account.ts";
+ import { defaultProductBrand, productBrandSettings } from "@executor-js/utils/product-brand";
++import { PoolRecords } from "./pool-records.ts";
+ 
+ const basaltPools = "basaltPools";
+ 
+@@ -60,18 +58,6 @@ const repairPoolAccess = (
+     );
+     return true;
+   });
+-const Pools = Schema.Struct({
+-  pools: Schema.Record(
+-    Schema.String,
+-    Schema.Struct({
+-      app: AppId,
+-      version: VersionId,
+-      bundle: Schema.optionalKey(Schema.String),
+-      account: Schema.optionalKey(AccountId),
+-      tokenKeyVersion: Schema.optionalKey(Schema.String),
+-    }),
+-  ),
+-});
+ const Member = Schema.Struct({ name: Schema.String, email: Schema.String });
+ const poolSource = {
+   reference: "https://github.com/JustYannicc/basalt/tree/main/apps/pool",
+@@ -104,7 +90,7 @@ export const poolDefaults = (
+     const rows = yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
+       from organization where id = ${organization}`;
+     if (rows.length !== 1) return;
+-    const { pools } = yield* Schema.decodeUnknownEffect(Pools)(rows[0]);
++    const { pools } = yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]);
+     const saved = Object.hasOwn(pools, user) ? pools[user] : undefined;
+     const tokenKeyVersion = yield* poolTokenKeyVersion(key.value);
+     const members = yield* sql`select "user".name, "user".email from member
+@@ -132,7 +118,7 @@ export const poolDefaults = (
+           yield* sql`select coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) as pools
+         from organization where id = ${organization} for no key update`;
+         if (rows.length !== 1) return undefined;
+-        const state = yield* Schema.decodeUnknownEffect(Pools)(rows[0]);
++        const state = yield* Schema.decodeUnknownEffect(PoolRecords)(rows[0]);
+         yield* sql`select pg_advisory_xact_lock(hashtextextended(${`basalt-pool:${organization}:${user}`}, 0))`;
+         const eligible = yield* sql`select member.id from member
+         join "user" on "user".id = member."userId"
+@@ -141,7 +127,7 @@ export const poolDefaults = (
+           for share of member, "user"`;
+         return eligible.length === 1 ? state : undefined;
+       });
+-    const record = (pool: (typeof Pools.Type.pools)[string]) =>
++    const record = (pool: (typeof PoolRecords.Type.pools)[string]) =>
+       // Other writers own fields such as the authorization handoff. Keep their stored bytes.
+       sql`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
+         array[${basaltPools}], coalesce(metadata::jsonb -> ${basaltPools}, '{}'::jsonb) ||
+diff --git a/apps/hosted/server/src/implementation/pool-records.ts b/apps/hosted/server/src/implementation/pool-records.ts
+new file mode 100644
+index 0000000..c43953a
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-records.ts
+@@ -0,0 +1,15 @@
++import { AccountId, AppId, VersionId } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++
++export const PoolRecords = Schema.Struct({
++  pools: Schema.Record(
++    Schema.String,
++    Schema.Struct({
++      app: AppId,
++      version: VersionId,
++      bundle: Schema.optionalKey(Schema.String),
++      account: Schema.optionalKey(AccountId),
++      tokenKeyVersion: Schema.optionalKey(Schema.String),
++    }),
++  ),
++});
+diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
+index 27874ba..8ad7b27 100644
+--- a/apps/hosted/server/src/implementation/resource-access.ts
++++ b/apps/hosted/server/src/implementation/resource-access.ts
+@@ -36,6 +36,7 @@ import {
+ } from "./resource-policy.ts";
+ import { appUiIndicators } from "./app-ui.ts";
+ import { hostManagedAccounts } from "./host-managed-accounts.ts";
++import { linkedAccountSignIn } from "./account-sign-in.ts";
+ 
+ /** Shared resource listing for the normal app/account lists and an explicit management view. */
+ export const resourceDirectory = (view: "available" | "managed" = "available") =>
+@@ -125,13 +126,35 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+     const listedAccounts = accountEntries.flat();
+     const listed = new Set(listedAccounts.map(({ account }) => account.id));
+     const providerOf = new Map(all.map((account) => [account.id, account.provider]));
++    const managedSignIns = new Map(
++      yield* Effect.forEach(
++        all.filter((account) => managed.has(account.id) && linked.has(account.id)),
++        (account) =>
++          linkedAccountSignIn(executor, owner, account.id).pipe(
++            Effect.map((state) => [account.id, state] as const),
++            Effect.catchTag("AccountNotFound", () =>
++              Effect.succeed([account.id, { state: "unavailable" as const }] as const),
++            ),
++          ),
++        { concurrency: 8 },
++      ),
++    );
+     const appEntries = listedApps.map(({ app, access }) => {
+       const shared = [...(appAccounts.get(app.id) ?? [])].filter((id) => !managed.has(id));
+       const own = [...new Set(links.filter((link) => link.app === app.id).map((link) => link.id))];
+       // Host credentials satisfy the caller's requirements without being listed as theirs.
+       const hostManagedLinks = own.flatMap((account) => {
+         const provider = providerOf.get(account);
+-        return managed.has(account) && provider !== undefined ? [{ account, provider }] : [];
++        const state = managedSignIns.get(account);
++        return managed.has(account) && provider !== undefined
++          ? [
++              {
++                account,
++                provider,
++                ...(state === undefined || state.state === "saved" ? {} : { problem: state.state }),
++              },
++            ]
++          : [];
+       });
+       return {
+         app,
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+index 26e9cb7..67ce6cb 100644
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -467,7 +467,12 @@ export const DashboardOverview = Schema.Struct({
+   appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+   /** The user links to host credentials, which fill requirements without being listed. */
+   hostManagedLinks: Schema.Array(
+-    Schema.Struct({ app: AppId, account: AccountId, provider: ProviderId }),
++    Schema.Struct({
++      app: AppId,
++      account: AccountId,
++      provider: ProviderId,
++      problem: Schema.optionalKey(Schema.Literals(["reconnect", "unavailable"])),
++    }),
+   ),
+   accounts: Schema.Array(DashboardAccount),
+ });
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+index 3aba9e7..6d8566e 100644
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -308,10 +308,19 @@ export const dashboard = (
+     };
+     const userLinks = pairs(true);
+     const links = userLinks.filter((link) => !managed.has(link.account));
+-    const hostManagedLinks = userLinks.flatMap((link) => {
+-      const provider = managed.get(link.account);
+-      return provider === undefined ? [] : [{ ...link, provider }];
+-    });
++    const hostManagedLinks = (yield* Effect.forEach(
++      userLinks,
++      (link) =>
++        Effect.gen(function* () {
++          const provider = managed.get(link.account);
++          if (provider === undefined) return [];
++          const state = yield* signIn(link.account);
++          return [
++            { ...link, provider, ...(state.state === "saved" ? {} : { problem: state.state }) },
++          ];
++        }),
++      { concurrency: 8 },
++    )).flat();
+     const health = yield* executor.accounts.listHealth({ links: pairs(false) });
+     const checks = new Map(health.map((entry) => [entry.account, entry]));
+     const display = [];
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 9f267e5..1023c0d 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -285,6 +285,11 @@ const notRunInCi: Partial<
+     { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
+   >
+ > = {
++  cloudPoolAccountRecovery: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt host-managed-accounts job runs it with an isolated synthetic pool signing key.",
++  },
+   mcp: {
+     targets: ["self-host", "cloud"],
+     reason: "Needs a model API key, which CI does not hold.",
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index b0fa511..6350bb3 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -242,6 +242,9 @@ export const startCloudEnvironment = (input: {
+       BETTER_AUTH_URL: input.origin,
+       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
++      ...(process.env.BASALT_E2E_POOL_SETUP === "1"
++        ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
++        : {}),
+       MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
+       MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index cafa7c4..8ba48fe 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -7614,6 +7615,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted account checks and rows."),
+     },
+   },
++  cloudPoolAccountRecovery: {
++    fixtures: "actors",
++    managementApps: ["owner"],
++    file: "pool-account-recovery.spec.ts",
++    title: "Cloud pool account recovery queues one owner job and repairs through the normal cron",
++    targets: {
++      "self-host": na("The Cloud host owns automatic pool setup."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The Cloud host owns automatic pool setup."),
++    },
++  },
+   hostManagedAccounts: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+index c19555e..6e3d272 100644
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -1,4 +1,7 @@
+-/** Default management keys are ordinary personal accounts each user links to the common app. */
++/**
++ * Default management keys are ordinary personal accounts each user links to the common app. After
++ * someone unlinks theirs, it comes back only to them, as the automatic choice.
++ */
+ import { holdTeamInstallation, InstallationDirectory } from "../support/team-installation.ts";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema, Schedule } from "effect";
+@@ -72,6 +75,28 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+           selectedAccounts.push(account.id);
+ 
+           yield* browser.login(actor);
++          // A scoped connection offers the key by what it is, never by its label.
++          yield* browser.use("Open Connections", (page) =>
++            page.goto(`/org/${actors.organization.slug}/connect`),
++          );
++          yield* browser.use("Start a scoped connection", (page) =>
++            page
++              .getByRole("button", { name: "Create a scoped connection", exact: true })
++              .or(page.getByRole("button", { name: "New scoped connection", exact: true }))
++              .click(),
++          );
++          yield* browser.use("Find Executor in the picker", (page) =>
++            page.getByRole("searchbox", { name: "Search apps" }).fill("Executor"),
++          );
++          yield* browser.use("Executor runs as the automatic choice", (page) =>
++            page.getByRole("checkbox", { name: /Executor.*Set up automatically/ }).waitFor(),
++          );
++          expect(
++            yield* browser.use("The picker does not name the key", (page) =>
++              page.getByText(account.label, { exact: true }).count(),
++            ),
++          ).toBe(0);
++          yield* browser.checkpoint(`Connection picker for ${account.label}`);
+           yield* browser.use("Open Executor's accounts", (page) =>
+             page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+           );
+@@ -159,7 +184,14 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+           yield* Effect.scoped(
+             Effect.gen(function* () {
+               yield* Effect.addFinalizer(() =>
+-                linkAccount(actor, appPath, "service", account.id).pipe(Effect.orDie),
++                linkedAccountIds(actor, appPath).pipe(
++                  Effect.flatMap((ids) =>
++                    ids.includes(account.id)
++                      ? Effect.void
++                      : linkAccount(actor, appPath, "service", account.id),
++                  ),
++                  Effect.orDie,
++                ),
+               );
+               // A healthy managed key has no row to unlink from; its owner can still unlink it.
+               yield* unlinkAccount(actor, appPath, "service", account.id);
+@@ -175,6 +207,77 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
+                   .waitFor(),
+               );
+               yield* browser.checkpoint("Needs account only after unlinking the managed key");
++              // The way back: the person's own key returns as the automatic choice, and nobody
++              // else's key is offered.
++              const offered = yield* body(
++                Schema.Struct({
++                  accounts: Schema.Array(
++                    Schema.Struct({
++                      account: Schema.Struct({ id: Schema.String }),
++                      automatic: Schema.optional(Schema.Literal(true)),
++                    }),
++                  ),
++                }),
++                yield* api.request(actor, "GET", `${appPath}/accounts/user/service`),
++              );
++              expect(
++                offered.accounts
++                  .filter((choice) => choice.automatic === true)
++                  .map((choice) => choice.account.id),
++              ).toEqual([account.id]);
++              for (const other of selectedAccounts.filter((id) => id !== account.id))
++                expect(offered.accounts.some((choice) => choice.account.id === other)).toBe(false);
++              yield* browser.use("Open Executor's accounts after unlinking", (page) =>
++                page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
++              );
++              const automaticChoice = (page: Page) =>
++                page
++                  .getByRole("region", { name: "Executor", exact: true })
++                  .getByRole("radio", { name: "Set up automatically", exact: true });
++              yield* browser.use("The unlinked key is offered as Set up automatically", (page) =>
++                automaticChoice(page).waitFor(),
++              );
++              expect(
++                yield* browser.use("The offered key keeps its label hidden", (page) =>
++                  page.getByText(account.label, { exact: true }).count(),
++                ),
++              ).toBe(0);
++              yield* browser.checkpoint(`Automatic choice after unlinking for ${account.label}`);
++              const relinked = yield* browser.use("Link the key again", (page) =>
++                Promise.all([
++                  page.waitForResponse(
++                    (response) =>
++                      response.request().method() === "PUT" &&
++                      new URL(response.url()).pathname.endsWith(
++                        `/accounts/user/service/${account.id}`,
++                      ),
++                  ),
++                  automaticChoice(page).click(),
++                ]).then(([response]) => response.status()),
++              );
++              expect(relinked).toBe(200);
++              yield* browser.use("The linked key is a quiet line again", (page) =>
++                automaticChoice(page).waitFor({ state: "detached" }),
++              );
++              yield* browser.use("The requirement says it is set up automatically", (page) =>
++                page
++                  .getByRole("region", { name: "Executor", exact: true })
++                  .getByText("Set up automatically", { exact: true })
++                  .waitFor(),
++              );
++              yield* browser.checkpoint(`Relinked automatic key for ${account.label}`);
++              // The same saved key is linked again and calls run with it.
++              expect(yield* linkedAccountIds(actor, appPath)).toEqual([account.id]);
++              const relinkedCall = yield* api.request(actor, "POST", `${appPath}/tools/call`, {
++                tool: "context.get",
++                kind: "query",
++                input: {},
++              });
++              expect(relinkedCall.status, JSON.stringify(relinkedCall.body)).toBe(200);
++              expect(yield* body(Identity, relinkedCall)).toEqual({
++                organization: actors.organization.id,
++                role: actor === actors.owner ? "owner" : "admin",
++              });
+             }),
+           );
+         }
+diff --git a/e2e/tests/host-managed-accounts.spec.ts b/e2e/tests/host-managed-accounts.spec.ts
+index 830b354..f1314eb 100644
+--- a/e2e/tests/host-managed-accounts.spec.ts
++++ b/e2e/tests/host-managed-accounts.spec.ts
+@@ -1,7 +1,8 @@
+ /**
+  * People's account lists leave out the host's own credentials: a method declared `provisioned`,
+  * a default access key, or one the host's provisioning records prove. Labels prove nothing, and
+- * an editor still sees a host credential that needs repair.
++ * an editor still sees a host credential that needs repair. Someone who cannot repair it learns
++ * only that it is missing or unavailable, and nothing promises a restore the host has not started.
+  */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+@@ -21,7 +22,10 @@ const App = Schema.Struct({
+   id: Schema.String,
+   activeVersion: Schema.String,
+   requirements: Schema.Struct({
+-    accounts: Schema.Struct({ pool: Schema.Struct({ provider: Schema.String }) }),
++    accounts: Schema.Struct({
++      pool: Schema.Struct({ provider: Schema.String }),
++      access: Schema.Struct({ provider: Schema.String }),
++    }),
+   }),
+ });
+ const source = (
+@@ -33,12 +37,14 @@ const pool = defineProvider({ name: "Signalbox pool", auth: {
+ }, async health() { ${broken ? 'throw new Error("Host access needs repair");' : "return {};"} } });
+ const subscription = defineProvider({ name: "Subscription", auth: { key: secrets({ label: "Subscription", fields: object({ token: string() }) }) } });
+ const notes = defineProvider({ name: "Notes", auth: { token: secrets({ label: "Notes token", fields: object({ token: string() }) }) } });
+-export default defineApp({ app: { accounts: { pool } }, user: { accounts: { subscription, notes } } }, {
++const access = defineProvider({ name: "Host key", auth: { ${broken ? "retired" : "apiKey"}: secrets({ label: "Host key", fields: object({ token: string() }) }) } });
++export default defineApp({ app: { accounts: { pool } }, user: { accounts: { subscription, notes, access } } }, {
+   tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
+ });`;
+ const Listed = Schema.Struct({ accounts: Schema.Array(Schema.Unknown) });
+ const pool = /^Signalbox pool(?: \(pool\))?$/;
+ const subscriptionRegion = /^Subscription(?: \(subscription\))?$/;
++const hostKeyRegion = /^Host key(?: \(access\))?$/;
+ 
+ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibility", (it) => {
+   it.effect(scenarios.hostManagedAccounts.title, (context) =>
+@@ -69,6 +75,15 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+                 yield* api.request(actors.owner, "DELETE", path);
+                 for (const account of saved)
+                   yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++                yield* legacyStorage([
++                  {
++                    sql: `UPDATE "organization" SET metadata = jsonb_set(
++                    coalesce(metadata::jsonb, '{}'::jsonb), '{executorKeyAccounts}',
++                    coalesce(metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)
++                    - 'synthetic-key-holder')::text WHERE id = $1`,
++                    params: [actors.organization.id],
++                  },
++                ]);
+               }),
+             ),
+             Effect.orDie,
+@@ -107,6 +122,8 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+         const subscription = yield* connect("user", "subscription", "key", "Personal subscription");
+         // Someone's own token with the same method name and label is still their sign-in.
+         const lookalike = yield* connect("user", "notes", "token", "Pool access (retired)");
++        // A key the host records as one it minted for someone, linked for the caller.
++        const hostKey = yield* connect("user", "access", "apiKey", "Synthetic host key");
+         const access = yield* body(
+           Schema.Struct({ revision: Schema.String }),
+           yield* api.request(actors.owner, "GET", `${path}/access`),
+@@ -141,6 +158,13 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+               RETURNING p.personal_user_id`,
+             params: [app.id, marked.activeVersion, actors.organization.id, retired],
+           },
++          {
++            sql: `UPDATE "organization" SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
++              '{executorKeyAccounts}', coalesce(metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)
++              || jsonb_build_object('synthetic-key-holder', $1::text))::text
++              WHERE id = $2 RETURNING id`,
++            params: [hostKey, actors.organization.id],
++          },
+         ]);
+         expect(recorded).toHaveLength(1);
+         yield* serverControl("start");
+@@ -159,7 +183,7 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+           });
+         const people = yield* listed("resources"),
+           machine = yield* listed("inventory");
+-        for (const id of [retired, current, key]) {
++        for (const id of [retired, current, key, hostKey]) {
+           expect(people(id), id).toBe(false);
+           expect(machine(id), id).toBe(true);
+         }
+@@ -203,9 +227,12 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+           "image/png",
+           yield* browser.use("Capture Apps", (page) => page.screenshot({ fullPage: true })),
+         );
+-        // The host's token fills the app requirement without counting as an account for everyone.
++        // The host's token fills the app requirement without counting as an account for everyone,
++        // and a healthy host key linked for the caller fills theirs without a name or a warning.
+         expect(card).toContain("Personal subscription");
+         expect(card).not.toContain("for everyone");
++        expect(card).not.toContain("Synthetic host key");
++        expect(card).not.toContain("Account unavailable");
+ 
+         yield* browser.use("Open the pool's Accounts", (page) =>
+           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+@@ -225,11 +252,23 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+             page.getByRole("region", { name: pool }).count(),
+           ),
+         ).toBe(0);
++        const hostKeySection = yield* browser.use("Read the healthy host key's section", (page) => {
++          const section = page.getByRole("region", { name: hostKeyRegion });
++          return section
++            .getByText("Set up automatically", { exact: true })
++            .waitFor()
++            .then(() => section.innerText());
++        });
++        expect(hostKeySection).not.toContain("Synthetic host key");
+ 
+-        expect(
+-          (yield* api.request(actors.owner, "POST", `${path}/deploy`, { files: files(true, true) }))
+-            .status,
+-        ).toBe(200);
++        // The broken version also drops the host key's method, so its sign-in becomes unavailable
++        // once the key moves to that provider below.
++        const brokenDeploy = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: files(true, true),
++        });
++        expect(brokenDeploy.status, JSON.stringify(brokenDeploy.body)).toBe(200);
++        const brokenAccess = (yield* body(Schema.Struct({ app: App }), brokenDeploy)).app
++          .requirements.accounts.access.provider;
+         const failed = yield* check();
+         expect(failed.status, JSON.stringify(failed.body)).toBe(200);
+         expect(JSON.stringify(failed.body)).toContain("Host access needs repair");
+@@ -261,9 +300,22 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+             page.screenshot({ fullPage: true }),
+           ),
+         );
++        // A member learns the host's account is unavailable, never which one or why.
++        const memberPool = yield* browser.use("A member sees broken host access", (page) => {
++          const section = page.getByRole("region", { name: pool });
++          return section
++            .getByText(
++              "This account is set up automatically and is unavailable. Ask an administrator to fix it.",
++              { exact: true },
++            )
++            .waitFor()
++            .then(() => section.innerText());
++        });
++        expect(memberPool).not.toContain("Pool access");
++        expect(memberPool).not.toContain("Host access needs repair");
+         expect(
+-          yield* browser.use("Only editors see host repairs", (page) =>
+-            page.getByRole("region", { name: pool }).count(),
++          yield* browser.use("A member is offered no host repair", (page) =>
++            page.getByRole("region", { name: pool }).getByRole("button").count(),
+           ),
+         ).toBe(0);
+         yield* legacyStorage([
+@@ -271,11 +323,17 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+             sql: "DELETE FROM hosted_app_account_links WHERE app = $1 AND requirement = 'pool'",
+             params: [app.id],
+           },
++          {
++            sql: "UPDATE executor_accounts SET provider = $1 WHERE id = $2",
++            params: [brokenAccess, hostKey],
++          },
+         ]);
+         yield* serverControl("start");
+         const choices = yield* api.request(actors.owner, "GET", `${path}/accounts/app/pool`);
+         expect(choices.status, JSON.stringify(choices.body)).toBe(200);
+         expect((yield* body(Listed, choices)).accounts).toEqual([]);
++        // This host has no setup that restores the link, so it claims no recovery.
++        expect(choices.body).not.toHaveProperty("recovery");
+         yield* browser.login(actors.owner);
+         yield* browser.use("Open missing host access as an editor", (page) =>
+           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+@@ -283,12 +341,14 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+         yield* browser.use("An editor sees missing host access", (page) =>
+           page
+             .getByRole("region", { name: pool })
+-            .getByText(
+-              "This account is missing. It will be restored the next time automatic setup runs.",
+-              { exact: true },
+-            )
++            .getByText("This account is set up automatically and is missing.", { exact: true })
+             .waitFor(),
+         );
++        expect(
++          yield* browser.use("Nothing promises a restore the host did not start", (page) =>
++            page.getByText("This account is missing and is being restored.").count(),
++          ),
++        ).toBe(0);
+         yield* evidence.attach(
+           "pool-unlinked.png",
+           "image/png",
+@@ -296,6 +356,30 @@ layer(HostedLive, { excludeTestServices: true })("Host-managed account visibilit
+             page.screenshot({ fullPage: true }),
+           ),
+         );
++
++        // A broken host key linked for the caller warns on the card without naming the key.
++        yield* browser.use("Open Apps with a broken host key", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps`),
++        );
++        const brokenCard = yield* browser.use("The card flags the unavailable host key", (page) => {
++          const card = page.getByRole("link", {
++            name: "Open Synthetic pool, account unavailable",
++            exact: true,
++          });
++          return card
++            .getByText("Account unavailable", { exact: true })
++            .waitFor()
++            .then(() => card.innerText());
++        });
++        expect(brokenCard).not.toContain("Synthetic host key");
++        expect(brokenCard).not.toContain("Needs account");
++        yield* evidence.attach(
++          "apps-broken-host-key.png",
++          "image/png",
++          yield* browser.use("Capture the broken host key's card", (page) =>
++            page.screenshot({ fullPage: true }),
++          ),
++        );
+       }),
+     ),
+   );
+diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
+new file mode 100644
+index 0000000..ecfe1d1
+--- /dev/null
++++ b/e2e/tests/pool-account-recovery.spec.ts
+@@ -0,0 +1,285 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { scenarios } from "../test-plan.ts";
++
++const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
++const Choices = Schema.Struct({
++  recovery: Schema.optionalKey(Schema.Literal("restoring")),
++  accounts: Schema.Array(Schema.Struct({ account: Schema.Struct({ id: Schema.String }) })),
++});
++const source = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const pool = defineProvider({ name: "Host pool", auth: {
++  token: secrets({ provisioned: true, label: "Pool access", fields: object({ token: string() }) }),
++} });
++export default defineApp({ app: { accounts: { pool } } }, {
++  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
++});`;
++class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
++
++layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) => {
++  it.effect(scenarios.cloudPoolAccountRecovery.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target,
++          evidence = yield* Evidence,
++          http = yield* HttpClient.HttpClient,
++          database = yield* cloudLocks;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
++        // This case owns the lab, and no pool Worker receives its cleanup notification.
++        // Register before setup can fail, while the database fixture is still available.
++        yield* Effect.addFinalizer(() =>
++          rows(
++            `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb)
++              - 'basaltPools')::text where id = $1`,
++            [actors.organization.id],
++          ).pipe(Effect.orDie),
++        );
++        const session = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        );
++        const owner = session.user.id;
++        const cron = Effect.scoped(
++          http
++            .get(
++              `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++            )
++            .pipe(Effect.flatMap((response) => response.text)),
++        );
++        const pending = () =>
++          rows(
++            `select id, status, attempts, (available_at <= now()) as ready,
++          (available_at > now() + interval '1 minute') as deferred
++        from hosted_provisioning where organization_id = $1 and user_id = $2
++          and kind = 'member' and status in ('queued', 'running')
++          and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'`,
++            [actors.organization.id, owner],
++          );
++        // Pool rollouts use ordinary member jobs delayed by 15 minutes, without a special prefix.
++        const deferred = randomUUID();
++        yield* rows(
++          `insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++            values ($1, 'member', $2, $3, now() + interval '15 minutes')`,
++          [deferred, actors.organization.id, owner],
++        );
++        yield* evidence.json("initial-provisioning.json", { jobs: yield* pending(), deferred });
++        // A 30-second dispatch lease is still active setup. Only longer rollouts can wait.
++        yield* pending().pipe(
++          Effect.flatMap((jobs) =>
++            jobs.some(
++              (job) => job.status === "running" || job.attempts !== 0 || job.deferred !== true,
++            )
++              ? Effect.fail(new Pending())
++              : Effect.void,
++          ),
++          Effect.retry({
++            while: Schema.is(Pending),
++            schedule: Schedule.spaced("250 millis"),
++            times: 240,
++          }),
++          Effect.ensuring(
++            Effect.gen(function* () {
++              yield* evidence.json("settled-provisioning.json", { jobs: yield* pending() });
++            }),
++          ),
++        );
++        expect((yield* pending()).find((entry) => entry.id === deferred)).toEqual({
++          id: deferred,
++          status: "queued",
++          attempts: 0,
++          ready: false,
++          deferred: true,
++        });
++        const [original] = yield* rows(
++          `select coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb)::text as pools
++        from organization where id = $1`,
++          [actors.organization.id],
++        );
++        if (typeof original?.pools !== "string")
++          return yield* Effect.die("Missing fixture pool metadata");
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Recovery fixture",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(created.status).toBe(200);
++        const app = yield* body(App, created),
++          path = `${prefix}/apps/${app.id}`,
++          choices = () =>
++            api.request(actors.owner, "GET", `${path}/accounts/app/pool`).pipe(
++              Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++              Effect.flatMap((response) => body(Choices, response)),
++            );
++        const restore = () =>
++          rows(
++            `update organization set metadata = jsonb_set(
++        coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++            [original.pools as string, actors.organization.id],
++          );
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            // Removal must not mistake this synthetic app for the host's recorded pool.
++            yield* restore();
++            yield* api.request(actors.owner, "DELETE", path);
++          }).pipe(Effect.orDie),
++        );
++        const record = (value: unknown) =>
++          rows(
++            `update organization set metadata = jsonb_set(
++        coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++            [JSON.stringify({ [owner]: value }), actors.organization.id],
++          );
++        const noRecovery = Effect.gen(function* () {
++          const before = yield* pending();
++          expect((yield* choices()).recovery).toBeUndefined();
++          expect(yield* pending()).toEqual(before);
++        });
++        yield* evidence.step(
++          "Ordinary apps, malformed records and former owners get no promise or job",
++          Effect.gen(function* () {
++            yield* noRecovery;
++            yield* record({ app: app.id });
++            yield* noRecovery;
++            yield* record({ app: app.id, version: app.activeVersion });
++            yield* rows(
++              `update member set role = 'admin' where "organizationId" = $1 and "userId" = $2`,
++              [actors.organization.id, owner],
++            );
++            yield* rows(
++              `update hosted_provisioning set available_at = now() + interval '1 day'
++            where organization_id = $1 and user_id = $2 and kind = 'member' and status = 'queued'`,
++              [actors.organization.id, owner],
++            );
++            yield* noRecovery;
++            yield* rows(
++              `update member set role = 'owner' where "organizationId" = $1 and "userId" = $2`,
++              [actors.organization.id, owner],
++            );
++            yield* rows(`update "user" set "emailVerified" = false where id = $1`, [owner]);
++            yield* noRecovery;
++            yield* rows(`update "user" set "emailVerified" = true where id = $1`, [owner]);
++          }),
++        );
++        // The app's second version models an owner-edited pool. Repair must keep that source.
++        const updated = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
++          files: [
++            { path: "index.ts", content: `${source}\n// Owner keeps this source.\n` },
++            appsManifest,
++          ],
++        });
++        expect(updated.status).toBe(200);
++        const current = (yield* body(Schema.Struct({ app: App }), updated)).app;
++        expect(current.activeVersion).not.toBe(app.activeVersion);
++        const job = randomUUID();
++        yield* rows(
++          `delete from hosted_provisioning where organization_id = $1 and user_id = $2
++        and kind = 'member' and status = 'queued'`,
++          [actors.organization.id, owner],
++        );
++        yield* rows(
++          `insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++        values ($1, 'member', $2, $3, now() + interval '1 day')`,
++          [job, actors.organization.id, owner],
++        );
++        yield* evidence.step(
++          "Reads preserve retry backoff and do not restart a recent failed repair",
++          Effect.gen(function* () {
++            yield* rows(`update hosted_provisioning set attempts = 3 where id = $1`, [job]);
++            const start = () =>
++              rows(`select available_at::text as start from hosted_provisioning where id = $1`, [
++                job,
++              ]);
++            const before = yield* start();
++            yield* choices();
++            expect(yield* start()).toEqual(before);
++            yield* rows(
++              `update hosted_provisioning set status = 'failed', attempts = 8, updated_at = now()
++                where id = $1`,
++              [job],
++            );
++            expect((yield* choices()).recovery).toBeUndefined();
++            expect(yield* pending()).toEqual([]);
++            yield* rows(
++              `update hosted_provisioning set status = 'queued', attempts = 0,
++                available_at = now() + interval '5 minutes' where id = $1`,
++              [job],
++            );
++          }),
++        );
++        expect((yield* api.request(actors.member, "GET", `${path}/accounts/app/pool`)).status).toBe(
++          403,
++        );
++        const history = () =>
++          rows(
++            `select id, status, attempts,
++                (available_at > now() + interval '1 minute') as deferred
++              from hosted_provisioning
++              where organization_id = $1 and user_id = $2 and kind = 'member'
++                and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'
++              order by id`,
++            [actors.organization.id, owner],
++          );
++        const previous = new Set((yield* history()).map((entry) => entry.id));
++        const recovery = () =>
++          rows(
++            `select id, status, attempts from hosted_provisioning
++              where id = $1 and kind = 'member' and organization_id = $2 and user_id = $3`,
++            [job, actors.organization.id, owner],
++          );
++        yield* evidence.step(
++          "One editor read activates its owner job and the normal workflow repairs the link",
++          Effect.gen(function* () {
++            // The selected outbox ID stays stable even when request finalizers finish first.
++            yield* choices();
++            yield* cron;
++            const repaired = yield* recovery().pipe(
++              Effect.flatMap((jobs) => {
++                expect(jobs.length, JSON.stringify(jobs)).toBeLessThanOrEqual(1);
++                return jobs.length === 1 && jobs[0]?.status === "succeeded"
++                  ? Effect.succeed(jobs)
++                  : Effect.fail(new Pending());
++              }),
++              Effect.retry({
++                while: Schema.is(Pending),
++                schedule: Schedule.spaced("250 millis"),
++                times: 240,
++              }),
++            );
++            expect(repaired).toHaveLength(1);
++            const restored = yield* choices();
++            expect(restored.recovery).toBeUndefined();
++            expect(restored.accounts).toHaveLength(1);
++            // Rollouts enqueue unattempted member jobs 15 minutes ahead. Dispatch leases are 30s.
++            const duplicates = (yield* history()).filter(
++              (entry) =>
++                !previous.has(entry.id) && !(entry.attempts === 0 && entry.deferred === true),
++            );
++            expect(duplicates).toEqual([]);
++            const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", path));
++            expect(unchanged.activeVersion).toBe(current.activeVersion);
++            yield* evidence.json("pool-recovery.json", {
++              job: repaired[0]?.id,
++              repairs: repaired,
++              account: restored.accounts[0]?.account.id,
++              sourcePreserved: true,
++              queuedByRead: true,
++              credentialCreatedByJob: true,
++            });
++          }),
++        );
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/contracts/app-accounts.ts b/packages/ui/src/contracts/app-accounts.ts
+index ed94f0b..c3c8136 100644
+--- a/packages/ui/src/contracts/app-accounts.ts
++++ b/packages/ui/src/contracts/app-accounts.ts
+@@ -30,6 +30,8 @@ export interface RequirementLink<A> {
+ export interface RequirementChoice<A> {
+   readonly account: A;
+   readonly linked: boolean;
++  /** The caller's own default host credential, offered without its label or details. */
++  readonly automatic?: true | undefined;
+ }
+ 
+ /**
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+index 421d3cd..403ca47 100644
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -69,8 +69,14 @@ export interface Inventory {
+   /** The listed accounts linked to each listed app for everyone, when this inventory lists them. */
+   readonly appLinks?: readonly AppAccountLink[];
+   readonly accounts: readonly AccountSummary[];
+-  /** The caller's links to host credentials: they satisfy requirements but are never listed. */
+-  readonly hostManagedLinks?: readonly (AppAccountLink & { readonly provider: ProviderId })[];
++  /**
++   * The caller's links to host credentials: they satisfy requirements but are never listed. A
++   * `problem` is the link's sign-in state when it no longer works.
++   */
++  readonly hostManagedLinks?: readonly (AppAccountLink & {
++    readonly provider: ProviderId;
++    readonly problem?: "reconnect" | "unavailable" | undefined;
++  })[];
+ }
+ /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */
+ export type Query<A, E> = Atom.Atom<AsyncResult.AsyncResult<A, E>>;
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 7d7c952..fec24b9 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -74,6 +74,22 @@ const provisionedProblem = (app: App, account: AccountSummary) => {
+   );
+ };
+ 
++/**
++ * The caller's own default host credential as a choice: what it is, never its label or the
++ * identity a check reported.
++ */
++const automaticAccount = (requirement: AccountRequirement, account: Account): AccountSummary => ({
++  id: account.id,
++  provider: account.provider,
++  method: account.method,
++  label: "Set up automatically",
++  description: null,
++  owner: account.owner,
++  createdAt: account.createdAt,
++  providerName: requirement.definition.name,
++  providerUrl: providerDisplayUrl(requirement.definition),
++});
++
+ const accountName = (account: AccountSummary) =>
+   account.label ||
+   account.health?.info?.displayName ||
+@@ -351,9 +367,14 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
+ /** Changing the links of one scope. The host still authorizes every link and connection. */
+ export interface LinkEditing<E> {
+   /** One requirement's linked accounts, then the other accounts the caller could link. */
+-  readonly choices: (
+-    slot: string,
+-  ) => Query<{ readonly accounts: readonly RequirementChoice<Account>[] }, E>;
++  readonly choices: (slot: string) => Query<
++    {
++      readonly accounts: readonly RequirementChoice<Account>[];
++      /** Set only when the host has queued or found real setup that restores a missing link. */
++      readonly recovery?: "restoring" | undefined;
++    },
++    E
++  >;
+   readonly link: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
+   /** Connect a new account for the requirement; saving it links it. */
+@@ -422,16 +443,17 @@ export function AppAccounts<E>({
+   );
+   // App links are the editors' to repair; user links belong to the caller, who sees their own.
+   const repairs = { app: appAccounts.edit !== undefined, user: true };
++  // A host requirement shows only while it is missing or broken. Viewers who cannot repair it learn
++  // that much, never which credential it is.
+   const visible =
+-    (scope: AccountScope, data: ScopeAccounts<E>) =>
++    (data: ScopeAccounts<E>) =>
+     ([slot, requirement]: RequirementEntry) => {
+       const linked = data.links.filter((link) => link.requirement === slot);
+       if (!provisionedOnly(requirement)) return true;
+-      if (!repairs[scope]) return false;
+       return linked.length === 0 || linked.some(({ account }) => provisionedProblem(app, account));
+     };
+-  const appRequirements = scoped(app, "app").filter(visible("app", appAccounts));
+-  const userRequirements = scoped(app, "user").filter(visible("user", yourAccounts));
++  const appRequirements = scoped(app, "app").filter(visible(appAccounts));
++  const userRequirements = scoped(app, "user").filter(visible(yourAccounts));
+   if (appRequirements.length === 0 && userRequirements.length === 0)
+     return Object.keys(app.requirements.accounts).length > 0 ? (
+       <EmptyState size="compact" title="Set up automatically">
+@@ -562,7 +584,9 @@ function RequirementView<E>({
+         </div>
+       </div>
+       <div className="overflow-hidden rounded-lg border">
+-        {data.edit === undefined || managed ? (
++        {data.edit !== undefined && managed && linked.length === 0 ? (
++          <MissingHostAccount edit={data.edit} slot={slot} Failure={props.Failure} />
++        ) : data.edit === undefined || managed ? (
+           <ReadOnlyChoices {...props} slot={slot} requirement={requirement} linked={linked} />
+         ) : (
+           <EditableChoices
+@@ -662,13 +686,12 @@ function ReadOnlyChoices<E>({
+   readonly linked: readonly AccountSummary[];
+ }) {
+   const plain = requirement.cardinality === "one";
++  // Editors who can change a missing host link read its recovery instead (`MissingHostAccount`).
+   if (linked.length === 0)
+     return (
+       <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">
+         {provisionedOnly(requirement)
+-          ? data.edit === undefined
+-            ? "This account is set up automatically and is missing. Ask an administrator to restore it."
+-            : "This account is missing. It will be restored the next time automatic setup runs."
++          ? "This account is set up automatically and is missing. Ask an administrator to restore it."
+           : "No account linked"}
+       </p>
+     );
+@@ -678,7 +701,13 @@ function ReadOnlyChoices<E>({
+       (showProvisionedProblems && provisionedProblem(app, account)),
+   );
+   if (shown.length === 0)
+-    return <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>;
++    return (
++      <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">
++        {linked.some((account) => provisionedProblem(app, account))
++          ? "This account is set up automatically and is unavailable. Ask an administrator to fix it."
++          : "Set up automatically"}
++      </p>
++    );
+   const rows = shown.map((account) => {
+     const provisioned = provisionedMethod(requirement, account);
+     return (
+@@ -745,6 +774,37 @@ function ReadOnlyChoices<E>({
+   );
+ }
+ 
++/**
++ * A missing host link, for someone who can change the scope's links. Only the host's read of the
++ * requirement can say its setup is restoring the link; until it does, nothing is promised.
++ */
++function MissingHostAccount<E>({
++  edit,
++  slot,
++  Failure,
++}: {
++  readonly edit: LinkEditing<E>;
++  readonly slot: string;
++  readonly Failure: ComponentType<FailureProps<E>>;
++}) {
++  const { result, data, refresh } = useQuery(edit.choices(slot));
++  const restoring = Option.isSome(data) && data.value.recovery === "restoring";
++  return (
++    <div className="divide-y divide-border/50">
++      {AsyncResult.isFailure(result) && (
++        <div className="px-3.5 py-2.5 text-xs">
++          <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
++        </div>
++      )}
++      <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">
++        {restoring
++          ? "This account is missing and is being restored."
++          : "This account is set up automatically and is missing."}
++      </p>
++    </div>
++  );
++}
++
+ /**
+  * The accounts the caller could use for one requirement, from the host's read of it. Until that
+  * read arrives the linked accounts show, without controls that could act on stale choices.
+@@ -775,16 +835,29 @@ function EditableChoices<E>({
+     account;
+   const choices = byName(
+     Option.match(loaded, {
+-      onNone: () => linked.map((account) => ({ account, linked: true })),
+-      // An account deleted since the read is no longer the caller's to link.
++      onNone: (): RequirementChoice<AccountSummary>[] =>
++        linked.map((account) => ({ account, linked: true })),
++      // An account deleted since the read is no longer the caller's to link. The caller's default
++      // host credential is never in their account list, so the host's flag keeps it offered.
+       onSome: (value) =>
+-        value.accounts.flatMap((choice) =>
+-          choice.linked || accounts.some((item) => item.id === choice.account.id)
+-            ? [{ account: summarize(choice.account), linked: choice.linked }]
+-            : [],
++        value.accounts.flatMap((choice): RequirementChoice<AccountSummary>[] =>
++          choice.automatic === true
++            ? [
++                {
++                  account: automaticAccount(requirement, choice.account),
++                  linked: choice.linked,
++                  automatic: true,
++                },
++              ]
++            : choice.linked || accounts.some((item) => item.id === choice.account.id)
++              ? [{ account: summarize(choice.account), linked: choice.linked }]
++              : [],
+         ),
+     }),
+-  ).filter(({ account, linked }) => linked || !provisionedMethod(requirement, account));
++  ).filter(
++    (choice) =>
++      choice.linked || choice.automatic === true || !provisionedMethod(requirement, choice.account),
++  );
+   const ready = Option.isSome(loaded) && edit.connecting !== true;
+   // Picking or connecting another account for a plain requirement retires an app-bound one, so it
+   // asks first.
+@@ -796,13 +869,18 @@ function EditableChoices<E>({
+           requirement.definition.auth[choice.account.method]?.type === "interactive",
+       )
+     : undefined;
++  // The only unlinked host choice left is the caller's own default credential: its row is the way
++  // back after unlinking it. A linked one shows only to repair it.
+   const shown = choices.filter(
+-    ({ account }) =>
+-      !provisionedMethod(requirement, account) ||
+-      (showProvisionedProblems && provisionedProblem(app, account)),
++    (choice) =>
++      (choice.automatic !== true && !provisionedMethod(requirement, choice.account)) ||
++      !choice.linked ||
++      (showProvisionedProblems && provisionedProblem(app, choice.account)),
+   );
+-  // A healthy host credential fills the requirement without a row; picking another replaces it.
+-  const automatic = shown.length < choices.length;
++  // A healthy host credential fills the requirement without a row. In a plain requirement the host
++  // refuses to replace one linked through a `provisioned` method, so picking another row fails
++  // with its error instead of swapping it; a credential only its records prove can be replaced.
++  const hiddenHost = shown.length < choices.length;
+   const rows = shown.map((choice) => (
+     <ChoiceRow
+       replaces={
+@@ -839,7 +917,7 @@ function EditableChoices<E>({
+           <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
+         </div>
+       )}
+-      {automatic && !provisionedOnly(requirement) && (
++      {hiddenHost && !provisionedOnly(requirement) && (
+         <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
+       )}
+       {shown.length > 0 &&
+@@ -913,6 +991,8 @@ function ChoiceRow<E>({
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   const { account, linked } = choice;
++  // The caller's default credential links like any choice, with no menu that could name it.
++  const automatic = choice.automatic === true;
+   const link = edit.link(slot, account.id);
+   const unlink = edit.unlink(slot, account.id);
+   const runLink = useAtomSet(link, { mode: "promiseExit" });
+@@ -923,7 +1003,7 @@ function ChoiceRow<E>({
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const id = useId();
+   const name = accountName(account);
+-  const hostProvisioned = provisionedMethod(requirement, account);
++  const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+   // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
+   const appBound = requirement.definition.auth[account.method]?.type === "interactive";
+   const [confirming, setConfirming] = useState(false);
+@@ -982,7 +1062,9 @@ function ChoiceRow<E>({
+             account={account}
+             labelFor={id}
+             actions={
+-              hostProvisioned ? undefined : data.accountMenu?.(account, slot, requirement, linked)
++              hostProvisioned || automatic
++                ? undefined
++                : data.accountMenu?.(account, slot, requirement, linked)
+             }
+           />
+         </div>
+@@ -1001,7 +1083,9 @@ function ChoiceRow<E>({
+             account={account}
+             part="header"
+             reconnect={
+-              hostProvisioned ? undefined : data.reconnectAction?.(account, slot, requirement)
++              hostProvisioned || automatic
++                ? undefined
++                : data.reconnectAction?.(account, slot, requirement)
+             }
+           />
+         </span>
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+index 2b2cbc7..30c804d 100644
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -133,12 +133,12 @@ function AppsList({
+               data.appAccountCounts?.find((item) => item.app === app.id)?.count ?? 0;
+             // The inventory names no requirements, so a user requirement counts any linked
+             // account of its provider. App-scope links contribute only their inventory count.
+-            // Host credentials fill a requirement without being shown as the caller's account.
++            // Host credentials fill a requirement without being shown as the caller's account,
++            // and still warn when their sign-in stops working.
++            const hostManaged = (data.hostManagedLinks ?? []).filter((link) => link.app === app.id);
+             const filling = [
+               ...selected,
+-              ...(data.hostManagedLinks ?? []).flatMap((link) =>
+-                link.app === app.id ? [{ id: link.account, provider: link.provider }] : [],
+-              ),
++              ...hostManaged.map((link) => ({ id: link.account, provider: link.provider })),
+             ];
+             const user = Object.entries(app.requirements.accounts).flatMap(([slot, requirement]) =>
+               requirement.scope === "user"
+@@ -148,8 +148,12 @@ function AppsList({
+                 : [],
+             );
+             const missing = missingRequirements(requirementAccounts(app, { user })).length > 0;
+-            const needsSignIn = selected.some((account) => accountNeedsSignIn(account));
+-            const unavailable = selected.some((account) => account.signIn?.state === "unavailable");
++            const needsSignIn =
++              selected.some((account) => accountNeedsSignIn(account)) ||
++              hostManaged.some((link) => link.problem === "reconnect");
++            const unavailable =
++              selected.some((account) => account.signIn?.state === "unavailable") ||
++              hostManaged.some((link) => link.problem === "unavailable");
+             const provider = Object.values(app.requirements.accounts)[0]?.definition;
+             const userAccounts = selected
+               .map((account) => account.label || "Unnamed account")
+@@ -195,7 +199,11 @@ function AppsList({
+                   </div>
+                   <div className="app-card-footer flex items-center justify-between gap-3 mt-auto pt-4 text-[11px] text-muted-foreground max-[600px]:col-start-2 max-[600px]:row-start-2 max-[600px]:mt-0 max-[600px]:self-start max-[600px]:pt-0">
+                     <div className="account-cell [.app-card_&]:flex-1 [.app-card_&]:[align-content:start] [.app-card_&]:text-foreground max-[600px]:[.app-card_&]:text-muted-foreground [.app-card_&_>_span]:min-w-0 grid gap-1.25 text-[12px] min-w-0 [&_>_span]:flex [&_>_span]:items-center [&_>_span]:gap-1.5 [&_>_span]:wrap-anywhere [&_svg]:text-muted-foreground [&_svg]:shrink-0">
+-                      {missing || selected.length > 0 || appAccountCount > 0 ? (
++                      {missing ||
++                      needsSignIn ||
++                      unavailable ||
++                      selected.length > 0 ||
++                      appAccountCount > 0 ? (
+                         <span>
+                           {missing || needsSignIn || unavailable ? (
+                             <HugeiconsIcon
