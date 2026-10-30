@@ -27,6 +27,7 @@ import { reportPoolStorage } from "./inventory-storage.ts";
 export interface PoolEnvironment extends TelemetryEnv {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
   POOL_DATABASE_URL: string;
+  POOL_AUTH_DATABASE?: Hyperdrive;
   POOL_MANAGEMENT_KEY: string;
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
@@ -205,7 +206,9 @@ export async function handlePoolWorkerRequest(
     if (!supplied) return modelAuthResponse(401, "Missing API key");
     if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
     try {
-      if (!(await lookupHomeApiKey(env.POOL_DATABASE_URL, values)))
+      const connectionString = env.POOL_AUTH_DATABASE?.connectionString;
+      if (!connectionString) return modelAuthResponse(503, "Authentication service unavailable");
+      if (!(await lookupHomeApiKey(connectionString, values)))
         return modelAuthResponse(401, "Invalid API key");
     } catch {
       return modelAuthResponse(503, "Authentication service unavailable");

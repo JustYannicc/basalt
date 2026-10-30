@@ -31,10 +31,11 @@ hooks.deregister();
 
 type WorkerEnvironment = Parameters<typeof handlePoolWorkerRequest>[1];
 
-function poolStub() {
+function poolStub(connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool") {
   const calls = { lookups: 0, forwarded: [] as Request[] };
   const env = {
     POOL_DATABASE_URL: "postgres://fixture:fixture@database.invalid/basalt_pool",
+    POOL_AUTH_DATABASE: { connectionString },
     PoolContainer: {
       jurisdiction(region: string) {
         calls.lookups += 1;
@@ -61,7 +62,7 @@ test("the exported Worker rejects bad credentials before controller lookup and p
     { request: new Request("https://pool.example/v1/models"), status: 401 },
     { request: new Request("https://pool.example/v1/models?key=invalid-home-key"), status: 401 },
     { request: new Request("https://pool.example/v1/models?key=revoked-home-key"), status: 401 },
-    { request: new Request("https://pool.example/v1/models?key=%20valid-home-key%20"), status: 401 },
+    { request: new Request("https://pool.example/v1/models?key=%20valid-home-key%20"), status: 202 },
     { request: new Request("https://pool.example/v1/models?key=valid-home-key"), status: 503, unavailable: true },
     { request: new Request("https://pool.example/v1/models?key=valid-home-key"), status: 202 },
     { request: new Request("https://pool.example/v1/models?auth_token=valid-home-key"), status: 202 },
@@ -80,8 +81,7 @@ test("the exported Worker rejects bad credentials before controller lookup and p
     },
   ];
   for (const { request, status, unavailable } of cases) {
-    const { env, calls } = poolStub();
-    if (unavailable) env.POOL_DATABASE_URL = "postgres://unavailable";
+    const { env, calls } = poolStub(unavailable ? "postgres://unavailable" : undefined);
     const response = await worker.fetch(request, env);
     assert.equal(response.status, status);
     assert.equal(calls.lookups, status === 202 ? 1 : 0);
@@ -91,6 +91,19 @@ test("the exported Worker rejects bad credentials before controller lookup and p
       if (request.method === "POST") assert.equal(await calls.forwarded[0]!.text(), "unchanged model request");
     }
   }
+});
+
+test("a missing Hyperdrive binding fails closed without using the direct container URL", async () => {
+  const { env, calls } = poolStub();
+  delete env.POOL_AUTH_DATABASE;
+  let queries = 0;
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/models?key=valid-home-key"), env,
+    async () => { queries += 1; return true; },
+  );
+  assert.equal(response.status, 503);
+  assert.equal(queries, 0);
+  assert.equal(calls.lookups, 0);
 });
 
 test("missing model keys return 401 before the Worker obtains the pool Durable Object", async () => {
@@ -155,7 +168,7 @@ test("any matching candidate continues unchanged through the pool Durable Object
   });
   let checked: readonly string[] = [];
   const response = await handlePoolWorkerRequest(request, env, async (connectionString, candidates) => {
-    assert.equal(connectionString, env.POOL_DATABASE_URL);
+    assert.equal(connectionString, env.POOL_AUTH_DATABASE!.connectionString);
     checked = candidates;
     return candidates.includes("valid-home-key");
   });
@@ -206,15 +219,15 @@ test("the public Worker uses its Home database lookup for valid keys", async () 
   assert.equal(calls.forwarded.length, 1);
 });
 
-test("a whitespace-padded query key cannot wake the container using an active key's value", async () => {
+test("a whitespace-padded active query key remains valid as in Home", async () => {
   const { env, calls } = poolStub();
   const response = await handlePoolWorkerRequest(
     new Request("https://pool.example/v1/models?key=%20valid-home-key%20"),
     env,
   );
-  assert.equal(response.status, 401);
-  assert.equal(calls.lookups, 0);
-  assert.equal(calls.forwarded.length, 0);
+  assert.equal(response.status, 202);
+  assert.equal(calls.lookups, 1);
+  assert.equal(calls.forwarded.length, 1);
 });
 
 test("signed pool access remains outside the Home model-key gate", async () => {

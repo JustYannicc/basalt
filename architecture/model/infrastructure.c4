@@ -118,7 +118,7 @@ model {
   databaseService = adapter "Database service" {
     #external
     technology "PlanetScale PostgreSQL · Cloudflare Hyperdrive"
-    metadata { sdks "pg"; resources "resource-1c88d10b5de3bf460a8772c9b75e87b1842812974a3ff9bb89d9df69c8665e3f|resource-36bbc91f4c0cea36c4c284f46252363d08b5ca107887b7cab233616a66362be1|resource-a9cb94b268fa684a3dd66682aa60d53e10d404540387ac7879129c9d9c047e1c|resource-b54ed15a0aee795ccd57ee376d4787aecbcc971446c7fbcecc637019e478a1a8|resource-cb8878dc4c0d274e4dfdda3cfba8bbb5dc8ef2047aca690dac963a5c96a85c48|resource-d8bc2fd096ea426d22d32ec1458fd53de4ae99878a54a89bda962695910ed660" }
+    metadata { sdks "pg"; resources "resource-1c88d10b5de3bf460a8772c9b75e87b1842812974a3ff9bb89d9df69c8665e3f|resource-36bbc91f4c0cea36c4c284f46252363d08b5ca107887b7cab233616a66362be1|resource-a9cb94b268fa684a3dd66682aa60d53e10d404540387ac7879129c9d9c047e1c|resource-b54ed15a0aee795ccd57ee376d4787aecbcc971446c7fbcecc637019e478a1a8|resource-cb8878dc4c0d274e4dfdda3cfba8bbb5dc8ef2047aca690dac963a5c96a85c48|resource-d8bc2fd096ea426d22d32ec1458fd53de4ae99878a54a89bda962695910ed660|resource-ae1940a06e995c1b1716d2d0fbded4d59614dcd575c33c2d6da70a50c87d6a03" }
   }
   basalt.toolsGateway -[sync]-> databaseService "call"
   basalt.modelGateway -[sync]-> databaseService "read-only pool inventory"
