@@ -213,7 +213,7 @@ export function proveGitLab({
       assert.equal(write.structuredContent?.status, "approval-required");
       assert.equal(typeof write.structuredContent.requestId, "string");
       assert.equal(write.structuredContent.invocation?.app, app.id);
-      assert.equal(write.structuredContent.invocation?.tool, "postApiV4Projects");
+      assert.equal(write.structuredContent.invocation?.tool, "projects.postApiV4Projects");
       assert.equal(item.site.requests.filter((event) =>
         event.method === "POST" && event.path === "/api/v4/projects",
       ).length, writesBefore, "An unapproved GitLab mutation must not reach the provider");
