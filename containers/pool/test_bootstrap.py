@@ -328,6 +328,24 @@ class BootstrapContractTests(unittest.TestCase):
                 self.assertIsNone(safe_child_output_line("home", "provider: " + message))
                 self.assertIsNone(safe_child_output_line("home", message + "ish error=private-content-sentinel"))
 
+    def test_read_output_forwards_closed_app_log_privacy_counts(self) -> None:
+        prefix = "[CLIProxyAPIHome] [2026-10-29 12:00:00] [--------] [info ] [app_log.go:42] "
+        messages = [
+            'POOL_APP_LOG_PRIVACY_AUDIT {"log_rows":203}',
+            'POOL_APP_LOG_WRITE_FAILURE {"count":1}',
+        ]
+        lines = [prefix + message + "\n" for message in messages]
+        self.assertEqual(self.read_child_output("home", lines), messages)
+        self.assertEqual(self.read_child_output("node", lines), [])
+        invalid = [
+            'POOL_APP_LOG_PRIVACY_AUDIT {"log_rows":203,"body":"private-sentinel"}',
+            'POOL_APP_LOG_PRIVACY_AUDIT {"log_rows":true}',
+            'POOL_APP_LOG_PRIVACY_AUDIT {"log_rows":-1}',
+            'POOL_APP_LOG_WRITE_FAILURE {"count":1,"error":"private-sentinel"}',
+            'POOL_APP_LOG_WRITE_FAILURE {"count":1,"count":2}',
+        ]
+        self.assertEqual(self.read_child_output("home", [prefix + message + "\n" for message in invalid]), [])
+
     def test_readiness_payload_contains_only_boot_identity(self) -> None:
         readiness = Readiness("fixture-management-key")
         ready, payload = readiness.snapshot()

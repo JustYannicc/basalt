@@ -78,6 +78,37 @@ export class FixtureDiagnostics {
     assert.fail("Privacy cleanup did not complete within the fixture budget");
   }
 
+  async waitForAppLogPrivacy(timeout = 90_000): Promise<void> {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      if (this.sql("select count(*) from home_data_migration where app_logs_done=false or app_log_audit_marker_emitted=false") === "0" &&
+        this.sql("select count(*) from home_data_migration") !== "0") return;
+      await delay(200);
+    }
+    assert.fail("App-log cleanup did not complete within the fixture budget");
+  }
+
+  pushAppLog(payload: { line: string; level: string; timestamp: string; request_id: string }): void {
+    // Use the running node's synthetic mTLS identity over Home's real RESP path.
+    // Certificate bytes stay inside the disposable container.
+    const script = `import json,pathlib,socket,ssl,sys
+certificates=list(pathlib.Path('/dev/shm/cliproxy-pool/node').glob('*/.cli-proxy-api/client-crt.pem'))
+assert len(certificates)==1, 'expected one synthetic node identity'
+directory=certificates[0].parent
+context=ssl.create_default_context(cafile=str(directory/'home-ca-crt.pem'))
+context.load_cert_chain(str(directory/'client-crt.pem'),str(directory/'client-key.pem'))
+parts=[b'RPUSH',b'app-log',sys.argv[1].encode()]
+command=b'*3\\r\\n'+b''.join(b'$'+str(len(part)).encode()+b'\\r\\n'+part+b'\\r\\n' for part in parts)
+with socket.create_connection(('127.0.0.1',8327),timeout=5) as plain:
+ with context.wrap_socket(plain,server_hostname='127.0.0.1') as connection:
+  connection.sendall(command)
+  reply=connection.makefile('rb').readline()
+  assert reply==b':1\\r\\n', 'synthetic app-log push was rejected'
+print('1')
+`;
+    assert.equal(output(["exec", `${this.name}-pool`, "python3", "-c", script, JSON.stringify(payload)]).trim(), "1");
+  }
+
   async scan(secrets: readonly string[]): Promise<{ database: number; files: number; logs: number }> {
     assert.ok(secrets.length && secrets.every((value) => value.length >= 8));
     const tables = this.sql("select tablename from pg_tables where schemaname='public' and " +

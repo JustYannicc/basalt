@@ -126,10 +126,10 @@ index 7f28904..3e93ab0 100644
  		result, errBackfill := repo.RunUsageTokenAccountingBackfillBatch(batchCtx)
  		cancel()
 diff --git a/docs/management/api.md b/docs/management/api.md
-index 37fad63..7947ebd 100644
+index 37fad63..2c9d703 100644
 --- a/docs/management/api.md
 +++ b/docs/management/api.md
-@@ -41,6 +41,33 @@ Home management state is stored in the database-backed cluster repository. When
+@@ -41,6 +41,44 @@ Home management state is stored in the database-backed cluster repository. When
  
  The route list below is the database-backed route set registered by `cmd/home` through `WithDatabaseManagement`.
  
@@ -142,6 +142,12 @@ index 37fad63..7947ebd 100644
 +that reference cannot authenticate. Nodes sending a precomputed reference send
 +matching `api_key` and `api_key_fingerprint` fields.
 +
++Application-log ingestion independently projects older nodes' payloads before
++console output and storage. It keeps only a fixed `POOL_APP_LOG {"count":1}` line,
++closed severity, timestamp and validated generated request ID. Addresses and
++arbitrary message fields are dropped. The PostgreSQL guard applies this same
++projection to application-log inserts and updates from older writers.
++
 +Canonical UUID session IDs remain available for exact request-to-usage lookup.
 +Home drops free-form session text. Nodes project custom session text to an
 +opaque UUID before diagnostics retain it. Parent session text is omitted.
@@ -152,6 +158,11 @@ index 37fad63..7947ebd 100644
 +committing its audit counts, cleanup and cursor together. A failed batch emits
 +only numeric retry metadata and retries with backoff without stopping serving.
 +Other historical backfills yield to this audit; new usage and billing continue.
++
++Application-log cleanup extends the same journal even when usage cleanup already
++completed. It pins an indexed upper bound and commits at most 100 projected rows
++with its cursor and count per transaction. `POOL_APP_LOG_PRIVACY_AUDIT` reports
++`log_rows` once without changing or replaying the earlier usage audit receipt.
 +
 +The private `home_data_migration_audit_key` table retains distinct affected key
 +IDs and one-way fingerprints for unknown keys. Runtime logs contain progress,
@@ -164,10 +175,10 @@ index 37fad63..7947ebd 100644
  
  Management routes under `/v8/management/*` and `/v0/management/*` require a management key. The exception is `GET/POST /v8/management/oauth/callback`: it validates a pending OAuth `state` without the management-key middleware. Availability checks still apply, so a disabled Management API also disables the v8 callback.
 diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
-index 515ad4b..48d839c 100644
+index 515ad4b..9d7b851 100644
 --- a/docs/management/api_CN.md
 +++ b/docs/management/api_CN.md
-@@ -41,6 +41,30 @@ Home management state 存储在 database-backed cluster repository 中。如果
+@@ -41,6 +41,39 @@ Home management state 存储在 database-backed cluster repository 中。如果
  
  下面的 route 清单是 `cmd/home` 通过 `WithDatabaseManagement` 注册的 database-backed route set。
  
@@ -179,6 +190,11 @@ index 515ad4b..48d839c 100644
 +Usage 使用 SHA-256 密钥指纹关联客户端；该指纹不能用于认证。
 +节点发送预先计算的指纹时，`api_key` 与 `api_key_fingerprint` 必须一致。
 +
++应用日志在输出到控制台或写入数据库之前也会独立筛选旧节点的 payload。
++仅保留固定的 `POOL_APP_LOG {"count":1}`、封闭级别、时间戳及验证过的生成请求 ID。
++地址和任意消息字段会被移除。PostgreSQL 保护对旧写入方的应用日志 INSERT 和
++UPDATE 执行相同筛选。
++
 +规范的 UUID 会话 ID 会保留，用于精确关联请求与 usage 记录。
 +Home 会丢弃自由文本会话标识。节点在保留诊断数据之前，
 +会将自定义会话文本转换成不透明 UUID。父会话文本会被移除。
@@ -188,6 +204,10 @@ index 515ad4b..48d839c 100644
 +每个事务最多处理 100 行，限时五秒，原子提交计数、清理结果和游标。
 +失败批次只记录数字重试信息，并退避重试，不会停止服务。
 +其他历史回填等待这次审计，新请求的用量和计费继续运行。
++
++应用日志清理扩展同一个 journal，包括已经完成 usage 清理的安装。
++它用索引固定历史上界，每个事务最多提交 100 行筛选结果、游标和计数。
++`POOL_APP_LOG_PRIVACY_AUDIT` 仅输出一次 `log_rows`，不会修改或重放先前的 usage 回执。
 +
 +私有表 `home_data_migration_audit_key` 保存去重后的受影响密钥 ID，
 +未知密钥仅使用单向指纹表示。运行日志仅输出进度、重试和最终计数。
@@ -226,6 +246,34 @@ index 8b6ce81..c945ebe 100644
  				updatedEntry = true
  				stats.RuntimeChanged = true
  			}
+diff --git a/internal/cluster/app_log.go b/internal/cluster/app_log.go
+index 744e9bb..d5befed 100644
+--- a/internal/cluster/app_log.go
++++ b/internal/cluster/app_log.go
+@@ -60,6 +60,14 @@ func AppLogRecordFromPayload(clientIP string, homeIP string, payload string) (*A
+ 	if !json.Valid([]byte(payload)) {
+ 		return nil, fmt.Errorf("app log payload is invalid json")
+ 	}
++	if DiagnosticsMetadataOnlyEnabled() {
++		projected, errProjection := SanitizeAppLogPayloadSecrets(payload)
++		if errProjection != nil {
++			return nil, errProjection
++		}
++		payload = projected
++		clientIP, homeIP = "", ""
++	}
+ 
+ 	line := strings.TrimRight(gjson.Get(payload, "line").String(), "\r\n")
+ 	if strings.TrimSpace(line) == "" {
+@@ -67,7 +75,7 @@ func AppLogRecordFromPayload(clientIP string, homeIP string, payload string) (*A
+ 	}
+ 
+ 	clientIP = strings.TrimSpace(clientIP)
+-	if clientIP == "" {
++	if clientIP == "" && !DiagnosticsMetadataOnlyEnabled() {
+ 		clientIP = "unknown"
+ 	}
+ 	now := time.Now().UTC()
 diff --git a/internal/cluster/billing.go b/internal/cluster/billing.go
 index f3fc2ce..f0198e8 100644
 --- a/internal/cluster/billing.go
@@ -254,8 +302,21 @@ index f3fc2ce..f0198e8 100644
  	if len(apiKey) <= 8 {
  		return "****"
  	}
+diff --git a/internal/cluster/dashboard_indexes_test.go b/internal/cluster/dashboard_indexes_test.go
+index 1eca658..e137d91 100644
+--- a/internal/cluster/dashboard_indexes_test.go
++++ b/internal/cluster/dashboard_indexes_test.go
+@@ -123,7 +123,7 @@ func TestUsageTokenAccountingPendingQueriesUseLiteralVersion(t *testing.T) {
+ func TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible(t *testing.T) {
+ 	t.Parallel()
+ 
+-	for _, version := range []int{6, 7, 8, 9, currentDatabaseVersion} {
++	for _, version := range []int{6, 7, 8, 9, 10, 11, 12, currentDatabaseVersion} {
+ 		models, okModels := databaseSnapshotModels(version)
+ 		if !okModels || len(models) != len(homeDatabaseModels) {
+ 			t.Fatalf("snapshot version %d registry is incompatible", version)
 diff --git a/internal/cluster/database_models.go b/internal/cluster/database_models.go
-index 5bdbb4f..ef92ffa 100644
+index 5bdbb4f..b848e62 100644
 --- a/internal/cluster/database_models.go
 +++ b/internal/cluster/database_models.go
 @@ -10,7 +10,7 @@ import (
@@ -263,7 +324,7 @@ index 5bdbb4f..ef92ffa 100644
  // portable snapshot format. Increment it for every required startup migration
  // or snapshot format change, and retain mappings for prior snapshot formats.
 -const currentDatabaseVersion = 11
-+const currentDatabaseVersion = 12
++const currentDatabaseVersion = 13
  
  // databaseModel describes one managed Home database table.
  type databaseModel struct {
@@ -283,8 +344,8 @@ index 5bdbb4f..ef92ffa 100644
  		return databaseSnapshotV5Models, true
 -	case 6, 7, 8, 9, 10, currentDatabaseVersion:
 -		// Versions 7 through 11 add migrations, indexes, and transient tables;
-+	case 6, 7, 8, 9, 10, 11, currentDatabaseVersion:
-+		// Versions 7 through 12 add migrations, indexes, and transient tables;
++	case 6, 7, 8, 9, 10, 11, 12, currentDatabaseVersion:
++		// Versions 7 through 13 add migrations, indexes, and transient tables;
  		// portable table shapes still match v6.
  		return homeDatabaseModels, true
  	default:
@@ -757,6 +818,292 @@ index 0000000..77bf368
 +	}
 +	return id.String()
 +}
+diff --git a/internal/cluster/diagnostics_privacy_app_log.go b/internal/cluster/diagnostics_privacy_app_log.go
+new file mode 100644
+index 0000000..9334af3
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_app_log.go
+@@ -0,0 +1,51 @@
++package cluster
++
++import (
++	"encoding/json"
++	"errors"
++	"strings"
++	"time"
++
++	"github.com/tidwall/gjson"
++)
++
++const diagnosticAppLogLine = `POOL_APP_LOG {"count":1}`
++
++// SanitizeAppLogPayloadSecrets projects before console output or persistence.
++// The message and attached fields never enter the returned payload.
++func SanitizeAppLogPayloadSecrets(payload string) (string, error) {
++	if !DiagnosticsMetadataOnlyEnabled() {
++		return payload, nil
++	}
++	if !gjson.Valid(payload) || !gjson.Parse(payload).IsObject() {
++		return "", errors.New("invalid app-log metadata")
++	}
++	line := gjson.Get(payload, "line")
++	if line.Type != gjson.String || strings.TrimSpace(line.String()) == "" {
++		return "", errors.New("missing app-log line")
++	}
++	clean := struct {
++		Line      string `json:"line"`
++		Level     string `json:"level"`
++		Timestamp string `json:"timestamp"`
++		RequestID string `json:"request_id,omitempty"`
++	}{
++		Line: diagnosticAppLogLine, Level: diagnosticAppLogLevel(gjson.Get(payload, "level").String()),
++		Timestamp: appLogTimestampFromPayload(payload, time.Now().UTC()).Format(time.RFC3339Nano),
++		RequestID: diagnosticRequestID(gjson.Get(payload, "request_id").String()),
++	}
++	raw, errMarshal := json.Marshal(clean)
++	if errMarshal != nil {
++		return "", errors.New("app-log metadata projection failed")
++	}
++	return string(raw), nil
++}
++
++func diagnosticAppLogLevel(level string) string {
++	switch normalizeAppLogLevel(level) {
++	case "panic", "fatal", "error", "warn", "info", "debug", "trace":
++		return normalizeAppLogLevel(level)
++	default:
++		return "unknown"
++	}
++}
+diff --git a/internal/cluster/diagnostics_privacy_app_log_migration.go b/internal/cluster/diagnostics_privacy_app_log_migration.go
+new file mode 100644
+index 0000000..1ce982e
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_app_log_migration.go
+@@ -0,0 +1,110 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++	"gorm.io/gorm"
++	"gorm.io/gorm/clause"
++)
++
++func prepareDiagnosticsPrivacyAppLogStep(ctx context.Context, db *gorm.DB, name string) error {
++	return diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if state.AppLogsPrepared {
++			return nil
++		}
++		var last AppLogRecord
++		if errBound := tx.Select("id").Order("id DESC").Limit(1).Find(&last).Error; errBound != nil {
++			return errBound
++		}
++		return tx.Model(state).Updates(map[string]any{
++			"app_log_max_id": last.ID, "app_logs_prepared": true, "updated_at": time.Now().UTC(),
++		}).Error
++	})
++}
++
++func runDiagnosticsPrivacyAppLogBatch(ctx context.Context, db *gorm.DB, name string) (int64, error) {
++	var updated int64
++	errBatch := diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if state.AppLogsDone {
++			return nil
++		}
++		if !state.AppLogsPrepared {
++			return errors.New("app-log privacy bound is unavailable")
++		}
++		var rows []AppLogRecord
++		query := tx.Select("id", "level", "request_id").Where("id > ? AND id <= ?", state.LastAppLogID, state.AppLogMaxID).
++			Order("id").Limit(diagnosticsPrivacyBatchSize)
++		if tx.Dialector.Name() == "postgres" {
++			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
++		}
++		if errFind := query.Find(&rows).Error; errFind != nil {
++			return errFind
++		}
++		if len(rows) == 0 {
++			return tx.Model(state).Updates(map[string]any{"app_logs_done": true, "updated_at": time.Now().UTC()}).Error
++		}
++		for _, row := range rows {
++			if errUpdate := tx.Model(&AppLogRecord{}).Where("id = ?", row.ID).Updates(map[string]any{
++				"line": diagnosticAppLogLine, "level": diagnosticAppLogLevel(row.Level),
++				"request_id": diagnosticRequestID(row.RequestID), "client_ip": "", "home_ip": "",
++			}).Error; errUpdate != nil {
++				return errUpdate
++			}
++			updated++
++		}
++		return tx.Model(state).Updates(map[string]any{
++			"last_app_log_id": rows[len(rows)-1].ID, "app_log_rows_updated": gorm.Expr("app_log_rows_updated + ?", updated),
++			"updated_at": time.Now().UTC(),
++		}).Error
++	})
++	if errBatch != nil {
++		return 0, errors.New("app-log privacy batch failed")
++	}
++	return updated, nil
++}
++
++func emitDiagnosticsPrivacyAppLogAudit(ctx context.Context, db *gorm.DB, name string) error {
++	var count int64
++	var emit bool
++	errClaim := diagnosticsPrivacyBatchTransaction(ctx, db, name, func(tx *gorm.DB, state *diagnosticsPrivacyMigrationRecord) error {
++		if !state.AppLogsDone || state.AppLogAuditMarkerEmitted {
++			return nil
++		}
++		count, emit = state.AppLogRowsUpdated, true
++		return tx.Model(state).Update("app_log_audit_marker_emitted", true).Error
++	})
++	if errClaim != nil {
++		return errors.New("app-log privacy receipt unavailable")
++	}
++	if emit {
++		message, _ := json.Marshal(struct {
++			Rows int64 `json:"log_rows"`
++		}{count})
++		log.Info("POOL_APP_LOG_PRIVACY_AUDIT " + string(message))
++	}
++	return nil
++}
++
++const diagnosticsMetadataOnlyAppLogFunctionV1 = `
++CREATE OR REPLACE FUNCTION home_diagnostics_metadata_only_app_log_v1()
++RETURNS trigger LANGUAGE plpgsql AS $$
++DECLARE
++    v_level text := lower(btrim(COALESCE(NEW.level, '')));
++    v_request_id text := lower(btrim(COALESCE(NEW.request_id, '')));
++BEGIN
++    IF v_level = 'warning' THEN v_level := 'warn'; END IF;
++    NEW.level := CASE WHEN v_level IN ('panic','fatal','error','warn','info','debug','trace')
++        THEN v_level ELSE 'unknown' END;
++    NEW.line := 'POOL_APP_LOG {"count":1}';
++    NEW.client_ip := '';
++    NEW.home_ip := '';
++    NEW.request_id := CASE WHEN v_request_id ~ '^([0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$'
++        THEN v_request_id ELSE '' END;
++    RETURN NEW;
++END;
++$$;
++`
+diff --git a/internal/cluster/diagnostics_privacy_app_log_test.go b/internal/cluster/diagnostics_privacy_app_log_test.go
+new file mode 100644
+index 0000000..bfe3c2b
+--- /dev/null
++++ b/internal/cluster/diagnostics_privacy_app_log_test.go
+@@ -0,0 +1,107 @@
++package cluster
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++	"gorm.io/gorm"
++)
++
++func TestDiagnosticsPrivacyAppLogsExtendCompletedUsageJournalAndResume(t *testing.T) {
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "0")
++	db := privacyTestDB(t)
++	const count = diagnosticsPrivacyBatchSize*2 + 3
++	timestamp := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
++	rows := make([]AppLogRecord, count)
++	for index := range rows {
++		rows[index] = AppLogRecord{Timestamp: timestamp, Level: "warning", RequestID: "a1b2c3d4",
++			ClientIP: "private-client-sentinel", HomeIP: "private-home-sentinel",
++			Line: "devin executor: trailer error (7): private-response-sentinel"}
++	}
++	if errSeed := db.CreateInBatches(rows, 20).Error; errSeed != nil {
++		t.Fatal(errSeed)
++	}
++	// An already deployed #105 journal must remain usable and gain the new phase.
++	old := diagnosticsPrivacyMigrationRecord{Name: diagnosticPrivacyStepName, APIKeysDone: true, UsageDone: true,
++		BillingChargesDone: true, Completed: true, AuditMarkerEmitted: true, UpdatedAt: timestamp}
++	if errSeed := db.Create(&old).Error; errSeed != nil {
++		t.Fatal(errSeed)
++	}
++	t.Setenv(DiagnosticsMetadataOnlyEnv, "1")
++	if errMigrate := AutoMigrate(db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	var exposed int64
++	if errCount := db.Model(&AppLogRecord{}).Where("line LIKE ?", "%private-response-sentinel%").Count(&exposed).Error; errCount != nil || exposed != count {
++		t.Fatal("startup ran historical app-log cleanup")
++	}
++	var output bytes.Buffer
++	previous := log.StandardLogger().Out
++	log.SetOutput(&output)
++	t.Cleanup(func() { log.SetOutput(previous) })
++	repo := NewRepository(db)
++	if result, errPrepare := repo.RunDiagnosticsPrivacyBatch(t.Context()); errPrepare != nil || result.Done {
++		t.Fatal("completed usage journal skipped the new app-log cleanup")
++	}
++	var updates int
++	const callback = "privacy_fail_second_app_log_update"
++	if errRegister := db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
++		if tx.Statement.Table == "log" {
++			updates++
++			if updates == 2 {
++				tx.AddError(errors.New("private-database-error-sentinel"))
++			}
++		}
++	}); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++	_, errBatch := repo.RunDiagnosticsPrivacyBatch(t.Context())
++	db.Callback().Update().Remove(callback)
++	if errBatch == nil || strings.Contains(errBatch.Error(), "sentinel") {
++		t.Fatal("failed app-log batch did not return a closed failure")
++	}
++	failed := privacyStep(t, db)
++	if failed.LastAppLogID != 0 || failed.AppLogRowsUpdated != 0 || !failed.AppLogsPrepared || failed.AppLogMaxID != count {
++		t.Fatal("failed app-log batch advanced its journal or lost the upper bound")
++	}
++	if _, errResume := repo.RunDiagnosticsPrivacyBatch(t.Context()); errResume != nil {
++		t.Fatal(errResume)
++	}
++	partial := privacyStep(t, db)
++	if partial.AppLogRowsUpdated != diagnosticsPrivacyBatchSize || partial.AppLogsDone {
++		t.Fatal("app-log batch was not bounded and committed")
++	}
++	stopped, cancel := context.WithCancel(t.Context())
++	cancel()
++	if _, errStopped := NewRepository(db).RunDiagnosticsPrivacyBatch(stopped); !errors.Is(errStopped, context.Canceled) {
++		t.Fatal("cancelled worker advanced app-log cleanup")
++	}
++	if errResume := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); errResume != nil {
++		t.Fatal(errResume)
++	}
++	if errAgain := runDiagnosticsMetadataOnlyPrivacyMigration(t.Context(), db); errAgain != nil {
++		t.Fatal(errAgain)
++	}
++	complete := privacyStep(t, db)
++	if !complete.Completed || !complete.AuditMarkerEmitted || !complete.AppLogsDone || !complete.AppLogAuditMarkerEmitted || complete.AppLogRowsUpdated != count {
++		t.Fatal("app-log cleanup did not extend the completed journal exactly once")
++	}
++	var stored []AppLogRecord
++	if errFind := db.Order("id").Find(&stored).Error; errFind != nil || len(stored) != count {
++		t.Fatal("app-log cleanup lost rows")
++	}
++	for index, row := range stored {
++		if row.ID != rows[index].ID || !row.Timestamp.Equal(timestamp) || row.Level != "warn" || row.RequestID != "a1b2c3d4" || row.Line != diagnosticAppLogLine {
++			t.Fatal("app-log cleanup lost safe metadata")
++		}
++	}
++	assertPrivateBytesAbsent(t, stored, "private-response-sentinel", "private-client-sentinel", "private-home-sentinel")
++	if strings.Count(output.String(), "POOL_APP_LOG_PRIVACY_AUDIT ") != 1 || strings.Contains(output.String(), "POOL_PRIVACY_AUDIT ") || strings.Contains(output.String(), "sentinel") {
++		t.Fatal("app-log receipt was missing, duplicated, or changed the prior usage receipt")
++	}
++}
 diff --git a/internal/cluster/diagnostics_privacy_audit.go b/internal/cluster/diagnostics_privacy_audit.go
 new file mode 100644
 index 0000000..9d75b35
@@ -966,10 +1313,10 @@ index 0000000..8e9d488
 +}
 diff --git a/internal/cluster/diagnostics_privacy_journal.go b/internal/cluster/diagnostics_privacy_journal.go
 new file mode 100644
-index 0000000..e15b29d
+index 0000000..565533f
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_journal.go
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,179 @@
 +package cluster
 +
 +import (
@@ -996,18 +1343,24 @@ index 0000000..e15b29d
 +	UsageMaxID               uint      `gorm:"column:usage_max_id;not null;default:0"`
 +	APIKeyMaxID              uint      `gorm:"column:api_key_max_id;not null;default:0"`
 +	BillingChargeMaxID       string    `gorm:"column:billing_charge_max_id;not null;default:''"`
++	AppLogMaxID              uint      `gorm:"column:app_log_max_id;not null;default:0"`
 +	Name                     string    `gorm:"column:name;primaryKey;size:192"`
 +	LastAPIKeyID             uint      `gorm:"column:last_api_key_id;not null;default:0"`
 +	LastUsageID              uint      `gorm:"column:last_usage_id;not null;default:0"`
 +	LastBillingChargeID      string    `gorm:"column:last_billing_charge_id;not null;default:''"`
++	LastAppLogID             uint      `gorm:"column:last_app_log_id;not null;default:0"`
 +	APIKeysDone              bool      `gorm:"column:api_keys_done;not null;default:false"`
 +	UsageDone                bool      `gorm:"column:usage_done;not null;default:false"`
 +	BillingChargesDone       bool      `gorm:"column:billing_charges_done;not null;default:false"`
++	AppLogsPrepared          bool      `gorm:"column:app_logs_prepared;not null;default:false"`
++	AppLogsDone              bool      `gorm:"column:app_logs_done;not null;default:false"`
++	AppLogAuditMarkerEmitted bool      `gorm:"column:app_log_audit_marker_emitted;not null;default:false"`
 +	Completed                bool      `gorm:"column:completed;not null;default:false;index:idx_home_data_migration_completed"`
 +	AuditMarkerEmitted       bool      `gorm:"column:audit_marker_emitted;not null;default:false"`
 +	APIKeyRowsUpdated        int64     `gorm:"column:api_key_rows_updated;not null;default:0"`
 +	UsageRowsUpdated         int64     `gorm:"column:usage_rows_updated;not null;default:0"`
 +	BillingChargeRowsUpdated int64     `gorm:"column:billing_charge_rows_updated;not null;default:0"`
++	AppLogRowsUpdated        int64     `gorm:"column:app_log_rows_updated;not null;default:0"`
 +	UpdatedAt                time.Time `gorm:"column:updated_at;not null"`
 +}
 +
@@ -1130,7 +1483,7 @@ index 0000000..e15b29d
 +		if state.Completed {
 +			return nil
 +		}
-+		if !state.APIKeysDone || !state.UsageDone || !state.BillingChargesDone {
++		if !state.APIKeysDone || !state.UsageDone || !state.BillingChargesDone || !state.AppLogsDone {
 +			return errors.New("privacy data step is incomplete")
 +		}
 +
@@ -1387,10 +1740,10 @@ index 0000000..cd5b642
 +}
 diff --git a/internal/cluster/diagnostics_privacy_postgres.go b/internal/cluster/diagnostics_privacy_postgres.go
 new file mode 100644
-index 0000000..4223542
+index 0000000..4bc9125
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_postgres.go
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,413 @@
 +package cluster
 +
 +import (
@@ -1771,6 +2124,12 @@ index 0000000..4223542
 +				functionSQL: diagnosticsMetadataOnlyBillingFunctionV1,
 +				triggerSQL:  `CREATE TRIGGER home_diagnostics_metadata_only_billing_v1_trigger BEFORE INSERT OR UPDATE ON billing_charge FOR EACH ROW EXECUTE FUNCTION home_diagnostics_metadata_only_billing_v1()`,
 +			},
++			{
++				table:       "log",
++				triggerName: "home_diagnostics_metadata_only_app_log_v1_trigger",
++				functionSQL: diagnosticsMetadataOnlyAppLogFunctionV1,
++				triggerSQL:  `CREATE TRIGGER home_diagnostics_metadata_only_app_log_v1_trigger BEFORE INSERT OR UPDATE ON log FOR EACH ROW EXECUTE FUNCTION home_diagnostics_metadata_only_app_log_v1()`,
++			},
 +		} {
 +			var exists bool
 +			if errCheck := tx.Raw(`SELECT EXISTS (
@@ -2093,10 +2452,10 @@ index 0000000..67ca44d
 +}
 diff --git a/internal/cluster/diagnostics_privacy_worker.go b/internal/cluster/diagnostics_privacy_worker.go
 new file mode 100644
-index 0000000..8a16672
+index 0000000..9685749
 --- /dev/null
 +++ b/internal/cluster/diagnostics_privacy_worker.go
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,117 @@
 +package cluster
 +
 +import (
@@ -2151,7 +2510,8 @@ index 0000000..8a16672
 +		}
 +	}
 +	var state diagnosticsPrivacyMigrationRecord
-+	query := r.db.WithContext(ctx).Where("name LIKE ? AND (completed = ? OR audit_marker_emitted = ?)", "diagnostics_metadata_only_%", false, false).
++	query := r.db.WithContext(ctx).Where("name LIKE ? AND (completed = ? OR audit_marker_emitted = ? OR app_logs_prepared = ? OR app_logs_done = ? OR app_log_audit_marker_emitted = ?)",
++		"diagnostics_metadata_only_%", false, false, false, false, false).
 +		Order("name").Limit(1).Find(&state)
 +	if query.Error != nil {
 +		return DiagnosticsPrivacyBatchResult{}, errors.New("privacy journal unreadable")
@@ -2162,16 +2522,22 @@ index 0000000..8a16672
 +	var result DiagnosticsPrivacyBatchResult
 +	var errBatch error
 +	switch {
++	case !state.AppLogsPrepared:
++		errBatch = prepareDiagnosticsPrivacyAppLogStep(ctx, r.db, state.Name)
 +	case !state.APIKeysDone:
 +		result.RowsUpdated, errBatch = runDiagnosticsPrivacyAPIKeyBatch(ctx, r.db, state.Name)
 +	case !state.UsageDone:
 +		result.RowsUpdated, errBatch = runDiagnosticsPrivacyUsageBatch(ctx, r.db, state.Name)
 +	case !state.BillingChargesDone:
 +		result.RowsUpdated, errBatch = runDiagnosticsPrivacyBillingChargeBatch(ctx, r.db, state.Name)
++	case !state.AppLogsDone:
++		result.RowsUpdated, errBatch = runDiagnosticsPrivacyAppLogBatch(ctx, r.db, state.Name)
 +	case !state.Completed:
 +		errBatch = completeDiagnosticsPrivacyStep(ctx, r.db, state.Name)
-+	default:
++	case !state.AuditMarkerEmitted:
 +		errBatch = emitDiagnosticsPrivacyAuditMarker(ctx, r.db, state.Name)
++	default:
++		errBatch = emitDiagnosticsPrivacyAppLogAudit(ctx, r.db, state.Name)
 +	}
 +	if errBatch != nil {
 +		return DiagnosticsPrivacyBatchResult{}, errors.New("privacy maintenance batch failed")
@@ -2586,6 +2952,128 @@ index 0000000..66e9d1e
 +		t.Fatal("privacy purge failure accepted a connection")
 +	} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 +		t.Fatal("privacy purge failure did not close the connection")
++	}
++}
+diff --git a/internal/respserver/push/app_log.go b/internal/respserver/push/app_log.go
+index 6c3a983..f0327d6 100644
+--- a/internal/respserver/push/app_log.go
++++ b/internal/respserver/push/app_log.go
+@@ -6,6 +6,7 @@ import (
+ 	"os"
+ 	"strings"
+ 
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+ 	homelogging "github.com/router-for-me/CLIProxyAPIHome/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
+ 	log "github.com/sirupsen/logrus"
+@@ -26,6 +27,13 @@ func handleAppLog(ctx context.Context, env dispatch.Env, args []string) dispatch
+ 	if payload == "" || !gjson.Valid(payload) {
+ 		return dispatch.Err("invalid app-log json")
+ 	}
++	if cluster.DiagnosticsMetadataOnlyEnabled() {
++		projected, errProjection := cluster.SanitizeAppLogPayloadSecrets(payload)
++		if errProjection != nil {
++			return dispatch.Err("invalid app-log metadata")
++		}
++		payload = projected
++	}
+ 
+ 	line := strings.TrimRight(gjson.Get(payload, "line").String(), "\r\n")
+ 	if strings.TrimSpace(line) == "" {
+@@ -33,6 +41,9 @@ func handleAppLog(ctx context.Context, env dispatch.Env, args []string) dispatch
+ 	}
+ 
+ 	clientIP := strings.TrimSpace(env.ClientIP)
++	if cluster.DiagnosticsMetadataOnlyEnabled() {
++		clientIP = "metadata-only"
++	}
+ 	if clientIP == "" {
+ 		clientIP = "unknown"
+ 	}
+@@ -42,7 +53,11 @@ func handleAppLog(ctx context.Context, env dispatch.Env, args []string) dispatch
+ 	if env.Runtime != nil {
+ 		persisted, errPersist := env.Runtime.PersistAppLogPayload(ctx, clientIP, payload)
+ 		if errPersist != nil {
+-			log.Errorf("app log database write error: %v", errPersist)
++			if cluster.DiagnosticsMetadataOnlyEnabled() {
++				log.Error(`POOL_APP_LOG_WRITE_FAILURE {"count":1}`)
++			} else {
++				log.Errorf("app log database write error: %v", errPersist)
++			}
+ 			return dispatch.Err("app log database write failed")
+ 		}
+ 		if persisted {
+diff --git a/internal/respserver/push/app_log_privacy_test.go b/internal/respserver/push/app_log_privacy_test.go
+new file mode 100644
+index 0000000..cf27c4a
+--- /dev/null
++++ b/internal/respserver/push/app_log_privacy_test.go
+@@ -0,0 +1,67 @@
++package push
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++)
++
++func TestDiagnosticsPrivacyAppLogIngressProjectsBeforeConsoleAndDatabase(t *testing.T) {
++	t.Setenv(cluster.DiagnosticsMetadataOnlyEnv, "1")
++	t.Chdir(t.TempDir())
++	db, errOpen := cluster.OpenSQLite(t.Context(), filepath.Join(t.TempDir(), "home.db"))
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	handle, errHandle := db.DB()
++	if errHandle != nil {
++		t.Fatal(errHandle)
++	}
++	t.Cleanup(func() { _ = handle.Close() })
++	if errMigrate := cluster.AutoMigrate(db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	runtime, errRuntime := home.NewRuntime(&config.Config{})
++	if errRuntime != nil {
++		t.Fatal(errRuntime)
++	}
++	runtime.SetClusterAdapter(cluster.NewRuntimeAdapter(cluster.NewRepository(db), "private-home-sentinel"))
++	reader, writer, errPipe := os.Pipe()
++	if errPipe != nil {
++		t.Fatal(errPipe)
++	}
++	previous := os.Stdout
++	os.Stdout = writer
++	t.Cleanup(func() { os.Stdout = previous; _ = reader.Close(); _ = writer.Close() })
++	payload := `{"line":"devin executor: trailer error (7): private-response-sentinel","level":"warning","request_id":"private-token-sentinel","timestamp":"2026-10-29T12:00:00Z","body":"private-extra-sentinel"}`
++	reply := handleAppLog(context.Background(), dispatch.Env{ClientIP: "private-client-sentinel", Runtime: runtime}, []string{"RPUSH", "app-log", payload})
++	_ = writer.Close()
++	os.Stdout = previous
++	console, errRead := io.ReadAll(reader)
++	if errRead != nil || reply.Kind != dispatch.ReplyKindInteger || reply.Integer != 1 {
++		t.Fatal("app-log ingestion did not acknowledge the metadata record")
++	}
++	if strings.Contains(string(console), "sentinel") || !strings.Contains(string(console), `POOL_APP_LOG {"count":1}`) {
++		t.Fatal("app-log console did not project the response-bearing warning")
++	}
++	var rows []cluster.AppLogRecord
++	if errFind := db.Find(&rows).Error; errFind != nil || len(rows) != 1 {
++		t.Fatal("app-log metadata was not persisted")
++	}
++	raw, _ := json.Marshal(rows)
++	if strings.Contains(string(raw), "sentinel") || rows[0].Line != `POOL_APP_LOG {"count":1}` || rows[0].Level != "warn" {
++		t.Fatal("app-log ingestion retained private fields or lost severity")
++	}
++	if rows[0].Timestamp.Format("2006-01-02T15:04:05Z07:00") != "2026-10-29T12:00:00Z" {
++		t.Fatal("app-log timestamp was lost")
 +	}
 +}
 diff --git a/internal/respserver/push/diagnostics_privacy_test.go b/internal/respserver/push/diagnostics_privacy_test.go

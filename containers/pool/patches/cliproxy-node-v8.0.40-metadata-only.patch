@@ -438,6 +438,155 @@ index 0000000..9f1640a
 +		t.Fatalf("SafeTraceID() accepted arbitrary text: %q", got)
 +	}
 +}
+diff --git a/internal/logging/home_app_log_forwarder.go b/internal/logging/home_app_log_forwarder.go
+index 32cd5a5..a59fd16 100644
+--- a/internal/logging/home_app_log_forwarder.go
++++ b/internal/logging/home_app_log_forwarder.go
+@@ -7,7 +7,6 @@ import (
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+-	"time"
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
+ 	log "github.com/sirupsen/logrus"
+@@ -186,18 +185,11 @@ func (f *HomeAppLogForwarder) Fire(entry *log.Entry) error {
+ 	if client == nil || !client.HeartbeatOK() {
+ 		return nil
+ 	}
+-	line, errFormat := f.formatEntry(entry)
+-	if errFormat != nil || strings.TrimSpace(line) == "" {
++	payload, errFormat := f.entryPayload(entry)
++	if errFormat != nil || strings.TrimSpace(payload.Line) == "" {
+ 		return nil
+ 	}
+-
+-	payload := homeAppLogPayload{
+-		Line:      line,
+-		Level:     entry.Level.String(),
+-		Timestamp: entry.Time.Format(time.RFC3339Nano),
+-		RequestID: appLogRequestID(entry),
+-		client:    client,
+-	}
++	payload.client = client
+ 	select {
+ 	case f.queue <- payload:
+ 	default:
+diff --git a/internal/logging/home_app_log_privacy.go b/internal/logging/home_app_log_privacy.go
+new file mode 100644
+index 0000000..2e7973e
+--- /dev/null
++++ b/internal/logging/home_app_log_privacy.go
+@@ -0,0 +1,36 @@
++package logging
++
++import (
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	log "github.com/sirupsen/logrus"
++)
++
++func (f *HomeAppLogForwarder) entryPayload(entry *log.Entry) (homeAppLogPayload, error) {
++	payload := homeAppLogPayload{
++		Level: entry.Level.String(), Timestamp: entry.Time.Format(time.RFC3339Nano),
++		RequestID: appLogRequestID(entry),
++	}
++	if !diagnostics.MetadataOnlyEnabled() {
++		line, errFormat := f.formatEntry(entry)
++		payload.Line = line
++		return payload, errFormat
++	}
++	// Never format the response-bearing message or copy its attached fields.
++	payload.Line = `POOL_APP_LOG {"count":1}`
++	switch entry.Level {
++	case log.PanicLevel, log.FatalLevel, log.ErrorLevel, log.InfoLevel, log.DebugLevel, log.TraceLevel:
++		payload.Level = entry.Level.String()
++	case log.WarnLevel:
++		payload.Level = "warn"
++	default:
++		payload.Level = "unknown"
++	}
++	requestID := diagnostics.SafeRequestID(payload.RequestID)
++	if requestID == "" {
++		requestID = diagnostics.SafeTraceID(payload.RequestID)
++	}
++	payload.RequestID = requestID
++	return payload, nil
++}
+diff --git a/internal/logging/home_app_log_privacy_test.go b/internal/logging/home_app_log_privacy_test.go
+new file mode 100644
+index 0000000..bca7497
+--- /dev/null
++++ b/internal/logging/home_app_log_privacy_test.go
+@@ -0,0 +1,67 @@
++package logging
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	log "github.com/sirupsen/logrus"
++)
++
++type privateAppLogFormatter struct{ calls int }
++
++func (f *privateAppLogFormatter) Format(entry *log.Entry) ([]byte, error) {
++	f.calls++
++	return []byte(entry.Message + " formatted-private-sentinel"), nil
++}
++
++func TestMetadataOnlyAppLogForwarderProjectsBeforeQueueAndFormatting(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	client := &stubHomeAppLogClient{heartbeatOK: true}
++	formatter := &privateAppLogFormatter{}
++	forwarder := &HomeAppLogForwarder{formatter: formatter, queue: make(chan homeAppLogPayload, 1)}
++	forwarder.enabled.Store(true)
++	forwarder.bind(client)
++	entry := log.NewEntry(log.New())
++	entry.Time = time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
++	entry.Level = log.WarnLevel
++	// This is the response-bearing warning shape used by the Devin stream path.
++	entry.Message = "devin executor: trailer error (7): private-response-sentinel"
++	entry.Data = log.Fields{"request_id": "private-token-sentinel", "error": "private-header-sentinel"}
++	if errFire := forwarder.Fire(entry); errFire != nil {
++		t.Fatal(errFire)
++	}
++	var queued homeAppLogPayload
++	select {
++	case queued = <-forwarder.queue:
++	default:
++		t.Fatal("application log count was dropped")
++	}
++	if queued.Line != `POOL_APP_LOG {"count":1}` || queued.Level != "warn" || queued.RequestID != "" {
++		t.Fatal("queued app log was not a closed metadata projection")
++	}
++	if formatter.calls != 0 {
++		t.Fatal("private-mode logging invoked the response-bearing formatter")
++	}
++	forwarder.forward(queued)
++	if client.pushedCount() != 1 {
++		t.Fatal("metadata count did not reach the Home client")
++	}
++	wire := client.pushedAt(0)
++	if strings.Contains(string(wire), "sentinel") {
++		t.Fatal("app-log forwarding retained private response or credential text")
++	}
++	var fields map[string]any
++	if errDecode := json.Unmarshal(wire, &fields); errDecode != nil || len(fields) != 3 || fields["timestamp"] != "2026-10-29T12:00:00Z" {
++		t.Fatal("app-log wire metadata has unexpected fields")
++	}
++	entry.Data["request_id"] = "a1b2c3d4"
++	if errFire := forwarder.Fire(entry); errFire != nil {
++		t.Fatal(errFire)
++	}
++	if correlated := <-forwarder.queue; correlated.RequestID != "a1b2c3d4" {
++		t.Fatal("generated request correlation was lost")
++	}
++}
 diff --git a/internal/redisqueue/metadata_only_test.go b/internal/redisqueue/metadata_only_test.go
 new file mode 100644
 index 0000000..e4dfca7

@@ -51,7 +51,7 @@ Both processes receive <code>CLIPROXY_DIAGNOSTICS_METADATA_ONLY=1</code>. The ef
 
 Usage diagnostics keep a client-key fingerprint for attribution. The fingerprint cannot authenticate a request. The credential store still keeps the live key that authentication needs. Provider response bodies, prompts, completions, authentication headers and raw client keys are excluded from usage diagnostics. Only closed billing tiers and validated numeric quota measurements survive alongside usage counters.
 
-Known privacy gap: the separate Home application-log table can still receive response content forwarded by the node. That table is outside this usage cleanup and needs capture prevention, an old-writer guard and historical cleanup in the next carry. Disabling request and file logging does not close that path.
+Application logs use the same privacy mode. The node emits a fixed <code>POOL_APP_LOG {"count":1}</code> line with a closed severity, timestamp and validated generated request ID before queuing a log. It never formats or forwards the original message or its attached fields. Home independently projects older nodes' payloads before console output and storage. Application-log addresses and arbitrary request IDs are removed. A PostgreSQL guard applies the same projection to inserts and updates from older writers.
 
 Exact request verification keeps an opaque canonical UUID session ID. The node projects custom session text to a UUID before retaining it; Home refuses free-form session text. This preserves the importer's exact-account verification without retaining session content.
 
@@ -59,9 +59,13 @@ Home installs the PostgreSQL old-writer guard before listeners open. Historical 
 
 The audit log reports <code>active_key_count</code> for distinct affected active credentials and <code>matched_active_key_copies</code> for diagnostic token copies matching those credentials. The same key can appear in both a usage column and its payload, so the copy count can exceed the key count. Distinct affected IDs remain in the private <code>home_data_migration_audit_key</code> journal. Unknown keys are represented there only by one-way fingerprints, so distinct counts stay correct across batch retries and restarts.
 
+Historical application-log cleanup extends the same journal, including installations whose usage cleanup already completed. It pins an indexed upper bound and commits at most 100 projected rows with its cursor and count in each transaction. It preserves timestamps, closed severities and validated request IDs. The original usage audit remains unchanged. <code>POOL_APP_LOG_PRIVACY_AUDIT</code> reports the number of application-log rows processed once; it does not count distinct credentials or token copies. Failed application-log writes emit <code>POOL_APP_LOG_WRITE_FAILURE</code> with a count and no driver error text. The supervisor forwards only those closed numeric signals.
+
 The purge removes the live database's diagnostic copies. Existing database backups can retain earlier copies until normal backup cleanup removes them. Restoring an older backup requires the privacy step to run again.
 
 CI builds <code>legacy-runtime</code> and <code>runtime</code> from this Dockerfile. The upgrade regression first reproduces the leak with the released binaries, then checks the purge, a forced failure, an old writer and another boot against a disposable PostgreSQL database. It scans raw diagnostic rows, files and container logs before fixture redaction. Authentication storage and the explicitly retained replay cache are separate from these diagnostic sinks.
+
+The application-log proof also builds the merged usage-privacy baseline from commit <code>b35314687e8972f64d7c1c3c73a1492a50fb7bac</code>. It submits a response-bearing application log over Home's real mTLS RESP connection, reproduces the retained row after the usage purge, then proves guarded writes and bounded cleanup through a failed batch, SIGKILL and another boot.
 
 ## Routing and model catalog
 

@@ -112,11 +112,18 @@ model {
 
     poolRuntime = module "Pool runtime" {
       #basalt #v1 #deep
+      description """
+        Projects application logs before the node formats or queues them and independently before
+        control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,
+        timestamp and validated generated request ID. The supervisor forwards only closed numeric
+        maintenance signals. Historical cleanup starts alongside Home listener handling in bounded
+        transactions, independently of pool readiness, and does not gate readiness on its completion.
+      """
       metadata {
         code "containers/pool"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only; fingerprint client keys; purge diagnostic content before readiness"
+        diagnosticPolicy "metadata-only usage and application logs; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"
@@ -126,6 +133,12 @@ model {
 
     poolDatabase = store "Pool database" {
       #basalt #v1
+      description """
+        Guards diagnostic usage and application-log inserts and updates from older writers.
+        Application-log cleanup extends the existing privacy journal, including completed usage
+        cleanups, with an indexed upper bound and atomic cursor/count commits for at most 100 rows. Its separate
+        processed-log count preserves the original usage audit receipt across retries and restarts.
+      """
       metadata { database "basalt_pool"; region "eu-central" }
     }
 

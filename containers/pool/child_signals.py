@@ -13,6 +13,8 @@ PRIVACY_PROGRESS_MARKER = "POOL_PRIVACY_PROGRESS "
 PRIVACY_RETRY_MARKER = "POOL_PRIVACY_RETRY "
 HOME_INIT_FAILURE_MARKER = "POOL_HOME_INIT_FAILURE "
 HOME_MAINTENANCE_FAILURE_MARKER = "POOL_HOME_MAINTENANCE_FAILURE "
+APP_LOG_PRIVACY_AUDIT_MARKER = "POOL_APP_LOG_PRIVACY_AUDIT "
+APP_LOG_WRITE_FAILURE_MARKER = "POOL_APP_LOG_WRITE_FAILURE "
 
 # Home's pinned LogFormatter adds these columns before the message. Strip only
 # that format, then apply the same closed projection used for raw messages.
@@ -37,6 +39,8 @@ PRIVACY_AUDIT_FIELDS = frozenset(
 )
 PRIVACY_PROGRESS_FIELDS = frozenset({"batches", "rows_updated"})
 PRIVACY_RETRY_FIELDS = frozenset({"attempt", "retry_after_seconds"})
+APP_LOG_PRIVACY_AUDIT_FIELDS = frozenset({"log_rows"})
+APP_LOG_WRITE_FAILURE_FIELDS = frozenset({"count"})
 HOME_INIT_FAILURE_CATEGORIES = ("database", "runtime", "listener", "cluster")
 HOME_MAINTENANCE_FAILURE_MESSAGES = {
     "derived_columns": "usage derived-column backfill batch failed",
@@ -166,6 +170,8 @@ def safe_child_output_line(name: str, line: str) -> str | None:
         (PRIVACY_AUDIT_MARKER, PRIVACY_AUDIT_FIELDS),
         (PRIVACY_PROGRESS_MARKER, PRIVACY_PROGRESS_FIELDS),
         (PRIVACY_RETRY_MARKER, PRIVACY_RETRY_FIELDS),
+        (APP_LOG_PRIVACY_AUDIT_MARKER, APP_LOG_PRIVACY_AUDIT_FIELDS),
+        (APP_LOG_WRITE_FAILURE_MARKER, APP_LOG_WRITE_FAILURE_FIELDS),
     ):
         safe = _privacy_signal_line(message, marker, fields)
         if safe is not None:
