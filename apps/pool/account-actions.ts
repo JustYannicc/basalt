@@ -10,7 +10,7 @@ const accountInput = object({ id: string({ minLength: 1 }) });
 const path = (id: string, action: string) => `/accounts/${encodeURIComponent(id)}/${action}`;
 
 export const refreshUsage = mutation(
-  { description: "Read this account's usage now, including idle accounts. The pool owner can force a collection at most once per 30 minutes per account.", approval: never(), input: accountInput },
+  { description: "Read this account's usage now, including idle accounts. Current pool members and the owner can force a collection at most once per 30 minutes per account.", approval: never(), input: accountInput },
   async (ctx: Context, { id }) => control<Account>(ctx, path(id, "refresh"), { method: "POST" }),
 );
 export const pauseAccount = mutation(

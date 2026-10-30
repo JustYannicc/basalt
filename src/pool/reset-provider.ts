@@ -80,6 +80,8 @@ export class ProviderResets {
     } else {
       const status = value.cedar_ember;
       if (!object(status) || typeof status.eligible !== "boolean" || status.ineligible_reason === "unavailable") return unavailable();
+      const cooldownUntil = timestamp(status.cooldown_until);
+      const cooling = cooldownUntil !== null && Date.parse(cooldownUntil) > now;
       if (status.eligible) for (const row of rows(status.grants)) {
         const id = text(row.id);
         if (!id || !grantId.test(id) || !count(row.resets_left) || typeof row.usable_now !== "boolean"
@@ -90,7 +92,7 @@ export class ProviderResets {
         if (!Array.isArray(row.clears) || row.clears.some((value) => typeof value !== "string")) return unavailable();
         const clears = windows.filter((window) => (row.clears as string[]).includes(window));
         credits.push({ id, type: "cedar_ember", remaining: row.resets_left, expiresAt,
-          usableNow: row.usable_now && (!row.use_requires_limit || status.at_limit === true), requiresLimit: row.use_requires_limit, clears });
+          usableNow: !cooling && row.usable_now && (!row.use_requires_limit || status.at_limit === true), requiresLimit: row.use_requires_limit, clears });
       }
     }
     if (credits.length > 100 || new Set(credits.map((credit) => credit.id)).size !== credits.length) return unavailable();

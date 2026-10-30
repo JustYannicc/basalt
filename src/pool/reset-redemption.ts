@@ -13,6 +13,7 @@ interface Attempt {
   creditId: string;
   organization?: string;
   startedAt: number;
+  sent: boolean;
   result: ResetResult;
 }
 const succeeded = (result: ResetResult) => ["reset", "already_redeemed", "already_used"].includes(result.outcome);
@@ -49,7 +50,7 @@ export class ResetRedemption {
       if (credit.usableNow === false) return fail(409, "invalid_query", "This reset cannot be used right now.");
       const organization = await provider.organization(signal);
       await stillMember();
-      attempt = { provider: provider.provider, creditId, organization, startedAt: this.now(),
+      attempt = { provider: provider.provider, creditId, organization, startedAt: this.now(), sent: false,
         result: { requestId, outcome: "unknown", cooldownCleared: false, usageRefreshQueued: false } };
       // Both writes precede the provider call. A crash between them cannot have spent a credit.
       await this.storage.put(receiptKey, attempt);
@@ -60,8 +61,13 @@ export class ResetRedemption {
       // preserve the unknown result rather than risking a second spend with the same key.
       if (this.now() - attempt.startedAt >= 10 * 60_000) return attempt.result;
       await stillMember();
+      const previouslySent = attempt.sent;
+      attempt = { ...attempt, sent: true };
+      await this.storage.put(receiptKey, attempt);
       try {
-        const outcome = await provider.consume(requestId, attempt.creditId, attempt.organization, signal);
+        let outcome = await provider.consume(requestId, attempt.creditId, attempt.organization, signal);
+        // A later refusal says nothing about an earlier request whose reply was lost.
+        if (previouslySent && !["reset", "already_redeemed", "already_used"].includes(outcome)) outcome = "unknown";
         attempt = { ...attempt, result: { ...attempt.result, outcome } };
       } catch { return attempt.result; }
       await this.storage.put(receiptKey, attempt);

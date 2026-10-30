@@ -16,13 +16,14 @@ class Storage implements ControlStorage {
   async getAlarm() { return null; }
   async setAlarm() {}
 }
-async function fixture(t: TestContext, provider = "codex") {
+async function fixture(t: TestContext, provider = "codex", audience: readonly string[] = []) {
   let now = Date.parse("2030-01-01T00:00:00Z");
   let disabled = false, member = true, collects = 0, consumes = 0, clears = 0;
   let observed = new Date(now - 60_000).toISOString();
   const calls: { path: string; method: string; body: Json }[] = [];
   let consume: (body: Json) => Promise<Json> = async () => ({ status_code: 200, body: JSON.stringify({ code: "reset", result: "reset" }) });
   let cooldownFailure = false;
+  let claudeCooldown: string | null = null;
   const server = createServer(async (req, res) => {
     try {
       const chunks = [];
@@ -67,7 +68,7 @@ async function fixture(t: TestContext, provider = "codex") {
           { id: "expired", reset_type: "codex_rate_limits", status: "available", expires_at: "2029-01-01T00:00:00Z" },
           { id: "other-type", reset_type: "other", status: "available" },
         ] }) };
-        else value = { status_code: 200, body: JSON.stringify({ cedar_ember: { eligible: true, at_limit: true, grants: [
+        else value = { status_code: 200, body: JSON.stringify({ cedar_ember: { eligible: true, at_limit: true, cooldown_until: claudeCooldown, grants: [
           { id: "grant_1", resets_left: 2, starts_at: null, ends_at: "2030-01-04T00:00:00Z", paused: false,
             usable_now: true, use_requires_limit: true, clears: ["seven_day"] },
           { id: "blocked", resets_left: 2, paused: false, usable_now: false, use_requires_limit: true, clears: ["five_hour"] },
@@ -81,7 +82,7 @@ async function fixture(t: TestContext, provider = "codex") {
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const storage = new Storage();
-  const deps = { signingKey, home: (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${address.port}${path}`, init), now: () => new Date(now) };
+  const deps = { signingKey, audience: async () => audience, home: (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${address.port}${path}`, init), now: () => new Date(now) };
   let control = new PoolControl(storage, deps);
   const token = await signPoolToken(signingKey, { pool: "pool", owner: "owner", organization: "org" });
   const call = async (action: string, body?: Json, owner = true, id = "account") => control.handle(new Request(
@@ -99,6 +100,7 @@ async function fixture(t: TestContext, provider = "codex") {
     restart: () => { control = new PoolControl(storage, deps); },
     advance: (ms: number) => { now += ms; }, remove: () => { member = false; },
     cooldownFailure: (fail: boolean) => { cooldownFailure = fail; },
+    claudeCooldown: (value: string | null) => { claudeCooldown = value; },
     consume: (handler: typeof consume) => { consume = handler; } };
 }
 
@@ -123,6 +125,16 @@ test("manual refresh collects a fresh idle account once, retaining the shared pe
   f.advance(30 * 60_000);
   assert.equal((await f.call("refresh")).status, 200);
   assert.equal(f.counts().collects, 2);
+});
+
+test("current audience members can refresh only accounts in their own pool", async (t) => {
+  const denied = await fixture(t);
+  assert.equal((await denied.call("refresh", undefined, false)).status, 403);
+  assert.equal(denied.calls.length, 0);
+  const f = await fixture(t, "codex", ["member"]);
+  assert.equal((await f.call("refresh", undefined, false)).status, 200);
+  assert.equal((await f.call("refresh", undefined, false, "other")).status, 404);
+  assert.equal(f.counts().collects, 1);
 });
 
 test("Codex credit reads preserve usable metadata and exclude expired or unrelated credits", async (t) => {
@@ -173,6 +185,20 @@ test("an expired unknown-attempt window does not send another provider request",
   assert.equal(f.counts().consumes, 1);
 });
 
+test("a retry refusal cannot settle an earlier ambiguous spend or permit a new request id", async (t) => {
+  const f = await fixture(t);
+  f.consume(async () => ({ status_code: 502, body: "{}" }));
+  assert.equal((await f.use()).result.outcome, "unknown");
+  f.restart();
+  for (const status of [401, 429, 200]) {
+    f.consume(async () => ({ status_code: status, body: JSON.stringify({ code: "no_credit" }) }));
+    assert.equal((await f.use()).result.outcome, "unknown");
+    assert.equal((await f.use(secondId)).status, 409);
+  }
+  assert.equal(f.counts().consumes, 4);
+  assert.equal(f.counts().clears, 0);
+});
+
 test("Claude grants retain windows and use conditions, and claims pin the exact organization and grant", async (t) => {
   const f = await fixture(t, "claude");
   const response = await f.call("resets");
@@ -196,4 +222,16 @@ test("removing membership blocks reset replays and malformed request IDs never r
   await f.use(); f.remove();
   assert.equal((await f.use()).status, 404);
   assert.equal(f.counts().consumes, 1);
+});
+
+test("Claude cooldown prevents a new claim even when the grant's usable_now flag is true", async (t) => {
+  const f = await fixture(t, "claude");
+  f.claudeCooldown("2030-01-01T00:10:00Z");
+  const response = await f.call("resets");
+  const value = await response.json() as ResetCredits;
+  assert.equal(value.credits.find((credit) => credit.id === "grant_1")?.usableNow, false);
+  assert.equal((await f.use()).status, 409);
+  assert.equal(f.counts().consumes, 0);
+  f.advance(10 * 60_000);
+  assert.equal((await f.use()).result.outcome, "reset");
 });

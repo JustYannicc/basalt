@@ -549,6 +549,12 @@ const routes: Record<string, Route> = {
 async function accountAction(ctx: RouteContext): Promise<Response> {
   const match = accountActionPath.exec(ctx.url.pathname.slice(base.length));
   if (!match) return fail(404, "not_found", "This pool endpoint does not exist.");
+  if (match[2] === "refresh" && !ctx.isOwner) {
+    const caller = text(ctx.request.headers.get(callerHeader));
+    if (!caller || !(await ctx.deps.audience?.(ctx.pool))?.includes(caller)) {
+      return fail(403, "not_owner", "Only people with access to this pool can refresh its accounts.");
+    }
+  }
   let id: string;
   try { id = decodeURIComponent(match[1]!); }
   catch { return fail(400, "invalid_query", "Provide a valid account id."); }
@@ -572,7 +578,8 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   if (!route) return fail(404, "not_found", "This pool endpoint does not exist.");
   const isOwner = request.headers.get(callerHeader) === claims.owner;
   const collect = routeKey === "POST /accounts/:id/collect";
-  if (routeKey !== "GET /pool" && !collect && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
+  const refresh = action?.[2] === "refresh" && request.method === "POST";
+  if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
   const isRead = collect || routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
   return { claims, url, route, routeKey, isOwner, isRead, isAccountAction: !!action };
 }
