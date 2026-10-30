@@ -142,7 +142,7 @@ jobs:
             "$BASE_SHA"
       - name: Check the reviewed Google client through its native E2E scenario
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name '^Executor for Google is offered'
+        run: bun run e2e:self-host --test-name '^The reviewed Google client follows' --workers 2
       - name: Retain the Google Admin proof summary
         uses: actions/upload-artifact@v4
         if: always()
