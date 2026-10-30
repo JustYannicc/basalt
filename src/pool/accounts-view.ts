@@ -20,7 +20,7 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
       // At equal lengths put Home's main account allowance last, so capacity uses it.
       windows: [...windows].sort((a, b) => (finite(a.window_seconds) ? a.window_seconds : Infinity)
         - (finite(b.window_seconds) ? b.window_seconds : Infinity)
-        || Number(mainAllowance(a, provider)) - Number(mainAllowance(b, provider))).map(windowView),
+        || Number(mainAllowance(a, provider)) - Number(mainAllowance(b, provider))).map(windowView).filter((window) => window !== null),
       observedAt: text(collection?.observed_at ?? reading?.observed_at),
       freshness: freshness === "fresh" || freshness === "stale" ? freshness : "never",
       // Partial collections still have usable windows (profile or reset metadata may have failed).
@@ -64,11 +64,24 @@ function bankedResets(value: unknown): BankedResets | null {
     .sort((a, b) => Date.parse(a) - Date.parse(b));
   return { available: value.available_count, nextExpiresAt: value.available_count > 0 ? expires[0] ?? null : null };
 }
-function windowView(row: Json): UsageWindow {
+function windowLabel(row: Json): string | null {
+  const label = text(row.label)?.trim();
+  if (label) return label;
+  const seconds = row.window_seconds;
+  if (!finite(seconds) || seconds <= 0) return null;
+  if (seconds === 604_800) return "Weekly";
+  for (const [unit, suffix] of [[86_400, "d"], [3_600, "h"], [60, "m"], [1, "s"]] as const) {
+    if (seconds % unit === 0) return `${seconds / unit}${suffix}`;
+  }
+  return `${seconds}s`;
+}
+function windowView(row: Json): UsageWindow | null {
+  const label = windowLabel(row);
+  if (label === null) return null;
   const ratio = finite(row.remaining_ratio) ? row.remaining_ratio : finite(row.used_ratio) ? 1 - row.used_ratio : null;
   return {
     // Home labels only additional limits; a raw window id never reaches a screen.
-    id: text(row.id) ?? "", label: text(row.label) ?? "Usage",
+    id: text(row.id) ?? "", label,
     remainingRatio: row.is_unlimited === true ? 1 : ratio === null ? null : Math.min(1, Math.max(0, ratio)),
     resetAt: row.is_unlimited === true ? null : text(row.reset_at),
     observedAt: text(row.observed_at),
