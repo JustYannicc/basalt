@@ -22,6 +22,7 @@ import { PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
+import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
@@ -146,6 +147,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async migrationInventory(): Promise<void> {
     await reportPoolStorage(this.ctx.storage);
+  }
+
+  async migrateCodexWebSockets(approved?: Pick<CodexWebSocketPlan, "digest" | "pending">) {
+    await this.managementReady();
+    const container = this.ctx.container;
+    if (!container) throw new Error("Pool container unavailable");
+    const client = new HomeClient((path, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("X-Management-Key", this.env.POOL_MANAGEMENT_KEY);
+      return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
+    });
+    return migrateCodexWebSockets(client, approved);
   }
 
   async fetch(request: Request): Promise<Response> {

@@ -6,6 +6,7 @@ import { HomeClient, PoolHome, poolGroupPrefix } from "../../src/pool/control.ts
 import { signPoolToken } from "../../src/pool/token.ts";
 import { importAccounts, type ImportConfig } from "../cutover/import.ts";
 import { SyntheticOAuthProvider } from "./import-fixture.ts";
+import { migrateCodexWebSockets } from "../../src/pool/codex-websockets.ts";
 import { MemoryStorage, SharingFixture } from "./sharing-fixture.ts";
 
 const signingKey = "ab".repeat(32);
@@ -181,6 +182,22 @@ test("cutover importer assigns synthetic Claude and Codex logins and verifies re
     assert.equal(importedIds.length, 2);
     assert.equal(new Set(importedIds).size, 2);
     for (const id of importedIds) assert.match(id, /^[0-9a-f-]{36}$/i);
+    const credentialFiles = (await homeClient.data("/credentials")).files as Record<string, unknown>[];
+    const codexFiles = credentialFiles.filter((file) => importedIds.includes(String(file.id)) && file.provider === "codex");
+    assert.equal(codexFiles.length, 1);
+    assert.equal(codexFiles[0]!.websockets, true, "Codex imports must enable and read back the pinned Home transport flag");
+    // Simulate an existing credential and prove the same supported field API migrates it.
+    const transportPatch = await homeClient.data("/credentials/fields", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: codexFiles[0]!.id, websockets: false }),
+    });
+    assert.equal(transportPatch.status, "ok");
+    const plan = await migrateCodexWebSockets(homeClient);
+    assert.equal(plan.pending, 1);
+    assert.equal(plan.applied, 0);
+    const applied = await migrateCodexWebSockets(homeClient, plan);
+    assert.equal(applied.status, "complete");
+    assert.equal(applied.applied, 1);
 
     const membership = await homeClient.allMembership();
     const target = membership.groups.find((group) => group.channel_name === `${poolGroupPrefix}${pool}`);

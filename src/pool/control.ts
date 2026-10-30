@@ -50,7 +50,7 @@ export interface ControlAttribution {
   uploadStarted(): Promise<string>;
   uploadFinished(upload: string): Promise<void>;
   retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
-  uploaded(home: PoolHome, id: string, upload: string, key: string): Promise<void>;
+  uploaded(home: PoolHome, id: string, upload: string, key: string, provider?: string): Promise<void>;
   removed(id: string): Promise<void>;
   cached(session: Session): SignInStatus | undefined;
   callback(home: HomeClient, session: Session): Promise<boolean>;
@@ -509,7 +509,7 @@ const routes: Record<string, Route> = {
     const saved: unknown = await response.json();
     if (!object(saved) || typeof saved.name !== "string" || !saved.name.endsWith(".json") || saved.name.length <= 5) return unavailable();
     const id = saved.name.slice(0, -5);
-    await state.uploaded(ctx.home, id, upload, key);
+    await state.uploaded(ctx.home, id, upload, key, String(credential.type));
     return json({ accountId: id });
   },
   "DELETE /accounts/:id": async (ctx) => {

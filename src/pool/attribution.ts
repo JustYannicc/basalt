@@ -4,6 +4,7 @@ import { BackendFailure, fail, failureResponse, rows, text, unavailable } from "
 import providers from "./providers.json" with { type: "json" };
 import { QuotaCollection } from "./quota-collection.ts";
 import { AccountActions } from "./account-actions.ts";
+import { enableNewCodexWebSockets } from "./codex-websockets.ts";
 
 export const attributionStorageKey = "pool-control-v1";
 // Home's device waiters use 16 minutes; callback exchanges use 5 minutes.
@@ -38,7 +39,7 @@ interface ProviderLock {
   callbackResent?: boolean;
 }
 interface TrackedSession { session: Session; accountId?: string; result?: SignInStatus; pendingIds?: string[] }
-interface PendingUpload { pool: string; id: string; upload: string; assigned?: boolean }
+interface PendingUpload { pool: string; id: string; upload: string; provider?: string; assigned?: boolean }
 interface AttributionState {
   version?: 2;
   locks: Record<string, ProviderLock>;
@@ -454,14 +455,14 @@ export class PoolControl implements ControlAttribution {
     // Finish this pool's saved upload before allowing another one to create a credential.
     for (const [pendingKey, pending] of Object.entries(this.state.uploads ?? {})) {
       if (pending.pool !== home.pool) continue;
-      await this.uploaded(home, pending.id, pending.upload, pendingKey);
+      await this.uploaded(home, pending.id, pending.upload, pendingKey, pending.provider);
       if (pendingKey === key) return pending.id;
     }
     return undefined;
   }
-  async uploaded(home: PoolHome, id: string, upload: string, key: string): Promise<void> {
+  async uploaded(home: PoolHome, id: string, upload: string, key: string, provider?: string): Promise<void> {
     const uploads = this.state.uploads ??= {};
-    const pending = uploads[key] ??= { pool: home.pool, id, upload };
+    const pending = uploads[key] ??= { pool: home.pool, id, upload, provider };
     this.changed();
     await this.save(); // Never repeat the credential POST after Home returned its id.
     const ownership = await this.ownership(home);
@@ -475,6 +476,7 @@ export class PoolControl implements ControlAttribution {
     pending.assigned = true;
     await this.assigned([id]);
     await this.uploadFinished(upload);
+    await enableNewCodexWebSockets(this.client, [id], pending.provider);
     await home.add([id], ownership.own);
     this.unassign([id]);
     delete uploads[key];
@@ -509,6 +511,7 @@ export class PoolControl implements ControlAttribution {
     tracked.pendingIds = ids;
     this.changed();
     await this.assigned(ids);
+    await enableNewCodexWebSockets(this.client, ids, session.provider);
     await home.add(ids, ownership.own);
     this.unassign(ids);
     const result: SignInStatus = { status: "connected", accountId: ids[0] ?? null };
