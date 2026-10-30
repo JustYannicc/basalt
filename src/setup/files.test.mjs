@@ -23,10 +23,23 @@ test("clean setup, rerun and undo restore file absence", async (t) => {
   assert.equal(claude.env.ANTHROPIC_AUTH_TOKEN, credentials.modelKey);
   const codex = decode(await readFile(paths[2].path, "utf8"), "toml");
   assert.equal(codex.model_providers.signalbox.requires_openai_auth, true);
+  assert.equal(codex.model_providers.signalbox.supports_websockets, true);
   assert.equal(codex.model_providers.signalbox.http_headers["X-Api-Key"], credentials.modelKey);
   assert.equal((await stat(paths[2].path)).mode & 0o777, 0o600);
   await configure({ ...options, undo: true });
   for (const file of paths) await assert.rejects(readFile(file.path), { code: "ENOENT" });
+});
+test("setup enables Codex WebSockets and undo restores the previous transport preference", async (t) => {
+  const options = await fixture(t);
+  const path = configPaths(options.home, options.env)[2].path;
+  const original = '[model_providers.signalbox]\nname = "Old pool"\nsupports_websockets = false\n';
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, original);
+  await configure(options);
+  await configure(options);
+  assert.equal(decode(await readFile(path, "utf8"), "toml").model_providers.signalbox.supports_websockets, true);
+  await configure({ ...options, undo: true });
+  assert.equal(await readFile(path, "utf8"), original);
 });
 test("another proxy, providers, servers and CRLF restore byte for byte after rerun and rename", async (t) => {
   const options = await fixture(t);

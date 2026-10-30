@@ -70,7 +70,7 @@ export function clientEntries(credentials, brand) {
     ] : [],
     codex: [
       [["model_provider"], name],
-      [["model_providers", name], { name: brand.name, base_url: `${credentials.modelUrl}/v1`, wire_api: "responses", requires_openai_auth: true, http_headers: { "X-Api-Key": credentials.modelKey } }],
+      [["model_providers", name], { name: brand.name, base_url: `${credentials.modelUrl}/v1`, wire_api: "responses", supports_websockets: true, requires_openai_auth: true, http_headers: { "X-Api-Key": credentials.modelKey } }],
       ...tools ? [[["mcp_servers", name], { url: credentials.toolsUrl, http_headers: { Authorization: `Bearer ${credentials.toolsToken}` } }]] : [],
     ],
   };

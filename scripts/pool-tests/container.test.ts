@@ -171,6 +171,26 @@ test("pinned Home/node stream, stick, spread, fail over at quota and retain keys
       return response.ok && payload.data?.some((model) => model.id === "fixture-model") ? true : undefined;
     }
     await until(catalog);
+    // Exercise the pinned binary's actual Responses WebSocket route, without provider traffic.
+    const socket = new WebSocket(`${node.replace(/^http/, "ws")}/v1/responses?key=fixture-client-key`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.addEventListener("open", () => resolve(), { once: true });
+        socket.addEventListener("error", () => reject(new Error("Pinned node rejected the WebSocket upgrade")), { once: true });
+      });
+      for (let i = 0; i < 2; i++) {
+        const received = new Promise<string>((resolve, reject) => {
+          socket.addEventListener("message", (event) => resolve(String(event.data)), { once: true });
+          socket.addEventListener("error", () => reject(new Error("Pinned node WebSocket failed")), { once: true });
+        });
+        socket.send(JSON.stringify({ type: "fixture.unsupported" }));
+        const event = JSON.parse(await received) as { type?: string; error?: { message?: string } };
+        assert.equal(event.type, "error");
+        assert.match(event.error?.message ?? "", /unsupported.*type/i);
+      }
+    } finally {
+      socket.close();
+    }
     const richCatalog = await fetch(`${node}/v1/models?client_version=cpa`, { headers: { Authorization: "Bearer fixture-client-key" } });
     assert.equal(richCatalog.status, 200);
     const rich = await richCatalog.json() as { models: { slug: string; service_tiers: unknown[] }[] };

@@ -199,6 +199,7 @@ for (const client of ["claude", "codex"]) for (const seed of ["clean", "existing
     }));
     const codex = generated[2].value;
     assert.equal(codex.model_providers.signalbox.requires_openai_auth, true);
+    assert.equal(codex.model_providers.signalbox.supports_websockets, true);
     assert.equal(codex.model_providers.signalbox.http_headers["X-Api-Key"], modelKey);
     if (seed === "existing") {
       assert.ok(codex.model_providers.other); assert.ok(codex.mcp_servers.other);
