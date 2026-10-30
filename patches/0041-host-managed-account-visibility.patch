@@ -932,7 +932,7 @@ new file mode 100644
 +          page
 +            .getByRole("region", { name: pool })
 +            .getByText(
-+              "This account is set up automatically and is missing. Ask an administrator to restore it.",
++              "This account is missing. It will be restored the next time automatic setup runs.",
 +              { exact: true },
 +            )
 +            .waitFor(),
@@ -1257,13 +1257,15 @@ index ff19b9c..3518e78 100644
    slot,
    requirement,
    linked,
-@@ -623,10 +665,19 @@ function ReadOnlyChoices<E>({
+@@ -623,10 +665,21 @@ function ReadOnlyChoices<E>({
    if (linked.length === 0)
      return (
        <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">
 -        {provisionedOnly(requirement) ? "Set up automatically" : "No account linked"}
 +        {provisionedOnly(requirement)
-+          ? "This account is set up automatically and is missing. Ask an administrator to restore it."
++          ? data.edit === undefined
++            ? "This account is set up automatically and is missing. Ask an administrator to restore it."
++            : "This account is missing. It will be restored the next time automatic setup runs."
 +          : "No account linked"}
        </p>
      );
