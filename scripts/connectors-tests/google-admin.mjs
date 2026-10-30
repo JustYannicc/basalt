@@ -20,10 +20,7 @@ import { brand } from "../../brand.ts";
 import { loadGoogleAdminCatalog } from "./google-admin-catalog.mjs";
 import { proveGoogleAdminOAuth } from "./google-admin-scenario.mjs";
 import { provisionSelfHostActors } from "./test-accounts.mjs";
-import {
-  pinProofSource,
-  redactDiagnostic,
-} from "./provider-evidence.mjs";
+import { pinProofSource } from "./provider-evidence.mjs";
 
 const scriptRoot = fileURLToPath(new URL("../..", import.meta.url));
 const root = resolve(process.argv[2] ?? scriptRoot);
@@ -205,14 +202,13 @@ try {
   );
   await writeFile(
     evidenceFile,
-    JSON.stringify({ ...result, evidenceDirectory }, null, 2) + "\n",
+    JSON.stringify(result, null, 2) + "\n",
     { mode: 0o600 },
   );
   console.log(
     JSON.stringify({ outcome: result.outcome, checks: result.checks.length }),
   );
-} catch (error) {
-  const message = redactDiagnostic(error?.message ?? error, privateValues);
+} catch {
   await writeFile(
     evidenceFile,
     JSON.stringify(
@@ -224,14 +220,12 @@ try {
         snapshots: state.snapshots,
         deployments: state.deployments,
         failures: state.failures,
-        diagnostic: message,
-        evidenceDirectory,
       },
       null,
       2,
     ) + "\n",
     { mode: 0o600 },
   );
-  console.error("Google Admin OAuth proof failed; private diagnostics were retained.");
+  console.error("Google Admin OAuth proof failed; stage and check results were retained.");
   process.exitCode = 1;
 }
