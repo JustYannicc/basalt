@@ -75,7 +75,7 @@ views {
 
   view current_inference {
     title "Basalt/Current inference"
-    description "Implemented transport and backend. One singleton EU control-plane actor forwards to one warm EU container; model requests through the pool app remain planned."
+    description "The Worker checks every Home model-key candidate in the existing pool database before it looks up the singleton controller; each connection and query is bounded to 2.5 seconds. Missing, invalid and revoked keys get 401, and database failures or timeouts get 503. Valid requests continue to Home for quota and model policy, then the controller forwards to the EU container. Model requests through the pool app remain planned."
 
     include
       basalt.router,
@@ -87,6 +87,7 @@ views {
     exclude * -> *
 
     include basalt.router -> basalt.modelGateway
+    include basalt.modelGateway -> basalt.poolDatabase
     include basalt.modelGateway -> basalt.poolController
     include basalt.poolController -> basalt.poolRuntime
     include basalt.poolRuntime -> basalt.poolDatabase

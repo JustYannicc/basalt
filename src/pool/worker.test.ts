@@ -5,11 +5,15 @@ import { signEnvelope, signPoolToken } from "./token.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 import providers from "./providers.json" with { type: "json" };
 
-// Node has no Workers runtime; keep the actual Worker and lifecycle with only the native base stubbed.
+// Node has no Workers runtime; keep the actual Worker and lifecycle with platform adapters stubbed.
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (specifier === "cloudflare:workers") return {
       url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }",
+      shortCircuit: true,
+    };
+    if (specifier === "pg") return {
+      url: "data:text/javascript,export default { Client: class { on() {} async connect() {} async query() { return { rows: [{ active: false }] }; } async end() {} } }",
       shortCircuit: true,
     };
     return next(specifier, context);
