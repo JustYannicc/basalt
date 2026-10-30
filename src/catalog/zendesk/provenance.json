@@ -2,8 +2,8 @@
   "schema": 1,
   "package": "zendesk",
   "sourceSdk": "apps@0.0.1-beta.104-basalt.1",
-  "origin": "provided tested Zendesk source snapshot",
-  "snapshotSha256": "022b79b5f5c8987ef0cfeb61915e9499097d80626c0a88bc44d2a00c1c48a213",
+  "origin": "Derived from the provided Zendesk source snapshot and official Zendesk Support API OpenAPI document",
+  "snapshotSha256": "51c506d2f982cf206ecaf0063b432732a6d9289292078c6d3fcb66e336319c33",
   "originalFileSha256": {
     "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
     "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
@@ -11,9 +11,11 @@
     "package.json": "5511f2c53b7800d3743be6b66a6e3d9a5d69a7b954ae99ab860ef093c2cb0734"
   },
   "catalogFileSha256": {
-    "README.md": "cbe59bd4d629b843d14e0058284c07c06b8a875a20b1e5a97cacc1768b96aa48",
+    "README.md": "56b74883a1528d975404f48494bf97c8de64817f71746f78fa245be5bb12fcf0",
     "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
-    "index.ts": "f9e7bf3f79d2d6f566b6d8b1309b12464c48d29f5426cd6c5af46fd5123bd069",
+    "icon.ts": "4e006f5d4490b7ebbbb8d4038637b7aed2c6dcd4b42619a268c2699523fc40d3",
+    "index.ts": "122dbd6c64b30cd7aafe446a50857794e3923edf118a2f8e4fbfb99ea729f348",
+    "openapi.ts": "ce31570fa69381d1f5faea8fd2d0a015bbf9171256b14a2772c0ee0aaa2661cc",
     "package.json": "0a5061e430e8593e1c0c8b6184b337c3c82290503485b5fee6c2fb4a28cf71df"
   },
   "authoringDocs": "https://executor.sh/docs/author-an-app",
@@ -25,5 +27,36 @@
     "declarationOrigin": "https://example.zendesk.com",
     "subdomainOf": "zendesk.com",
     "integrationMetadataFile": "configuration.ts"
+  },
+  "baseline": {
+    "snapshotSha256": "022b79b5f5c8987ef0cfeb61915e9499097d80626c0a88bc44d2a00c1c48a213",
+    "catalogFileSha256": {
+      "README.md": "cbe59bd4d629b843d14e0058284c07c06b8a875a20b1e5a97cacc1768b96aa48",
+      "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
+      "index.ts": "f9e7bf3f79d2d6f566b6d8b1309b12464c48d29f5426cd6c5af46fd5123bd069",
+      "package.json": "0a5061e430e8593e1c0c8b6184b337c3c82290503485b5fee6c2fb4a28cf71df"
+    },
+    "originalFileSha256": {
+      "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
+      "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
+      "index.ts": "a875c9c067430d05c8dd3787eff6aa295a72263ed673a23e0c58bfa65d54ced7",
+      "package.json": "5511f2c53b7800d3743be6b66a6e3d9a5d69a7b954ae99ab860ef093c2cb0734"
+    }
+  },
+  "requestedScopes": [
+    "read",
+    "write",
+    "impersonate"
+  ],
+  "openApiSpec": {
+    "url": "https://developer.zendesk.com/zendesk/oas.yaml",
+    "checkedAt": "2026-10-30",
+    "sha256": "809a093dd15caa57536520db2c7dd8a829e8e6c2a25c01b3f7af3f4e9b8d22e6"
+  },
+  "vendorLogo": {
+    "url": "https://web-assets.zendesk.com/zendesk/pages/company/brand-guidelines/primarylogo.png",
+    "mimeType": "image/png",
+    "bytes": 16946,
+    "sha256": "ea6a73c169befa298e7bd1cd2fa289d79326af96cbe9dc80cb9daac6d6b73927"
   }
 }

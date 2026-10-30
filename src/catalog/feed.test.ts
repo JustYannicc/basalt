@@ -8,6 +8,7 @@ import { gitlabSource } from "./gitlab.ts";
 import sourceSnapshot from "./zendesk/source.json" with { type: "json" };
 import sourceProvenance from "./zendesk/provenance.json" with { type: "json" };
 import { zendeskAddition } from "./zendesk/source.ts";
+import { zendeskIcons } from "./zendesk/logo.ts";
 
 const official: Feed = {
   version: 1,
@@ -172,6 +173,8 @@ test("Zendesk source is served locally and catalog requests cannot choose its te
   assert.ok(entry);
   assert.equal(entry.package, "zendesk");
   assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
+  assert.deepEqual(entry.icons, zendeskIcons);
+  assert.match(entry.icons[0]!.src, /^data:image\/png;base64,/);
   assert.equal(entry.connectionNotices, undefined);
   assert.doesNotMatch(JSON.stringify(entry), /untrusted-tenant/);
 

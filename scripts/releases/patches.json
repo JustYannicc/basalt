@@ -183,7 +183,7 @@
     {
       "identity": "executor-gitlab-miro-oauth",
       "file": "0020-gitlab-miro-oauth.patch",
-      "content_sha256": "5325a16ebe36ac29e9e37c7b86bc151aa7ce8f24267c0dac995268542cc96c59",
+      "content_sha256": "4e710aaa3021211c5f21fc26cec07f45718a401a6f2976956463a01711dffffd",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -201,7 +201,7 @@
     {
       "identity": "executor-zendesk-oauth",
       "file": "0022-zendesk-hosted-oauth.patch",
-      "content_sha256": "e1c862ad74e9ba30c4f4c068e33c5dd03a1d1ad115418dc6f2d6966b6ec336f7",
+      "content_sha256": "edec88a1140389181ee79ccdc27c8bd185fdee57a5a27e2498c5fd079e770303",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
