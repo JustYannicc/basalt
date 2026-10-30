@@ -122,6 +122,7 @@ model {
   }
   basalt.toolsGateway -[sync]-> databaseService "call"
   basalt.modelGateway -[sync]-> databaseService "read-only pool inventory"
+  basalt.modelGateway -[sync]-> databaseService "verify active model API keys before controller lookup"
   basalt.deployment -[sync]-> databaseService "provision logical database"
   assetsService = adapter "Asset service" {
     #external
