@@ -159,6 +159,17 @@ test("the public Worker uses its Home database lookup for valid keys", async () 
   assert.equal(calls.forwarded.length, 1);
 });
 
+test("a whitespace-padded query key cannot wake the container using an active key's value", async () => {
+  const { env, calls } = poolStub();
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/models?key=%20valid-home-key%20"),
+    env,
+  );
+  assert.equal(response.status, 401);
+  assert.equal(calls.lookups, 0);
+  assert.equal(calls.forwarded.length, 0);
+});
+
 test("signed pool access remains outside the Home model-key gate", async () => {
   const { env, calls } = poolStub();
   let keyLookups = 0;

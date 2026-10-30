@@ -31,20 +31,19 @@ export function homeApiKeyCandidates(request: Request): HomeApiKeyCandidates {
       queryAuthToken !== "",
     values: [
       extractBearerToken(authorization),
-      googleApiKey.trim(),
-      apiKey.trim(),
-      queryKey.trim(),
-      queryAuthToken.trim(),
+      googleApiKey,
+      apiKey,
+      queryKey,
+      queryAuthToken,
     ].filter((value) => value !== ""),
   };
 }
 
 function extractBearerToken(header: string): string {
-  const trimmed = header.trim();
-  if (trimmed === "") return "";
-  const separator = trimmed.indexOf(" ");
-  if (separator < 0 || trimmed.slice(0, separator).toLowerCase() !== "bearer") return trimmed;
-  return trimmed.slice(separator + 1).trim();
+  const separator = header.indexOf(" ");
+  if (separator < 0 || header.slice(0, separator).toLowerCase() !== "bearer") return header;
+  // Go's strings.TrimSpace accepts Unicode White_Space, including NEL but not BOM.
+  return header.slice(separator + 1).replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 }
 
 /** Looks up any active Home API key with one parameterized query eligible for the unique api_key index. */

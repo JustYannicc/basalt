@@ -80,7 +80,19 @@ test("missing model API-key candidates are distinguishable from invalid credenti
 
   const empty = homeApiKeyCandidates(new Request("https://pool.example/v1/models?key=%20"));
   assert.equal(empty.supplied, true);
-  assert.deepEqual(empty.values, []);
+  assert.deepEqual(empty.values, [" "]);
+});
+
+test("query credentials keep whitespace that Home treats as part of a bad key", () => {
+  const request = new Request("https://pool.example/v1/models?key=%20active-key%20&auth_token=%C2%85active-key%C2%85");
+  assert.deepEqual(homeApiKeyCandidates(request).values, [" active-key ", "\u0085active-key\u0085"]);
+});
+
+test("Bearer extraction uses Home's Unicode whitespace rule", () => {
+  const request = new Request("https://pool.example/v1/models", {
+    headers: { Authorization: "Bearer \u0085active-key\u0085" },
+  });
+  assert.deepEqual(homeApiKeyCandidates(request).values, ["active-key"]);
 });
 
 test("Home model-key lookup uses a parameterized active-row query and bounded timeouts", async () => {
