@@ -4,6 +4,23 @@ export interface HistoryDatabase {
 
 export const historySchemaVersion = "model_request_history_v1";
 
+/** Catalog-only preview. The same query works before any history table exists. */
+export async function planModelHistorySchema(db: HistoryDatabase) {
+  await db.query("BEGIN TRANSACTION READ ONLY");
+  try {
+    await db.query("SET LOCAL statement_timeout = '3s'");
+    const identity = await db.query("SELECT current_database() AS database, current_user AS role, current_schema() AS schema");
+    const relations = await db.query(`SELECT c.relname AS name,c.relkind AS kind
+      FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=current_schema() AND c.relname LIKE 'basalt_model_%' ORDER BY c.relname`);
+    await db.query("COMMIT");
+    return { identity: identity.rows[0], relations: relations.rows, writes: false };
+  } catch (error) {
+    await db.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
+}
+
 // Hash partitions keep the unique request identity on the table itself. No second receipt
 // per request, no default partition to drain, and no time partition that a retention job can drop.
 export const historySchemaStatements = [

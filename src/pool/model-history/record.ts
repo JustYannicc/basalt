@@ -110,6 +110,7 @@ export function endpointMetadata(value: unknown): Pick<ModelRequest, "endpoint" 
 export async function reference(source: string, kind: string, value: unknown): Promise<string | null> {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string" && typeof value !== "number") return invalidHistory();
+  if (typeof value === "number" && !Number.isSafeInteger(value)) return invalidHistory();
   if (String(value).length > 4096) return invalidHistory();
   return digest(JSON.stringify([source, kind, String(value)]));
 }

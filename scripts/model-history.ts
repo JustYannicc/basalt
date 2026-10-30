@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { poolDatabase } from "../src/pool/database-settings.ts";
 import { activateHomeBackfill, planHomeBackfill, type BackfillPlan } from "../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../src/pool/model-history/capture.ts";
-import { historySchemaStatements, historySchemaVersion, migrateModelHistory } from "../src/pool/model-history/schema.ts";
+import { historySchemaStatements, historySchemaVersion, migrateModelHistory, planModelHistorySchema } from "../src/pool/model-history/schema.ts";
 
 const [command, mode, path, approval] = process.argv.slice(2);
 const schemaHash = createHash("sha256").update(JSON.stringify(historySchemaStatements)).digest("hex");
@@ -12,8 +12,17 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 
 async function main() {
   if (command === "schema" && mode === "--dry-run") {
+    let catalog: unknown;
+    const connectionString = process.env.POOL_HISTORY_DATABASE_URL;
+    if (connectionString) {
+      if (new URL(connectionString).pathname !== `/${poolDatabase.name}`) throw new Error("Invalid history database");
+      const db = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000, query_timeout: 4_000 });
+      db.on("error", () => {});
+      try { await db.connect(); catalog = await planModelHistorySchema(db); }
+      finally { await db.end().catch(() => {}); }
+    }
     console.log(JSON.stringify({ version: historySchemaVersion, sha256: schemaHash, additive: true,
-      existingTableWrites: false, automaticBackfill: false, statements: historySchemaStatements }, null, 2));
+      existingTableWrites: false, automaticBackfill: false, catalog, statements: historySchemaStatements }, null, 2));
     return;
   }
   const valid = command === "schema" && mode === "--apply" && path === schemaHash
