@@ -46,8 +46,10 @@ test("checkout, report and deploy all use the exact successful Check SHA", () =>
 });
 
 test("production serialization, credentials, and release report gates remain", () => {
-  assert.match(workflow, /^  group: deploy-production$/m);
-  assert.match(workflow, /^  cancel-in-progress: false$/m);
+  // On the deploy job, so a Deploy run whose jobs are all skipped can't replace a pending release.
+  assert.match(workflow, /^  deploy:\n    if: >-\n(?:      [^\n]+\n)+    runs-on: ubuntu-latest\n(?:    #[^\n]*\n)*    concurrency:\n      group: deploy-production\n      cancel-in-progress: false\n/m);
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("\njobs:")), /concurrency:/);
+  assert.equal(workflow.match(/group: deploy-production/g)?.length, 1);
   assert.match(workflow, /^      CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}$/m);
   assert.match(workflow, /^      PLANETSCALE_API_TOKEN: \$\{\{ secrets\.PLANETSCALE_API_TOKEN \}\}$/m);
   assert.match(workflow, /name: Validate credentials/);
@@ -59,13 +61,77 @@ test("database and Workflow-identity releases go to Manual release of main witho
   assert.doesNotMatch(workflow.slice(0, workflow.indexOf("\njobs:")), /actions: write/);
   assert.match(workflow, /- name: Compare the candidate with the last successful production deployment\n\s+id: report\n/);
   assert.match(workflow, /- name: Deploy normal releases[^\n]*\n\s+if: steps\.report\.outputs\.manual_required == 'false'\n\s+run: env -u GITHUB_SHA node scripts\/deploy-safety\/release\.ts deploy [^\n]*--mode automatic/);
-  assert.match(workflow, /if: steps\.report\.outputs\.manual_required != 'false' && steps\.report\.outputs\.deployable != 'true'\n\s+run: \|\n[^\n]*unresolved[^\n]*\n\s+exit 1/);
+  assert.match(workflow, /if: steps\.report\.outputs\.manual_required == 'true' && steps\.report\.outputs\.deployable != 'true'\n\s+run: \|\n[^\n]*unresolved[^\n]*\n\s+exit 1/);
   const handoff = workflow.slice(workflow.indexOf("\n  handoff:\n"));
-  assert.match(handoff, /^    needs: deploy\n    if: needs\.deploy\.outputs\.manual_required != 'false'$/m);
+  assert.match(handoff, /^    needs: deploy\n    if: >-\n      needs\.deploy\.outputs\.already_live == 'false' &&\n      \(needs\.deploy\.outputs\.newer != '' \|\| needs\.deploy\.outputs\.manual_required == 'true'\)$/m);
   assert.match(handoff, /^    permissions:\n      contents: read\n      actions: write$/m);
   assert.doesNotMatch(handoff, /secrets\.|actions\/checkout|npm |node /);
-  assert.match(handoff, /^\s+"completed "\*\) echo "::error::[^\n]*"; exit 1 ;;\n\s+\*\) echo "::notice::[^\n]*"; exit 0 ;;$/m);
-  assert.doesNotMatch(handoff, /"null null"/);
-  assert.match(handoff, /release-updates\/[\s\S]*?exit 1[\s\S]*?gh workflow run release-main\.yml --repo "\$GITHUB_REPOSITORY" --ref main/);
-  assert.match(workflow, /^      manual_required: \$\{\{ steps\.report\.outputs\.manual_required \}\}$/m);
+  for (const [name, step] of [["already_live", "live"], ["newer", "newer"], ["manual_required", "report"]])
+    assert.match(workflow, new RegExp(`^      ${name}: \\$\\{\\{ steps\\.${step}\\.outputs\\.${name} \\}\\}$`, "m"), name);
+});
+
+/** The deploy job's steps, each as written after its leading `- `. */
+function deploySteps(): string[] {
+  return workflow.slice(workflow.indexOf("\n  deploy:\n"), workflow.indexOf("\n  handoff:\n")).split(/\n      - /).slice(1);
+}
+
+test("Deploy looks for a newer passing commit first, then skips whichever commit production already contains", () => {
+  const steps = deploySteps();
+  assert.match(steps[0]!, /^uses: actions\/checkout@v4\n/);
+  assert.match(steps[1]!, /^uses: actions\/setup-node@v4\n/);
+  // This run may have replaced the newer commit's pending Deploy run, so the newer commit is found unconditionally.
+  assert.match(steps[2]!, /^name: [^\n]+\n        id: newer\n        run: MAIN_RELEASE_CANDIDATE="\$RELEASE_CANDIDATE_SHA" node scripts\/release-merge\/main-candidate\.ts newer$/);
+  assert.match(steps[3]!, /^name: [^\n]+\n        id: live\n        run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$\{NEWER:-\$RELEASE_CANDIDATE_SHA\}"\n        env:\n          NEWER: \$\{\{ steps\.newer\.outputs\.newer \}\}$/);
+  // Every check, the report and through it the deploy and the unresolved refusal wait on both.
+  const gated = steps.slice(4, steps.findIndex((step) => /\n\s+id: report\n/.test(step)) + 1);
+  assert.equal(gated.length, 13);
+  for (const step of gated)
+    assert.match(step, /^(?:(?:name|id): [^\n]+\n        )*if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == ''\n/, step);
+  const after = steps.slice(4 + gated.length);
+  assert.equal(after.length, 3);
+  for (const step of after) assert.match(step, /\n        if: steps\.report\.outputs\./, step);
+  // A report that succeeds without saying which path it needs fails Deploy rather than releasing nothing.
+  assert.match(after[2]!, /\n        if: steps\.report\.outputs\.manual_required != 'true' && steps\.report\.outputs\.manual_required != 'false' && steps\.report\.outcome == 'success'\n        run: \|\n[^\n]*::error::[^\n]*\n\s+exit 1/);
+});
+
+test("the handoff releases this Check's commit, or a newer passing one, even when main has moved on", () => {
+  const handoff = workflow.slice(workflow.indexOf("\n  handoff:\n"));
+  const script = handoff.match(/^        run: \|\n((?:          [^\n]*\n?)+)/m)?.[1];
+  assert.ok(script, "handoff must run a script");
+  // A newer head, or its pending or failed Check, no longer defers or blocks this release.
+  assert.doesNotMatch(script, /commits\/main|ci\.yml\/runs|exit 0/);
+  assert.match(script, /^          if gh api "repos\/\$GITHUB_REPOSITORY\/commits\/\$RELEASE_CANDIDATE_SHA\/pulls" --jq '\.\[\]\.head\.ref' \| grep -q '\^release-updates\/'; then\n[^\n]*::error::[^\n]*\n\s+exit 1\n\s+fi\n/m);
+  assert.match(script, /\n          gh workflow run release-main\.yml --repo "\$GITHUB_REPOSITORY" --ref main -f candidate="\$RELEASE_CANDIDATE_SHA"\n?$/);
+  assert.equal(script.match(/gh workflow run/g)?.length, 1);
+  assert.match(handoff, /^      RELEASE_CANDIDATE_SHA: \$\{\{ needs\.deploy\.outputs\.newer \|\| github\.event\.workflow_run\.head_sha \}\}$/m);
+});
+
+test("Manual release of main releases a dispatched candidate main contains, and never one production already has", () => {
+  const release = readFileSync(fileURLToPath(new URL("../../.github/workflows/release-main.yml", import.meta.url)), "utf8");
+  const backup = release.slice(release.indexOf("\n  backup:\n"), release.indexOf("\n  deploy:\n"));
+  const deploy = release.slice(release.indexOf("\n  deploy:\n"));
+  assert.match(release, /^  workflow_dispatch:\n    inputs:\n      candidate:\n        description: [^\n]+\n        required: false\n        type: string$/m);
+  assert.match(release, /^  group: deploy-production\n  cancel-in-progress: false$/m);
+  // Trusted scripts come from main, the same commit in both jobs; the candidate only goes into its own worktree.
+  assert.match(backup, /^          ref: main$/m);
+  assert.match(backup, /^      trusted: \$\{\{ steps\.trusted\.outputs\.commit \}\}$/m);
+  assert.match(backup, /\n\s+id: trusted\n\s+run: echo "commit=\$\(git rev-parse HEAD\)" >> "\$GITHUB_OUTPUT"\n/);
+  assert.ok(backup.indexOf("id: trusted") < backup.indexOf("id: candidate"));
+  assert.match(deploy, /^          ref: \$\{\{ needs\.backup\.outputs\.trusted \}\}$/m);
+  assert.doesNotMatch(deploy, /^          ref: main$/m);
+  // A dispatched run can replace a newer commit's pending Deploy run, so it releases the newest passing commit.
+  assert.match(backup, /run: MAIN_RELEASE_CHECKOUT="\$\(git rev-parse HEAD\)" node scripts\/release-merge\/main-candidate\.ts newest\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ inputs\.candidate \}\}\n/);
+  assert.doesNotMatch(release, /\$\{\{ inputs\.candidate \}\}"|run: [^\n]*inputs\.candidate/);
+  assert.match(backup, /^      already_live: \$\{\{ steps\.live\.outputs\.already_live \}\}$/m);
+  assert.match(backup, /\n\s+id: live\n\s+run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$RELEASE_HEAD"\n/);
+  const guarded = backup.slice(backup.indexOf("id: live"));
+  assert.ok(backup.indexOf("id: live") > backup.indexOf("id: candidate"));
+  // Nothing after the guard runs once production has the candidate: no worktree, report, backup or artifact.
+  const steps = guarded.split(/\n      - /).slice(1);
+  assert.equal(steps.length, 4);
+  for (const step of steps) assert.match(step, /^(?:name: [^\n]+\n        )?if: steps\.live\.outputs\.already_live == 'false'\n/, step);
+  assert.match(deploy, /^    if: github\.ref == 'refs\/heads\/main' && needs\.backup\.outputs\.already_live == 'false'$/m);
+  // The deploy job only needs main to still contain the backed-up candidate, not to equal it.
+  assert.match(deploy, /run: node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ needs\.backup\.outputs\.head \}\}\n\s+MAIN_RELEASE_REQUIRE_CANDIDATE: "true"\n/);
+  assert.doesNotMatch(release, /MAIN_RELEASE_EXPECTED_HEAD|MAIN_RELEASE_REQUIRE_EXPECTED/);
 });

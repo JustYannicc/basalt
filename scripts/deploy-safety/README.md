@@ -43,7 +43,13 @@ node scripts/deploy-safety/release.ts deploy \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports go through the separate manual release workflow. On `main`, the Deploy workflow starts `Manual release of main` itself when the report needs it, as long as its candidate is still the `main` head. It validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
+Automatic mode accepts a `push` or bootstrap `workflow_dispatch` from `refs/heads/main` only when both `databaseChanged` and `workflowChanged` are false. Risky reports go through the separate manual release workflow.
+
+Check runs can finish out of order. Before anything else, Deploy's job looks for a newer `main` commit that contains its commit and has a passing push Check. It does this even when its own commit is already live, because its run may have replaced that newer commit's pending one. Then `already-live` stops the job cleanly when the last successful production deployment already is or contains the newer commit, or its own commit when there is none. Otherwise a newer commit goes to `Manual release of main` instead of Deploy deploying its own over it. Without one, Deploy reports and, when the report needs the manual path, starts `Manual release of main` with its Check's commit as `candidate`, even when `main` has moved on. A report that doesn't say which path it needs fails the job.
+
+Releases run one at a time in the `deploy-production` concurrency group, set on Deploy's job, so a Deploy run that skips everything doesn't take a place in the queue. GitHub keeps one pending run per group, and a new one replaces it whatever commit either carries. So `Manual release of main` releases the newest `main` commit that contains `candidate`, passed its own push Check and isn't a `release-updates/` head, falling back to `candidate` when none newer qualifies. Without `candidate`, it releases the current `main` head. It also stops with success before the backup when production already contains that commit. Its deploy job then only needs `main` to still contain the backed-up commit, since the backup is for that commit's transition, and runs the same trusted `main` commit as the backup job.
+
+Automatic mode validates deployment configuration before creating a deployment record, deploys, runs the public smoke check, and marks the record successful.
 
 The deploy step retries one failure, in both modes: when Cloudflare rejects a Worker upload with `ScriptStartupError` because script startup exceeded the CPU time limit, the runner logs a warning and runs the deploy command once more under the same deployment record. Startup CPU time varies between uploads. The retry runs the whole deploy again, so the steps that always run, such as Migrations, PoolDatabase and AppSourceNamespace, run a second time. It needs both the error name and that message in the failed command's output, and it needs the first attempt to have finished: when something the deploy started still holds its output two seconds after it exits, the runner logs why and doesn't retry, so the two can't overlap. No other failure, including another `ScriptStartupError`, is retried, and a second rejection fails the step. Rollback deploys retry the same way.
 
@@ -94,7 +100,7 @@ The unresolved reason and the roll-forward refusal say which of these held, such
 
 ### Release hold
 
-Set the `PRODUCTION_RELEASE_HOLD` repository variable to any non-empty value to stop every release, including a roll-forward, while someone restores a backup by hand. The Deploy, `Manual release of main` and `Manual release` jobs receive it, and their release commands (`report`, `backup-only`, `inspect-workflows`, `deploy`, and creating the deployment record) stop with a clear message. `Manual production rollback` doesn't receive it, so the rollback still runs. The order is:
+Set the `PRODUCTION_RELEASE_HOLD` repository variable to any non-empty value to stop every release, including a roll-forward, while someone restores a backup by hand. The Deploy, `Manual release of main` and `Manual release` jobs receive it, and their release commands (`already-live`, `report`, `backup-only`, `inspect-workflows`, `deploy`, and creating the deployment record) stop with a clear message. `Manual production rollback` doesn't receive it, so the rollback still runs. The order is:
 
 1. Set the hold.
 2. Restore the recorded backup.

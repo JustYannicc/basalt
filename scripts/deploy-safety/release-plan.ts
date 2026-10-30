@@ -26,27 +26,59 @@ export type ReleasePlan = {
 const trustedRepositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 /**
+ * Whether `descendant` contains `ancestor`, by `git merge-base --is-ancestor` in the trusted
+ * checkout. Git exits 0 when it is an ancestor and 1 when it is not; anything else, such as a
+ * commit missing from the checkout, throws.
+ */
+export function gitContains(repositoryRoot = trustedRepositoryRoot): RollForward["contains"] {
+  return (ancestor, descendant) => {
+    if (![ancestor, descendant].every((commit) => /^[a-f0-9]{40}$/.test(commit)))
+      throw new SafetyGateError("Commit ancestry needs exact commit SHAs");
+    const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    if (result.status === 0) return true;
+    if (result.status === 1) return false;
+    throw new SafetyGateError(`git could not compare ${ancestor} with ${descendant}`);
+  };
+}
+
+/**
  * Lets a release of `candidateGitCommit` roll forward over a failed release whose commit it
- * contains, checked with `git merge-base --is-ancestor` in the trusted checkout. Git exits 0 when
- * it is an ancestor and 1 when it is not; anything else, such as a commit missing from the
- * checkout, throws, so the failure stays unresolved. Rollback paths read the ledger without it.
+ * contains. A commit Git can't find or compare throws, so the failure stays unresolved. Rollback
+ * paths read the ledger without it.
  */
 export function rollForwardTo(candidateGitCommit: string, repositoryRoot = trustedRepositoryRoot): RollForward {
-  return {
-    candidateGitCommit,
-    contains: (ancestor, descendant) => {
-      if (![ancestor, descendant].every((commit) => /^[a-f0-9]{40}$/.test(commit)))
-        throw new SafetyGateError("Roll-forward ancestry needs exact commit SHAs");
-      const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
-        cwd: repositoryRoot,
-        encoding: "utf8",
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      if (result.status === 0) return true;
-      if (result.status === 1) return false;
-      throw new SafetyGateError(`git could not compare ${ancestor} with ${descendant}`);
-    },
-  };
+  return { candidateGitCommit, contains: gitContains(repositoryRoot) };
+}
+
+/**
+ * The last successful production commit when it is `candidate` or contains it, so releasing the
+ * candidate would move production backwards. Check runs can finish out of order, so an older
+ * candidate's release can start after a newer one has gone live.
+ */
+export function liveCommitContaining(
+  candidate: string,
+  ledger: DeploymentLedger,
+  contains: RollForward["contains"],
+): string | undefined {
+  const live = ledger.state === "ready" ? ledger.gitCommit : ledger.state === "unresolved" ? ledger.lastSuccessful?.gitCommit : undefined;
+  return live && (live === candidate || contains(candidate, live)) ? live : undefined;
+}
+
+export async function productionCommitContaining(candidate: string, repositoryRoot = trustedRepositoryRoot): Promise<string | undefined> {
+  // It decides whether a release goes ahead, so a hold stops it like every other release command.
+  assertNoReleaseHold();
+  const ledger = await readDeploymentLedger(readLedgerEnvironment());
+  const contains = gitContains(repositoryRoot);
+  return liveCommitContaining(candidate, ledger, (ancestor, descendant) => {
+    // A `Manual release` of a pull request records its head commit, which a main checkout lacks.
+    if (spawnSync("git", ["cat-file", "-e", `${descendant}^{commit}`], { cwd: repositoryRoot, stdio: "ignore" }).status !== 0)
+      execFileSync("git", ["fetch", "--quiet", "--no-tags", "origin", descendant], { cwd: repositoryRoot, stdio: ["ignore", "ignore", "pipe"] });
+    return contains(ancestor, descendant);
+  });
 }
 
 export async function latestProductionBase(): Promise<{
