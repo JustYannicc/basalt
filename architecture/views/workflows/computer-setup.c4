@@ -13,7 +13,10 @@ views {
       root /setup page with it. The router serves the React screen as static assets; the screen reuses
       apps/pool UI components. The HTTP host checks the native cookie session and creates a personal
       tools PAT pinned to the organization holding the caller's own pool, also on a shared pool.
-      Setup works on the caller's own pool or one shared with them; see the sharing workflows.
+      Setup works on the caller's own pool or one shared with them; see the sharing workflows. A link may
+      name any pool in the caller's choices, checked the same way as switching, and may skip the tools PAT
+      for a models-only computer, which turns green on its first model request. People rename their own
+      computers through a signed rename action.
       Private pool actions carry an action-bound signature and a 30-second expiry.
       The model gateway owns the registry in the existing pool controller, generates a model key and
       registers it to the user's backend record with a nonempty pool channel-group list. Both credentials
@@ -39,13 +42,13 @@ views {
     poolOwner -> localClient "open root /setup with intent"
     localClient -> basalt.router "GET /setup; load static React screen"
     localClient <- basalt.router "setup screen and static assets"
-    localClient -> basalt.router "POST /setup/v1/links with intent and computer name"
+    localClient -> basalt.router "POST /setup/v1/links with intent, computer name and optional pool and tools choice"
     basalt.router -> basalt.setupHost "handle same-origin browser setup"
     basalt.setupHost -> basalt.toolsGateway "native cookie-auth get-session"
     basalt.setupHost <- basalt.toolsGateway "verified user"
     basalt.setupHost -> basalt.modelGateway "signed validate action with 30-second expiry via private binding"
     basalt.setupHost <- basalt.modelGateway "intent valid for this user and pool"
-    basalt.setupHost -> basalt.toolsGateway "native cookie-auth api-key/create personal PAT"
+    basalt.setupHost -> basalt.toolsGateway "unless models only: native cookie-auth api-key/create personal PAT"
     basalt.setupHost <- basalt.toolsGateway "personal PAT and key id"
     basalt.setupHost -> basalt.modelGateway "signed links action with PAT and 30-second expiry via private binding"
     basalt.modelGateway -> basalt.poolController "serialize computer registration"
@@ -118,7 +121,8 @@ views {
       Source implementation; live acceptance pending. The setup host verifies the browser session and
       intent. The pool controller revokes the backend model key first, then the host deletes the personal
       tools PAT through native cookie authentication and marks the computer revoked. A failed native PAT
-      deletion remains retryable. Undo restores local config separately and does not revoke credentials.
+      deletion remains retryable. A models-only computer has no PAT, so revoke skips that delete. Undo
+      restores local config separately and does not revoke credentials.
     """
 
     include poolOwner, localClient, basalt.router, basalt.setupHost, basalt.toolsGateway, basalt.modelGateway, basalt.poolController, basalt.poolRuntime
