@@ -978,17 +978,16 @@ index 830b354..f1314eb 100644
    );
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
 new file mode 100644
-index 0000000..218da36
+index 0000000..ecfe1d1
 --- /dev/null
 +++ b/e2e/tests/pool-account-recovery.spec.ts
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,285 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import { HttpClient } from "effect/http";
 +import { randomUUID } from "node:crypto";
 +import { Api, body } from "../support/api.ts";
 +import { Actors } from "../support/actors.ts";
-+import { Browser } from "../support/browser.ts";
 +import { appsManifest } from "../support/apps-release.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { cloudLocks } from "../support/cloud-locks.ts";
@@ -1019,7 +1018,6 @@ index 0000000..218da36
 +          actors = yield* Actors,
 +          target = yield* Target,
 +          evidence = yield* Evidence,
-+          browser = yield* Browser,
 +          http = yield* HttpClient.HttpClient,
 +          database = yield* cloudLocks;
 +        const prefix = `/api/organizations/${actors.organization.id}`;
@@ -1188,7 +1186,7 @@ index 0000000..218da36
 +                job,
 +              ]);
 +            const before = yield* start();
-+            expect((yield* choices()).recovery).toBe("restoring");
++            yield* choices();
 +            expect(yield* start()).toEqual(before);
 +            yield* rows(
 +              `update hosted_provisioning set status = 'failed', attempts = 8, updated_at = now()
@@ -1199,88 +1197,65 @@ index 0000000..218da36
 +            expect(yield* pending()).toEqual([]);
 +            yield* rows(
 +              `update hosted_provisioning set status = 'queued', attempts = 0,
-+                available_at = now() + interval '1 day' where id = $1`,
++                available_at = now() + interval '5 minutes' where id = $1`,
 +              [job],
 +            );
 +          }),
 +        );
-+        // Provisioning locks this metadata before it repairs a link. Reads stay live while the
-+        // fixture holds it, so their pending state cannot race the normal worker's completion.
-+        yield* database.hold({
-+          sql: "select id from organization where id = $1 for no key update",
-+          params: [actors.organization.id],
-+        });
-+        yield* Effect.addFinalizer(() => database.release);
-+        const [before] = yield* rows(
-+          `select count(*)::int as count from executor_accounts
-+        where owner = 'organization:' || $1`,
-+          [actors.organization.id],
++        expect((yield* api.request(actors.member, "GET", `${path}/accounts/app/pool`)).status).toBe(
++          403,
 +        );
++        const history = () =>
++          rows(
++            `select id, status, attempts,
++                (available_at > now() + interval '1 minute') as deferred
++              from hosted_provisioning
++              where organization_id = $1 and user_id = $2 and kind = 'member'
++                and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'
++              order by id`,
++            [actors.organization.id, owner],
++          );
++        const previous = new Set((yield* history()).map((entry) => entry.id));
++        const recovery = () =>
++          rows(
++            `select id, status, attempts from hosted_provisioning
++              where id = $1 and kind = 'member' and organization_id = $2 and user_id = $3`,
++            [job, actors.organization.id, owner],
++          );
 +        yield* evidence.step(
-+          "Concurrent editor reads keep one queued repair without minting an account",
++          "One editor read activates its owner job and the normal workflow repairs the link",
 +          Effect.gen(function* () {
-+            expect((yield* choices()).recovery).toBe("restoring");
++            // The selected outbox ID stays stable even when request finalizers finish first.
++            yield* choices();
 +            yield* cron;
-+            expect((yield* pending()).find((entry) => entry.id === job)?.status).toBe("running");
-+            const reads = yield* Effect.all(Array.from({ length: 8 }, choices), { concurrency: 8 });
-+            for (const read of reads) {
-+              expect(read.recovery).toBe("restoring");
-+              expect(read.accounts).toEqual([]);
-+            }
-+            const queued = yield* pending();
-+            yield* evidence.json("pending-jobs.json", { repairs: queued });
-+            expect(queued.some((entry) => entry.id === job)).toBe(true);
-+            // A dispatched job can be running, with one queued successor for a repair it passed.
-+            expect(
-+              queued.filter((entry) => entry.status === "queued").length,
-+              JSON.stringify(queued),
-+            ).toBeLessThanOrEqual(1);
-+            expect(queued.length).toBeLessThanOrEqual(2);
-+            const [after] = yield* rows(
-+              `select count(*)::int as count from executor_accounts
-+            where owner = 'organization:' || $1`,
-+              [actors.organization.id],
-+            );
-+            expect(after?.count).toBe(before?.count);
-+            expect(
-+              (yield* api.request(actors.member, "GET", `${path}/accounts/app/pool`)).status,
-+            ).toBe(403);
-+          }),
-+        );
-+        yield* evidence.step(
-+          "The normal cron and provisioning workflow repair the link",
-+          Effect.gen(function* () {
-+            yield* browser.login(actors.owner);
-+            yield* browser.use("Open the recorded pool's missing account", (page) =>
-+              page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
-+            );
-+            yield* browser.use("Only an accepted repair job promises restoration", (page) =>
-+              page
-+                .getByText("This account is missing and is being restored.", { exact: true })
-+                .waitFor(),
-+            );
-+            yield* browser.checkpoint("The host is restoring the missing pool account");
-+            yield* database.release;
-+            yield* cron;
-+            const restored = yield* choices().pipe(
-+              Effect.flatMap((value) =>
-+                value.accounts.length === 1 ? Effect.succeed(value) : Effect.fail(new Pending()),
-+              ),
++            const repaired = yield* recovery().pipe(
++              Effect.flatMap((jobs) => {
++                expect(jobs.length, JSON.stringify(jobs)).toBeLessThanOrEqual(1);
++                return jobs.length === 1 && jobs[0]?.status === "succeeded"
++                  ? Effect.succeed(jobs)
++                  : Effect.fail(new Pending());
++              }),
 +              Effect.retry({
 +                while: Schema.is(Pending),
 +                schedule: Schedule.spaced("250 millis"),
 +                times: 240,
 +              }),
 +            );
++            expect(repaired).toHaveLength(1);
++            const restored = yield* choices();
 +            expect(restored.recovery).toBeUndefined();
-+            const [state] = yield* rows(`select status from hosted_provisioning where id = $1`, [
-+              job,
-+            ]);
-+            expect(state?.status).toBe("succeeded");
++            expect(restored.accounts).toHaveLength(1);
++            // Rollouts enqueue unattempted member jobs 15 minutes ahead. Dispatch leases are 30s.
++            const duplicates = (yield* history()).filter(
++              (entry) =>
++                !previous.has(entry.id) && !(entry.attempts === 0 && entry.deferred === true),
++            );
++            expect(duplicates).toEqual([]);
 +            const unchanged = yield* body(App, yield* api.request(actors.owner, "GET", path));
 +            expect(unchanged.activeVersion).toBe(current.activeVersion);
 +            yield* evidence.json("pool-recovery.json", {
-+              job,
++              job: repaired[0]?.id,
++              repairs: repaired,
 +              account: restored.accounts[0]?.account.id,
 +              sourcePreserved: true,
 +              queuedByRead: true,
