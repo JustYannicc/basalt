@@ -45,9 +45,9 @@ export function proveGitLabLegacy({ Effect, request, checked, actors, prefix, ca
     const saved = yield* complete(reconnect);
     const read = checked(yield* request(actors.owner, "GET", prefix + "/accounts/" + account.id), 200, "Read migrated legacy OAuth account");
     assert.equal(saved.id, account.id);
-    assert.equal(read.id, account.id);
+    assert.equal(read.account.id, account.id);
     assert.equal(saved.site, site.origin);
-    assert.equal(read.site, site.origin);
+    assert.equal(read.account.site, site.origin);
     prove(true, "A completed OAuth reconnect preserves the legacy account ID and persists the declared default site");
     return { accountIdPreserved: true, defaultSitePersisted: true, syntheticDefaultOrigin: true };
   });
