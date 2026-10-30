@@ -18,7 +18,7 @@ export function recordValues(row: ModelRequest) {
     input_tokens: row.inputTokens, output_tokens: row.outputTokens, cache_read_tokens: row.cacheReadTokens,
     cache_write_tokens: row.cacheWriteTokens, reasoning_tokens: row.reasoningTokens, total_tokens: row.totalTokens,
     token_quality: row.tokenQuality, latency_ms: row.latencyMs, failed: row.failed, status_code: row.statusCode,
-    cost: row.cost, currency: row.currency, cost_basis: row.costBasis, price_version: row.priceVersion,
+    cost: row.cost, currency: row.currency, cost_basis: row.costBasis, price_version: row.priceVersion, original_price_rule: row.originalPriceRule,
     price_snapshot: row.price === null ? null : {
       input: row.price.input, output: row.price.output, cacheRead: row.price.cacheRead, cacheWrite: row.price.cacheWrite,
       request: row.price.request, tier: row.price.tier, minInput: row.price.minInput,
@@ -37,14 +37,14 @@ export function recordValues(row: ModelRequest) {
 const columns = `id, source, source_record, timestamp, timestamp_exact, pool, person, account, client_key,
   request_id, provider, model, endpoint, api_type, service_tier, input_tokens, output_tokens,
   cache_read_tokens, cache_write_tokens, reasoning_tokens, total_tokens, token_quality, latency_ms,
-  failed, status_code, cost, currency, cost_basis, price_version, price_snapshot, attribution`;
+  failed, status_code, cost, currency, cost_basis, price_version, original_price_rule, price_snapshot, attribution`;
 const typedColumns = `id char(64), source char(64), source_record char(64), timestamp timestamptz,
   timestamp_exact varchar(30), pool varchar(16), person char(64), account char(64), client_key char(64),
   request_id varchar(256), provider varchar(256), model varchar(256), endpoint varchar(256), api_type varchar(64),
   service_tier varchar(256), input_tokens bigint, output_tokens bigint, cache_read_tokens bigint,
   cache_write_tokens bigint, reasoning_tokens bigint, total_tokens bigint, token_quality varchar(16),
   latency_ms bigint, failed boolean, status_code smallint, cost numeric(28,12), currency varchar(16),
-  cost_basis varchar(32), price_version char(64), price_snapshot jsonb, attribution varchar(32)`;
+  cost_basis varchar(32), price_version char(64), original_price_rule varchar(1024), price_snapshot jsonb, attribution varchar(32)`;
 
 export async function existingRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false): Promise<Set<string>> {
   if (records.length > historyBatchSize) throw new Error("Model usage batch exceeds its limit");
@@ -87,7 +87,7 @@ export async function readRequests(db: HistoryDatabase, query: HistoryQuery) {
     person, account, client_key, request_id, provider, model, endpoint, api_type, service_tier,
     input_tokens::text, output_tokens::text, cache_read_tokens::text, cache_write_tokens::text,
     reasoning_tokens::text, total_tokens::text, token_quality, latency_ms::text, failed, status_code,
-    cost::text, currency, cost_basis, price_version, price_snapshot, attribution,
+    cost::text, currency, cost_basis, price_version, original_price_rule, price_snapshot, attribution,
     to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_timestamp
     FROM basalt_model_requests
     WHERE pool = $1 AND ($2::text IS NULL OR person = $2) AND timestamp >= $3 AND timestamp < $4

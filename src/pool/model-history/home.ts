@@ -1,5 +1,5 @@
 import { digest, parseBackendUserName } from "../backend-users.ts";
-import { amount, counter, endpointMetadata, historyObject, homePrice, identifier, invalidHistory, reference,
+import { amount, counter, endpointMetadata, historyObject, homePrice, identifier, invalidHistory, priceRule, reference,
   timestamp, type ModelRequest } from "./record.ts";
 
 export const homeHistorySource = "home-local-v1";
@@ -16,7 +16,7 @@ export const homeHistorySelect = `SELECT u.id::text AS source_id,
   u.accounting_cache_read_tokens::text, u.accounting_cache_write_tokens::text, u.accounting_reasoning_tokens::text,
   u.accounting_total_tokens::text, u.latency_ms::text, u.failed, u.fail_status_code,
   u.upstream_status_code, c.id AS charge_id, c.amount::text AS amount,
-  c.matched_price_rule,
+  c.matched_price_rule, c.user_id::text AS charge_user_id,
   jsonb_build_object(
     'input_price_per_million', c.price_snapshot->'input_price_per_million',
     'output_price_per_million', c.price_snapshot->'output_price_per_million',
@@ -48,6 +48,7 @@ export async function homeRequest(raw: unknown, source: string): Promise<ModelRe
   // request_id is a shared HTTP trace. Home's persisted usage ID identifies each attempt.
   const sourceRecord = await digest(JSON.stringify(["usage", sourceId]));
   const user = parseBackendUserName(row.username);
+  const chargeOwner = counter(row.charge_user_id);
   const canonical = row.token_accounting_version === 2 && row.token_accounting_quality === "complete";
   const quality = canonical ? "complete" : row.token_accounting_quality === "inconsistent" ? "inconsistent"
     : row.token_accounting_quality === "unclassified" ? "unclassified" : "legacy";
@@ -73,7 +74,8 @@ export async function homeRequest(raw: unknown, source: string): Promise<ModelRe
     totalTokens: counter(canonical ? row.accounting_total_tokens : row.total_tokens),
     tokenQuality: quality, latencyMs: counter(row.latency_ms), failed: row.failed, statusCode: code,
     cost, currency: cost === null ? null : "credits", costBasis: cost === null ? "unpriced" : "home-charge",
+    originalPriceRule: priceRule(row.matched_price_rule),
     priceVersion: price === null ? null : await digest(JSON.stringify(price)), price,
-    attribution: user ? row.charge_id ? "charge-snapshot" : "key-at-capture" : "unknown",
+    attribution: user ? chargeOwner !== null && chargeOwner !== "0" ? "charge-snapshot" : "key-at-capture" : "unknown",
   };
 }

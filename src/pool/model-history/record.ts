@@ -29,6 +29,7 @@ export interface ModelRequest {
   currency: string | null;
   costBasis: "home-charge" | "historical-api-price" | "unpriced";
   priceVersion: string | null;
+  originalPriceRule: string | null;
   price: HistoryPrice | null;
   attribution: "charge-snapshot" | "key-at-capture" | "import-owner" | "unknown";
 }
@@ -150,11 +151,14 @@ export function historyBilling(raw: Record<string, unknown>): HistoryBilling {
   const tier = (value: unknown) => typeof value === "string" &&
     ["auto", "default", "standard", "priority", "flex", "fast"].includes(value) ? value : null;
   return {
-    matchedRule: typeof raw.matchedRule === "string" && /^[A-Za-z0-9][A-Za-z0-9_./:@+*\-]{0,1023}$/.test(raw.matchedRule)
-      ? raw.matchedRule : null,
+    matchedRule: priceRule(raw.matchedRule),
     provider: identifier(raw.provider), model: identifier(raw.model),
     requestedTier: tier(raw.requestedTier), responseTier: tier(raw.responseTier), effectiveTier: tier(raw.effectiveTier),
     tierSource: raw.tierSource === "request" || raw.tierSource === "response" ? raw.tierSource : null,
     responseFallback: typeof raw.responseFallback === "boolean" ? raw.responseFallback : null,
   };
+}
+
+export function priceRule(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_./:@+*\-]{0,1023}$/.test(value) ? value : null;
 }

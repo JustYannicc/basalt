@@ -81,6 +81,8 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(result.records[0]!.reasoning_tokens, "3");
     assert.equal(result.records[0]!.model, null);
     assert.equal(result.records[0]!.cost, "0.000123456789012");
+    assert.equal(result.records[0]!.attribution, "charge-snapshot");
+    assert.equal(result.records[0]!.original_price_rule, "fixture-price");
     assert.deepEqual(historyObject(result.records[0]!.price_snapshot).billing, {
       matchedRule: "fixture-price", provider: "fixture-provider", model: "fixture-priced-model",
       requestedTier: "priority", responseTier: "flex", tierSource: "response", effectiveTier: "flex", responseFallback: false,
@@ -124,6 +126,19 @@ test("request history backfills explicitly, survives restarts and late commits, 
     assert.equal(new Set(attempts.map((row) => row.id)).size, 2);
     assert.equal(new Set(attempts.map((row) => row.price_version)).size, 2, "billing rule and effective tier are part of price identity");
     assert.equal(attempts.filter((row) => row.failed === true).length, 1);
+    const withoutSavedOwner = randomUUID();
+    await add(db, withoutSavedOwner);
+    await db.query(`INSERT INTO billing_charge (id,usage_id,amount,matched_price_rule,price_snapshot,api_key_id,user_id)
+      SELECT 'ownerless-charge',6,amount,matched_price_rule,price_snapshot,1,NULL FROM billing_charge WHERE usage_id=1`);
+    await db.query("UPDATE api_key SET user_id=2");
+    await captureHomeRequests(db);
+    const fallback = await readRequests(db, { ...query, pool: (await digest("other-pool")).slice(0, 16),
+      person: await digest("fixture-other") });
+    assert.equal(fallback.records.length, 1);
+    assert.equal(fallback.records[0]!.request_id, withoutSavedOwner);
+    assert.equal(fallback.records[0]!.attribution, "key-at-capture",
+      "a current key owner cannot become a historical charge owner when its saved user ID is null");
+    await db.query("UPDATE api_key SET user_id=1");
     const delayedRequest = randomUUID();
     await late.query("BEGIN");
     await add(late, delayedRequest);

@@ -38,7 +38,7 @@ export const historySchemaStatements = [
     token_quality varchar(16) NOT NULL,
     failed boolean NOT NULL, status_code smallint,
     cost numeric(28,12), currency varchar(16), cost_basis varchar(32) NOT NULL,
-    price_version char(64), price_snapshot jsonb, attribution varchar(32) NOT NULL,
+    price_version char(64), original_price_rule varchar(1024), price_snapshot jsonb, attribution varchar(32) NOT NULL,
     ingested_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (token_quality IN ('complete','legacy','unclassified','inconsistent')),
     CHECK (cost_basis IN ('home-charge','historical-api-price','unpriced')),
