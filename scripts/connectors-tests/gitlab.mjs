@@ -199,6 +199,25 @@ export function proveGitLab({
         item.account.id === patAccount.id ? "pat" : "oauth",
       );
       prove(true, "Native GitLab API call used the saved " + item.site.id + " account origin");
+      const mutation = search.structuredContent?.items?.find((entry) =>
+        entry.path.endsWith(".postApiV4Projects"),
+      );
+      assert.ok(mutation, "The synthetic GitLab write must use the catalog mutation wrapper");
+      const writesBefore = item.site.requests.filter((event) =>
+        event.method === "POST" && event.path === "/api/v4/projects",
+      ).length;
+      const write = yield* Effect.promise(() => call(client, "call", {
+        calls: { path: mutation.path, input: { accountId: item.account.id, input: { name: "Synthetic approval check" } } },
+      }));
+      assert.notEqual(write.isError, true, "The approval request must be a successful MCP response");
+      assert.equal(write.structuredContent?.status, "approval-required");
+      assert.equal(typeof write.structuredContent.requestId, "string");
+      assert.equal(write.structuredContent.invocation?.app, app.id);
+      assert.equal(write.structuredContent.invocation?.tool, "postApiV4Projects");
+      assert.equal(item.site.requests.filter((event) =>
+        event.method === "POST" && event.path === "/api/v4/projects",
+      ).length, writesBefore, "An unapproved GitLab mutation must not reach the provider");
+      prove(true, "GitLab mutation approval blocks provider writes for " + item.site.id);
     }
 
     siteA.redirectHealthTo = unapproved.origin + "/api/v4/user";
@@ -225,6 +244,7 @@ export function proveGitLab({
       gitlabReconnectOriginLocked: true,
       gitlabPatAndOAuthAccounts: true,
       gitlabPrivateRedirectRefused: true,
+      gitlabMutationApprovalPreserved: true,
     };
   });
 }

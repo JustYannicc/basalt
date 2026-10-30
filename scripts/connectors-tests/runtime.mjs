@@ -41,7 +41,11 @@ const markers = ["synthetic_first_message", "synthetic_second_message"];
 const scopes = ["openid", "email", "profile", "https://mail.google.com/", "https://www.googleapis.com/auth/gmail.settings.basic"];
 let callback;
 const check = (condition, operation) => assert.ok(condition, operation);
-const step = (operation) => console.log(JSON.stringify({ stage: operation }));
+let phase = "runtime-startup";
+const step = (operation) => {
+  phase = operation;
+  console.log(JSON.stringify({ stage: operation }));
+};
 
 async function freePort() {
   const server = createServer(); server.listen(0, "127.0.0.1"); await once(server, "listening");
@@ -105,6 +109,7 @@ const call = (client, name, args) => client.callTool({ name, arguments: args });
 const text = (result) => JSON.stringify(result.structuredContent ?? result.content);
 
 const program = Effect.gen(function* () {
+  step("callback-receiver");
   const receiver = yield* Effect.acquireRelease(Effect.promise(async () => {
     const server = createHttpServer((request, response) => {
       if (request.method !== "GET" || !request.url?.startsWith("/api/oauth/callback?")) {
@@ -117,10 +122,14 @@ const program = Effect.gen(function* () {
     await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
   }));
   callback = `http://127.0.0.1:${receiver.address().port}/api/oauth/callback`;
+  step("provider-emulator");
   const provider = yield* Effect.acquireRelease(Effect.promise(emulator), (server) => Effect.promise(server.stop));
+  step("browser-launch");
   const browser = yield* Effect.acquireRelease(Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })), (browser) => Effect.promise(() => browser.close()));
   step("published-emulator-ready");
+  step("self-host-environment");
   const base = yield* startEnvironment({ target: "self-host", headless: true });
+  step("locked-registry");
   const registry = yield* lockedNpmRegistry;
   const marketplace = { name: "Signalbox", organizationId: "fixture-organization", appId: "fixture-app" };
   const marketplaceHeaders = {
@@ -128,18 +137,22 @@ const program = Effect.gen(function* () {
     "X-Zendesk-Marketplace-Organization-Id": marketplace.organizationId,
     "X-Zendesk-Marketplace-App-Id": marketplace.appId,
   };
+  step("zendesk-fixtures");
   const zendeskFixtures = yield* Effect.acquireRelease(
     Effect.promise(() => startZendeskFixtures({ marketplaceHeaders })),
     (fixtures) => Effect.promise(() => fixtures.stop()),
   );
+  step("gitlab-fixtures");
   const gitlabFixtures = yield* Effect.acquireRelease(
     Effect.promise(startGitLabFixtures),
     (fixtures) => Effect.promise(() => fixtures.stop()),
   );
+  step("catalog-worker");
   const catalogWorker = yield* Effect.acquireRelease(
     Effect.promise(() => startZendeskCatalogWorker({ root, upstream, directory, marketplace })),
     (worker) => Effect.promise(() => worker.stop()),
   );
+  step("catalog-source");
   const catalog = yield* Effect.promise(() => loadZendeskCatalogSource({
     root,
     catalogOrigin: catalogWorker.origin,
@@ -176,10 +189,12 @@ const program = Effect.gen(function* () {
     allowedScopes: ["tickets:read", "tickets:write", "users:read"],
     placement: { hosts: [zendeskTemplate.host] },
   };
+  step("scenario-preparation");
   const prepared = yield* prepareScenario(base.target, "Connector OAuth and native MCP proof");
   const port = yield* Effect.promise(freePort);
   const authSecret = randomBytes(32).toString("hex");
   const preparedTarget = Target.of({ ...prepared, metadata: { ...prepared.metadata, origin: `http://127.0.0.1:${port}` } });
+  step("test-accounts");
   const cliActors = yield* Effect.promise(() => provisionSelfHostActors({
     executable: process.execPath,
     upstream,
@@ -194,6 +209,7 @@ const program = Effect.gen(function* () {
       .filter(({ id }) => id !== "unapproved")
       .map(({ origin }) => origin),
   ].sort();
+  step("product-server");
   const server = yield* startManagedServer(preparedTarget, "product", {
     BETTER_AUTH_SECRET: authSecret,
     EXECUTOR_NPM_REGISTRY: registry.url,
@@ -233,10 +249,12 @@ const program = Effect.gen(function* () {
     assert.equal(response.status, status, operation); return response.body;
   };
   const prefix = `/api/organizations/${actors.organization.id}`;
+  step("zendesk-runtime");
   const zendeskProof = yield* proveZendeskNative({
     Effect, request, checked, actors, directory, prefix, callback, candidateSha, upstreamPin, carriedPatches,
     target, root, upstream, fixtures: zendeskFixtures, catalog, step,
   });
+  step("gitlab-runtime");
   const gitlabProof = yield* proveGitLab({
     Effect, request, checked, actors, prefix, target, upstream, callback,
     catalog: gitlabCatalog, fixtures: gitlabFixtures, mcp, call,
@@ -246,10 +264,12 @@ const program = Effect.gen(function* () {
       { mode: 0o600 },
     ),
   });
+  step("site-ui");
   const uiProof = yield* proveAccountSiteUi({
     Effect, request, checked, actors, browser, directory, target, sites: zendeskFixtures.sites,
     cookies: Redacted.value(yield* actors.member.cookies),
   });
+  step("gitlab-site-ui");
   const gitlabUiProof = yield* proveAccountSiteUi({
     Effect, request, checked, actors, browser, directory, target, sites: gitlabFixtures.sites,
     cookies: Redacted.value(yield* actors.member.cookies),
@@ -363,6 +383,18 @@ try {
   const result = await Effect.runPromise(program.pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))));
   console.log(JSON.stringify(result));
 } catch (error) {
-  await writeFile(join(directory, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });
+  const detail = String(error?.stack ?? error);
+  await writeFile(join(directory, "failure.txt"), detail, { mode: 0o600 });
+  const kind = /AssertionError|ERR_ASSERTION/.test(detail) ? "assertion"
+    : /browserType\.launch|Executable doesn't exist/.test(detail) ? "browser-launch"
+    : /Cannot find module|Cannot find package|ModuleNotFound|SyntaxError/.test(detail) ? "module-load"
+    : /ENOTFOUND|EAI_AGAIN/.test(detail) ? "dns"
+    : /ECONNREFUSED|ECONNRESET/.test(detail) ? "connection"
+    : /EACCES|EPERM/.test(detail) ? "permission"
+    : /[Tt]imeout|[Tt]imed out/.test(detail) ? "timeout" : "runtime";
+  const frame = /scripts\/connectors-tests\/([a-z0-9-]+\.mjs):(\d+):\d+/.exec(detail);
+  const location = frame === null ? "unknown" : `${frame[1]}:${frame[2]}`;
+  // Print only fixed categories and a source basename. Raw errors can contain credentials.
+  console.error(`CONNECTORS_PROOF_FAILURE phase=${phase} kind=${kind} at=${location}`);
   console.error("Connector runtime proof failed; private diagnostics retained."); process.exitCode = 1;
 }

@@ -85,6 +85,21 @@ export async function startGitLabFixtures() {
     info: { title: "Synthetic GitLab API", version: "fixture" },
     paths: {
       "/api/v4/projects": {
+        post: {
+          operationId: "postApiV4Projects",
+          tags: ["Projects"],
+          summary: "Create a synthetic project",
+          security: [{ apiKey: [] }, { http: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: {
+              type: "object", properties: { name: { type: "string" } }, required: ["name"],
+            } } },
+          },
+          responses: { "201": { description: "Created", content: {
+            "application/json": { schema: { type: "object", properties: { id: { type: "integer" } } } },
+          } } },
+        },
         get: {
           operationId: "getApiV4Projects",
           tags: ["Projects"],
@@ -275,6 +290,10 @@ export async function startGitLabFixtures() {
           username: "fixture_" + site.id,
           web_url: site.origin + "/fixture_" + site.id,
         });
+      }
+      if (request.method === "POST" && pathname === "/api/v4/projects") {
+        await readBody(request);
+        return json(response, 201, { id: 9901 });
       }
       if (request.method === "GET" && pathname === "/api/v4/projects") {
         const marker = "synthetic_gitlab_" + site.id + "_project";

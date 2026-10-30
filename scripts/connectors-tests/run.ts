@@ -28,7 +28,21 @@ async function run(command: string, args: string[], cwd: string, log: string, ho
   child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
   const code = await new Promise<number | null>((done, fail) => { child.once("error", fail); child.once("close", done); });
   await writeFile(log, JSON.stringify({ code, stdout, stderr }), { mode: 0o600 });
-  if (code !== 0) throw new Error("Connector proof stage failed; private diagnostics retained in the run directory.");
+  if (code !== 0) {
+    let reported = false;
+    for (const line of stderr.split(/\r?\n/)) {
+      if (/^CONNECTORS_PROOF_FAILURE phase=[a-z-]+ kind=[a-z-]+ at=(?:[a-z0-9-]+\.mjs:[0-9]+|unknown)$/.test(line)) {
+        console.error(line);
+        reported = true;
+      }
+    }
+    if (!reported) {
+      const kind = /Cannot find module|Cannot find package|ModuleNotFound|SyntaxError/.test(stderr)
+        ? "module-load" : /EACCES|EPERM/.test(stderr) ? "permission" : "process";
+      console.error(`CONNECTORS_PROOF_FAILURE phase=process-startup kind=${kind} at=unknown`);
+    }
+    throw new Error("Connector proof stage failed; private diagnostics retained in the run directory.");
+  }
   return stdout;
 }
 
@@ -88,6 +102,7 @@ export async function runConnectorsProof({ root, upstream, commit, candidate, pa
     && value?.gitlabReconnectOriginLocked === true
     && value?.gitlabPatAndOAuthAccounts === true
     && value?.gitlabPrivateRedirectRefused === true
+    && value?.gitlabMutationApprovalPreserved === true
     && value?.gitlabDefaultOriginUi === true
     && value?.zendeskNativeAuthorizationStart === true && value?.zendeskPeerConnectionDenials === 2
     && value?.hostedManagedClientAtExactAccountSite === true
