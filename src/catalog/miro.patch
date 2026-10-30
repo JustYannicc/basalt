@@ -74,6 +74,18 @@ diff --git a/index.ts b/index.ts
        ],
      }),
    },
+diff --git a/openapi.ts b/openapi.ts
+--- a/openapi.ts
++++ b/openapi.ts
+@@ -31,6 +31,8 @@
+     // (catalog/status/miro.json "credentialFree").
+     { op: "add" as const, path: "/paths/~1v2~1oauth~1revoke/post/security", value: [] },
+     // Miro calls the v1 revoke vulnerable and deprecated (it takes the token in the URL) and points to /v2/oauth/revoke.
++    // The pinned spec includes a trailing query marker in the group-delete route, which the importer cannot route.
++    { op: "remove" as const, path: "/paths/~1v2~1boards~1{board_id}~1groups~1{group_id}?" },
+     { op: "remove" as const, path: "/paths/~1v1~1oauth~1revoke" },
+   ],
+ } satisfies OpenapiToolNamesOptions;
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json

@@ -70,7 +70,8 @@ test("Miro carry preserves the full OpenAPI package and aligns the app scopes wi
   assert.doesNotMatch(appSource, /organizations:read|organizations:teams:/);
   assert.ok(sourceScopes.includes("boards:read") && sourceScopes.includes("sessions:delete"));
   assert.match(appSource, /tool\.kind === "mutation" \? always\(\) : undefined/);
-  assert.match(openapi, /organization|team/i);
+  assert.ok(openapi.includes(`api-clients/${provenance.specCommit}/packages/generator/spec.json`));
+  assert.ok(openapi.includes("/paths/~1v2~1boards~1{board_id}~1groups~1{group_id}?"));
   assert.match(openapi, /SCIM/);
   assert.match(readme, /does not use the Web SDK/);
   assert.match(readme, /Company Admin/);

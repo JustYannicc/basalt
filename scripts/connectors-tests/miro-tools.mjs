@@ -63,6 +63,8 @@ try {
     count + (excludedPaths.has(path) ? 0 : Object.keys(item).filter(method => httpMethods.has(method)).length), 0);
   assert.equal(result.tools.length, expectedOperations,
     "Every retained Miro API operation must compile through the pinned framework");
+  assert.ok(!result.tools.some(tool => tool.path === "/v2/boards/{board_id}/groups/{group_id}?"),
+    "The malformed group-delete path must be removed before import");
   for (const tool of result.tools) {
     assert.doesNotMatch(tool.path, /^\/(?:Users|Groups|ServiceProviderConfig|ResourceTypes|Schemas)(?:\/|$)/);
   }
