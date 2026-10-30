@@ -10,6 +10,7 @@ export const gitlabHostedClient = {
 };
 
 const instanceClients = {
+  legacy: { clientId: "synthetic-gitlab-legacy-client", clientSecret: "synthetic-gitlab-legacy-secret" },
   "instance-a": {
     clientId: "synthetic-gitlab-instance-a-client",
     clientSecret: "synthetic-gitlab-instance-a-secret",
@@ -292,7 +293,7 @@ export async function startGitLabFixtures() {
     assert.ok(address && typeof address === "object", "GitLab fixture must expose a TCP port");
     site.origin = "http://127.0.0.1:" + address.port;
     site.host = new URL(site.origin).host;
-    if (site.id === "instance-a" || site.id === "instance-b") {
+    if (Object.hasOwn(instanceClients, site.id)) {
       site.client = instanceClients[site.id];
       site.patToken = "synthetic-gitlab-pat-" + site.id;
       patTokens.set(site.patToken, site.id);
@@ -305,6 +306,7 @@ export async function startGitLabFixtures() {
   await startSite("instance-a");
   await startSite("instance-b");
   await startSite("unapproved");
+  await startSite("legacy");
   return {
     sites,
     site(id) {

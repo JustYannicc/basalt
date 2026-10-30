@@ -276,7 +276,7 @@ index 62c58d4..ce5cf7f 100644
      AccountConnectionTargetChanged: () =>
        "The app’s account setup changed. Close this form and try again.",
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index bb75f68..55fd0bf 100644
+index bb75f68..002a311 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -1,5 +1,5 @@
@@ -891,7 +891,7 @@ index e4b9f8b..7fa5ad1 100644
        message("This connection has ended", "Ask your agent for a new connection link."),
      AccountConnectionRefused: () =>
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index 8e717cb..b011655 100644
+index 8e717cb..a5c9889 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
 @@ -1,5 +1,7 @@
@@ -4626,7 +4626,7 @@ index 8d5f264..ee2126e 100644
 +  { message: "invocation", protocols: [14], adapter: "protocol14.invocation" },
 +];
 diff --git a/packages/sdk/src/implementation/connection-target.ts b/packages/sdk/src/implementation/connection-target.ts
-index e2ccfcd..437885e 100644
+index e2ccfcd..b04d909 100644
 --- a/packages/sdk/src/implementation/connection-target.ts
 +++ b/packages/sdk/src/implementation/connection-target.ts
 @@ -1,6 +1,9 @@
@@ -4658,7 +4658,7 @@ index e2ccfcd..437885e 100644
 +        requirement.definition.site.defaultOrigin === true
 +          ? requirement.definition.site.origin
 +          : undefined;
-+      const pinnedSite = reconnectSite === null ? defaultSite : reconnectSite ?? undefined;
++      const pinnedSite = reconnectSite === null ? defaultSite : (reconnectSite ?? undefined);
 +      const selected = target.site ?? pinnedSite ?? defaultSite;
 +      if (selected === undefined)
 +        return yield* new AccountSiteInvalid({
@@ -4697,13 +4697,16 @@ index e2ccfcd..437885e 100644
      };
      return { provider: requirement.provider, snapshot };
    });
-@@ -122,14 +163,20 @@ export const applyConnectionTarget = (
+@@ -122,14 +163,23 @@ export const applyConnectionTarget = (
        required === undefined ||
        required.provider !== provider ||
        required.provider !== account.provider ||
 -      required.scope !== target.scope
 +      required.scope !== target.scope ||
-+      (account.site ?? undefined) !== target.site
++      (account.site ??
++        (required.definition.site?.defaultOrigin === true
++          ? required.definition.site.origin
++          : undefined)) !== target.site
      )
        return yield* changed();
      // Connecting for this app grants the hosts it declares, replacing any earlier grant.
@@ -4716,7 +4719,7 @@ index e2ccfcd..437885e 100644
        db.updateMany("accounts", {
          where: (b) => b("id", "=", account.id),
 -        set: { allowedHosts: required.definition.hosts ?? null },
-+        set: { allowedHosts: allowedHosts ?? null },
++        set: { allowedHosts: allowedHosts ?? null, site: target.site ?? null },
        }),
      );
      if (lifecycle !== undefined)
@@ -4938,7 +4941,7 @@ index 0000000..15b92e0
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index d4168d1..2cdf75c 100644
+index d4168d1..172dd25 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,7 +1,12 @@
@@ -5342,17 +5345,28 @@ index d4168d1..2cdf75c 100644
        ).pipe(
          // Agents reading the request learn what the person connecting was shown.
          Effect.tapError((error) =>
-@@ -1804,7 +1898,8 @@ export const makeOAuth = (
-         row === null ||
-         row.owner !== attempt.owner ||
-         row.provider !== attempt.provider ||
--        row.method !== attempt.method
-+        row.method !== attempt.method ||
-+        (row.site ?? undefined) !== attempt.site
+@@ -1808,7 +1902,19 @@ export const makeOAuth = (
        ) {
          return yield* new OAuthCompletionFailed({ reason: "account_unavailable" });
        }
-@@ -1951,7 +2046,7 @@ export const makeOAuth = (
+-      return yield* decode(StoredAccount, row);
++      const connection = yield* readConnection(tx, {
++        connection: attempt.connection,
++        owner: attempt.owner,
++      });
++      const provider = yield* requireTargetProvider(tx, connection);
++      const site =
++        row.site ??
++        (provider.definition.site?.defaultOrigin === true
++          ? provider.definition.site.origin
++          : undefined);
++      if (site !== attempt.site)
++        return yield* new OAuthCompletionFailed({ reason: "account_unavailable" });
++      return yield* decode(StoredAccount, { ...row, site: site ?? null });
+     });
+ 
+   const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
+@@ -1951,7 +2057,7 @@ export const makeOAuth = (
        if (attempt.reconnect) yield* reconnectTarget(db, attempt);
        // An attempt with the operator's client signs in with its current configuration only.
        const operating = isFirstPartyAttempt(attempt)
@@ -5361,7 +5375,7 @@ index d4168d1..2cdf75c 100644
              Effect.map((operator) =>
                operator === undefined ? undefined : { ...attempt, ...operator },
              ),
-@@ -2067,7 +2162,7 @@ export const makeOAuth = (
+@@ -2067,7 +2173,7 @@ export const makeOAuth = (
        );
        // The operator's client keeps no grant holding a scope it does not allow.
        if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
@@ -5370,7 +5384,7 @@ index d4168d1..2cdf75c 100644
            refreshToken: tokens.refresh_token,
            accessToken: tokens.access_token,
          });
-@@ -2087,6 +2182,7 @@ export const makeOAuth = (
+@@ -2087,6 +2193,7 @@ export const makeOAuth = (
        );
        const completedAt = yield* Clock.currentTimeMillis;
        const issued = {
@@ -5378,7 +5392,7 @@ index d4168d1..2cdf75c 100644
          response: attempt.response,
          fields,
          redirectUri: attempt.redirectUri,
-@@ -2173,16 +2269,19 @@ export const makeOAuth = (
+@@ -2173,28 +2280,40 @@ export const makeOAuth = (
            // Read again after the remote exchange: deletion must win, and a concurrent rename must survive.
            const target = attempt.reconnect ? yield* reconnectTarget(tx, attempt) : undefined;
            const saved =
@@ -5408,7 +5422,16 @@ index d4168d1..2cdf75c 100644
            // A reconnect may sign in as another upstream identity: start a new generation.
            const generation = target === undefined ? 0 : target.credentialGeneration + 1;
            if (target !== undefined) {
-@@ -2194,7 +2293,12 @@ export const makeOAuth = (
+             yield* query(() =>
+               tx.updateMany("accounts", {
+                 where: (b) => b("id", "=", target.id),
+-                set: { encryptedCredentials, credentialGeneration: generation },
++                set: {
++                  encryptedCredentials,
++                  credentialGeneration: generation,
++                  site: target.site,
++                },
+               }),
              );
            } else {
              yield* query(() =>
@@ -5422,7 +5445,7 @@ index d4168d1..2cdf75c 100644
              );
              if (lifecycle) yield* lifecycle.accountCreated(saved);
            }
-@@ -2414,6 +2518,7 @@ export const makeOAuth = (
+@@ -2414,6 +2533,7 @@ export const makeOAuth = (
                // reconnect, is never touched.
                yield* revokeRefused(
                  grant.firstParty,
@@ -5430,7 +5453,7 @@ index d4168d1..2cdf75c 100644
                  settled
                    ? { ...exceeded, refreshToken: exceeded.refreshToken ?? grant.refreshToken }
                    : exceeded,
-@@ -2740,7 +2845,7 @@ export const makeOAuth = (
+@@ -2740,7 +2860,7 @@ export const makeOAuth = (
    const authorized = (accounts: readonly StoredAccount[]) =>
      lifecycle === undefined || !Arr.isReadonlyArrayNonEmpty(accounts)
        ? Effect.succeed(undefined)
@@ -5439,7 +5462,7 @@ index d4168d1..2cdf75c 100644
    /** Fail unless the product still authorizes every one of `accounts` in `current`. */
    const enforced = (
      current: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError>,
-@@ -2868,7 +2973,7 @@ export const makeOAuth = (
+@@ -2868,7 +2988,7 @@ export const makeOAuth = (
            );
            /** The account as one slot's invocation sends it, under that slot's definition. */
            return (definition: ProviderDefinition) =>
@@ -5448,7 +5471,7 @@ index d4168d1..2cdf75c 100644
          }),
        );
      });
-@@ -2976,11 +3081,12 @@ export const makeOAuth = (
+@@ -2976,11 +3096,12 @@ export const makeOAuth = (
     */
    const revokeRefused = (
      id: FirstPartyOAuthClientId,
@@ -5463,7 +5486,7 @@ index d4168d1..2cdf75c 100644
              operator === undefined
                ? Effect.succeed("unsupported" as const)
 diff --git a/packages/sdk/src/implementation/provider.ts b/packages/sdk/src/implementation/provider.ts
-index 5527dbf..1f8459a 100644
+index 5527dbf..2bb75d2 100644
 --- a/packages/sdk/src/implementation/provider.ts
 +++ b/packages/sdk/src/implementation/provider.ts
 @@ -10,6 +10,9 @@ import type {
@@ -5476,7 +5499,7 @@ index 5527dbf..1f8459a 100644
  import { AuthMethodInvalid, ProviderDefinition } from "../contracts/provider.ts";
  import { ProviderId, StorageError, type Json } from "../contracts/shared.ts";
  import { JsonObject } from "../contracts/shared.ts";
-@@ -27,16 +30,16 @@
+@@ -27,16 +30,16 @@ function canonical(value: Json): string {
  
  /**
   * Equal JSON definitions, regardless of object key order, share a content-derived ID. Declared
@@ -5919,12 +5942,12 @@ index f77f3e8..4bd3285 100644
      "./api-error": "./src/api-error.ts",
 diff --git a/packages/utils/src/account-site.ts b/packages/utils/src/account-site.ts
 new file mode 100644
-index 0000000..66abcb0
+index 0000000..322036b
 --- /dev/null
 +++ b/packages/utils/src/account-site.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,129 @@
 +import { Option, Schema } from "effect";
-+import { HttpOrigin, parseDestination, type UrlPolicy } from "./url-policy.ts";
++import { HttpOrigin, isPrivateHostname, parseDestination, type UrlPolicy } from "./url-policy.ts";
 +
 +const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 +
@@ -6000,6 +6023,12 @@ index 0000000..66abcb0
 +  )
 +    return undefined;
 +
++  // Site inputs need an exact opt-in even when ordinary development URLs allow loopback.
++  if (
++    isPrivateHostname(candidate.hostname) &&
++    !policy.allowedHttpOrigins.some((origin) => origin === candidate.origin)
++  )
++    return undefined;
 +  const destination = parseDestination(candidate.origin, policy);
 +  if (destination === undefined) return undefined;
 +  return Option.getOrUndefined(Schema.decodeUnknownOption(SiteOrigin)(destination.origin));

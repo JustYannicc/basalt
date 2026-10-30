@@ -4,6 +4,7 @@ import { gitlabHostedClient } from "./gitlab-fixture.mjs";
 import { adaptProviderAppFiles } from "./provider-source.mjs";
 import { loadGitLabCatalogSource } from "./gitlab-catalog.mjs";
 import { proveGitLabOAuth } from "./gitlab-oauth.mjs";
+import { proveGitLabLegacy } from "./gitlab-legacy.mjs";
 
 
 const shareApp = (request, checked, actor, prefix, app) =>
@@ -31,6 +32,7 @@ export function proveGitLab({
   actors,
   prefix,
   target,
+  callback,
   catalog,
   fixtures,
   mcp,
@@ -47,23 +49,6 @@ export function proveGitLab({
     }), 200, "Deploy the previous GitLab package declaration");
     const legacyProvider = legacy.requirements?.accounts?.gitlab?.provider;
     assert.equal(typeof legacyProvider, "string", "Previous GitLab source omitted its provider ID");
-
-    const legacyConnection = checked(yield* request(
-      actors.owner,
-      "POST",
-      connectPath(prefix + "/apps/" + legacy.id),
-      { destination: { kind: "personal" } },
-    ), 200, "Create a legacy GitLab account connection");
-    const legacyAccount = checked(yield* request(
-      actors.owner,
-      "POST",
-      prefix + "/connections/" + legacyConnection.id + "/submit",
-      {
-        method: "token",
-        label: "Synthetic legacy GitLab",
-        fields: { token: "synthetic-gitlab-legacy-account-token" },
-      },
-    ), 200, "Save the legacy GitLab account without a site");
 
     const deployed = checked(yield* request(actors.owner, "POST", prefix + "/apps/deploy", {
       name: "GitLab multi-instance proof",
@@ -86,53 +71,23 @@ export function proveGitLab({
     const siteB = fixtures.site("instance-b");
     const unapproved = fixtures.site("unapproved");
 
-    const movedLegacy = yield* request(
-      actors.owner,
-      "POST",
-      connectPath(app.path),
-      {
-        destination: { kind: "personal" },
-        account: legacyAccount.id,
-        site: siteA.origin,
-      },
-    );
-    prove(movedLegacy.status === 422,
-      "A legacy GitLab.com account cannot reconnect to a self-managed instance");
-    prove(!observations.some((event) => event.phase === "token_exchange" || event.phase === "token_refresh"),
-      "A refused legacy site change sends no token request");
-
-    const legacyReconnect = checked(yield* request(
-      actors.owner,
-      "POST",
-      connectPath(app.path),
-      { destination: { kind: "personal" }, account: legacyAccount.id },
-    ), 200, "Reconnect the legacy GitLab account at its default origin");
-    const legacyRead = checked(yield* request(
-      actors.owner,
-      "GET",
-      accountPath(legacyAccount.id),
-    ), 200, "Read the retained legacy GitLab account");
-    assert.equal(legacyRead.id, legacyAccount.id);
-    assert.equal(legacyRead.site ?? null, null);
-    const legacySetup = checked(yield* request(
-      actors.owner,
-      "GET",
-      setupPath(prefix, legacyReconnect.id),
-    ), 200, "Read the legacy GitLab account OAuth setup");
-    assert.equal(legacySetup.issuer, "https://gitlab.com/oauth/token");
-    assert.equal(legacySetup.mode, "automatic", "GitLab.com keeps its hosted OAuth client");
-    const legacyStarted = checked(yield* request(
-      actors.owner,
-      "POST",
-      startPath(prefix, legacyReconnect.id),
-      { method: "oauth", label: "GitLab.com hosted reconnect" },
-    ), 200, "Start hosted GitLab.com OAuth without user-supplied credentials");
-    const hostedAuthorization = new URL(legacyStarted.authorizationUrl);
+    const legacyMigration = yield* proveGitLabLegacy({
+      Effect, request, checked, actors, prefix, callback, catalog, fixtures,
+      appsVersion: runtimeAppsVersion, prove,
+    });
+    const hostedConnection = checked(yield* request(actors.owner, "POST", connectPath(app.path), {
+      destination: { kind: "personal" },
+    }), 200, "Create a GitLab.com connection at the declared default");
+    const hostedSetup = checked(yield* request(actors.owner, "GET", setupPath(prefix, hostedConnection.id)), 200, "Read hosted GitLab.com OAuth setup");
+    assert.equal(hostedSetup.issuer, "https://gitlab.com/oauth/token");
+    assert.equal(hostedSetup.mode, "automatic");
+    const hostedStart = checked(yield* request(actors.owner, "POST", startPath(prefix, hostedConnection.id), {
+      method: "oauth", label: "GitLab.com hosted selection",
+    }), 200, "Start hosted GitLab.com OAuth without user credentials");
+    const hostedAuthorization = new URL(hostedStart.authorizationUrl);
     assert.equal(hostedAuthorization.origin, "https://gitlab.com");
     assert.equal(hostedAuthorization.searchParams.get("client_id"), gitlabHostedClient.id);
     assert.equal(hostedAuthorization.searchParams.has("client_secret"), false);
-    prove(legacyRead.id === legacyAccount.id,
-      "A site-less GitLab account keeps its account ID and reconnects to GitLab.com");
 
     const deniedPrivateOrigin = yield* request(
       actors.owner,
@@ -264,7 +219,9 @@ export function proveGitLab({
       checks,
       gitlabTwoOriginRuntime: true,
       gitlabHostedClientAtGitLabComOnly: true,
-      gitlabLegacyAccountIdPreserved: true,
+      gitlabLegacyAccountIdPreserved: legacyMigration.accountIdPreserved,
+      gitlabLegacyDefaultSitePersisted: legacyMigration.defaultSitePersisted,
+      gitlabLegacySyntheticDefaultOrigin: legacyMigration.syntheticDefaultOrigin,
       gitlabReconnectOriginLocked: true,
       gitlabPatAndOAuthAccounts: true,
       gitlabPrivateRedirectRefused: true,

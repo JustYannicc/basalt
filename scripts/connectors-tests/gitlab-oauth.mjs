@@ -131,7 +131,9 @@ export function proveGitLabOAuth({
     const changedReconnect = yield* connectionFor(actors.member, siteB, accountA.id);
     prove(changedReconnect.status === 422,
       "A saved self-managed account cannot reconnect to another instance");
-    const reconnectSiteRequests = observations.filter((event) => event.phase === "authorization").length;
+    const reconnectSiteRequests = observations.filter((event) =>
+      event.phase === "authorization" && [siteA.id, siteB.id].includes(event.site),
+    ).length;
     prove(reconnectSiteRequests === 2,
       "A refused reconnect does not start OAuth at either instance");
 

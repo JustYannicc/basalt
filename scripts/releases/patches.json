@@ -221,7 +221,7 @@
     {
       "identity": "basalt-account-site-origin",
       "file": "0024-account-site-origin.patch",
-      "content_sha256": "44f2023ba2d4c3132d7a2e583da9e3106a44679502e4a9dbe7685bc498c37ee3",
+      "content_sha256": "7dae0f495cfd43cfd6d4bf5b5ccec959f6e810a0ceda5f15ca1525ec9aa2c43f",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -230,7 +230,7 @@
     {
       "identity": "basalt-interactive-accounts",
       "file": "0025-interactive-accounts.patch",
-      "content_sha256": "f1ce245aceda469922dfd04bb112be740097be3277037632b47c91eec427eeac",
+      "content_sha256": "18e27bcc20899cf3b3b7527505761c3933c610e055ccfddfbd024c64a0fa9888",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
