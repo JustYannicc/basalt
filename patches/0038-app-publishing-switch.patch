@@ -1,0 +1,492 @@
+diff --git a/.changeset/app-publishing-switch.md b/.changeset/app-publishing-switch.md
+new file mode 100644
+index 000000000..11a2b6731
+--- /dev/null
++++ b/.changeset/app-publishing-switch.md
+@@ -0,0 +1,14 @@
++---
++"@executor-js/sdk": patch
++"@executor-js/app-management": patch
++"@executor-js/ui": patch
++"@executor-js/hosted-web": patch
++"@executor-js/hosted-server": patch
++"@executor-js/hosted-cloud": patch
++---
++
++Operators can turn off app publishing with `EXECUTOR_APP_PUBLISHING=off`
++(default `on`). The catalog stays readable; publish and unpublish are refused
++for people and agents alike. `GET /app-publications/status` reports whether the
++host publishes, and the app page shows no Publish control when it does not.
++`RegistryOptions` takes `publishing: false` to keep a stored catalog read-only.
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 90ef10a78..444dcdaf2 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -54,4 +54,9 @@ export const cloudEgress = Effect.gen(function* () {
+ });
+ 
++/** `off` keeps the catalog readable and refuses new publications, from people and agents alike. */
++const appPublishing = Config.Literals(["on", "off"], "EXECUTOR_APP_PUBLISHING").pipe(
++  Config.withDefault("on"),
++);
++
+ /**
+  * The operator's OAuth clients whose credentials this stage has. Only an emulated Cloud, which E2E
+@@ -98,4 +103,5 @@ export const cloudExecutor = Effect.fn(function* (
+   const workflows = yield* cloudWorkflows;
+   const blobs = yield* cloudBlobs;
++  const publishing = (yield* appPublishing.pipe(Effect.orDie)) === "on";
+   // App storage, hosted permission checks and Better Auth share the event's client.
+   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
+@@ -143,4 +149,5 @@ export const cloudExecutor = Effect.fn(function* (
+             Effect.provideContext(services),
+           ),
++          publishing,
+         },
+         hooks: lifecycle.hooks,
+diff --git a/apps/hosted/server/src/app-management.ts b/apps/hosted/server/src/app-management.ts
+index 36da2fcd8..c15ab3ef4 100644
+--- a/apps/hosted/server/src/app-management.ts
++++ b/apps/hosted/server/src/app-management.ts
+@@ -99,5 +99,7 @@ export const hostedAppAccess = Layer.effect(
+             );
+           }),
+-        endpoint.identifier === "list" || endpoint.identifier === "catalog"
++        endpoint.identifier === "list" ||
++          endpoint.identifier === "catalog" ||
++          endpoint.identifier === "publishing"
+           ? "discover"
+           : endpoint.identifier === "authoring" ||
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index 4b9eb13a0..874df1177 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -49,5 +49,5 @@ import type { HostedError } from "../../contracts/errors.ts";
+ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
+ import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
+-import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
++import { PublishApp, WhenPublishing } from "@executor-js/ui/dashboard/publish-app";
+ import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
+ import { AppScreen, NoAppScreen } from "./app-screen.tsx";
+@@ -86,4 +86,5 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params)
+       userLinksAtom({ organization, app }),
+       appAccessAtom({ organization, app }),
++      appManagement(organization).publishing,
+       listedAppReads(organization)(app),
+     ],
+@@ -247,5 +248,8 @@ export function AppDetailPage({
+       actions={
+         app === undefined || access === undefined ? (
+-          <Skeleton className="h-9 w-28 max-[740px]:h-11" />
++          // Hold no place for a Publish control on a host that does not publish.
++          <WhenPublishing atoms={appManagement(organization)}>
++            <Skeleton className="h-9 w-28 max-[740px]:h-11" />
++          </WhenPublishing>
+         ) : (
+           <>
+@@ -254,17 +258,19 @@ export function AppDetailPage({
+               <PublishApp app={app} atoms={appManagement(organization)} Failure={HostedFailure} />
+             ) : (
+-              <Button
+-                variant="outline"
+-                size="sm"
+-                disabledReason={
+-                  role === undefined
+-                    ? "Checking organization access…"
+-                    : role === "owner" || role === "admin"
+-                      ? manageReason
+-                      : "Only organization owners and admins can publish apps."
+-                }
+-              >
+-                Publish
+-              </Button>
++              <WhenPublishing atoms={appManagement(organization)}>
++                <Button
++                  variant="outline"
++                  size="sm"
++                  disabledReason={
++                    role === undefined
++                      ? "Checking organization access…"
++                      : role === "owner" || role === "admin"
++                        ? manageReason
++                        : "Only organization owners and admins can publish apps."
++                  }
++                >
++                  Publish
++                </Button>
++              </WhenPublishing>
+             )}
+           </>
+diff --git a/e2e/support/contracts.ts b/e2e/support/contracts.ts
+index cfc5d9989..4fd8fa187 100644
+--- a/e2e/support/contracts.ts
++++ b/e2e/support/contracts.ts
+@@ -8,4 +8,5 @@ export const LastOrganization = Schema.Struct({ user: Schema.String, organizatio
+ export const Resource = Schema.Struct({ id: Schema.String });
+ export const App = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String });
++export const PublishingStatus = Schema.Struct({ publishing: Schema.Boolean });
+ export const Inventory = Schema.Struct({
+   apps: Schema.Array(App),
+diff --git a/e2e/support/publishing-preview.ts b/e2e/support/publishing-preview.ts
+index a30ad6a8f..919e611a8 100644
+--- a/e2e/support/publishing-preview.ts
++++ b/e2e/support/publishing-preview.ts
+@@ -23,4 +23,5 @@ export const publishingPreview = (
+     const authoring = (url: URL) => url.pathname.endsWith(`/apps/${app}/authoring`);
+     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
++    const status = (url: URL) => url.pathname.endsWith("/app-publications/status");
+     const source = (route: Route) =>
+       route.fetch().then((response) => {
+@@ -46,4 +47,13 @@ export const publishingPreview = (
+         body: JSON.stringify(published),
+       });
++    yield* browser.use("Report a host that publishes", (page) =>
++      page.route(status, (route) =>
++        route.fulfill({
++          status: 200,
++          contentType: "application/json",
++          body: JSON.stringify({ publishing: true }),
++        }),
++      ),
++    );
+     yield* browser.use("Enable publishing in the shared authoring controls", (page) =>
+       page.route(authoring, (route) =>
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 96a575a56..4f151dc2c 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -1892,4 +1892,17 @@ export const scenarios = plan({
+     },
+   },
++  publishingOff: {
++    fixtures: "actors",
++    file: "publishing-off.spec.ts",
++    title:
++      "A host that does not publish says so, refuses publications and shows no Publish control",
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "Cloud scenarios share one server that publishes; a host without publishing is checked on self-host.",
++      ),
++      local: na("Local does not publish apps."),
++    },
++  },
+   appFrameworkPin: {
+     fixtures: "actors",
+diff --git a/e2e/tests/member-controls.spec.ts b/e2e/tests/member-controls.spec.ts
+index afc084f0e..6046131bf 100644
+--- a/e2e/tests/member-controls.spec.ts
++++ b/e2e/tests/member-controls.spec.ts
+@@ -10,5 +10,5 @@ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { App, Resource } from "../support/contracts.ts";
++import { App, PublishingStatus, Resource } from "../support/contracts.ts";
+ import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+@@ -42,4 +42,9 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
+           const prefix = `/api/organizations/${actors.organization.id}`;
+           const name = `Member controls ${randomUUID().slice(0, 8)}`;
++          // A host that does not publish shows no Publish control, not even a disabled one.
++          const { publishing } = yield* body(
++            PublishingStatus,
++            yield* api.request(actors.member, "GET", `${prefix}/app-publications/status`),
++          );
+           const app = yield* body(
+             App,
+@@ -316,5 +321,5 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
+               "Save access",
+               "Reset changes",
+-              "Publish",
++              ...(publishing ? ["Publish"] : []),
+             ])
+               expect(
+@@ -323,4 +328,14 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
+                 ),
+               ).toBe(true);
++            if (!publishing) {
++              yield* browser.use("The host has answered whether it publishes", (page) =>
++                page.getByLabel("Loading publishing access").waitFor({ state: "detached" }),
++              );
++              expect(
++                yield* browser.use("No Publish control where the host does not publish", (page) =>
++                  page.getByRole("button", { name: "Publish", exact: true }).count(),
++                ),
++              ).toBe(0);
++            }
+             expect(
+               yield* browser.use("Sharing selector remains disabled", (page) =>
+diff --git a/e2e/tests/publishing-off.spec.ts b/e2e/tests/publishing-off.spec.ts
+new file mode 100644
+index 000000000..6e85fe418
+--- /dev/null
++++ b/e2e/tests/publishing-off.spec.ts
+@@ -0,0 +1,94 @@
++/** A host that does not publish says so, refuses publications and leaves no Publish control. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { App, PublishingStatus } from "../support/contracts.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import { holdQuery } from "../support/query-transition.ts";
++import { scenarios } from "../test-plan.ts";
++import { withApps } from "../support/apps-release.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Publishing off", (it) => {
++  it.effect(scenarios.publishingOff.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        // Self-host reads another host's catalog and keeps none of its own, so it never publishes.
++        const status = yield* api.request(actors.owner, "GET", `${prefix}/app-publications/status`);
++        expect(status.status).toBe(200);
++        expect(yield* body(PublishingStatus, status)).toEqual({ publishing: false });
++        const unpublish = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/app-publications/unpublish`,
++          { package: `@${actors.organization.slug}.executor.community/absent` },
++        );
++        expect(unpublish.status).toBe(403);
++
++        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Unpublished example ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: 'import {defineApp} from "apps"; export default defineApp({},{});',
++            },
++            {
++              path: "package.json",
++              content: JSON.stringify({ name: "unpublished", dependencies: withApps() }),
++            },
++          ],
++        });
++        expect(response.status).toBe(200);
++        const app = yield* body(App, response);
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)
++            .pipe(Effect.asVoid, Effect.orDie),
++        );
++        const publish = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/publication`,
++          { commit: "a".repeat(40) },
++        );
++        expect(publish.status).toBe(403);
++        yield* browser.login(actors.owner);
++        const statusHold = yield* holdQuery(
++          [actors.organization.id, actors.organization.slug].map(
++            (organization) => `/api/organizations/${organization}/app-publications/status`,
++          ),
++          "continue",
++        );
++        yield* openThroughBrowser(
++          "Open the app as its owner",
++          `/org/${actors.organization.slug}/apps/${app.id}`,
++        );
++        yield* statusHold.requested;
++        yield* browser.use("Publishing access holds its place while the host answers", (page) =>
++          page.getByLabel("Loading publishing access").waitFor(),
++        );
++        yield* statusHold.release;
++        yield* browser.use("The placeholder leaves once the host answers", (page) =>
++          page.getByLabel("Loading publishing access").waitFor({ state: "detached" }),
++        );
++        yield* browser.use("App navigation is available", (page) =>
++          page.getByRole("navigation", { name: "App navigation" }).waitFor(),
++        );
++        expect(
++          yield* browser.use("No Publish control, enabled or disabled", (page) =>
++            page.getByRole("button", { name: "Publish", exact: true }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.checkpoint("Owner app page without publishing");
++      }),
++    ),
++  );
++});
+diff --git a/packages/app-management/src/contracts/api.ts b/packages/app-management/src/contracts/api.ts
+index caed397d7..14a3a8f38 100644
+--- a/packages/app-management/src/contracts/api.ts
++++ b/packages/app-management/src/contracts/api.ts
+@@ -264,4 +264,12 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
+           error: appOperationErrors,
+         }).annotate(OpenApi.Description, "Read recent commits in this app's private Git history."),
++        HttpApiEndpoint.get("publishing", "/app-publications/status", {
++          params: tenant,
++          success: Schema.Struct({ publishing: Schema.Boolean }),
++          error: appOperationErrors,
++        }).annotate(
++          OpenApi.Description,
++          "Read whether this host publishes apps. When it does not, publish and unpublish are refused and public listings stay readable.",
++        ),
+         HttpApiEndpoint.get("catalog", "/app-publications", {
+           params: tenant,
+diff --git a/packages/app-management/src/http.ts b/packages/app-management/src/http.ts
+index ede63278e..a4e6ae133 100644
+--- a/packages/app-management/src/http.ts
++++ b/packages/app-management/src/http.ts
+@@ -147,4 +147,6 @@ const editIdentity = (app: AppId) =>
+     ),
+   );
++const publishingStatus = (host: ManagementHost) =>
++  host.executor.publications.status().pipe(Effect.mapError(() => new StorageError()));
+ const authoring = (id: AppId) =>
+   Effect.gen(function* () {
+@@ -153,7 +155,5 @@ const authoring = (id: AppId) =>
+     const { app, access } = yield* ownedSource(host, identity, id);
+     const canEdit = identity.canWrite && access.edit && !identity.protectedApps.includes(id);
+-    const { publishing } = yield* host.executor.publications
+-      .status()
+-      .pipe(Effect.mapError(() => new StorageError()));
++    const { publishing } = yield* publishingStatus(host);
+     const remote = yield* gitRemote(identity.scope, app);
+     return {
+@@ -348,4 +348,10 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
+         }),
+       )
++      .handle("publishing", () =>
++        Effect.gen(function* () {
++          const { publishing } = yield* publishingStatus(yield* Effect.flatten(AppManagementHost));
++          return { publishing };
++        }),
++      )
+       .handle("catalog", ({ query }) =>
+         Effect.gen(function* () {
+diff --git a/packages/sdk/src/contracts/registry.ts b/packages/sdk/src/contracts/registry.ts
+index c747a7b0f..627a0188b 100644
+--- a/packages/sdk/src/contracts/registry.ts
++++ b/packages/sdk/src/contracts/registry.ts
+@@ -184,6 +184,9 @@ export interface RegistryStorage {
+  * Where this executor's public catalog lives. A remote registry only reads another host's
+  * listings. A stored catalog is this executor's own, published at the executor's origin.
++ * `publishing: false` keeps a stored catalog readable and refuses new publications.
+  */
+-export type RegistryOptions = Registry | { readonly storage: RegistryStorage };
++export type RegistryOptions =
++  | Registry
++  | { readonly storage: RegistryStorage; readonly publishing?: boolean };
+ 
+ /** Scope only freshly generated source, before Git retains it. Never rewrite an existing app. */
+diff --git a/packages/sdk/src/implementation/registry.ts b/packages/sdk/src/implementation/registry.ts
+index 4b1554c4b..1592851f7 100644
+--- a/packages/sdk/src/implementation/registry.ts
++++ b/packages/sdk/src/implementation/registry.ts
+@@ -183,5 +183,7 @@ export const makeRegistry = (
+     file: (input) => reads.file(input.name, input.commit, input.path),
+   };
+-  if (stored === undefined)
++  // An operator may turn publishing off; the stored catalog stays readable.
++  const writable = "storage" in options && options.publishing !== false ? stored : undefined;
++  if (writable === undefined)
+     return {
+       reads,
+@@ -191,9 +193,10 @@ export const makeRegistry = (
+         preview: () => Effect.fail(unsupported()),
+         publish: () => Effect.fail(unsupported()),
+-        owned: () => Effect.succeed([]),
++        // Listings published before publishing was turned off stay visible to their owner.
++        owned: (input) => (stored === undefined ? Effect.succeed([]) : stored.owned(input.owner)),
+         unpublish: () => Effect.fail(unsupported()),
+       },
+     };
+-  const storage = stored;
++  const storage = writable;
+   const validate = (input: {
+     readonly owner: Parameters<Executor["publications"]["publish"]>[0]["owner"];
+diff --git a/packages/ui/src/contracts/app-management.ts b/packages/ui/src/contracts/app-management.ts
+index 1e8a04cbe..d7a0c2975 100644
+--- a/packages/ui/src/contracts/app-management.ts
++++ b/packages/ui/src/contracts/app-management.ts
+@@ -43,4 +43,8 @@ export const makeAppManagementAtoms = <R, E>(
+     .atom(Effect.flatMap(client, (api) => api.published({ params })))
+     .pipe(hydrate("published", params), (source) => acknowledgedQuery(source, retainFailure));
++  // A host setting rather than a permission, so it changes only with a deploy.
++  const publishing = runtime
++    .atom(Effect.flatMap(client, (api) => api.publishing({ params })))
++    .pipe(hydrate("publishing", params), Atom.setIdleTTL("30 minutes"));
+   const authoring = Atom.family((app: AppId) =>
+     runtime
+@@ -203,4 +207,5 @@ export const makeAppManagementAtoms = <R, E>(
+   return {
+     published,
++    publishing,
+     authoring,
+     source,
+diff --git a/packages/ui/src/implementation/dashboard/publish-app.tsx b/packages/ui/src/implementation/dashboard/publish-app.tsx
+index 8dad8c008..fc6797ac9 100644
+--- a/packages/ui/src/implementation/dashboard/publish-app.tsx
++++ b/packages/ui/src/implementation/dashboard/publish-app.tsx
+@@ -1,3 +1,3 @@
+-import { useState } from "react";
++import { useState, type ReactNode } from "react";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { Exit, Schema, type Cause } from "effect";
+@@ -283,4 +283,21 @@ function RenameAndContinue<E>({
+ }
+ 
++const publishingPending = (
++  <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
++);
++
++/**
++ * Render a Publish control only on a host that publishes; one that does not shows none. If the
++ * check fails, the control stays and the host still refuses the publication.
++ */
++export function WhenPublishing<E>({
++  atoms,
++  children,
++}: Pick<AppManagementProps<E>, "atoms"> & { readonly children: ReactNode }) {
++  const { result } = useQuery(atoms.publishing);
++  if (AsyncResult.isSuccess(result)) return result.value.publishing ? children : null;
++  return AsyncResult.isFailure(result) ? children : publishingPending;
++}
++
+ /** Make publishing available from every app tab; the host still owns permission. */
+ export function PublishApp<E>({
+@@ -290,21 +307,17 @@ export function PublishApp<E>({
+ }: AppManagementProps<E> & { readonly app: App }) {
+   return (
+-    <QueryView
+-      query={atoms.authoring(app.id)}
+-      Failure={Failure}
+-      pending={
+-        <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
+-      }
+-    >
+-      {(metadata) =>
+-        metadata.canPublish ? (
+-          <PublishAction app={app} atoms={atoms} Failure={Failure} />
+-        ) : (
+-          <Button variant="outline" disabledReason="Publishing is not available on this server.">
+-            Publish
+-          </Button>
+-        )
+-      }
+-    </QueryView>
++    <WhenPublishing atoms={atoms}>
++      <QueryView query={atoms.authoring(app.id)} Failure={Failure} pending={publishingPending}>
++        {(metadata) =>
++          metadata.canPublish ? (
++            <PublishAction app={app} atoms={atoms} Failure={Failure} />
++          ) : (
++            <Button variant="outline" disabledReason="Publishing is not available on this server.">
++              Publish
++            </Button>
++          )
++        }
++      </QueryView>
++    </WhenPublishing>
+   );
+ }

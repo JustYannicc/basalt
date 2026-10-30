@@ -169,6 +169,8 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     DO_NOT_TRACK: source.POSTHOG_PROJECT_KEY?.trim() ? "0" : "1",
     // Fresh deployment: no earlier dispatcher can create the legacy native instance.
     EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
+    // An operator setting: the catalog stays readable, but nobody publishes from this deployment.
+    EXECUTOR_APP_PUBLISHING: "off",
     ALCHEMY_STAGE: deployment.stage,
     CLOUD_SOURCE_NAMESPACE: deployment.sourceNamespace,
     BETTER_AUTH_URL: `https://${brand.host}`,
@@ -254,6 +256,8 @@ export function previewEnvironment(
     TEST_STAGE_DATABASE: databaseName,
     TEST_STAGE_PASSWORD_SIGN_IN: "true",
     EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
+    // Previews match production, so they show no Publish control either.
+    EXECUTOR_APP_PUBLISHING: "off",
     BETTER_AUTH_URL: origin,
     EXECUTOR_CATALOG_URL: `${origin}${catalog.path}index.json`,
     TELEMETRY_RELAY_KEY: previewKey(source.PREVIEW_STATE_KEY!, number, "TELEMETRY_RELAY_KEY"),
