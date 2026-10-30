@@ -3,6 +3,7 @@ import * as Output from "alchemy/Output";
 import { Config, Effect, Option } from "effect";
 import { fileURLToPath } from "node:url";
 import { poolDatabaseInfrastructure } from "./database.ts";
+import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 import { inventoryCron } from "./inventory.ts";
 
@@ -14,7 +15,8 @@ const euPlacement: Cloudflare.ContainerApplication.Constraints & {
 } = { jurisdiction: "eu", regions: ["EEUR", "WEUR"] };
 
 export const poolWorker = Effect.gen(function* () {
-  const databaseUrl = yield* poolDatabaseInfrastructure;
+  const database = yield* poolDatabaseInfrastructure;
+  const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
   const image = Cloudflare.Container("PoolContainer", {
     context: fileURLToPath(new URL("../../containers/pool/", import.meta.url)),
     className: "PoolContainer",
@@ -36,7 +38,8 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
-      POOL_DATABASE_URL: databaseUrl,
+      POOL_DATABASE_URL: database.directUrl,
+      POOL_AUTH_DATABASE: workerDatabase,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
       ...(yield* telemetryBindings),

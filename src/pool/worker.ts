@@ -12,6 +12,11 @@ import { failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
+import {
+  hasActiveHomeApiKey,
+  homeApiKeyCandidates,
+  type HomeApiKeyLookup,
+} from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
@@ -22,6 +27,7 @@ import { reportPoolStorage } from "./inventory-storage.ts";
 export interface PoolEnvironment extends TelemetryEnv {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
   POOL_DATABASE_URL: string;
+  POOL_AUTH_DATABASE?: Hyperdrive;
   POOL_MANAGEMENT_KEY: string;
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
@@ -186,14 +192,38 @@ function singleton(env: PoolEnvironment) {
   return env.PoolContainer.jurisdiction("eu").getByName("control-plane");
 }
 
+export async function handlePoolWorkerRequest(
+  request: Request,
+  env: PoolEnvironment,
+  lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
+): Promise<Response> {
+  const pathname = new URL(request.url).pathname;
+  if (pathname !== accessPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
+    return new Response(null, { status: 404 });
+  }
+  if (isPublicModelPath(pathname)) {
+    const { supplied, values } = homeApiKeyCandidates(request);
+    if (!supplied) return modelAuthResponse(401, "Missing API key");
+    if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
+    try {
+      const connectionString = env.POOL_AUTH_DATABASE?.connectionString;
+      if (!connectionString) return modelAuthResponse(503, "Authentication service unavailable");
+      if (!(await lookupHomeApiKey(connectionString, values)))
+        return modelAuthResponse(401, "Invalid API key");
+    } catch {
+      return modelAuthResponse(503, "Authentication service unavailable");
+    }
+  }
+  return singleton(env).fetch(request);
+}
+
+function modelAuthResponse(status: 401 | 503, error: string): Response {
+  return Response.json({ error }, { status, headers: { "Cache-Control": "no-store" } });
+}
+
 export default {
   fetch(request: Request, env: PoolEnvironment) {
-    const pathname = new URL(request.url).pathname;
-    // The control API checks its own pool token; everything else public is the model gateway.
-    if (pathname !== accessPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
-      return new Response(null, { status: 404 });
-    }
-    return singleton(env).fetch(request);
+    return handlePoolWorkerRequest(request, env);
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
     if (event.cron === inventoryCron) {

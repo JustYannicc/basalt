@@ -8,6 +8,10 @@ const hooks = registerHooks({
       url: "data:text/javascript,export class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } }",
       shortCircuit: true,
     };
+    if (specifier === "pg") return {
+      url: "data:text/javascript,export default { Client: class { on() {} async connect() {} async query() { return { rows: [{ active: false }] }; } async end() {} } }",
+      shortCircuit: true,
+    };
     return next(specifier, context);
   },
 });

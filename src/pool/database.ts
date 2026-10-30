@@ -7,7 +7,7 @@ import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
+import { poolDatabase, poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
 
 /** A logical database inside the tools service's existing PlanetScale cluster. */
 export const poolDatabaseInfrastructure = Effect.gen(function* () {
@@ -94,7 +94,12 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     // exits with the step it failed at. This outer limit only catches a script that cannot exit.
     timeout: "3 minutes",
   });
-  return Output.all(runtime.connectionUrl, ready.hash).pipe(
-    Output.map(([url]) => Redacted.make(poolDatabaseUrl(Redacted.value(url)))),
-  );
+  return {
+    directUrl: Output.all(runtime.connectionUrl, ready.hash).pipe(
+      Output.map(([url]) => Redacted.make(poolDatabaseUrl(Redacted.value(url)))),
+    ),
+    workerOrigin: Output.all(runtime.origin, ready.hash).pipe(
+      Output.map(([origin]) => ({ ...origin, database: poolDatabase.name })),
+    ),
+  };
 });

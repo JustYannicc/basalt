@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import pg from "pg";
 import { poolDatabase } from "../../src/pool/database-settings.ts";
+import { hasActiveHomeApiKey } from "../../src/pool/model-auth.ts";
 import { managedMigrationUrl } from "./managed-postgres.ts";
 
 const adminUrl = process.env.POOL_TEST_ADMIN_URL;
@@ -39,6 +40,8 @@ test("logical database persists across runtime-role rotation and excludes unrela
     await first.connect();
     await first.query("CREATE TABLE pool_proof (value text NOT NULL)");
     await first.query("INSERT INTO pool_proof VALUES ('retained')");
+    await first.query("CREATE TABLE api_key (api_key text NOT NULL UNIQUE, deleted_at timestamptz)");
+    await first.query("INSERT INTO api_key VALUES ('active-key', NULL), ('revoked-key', now())");
     await first.end();
 
     // A PlanetScale login carries a branch routing suffix after the role name.
@@ -50,6 +53,18 @@ test("logical database persists across runtime-role rotation and excludes unrela
     await second.query("ALTER TABLE pool_proof ADD COLUMN migrated boolean DEFAULT true");
     await assert.rejects(second.query("CREATE DATABASE forbidden_pool_database"), { code: "42501" });
     await second.end();
+
+    // Hyperdrive supplies the login and database without the container's SET ROLE option.
+    const workerUrl = new URL(adminUrl!);
+    workerUrl.username = "pool_test_second";
+    workerUrl.password = "fixture-only";
+    workerUrl.pathname = `/${poolDatabase.name}`;
+    workerUrl.search = "";
+    assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["unknown-key", "active-key"]), true);
+    assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["active-key", "\0"]), true);
+    await assert.rejects(hasActiveHomeApiKey(workerUrl.toString(), ["\0", "active-key"]), { code: "22021" });
+    assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["revoked-key"]), false);
+    assert.equal(await hasActiveHomeApiKey(workerUrl.toString(), ["' OR TRUE --"]), false);
 
     const outsider = connection("pool_test_outsider");
     await assert.rejects(outsider.connect(), { code: "42501" });
