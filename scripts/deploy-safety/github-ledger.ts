@@ -126,8 +126,8 @@ export function readLedgerEnvironment(source = process.env): LedgerEnvironment {
 }
 
 /**
- * The production ledger. With `rollForward`, the single release that failed after the last success
- * is set aside when the release now running contains its commit: the ledger is then ready at the
+ * The production ledger. With `rollForward`, failed attempts of one SHA after the last success
+ * are set aside when the release now running contains its commit: the ledger is then ready at the
  * last success, and that release deploys forward from it, re-applying everything the failed one
  * did. Anything else stays unresolved. Rollback paths read the ledger without it.
  */
@@ -639,13 +639,8 @@ async function runCompletedAt(
 }
 
 /**
- * Sets aside the one failed release since the last success when the release now running contains
- * it, or says why it can't. Exactly one record may follow that success: a release whose latest
- * status is `failure` or `error`, that never reported success, and whose recorded base is that
- * success with the same pins. Its commit must be the commit being released or one of its
- * ancestors. A second record since the success, which is the superseding release failing too, a
- * pending, in-progress, status-less or inactive record, a rollback record, or a commit git can't
- * show is contained keeps the ledger unresolved.
+ * Same-SHA retries count as one failed release. Validate every attempt and retain the oldest
+ * payload: its backup predates all of that release's writes. Different SHAs still need a decision.
  */
 async function supersedeFailedRelease(
   deployments: Deployment[],
@@ -657,35 +652,47 @@ async function supersedeFailedRelease(
 ): Promise<{ ready: Extract<DeploymentLedger, { state: "ready" }>; superseded: SupersededRelease } | { refusal: string }> {
   const index = deployments.findIndex(({ id }) => id === lastSuccessful.deploymentId);
   if (index < 0) return { refusal: "the last successful deployment is missing from the ledger" };
-  if (index !== 1)
-    return { refusal: `${index} deployment records follow the last success; only a single failed release is rolled forward, so a person decides` };
-  const failed = deployments[0]!;
-  const refuse = (why: string) => ({ refusal: `deployment ${failed.id} ${why}` });
-  if (failed.environment !== "production") return refuse("is outside production");
-  let payload: DeploymentPayload;
-  try {
-    payload = parseDeploymentPayload(failed.payload);
-  } catch {
-    return refuse("has unreadable ledger metadata");
+  const attempts = deployments.slice(0, index);
+  if (attempts.length === 0) return { refusal: "no failed release follows the last success" };
+  const candidate = attempts[0]!.sha;
+  if (attempts.some((attempt) => attempt.sha !== candidate))
+    return { refusal: `${index} deployment records with different SHAs follow the last success; a person decides` };
+  let original: SupersededRelease | undefined;
+  for (const failed of attempts) {
+    const refuse = (why: string) => ({ refusal: `deployment ${failed.id} ${why}` });
+    if (failed.environment !== "production") return refuse("is outside production");
+    let payload: DeploymentPayload;
+    try {
+      payload = parseDeploymentPayload(failed.payload);
+    } catch {
+      return refuse("has unreadable ledger metadata");
+    }
+    const { statuses, why } = await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
+    const status = statuses[0]?.state ?? "missing";
+    if (!endedWithoutSuccess(statuses))
+      return refuse(`is ${status}, not a failed attempt that never succeeded${why ? `; it still counts as unfinished because ${why}` : ""}`);
+    if (payload.kind !== "release") return refuse("is a rollback, not a release");
+    if (payload.gitCommit !== failed.sha || payload.candidateGitCommit !== failed.sha)
+      return refuse("metadata does not match its SHA");
+    if (payload.baseGitCommit !== lastSuccessful.gitCommit ||
+        stableStringify(payload.basePins) !== stableStringify(lastSuccessful.pins))
+      return refuse("was not based on the last successful deployment");
+    if (original && (payload.databaseChanged !== original.payload.databaseChanged ||
+        payload.workflowChanged !== original.payload.workflowChanged ||
+        stableStringify(payload.pins) !== stableStringify(original.payload.pins)))
+      return refuse("has different pins or safety gates from another attempt of the same SHA");
+    original = { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status, payload };
   }
-  const { statuses, why } = await statusesOfLatest(failed, payload, deployments, environment, fetcher, now);
-  const status = statuses[0]?.state ?? "missing";
-  if (!endedWithoutSuccess(statuses))
-    return refuse(`is ${status}, not a failed attempt that never succeeded${why ? `; it still counts as unfinished because ${why}` : ""}`);
-  if (payload.kind !== "release") return refuse("is a rollback, not a release");
-  if (payload.gitCommit !== failed.sha || payload.candidateGitCommit !== failed.sha)
-    return refuse("metadata does not match its SHA");
-  if (payload.baseGitCommit !== lastSuccessful.gitCommit ||
-      stableStringify(payload.basePins) !== stableStringify(lastSuccessful.pins))
-    return refuse("was not based on the last successful deployment");
+  if (!original) return { refusal: "no failed release follows the last success" };
   let contained: boolean;
   try {
-    contained = rollForward.contains(failed.sha, rollForward.candidateGitCommit);
+    contained = rollForward.contains(candidate, rollForward.candidateGitCommit);
   } catch (error) {
-    return refuse(`could not be checked against ${rollForward.candidateGitCommit}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}`);
+    return { refusal: `deployment ${original.deploymentId} could not be checked against ${rollForward.candidateGitCommit}: ${error instanceof Error ? error.message.split("\n")[0] : "git failed"}` };
   }
-  if (!contained) return refuse(`is not contained in ${rollForward.candidateGitCommit}, so that release would not re-apply it`);
-  const success = deployments[1]!;
+  if (!contained)
+    return { refusal: `deployment ${original.deploymentId} is not contained in ${rollForward.candidateGitCommit}, so that release would not re-apply it` };
+  const success = deployments[index]!;
   return {
     ready: {
       state: "ready",
@@ -694,7 +701,7 @@ async function supersedeFailedRelease(
       pins: lastSuccessful.pins,
       payload: parseDeploymentPayload(success.payload),
     },
-    superseded: { deploymentId: failed.id, gitCommit: failed.sha, deploymentStatus: status, payload },
+    superseded: original,
   };
 }
 

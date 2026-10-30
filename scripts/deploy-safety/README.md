@@ -53,7 +53,7 @@ If deployment or smoke starts and fails for a safe release, the runner marks tha
 
 A failed release can leave production mixed, with some Workers new and some old, and its migrations and data steps partly or fully applied. The next release on `main` rolls forward over it instead of waiting for someone to reconcile the record, when all of these hold:
 
-- It is the only deployment record since the last success: a release record (not a rollback) whose latest status is `failure` or `error` and that never reported `success`. A pending, queued, in-progress, status-less or `inactive` record is never rolled forward over. If a second record lands after that success, which happens when the release rolling forward fails too, nothing is rolled forward and a person decides.
+- Every deployment since the last success is a failed attempt of the same candidate SHA: each is a release record (not a rollback) whose latest status is `failure` or `error` and that never reported `success`. Each attempt must have the same pins and safety gates. A pending, queued, in-progress, status-less or `inactive` record is never rolled forward over. Different candidate SHAs still stop for a decision.
 - It recorded the last success as its base, with the same pins.
 - Its commit is the commit now being released, or an ancestor of it, by `git merge-base --is-ancestor` in the trusted checkout. A commit on another branch, a `main` rewritten since, or a commit Git can't find or compare leaves the failure unresolved.
 - The release keeps the failed release's gates. If the failed release changed the database or a Workflow identity and the new report doesn't, as after a revert, rolling forward would skip the backup or the drain check, so the failure stays unresolved. This is checked after classification and again when the deployment record is created.
@@ -62,6 +62,8 @@ A failed release can leave production mixed, with some Workers new and some old,
 A failed release from `Manual release` of a pull request records that PR's head commit. A squash merge puts a different commit on `main`, so the next `main` release doesn't contain it and doesn't roll forward over it. Only a re-release of that PR's branch, whose head contains the failed commit, rolls forward.
 
 The ledger then reads as ready at the last success. The base stays the last success, so the release is classified against it, backed up when it changes the database, and recorded against it. It contains everything the failed release did, so its deploy re-applies the failed release's migrations and data steps and finishes whatever they left half done. `report` logs the failed record it rolls forward over, or why it can't. Rolling forward is checked again when the deployment record is created. `latest-base` has no candidate to compare, so it still reports the failure as unresolved.
+
+For repeated failures of the same SHA, the oldest failed attempt supplies the rollback backup, before any attempt's writes. No deployment records are changed or removed.
 
 Rolling forward keeps the failed release's database writes. It relies on migrations and data steps being forward-only, which the pinned upstream follows by convention; nothing here checks it per release:
 
@@ -124,7 +126,7 @@ node scripts/deploy-safety/release.ts deploy \
   --report "$RUNNER_TEMP/release-report.json"
 ```
 
-The source directory must be under `RUNNER_TEMP` and its Git `HEAD` must exactly match the report candidate. The runner checks that the current baseline and classification still match and verifies the protected backup before starting a database-changing deployment. A manual release failure is recorded but never automatically rolled back. The next release that contains it rolls forward over it; until then, or when that fails too, it stays unresolved until someone acts.
+The source directory must be under `RUNNER_TEMP` and its Git `HEAD` must exactly match the report candidate. The runner checks that the current baseline and classification still match and verifies the protected backup before starting a database-changing deployment. A manual release failure is recorded but never automatically rolled back. The next release that contains it rolls forward over it; until then, or when failures span different candidate SHAs, it stays unresolved until someone acts.
 
 Workflow updates require the exact step name:
 
