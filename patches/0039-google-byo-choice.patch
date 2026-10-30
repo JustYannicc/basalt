@@ -92,7 +92,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 +              linkedChoice(page, "Gmail", "Recovery account").waitFor({
                  state: "visible",
                }),
-@@ -278,27 +278,37 @@
+@@ -278,28 +278,37 @@
          yield* browser.use("Open the existing account for reconnection", (page) =>
            page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
          );
@@ -105,6 +105,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
 -              .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
 -              .waitFor({ state: "visible" })
 -              .then(() => page.getByRole("combobox", { name: "OAuth client" }).count()),
+-          ),
 +          yield* browser.use("A Google reconnect exposes client choices up front", (page) => {
 +            const clients = page.getByRole("combobox", { name: "OAuth client" });
 +            return page
@@ -150,7 +151,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
          expect(
            (yield* api.request(
              actors.owner,
-@@ -308,15 +318,12 @@
+@@ -308,15 +317,12 @@
            )).status,
          ).toBe(200);
          yield* browser.use("Reopen the reconnect without the registered client", (page) =>
@@ -172,15 +173,15 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
          );
          yield* browser.checkpoint("Reconnect OAuth client options");
          yield* browser.use("The account's client can be replaced", (page) =>
-@@ -324,6 +331,6 @@
+@@ -324,4 +330,6 @@
              .getByRole("combobox", { name: "OAuth client" })
              .click()
-             .then(() =>
--              page.getByRole("option", { name: /^Your own .+ app \(OAuth\)$/ }).click(),
+-            .then(() => page.getByRole("option", { name: /^Your own .+ app \(OAuth\)$/ }).click()),
++            .then(() =>
 +              page.getByRole("option", { name: "Your own Google app (OAuth)", exact: true }).click(),
-             ),
++            ),
          );
-@@ -335,7 +342,7 @@
+@@ -335,7 +343,7 @@
              .then(() => page.getByLabel("Client secret", { exact: true }).fill("wrong-secret"))
              .then(() =>
                page
@@ -189,7 +190,7 @@ diff --git a/e2e/tests/oauth-client-recovery.spec.ts b/e2e/tests/oauth-client-re
                  .click(),
              )
              .then(() =>
-@@ -362,7 +369,7 @@
+@@ -362,7 +370,7 @@
              )
              .then(() =>
                page
