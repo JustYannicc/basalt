@@ -26,6 +26,7 @@ import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websock
 import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
+import { handleModelHistoryOperation, historyBackfillPath, historySchemaApplyPath, historySchemaCatalogPath } from "./model-history/operator.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
@@ -250,7 +251,10 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 /** Only a service binding that explicitly selects this named entrypoint can invoke it. */
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).pathname !== "/codex-websockets") return new Response(null, { status: 404 });
+    const path = new URL(request.url).pathname;
+    if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
+      return handleModelHistoryOperation(request, this.env.POOL_DATABASE_URL);
+    if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
       let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
       if (request.method === "POST") {

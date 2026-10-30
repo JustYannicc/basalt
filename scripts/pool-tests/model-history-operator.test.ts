@@ -28,22 +28,39 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     const before = await db.query("SELECT tablename FROM pg_tables WHERE schemaname=$1 ORDER BY tablename", [schema]);
     const bundle = readBundle("PoolWorker", ".alchemy/bundles/PoolWorker");
     const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
-    const worker = new Miniflare(convertV4MiniflareOptions({
+    const worker = new Miniflare(convertV4MiniflareOptions({ workers: [{
+      name: "pool",
       compatibilityDate: "2026-09-08", compatibilityFlags: ["nodejs_compat"], modulesRoot: "/",
       modules: bundle.modules.map((file) => ({ type: file.endsWith(".wasm") ? "CompiledWasm" : "ESModule",
         path: join(bundle.directory, file), contents: readFileSync(join(bundle.directory, file)) })),
       bindings: { POOL_DATABASE_URL: url.toString(), POOL_MANAGEMENT_KEY: "fixture-management",
         POOL_IMAGE_HASH: "fixture", POOL_APP_SIGNING_KEY: "ab".repeat(32) },
       durableObjects: { PoolContainer: { className: "PoolContainer", useSQLite: true } },
-    }));
+    }, {
+      name: "operator", compatibilityDate: "2026-09-08", modules: true,
+      script: "export default { fetch(request, env) { return env.POOL_OPERATIONS.fetch(request); } };",
+      serviceBindings: { POOL_OPERATIONS: { name: "pool", entrypoint: "PoolOperations" } },
+    }] }));
     try {
       await worker.ready;
+      const publicPool = await worker.getWorker("pool");
       for (const path of [historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath]) {
-        const response = await worker.dispatchFetch(`http://pool${path}`, { method: "POST",
+        const response = await publicPool.fetch(`http://pool${path}`, { method: "POST",
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ go: true }) });
         assert.equal(response.status, 404, "operator actions must not be exposed by the public Worker");
         await response.body?.cancel();
       }
+      const operator = await worker.getWorker("operator");
+      const catalog = await operator.fetch(`http://operator${historySchemaCatalogPath}`);
+      assert.equal(catalog.status, 200, await catalog.clone().text());
+      const preview = await catalog.json();
+      assert.equal(preview.writes, false);
+      assert.equal(preview.history.rows, "2");
+      assert.equal(preview.history.privacyReady, true);
+      assert.equal(preview.catalogDiff.createTables.length, 19);
+      const backfill = await operator.fetch(`http://operator${historyBackfillPath}`);
+      assert.equal(backfill.status, 200, await backfill.clone().text());
+      assert.equal((await backfill.json()).writes, false);
     } finally { await worker.dispose(); }
     assert.deepEqual((await db.query("SELECT tablename FROM pg_tables WHERE schemaname=$1 ORDER BY tablename", [schema])).rows, before.rows,
       "starting the deployed Worker must not create or migrate history tables");
