@@ -49,9 +49,11 @@ jobs:
       - name: Record the trusted main commit
         id: trusted
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Validate that the candidate is on main and passed its push Check
+      # This run can replace a newer commit's pending Deploy run, so it releases the newest passing main commit
+      # that contains the candidate.
+      - name: Choose the newest passing main commit that contains the candidate
         id: candidate
-        run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts
+        run: MAIN_RELEASE_CHECKOUT="$(git rev-parse HEAD)" node scripts/release-merge/main-candidate.ts newest
         env:
           MAIN_RELEASE_CANDIDATE: ${{ inputs.candidate }}
       # Check runs can finish out of order, so a newer release may already have shipped this commit.

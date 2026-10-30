@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mainCandidateOutputLines, validateMainCandidate, type MainCandidateFetch } from "./main-candidate.ts";
+import { sha } from "../releases/fixtures.test-helpers.ts";
+import { mainCandidateOutputLines, newerMainCandidate, validateMainCandidate, type MainCandidateFetch } from "./main-candidate.ts";
 
-const head = "a".repeat(40);
-const other = "b".repeat(40);
-const newer = "c".repeat(40);
+const head = sha("a");
+const other = sha("b");
+const newer = sha("c");
 
 function github(
   main: string,
@@ -72,4 +73,61 @@ test("a candidate main doesn't contain, or that isn't a passing non-update commi
     await assert.rejects(validateMainCandidate("owner/basalt", "token", newer, head, fetcher), error, name);
   for (const candidate of ["", "main", head.slice(0, 12), `${head}0`])
     await assert.rejects(validateMainCandidate("owner/basalt", "token", newer, candidate, github(newer, [passing])), /release candidate must be a full commit SHA/, candidate);
+});
+
+/**
+ * main is `head` followed by `after`, oldest first. A newer commit's Check passed unless `checks`
+ * names its conclusion, or undefined for one still running. `pages` splits head...tip as GitHub would.
+ */
+function mainAfter(after: string[], checks: Record<string, string | undefined> = {}, updates: string[] = [], options: { sideBranch?: string; pages?: string[][] } = {}) {
+  const order = [head, ...after];
+  const tip = order.at(-1)!;
+  const urls: string[] = [];
+  const fetcher: MainCandidateFetch = async (url) => {
+    urls.push(url);
+    const { pathname, searchParams } = new URL(url);
+    if (pathname.endsWith("/commits/main")) return Response.json({ sha: tip });
+    const compare = pathname.match(/\/compare\/([a-f0-9]{40})\.\.\.([a-f0-9]{40})$/);
+    if (compare) {
+      const [from, to] = [order.indexOf(compare[1]!), order.indexOf(compare[2]!)];
+      const status = from < 0 || to < from || compare[2] === options.sideBranch ? "diverged" : from === to ? "identical" : "ahead";
+      const paged = options.pages && from === 0 && compare[2] === tip;
+      const commits = paged ? options.pages![Number(searchParams.get("page")) - 1]! : order.slice(from + 1, to + 1);
+      return Response.json({ status, total_commits: paged ? 101 : commits.length, commits: commits.map((sha) => ({ sha })) });
+    }
+    const pulls = pathname.match(/\/commits\/([a-f0-9]{40})\/pulls$/);
+    if (pulls) return Response.json([{ head: { ref: updates.includes(pulls[1]!) ? "release-updates/tools-1.2.3" : "fix/user-agent" } }]);
+    if (pathname.endsWith("/actions/workflows/ci.yml/runs")) {
+      const commit = searchParams.get("head_sha")!;
+      const conclusion = commit in checks ? checks[commit] : "success";
+      return Response.json({ workflow_runs: conclusion ? [{ ...passing, head_sha: commit, conclusion }] : [] });
+    }
+    return new Response(null, { status: 404 });
+  };
+  return Object.assign(fetcher, { urls });
+}
+
+const [n1, n2, n3] = [sha("1"), sha("2"), sha("3")];
+
+test("a release for a candidate main has moved past releases the newest passing commit containing it", async () => {
+  const newest = (fetcher: MainCandidateFetch) => newerMainCandidate("owner/basalt", "token", head, fetcher);
+  // n3's Check is still running, so n2 is the newest commit that can be released.
+  assert.equal(await newest(mainAfter([n1, n2, n3], { [n3]: undefined })), n2);
+  assert.equal(await newest(mainAfter([n1, n2, n3], { [n3]: "failure" }, [n2])), n1);
+  assert.equal(await newest(mainAfter([n1, n2, n3], { [n3]: undefined }, [], { sideBranch: n2 })), n1);
+  // GitHub lists the oldest commits first, so the newest come from the last page.
+  const paged = mainAfter([n1, n2, n3], {}, [], { pages: [[n1, n2], [n3]] });
+  assert.equal(await newest(paged), n3);
+  assert.deepEqual(paged.urls.filter((url) => url.includes(`...${n3}?`)).map((url) => new URL(url).searchParams.get("page")), ["1", "2"]);
+});
+
+test("the candidate itself is released when nothing newer on main qualifies", async () => {
+  const newest = (fetcher: MainCandidateFetch, candidate = head) => newerMainCandidate("owner/basalt", "token", candidate, fetcher);
+  assert.equal(await newest(mainAfter([n1, n2], { [n1]: "failure", [n2]: undefined })), undefined);
+  assert.equal(await newest(mainAfter([n1], {}, [n1])), undefined);
+  const atHead = mainAfter([]);
+  assert.equal(await newest(atHead), undefined);
+  assert.ok(!atHead.urls.some((url) => url.includes("/compare/")));
+  await assert.rejects(newest(mainAfter([n1]), n3), /main does not contain the release candidate/);
+  await assert.rejects(newest(mainAfter([n1]), "main"), /full commit SHA/);
 });
