@@ -153,6 +153,8 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.equal(result.computerId, computer.id);
   assert.deepEqual(result.computer, computer);
   assert.match(result.prompt, /https:\/\/setup.example\/setup\/claim\/opaque-link-token/);
+  // The browser claims the link itself only for keys it shows once, such as Claude Desktop's.
+  assert.equal(result.link, "https://setup.example/setup/claim/opaque-link-token");
   assert.match(result.command, /node --input-type=module/);
   assert.match(result.command, /mkdtemp/);
   assert.match(result.command, /mode:0o600/);

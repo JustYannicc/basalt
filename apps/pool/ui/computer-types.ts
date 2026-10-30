@@ -29,6 +29,8 @@ export interface Computer {
   readonly state?: ComputerState;
   /** False for a computer set up for models only. Absent from hosts that predate the choice. */
   readonly tools?: boolean;
+  /** Its setup link lapsed unclaimed, so it can never be set up. */
+  readonly lapsed?: true;
 }
 
 export type ComputerState = "issuing" | "active" | "revoking" | "revoked" | "removed";

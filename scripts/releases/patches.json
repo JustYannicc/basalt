@@ -247,9 +247,9 @@
       "workflow_sensitive": false
     },
     {
-      "identity": "basalt-computer-connections",
-      "file": "0027-computer-connections.patch",
-      "content_sha256": "4d858aeb9af2149642032d96ee71c74abcbbc5be0959826765a2240bb063471a",
+      "identity": "executor-assistant-guide-extensions",
+      "file": "0027-assistant-guide-extensions.patch",
+      "content_sha256": "2064f3ca76dd75ef900981c23b5cc3cf363c2b4b8dd9636cb9f1bddb2383c9a8",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -316,7 +316,7 @@
     {
       "identity": "executor-instant-navigation",
       "file": "0034-instant-navigation.patch",
-      "content_sha256": "b5fe1afe3b761606b7a0e2f6e221c58a7d013551fc482c0c951823f585da6d3a",
+      "content_sha256": "e964c14f380a51412bdaddd5628156aaf4d77d9847d99982914504344c61c25c",
       "kind": "upstream",
       "upstream_pull_request": 2437,
       "database_sensitive": false,
@@ -442,7 +442,16 @@
     {
       "identity": "basalt-product-feedback",
       "file": "0047-product-feedback.patch",
-      "content_sha256": "01289e0bcdec2945e29d629b505408005f69c316c92dfd17b6ef4fdac5e6f484",
+      "content_sha256": "9e93d6226dc1cc562be50a63124a0cbe6a2d68439114c105052659b69bbaa551",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-connect-pool-setup",
+      "file": "0048-connect-pool-setup.patch",
+      "content_sha256": "5661671813a45477be0b0e60068fb51483dbef0c099d77fe482a323d52d1dd5d",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

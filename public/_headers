@@ -7,3 +7,6 @@
   Cache-Control: public, max-age=86400
 /brand/hero/*
   Cache-Control: public, max-age=86400
+# Captures of assistants' own dialogs, shown in the Connect guides.
+/brand/assistants/*
+  Cache-Control: public, max-age=86400
