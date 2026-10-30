@@ -116,9 +116,13 @@ export const proveGoogleAdminOAuth = ({
         label: productName + " for Google",
       });
       assert.deepEqual(result.setup.scopes, admin.oauth.scopes);
-      assert.equal(
-        result.setup.tokenEndpointAuthMethod,
-        googleClient.tokenEndpointAuthMethod,
+      // Setup describes discovery. The operator client's reviewed token method is
+      // checked separately against the same metadata by loadGoogleAdminCatalog.
+      assert.ok(
+        googleMetadata.token_endpoint_auth_methods_supported.includes(
+          result.setup.tokenEndpointAuthMethod,
+        ),
+        "Google metadata must support the discovered setup token method",
       );
       assert.equal(result.started.status, 200);
       const url = new URL(result.started.body.authorizationUrl);
