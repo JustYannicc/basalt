@@ -76,7 +76,25 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources
+        run: python3 -m unittest containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_output_privacy
+      - name: Prove the output regression catches the previous image source
+        run: |
+          mkdir -p "$RUNNER_TEMP/pool-output-baseline"
+          git archive b4ffc98c586aa8c6700fe95bd8a87aac0cc35847 containers/pool | tar -x -C "$RUNNER_TEMP/pool-output-baseline"
+          cp containers/pool/test_output_privacy.py "$RUNNER_TEMP/pool-output-baseline/containers/pool/"
+          cd "$RUNNER_TEMP/pool-output-baseline"
+          python3 - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.loadTestsFromNames([
+              "containers.pool.test_output_privacy.OutputPrivacyTests.test_supervisor_startup_errors_are_closed",
+              "containers.pool.test_output_privacy.OutputPrivacyTests.test_supervisor_post_readiness_runtime_failure_is_closed",
+              "containers.pool.test_output_privacy.OutputPrivacyTests.test_http_handler_failure_cannot_print_response_token_or_address",
+          ])
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.testsRun != 3 or result.errors or len(result.failures) != 3:
+              raise SystemExit("Expected exactly three privacy assertion failures against the previous image source")
+          print("All three previous-image output leaks reproduced; no setup errors")
+          PY
       - run: npm run prepare:upstream
       - name: Prove release updates, broken patches, rollback and preview cleanup gates
         run: |

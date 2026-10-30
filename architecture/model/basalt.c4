@@ -115,15 +115,18 @@ model {
       description """
         Projects application logs before the node formats or queues them and independently before
         control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,
-        timestamp and validated generated request ID. The supervisor forwards only closed numeric
-        maintenance signals. Historical cleanup starts alongside Home listener handling in bounded
+        timestamp and validated generated request ID. Container log collection is enabled in the
+        stack. The supervisor forwards only closed numeric maintenance signals; its own failures,
+        readiness HTTP errors and uncaught exceptions emit numeric categories on stderr, without
+        exception text, class names, tracebacks or client addresses.
+        Historical cleanup starts alongside Home listener handling in bounded
         transactions, independently of pool readiness, and does not gate readiness on its completion.
       """
       metadata {
         code "containers/pool"
         releaseManifest "containers/pool/releases.json"
         sourceManifest "containers/pool/sources.json"
-        diagnosticPolicy "metadata-only usage and application logs; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
+        diagnosticPolicy "metadata-only usage and application logs; closed numeric container stdout and stderr; fingerprint client keys; old-writer guards before readiness; bounded historical cleanup independent of pool readiness"
         schedulingPolicy "default"
         jurisdiction "eu"
         regions "EEUR|WEUR"

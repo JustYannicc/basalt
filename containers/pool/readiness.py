@@ -9,6 +9,8 @@ import json
 import threading
 import uuid
 
+from .runtime_signals import FailureCategory, report_failure
+
 
 READY_BIND = ("0.0.0.0", 8318)
 
@@ -69,9 +71,14 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+class ReadyServer(http.server.ThreadingHTTPServer):
+    def handle_error(self, request: object, client_address: object) -> None:
+        report_failure(FailureCategory.READINESS_HTTP)
+
+
 def start_ready_server(readiness: Readiness) -> http.server.ThreadingHTTPServer:
     handler = type("BoundReadyHandler", (ReadyHandler,), {"readiness": readiness})
-    server = http.server.ThreadingHTTPServer(READY_BIND, handler)
+    server = ReadyServer(READY_BIND, handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

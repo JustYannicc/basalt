@@ -113,7 +113,7 @@ test("build-stage and runtime Python are scanned while tests retain separate own
 
 test("the actual build downloader and pool wrapper require a release service", () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const files = Object.fromEntries(["Dockerfile", "releases.json", "fetch_releases.py", "supervisor.py", "child_signals.py", "pool_contract.py", "readiness.py", "healthcheck.py", "__init__.py"].map(file =>
+  const files = Object.fromEntries(["Dockerfile", "releases.json", "fetch_releases.py", "supervisor.py", "child_signals.py", "runtime_signals.py", "pool_contract.py", "readiness.py", "healthcheck.py", "__init__.py"].map(file =>
     [`containers/pool/${file}`, readFileSync(join(root, "containers/pool", file), "utf8")]));
   const copy = fixture(files);
   expect(pythonDependencies(copy, [module("pool", "containers/pool")], []).errors.join("\n")).toContain("Unmodelled outside host: github.com");
