@@ -19,3 +19,5 @@ public/setup/main.css
 public/setup/index.html
 public/share/main.js
 public/share/index.html
+public/native-device/main.js
+public/native-device/index.html
