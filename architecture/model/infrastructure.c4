@@ -126,6 +126,11 @@ model {
   basalt.modelGateway -[sync]-> databaseService "read-only pool inventory through the model authentication connection, with no direct fallback"
   basalt.modelGateway -[sync]-> databaseService "verify active model API keys before controller lookup"
   basalt.deployment -[sync]-> databaseService "provision logical database"
+  historyExportService = adapter "Selected history export source" {
+    #external
+    description "The operator's Home management origin, supplied at import time. Only usage records and non-destructive JSONL exports are read."
+  }
+  basalt.usageExportClient -[sync]-> historyExportService "page retained request metadata with a separately supplied management credential"
   assetsService = adapter "Asset service" {
     #external
     technology "Cloudflare R2"

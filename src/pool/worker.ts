@@ -27,6 +27,7 @@ import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
 import { handleModelHistoryOperation, historyBackfillPath, historySchemaApplyPath, historySchemaCatalogPath } from "./model-history/operator.ts";
+import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
@@ -185,7 +186,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
     if (pathname === summaryPath) return this.usage.handle(request);
-    if (pathname === modelHistoryPath) return handleModelHistory(request, {
+    if (pathname === modelHistoryPath || pathname === modelImportPath) return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
       signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
       connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
       permissions: (pool, caller) => this.computers.permissions(pool, caller),
