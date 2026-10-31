@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
-index 4e5ee58..d403400 100644
+index 4e5ee582..d4034005 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
 @@ -290,6 +290,38 @@ export const poolDefaults = (
@@ -60,7 +60,7 @@ index 4e5ee58..d403400 100644
        Effect.gen(function* () {
          const current = yield* lockedState();
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 445fb3d..a5bdb50 100644
+index 931955cb..fccabb24 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -51,14 +51,21 @@ export const memberAppCreation =
@@ -94,10 +94,10 @@ index 445fb3d..a5bdb50 100644
 +          const commit = yield* PoolSetupCommit;
 +          if (commit !== undefined) yield* commit(app);
          }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
-       accountCreated: (account) =>
+       accountIdentityPlacement: (account) =>
          Effect.gen(function* () {
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 0aa738b..18008a0 100644
+index 0aa738b7..18008a0c 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
 @@ -285,6 +285,11 @@ const notRunInCi: Partial<
@@ -113,10 +113,10 @@ index 0aa738b..18008a0 100644
      targets: ["cloud"],
      reason:
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 452c680..db77a93 100644
+index 956f241d..12c2899c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8113,6 +8113,17 @@ export const scenarios = plan({
+@@ -8240,6 +8240,17 @@ export const scenarios = plan({
        local: na("Exercises hosted account checks and rows."),
      },
    },
@@ -136,6 +136,7 @@ index 452c680..db77a93 100644
      deferOnboarding: true,
 diff --git a/e2e/tests/pool-setup-atomic.spec.ts b/e2e/tests/pool-setup-atomic.spec.ts
 new file mode 100644
+index 00000000..5a148cb5
 --- /dev/null
 +++ b/e2e/tests/pool-setup-atomic.spec.ts
 @@ -0,0 +1,151 @@
