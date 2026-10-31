@@ -249,9 +249,9 @@
     {
       "identity": "executor-assistant-guide-extensions",
       "file": "0027-assistant-guide-extensions.patch",
-      "content_sha256": "2064f3ca76dd75ef900981c23b5cc3cf363c2b4b8dd9636cb9f1bddb2383c9a8",
-      "kind": "overlay",
-      "upstream_pull_request": null,
+      "content_sha256": "a63bbc923cc77444b0cf102688314492c1b39efeb3a6d0d91945a07f21348a4c",
+      "kind": "upstream",
+      "upstream_pull_request": 2470,
       "database_sensitive": false,
       "workflow_sensitive": false
     },
@@ -499,6 +499,15 @@
       "content_sha256": "230ddb5dbd65dd7674258e698a8cad8fe00a12c99de3ed814222c38aa2af0b8c",
       "kind": "upstream",
       "upstream_pull_request": 2466,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-assistant-guide-brand",
+      "file": "0057-assistant-guide-brand.patch",
+      "content_sha256": "bfeef2c9a8911c5ff625ba85ad7ada7395d3931409ba11525695af8d0e5dab82",
+      "kind": "overlay",
+      "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
     }

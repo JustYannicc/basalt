@@ -1,0 +1,139 @@
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+index b184158..1ab3329 100644
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -298,10 +298,6 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
+     ),
+ });
+ 
+-/** The screenshots show Executor's name, so they apply only while the deployment presents it. */
+-const shot = (executor: boolean, screenshot: NonNullable<AssistantGuide["screenshot"]>) =>
+-  executor ? screenshot : undefined;
+-
+ /**
+  * What a host adds to the assistant guides. Nothing here replaces a guide: quick setup leads with
+  * one click and keeps the steps one click away, extra assistants sit beside the built-in ones, and
+@@ -359,13 +355,13 @@ const guides = (
+       </>,
+       signIn("Claude", product),
+     ],
+-    screenshot: shot(executor, {
++    screenshot: {
+       src: claudeScreenshot,
+       width: 538,
+       height: 451,
+       alt: "Claude's Add custom connector dialog with Executor entered",
+       caption: "Claude’s Add custom connector dialog",
+-    }),
++    },
+     note: (
+       <>
+         On Team or Enterprise, an Owner first adds {product} under{" "}
+@@ -395,13 +391,13 @@ const guides = (
+             </>,
+             signIn("ChatGPT", product),
+           ],
+-          screenshot: shot(executor, {
++          screenshot: {
+             src: chatgptScreenshot,
+             width: 600,
+             height: 760,
+             alt: "ChatGPT's Add custom MCP server dialog with Executor, the MCP URL and OAuth",
+             caption: "ChatGPT’s Add custom MCP server dialog",
+-          }),
++          },
+           note: (
+             <>
+               Your ChatGPT dot uses the plugins you add here, so connect {product} once in ChatGPT.
+@@ -479,13 +475,13 @@ const guides = (
+         Click <Ui>Connect</Ui> next to {product}. {signIn("Devin", product)}
+       </>,
+     ],
+-    screenshot: shot(executor, {
++    screenshot: {
+       src: devinScreenshot,
+       width: 799,
+       height: 810,
+       alt: "Devin's New MCP form with Executor, HTTP transport and OAuth authentication",
+       caption: "Devin’s New MCP form",
+-    }),
++    },
+     note: "In an organization, Personal access lets each member sign in with their own account.",
+   },
+   "grok-bot": {
+@@ -522,13 +518,13 @@ const guides = (
+       </>,
+       <>Follow the connector&rsquo;s sign-in link. {signIn("Grok", product)}</>,
+     ],
+-    screenshot: shot(executor, {
++    screenshot: {
+       src: grokScreenshot,
+       width: 520,
+       height: 304,
+       alt: "Grok's Custom Connector form with Executor and the MCP URL",
+       caption: "Grok’s Custom Connector form",
+-    }),
++    },
+   },
+   muse: {
+     name: "Muse",
+@@ -547,14 +543,14 @@ const guides = (
+         approve access.
+       </>,
+     ],
+-    screenshot: shot(executor, {
++    screenshot: {
+       src: museScreenshot,
+       width: 780,
+       height: 90,
+       alt: "A setup message typed into Muse's chat box",
+       caption: "Where the message goes in Muse",
+       wide: true,
+-    }),
++    },
+   },
+   other: {
+     name: "Other",
+@@ -696,12 +692,18 @@ export function AssistantSetupGuide({
+   readonly assistant: AssistantId;
+ }) {
+   const guide = useAssistantGuide(endpoint, assistant);
++  const brand = useProductBrand();
+   const extensions = useAssistantGuideExtensions();
+   const quick = extensions.quickSetup?.[assistant];
+   const capture = extensions.screenshots?.[assistant];
++  // The built-in captures show Executor's name, so another brand shows only its own.
+   const screenshot =
+     guide.screenshot &&
+-    (capture === undefined ? guide.screenshot : { ...guide.screenshot, src: capture });
++    (capture !== undefined
++      ? { ...guide.screenshot, src: capture }
++      : isDefaultProductBrand(brand)
++        ? guide.screenshot
++        : undefined);
+   const steps = (
+     <>
+       <div
+@@ -729,7 +731,7 @@ export function AssistantSetupGuide({
+     <AssistantGuideCard
+       name={guide.name}
+       logo={guide.logo}
+-      title={`Add Executor to ${guide.name}`}
++      title={`Add ${brand.name} to ${guide.name}`}
+       method={quick === undefined ? guide.method : "One-click setup"}
+       link={<AssistantGuideLink guide={guide} className="w-full @md:w-auto" />}
+     >
+@@ -805,11 +807,12 @@ function QuickSetup({
+ 
+ /** A host's own assistant, in the same frame as the built-in guides. */
+ function ExtraAssistantGuide({ assistant }: { readonly assistant: ExtraAssistant }) {
++  const brand = useProductBrand();
+   return (
+     <AssistantGuideCard
+       name={assistant.name}
+       logo={assistant.logo}
+-      title={`Add Executor to ${assistant.name}`}
++      title={`Add ${brand.name} to ${assistant.name}`}
+       method={assistant.method}
+       link={<AssistantGuideLink guide={assistant} className="w-full @md:w-auto" />}
+     >
