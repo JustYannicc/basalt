@@ -1,3 +1,15 @@
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 04a87a384..4b5e84185 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -13,6 +13,7 @@
+     "./organization": "./src/contracts/organization.ts",
+     "./groups": "./src/contracts/groups.ts",
+     "./resource-access": "./src/contracts/resource-access.ts",
++    "./account-observations": "./src/contracts/account-observations.ts",
+     "./oauth-clients": "./src/contracts/oauth-clients.ts",
+     "./database": "./src/implementation/database.ts",
+     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
 diff --git a/apps/hosted/server/src/contracts/account-observations.ts b/apps/hosted/server/src/contracts/account-observations.ts
 new file mode 100644
 index 000000000..8185385c4
@@ -348,7 +360,7 @@ index 42f44c537..b35393ff0 100644
          Effect.flatMap(currentOwner, (owner) =>
            checkCredentials(owner, { app: params.app, ...payload }),
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index d42314c38..2136aa9c5 100644
+index a789e0f95..4bf2dc251 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -1,3 +1,4 @@
@@ -356,7 +368,7 @@ index d42314c38..2136aa9c5 100644
  /**
   * The routes that link accounts to an app's requirements, in either scope. App links need edit
   * access to the app and, to link, use of the account; reading them needs use of the app. User links
-@@ -102,10 +103,14 @@ const linkViews = (
+@@ -91,10 +92,14 @@ const linkViews = (
        present.map(({ account }) => account),
      );
      const health = new Map(
@@ -376,7 +388,7 @@ index d42314c38..2136aa9c5 100644
      const views = yield* Effect.forEach(
        present,
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index a81e449bb..caaa85aa9 100644
+index f04325945..570ed6fa6 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,3 +1,4 @@
@@ -384,7 +396,7 @@ index a81e449bb..caaa85aa9 100644
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
  import { fullAuthority } from "@executor-js/authorization";
-@@ -680,11 +681,17 @@ export const hostedAppUi = <R = never>(
+@@ -677,11 +678,17 @@ export const hostedAppUi = <R = never>(
        const found = yield* Effect.forEach(used, (account) =>
          Effect.all({
            account: executor.accounts.get({ owner: current.access.owner, account }),
@@ -428,9 +440,10 @@ index ba83cb8fd..85a8acfab 100644
  
  /**
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+index 15cc0293c..6dd82c2b7 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
-@@ -52,6 +52,7 @@
+@@ -52,6 +52,7 @@ import {
    organizationOwner,
    publishingScope,
  } from "../contracts/organization.ts";
@@ -438,7 +451,7 @@ diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted
  
  /** Read current membership once after native session verification; never retain roles between requests. */
  export const lookupMembership = (
-@@ -246,9 +247,12 @@
+@@ -246,9 +247,12 @@ export const inventory = (owner: OwnerId) =>
      ];
      // Checks are reported for the apps the caller linked each account to.
      const health = new Map(
@@ -455,7 +468,7 @@ diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted
      const withHealth = (listedAccounts: typeof accounts) =>
        listedAccounts.map((account) => {
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index 27874ba90..553dd331c 100644
+index 8ad7b27e7..f70dd9350 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
 @@ -1,3 +1,4 @@
@@ -463,7 +476,7 @@ index 27874ba90..553dd331c 100644
  import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { permittedAppIds } from "@executor-js/authorization";
-@@ -118,7 +119,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
+@@ -119,7 +120,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
          return [
            checks === undefined
              ? { account, access, provider }
@@ -473,7 +486,7 @@ index 27874ba90..553dd331c 100644
        }),
      );
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 26e9cb723..491f5bd23 100644
+index 67ce6cb08..dad25672e 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -481,7 +494,7 @@ index 26e9cb723..491f5bd23 100644
  import { AccountProvisioned } from "@executor-js/sdk/core";
  import {
    InteractiveRetirementBusy,
-@@ -792,6 +793,24 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -797,6 +798,24 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
          ],
        }),
      )
@@ -507,10 +520,10 @@ index 26e9cb723..491f5bd23 100644
        HttpApiEndpoint.get("account", "/dashboard/api/accounts/:account", {
          params: { account: AccountId },
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index 3aba9e742..04285d7ca 100644
+index 6d8566e5a..bebb75b10 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
-@@ -634,6 +634,24 @@ export const dashboard = (
+@@ -643,6 +643,24 @@ export const dashboard = (
          }),
        )
        .handle("account", ({ params }) => accountDetail(params.account))
@@ -760,49 +773,44 @@ index 000000000..a6e47b5c9
 +  ),
 +});
 diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
-index f27305ee3..bcf170e19 100644
+index f27305ee3..4be568401 100644
 --- a/e2e/support/app-package.ts
 +++ b/e2e/support/app-package.ts
-@@ -161,3 +161,24 @@ export const publishedRelease = (version: Release) =>
+@@ -161,3 +161,29 @@ export const publishedRelease = (version: Release) =>
      archives.set(route, yield* publishedArchive(version));
      return { url: `${base}${route}`, route, requests };
    });
 +
-+/** Advertise a compatible bundle as protocol 17 to exercise the host's refusal before dispatch. */
-+export const protocol17Framework = Effect.gen(function* () {
-+  const fs = yield* FileSystem.FileSystem,
-+    path = yield* Path.Path;
-+  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-+  const directory = yield* fs.makeTempDirectoryScoped();
-+  const extracted = path.join(directory, "retained");
-+  yield* fs.makeDirectory(extracted);
-+  yield* processes.string(
-+    ChildProcess.make("tar", ["-xzf", ".local/test-runtime/apps.tgz", "-C", extracted]),
-+  );
-+  const runtimeFile = path.join(extracted, "package", "runtime.json");
-+  const runtime = yield* fs
-+    .readFileString(runtimeFile)
-+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimePackage))));
-+  yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol: 17 }));
-+  const { base, archives } = yield* loopbackArchives;
-+  archives.set("/protocol17.tgz", yield* packDirectory(path.join(extracted, "package"), directory));
-+  return `${base}/protocol17.tgz`;
-+});
++/** Advertise a compatible bundle as retained to exercise refusal before dispatch. */
++const retainedObservationFramework = (protocol: 17 | 18) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const directory = yield* fs.makeTempDirectoryScoped();
++    const extracted = path.join(directory, "retained");
++    yield* fs.makeDirectory(extracted);
++    yield* processes.string(
++      ChildProcess.make("tar", ["-xzf", ".local/test-runtime/apps.tgz", "-C", extracted]),
++    );
++    const runtimeFile = path.join(extracted, "package", "runtime.json");
++    const runtime = yield* fs
++      .readFileString(runtimeFile)
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimePackage))));
++    yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol }));
++    const { base, archives } = yield* loopbackArchives;
++    const route = `/protocol${protocol}.tgz`;
++    archives.set(route, yield* packDirectory(path.join(extracted, "package"), directory));
++    return `${base}${route}`;
++  });
++
++export const protocol17Framework = retainedObservationFramework(17);
++export const protocol18Framework = retainedObservationFramework(18);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 91721bb9b..1f01eb757 100644
+index e889f4b30..2130cb0b2 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3046,7 +3046,8 @@ export const scenarios = plan({
-   catalogOAuthClients: {
-     fixtures: "actors",
-     file: "catalog-oauth-clients.spec.ts",
--    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
-+    title:
-+      "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
-     targets: {
-       "self-host": scheduled,
-       cloud: na("Restarts a runner-owned product with optional client credentials."),
-@@ -7580,6 +7581,100 @@ export const scenarios = plan({
+@@ -7647,6 +7647,110 @@ export const scenarios = plan({
        local: na("Uses hosted HTTP endpoints."),
      },
    },
@@ -853,6 +861,16 @@ index 91721bb9b..1f01eb757 100644
 +    fixtures: "actors",
 +    file: "account-observation-protocol.spec.ts",
 +    title: "protocol 17 refuses observations before dispatch while retaining health and tool calls",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback framework archive and allowance service."),
++      local: na("Uses hosted account HTTP endpoints."),
++    },
++  },
++  accountObservationProtocol18: {
++    fixtures: "actors",
++    file: "account-observation-protocol.spec.ts",
++    title: "protocol 18 refuses observations before dispatch while retaining health and tool calls",
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: na("Uses a loopback framework archive and allowance service."),
@@ -1197,7 +1215,7 @@ index 000000000..7b2234dab
 +});
 diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
 new file mode 100644
-index 000000000..15d085fb6
+index 000000000..7871f1b34
 --- /dev/null
 +++ b/e2e/tests/account-observation-migration.spec.ts
 @@ -0,0 +1,51 @@
@@ -1217,11 +1235,11 @@ index 000000000..15d085fb6
 +        const f = yield* observationFixture();
 +        const health = yield* f.check();
 +        expect(health.status).toBe(200);
-+        // Reconstruct the supported 4.0.16 layout; existing account, health and app rows remain intact.
++        // Reconstruct the supported 4.0.17 layout; existing account, health and app rows remain intact.
 +        yield* legacyStorage([
 +          { sql: "DROP TABLE hosted_account_observation_access" },
 +          { sql: "DROP TABLE executor_account_observations" },
-+          { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
++          { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
 +          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
 +        ]);
 +        yield* serverControl("start");
@@ -1238,7 +1256,7 @@ index 000000000..15d085fb6
 +            sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
 +          },
 +        ]);
-+        expect(versions).toEqual([{ value: "4.0.17" }]);
++        expect(versions).toEqual([{ value: "4.0.18" }]);
 +        expect(steps).toEqual([{ name: "account_observations" }]);
 +        expect(tables).toEqual([
 +          { table_name: "executor_account_observations" },
@@ -1254,42 +1272,49 @@ index 000000000..15d085fb6
 +});
 diff --git a/e2e/tests/account-observation-protocol.spec.ts b/e2e/tests/account-observation-protocol.spec.ts
 new file mode 100644
-index 000000000..1f697092a
+index 000000000..08204f8fa
 --- /dev/null
 +++ b/e2e/tests/account-observation-protocol.spec.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,40 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { observationFixture } from "../support/account-observation-fixture.ts";
-+import { protocol17Framework } from "../support/app-package.ts";
++import { protocol17Framework, protocol18Framework } from "../support/app-package.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("Optional observation protocol", (it) => {
-+  it.effect(scenarios.accountObservationProtocol.title, (context) =>
-+    withHostedCase(
-+      context,
-+      Effect.gen(function* () {
-+        const framework = yield* protocol17Framework;
-+        const f = yield* observationFixture({ observe: true, health: true, framework });
-+        expect((yield* f.check()).body).toMatchObject({ apps: [{ check: { status: "healthy" } }] });
-+        const tool = yield* f.api.request(f.actors.owner, "POST", `${f.appPath}/tools/call`, {
-+          tool: "ping",
-+          kind: "query",
-+          input: {},
-+        });
-+        expect(tool.status, JSON.stringify(tool.body)).toBe(200);
-+        expect(tool.body).toBe(true);
-+        const refreshed = yield* f.refresh();
-+        expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
-+        expect(refreshed.body).toMatchObject({ reports: [] });
-+        expect(yield* f.backend.calls).toBe(0);
-+        expect((yield* f.detail()).body).toMatchObject({
-+          health: { apps: [{ check: { status: "healthy" } }] },
-+        });
-+      }),
-+    ),
-+  );
++  for (const { scenario, retained } of [
++    { scenario: scenarios.accountObservationProtocol, retained: protocol17Framework },
++    { scenario: scenarios.accountObservationProtocol18, retained: protocol18Framework },
++  ]) {
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const framework = yield* retained;
++          const f = yield* observationFixture({ observe: true, health: true, framework });
++          expect((yield* f.check()).body).toMatchObject({
++            apps: [{ check: { status: "healthy" } }],
++          });
++          const tool = yield* f.api.request(f.actors.owner, "POST", `${f.appPath}/tools/call`, {
++            tool: "ping",
++            kind: "query",
++            input: {},
++          });
++          expect(tool.status, JSON.stringify(tool.body)).toBe(200);
++          expect(tool.body).toBe(true);
++          const refreshed = yield* f.refresh();
++          expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
++          expect(refreshed.body).toMatchObject({ reports: [] });
++          expect(yield* f.backend.calls).toBe(0);
++          expect((yield* f.detail()).body).toMatchObject({
++            health: { apps: [{ check: { status: "healthy" } }] },
++          });
++        }),
++      ),
++    );
++  }
 +});
 diff --git a/e2e/tests/account-observations-local.spec.ts b/e2e/tests/account-observations-local.spec.ts
 new file mode 100644
@@ -1626,7 +1651,7 @@ index 000000000..b5d738768
 +  );
 +});
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
-index b824af743..2fac47d84 100644
+index 1ca4e8359..2fac47d84 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -1,4 +1,4 @@
@@ -1635,15 +1660,6 @@ index b824af743..2fac47d84 100644
  import { expect, layer } from "@effect/vitest";
  import { Effect } from "effect";
  import { HostedLive, withHostedCase } from "../support/case.ts";
-@@ -24,7 +24,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
-             params: [fixture.account],
-           },
-         ]);
--        expect(version).toEqual([{ value: "4.0.16" }]);
-+        expect(version).toEqual([{ value: "4.0.17" }]);
-         expect(columns).toEqual([]);
-         expect(records).toEqual([
-           {
 @@ -68,7 +68,11 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
            },
          ]);
@@ -1657,41 +1673,15 @@ index b824af743..2fac47d84 100644
          ]);
          yield* serverControl("start");
        }),
-diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index 2ca7e6e2d..9080f8702 100644
---- a/e2e/tests/app-package.spec.ts
-+++ b/e2e/tests/app-package.spec.ts
-@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
-         expect(rejected.body).toMatchObject({
-           _tag: "VersionBuildFailed",
-           reason:
--            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17. Declare a supported apps version.",
-+            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18. Declare a supported apps version.",
-         });
-         expect((yield* call("queries.version")).body).toEqual(Published);
-         expect(
-diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage-migration-diagnostics.spec.ts
-index 3f134314d..4a50fc5c7 100644
---- a/e2e/tests/storage-migration-diagnostics.spec.ts
-+++ b/e2e/tests/storage-migration-diagnostics.spec.ts
-@@ -19,7 +19,7 @@ layer(TestLive, { excludeTestServices: true })("Storage migration diagnostics",
-         ]);
-         yield* Effect.addFinalizer(() =>
-           legacyStorage([
--            { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
-+            { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
-           ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
-         );
-         yield* serverControl("start", 500);
-diff --git a/packages/apps/protocols/18.json b/packages/apps/protocols/18.json
+diff --git a/packages/apps/protocols/19.json b/packages/apps/protocols/19.json
 new file mode 100644
-index 000000000..d5c626f67
+index 000000000..6426ad5d0
 --- /dev/null
-+++ b/packages/apps/protocols/18.json
-@@ -0,0 +1,3188 @@
++++ b/packages/apps/protocols/19.json
+@@ -0,0 +1,3379 @@
 +{
-+  "protocol": 18,
-+  "previous": 17,
++  "protocol": 19,
++  "previous": 18,
 +  "messages": {
 +    "invocation": {
 +      "_tag": "Objects",
@@ -3022,6 +3012,14 @@ index 000000000..d5c626f67
 +              "isOptional": false
 +            },
 +            {
++              "name": "uiProfile",
++              "type": {
++                "_tag": "Literal",
++                "literal": true
++              },
++              "isOptional": true
++            },
++            {
 +              "name": "detail",
 +              "type": {
 +                "_tag": "Literal",
@@ -3223,6 +3221,189 @@ index 000000000..d5c626f67
 +            },
 +            {
 +              "name": "input",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "audience",
++              "type": {
++                "_tag": "Literal",
++                "literal": "app"
++              },
++              "isOptional": true
++            },
++            {
++              "name": "uiProfile",
++              "type": {
++                "_tag": "Literal",
++                "literal": true
++              },
++              "isOptional": true
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "app-resource"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "tool",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "input",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "source",
++              "type": {
++                "_tag": "String"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "selection",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "uri",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "app-callback"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "tool",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "input",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "source",
++              "type": {
++                "_tag": "String"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "selection",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "arguments",
 +              "type": {
 +                "_tag": "Declaration",
 +                "representation": {
@@ -4991,31 +5172,60 @@ index 000000000..dbe0c61e2
 +  ): import("effect").Effect.Effect<AccountObservationResult | void, unknown>;
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 5014b3b51..4baea1162 100644
+index 25b4053b8..b9e970629 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
-@@ -1,3 +1,5 @@
-+export { protocol17 } from "./protocols/17.ts";
+@@ -1,3 +1,4 @@
 +export * from "./account-observation.ts";
  export * from "./skills.ts";
  import { type SkillFile } from "./skills.ts";
  import { ProviderError } from "./provider-error.ts";
+@@ -92,9 +93,10 @@ export { protocol14 } from "./protocols/14.ts";
+ export { protocol15 } from "./protocols/15.ts";
+ export { protocol16 } from "./protocols/16.ts";
+ export { protocol17 } from "./protocols/17.ts";
++export { protocol18 } from "./protocols/18.ts";
+ export * from "./connect.ts";
+ export {
+-  current as protocol18,
++  current as protocol19,
+   AccountCheckCommand,
+   CredentialHost,
+   MigrateCommand,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 97feddf76..3172054f8 100644
+index 3172054f8..31485cb50 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
   * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
   * This file has no imports so the package build script can read it directly.
   */
--export const frameworkProtocol = 17;
-+export const frameworkProtocol = 18;
+-export const frameworkProtocol = 18;
++export const frameworkProtocol = 19;
 diff --git a/packages/apps/src/contracts/protocols/17.ts b/packages/apps/src/contracts/protocols/17.ts
-new file mode 100644
-index 000000000..1840ebd6f
---- /dev/null
+index e763586ea..1840ebd6f 100644
+--- a/packages/apps/src/contracts/protocols/17.ts
 +++ b/packages/apps/src/contracts/protocols/17.ts
-@@ -0,0 +1,654 @@
+@@ -31,8 +31,12 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountInfo, AccountStatus } from "../provider.ts";
+ import { OAuth2Config } from "./oauth-17.ts";
++const AccountCheckResult = Schema.Struct({
++  accountInfo: Schema.optionalKey(AccountInfo),
++  status: Schema.optionalKey(AccountStatus),
++});
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/18.ts b/packages/apps/src/contracts/protocols/18.ts
+new file mode 100644
+index 000000000..ee490bd87
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/18.ts
+@@ -0,0 +1,678 @@
 +/**
 + * The host protocol this framework speaks: every message that crosses between a host and an app
 + * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
@@ -5031,10 +5241,11 @@ index 000000000..1840ebd6f
 + * imports them, so a change here never edits a released protocol.
 + */
 +import { Schema } from "effect";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
 +import { ConnectCommand } from "../connect.ts";
 +import { ProviderSite } from "@executor-js/utils/account-site";
 +import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-+const frameworkProtocol = 17;
++const frameworkProtocol = 18;
 +import {
 +  DatabaseFieldReserved,
 +  DatabaseLimitExceeded,
@@ -5221,6 +5432,7 @@ index 000000000..1840ebd6f
 +       * as an excess field.
 +       */
 +      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
 +    }),
 +  ),
 +  /**
@@ -5307,6 +5519,7 @@ index 000000000..1840ebd6f
 +  outputSchema: Schema.optionalKey(JsonObject),
 +  annotations: Schema.optionalKey(ToolAnnotations),
 +  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
 +});
 +/** Parsed live tool description. */
 +export type HostedTool = typeof HostedTool.Type;
@@ -5447,6 +5660,7 @@ index 000000000..1840ebd6f
 +  Schema.Struct({ operation: Schema.Literal("requirements") }),
 +  Schema.Struct({
 +    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
 +    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
 +    detail: Schema.optionalKey(Schema.Literal("summary")),
 +    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
@@ -5486,6 +5700,25 @@ index 000000000..1840ebd6f
 +     */
 +    kind: Schema.optionalKey(ToolKind),
 +    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
 +  }),
 +  AccountCheckCommand,
 +  MigrateCommand,
@@ -5588,6 +5821,7 @@ index 000000000..1840ebd6f
 +    ok: Schema.Literal(true),
 +    value: JsonValue,
 +    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
 +    /** The occurrences this invocation emitted, kept only because it succeeded. */
 +    events: Schema.optionalKey(EmittedEvents),
 +  }),
@@ -5644,7 +5878,7 @@ index 000000000..1840ebd6f
 +export type MessageName = keyof typeof messageDirections;
 +
 +/** Every message of the current protocol. The snapshot records them by name. */
-+export const protocol17 = {
++export const protocol18 = {
 +  version: frameworkProtocol,
 +  schemas: {
 +    invocation: HostInvocation,
@@ -5671,7 +5905,7 @@ index 000000000..1840ebd6f
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 539b3fd27..b17c242bd 100644
+index f6983c3dc..68c579644 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -1,3 +1,4 @@
@@ -5679,7 +5913,7 @@ index 539b3fd27..b17c242bd 100644
  /**
   * The host protocol this framework speaks: every message that crosses between a host and an app
   * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
-@@ -405,6 +406,10 @@ export const AccountCheckCommand = Schema.Struct({
+@@ -408,6 +409,10 @@ export const AccountCheckCommand = Schema.Struct({
    requirement: Schema.NonEmptyString,
  });
  export type AccountCheckCommand = typeof AccountCheckCommand.Type;
@@ -5690,15 +5924,15 @@ index 539b3fd27..b17c242bd 100644
  
  /** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
  export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
-@@ -465,6 +470,7 @@ export const HostRequest = Schema.Union([
-     input: JsonValue,
+@@ -488,6 +493,7 @@ export const HostRequest = Schema.Union([
+     arguments: JsonValue,
    }),
    AccountCheckCommand,
 +  AccountObserveCommand,
    MigrateCommand,
  ]);
  /** Parsed portable dispatch request. */
-@@ -615,6 +621,7 @@ export const messageDirections = {
+@@ -639,6 +645,7 @@ export const messageDirections = {
    workflowControl: "bundle",
    cacheCommand: "bundle",
    accountCheck: "bundle",
@@ -5706,7 +5940,7 @@ index 539b3fd27..b17c242bd 100644
    migrate: "bundle",
  } as const satisfies Record<string, "host" | "bundle">;
  /** A message name every protocol so far has used. */
-@@ -640,6 +647,7 @@ export const current = {
+@@ -664,6 +671,7 @@ export const current = {
      cacheCommand: CacheCommand,
      cacheReply: CacheReply,
      accountCheck: AccountCheckResult,
@@ -5715,23 +5949,22 @@ index 539b3fd27..b17c242bd 100644
      migrate: MigrateResult,
    },
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index 5d643cc1d..b3e8d5416 100644
+index b3e8d5416..e775eed99 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
-@@ -22,6 +22,8 @@ import { protocol15 } from "./15.ts";
- 
+@@ -23,6 +23,7 @@ import { protocol15 } from "./15.ts";
  import { protocol16 } from "./16.ts";
  
-+import { protocol17 } from "./17.ts";
-+
+ import { protocol17 } from "./17.ts";
++import { protocol18 } from "./18.ts";
+ 
  export const releasedProtocols = [
    protocol1,
-   protocol2,
-@@ -39,4 +41,5 @@ export const releasedProtocols = [
-   protocol14,
+@@ -42,4 +43,5 @@ export const releasedProtocols = [
    protocol15,
    protocol16,
-+  protocol17,
+   protocol17,
++  protocol18,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
 index e55625b48..b4f8c6805 100644
@@ -5885,7 +6118,7 @@ index 21fe55999..1156d3407 100644
        Effect.flatMap(Schema.decodeUnknownEffect(JsonValue)),
        Effect.mapError(() => new HostOutputInvalid()),
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 1c5e9fea2..7405c853a 100644
+index 1db128734..0ef41ab2b 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -1,3 +1,4 @@
@@ -5904,7 +6137,7 @@ index 1c5e9fea2..7405c853a 100644
    type FieldExposure,
    type Provider,
  } from "../contracts/provider.ts";
-@@ -569,7 +570,7 @@ function dispatch(
+@@ -579,7 +580,7 @@ function dispatch(
              return yield* new WorkflowFailure({ reason: "engine", retryable: true });
            return result;
          });
@@ -5913,7 +6146,7 @@ index 1c5e9fea2..7405c853a 100644
          return yield* checkAccount(
            native.accounts,
            declared,
-@@ -577,6 +578,7 @@ function dispatch(
+@@ -587,6 +588,7 @@ function dispatch(
            context,
            invocationSignal,
            deadline,
@@ -5921,7 +6154,7 @@ index 1c5e9fea2..7405c853a 100644
          ).pipe(withinDeadline);
        let running: InvocationTelemetry | undefined;
        // SQL transactions are synchronous, so a handler can never wait for input inside one.
-@@ -1081,6 +1083,7 @@ function checkAccount(
+@@ -1146,6 +1148,7 @@ function checkAccount(
    context: HostContext,
    signal: AbortSignal,
    deadline: number | undefined,
@@ -5929,7 +6162,7 @@ index 1c5e9fea2..7405c853a 100644
  ) {
    return Effect.gen(function* () {
      // A requirement name is unique across scopes; the host supplies the account in its scope.
-@@ -1096,7 +1099,9 @@ function checkAccount(
+@@ -1161,7 +1164,9 @@ function checkAccount(
        : undefined;
      if (selection === undefined || slot === undefined) return yield* new HostAccountsInvalid();
      const provider = selection instanceof ManyAccounts ? selection.provider : selection;
@@ -5940,7 +6173,7 @@ index 1c5e9fea2..7405c853a 100644
      if (health === undefined) return yield* new HostOperationNotFound();
      const accounts = yield* safe(
        () =>
-@@ -1125,7 +1130,27 @@ function checkAccount(
+@@ -1190,7 +1195,27 @@ function checkAccount(
            ...(deadline === undefined ? {} : { deadline }),
          });
        }),
@@ -6154,10 +6387,10 @@ index 36fe1bb5d..561ef1bd4 100644
  export * from "./shared.ts";
  export * from "./provider.ts";
 diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/runtime.ts
-index 664a84ee7..934586492 100644
+index 9d791b508..32e40f1f7 100644
 --- a/packages/sdk/src/contracts/runtime.ts
 +++ b/packages/sdk/src/contracts/runtime.ts
-@@ -508,6 +508,17 @@ export interface Runtime<Requirements = never> {
+@@ -520,6 +520,17 @@ export interface Runtime<Requirements = never> {
      RuntimeLoadError | typeof HostAccountCheckError.Type,
      Requirements
    >;
@@ -6817,7 +7050,7 @@ index b78ca1739..97afb348a 100644
                tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
              );
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index b378e591e..3659dac7c 100644
+index ec39e0fd5..a6feadecb 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -59,6 +59,20 @@ export interface AppProtocol {
@@ -6825,10 +7058,10 @@ index b378e591e..3659dac7c 100644
  }
  
 +/** Account observations are a separate optional read operation. */
-+const protocol18: AppProtocol = {
-+  version: 18,
++const protocol19: AppProtocol = {
++  version: 19,
 +  workerEntry: appBridge,
-+  nodeEntry: nodeAppEntry(18),
++  nodeEntry: nodeAppEntry(19),
 +  invocation: (input) => JSON.stringify(input),
 +  request: (command) => command,
 +  refuse: () => undefined,
@@ -6838,10 +7071,22 @@ index b378e591e..3659dac7c 100644
 +  sealedCredentials: true,
 +};
 +
- /** Protocol 17 adds display status and app-owned account checks. */
- const protocol17: AppProtocol = {
-   version: 17,
-@@ -66,7 +80,10 @@ const protocol17: AppProtocol = {
+ /** Protocol 18 adds source-bound MCP Apps resources and callbacks. */
+ const protocol18: AppProtocol = {
+   version: 18,
+@@ -66,7 +80,10 @@ const protocol18: AppProtocol = {
+   nodeEntry: nodeAppEntry(18),
+   invocation: (input) => JSON.stringify(input),
+   request: (command) => command,
+-  refuse: () => undefined,
++  refuse: (command) =>
++    command.operation === "account-observe"
++      ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
++      : undefined,
+   response: (_command, body) => Effect.succeed(body),
+   workflow: (execution) => execution,
+   concurrentData: true,
+@@ -80,7 +97,10 @@ const protocol17: AppProtocol = {
    nodeEntry: nodeAppEntry(17),
    invocation: (input) => JSON.stringify(input),
    request: (command) => command,
@@ -6853,7 +7098,7 @@ index b378e591e..3659dac7c 100644
    response: (_command, body) => Effect.succeed(body),
    workflow: (execution) => execution,
    concurrentData: true,
-@@ -82,7 +99,8 @@ const protocol16: AppProtocol = {
+@@ -96,7 +116,8 @@ const protocol16: AppProtocol = {
      JSON.stringify({ ...input, accounts: withoutProvisionedAccounts(input.accounts) }),
    request: (command) => command,
    refuse: (command) =>
@@ -6863,7 +7108,7 @@ index b378e591e..3659dac7c 100644
        ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
        : undefined,
    response: (_command, body) => Effect.succeed(body),
-@@ -109,7 +127,7 @@ const protocol15: AppProtocol = {
+@@ -123,7 +144,7 @@ const protocol15: AppProtocol = {
      JSON.stringify({ ...input, accounts: withoutInteractiveAccounts(input.accounts) }),
    request: (command) => command,
    refuse: (command) =>
@@ -6872,7 +7117,7 @@ index b378e591e..3659dac7c 100644
        ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
        : undefined,
    response: (_command, body) => Effect.succeed(body),
-@@ -323,7 +341,9 @@ const protocol9: AppProtocol = {
+@@ -337,7 +358,9 @@ const protocol9: AppProtocol = {
    version: 9,
    nodeEntry: nodeAppEntry(9),
    refuse: (command) =>
@@ -6883,7 +7128,7 @@ index b378e591e..3659dac7c 100644
        ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
        : undefined,
    concurrentData: false,
-@@ -400,7 +420,7 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
+@@ -414,7 +437,7 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
      invocation: (input) => unscoped.invocation({ ...input, command: legacyCommand(input.command) }),
      request: legacyCommand,
      refuse: (command) => {
@@ -6892,25 +7137,25 @@ index b378e591e..3659dac7c 100644
          return Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound());
        if (command.operation !== "call" || command.kind === undefined) return undefined;
        const actual = prefixKind(command.tool);
-@@ -449,6 +469,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
-     protocol15,
+@@ -464,6 +487,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol16,
      protocol17,
-+    protocol18,
+     protocol18,
++    protocol19,
    ].map((protocol) => [protocol.version, protocol]),
  );
  
-@@ -467,6 +488,16 @@ export const appProtocol = (
-     : Effect.succeed(protocol);
+@@ -503,6 +527,16 @@ export const appProtocol = (
+       );
  };
  
-+/** Observation commands are sent only to bundles that declare protocol 18 or later. */
++/** Observation commands are sent only to bundles that declare protocol 19 or later. */
 +export const observationProtocolAdditions = [
 +  {
 +    message: "request",
 +    path: "operation=account-observe",
-+    since: 18,
-+    gate: "appProtocol.refuse rejects account-observe before18",
++    since: 19,
++    gate: "appProtocol.refuse rejects account-observe before19",
 +  },
 +];
 +
@@ -6918,10 +7163,10 @@ index b378e591e..3659dac7c 100644
  export const interactiveProtocolAdditions = [
    {
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
-index 02ac48916..318e50fa2 100644
+index 5198b8ef6..a47c0c034 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
-@@ -8,6 +8,7 @@ import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-
+@@ -9,6 +9,7 @@ import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-
  import { recordAs } from "@executor-js/utils/recorded-message";
  import {
    AccountCheckResult,
@@ -6929,7 +7174,7 @@ index 02ac48916..318e50fa2 100644
    HostAccountCheckError,
    HostCallError,
    HostDataError,
-@@ -409,6 +410,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
+@@ -421,6 +422,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
            AccountCheckResult,
            HostAccountCheckError,
          ).pipe(Effect.withSpan(span("checkAccount"))),
@@ -6944,7 +7189,7 @@ index 02ac48916..318e50fa2 100644
          dispatch(
            { ...input, database: true, accounts: Redacted.make({ app: {} }) },
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 08edc5c18..d4ec546b7 100644
+index 7ef341050..c6e46dbdf 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,3 +1,5 @@
@@ -6953,7 +7198,7 @@ index 08edc5c18..d4ec546b7 100644
  import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
  import { transaction } from "./database.ts";
  import { makeInteractiveRetirement } from "./interactive-retirement.ts";
-@@ -201,6 +203,12 @@ export const createExecutor = (
+@@ -203,6 +205,12 @@ export const createExecutor = (
        options.hooks,
      );
      const ownerOperations = makeOwners(db);
@@ -6966,7 +7211,7 @@ index 08edc5c18..d4ec546b7 100644
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
        runtime,
-@@ -209,6 +217,7 @@ export const createExecutor = (
+@@ -211,6 +219,7 @@ export const createExecutor = (
        sitePolicy,
        apps.list,
        options.hooks,
@@ -6974,7 +7219,7 @@ index 08edc5c18..d4ec546b7 100644
      );
      const schedules = makeSchedules(
        options.database,
-@@ -300,6 +309,7 @@ export const createExecutor = (
+@@ -304,6 +313,7 @@ export const createExecutor = (
              );
            }),
          ...accountHealth,
@@ -6983,15 +7228,15 @@ index 08edc5c18..d4ec546b7 100644
            storedAccount(db, input.account, input.owner).pipe(
              Effect.flatMap((account) => oauth.revocation(account.id)),
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 9acfebb10..c0dfd91ad 100644
+index c0dfd91ad..010d194c5 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
 @@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
  /** Bound query handle sharing the host connection and reactive transaction context. */
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
--export const database = (storage: ExecutorDatabase) => storage.orm("4.0.16");
-+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
+-export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
++export const database = (storage: ExecutorDatabase) => storage.orm("4.0.18");
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
   * FumaDB span covers the same interval, so this boundary adds no span of its own.
@@ -7049,7 +7294,7 @@ index 0df1eb7f7..c46844efe 100644
      accountConnections: {
        oauthSetup: (input) => run(CheckOAuthSetup, input, executor.accountConnections.oauthSetup),
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
-index 00acb7629..721aa63de 100644
+index 1ae4cc34c..b3abf1b00 100644
 --- a/packages/sdk/src/implementation/runtime.ts
 +++ b/packages/sdk/src/implementation/runtime.ts
 @@ -2,6 +2,7 @@
@@ -7060,8 +7305,8 @@ index 00acb7629..721aa63de 100644
    ResolvedAccounts,
    type HostContext,
    type HostedCatalog,
-@@ -238,6 +239,10 @@ export const toEffectRuntime = (
-     call: (input) => runtime.call(input).pipe(provide),
+@@ -239,6 +240,10 @@ export const toEffectRuntime = (
+     mcpApp: (input) => runtime.mcpApp(input).pipe(provide),
      connect: (input) => runtime.connect(input).pipe(provide),
      checkAccount: (input) => runtime.checkAccount(input).pipe(provide),
 +    observeAccount: (input) =>
@@ -7072,7 +7317,7 @@ index 00acb7629..721aa63de 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index b0b94bb1b..fd79fd5df 100644
+index db1bc6f35..e2d3b8046 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,4 @@
@@ -7080,13 +7325,13 @@ index b0b94bb1b..fd79fd5df 100644
  /** Current baseline and the upgrades required by existing version 4 databases. */
  import { fumadb } from "fumadb-effect";
  import { Effect, Schema } from "effect";
-@@ -658,6 +659,18 @@ export const storageSchemas = [
+@@ -684,6 +685,18 @@ export const storageSchemas = [
        }),
      },
    }),
 +  schema({
-+    version: "4.0.17",
-+    tables: { ...version4016Tables, accountObservations },
++    version: "4.0.18",
++    tables: { ...version4017Tables, accountObservations },
 +    relations: {
 +      accounts: ({ one }) => ({
 +        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
@@ -7100,33 +7345,33 @@ index b0b94bb1b..fd79fd5df 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index 461c6bd06..aef4b5e55 100644
+index decbfc09b..57d682ba8 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -21,7 +21,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
--    const db = bindOrm(client.orm("4.0.16"), sql, reactivity);
-+    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
+-    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
++    const db = bindOrm(client.orm("4.0.18"), sql, reactivity);
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -46,7 +46,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -47,7 +47,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
              yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
                discard: true,
              });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.16")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.17")));
+-          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.17")));
++          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.18")));
            return;
          }
          // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -76,7 +76,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -77,7 +77,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
--      orm: (_version: "4.0.16") => db,
-+      orm: (_version: "4.0.17") => db,
+-      orm: (_version: "4.0.17") => db,
++      orm: (_version: "4.0.18") => db,
        reactivity,
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
@@ -7165,39 +7410,22 @@ index b0266758b..1bd68eed2 100644
   * The display with every item that collides with a short credential removed, or undefined when
   * any string carries a credential or the input exceeds the bounds. Removing a colliding item keeps
 diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
-index ba20ce4b8..c2f0f7c41 100644
+index 4e3699a6d..441c80760 100644
 --- a/scripts/check-app-protocols.ts
 +++ b/scripts/check-app-protocols.ts
-@@ -37,6 +37,7 @@ import { releasedProtocols } from "../packages/apps/src/contracts/protocols/rele
- import {
+@@ -38,6 +38,7 @@ import {
    accountSiteAdaptations,
    interactiveProtocolAdditions,
+   mcpAppsProtocolAdditions,
 +  observationProtocolAdditions,
    interactiveProtocolAdaptations,
    supportedProtocols,
  } from "../packages/sdk/src/implementation/app-protocols.ts";
-@@ -586,7 +587,11 @@ const recordedGates: Gates = existsSync(gatesFile)
- const gates: Gates = {
-   ...recordedGates,
-   adapted: [...recordedGates.adapted, ...accountSiteAdaptations, ...interactiveProtocolAdaptations],
--  additions: [...recordedGates.additions, ...interactiveProtocolAdditions],
-+  additions: [
-+    ...recordedGates.additions,
-+    ...interactiveProtocolAdditions,
+@@ -591,6 +592,7 @@ const gates: Gates = {
+     ...recordedGates.additions,
+     ...interactiveProtocolAdditions,
+     ...mcpAppsProtocolAdditions,
 +    ...observationProtocolAdditions,
-+  ],
+   ],
  };
  
- /**
-diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 04a87a384..4b5e84185 100644
---- a/apps/hosted/server/package.json
-+++ b/apps/hosted/server/package.json
-@@ -13,6 +13,7 @@
-     "./organization": "./src/contracts/organization.ts",
-     "./groups": "./src/contracts/groups.ts",
-     "./resource-access": "./src/contracts/resource-access.ts",
-+    "./account-observations": "./src/contracts/account-observations.ts",
-     "./oauth-clients": "./src/contracts/oauth-clients.ts",
-     "./database": "./src/implementation/database.ts",
-     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
