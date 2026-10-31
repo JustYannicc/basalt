@@ -1,32 +1,10 @@
 import type { HomeClient } from "./control.ts";
-import { failureResponse, json, object, unavailable } from "./json.ts";
+import { failureResponse, json, object, readBody, unavailable } from "./json.ts";
 import { openEnvelope } from "./token.ts";
 
 export const accountMirrorPath = "/pool/v1/account-mirrors";
 export const accountMirrorPrefix = "sbam1";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-async function mirrorBody(request: Request): Promise<string | undefined> {
-  const reader = request.body?.getReader({ mode: "byob" });
-  if (!reader) return "";
-  let bytes = new Uint8Array(65_537);
-  let size = 0;
-  try {
-    for (;;) {
-      // A default reader can deliver an arbitrarily large pre-auth chunk before we reject it.
-      const { value, done } = await reader.read(bytes.subarray(size));
-      if (value === undefined) break;
-      bytes = new Uint8Array(value.buffer);
-      size += value.byteLength;
-      if (size > 65_536) {
-        void reader.cancel().catch(() => {});
-        return undefined;
-      }
-      if (done) break;
-    }
-  } finally { reader.releaseLock(); }
-  return new TextDecoder().decode(bytes.subarray(0, size));
-}
 
 /** Only a fresh assertion from the trusted host can copy account fields into Home. */
 export async function handleAccountKeyMirror(request: Request, input: {
@@ -37,9 +15,9 @@ export async function handleAccountKeyMirror(request: Request, input: {
 }): Promise<Response> {
   try {
     if (request.method !== "POST") return new Response(null, { status: 405 });
-    const raw = await mirrorBody(request);
+    const raw = await readBody(request, 65_536);
     if (raw === undefined) return new Response(null, { status: 413 });
-    const body: unknown = JSON.parse(raw);
+    const body: unknown = JSON.parse(new TextDecoder().decode(raw));
     const value = object(body) && typeof body.envelope === "string"
       ? await openEnvelope(input.signingKey, accountMirrorPrefix, body.envelope, input.previousSigningKey)
       : undefined;

@@ -54,3 +54,25 @@ export function failureResponse(error: unknown): Response {
   if (error.retryAfterSeconds !== undefined) response.headers.set("Retry-After", String(error.retryAfterSeconds));
   return response;
 }
+
+export async function readBody(request: Request, limit: number): Promise<Uint8Array | undefined> {
+  const reader = request.body?.getReader({ mode: "byob" });
+  if (!reader) return new Uint8Array();
+  let bytes = new Uint8Array(limit + 1);
+  let size = 0;
+  try {
+    for (;;) {
+      // A default reader can deliver an arbitrarily large pre-auth chunk before we reject it.
+      const { value, done } = await reader.read(bytes.subarray(size));
+      if (value === undefined) break;
+      bytes = new Uint8Array(value.buffer);
+      size += value.byteLength;
+      if (size > limit) {
+        void reader.cancel().catch(() => {});
+        return undefined;
+      }
+      if (done) break;
+    }
+  } finally { reader.releaseLock(); }
+  return bytes.subarray(0, size);
+}

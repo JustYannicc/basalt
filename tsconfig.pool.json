@@ -41,6 +41,7 @@
   "include": [
     "apps/pool/**/*.ts",
     "apps/pool/**/*.tsx",
+    "src/pool/provider-accounts/**/*.ts",
     "src/setup/*.tsx"
   ],
   "exclude": [

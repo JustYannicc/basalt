@@ -150,3 +150,21 @@ test("authority requires the exact clean policy acknowledgement and never extend
   f.advance(membershipTtlMs - 5_000);
   await assert.rejects(memberships.authority("a"), /refreshing/);
 });
+
+test("one native account expands its exact multi-project Home reference into pool authority", async () => {
+  const f = fixture();
+  const read = f.deps.read;
+  f.deps.read = async (pool, organization) => {
+    const snapshot = await read(pool, organization);
+    return { ...snapshot, accounts: snapshot.accounts.map((account) => ({
+      ...account, homeReference: 'sbhrefs1:["parent","project-a","project-b"]',
+    })) };
+  };
+  const memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request());
+  await memberships.tick();
+  const expected = ["parent", "project-a", "project-b"];
+  assert.deepEqual((await memberships.authority("a"))?.accounts, expected);
+  assert.deepEqual(f.home.get("a"), expected);
+  assert.deepEqual(f.installed.get("a")?.accounts, expected);
+});

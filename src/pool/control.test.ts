@@ -4,7 +4,8 @@ import type { PoolView, SignInStarted, SignInStatus } from "../../apps/pool/cont
 import { attributionStorageKey, PoolControl, type ControlStorage } from "./attribution.ts";
 import { handleControl, HomeClient } from "./control.ts";
 import providers from "./providers.json" with { type: "json" };
-import { signPoolToken } from "./token.ts";
+import { signEnvelope, signPoolToken } from "./token.ts";
+import { accountAcquisitionPath, accountAcquisitionPrefix } from "./account-acquisition-contract.ts";
 import { subscriptionFailure } from "../../apps/pool/account-health.ts";
 import type { Account } from "../../apps/pool/contract.ts";
 
@@ -196,7 +197,15 @@ async function fixture(audience: readonly string[] = []) {
   async function poll(started: SignInStarted, pool = "pool-a") {
     return call(`/sign-ins/status?session=${encodeURIComponent(started.session)}`, { pool });
   }
-  return { home, storage, deps, productEvents, request, call, start, callback, poll, advance: (ms: number) => { time += ms; }, expire: () => control.expire(), restart: () => { control = new PoolControl(storage, deps); } };
+  async function acquire(action: string, input: Row = {}, operation = "native-operation") {
+    const envelope = await signEnvelope(signingKey, accountAcquisitionPrefix, {
+      owner: "organization:fake-org", provider, operation, action, at: time, expiresAt: time + 30_000, ...input,
+    });
+    return control.acquire(new Request(`https://pool.example${accountAcquisitionPath}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ envelope }),
+    }));
+  }
+  return { home, storage, deps, productEvents, request, call, start, callback, poll, acquire, advance: (ms: number) => { time += ms; }, expire: () => control.expire(), restart: () => { control = new PoolControl(storage, deps); } };
 }
 async function error(response: Response, code: string, status = 400) {
   assert.equal(response.status, status, await response.clone().text());
@@ -1802,4 +1811,158 @@ test("native removal intent follows observations made while deletion awaits ackn
   assert.equal(after.accounts.length, 0);
   assert.ok(Date.parse(after.removals!.items[0]!.at) >= observedAt);
   assert.equal(after.removals!.items[0]!.at, f.deps.now().toISOString());
+});
+
+for (const order of ["native-first", "legacy-first"] as const) {
+  test(`a ${order} global sign-in stays out of a legacy pool's directory-diff result`, async () => {
+    const f = await fixture();
+    f.home.flow = "device";
+    const global = async () => {
+      const response = await f.acquire("start");
+      assert.equal(response.status, 200, await response.clone().text());
+      const value = await response.json() as { session: string; paste?: unknown };
+      assert.equal(value.paste, undefined, "an explicit device flow never asks for a callback URL");
+      return value;
+    };
+    let legacy: SignInStarted;
+    let native: { session: string };
+    if (order === "native-first") { native = await global(); legacy = await f.start(); }
+    else { legacy = await f.start(); native = await global(); }
+    const legacyState = state(legacy);
+    const nativeState = [...f.home.sessions.keys()].find((key) => key !== legacyState)!;
+    const pending = f.storage.values.get(attributionStorageKey) as { locks: Record<string, { unconfirmedUploads?: string[] }> };
+    assert.equal(pending.locks[provider]?.unconfirmedUploads?.length, 1);
+    f.home.addFile("global-account");
+    f.home.sessions.set(nativeState, { provider, status: "ok", auth_ids: ["global-account"] });
+    const response = await f.acquire("status", { session: native.session });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(await response.json(), { state: "connected", ref: "global-account" });
+    f.home.addFile("legacy-account");
+    f.home.sessions.set(legacyState, { provider, status: "ok" });
+    await status(await f.poll(legacy), { status: "connected", accountId: "legacy-account" });
+    assert.deepEqual(f.home.members.map((member) => member.auth_id), ["legacy-account"]);
+    assert.ok(f.home.files.has("global-account"));
+  });
+}
+
+test("an unresolved global sign-in prevents a legacy directory diff from claiming its credential", async () => {
+  const f = await fixture();
+  f.home.flow = "device";
+  const legacy = await f.start();
+  const response = await f.acquire("start");
+  assert.equal(response.status, 200);
+  f.home.addFile("global-account");
+  f.home.sessions.set(state(legacy), { provider, status: "ok" });
+  const result = await f.poll(legacy);
+  assert.equal(result.status, 200);
+  assert.equal((await result.json() as SignInStatus).status, "failed");
+  assert.equal(f.home.members.length, 0);
+  assert.ok(f.home.files.has("global-account"));
+});
+
+for (const outcome of ["lost-status", "missing-ids"] as const) {
+  for (const order of ["native-first", "legacy-first"] as const) {
+    test(`an ambiguous global ${outcome} in ${order} order cannot become a legacy pool account`, async () => {
+      const f = await fixture();
+      f.home.flow = "device";
+      let legacy: SignInStarted;
+      let native: { session: string };
+      const startGlobal = async () => {
+        const response = await f.acquire("start");
+        assert.equal(response.status, 200);
+        return await response.json() as { session: string };
+      };
+      if (order === "native-first") { native = await startGlobal(); legacy = await f.start(); }
+      else { legacy = await f.start(); native = await startGlobal(); }
+      const nativeState = [...f.home.sessions.keys()].find((key) => key !== state(legacy))!;
+      f.home.addFile("global-account");
+      if (outcome === "lost-status") f.home.sessions.delete(nativeState);
+      else f.home.sessions.set(nativeState, { provider, status: "ok" });
+      f.restart();
+      const failed = await f.acquire("status", { session: native.session });
+      assert.equal(failed.status, 200);
+      assert.equal((await failed.json() as { state: string }).state, "failed");
+      f.restart();
+      f.home.sessions.set(state(legacy), { provider, status: "ok" });
+      const result = await f.poll(legacy);
+      assert.equal(result.status, 200);
+      assert.equal((await result.json() as SignInStatus).status, "failed");
+      assert.equal(f.home.members.length, 0);
+      assert.ok(f.home.files.has("global-account"));
+    });
+  }
+
+  test(`an ambiguous global ${outcome} retains its guard while credential reconciliation fails`, async () => {
+    const f = await fixture();
+    f.home.flow = "device";
+    const legacy = await f.start();
+    const started = await f.acquire("start");
+    assert.equal(started.status, 200);
+    const native = await started.json() as { session: string };
+    const nativeState = [...f.home.sessions.keys()].find((key) => key !== state(legacy))!;
+    f.home.addFile("global-account");
+    if (outcome === "lost-status") f.home.sessions.delete(nativeState);
+    else f.home.sessions.set(nativeState, { provider, status: "ok" });
+    f.home.override = (path) => path.endsWith("/credentials") ? Response.json({}, { status: 503 }) : undefined;
+    assert.equal((await f.acquire("status", { session: native.session })).status, 503);
+    f.home.override = undefined;
+    f.restart();
+    const failed = await f.acquire("status", { session: native.session });
+    assert.equal(failed.status, 200);
+    assert.equal((await failed.json() as { state: string }).state, "failed");
+    f.home.sessions.set(state(legacy), { provider, status: "ok" });
+    const result = await f.poll(legacy);
+    assert.equal(result.status, 200);
+    assert.equal((await result.json() as SignInStatus).status, "failed");
+    assert.equal(f.home.members.length, 0);
+    assert.ok(f.home.files.has("global-account"));
+  });
+}
+
+for (const outcome of ["lost-status", "missing-ids", "expiry"] as const) {
+  test(`an ambiguous global ${outcome} preserves another provider's completed legacy sign-in`, async () => {
+    const f = await fixture();
+    f.home.flow = "device";
+    const started = await f.acquire("start");
+    assert.equal(started.status, 200);
+    const native = await started.json() as { session: string };
+    const nativeState = [...f.home.sessions.keys()][0]!;
+    if (outcome === "expiry") f.advance(19 * 60_000);
+    const legacy = await f.start("pool-a", otherProvider);
+    f.home.addFile("global-account");
+    f.home.addFile("other-provider-account", otherProvider);
+    if (outcome === "lost-status") f.home.sessions.delete(nativeState);
+    else if (outcome === "missing-ids") f.home.sessions.set(nativeState, { provider, status: "ok" });
+    else f.advance(60_001);
+    f.restart();
+    const failed = await f.acquire("status", { session: native.session });
+    assert.equal(failed.status, 200);
+    assert.equal((await failed.json() as { state: string }).state, "failed");
+    f.home.sessions.set(state(legacy), { provider: otherProvider, status: "ok" });
+    await status(await f.poll(legacy), { status: "connected", accountId: "other-provider-account" });
+    assert.deepEqual(f.home.members.map((member) => member.auth_id), ["other-provider-account"]);
+    assert.ok(f.home.files.has("global-account"));
+  });
+}
+
+test("the alarm retains an unattended global result across eviction without attaching any pool", async () => {
+  const f = await fixture();
+  const startedResponse = await f.acquire("start");
+  assert.equal(startedResponse.status, 200);
+  const started = await startedResponse.json() as { session: string };
+  const nativeState = [...f.home.sessions.keys()][0]!;
+  assert.equal(f.storage.alarm, f.deps.now().getTime() + 30_000);
+  f.home.addFile("unattended-account");
+  f.home.sessions.set(nativeState, { provider, status: "ok", auth_ids: ["unattended-account"] });
+  f.advance(30_000);
+  f.restart();
+  await f.expire();
+  f.home.sessions.clear();
+  f.restart();
+  const before = f.home.calls.length;
+  const response = await f.acquire("status", { session: started.session });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { state: "connected", ref: "unattended-account" });
+  assert.equal(f.home.calls.length, before, "a lost Home result is served from the durable answer");
+  assert.equal(f.home.members.length, 0);
 });

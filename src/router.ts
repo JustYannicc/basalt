@@ -1,4 +1,5 @@
 import { isControlPath } from "../apps/pool/contract.ts";
+import { accountAcquisitionPath } from "./pool/account-acquisition-contract.ts";
 import { isPublicModelPath } from "./pool/lifecycle.ts";
 import { appHosting, brand } from "../brand.ts";
 import { handleSetup, handleSetupPage } from "./setup/host.ts";
@@ -40,7 +41,7 @@ export interface RouterEnv extends RelayEnv, TraceEnv {
 }
 
 function isPoolPath(pathname: string): boolean {
-  return isPublicModelPath(pathname) || isControlPath(pathname);
+  return pathname === accountAcquisitionPath || isPublicModelPath(pathname) || isControlPath(pathname);
 }
 
 function isPoolManagementPath(pathname: string): boolean {

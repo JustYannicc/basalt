@@ -77,6 +77,9 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     }
   };
   walk(source);
+  files.push({ path: "provider-definitions.ts", content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8") });
+  files.push({ path: "provider-capabilities.ts", content: readFileSync(join(root, "src/pool/provider-accounts/capabilities.ts"), "utf8")
+    .replace('"./definitions.ts"', '"./provider-definitions.ts"') });
   if (files.some((file) => file.path.startsWith("ui/"))) {
     files.push(poolFonts());
     placeRouterFonts(root, upstream);
@@ -105,5 +108,10 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     join(dirname(destination), "pool-access-contract.ts"),
   );
   copyFileSync(join(root, "src/pool/native-contract.ts"), join(dirname(destination), "native-contract.ts"));
+  copyFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), join(dirname(destination), "pool-provider-definitions.ts"));
+  writeFileSync(join(dirname(destination), "pool-provider-capabilities.ts"),
+    readFileSync(join(root, "src/pool/provider-accounts/capabilities.ts"), "utf8")
+      .replace('"./definitions.ts"', '"./pool-provider-definitions.ts"'));
+  copyFileSync(join(root, "src/pool/account-acquisition-contract.ts"), join(dirname(destination), "pool-account-acquisition-contract.ts"));
   return files;
 }

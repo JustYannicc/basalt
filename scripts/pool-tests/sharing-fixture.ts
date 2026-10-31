@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ComputerStorage } from "../../src/pool/computers.ts";
 import { FixtureDiagnostics } from "./sharing-diagnostics.ts";
+import { cleanupFixtureDocker } from "./sharing-cleanup.ts";
 
 const fixtureSigningKey = "ab".repeat(32);
 
@@ -70,6 +71,7 @@ export class SharingFixture {
   private resources: string[] = [];
   private network: string | undefined;
   private imageAttempted = false;
+  private cleanupRegistered = false;
   private buildImage: boolean;
   private logRedactions = ["fixture-management-key", "fixture-only", fixtureSigningKey];
   private release = () => {};
@@ -124,6 +126,19 @@ export class SharingFixture {
     this.onStage = options.onStage;
   }
 
+  private exitCleanup = () => {
+    const failures = this.cleanupDocker();
+    if (failures.length) console.error(new AggregateError(failures, "Fixture exit cleanup failed"));
+  };
+  private cleanupDocker(): unknown[] {
+    if (!this.cleanupRegistered) return [];
+    this.cleanupRegistered = false;
+    process.off("exit", this.exitCleanup);
+    return cleanupFixtureDocker({
+      containers: this.resources, network: this.network,
+      image: this.imageAttempted ? this.image : undefined, timeout: this.operationTimeoutMs,
+    });
+  }
   private stage(value: string): void { this.onStage?.(value); }
 
   addLogRedactions(values: readonly string[]): void {
@@ -146,6 +161,10 @@ export class SharingFixture {
     return `http://${mapping}`;
   }
   async start(): Promise<void> {
+    if (!this.cleanupRegistered) {
+      this.cleanupRegistered = true;
+      process.once("exit", this.exitCleanup);
+    }
     console.log(`Resources: ${this.name}-postgres, ${this.name}-pool, ${this.image}`);
     if (this.buildImage) {
       this.stage("docker build started");
@@ -264,27 +283,14 @@ export class SharingFixture {
   async close(): Promise<void> {
     this.release();
     const failures: unknown[] = [];
-    this.upstream.closeAllConnections();
-    const upstreamClosed = new Promise<void>((resolve) => this.upstream.close(() => resolve()));
-    if (!await Promise.race([upstreamClosed.then(() => true), delay(5_000).then(() => false)])) {
-      failures.push(new Error("Synthetic OpenAI fixture listener did not close within 5 seconds"));
-    }
-    for (const name of this.resources.reverse()) {
-      try { docker(["rm", "--force", "--volumes", name], this.operationTimeoutMs); console.log(`Removed container ${name}`); }
-      catch (error) { failures.push(error); }
-    }
-    if (this.network) {
-      try { docker(["network", "rm", this.network], this.operationTimeoutMs); console.log(`Removed network ${this.network}`); }
-      catch (error) { failures.push(error); }
-    }
-    if (this.imageAttempted) {
-      const exists = spawnSync("docker", ["image", "inspect", this.image], {
-        encoding: "utf8", timeout: this.operationTimeoutMs,
-      });
-      if (exists.status === 0) {
-        try { docker(["image", "rm", this.image], this.operationTimeoutMs); console.log(`Removed image ${this.image}`); }
-        catch (error) { failures.push(error); }
-      }
+    try {
+      this.upstream.closeAllConnections();
+      const upstreamClosed = new Promise<void>((resolve) => this.upstream.close(() => resolve()));
+      if (!await Promise.race([upstreamClosed.then(() => true), delay(5_000, undefined, { ref: false }).then(() => false)]))
+        failures.push(new Error("Synthetic OpenAI fixture listener did not close within 5 seconds"));
+    } catch (error) { failures.push(error); }
+    finally {
+      failures.push(...this.cleanupDocker());
     }
     if (failures.length) throw new AggregateError(failures, "Fixture cleanup failed");
   }
