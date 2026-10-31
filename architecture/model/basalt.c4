@@ -121,6 +121,16 @@ model {
       metadata { code "src/setup/client.mjs|src/setup/config.mjs|src/setup/files.mjs"; libraries "smol-toml" }
     }
 
+    clientConnection = module "Client connection" {
+      #basalt #deep
+      description "One headless process forwards inference and cloud tools over authenticated loopback HTTP and private stdio IPC. Local agents have separate service permissions; remote credentials stay in the OS store or explicitly selected owner-only headless files. Streaming, cancellation and backpressure pass through, and interrupted requests are never replayed. Direct-key mode does not register a native device."
+      metadata {
+        code "clients/cli|clients/connection|clients/contracts"
+        libraries "@modelcontextprotocol/sdk|@napi-rs/keyring|effect|proper-lockfile|node:http|node:https|node:net"
+        endpointHosts "127.0.0.1|localhost"
+      }
+    }
+
     poolRuntime = module "Pool runtime" {
       #basalt #v1 #deep
       description """
@@ -305,6 +315,10 @@ model {
   basalt.setupInstaller -[sync]-> basalt.router "claim one-time credentials from /setup/claim/*"
   basalt.router -[sync]-> basalt.setupInstaller "installer asset or one-time credential response"
   localClient -[sync]-> basalt.setupInstaller "run installer or undo"
+  localClient -[sync]-> basalt.clientConnection "local model requests and cloud tool calls"
+  basalt.clientConnection -[sync]-> basalt.router "authenticated direct model and tools requests"
+  basalt.router -[sync]-> basalt.clientConnection "stream reply or MCP messages"
+  basalt.clientConnection -[sync]-> localClient "stream reply or MCP messages"
   basalt.setupInstaller -[sync]-> localClient "write backed-up marked client config; restart instructions"
 
   poolOwner -[sync]-> appHosting "open private app screen in dashboard App tab"

@@ -1,0 +1,27 @@
+{
+  "name": "@signalbox/client",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "signalbox-client": "cli/main.mjs"
+  },
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test e2e/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@napi-rs/keyring": "2.1.0",
+    "effect": "4.0.1",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "@types/proper-lockfile": "4.1.4",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24.18.0"
+  }
+}

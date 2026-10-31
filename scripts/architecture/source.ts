@@ -162,6 +162,10 @@ export function sourceDependencies(root: string, modules: Module[], services: Ou
     const observedHosts = new Set<string>();
     const addHost = (node: ts.Node, host: string) => {
       if (usesBoundTransport(node, module, source)) return;
+      if (module.endpointHosts?.includes(host)) {
+        observedHosts.add(host);
+        return;
+      }
       const service = services.find(candidate => matchesHost(host, candidate.hosts));
       if (service) {
         add(module.id, service.id, `${file}: ${host}`);
