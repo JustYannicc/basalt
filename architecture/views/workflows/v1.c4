@@ -135,7 +135,10 @@ views {
     title "Workflows/Basalt/Sign in and empty pool"
     description """
       Status: Implemented in source, live acceptance pending. The dependency signs people in and installs
-      one private pool app per verified person per organization. Later member jobs reconcile each pool and
+      one private pool app per verified person per organization. Initial publication, private access,
+      the host-managed account link and pool metadata commit in one PostgreSQL transaction after
+      compilation. A failed link or metadata write rolls back publication, keeping the pool uncallable.
+      Later member jobs reconcile each pool and
       log one line naming its decision (upgraded, already current, source edited, version mismatch,
       superseded, not owner, or rotation current when a token-only job finds nothing to rotate) with the app id and repair counts only. A new pool app bundle, or a bumped reconcile
       revision when the reconcile logic changes, queues one such job per verified owner. Upgrades
@@ -144,7 +147,8 @@ views {
       planned while app hosting is disabled.
       The pool's token method is host-provisioned, so marking it `provisioned: true` changes provider
       identity; the member job relinks it through the trusted host path after the new bundle deploys.
-      If that job fails between deploy commit and link repair commit, its retry adopts the active bundle
+      Upgrade jobs and pools left by earlier deploy-first releases retain the repair path. If an
+      upgrade fails between deploy commit and link repair commit, its retry adopts the active bundle
       only when its source matches the current pool files, then repairs the link and records the deployed
       version and bundle; pools left on edited source or a version mismatch keep their old link.
     """
@@ -160,7 +164,7 @@ views {
     localClient -> basalt.router "sign-in request"
     basalt.router -> basalt.toolsGateway "TOOLS_SERVICE"
     basalt.toolsGateway -> basalt.publicIdentity "authenticate"
-    basalt.toolsGateway -> basalt.pool "create empty pool"
+    basalt.toolsGateway -> basalt.pool "publish pool, managed account link and metadata atomically"
     basalt.toolsGateway <- basalt.pool "empty pool"
     basalt.router <- basalt.toolsGateway "signed-in session"
     localClient <- basalt.router "shows empty pool"

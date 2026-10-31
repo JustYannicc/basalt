@@ -733,11 +733,27 @@ test("ordinary member jobs retry pool failures after the default setup has run",
       assert.equal(failed._tag, "Failure");
       assert.equal(defaultsRan, 1);
       assert.equal((yield* sql`select status from hosted_provisioning`)[0]!.status, "queued");
-      assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      assert.equal((yield* sql`select attempts from hosted_provisioning`)[0]!.attempts, 1);
+      assert.equal((yield* sql`select * from executor_apps`).length, 0);
       assert.equal((yield* sql`select * from executor_accounts`).length, 0);
+      assert.equal((yield* sql`select * from hosted_app_access`).length, 0);
+      assert.equal((yield* sql`select * from hosted_app_account_links`).length, 0);
+      const [failedPool] =
+        yield* sql`select metadata::jsonb -> 'basaltPools' -> 'person-a' as pool from organization`;
+      assert.equal(failedPool!.pool, null);
       yield* run(key);
+      assert.equal(defaultsRan, 2);
       assert.equal((yield* sql`select status from hosted_provisioning`)[0]!.status, "succeeded");
+      assert.equal((yield* sql`select attempts from hosted_provisioning`)[0]!.attempts, 2);
       assert.equal((yield* sql`select * from executor_apps`).length, 1);
+      assert.equal((yield* sql`select * from executor_accounts`).length, 1);
+      assert.equal((yield* sql`select * from hosted_app_access`).length, 1);
+      assert.equal((yield* sql`select * from hosted_app_account_links`).length, 1);
+      const [linkedPool] = yield* sql`select link.app from hosted_app_account_links link
+        join organization team on team.id = ${organization}
+        where link.app = team.metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'app'
+          and link.account = team.metadata::jsonb -> 'basaltPools' -> 'person-a' ->> 'account'`;
+      assert.ok(linkedPool);
     }),
   );
 });
