@@ -9,6 +9,7 @@ import { PoolDirectory } from "./directory.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openNativeKey, sealNativeKey } from "./native-key.ts";
 import { NativeStreams } from "./native-streams.ts";
+import { nativePoolDisplay } from "./native-display.ts";
 import { computerName, readIntent, setupTtl } from "./setup-links.ts";
 import { openEnvelope } from "./token.ts";
 import {
@@ -109,8 +110,10 @@ export class NativeComputers {
       const caller = identity(value);
       return await this.deps.run(async (registry) => {
         if (value.action === "check") {
-          await this.active(registry, caller);
-          return json({ active: true });
+          const computer = await this.active(registry, caller);
+          if (value.display !== true) return json({ active: true });
+          const display = await nativePoolDisplay(this.deps.storage, computer, this.deps.now());
+          return json({ active: true, display });
         }
         if (value.action !== "revoke")
           return fail(404, "not_found", "This native endpoint does not exist.");
