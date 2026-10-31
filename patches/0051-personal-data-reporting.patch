@@ -906,7 +906,7 @@ diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upg
        after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
      });
 -    expect(version).toEqual([{ value: "4.0.15" }]);
-+    expect(version).toEqual([{ value: "4.0.17" }]);
++    expect(version).toEqual([{ value: "4.0.19" }]);
      expect(step).toEqual([{ name: "app_account_links" }]);
      // The member's user link as it was, and the app link without a subject.
      expect(linksAfter).toEqual([
@@ -918,7 +918,7 @@ diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profi
          ]);
          expect(ledger).toEqual([{ name: "app_account_links" }]);
 -        expect(version).toEqual([{ value: "4.0.15" }]);
-+        expect(version).toEqual([{ value: "4.0.17" }]);
++        expect(version).toEqual([{ value: "4.0.19" }]);
          expect(plans).toEqual(
            [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
          );
@@ -930,7 +930,7 @@ diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-
  ) => {
    expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
 -  expect(version).toEqual([{ value: "4.0.15" }]);
-+  expect(version).toEqual([{ value: "4.0.17" }]);
++  expect(version).toEqual([{ value: "4.0.19" }]);
    // Only the connection with a target is left, and only the sign-in no connection pointed at.
    expect(connections).toEqual([{ id: template, target: "object" }]);
    expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
@@ -942,7 +942,7 @@ diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-c
          ]);
          yield* serverControl("start");
 -        expect(version).toEqual([{ value: "4.0.15" }]);
-+        expect(version).toEqual([{ value: "4.0.17" }]);
++        expect(version).toEqual([{ value: "4.0.19" }]);
          expect(credentials).toEqual([
            { client: ids.a },
            { client: ids.a },
@@ -1877,7 +1877,7 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
 -export const database = (storage: ExecutorDatabase) => storage.orm("4.0.16");
-+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
++export const database = (storage: ExecutorDatabase) => storage.orm("4.0.19");
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
   * FumaDB span covers the same interval, so this boundary adds no span of its own.
@@ -3322,7 +3322,7 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
    version4014Tables,
    version4015Tables,
    version4016Tables,
-+  version4017Tables,
++  version4019Tables,
    appScheduleIndex,
    scopedRunKeyIndex,
    version402Tables,
@@ -3348,8 +3348,8 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
    }),
 +  // Additive: closed-account notices survive account removal, with the subject ID cleared.
 +  schema({
-+    version: "4.0.17",
-+    tables: version4017Tables,
++    version: "4.0.19",
++    tables: version4019Tables,
 +    relations: {
 +      accounts: ({ one }) => ({
 +        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
@@ -3402,8 +3402,8 @@ diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/sr
 +  leaseUntil: column("lease_until", Schema.NullOr(Schema.Date)),
 +});
 +
-+/** Tables of the 4.0.17 layout, adding reporting state without changing the account row. */
-+export const version4017Tables = {
++/** Tables of the 4.0.19 layout, adding reporting state without changing the account row. */
++export const version4019Tables = {
 +  ...version4016Tables,
 +  accountReports,
 +};
@@ -3427,16 +3427,25 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
 -    const db = bindOrm(client.orm("4.0.16"), sql, reactivity);
-+    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
++    const db = bindOrm(client.orm("4.0.19"), sql, reactivity);
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
+@@ -46,7 +46,7 @@
+             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
+               discard: true,
+             });
+-          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.16")));
++          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.19")));
+           return;
+         }
+         // Execute every registered upgrade in order. A direct diff to latest can skip
 @@ -76,7 +76,7 @@
        Effect.mapError(() => new StorageError()),
      );
      return {
 -      orm: (_version: "4.0.16") => db,
-+      orm: (_version: "4.0.17") => db,
++      orm: (_version: "4.0.19") => db,
        reactivity,
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
@@ -3463,7 +3472,7 @@ diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
          const storage = yield* makeExecutorStorage({ provider: "postgresql" });
          yield* storage.migrate;
 -        const orm = storage.orm("4.0.16");
-+        const orm = storage.orm("4.0.17");
++        const orm = storage.orm("4.0.19");
          const createdAt = new Date("2026-01-01T00:00:00.000Z");
          const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
            id: "dpl_example",
@@ -3509,7 +3518,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
 +            sql: "UPDATE executor_accounts SET site = $1 WHERE id = $2",
 +            params: [site, fixture.account],
 +          },
-+          { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
++          { sql: "UPDATE private_executor_settings SET value = '4.0.18' WHERE key = 'version'" },
 +        ]);
 +        yield* serverControl("start");
 +        expect((yield* fixture.read()).body).toMatchObject({ account: { site } });
@@ -3522,7 +3531,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
            },
          ]);
 -        expect(version).toEqual([{ value: "4.0.16" }]);
-+        expect(version).toEqual([{ value: "4.0.17" }]);
++        expect(version).toEqual([{ value: "4.0.19" }]);
          expect(columns).toEqual([]);
          expect(records).toEqual([
            {
@@ -3534,7 +3543,7 @@ diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage
          yield* Effect.addFinalizer(() =>
            legacyStorage([
 -            { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
-+            { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
++            { sql: "UPDATE private_executor_settings SET value = '4.0.19' WHERE key = 'version'" },
            ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
          );
          yield* serverControl("start", 500);
