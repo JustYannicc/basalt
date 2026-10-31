@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "description": "Connect your local agents to Signalbox models and tools.",
+  "homepage": "https://github.com/JustYannicc/basalt",
   "license": "Apache-2.0",
   "type": "module",
   "main": ".dist/main.cjs",
   "scripts": {
     "build": "node build.mjs",
-    "typecheck": "../node_modules/.bin/tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "electron .",
     "package:mac": "electron-builder --mac dmg zip --publish never",
     "package:win": "electron-builder --win nsis zip --publish never",
@@ -50,6 +51,7 @@
       "signAndEditExecutable": false
     },
     "linux": {
+      "executableName": "signalbox-client",
       "category": "Utility",
       "maintainer": "Signalbox"
     },
