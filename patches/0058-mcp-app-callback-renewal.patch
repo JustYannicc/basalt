@@ -49,9 +49,9 @@ diff --git a/e2e/support/mcp-app-renewal.ts b/e2e/support/mcp-app-renewal.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/mcp-app-renewal.ts
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,90 @@
 +import { expect } from "@effect/vitest";
-+import { Effect } from "effect";
++import { Effect, Schema } from "effect";
 +import type { Browser } from "./browser.ts";
 +
 +const guest = (page: import("playwright").Page) =>
@@ -92,9 +92,27 @@ new file mode 100644
 +    yield* browser.use("Advance the client wall clock past callback expiry", (page) =>
 +      page.clock.setFixedTime(Date.now() + elapsed),
 +    );
-+    yield* browser.use("Renew authority before a callback", (page) =>
-+      guest(page).getByRole("button", { name: "Save", exact: true }).click(),
-+    );
++    const saved = yield* browser
++      .use("Renew authority before a callback", (page) =>
++        Promise.all([
++          page
++            .waitForResponse(
++              (response) =>
++                response.url().endsWith("/call") &&
++                response.request().postDataJSON()?.name === "app-callback",
++            )
++            .then((response) => response.json()),
++          guest(page).getByRole("button", { name: "Save", exact: true }).click(),
++        ]).then(([result]) => result),
++      )
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.Struct({ isError: Schema.optionalKey(Schema.Boolean) }),
++          ),
++        ),
++      );
++    expect(saved.isError, "The expired save must use renewed authority").not.toBe(true);
 +    yield* browser.use("Read the approved callback after renewal", (page) =>
 +      guest(page)
 +        .getByRole("status")
