@@ -541,7 +541,7 @@
     {
       "identity": "basalt-personal-data-reporting",
       "file": "0054-personal-data-reporting.patch",
-      "content_sha256": "c749ef546b3f175e776118c67e382989460cdbaedf8a93c991fd29a7195d893d",
+      "content_sha256": "4c621c8336b02658286f06d97794b155b19bb6e3144b443b0b3b8e46fa8d9acb",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
