@@ -11,6 +11,19 @@ index 1ce0c1a..89d8563 100644
          registry: {
            storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
              Effect.provideContext(services),
+diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+index 3dd7e90..1bc9f0c 100644
+--- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
++++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+@@ -30,7 +30,7 @@ export type WorkerName =
+  * authoring reference to `authoring` and MCP sessions to `mcp-server`.
+  */
+ const uploadBudgets: Record<WorkerName, number> = {
+-  api: 5_450_000,
++  api: 5_460_000,
+   // App runners and data supervisors: a cold tool call starts both isolates.
+   "app-data": 700_000,
+   "app-pages": 2_500_000,
 diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
 index 24b26f3..f4ece11 100644
 --- a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
@@ -458,10 +471,10 @@ index ebdf942..8facdd7 100644
  ];
 diff --git a/e2e/support/workflow-input-app.ts b/e2e/support/workflow-input-app.ts
 new file mode 100644
-index 0000000..f7ca953
+index 0000000..05e9383
 --- /dev/null
 +++ b/e2e/support/workflow-input-app.ts
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,70 @@
 +/** An ordinary authored app asks, records one continuation and keeps consent separate. */
 +import { appsManifest } from "./apps-release.ts";
 +export const workflowInputFiles = [
@@ -499,7 +512,16 @@ index 0000000..f7ca953
 +    workflowInputQuestions.number("What amount?"),
 +    workflowInputQuestions.date("Which date?"),
 +    workflowInputQuestions.reconnectAccount("Reconnect, then ask to verify", { label: "Accounts", href: "/accounts" }),
-+    { ...workflowInputQuestions.text("Custom question with a form fallback"), display: { kind: "mcp-app", view: { source: "custom", selection: { kind: "tool", name: "question" }, input: {}, resourceUri: "ui://questions/custom" } } },
++    { form: { mode: "form", message: "Custom question with a form fallback", requestedSchema: {
++      type: "object", properties: {
++        value: { type: "string", minLength: 2, maxLength: 80 },
++        count: { type: "integer", minimum: 0 },
++        amount: { type: "number", minimum: 1, maximum: 10 },
++        enabled: { type: "boolean" },
++        single: { type: "string", oneOf: [{ const: "one", title: "First" }, { const: "two", title: "Second" }] },
++        multi: { type: "array", minItems: 1, maxItems: 2, items: { anyOf: [{ const: "one", title: "First" }, { const: "two", title: "Second" }] } },
++      }, required: ["value", "count", "amount", "enabled", "single", "multi"],
++    } }, display: { kind: "mcp-app", view: { source: "custom", selection: { kind: "tool", name: "question" }, input: {}, resourceUri: "ui://questions/custom" } } },
 +  ];
 +  const replies = [];
 +  for (let index = 0; index < questions.length; index++) {
@@ -708,7 +730,7 @@ index 452c680..25380af 100644
      fixtures: "actors",
      file: "workflows.spec.ts",
 diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
-index a431415..64b5305 100644
+index a431415..3af1bca 100644
 --- a/e2e/tests/account-observation-migration.spec.ts
 +++ b/e2e/tests/account-observation-migration.spec.ts
 @@ -3,6 +3,7 @@ import { Effect } from "effect";
@@ -732,16 +754,21 @@ index a431415..64b5305 100644
            { sql: "UPDATE private_executor_settings SET value = '4.0.19' WHERE key = 'version'" },
          ]);
          yield* serverControl("start");
-@@ -29,8 +30,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+@@ -29,12 +30,11 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
          });
          // Reconstruct the supported 4.0.17 layout; existing account, health and app rows remain intact.
          yield* legacyStorage([
 -          { sql: "DROP TABLE executor_account_driver_checks" },
 -          { sql: "DROP TABLE executor_account_acquisitions" },
++          { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
 +          ...beforeAccountAcquisition(),
            { sql: "DROP TABLE hosted_account_observation_access" },
            { sql: "DROP TABLE executor_account_observations" },
            { sql: "DROP TABLE executor_account_reports" },
+-          { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
+           { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
+         ]);
+         yield* serverControl("start");
 @@ -51,7 +51,8 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
              sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_acquisitions', 'executor_account_driver_checks', 'executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
            },
@@ -753,22 +780,30 @@ index a431415..64b5305 100644
          expect(tables).toEqual([
            { table_name: "executor_account_acquisitions" },
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
-index 34d5f61..0e64c79 100644
+index 34d5f61..d481087 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
+@@ -1,6 +1,6 @@
+ /** Reporting upgrades preserve selected sites, credentials and checked account status. */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Array, Effect } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
 @@ -17,6 +17,37 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
        Effect.gen(function* () {
          const fixture = yield* statusAccount(accountStatusSource);
          expect((yield* fixture.check()).status).toBe(200);
 +        // The prior 4.0.21 layout retains every account table when questions are added.
-+        const retainedTables = [
++        const retainedTables = Array.make(
 +          "executor_accounts",
 +          "executor_account_observations",
 +          "executor_account_reports",
 +          "executor_account_acquisitions",
 +          "executor_account_driver_checks",
-+        ];
-+        const retainedQueries = retainedTables.map((table) => ({
++        );
++        const retainedQueries = Array.map(retainedTables, (table) => ({
 +          sql: `SELECT row_to_json(saved) AS row FROM ${table} AS saved ORDER BY row_to_json(saved)::text`,
 +        }));
 +        const beforeInput = yield* legacyStorage([
@@ -988,10 +1023,10 @@ index 0000000..193a3b1
 +});
 diff --git a/e2e/tests/workflow-input-defaults.spec.ts b/e2e/tests/workflow-input-defaults.spec.ts
 new file mode 100644
-index 0000000..084c35c
+index 0000000..a971a48
 --- /dev/null
 +++ b/e2e/tests/workflow-input-defaults.spec.ts
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,124 @@
 +/** Common forms retain their display choice and validate answers through the real workflow. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect } from "effect";
@@ -1023,7 +1058,14 @@ index 0000000..084c35c
 +            kind: "mcp-app",
 +            response: {
 +              action: "accept",
-+              content: { value: "Custom display still uses the form contract." },
++              content: {
++                value: "😀a",
++                count: 1e20,
++                amount: 5,
++                enabled: true,
++                single: "two",
++                multi: ["one", "two"],
++              },
 +            },
 +          },
 +        ];
@@ -1058,6 +1100,33 @@ index 0000000..084c35c
 +                { response: { action: "accept", content: { value: wrong } } },
 +              )).status,
 +            ).toBe(400);
++          }
++          if (item.kind === "mcp-app") {
++            const content = item.response.content;
++            for (const invalid of [
++              { ...content, value: "😀" },
++              { ...content, value: "x".repeat(81) },
++              { ...content, count: 1.5 },
++              { ...content, amount: 11 },
++              { ...content, enabled: "yes" },
++              { ...content, single: "other" },
++              { ...content, multi: [] },
++              { ...content, multi: ["other"] },
++              { ...content, multi: ["one", "two", "one"] },
++              { value: "Required fields are missing" },
++            ]) {
++              expect(
++                (yield* f.api.request(
++                  f.actors.owner,
++                  "POST",
++                  `${f.path}/workflow-inputs/${question.id}`,
++                  {
++                    response: { action: "accept", content: invalid },
++                  },
++                )).status,
++              ).toBe(400);
++              expect((yield* f.pending(run.id)).id).toBe(question.id);
++            }
 +          }
 +          expect(
 +            (yield* f.api.request(
@@ -3418,23 +3487,64 @@ index 671942e..5723b13 100644
 +
 +export { prepareElicitation } from "./implementation/elicitation.ts";
 diff --git a/packages/apps/src/implementation/elicitation.ts b/packages/apps/src/implementation/elicitation.ts
-index b04af3e..1a61745 100644
+index b04af3e..37f67dc 100644
 --- a/packages/apps/src/implementation/elicitation.ts
 +++ b/packages/apps/src/implementation/elicitation.ts
-@@ -12,6 +12,12 @@ import { toPromise } from "./authoring.ts";
+@@ -1,5 +1,5 @@
+ /** Validate both sides of a tool's form and bind delivery to its invocation lifetime. */
+-import { Effect, Schema, type Context } from "effect";
++import { Effect, JsonSchema, Schema, SchemaRepresentation, type Context } from "effect";
+ import {
+   ElicitationFailed,
+   ElicitationResponse,
+@@ -10,7 +10,12 @@ import {
+ import { owned } from "@executor-js/telemetry";
+ import { toPromise } from "./authoring.ts";
  import { elicitationWaitSpan } from "./invocation-timing.ts";
- import { jsonSchemaDecoder } from "./schema.ts";
- 
+-import { jsonSchemaDecoder } from "./schema.ts";
++
 +const calendarDate = (value: unknown) => {
 +  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
 +  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
 +  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
 +};
-+
+ 
  /** Parse a form and retain its response parser, so invalid answers can be rejected before consuming a host continuation. */
  export const prepareElicitation = (input: unknown) =>
-   Effect.gen(function* () {
-@@ -34,6 +40,17 @@ export const prepareElicitation = (input: unknown) =>
+@@ -18,9 +23,29 @@ export const prepareElicitation = (input: unknown) =>
+     const request = yield* Schema.decodeUnknownEffect(FormElicitation)(input, {
+       onExcessProperty: "error",
+     }).pipe(Effect.mapError(() => new ElicitationFailed({ reason: "invalid-request" })));
+-    const content = yield* jsonSchemaDecoder(request.requestedSchema).pipe(
+-      Effect.mapError(() => new ElicitationFailed({ reason: "invalid-request" })),
+-    );
++    // MCP forms contain primitive fields. Use the same native schema importer as SDK secrets,
++    // keeping the general app-schema interpreter and its diagnostics out of the API Worker.
++    const content = yield* Effect.try({
++      try: () =>
++        Schema.toType(
++          SchemaRepresentation.fromJsonSchemaDocument(
++            JsonSchema.fromSchemaDraft2020_12(request.requestedSchema),
++            {
++              onEnter: (schema) => {
++                const field = { ...schema };
++                delete field.format;
++                // JSON Schema integers include whole numbers beyond JavaScript's safe range.
++                if (field.type === "integer") {
++                  field.type = "number";
++                  field.multipleOf = 1;
++                }
++                return field;
++              },
++            },
++          ),
++        ),
++      catch: () => new ElicitationFailed({ reason: "invalid-request" }),
++    });
+     const respond = (input: unknown) =>
+       Effect.gen(function* () {
+         const response = yield* Schema.decodeUnknownEffect(ElicitationResponse)(input).pipe(
+@@ -34,6 +59,17 @@ export const prepareElicitation = (input: unknown) =>
            yield* Schema.decodeUnknownEffect(content)(fields).pipe(
              Effect.mapError(() => new ElicitationFailed({ reason: "invalid-response" })),
            );
@@ -3452,6 +3562,28 @@ index b04af3e..1a61745 100644
            return { ...response, content: fields };
          }
          return response;
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index 4b29179..77ffb06 100644
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -303,7 +303,7 @@ function canonical(value: JsonValue): string {
+  * account to its slot.
+  */
+ function withoutGrants({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
+-  return {
++  return Schema.decodeUnknownSync(JsonValue)({
+     ...provider,
+     auth: Object.fromEntries(
+       Object.entries(provider.auth).map(([name, { request: _request, ...method }]) => [
+@@ -311,7 +311,7 @@ function withoutGrants({ hosts: _hosts, ...provider }: DeclaredProvider): JsonVa
+         method,
+       ]),
+     ),
+-  };
++  });
+ }
+ 
+ type BoundSlots = BoundAccounts<AccountSlots>;
 diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/apps/src/implementation/workflow-context.ts
 index 1ce284e..15a9b71 100644
 --- a/packages/apps/src/implementation/workflow-context.ts
