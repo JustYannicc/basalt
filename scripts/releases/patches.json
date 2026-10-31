@@ -155,7 +155,7 @@
     {
       "identity": "executor-atlassian",
       "file": "0017-atlassian.patch",
-      "content_sha256": "bcf97ed277ca32ab961b77ce974bb439221200a6e11107469f350edd1bbeb72f",
+      "content_sha256": "6b02e1b9bdb05f19193420c2952685a4b53de13196d6a2accbce63aa99bc5396",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -249,9 +249,9 @@
     {
       "identity": "executor-assistant-guide-extensions",
       "file": "0027-assistant-guide-extensions.patch",
-      "content_sha256": "2064f3ca76dd75ef900981c23b5cc3cf363c2b4b8dd9636cb9f1bddb2383c9a8",
-      "kind": "overlay",
-      "upstream_pull_request": null,
+      "content_sha256": "a63bbc923cc77444b0cf102688314492c1b39efeb3a6d0d91945a07f21348a4c",
+      "kind": "upstream",
+      "upstream_pull_request": 2470,
       "database_sensitive": false,
       "workflow_sensitive": false
     },

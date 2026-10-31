@@ -101,6 +101,7 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
   const tokens = new Map();
   const requests = [];
   const failures = [];
+  const reportingRequests = [];
   let nextCode = 0;
   let nextToken = 0;
 
@@ -234,6 +235,40 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         return json(response, 401, { error: "unauthorized" });
       }
 
+      if (url.pathname === "/me" && request.method === "GET") {
+        log.person = person.key;
+        log.status = 200;
+        return json(response, 200, {
+          account_id: `synthetic:${person.key}`,
+          name: person.siteName,
+          email: person.email,
+        });
+      }
+      if (url.pathname === "/app/report-accounts/" && request.method === "POST") {
+        const report = JSON.parse(await body(request));
+        if (
+          !Array.isArray(report.accounts) ||
+          report.accounts.length < 1 ||
+          report.accounts.length > 90
+        )
+          throw new Error("Invalid reporting batch");
+        for (const account of report.accounts) {
+          if (
+            !atlassianPeople.some(
+              (candidate) => account.accountId === `synthetic:${candidate.key}`,
+            ) ||
+            !Number.isFinite(Date.parse(account.updatedAt))
+          )
+            throw new Error("Invalid reported identity or retrieval timestamp");
+        }
+        reportingRequests.push(report.accounts);
+        log.person = person.key;
+        log.status = 204;
+        response.writeHead(204, { "cycle-period": "7" });
+        response.end();
+        return;
+      }
+
       if (await api.handle({ request, url, response, person, log, body, json })) return;
 
       const confluence =
@@ -327,6 +362,7 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
     requests,
     writes: api.writes,
     failures,
+    reportingRequests,
     apiRequests: () => requests.filter((request) => request.path.startsWith("/ex/")),
     tamperJiraSpecification() {
       const original = specs.jira;
@@ -358,7 +394,7 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
       await new Promise((resolve) => server.close(resolve));
       await writeFile(
         join(directory, "provider.json"),
-        JSON.stringify({ requests, failures, writes: api.writes }),
+        JSON.stringify({ requests, failures, writes: api.writes, reportingRequests }),
         { mode: 0o600 },
       );
     },

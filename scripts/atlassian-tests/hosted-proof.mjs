@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Effect } from "effect";
+import { Effect, Redacted, Schedule } from "effect";
 import { atlassianPeople } from "./provider.mjs";
 import { proveSpecificationDrift } from "./drift-proof.mjs";
 import { discover, proveAtlassianWrites } from "./write-proof.mjs";
@@ -197,6 +197,36 @@ export const proveHostedAtlassian = ({
       "Save two distinct Atlassian accounts",
     );
     check(actors.organization.id.length > 0, "Both people share one organization");
+
+    check(
+      target.controlOrigin?.startsWith("http://127.0.0.1:"),
+      "Restart only the runner-owned product",
+    );
+    const restarted = yield* Effect.promise(() =>
+      fetch(`${target.controlOrigin}/restart`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${Redacted.value(target.apiKey)}` },
+      }),
+    );
+    check(restarted.status === 200, "Restart the real host to run scheduled reporting");
+    yield* Effect.suspend(() =>
+      provider.reportingRequests.length === 0
+        ? Effect.fail(new Error("The hosted client has not reported its saved subjects yet"))
+        : Effect.void,
+    ).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }));
+    check(
+      provider.reportingRequests.length === 1,
+      "Report the two saved subjects once in their registration",
+    );
+    assert.deepEqual(
+      provider.reportingRequests[0].map((account) => account.accountId).toSorted(),
+      atlassianPeople.map((person) => `synthetic:${person.key}`).toSorted(),
+    );
+    check(
+      provider.requests.filter((request) => request.path === "/me" && request.status === 200)
+        .length === 2,
+      "Read each subject through the reviewed account_id identity endpoint",
+    );
 
     const require = createRequire(join(upstream, "package.json"));
     const sdk = yield* Effect.promise(async () => {
@@ -482,6 +512,7 @@ export const proveHostedAtlassian = ({
       peerAccountSelectionDenied: true,
       disconnectNextRequestFails: true,
       connectedActorReadAfterPeerDisconnect: true,
+      hostedClientPersonalDataReporting: true,
       nativeClients,
       writes,
       specificationDrift,

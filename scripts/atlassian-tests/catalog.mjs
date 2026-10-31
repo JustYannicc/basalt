@@ -189,10 +189,20 @@ export async function atlassianOAuthFixtureDefinition(upstream, providerOrigin, 
     audience: "api.atlassian.com",
     prompt: "consent",
   });
+  assert.deepEqual(reviewed.personalDataReporting, {
+    identityUrl: "https://api.atlassian.com/me",
+    reportUrl: "https://api.atlassian.com/app/report-accounts/",
+    accountIdField: "account_id",
+  });
   const definition = structuredClone(reviewed);
   definition.id = "atlassian-local-proof";
   definition.server.authorizationUrl = `${providerOrigin}/authorize`;
   definition.server.tokenUrl = `${providerOrigin}/oauth/token`;
+  definition.personalDataReporting = {
+    ...definition.personalDataReporting,
+    identityUrl: `${providerOrigin}/me`,
+    reportUrl: `${providerOrigin}/app/report-accounts/`,
+  };
   definition.placement = { ...definition.placement, hosts: [new URL(providerOrigin).host] };
   return { definition, scopes };
 }

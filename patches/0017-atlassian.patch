@@ -85,7 +85,7 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
  /** OAuth App scopes declared by the official GitHub REST app. */
  const githubRestScopes = [
    "repo",
-@@ -186,6 +263,20 @@
+@@ -186,6 +263,25 @@
      defaultScopes: ["openid", "email", "profile"],
      allowedScopes: googleAllowedScopes,
      placement: { hosts: ["*.googleapis.com"] },
@@ -103,10 +103,15 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 +    defaultScopes: atlassianScopes,
 +    allowedScopes: atlassianScopes,
 +    placement: { hosts: ["api.atlassian.com"] },
++    personalDataReporting: {
++      identityUrl: "https://api.atlassian.com/me",
++      reportUrl: "https://api.atlassian.com/app/report-accounts/",
++      accountIdField: "account_id",
++    },
    },
    {
      id: "slack",
-@@ -312,7 +403,9 @@
+@@ -312,7 +408,9 @@
              ? "GitHub"
              : definition.id === "slack"
                ? "Slack"
