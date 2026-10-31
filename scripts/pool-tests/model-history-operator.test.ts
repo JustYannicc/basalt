@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,6 +14,8 @@ if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname
   throw new Error("POOL_TEST_ADMIN_URL must point to isolated local test Postgres");
 
 test("the private schema operator defaults to catalog/count reads and binds writes to the reviewed schema and catalog", async () => {
+  // CI runs this before the application build, so the fixture owns its deployment bundle.
+  execFileSync("bun", ["scripts/pool-worker-build.ts"], { stdio: "inherit" });
   const schema = `operator_${randomUUID().replaceAll("-", "")}`;
   const db = new pg.Client({ connectionString: adminUrl });
   await db.connect();

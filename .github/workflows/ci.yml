@@ -287,6 +287,7 @@ jobs:
           docker build --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy containers/pool
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
+      - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
@@ -299,7 +300,6 @@ jobs:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
       - run: npm run build
       - run: npm run check:build
-      - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
       - name: Check every Worker's startup CPU and size against Cloudflare's limits
         run: npm run check:startup
       - run: npm run typecheck
