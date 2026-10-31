@@ -1,3 +1,4 @@
+import { PoolAccountRemovals } from "./account-removals.ts";
 import { controlBasePath as base, type SignInFlow, type SignInStatus } from "../../apps/pool/contract.ts";
 import { type ControlAttribution, type HomeDependencies, HomeClient, authorizeControl, handleControl, type Membership, PoolHome, type Session, signInTtlMs } from "./control.ts";
 import { BackendFailure, fail, failureResponse, rows, text, unavailable } from "./json.ts";
@@ -54,6 +55,7 @@ interface LockSignal { released: Promise<void>; resolve: () => void }
 export class PoolControl implements ControlAttribution {
   readonly collection: QuotaCollection;
   private actions: AccountActions;
+  private removals: PoolAccountRemovals;
   private storage: ControlStorage;
   private deps: HomeDependencies;
   private client: HomeClient;
@@ -70,6 +72,7 @@ export class PoolControl implements ControlAttribution {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(storage: ControlStorage, deps: HomeDependencies) {
     this.storage = storage;
+    this.removals = new PoolAccountRemovals(storage);
     this.deps = deps;
     this.client = new HomeClient(deps.home, () => this.now());
     this.collection = new QuotaCollection(storage, this.client, { now: () => this.now() });
@@ -176,6 +179,7 @@ export class PoolControl implements ControlAttribution {
       const { routeKey, isRead, isAccountAction } = await authorizeControl(request, this.deps.signingKey, this.deps.previousSigningKey);
       if (isRead || isAccountAction) return handleControl(request, {
         ...this.deps, client: this.client, collection: this.collection, actions: this.actions, attribution: null,
+        removals: (pool) => this.removals.read(pool),
       });
       const callback = routeKey === "POST /sign-ins/callback";
       for (;;) {
@@ -402,7 +406,8 @@ export class PoolControl implements ControlAttribution {
     this.changed();
     await this.save(); // Recover membership writes whose outcome is unknown after eviction.
   }
-  async removed(id: string): Promise<void> {
+  async removed(id: string, intent?: { pool: string; actor: string; at: Date }): Promise<void> {
+    if (intent) await this.removals.record(intent.pool, id, intent.actor, intent.at);
     for (const [key, pending] of Object.entries(this.state.uploads ?? {})) {
       if (pending.id === id) { delete this.state.uploads![key]; this.changed(); }
     }

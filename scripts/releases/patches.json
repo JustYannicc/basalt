@@ -582,6 +582,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-durable-workflow-input",
+      "file": "0063-durable-workflow-input.patch",
+      "content_sha256": "049f35345cbcef9c8943ba9da60fd25d153e333e77e74f13a4c1c6b004acb9dc",
+      "kind": "upstream",
+      "upstream_pull_request": 2471,
+      "database_sensitive": true,
+      "workflow_sensitive": true
     }
   ],
   "pool_carries": {

@@ -4,6 +4,7 @@ import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
+import { recipeAdditions } from "./recipes/index.ts";
 import { aws } from "./aws/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
@@ -20,10 +21,10 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
   status: 502, headers: { ...headers, "Cache-Control": "no-store" },
 });
 
-function configuredAdditions(metadata?: ZendeskMarketplaceMetadata): readonly FeedAddition[] {
+function configuredAdditions(origin: string, metadata?: ZendeskMarketplaceMetadata): readonly FeedAddition[] {
   const additions = [atlassianAddition()];
   const zendesk = zendeskAddition(metadata);
-  return [...additions, ...sourceAdditions, zendesk];
+  return [...additions, ...sourceAdditions, ...recipeAdditions(origin), zendesk];
 }
 
 /** A read-only feed. Never forward cookies, authorization or query parameters to its publisher. */
@@ -34,7 +35,7 @@ export async function handleCatalog(
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD")
     return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
-  const additions = configuredAdditions(metadata);
+  const additions = configuredAdditions(new URL(request.url).origin, metadata);
   const path = new URL(request.url).pathname;
   const relative = path.startsWith(catalog.path) ? path.slice(catalog.path.length) : "";
   if (relative !== "index.json" && !/^apps\/[a-zA-Z0-9_-]+\.json$/.test(relative))

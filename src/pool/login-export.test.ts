@@ -20,6 +20,7 @@ async function fixture(provider = "claude") {
     raw: ` { "type": "${provider}", "access_token": "fixture-secret", "nested": { "preserve": true } }\n`,
     download: undefined as (() => Response | Promise<Response>) | undefined,
     storageAccesses: 0,
+    storageReads: [] as string[],
   };
   const calls: { path: string; init?: RequestInit }[] = [];
   const home = async (path: string, init?: RequestInit) => {
@@ -43,7 +44,10 @@ async function fixture(provider = "claude") {
     throw new Error("Unexpected fixture Home request");
   };
   const touchedStorage = async (): Promise<never> => { state.storageAccesses++; throw new Error("Export must not access attribution storage"); };
-  const storage: ControlStorage = { get: touchedStorage, put: touchedStorage, getAlarm: touchedStorage, setAlarm: touchedStorage };
+  const storage: ControlStorage = {
+    async get(key) { state.storageReads.push(key); return undefined; },
+    put: touchedStorage, getAlarm: touchedStorage, setAlarm: touchedStorage,
+  };
   const control = new PoolControl(storage, { signingKey, home });
   const token = await signPoolToken(signingKey, { pool, owner, organization });
   async function call(route = path, options: { token?: string | null; caller?: string | null; method?: string } = {}) {
@@ -52,9 +56,13 @@ async function fixture(provider = "claude") {
     const caller = options.caller === undefined ? owner : options.caller;
     if (bearer !== null) headers.set("authorization", `Bearer ${bearer}`);
     if (caller !== null) headers.set("x-signalbox-caller", caller);
+    const readsBefore = state.storageReads.length;
     const response = await control.handle(new Request(`https://pool.invalid/pool/v1${route}`, { headers, method: options.method }));
     assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(state.storageAccesses, 0);
+    assert.deepEqual(state.storageReads.slice(readsBefore),
+      route === "/pool" && caller === owner && bearer === token ? [`pool-account-removals:${pool}`] : [],
+      "Only the owner pool view may read removal history; export never accesses storage");
     return response;
   }
   return { state, calls, call, token };

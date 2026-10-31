@@ -53,7 +53,7 @@ export interface ControlAttribution {
   uploadFinished(upload: string): Promise<void>;
   retryUpload(home: PoolHome, key: string): Promise<string | undefined>;
   uploaded(home: PoolHome, id: string, upload: string, key: string, provider?: string): Promise<void>;
-  removed(id: string): Promise<void>;
+  removed(id: string, intent?: { pool: string; actor: string; at: Date }): Promise<void>;
   cached(session: Session): SignInStatus | undefined;
   callback(home: HomeClient, session: Session): Promise<boolean>;
   polled(session: Session): Promise<void>;
@@ -66,6 +66,7 @@ export interface ControlDependencies extends HomeDependencies {
   added?: (ids: string[]) => void;
   collection?: QuotaCollection;
   actions?: AccountActions;
+  removals?: (pool: string) => Promise<NonNullable<PoolView["removals"]>>;
 }
 export interface Session {
   pool: string;
@@ -460,7 +461,10 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner }) => json(await home.view(isOwner)),
+  "GET /pool": async ({ home, isOwner, deps, pool }) => {
+    const view = await home.view(isOwner);
+    return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
+  },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
   "POST /sign-ins": async (ctx) => {
@@ -520,7 +524,7 @@ const routes: Record<string, Route> = {
     let id: string;
     try { id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length)); }
     catch { return fail(404, "not_found", "This account does not exist."); }
-    await ctx.home.remove(id, () => attribution(ctx).removed(id));
+    await ctx.home.remove(id, () => attribution(ctx).removed(id, { pool: ctx.pool, actor: ctx.accountId, at: ctx.deps.now?.() ?? new Date() }));
     return json(null);
   },
   "POST /sign-ins/callback": async (ctx) => {

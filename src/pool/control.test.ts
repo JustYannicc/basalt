@@ -19,9 +19,10 @@ class MemoryStorage implements ControlStorage {
   values = new Map<string, unknown>();
   alarm: number | null = null;
   gets = 0;
+  readKeys: string[] = [];
   puts = 0;
   alarmReads = 0;
-  async get<T>(key: string): Promise<T | undefined> { this.gets++; return structuredClone(this.values.get(key)) as T | undefined; }
+  async get<T>(key: string): Promise<T | undefined> { this.gets++; this.readKeys.push(key); return structuredClone(this.values.get(key)) as T | undefined; }
   async put(key: string, value: unknown) { this.puts++; this.values.set(key, structuredClone(value)); }
   async getAlarm() { this.alarmReads++; return this.alarm; }
   async setAlarm(time: number) { this.alarm = time; }
@@ -731,7 +732,7 @@ async function withoutWaitingForGate(work: Promise<unknown>): Promise<void> {
 test("GET pool bypasses an in-flight attribution request and never loads its state", async () => {
   const f = await fixture();
   await f.call("/pool");
-  assert.equal(f.storage.gets, 0);
+  assert.deepEqual(f.storage.readKeys, ["pool-account-removals:pool-a"]);
   const started = await f.start();
   const entered = deferred(); const release = deferred();
   f.home.override = async (path) => {
@@ -745,7 +746,9 @@ test("GET pool bypasses an in-flight attribution request and never loads its sta
   try {
     await withoutWaitingForGate(read);
     assert.equal(view?.status, 200, "the view should finish while status is blocked");
-    assert.deepEqual({ reads: f.storage.gets, writes: f.storage.puts, alarms: f.storage.alarmReads }, before);
+    assert.deepEqual(f.storage.readKeys.slice(before.reads), ["pool-account-removals:pool-b"]);
+    assert.equal(f.storage.puts, before.writes);
+    assert.equal(f.storage.alarmReads, before.alarms);
   } finally { release.resolve(); await Promise.all([poll, read]); }
 });
 
@@ -1473,13 +1476,14 @@ test("owner usage returns only exact-session pool records and only four public f
     { id: "101", account: "own-account", status: "success", at: "2026-01-01T00:00:00.123456Z" },
     { id: "103", account: "own-account", status: "success", at: "2026-01-01T00:00:00.123456Z" },
   ] });
+  assert.equal(f.storage.gets, 0, "usage does not load control storage");
   const view = await (await f.call("/pool")).json() as PoolView;
   assert.equal(view.accounts[0]!.id, "own-account");
   const call = f.home.calls.find((call) => call.path.includes("/usage/records?"))!;
   const query = new URL(`https://home.example${call.path}`).searchParams;
   assert.equal(query.get("session_id"), "b2dff7a4-658d-811d-ab12-7d8bbe4e6157"); assert.equal(query.get("limit"), "200");
   assert.equal(query.has("parent_session_id"), false); assert.equal(query.has("root_session_id"), false);
-  assert.equal(f.storage.gets, 0); assert.equal(f.storage.puts, 0);
+  assert.deepEqual(f.storage.readKeys, ["pool-account-removals:pool-a"]); assert.equal(f.storage.puts, 0);
 });
 
 test("usage rejects non-owners and invalid tokens before Home or attribution storage", async () => {
@@ -1744,4 +1748,58 @@ test("explicit observation refresh coalesces collection and preserves its persis
   f.restart();
   assert.equal((await f.call("/accounts/a/observations/refresh", { method: "POST" })).status, 200);
   assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 1);
+});
+
+test("native removal records owner intent after deletion acknowledgement and hides it from members", async () => {
+  const f = await fixture(["fake-member"]);
+  f.home.addFile("deliberate");
+  f.home.addGroup("pool-a", 10, ["deliberate"]);
+  assert.equal((await f.call("/accounts/deliberate", { method: "DELETE", owner: false })).status, 403);
+  assert.equal((await f.call("/accounts/deliberate", { method: "DELETE" })).status, 200);
+  const own = await (await f.call("/pool")).json() as PoolView;
+  assert.deepEqual(own.removals, { since: null, items: [{ account: "deliberate", actor: "fake-owner", at: "2026-01-01T00:00:00.000Z" }] });
+  const member = await (await f.call("/pool", { owner: false })).json() as PoolView;
+  assert.equal(Object.hasOwn(member, "removals"), false);
+  f.restart();
+  assert.deepEqual((await (await f.call("/pool")).json() as PoolView).removals, own.removals);
+});
+
+test("a refused credential deletion cannot create a removal-intent receipt", async () => {
+  const f = await fixture();
+  f.home.addFile("retained");
+  f.home.addGroup("pool-a", 10, ["retained"]);
+  f.home.override = (path, init) => path.includes("/credentials?id=retained") && init?.method === "DELETE" ? Response.json({}, { status: 500 }) : undefined;
+  assert.equal((await f.call("/accounts/retained", { method: "DELETE" })).status, 503);
+  const view = await (await f.call("/pool")).json() as PoolView;
+  assert.deepEqual(view.removals, { since: null, items: [] });
+  assert.deepEqual(view.accounts.map((account) => account.id), ["retained"]);
+});
+
+
+test("native removal intent follows observations made while deletion awaits acknowledgement", async () => {
+  const f = await fixture();
+  f.home.addFile("delayed"); f.home.addGroup("pool-a", 10, ["delayed"]);
+  const entered = deferred(), release = deferred();
+  f.home.override = async (path, init) => {
+    if (path.includes("/credentials?id=delayed") && init?.method === "DELETE") {
+      entered.resolve();
+      await release.promise;
+    }
+    return undefined;
+  };
+  const removing = f.call("/accounts/delayed", { method: "DELETE" });
+  await entered.promise;
+  let observedAt: number;
+  try {
+    f.advance(1000);
+    const during = await (await f.call("/pool")).json() as PoolView;
+    assert.equal(during.accounts[0]!.id, "delayed");
+    observedAt = f.deps.now().getTime();
+    f.advance(1000);
+  } finally { release.resolve(); }
+  assert.equal((await removing).status, 200);
+  const after = await (await f.call("/pool")).json() as PoolView;
+  assert.equal(after.accounts.length, 0);
+  assert.ok(Date.parse(after.removals!.items[0]!.at) >= observedAt);
+  assert.equal(after.removals!.items[0]!.at, f.deps.now().toISOString());
 });

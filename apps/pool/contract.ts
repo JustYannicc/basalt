@@ -96,6 +96,11 @@ export interface AccountObservationResponse {
 /** GET /pool */
 export interface PoolView {
   readonly isOwner: boolean;
+  /** Native removal intent is visible to the owner only. `since` bounds retained history. */
+  readonly removals?: {
+    readonly since: string | null;
+    readonly items: readonly { readonly account: string; readonly actor: string; readonly at: string }[];
+  };
   readonly providers: readonly Provider[];
   readonly accounts: readonly Account[];
 }

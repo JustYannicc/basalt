@@ -53,8 +53,14 @@ model {
 
     catalog = module "Connector catalog" {
       #basalt #v1
-      description "Read-only feed in a separate Worker. Merges the official catalog with published additions. No person credentials. Carried apps pin the prepared host framework and declare each operation's approval. Messaging app source combines frozen public source, a contributed personal user-token patch, and a separate exact host-framework pin. Its registration manifest, app grant and hosted client request matching user scopes and omit the tokens.basic scope rejected at registration. Its queries never require approval; mutations always require approval, including side effects exposed as GET. Community publication remains on hold until the owner selects a publisher scope and the chosen host supports the strict nested-grant option and passes its behavior checks. It substitutes trusted tenant configuration only when tenant and hosted OAuth client settings are complete. The issue-tracking and wiki package serves four full API routers and five read shortcuts. Its specification loader verifies reviewed OpenAPI hashes before compilation and keys its cache by that hash, refusing changed documents. Visual collaboration and customer support packages serve their full supported REST operations. Every mutation requires approval; saved account grants and provider roles still bound access. The catalog uses the public app framework icon type for its customer support logo. Sources stay outside the tools API Worker."
+      description "Read-only feed in a separate Worker. Merges the official catalog with published additions and editable check recipes. No person credentials. Carried apps pin the prepared host framework and declare each operation's approval. Messaging app source combines frozen public source, a contributed personal user-token patch, and a separate exact host-framework pin. Its registration manifest, app grant and hosted client request matching user scopes and omit the tokens.basic scope rejected at registration. Its queries never require approval; mutations always require approval, including side effects exposed as GET. Community publication remains on hold until the owner selects a publisher scope and the chosen host supports the strict nested-grant option and passes its behavior checks. It substitutes trusted tenant configuration only when tenant and hosted OAuth client settings are complete. The issue-tracking and wiki package serves four full API routers and five read shortcuts. Its specification loader verifies reviewed OpenAPI hashes before compilation and keys its cache by that hash, refusing changed documents. Visual collaboration and customer support packages serve their full supported REST operations. Every mutation requires approval; saved account grants and provider roles still bound access. The catalog uses the public app framework icon type for its customer support logo. Sources stay outside the tools API Worker."
       metadata { code "src/catalog"; libraries "apps" }
+    }
+
+    workflowRecipes = module "Editable check recipes" {
+      #basalt #v1
+      description "Ordinary private apps with user schedules, native workflow waits and app SQL checkpoints. The source owns detection and nudge deduplication; the tools gateway owns credentials, permissions and durable workflow input. Delivery starts disabled, destinations come from the owner, and customized copies stay untouched."
+      metadata { code "recipes"; libraries "apps"; bindings "context=basalt.router|step=outsideServices" }
     }
 
     publicIdentity = iface "Public identity" { #v1 }
@@ -258,6 +264,12 @@ model {
   basalt.router -[sync]-> basalt.clientAssets "ASSETS: dashboard-host static files only"
   basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
   basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
+  basalt.catalog -[sync]-> basalt.workflowRecipes "serve editable defaults as app source"
+  basalt.build -[sync]-> basalt.workflowRecipes "package ordinary app sources"
+  basalt.workflowRecipes -[sync]-> basalt.toolsGateway "use native workflows, schedules, SQL, workflow input and connected tools"
+  basalt.workflowRecipes -[sync]-> basalt.router "call the installation public API"
+  basalt.workflowRecipes -[tool]-> outsideServices "probe the configured public availability URL"
+  basalt.workflowRecipes -[sync]-> repositoryApi "link to terminal release evidence"
   basalt.catalog -[sync]-> basalt.brandConfig "read connector copy brand"
   basalt.site -[sync]-> basalt.brandConfig "read site copy, operator and links"
   basalt.site -[sync]-> basalt.clientAssets "serve brand logo and fonts"
