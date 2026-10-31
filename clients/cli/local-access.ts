@@ -76,7 +76,10 @@ export function remoteOperation(
       return undefined;
     }
   }
-  if (websocket) return method === "GET" && url.pathname === "/v1/responses" ? "models" : undefined;
+  if (websocket)
+    return method === "GET" && (url.search ? url.pathname : path) === "/v1/responses"
+      ? "models"
+      : undefined;
   if (method === "GET" && url.pathname === "/v1/models") return "models";
   if (
     method === "POST" &&

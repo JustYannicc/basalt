@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -88,6 +88,48 @@ test(
       } finally {
         websocket.terminate();
       }
+      const rawStatus = (path: string, upgrade = false) =>
+        new Promise<number>((resolve, reject) => {
+          const url = new URL(origin);
+          const outgoing = request({
+            hostname: url.hostname,
+            port: url.port,
+            method: "GET",
+            path,
+            headers: {
+              ...headers,
+              ...(upgrade
+                ? {
+                    connection: "Upgrade",
+                    upgrade: "websocket",
+                    "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+                    "sec-websocket-version": "13",
+                  }
+                : {}),
+            },
+          });
+          outgoing.on("error", reject);
+          outgoing.once("response", (response) => {
+            response.resume();
+            response.once("end", () => resolve(response.statusCode ?? 0));
+          });
+          outgoing.once("upgrade", (response, socket) => {
+            socket.on("error", () => {});
+            socket.destroy();
+            resolve(response.statusCode ?? 0);
+          });
+          outgoing.end();
+        });
+      assert.equal(
+        await rawStatus("/v1/../v1/models"),
+        200,
+        "Direct HTTP keeps its existing URL handling.",
+      );
+      assert.equal(
+        await rawStatus("/v1/../v1/responses", true),
+        403,
+        "WebSocket admission stays exact without search.",
+      );
       const before = paths.length;
       for (const path of [
         "/v1/models?bad=%GG",

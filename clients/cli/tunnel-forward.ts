@@ -38,7 +38,8 @@ function operation(
       operation: {
         service: capability,
         method: incoming.method,
-        path: url.pathname,
+        // Keep existing refusals in the literal-path decoder when no search was supplied.
+        path: url.search ? url.pathname : incoming.url,
         ...(capability === "models" && url.search ? { search: url.search } : {}),
         transport: websocket ? "websocket" : "http",
       },

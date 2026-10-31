@@ -1,5 +1,40 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { request } from "node:http";
+
+function rawLocalStatus(origin, path, headers, upgrade = false) {
+  const url = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const outgoing = request({
+      hostname: url.hostname,
+      port: url.port,
+      method: "GET",
+      path,
+      headers: {
+        ...headers,
+        ...(upgrade
+          ? {
+              connection: "Upgrade",
+              upgrade: "websocket",
+              "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+              "sec-websocket-version": "13",
+            }
+          : {}),
+      },
+    });
+    outgoing.on("error", reject);
+    outgoing.once("response", (response) => {
+      response.resume();
+      response.once("end", () => resolve(response.statusCode));
+    });
+    outgoing.once("upgrade", (response, socket) => {
+      socket.on("error", () => {});
+      socket.destroy();
+      resolve(response.statusCode);
+    });
+    outgoing.end();
+  });
+}
 
 /** Uses the public CLI listener and native tunnel; the grant comes from real hosted sign-in. */
 export async function verifyNativeSearch({ worker, origin, headers, WebSocket }) {
@@ -155,11 +190,21 @@ export async function verifyNativeSearch({ worker, origin, headers, WebSocket })
     assert.equal(response.status, 404);
     await response.body?.cancel();
   }
+  const noSearch = {
+    http: await rawLocalStatus(origin, "/v1/../v1/models", headers),
+    websocket: await rawLocalStatus(origin, "/v1/../v1/responses", headers, true),
+  };
+  assert.deepEqual(
+    noSearch,
+    { http: 502, websocket: 403 },
+    "Raw no-search targets retain their previous refusal.",
+  );
   return {
     queries: 5,
     websocketQuery: true,
     rawNormalized: true,
     refusedOperations: refused.length,
     refusedLocalPaths: 4,
+    noSearchRefusals: 2,
   };
 }
