@@ -478,7 +478,7 @@
     {
       "identity": "basalt-host-managed-account-recovery",
       "file": "0049-host-managed-account-recovery.patch",
-      "content_sha256": "04524df3f216a8d3df890565f8550b1c100fd7e386075bf622232282a5f42383",
+      "content_sha256": "3bb540904a5ca04b7f469495a962b69365a354f6dffb937752dbc6819b6a3cfb",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
