@@ -707,6 +707,51 @@ index 452c680..25380af 100644
    workflowStarts: {
      fixtures: "actors",
      file: "workflows.spec.ts",
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+index a431415..64b5305 100644
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -3,6 +3,7 @@ import { Effect } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { observationFixture } from "../support/account-observation-fixture.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
++import { beforeAccountAcquisition } from "../support/profile-removal-rollback.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -16,9 +17,9 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+         expect(health.status).toBe(200);
+         expect((yield* f.refresh()).status).toBe(200);
+         const retained = (yield* f.read()).body;
+-        yield* legacyStorage([
+-          { sql: "DROP TABLE executor_account_driver_checks" },
+-          { sql: "DROP TABLE executor_account_acquisitions" },
++        const [currentVersion] = yield* legacyStorage([
++          { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++          ...beforeAccountAcquisition(),
+           { sql: "UPDATE private_executor_settings SET value = '4.0.19' WHERE key = 'version'" },
+         ]);
+         yield* serverControl("start");
+@@ -29,8 +30,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+         });
+         // Reconstruct the supported 4.0.17 layout; existing account, health and app rows remain intact.
+         yield* legacyStorage([
+-          { sql: "DROP TABLE executor_account_driver_checks" },
+-          { sql: "DROP TABLE executor_account_acquisitions" },
++          ...beforeAccountAcquisition(),
+           { sql: "DROP TABLE hosted_account_observation_access" },
+           { sql: "DROP TABLE executor_account_observations" },
+           { sql: "DROP TABLE executor_account_reports" },
+@@ -51,7 +51,8 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_acquisitions', 'executor_account_driver_checks', 'executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
+           },
+         ]);
+-        expect(versions).toEqual([{ value: "4.0.21" }]);
++        expect(currentVersion).toHaveLength(1);
++        expect(versions).toEqual(currentVersion);
+         expect(steps).toEqual([{ name: "account_observations" }]);
+         expect(tables).toEqual([
+           { table_name: "executor_account_acquisitions" },
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
 index 34d5f61..0e64c79 100644
 --- a/e2e/tests/account-status-storage.spec.ts
@@ -758,6 +803,64 @@ index 34d5f61..0e64c79 100644
          expect(columns).toEqual([]);
          expect(records).toEqual([
            {
+diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
+index 1b3bb26..f4ee00d 100644
+--- a/e2e/tests/app-accounts-upgrade.spec.ts
++++ b/e2e/tests/app-accounts-upgrade.spec.ts
+@@ -217,17 +217,19 @@ const upgradeFlow = <E, R>(
+     const linkStep = {
+       sql: `SELECT name FROM ${host.journal}_migrations WHERE name = 'app_account_links'`,
+     };
+-    const [schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore] = yield* storage([
+-      scheduleRows,
+-      sourceRows,
+-      {
+-        sql: "SELECT id, actor, start_key FROM executor_workflow_runs WHERE app = $1",
+-        params: [app],
+-      },
+-      linkRows,
+-      linkStep,
+-      ...beforeAppAccounts(),
+-    ]);
++    const [currentVersion, schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore] =
++      yield* storage([
++        { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++        scheduleRows,
++        sourceRows,
++        {
++          sql: "SELECT id, actor, start_key FROM executor_workflow_runs WHERE app = $1",
++          params: [app],
++        },
++        linkRows,
++        linkStep,
++        ...beforeAppAccounts(),
++      ]);
+     // The host's link step stays recorded, holding the member's link and no app link.
+     expect(stepBefore).toEqual([{ name: "app_account_links" }]);
+     expect(linksBefore).toEqual([{ requirement: "service", subject: host.actor, account }]);
+@@ -281,7 +283,8 @@ const upgradeFlow = <E, R>(
+       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
+       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
+     });
+-    expect(version).toEqual([{ value: "4.0.21" }]);
++    expect(currentVersion).toHaveLength(1);
++    expect(version).toEqual(currentVersion);
+     expect(step).toEqual([{ name: "app_account_links" }]);
+     // The member's user link as it was, and the app link without a subject.
+     expect(linksAfter).toEqual([
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+index 9026c0e..1c14833 100644
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+           reason:
+-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20. Declare a supported apps version.",
++            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21. Declare a supported apps version.",
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(
 diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
 new file mode 100644
 index 0000000..193a3b1
