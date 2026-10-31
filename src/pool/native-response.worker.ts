@@ -1,5 +1,24 @@
 import type { NativeStreamLease } from "./native-streams.ts";
 
+/** This private socket carries only lifetime: closing it releases the registry lease. */
+export function nativeSession(lease: NativeStreamLease): Response {
+  const pair = new WebSocketPair();
+  const server = pair[1];
+  server.accept();
+  const close = () => {
+    lease.release();
+    try {
+      server.close(1000, "Session ended");
+    } catch {}
+  };
+  server.addEventListener("close", close);
+  server.addEventListener("error", close);
+  server.addEventListener("message", close);
+  lease.onClose(close);
+  lease.signal.addEventListener("abort", close, { once: true });
+  return new Response(null, { status: 101, webSocket: pair[0] });
+}
+
 /** Cloudflare's upgraded sockets need a relay so persisted revocation can close both ends. */
 export function nativeResponse(response: Response, lease: NativeStreamLease): Response {
   if (response.status === 101 && response.webSocket) {

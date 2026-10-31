@@ -573,6 +573,15 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-native-tunnel-expiry",
+      "file": "0062-native-tunnel-expiry.patch",
+      "content_sha256": "1796e2abb4f918025dded971a0e4a9e4c0bac018f812d304008e6e836d85467b",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

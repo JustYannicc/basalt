@@ -12,6 +12,9 @@ import { validSentryDsn } from "./telemetry/sentry.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
 import { nativeAuthenticationHeader, nativeModelRequest } from "./native-model.ts";
 import { nativeControlPath } from "./pool/native-contract.ts";
+import { nativeSessionPath } from "./pool/native-contract.ts";
+import { tunnelPath } from "../clients/contracts/tunnel.ts";
+import { handleTunnel } from "./tunnel/host.ts";
 
 // Service bindings name the same gateways as the architecture.
 export const serviceArchitecture = {
@@ -181,6 +184,8 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   }
   const { search } = url;
   const pathname = servicePath(url.pathname);
+  if (pathname === tunnelPath) return handleTunnel(request, env, context);
+  if (pathname === nativeSessionPath) return Promise.resolve(notFoundPage());
   if (pathname.startsWith("/catalog/")) return env.CATALOG_SERVICE.fetch(request);
   if (pathname.startsWith("/feedback/v1/")) return handleFeedback(request, env);
   if (pathname.startsWith("/__telemetry/")) return handleRelay(request, env);
