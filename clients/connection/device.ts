@@ -108,6 +108,7 @@ export function deviceConnection(
     return saved;
   };
   return {
+    origins: () => (saved ? [saved.origin] : []),
     view: () => ({
       state,
       mode: "device",

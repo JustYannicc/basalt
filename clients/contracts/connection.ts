@@ -79,6 +79,12 @@ export const ConnectionView = Schema.Struct({
   capabilities: Schema.Array(Capability),
   display: Schema.optionalKey(ConnectionDisplay),
   origin: Schema.optionalKey(Origin),
+  health: Schema.optionalKey(
+    Schema.Struct({
+      state: Schema.Literals(["online", "offline"]),
+      checkedAt: Schema.Int,
+    }),
+  ),
 });
 export type ConnectionView = typeof ConnectionView.Type;
 export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
@@ -88,6 +94,7 @@ export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
 /** The process owns forwarding; a credential source owns renewal and server-side revocation. */
 export interface CredentialSource {
   view(): ConnectionView;
+  origins(): readonly string[];
   transport(signal: AbortSignal): Promise<ConnectionTransport>;
   disconnect(): Promise<void>;
   reconnect(): Promise<void>;

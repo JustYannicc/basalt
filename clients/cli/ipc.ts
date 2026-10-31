@@ -65,10 +65,10 @@ export function ipcFetch(socketPath: string, token: string) {
 }
 
 export async function control(socketPath: string, token: string, command: string) {
-  if (!["status", "disconnect", "reconnect", "sign-out", "revoke"].includes(command))
+  if (!["status", "health", "disconnect", "reconnect", "sign-out", "revoke"].includes(command))
     throw new Error("Unknown connection command.");
   const response = await ipcFetch(socketPath, token)(`http://localhost/client/${command}`, {
-    method: command === "status" ? "GET" : "POST",
+    method: command === "status" || command === "health" ? "GET" : "POST",
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error("The connection command was refused.");

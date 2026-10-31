@@ -47,7 +47,7 @@ node clients/cli/main.mjs stdio --agent coding-agent
 
 The stdio bridge reaches the same connection process over private IPC. Its stdout contains only MCP messages. Each agent can receive `models`, `tools` or both permissions. `agent remove <id>` refuses future requests from its local credential.
 
-`status` shows redacted connection state. `disconnect` interrupts active requests; `reconnect` reads the saved credentials again. `sign-out` interrupts local work and removes the saved remote credentials. Direct keys are revoked on their issuing server. Restarting preserves the local port and agent settings; a second process for the same profile refuses to start.
+`status` shows redacted local state. `health` checks server reachability with a five-second network deadline and caches that observation for ten seconds. It sends no credentials or application work. The desktop uses that check while visible and distinguishes an unavailable server from an intentional disconnect. `disconnect` interrupts active requests; `reconnect` reads the saved credentials again. `sign-out` interrupts local work and removes the saved remote credentials. Direct keys are revoked on their issuing server. Restarting preserves the local port and agent settings; a second process for the same profile refuses to start.
 
 Interrupted model streams end. Interrupted tool calls can have an unknown outcome and are never replayed automatically.
 

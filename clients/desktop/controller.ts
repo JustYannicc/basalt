@@ -41,13 +41,14 @@ export function desktopController(options: {
     configured = (await setup.inspect()).configured;
   };
   const snapshot = async (): Promise<DesktopSnapshot> => {
-    const current = hasProfile ? await connection.status().catch(() => undefined) : undefined;
+    const current = hasProfile ? await connection.health().catch(() => undefined) : undefined;
     const origin = current ? await connection.origin().catch(() => undefined) : undefined;
     return {
       phase,
       configured,
       canReconnect:
         hasProfile && current?.state !== "revoked" && current?.state !== "sign-in-required",
+      canSignOut: hasProfile,
       ...(current ? { connection: current } : {}),
       ...(origin ? { localOrigin: origin } : {}),
       ...(authorization ? { authorization } : {}),
@@ -156,6 +157,7 @@ export function desktopController(options: {
       }
       try {
         if ((await readPrivate(profilePath(options.home))) !== undefined) {
+          hasProfile = true;
           const profile = await loadProfile(options.home);
           hasProfile =
             (await (await credentialStore(options.home, profile.storage)).read()) !== undefined;

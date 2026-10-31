@@ -12,6 +12,10 @@ export function directConnection(
   let credentials: DirectCredentials | undefined = initial;
   let state: ConnectionView["state"] = "connected";
   return {
+    origins: () =>
+      [credentials?.models, credentials?.tools].flatMap((service) =>
+        service ? [service.origin] : [],
+      ),
     view: () => ({
       state,
       mode: "direct",

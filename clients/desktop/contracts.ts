@@ -30,6 +30,7 @@ export const DesktopSnapshot = Schema.Struct({
   phase: Schema.Literals(["starting", "ready", "signing-in"]),
   configured: Schema.Struct({ claude: Schema.Boolean, codex: Schema.Boolean }),
   canReconnect: Schema.Boolean,
+  canSignOut: Schema.Boolean,
   localOrigin: Schema.optionalKey(Schema.String),
   authorization: Schema.optionalKey(Schema.Struct({ url: Schema.String, code: Schema.String })),
   error: Schema.optionalKey(Schema.String),

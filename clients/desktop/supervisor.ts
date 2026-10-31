@@ -18,6 +18,9 @@ export class ConnectionSupervisor {
   async status() {
     return control(ipcPath(this.home), await operatorToken(this.home), "status");
   }
+  async health() {
+    return control(ipcPath(this.home), await operatorToken(this.home), "health");
+  }
   async origin() {
     return runtimeOrigin(this.home);
   }

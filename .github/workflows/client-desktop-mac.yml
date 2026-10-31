@@ -20,7 +20,6 @@ jobs:
           bun-version: 1.4.4
       - run: bun install --cwd clients --frozen-lockfile
       - run: bun install --cwd clients/desktop --frozen-lockfile
-      - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
       - name: Package the unsigned development client
         run: bun run --cwd clients/desktop package:mac

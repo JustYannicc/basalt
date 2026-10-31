@@ -19,7 +19,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild"; bindings "platform.env.POOL_OPERATIONS=basalt.modelGateway" }
+      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml|.github/workflows/client-desktop-mac.yml"; libraries "@effect/platform-node|alchemy|esbuild"; bindings "platform.env.POOL_OPERATIONS=basalt.modelGateway" }
     }
 
     deployment = module "Deployment" {
@@ -144,7 +144,7 @@ model {
 
     clientConnection = module "Client connection" {
       #basalt #deep
-      summary "Model callers authenticate with their local bearer or X-Api-Key. Direct model forwarding replaces the local key while retaining a separate provider login; native requests use only the device grant. Tools and operator controls retain their bearer-only authority."
+      summary "Model callers authenticate with their local bearer or X-Api-Key. Direct model forwarding replaces the local key while retaining a separate provider login; native requests use only the device grant. Tools and operator controls retain their bearer-only authority. Operator health reads check server reachability without credentials or grant renewal with bounded network deadlines and cached observations; they never replay application work."
       description "One headless process forwards inference and cloud tools over authenticated loopback HTTP and private stdio IPC. Native sign-in uses verifier-bound browser approval and the outbound device tunnel. Rotated grants reach the credential store before use; an uncertain refresh requires sign-in. Explicit direct keys remain available. Local agents have separate service permissions, bounded streams and cancellation. Interrupted operations are never replayed."
       metadata {
         code "clients/cli|clients/connection|clients/contracts"

@@ -102,7 +102,8 @@ function App() {
     }
   };
   const view = snapshot?.connection;
-  const connected = view?.state === "connected";
+  const offline = view?.health?.state === "offline";
+  const connected = view?.state === "connected" && !offline;
   const signing = snapshot?.phase === "signing-in";
   const starting = !snapshot || snapshot.phase === "starting";
   const disabled = busy || signing || starting;
@@ -114,20 +115,24 @@ function App() {
     ? "Starting your connection"
     : signing
       ? "Approve this device"
-      : connected
-        ? "You're connected"
-        : view?.state === "revoked"
-          ? "This device was revoked"
-          : view?.state === "disconnected" || snapshot.canReconnect
-            ? "Disconnected"
-            : "Connect your models and tools";
+      : offline
+        ? "You're offline"
+        : connected
+          ? "You're connected"
+          : view?.state === "revoked"
+            ? "This device was revoked"
+            : view?.state === "disconnected" || snapshot.canReconnect
+              ? "Disconnected"
+              : "Connect your models and tools";
   const description = signing
     ? "Finish sign-in and choose a pool in your browser. Check that the code matches."
     : starting
       ? "Your saved connection and agent settings are loading."
-      : connected
-        ? `Your agents can use ${modelAccess && toolAccess ? "your models and tools" : modelAccess ? "your models" : "your tools"}.`
-        : "Sign in with your browser, or reconnect to resume a saved connection.";
+      : offline
+        ? "Your connection is unavailable. Check your network or server, then reconnect. Your saved sign-in is kept."
+        : connected
+          ? `Your agents can use ${modelAccess && toolAccess ? "your models and tools" : modelAccess ? "your models" : "your tools"}.`
+          : "Sign in with your browser, or reconnect to resume a saved connection.";
   const changeSelection = (client: keyof AgentSelection, choice: AgentSelection["claude"]) => {
     setSelection({ ...selection, [client]: choice });
     setPreview(undefined);
@@ -155,13 +160,15 @@ function App() {
             <span aria-hidden="true" className={connected ? "dot connected" : "dot"} />
             {signing
               ? "Waiting for browser approval"
-              : connected
-                ? "Connected"
-                : view?.state === "sign-in-required"
-                  ? "Sign-in required"
-                  : view?.state === "revoked"
-                    ? "Access stopped"
-                    : "Disconnected"}
+              : offline
+                ? "Offline"
+                : connected
+                  ? "Connected"
+                  : view?.state === "sign-in-required"
+                    ? "Sign-in required"
+                    : view?.state === "revoked"
+                      ? "Access stopped"
+                      : "Disconnected"}
           </p>
         )}
         {signing && (
@@ -267,7 +274,7 @@ function App() {
                 Reconnect
               </button>
             )}
-            {connected && (
+            {view?.state === "connected" && (
               <button
                 disabled={disabled}
                 onClick={() => {
@@ -339,7 +346,7 @@ function App() {
             </button>
           </details>
         )}
-        {snapshot?.canReconnect && !signing && (
+        {snapshot?.canSignOut && !signing && (
           <footer>
             <button
               className="plain"
@@ -350,7 +357,7 @@ function App() {
             >
               Sign out
             </button>
-            {view?.mode === "device" && (
+            {view?.mode === "device" && snapshot.canReconnect && (
               <button className="plain danger" disabled={disabled} onClick={() => setRevoke(true)}>
                 Revoke this device
               </button>

@@ -12,6 +12,7 @@ import {
 import { forwardHttp, maximumRequestBytes } from "./http-forward.ts";
 import { forwardWebsocket } from "./websocket-forward.ts";
 import { forwardTunnelHttp, forwardTunnelWebsocket } from "./tunnel-forward.ts";
+import { connectionHealth } from "./connection-health.ts";
 
 const maximumActiveRequests = 32;
 
@@ -29,6 +30,7 @@ function answer(response: ServerResponse, status: number, value: unknown) {
 }
 
 export async function startGateway(options: GatewayOptions) {
+  const health = connectionHealth(options.source);
   const active = new Set<AbortController>();
   let closed = false;
   let transition: Promise<void> = Promise.resolve();
@@ -44,7 +46,9 @@ export async function startGateway(options: GatewayOptions) {
       if (!tokenMatches(bearerToken(request), options.operatorHash))
         return answer(response, 401, { error: "An operator credential is required." });
       if (request.method === "GET" && request.url === "/client/status")
-        return answer(response, 200, options.source.view());
+        return answer(response, 200, health.view());
+      if (request.method === "GET" && request.url === "/client/health")
+        return answer(response, 200, await health.check());
       const command = request.url.slice("/client/".length);
       if (
         request.method !== "POST" ||
@@ -55,6 +59,7 @@ export async function startGateway(options: GatewayOptions) {
         return answer(response, 400, { error: "This command takes no body." });
       interrupt();
       const work = async () => {
+        health.reset(command === "disconnect");
         if (command === "disconnect") await options.source.disconnect();
         if (command === "reconnect") await options.source.reconnect();
         if (command === "sign-out") await options.source.signOut();
@@ -212,6 +217,7 @@ export async function startGateway(options: GatewayOptions) {
     close: async () => {
       closed = true;
       interrupt();
+      await health.close();
       await Promise.all(
         [tcp, ipc].map(
           (server) =>

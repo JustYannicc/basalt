@@ -85,7 +85,7 @@ try {
     await signOut(directory);
     process.stderr.write("Saved credentials removed.\n");
   } else if (
-    ["status", "disconnect", "reconnect", "revoke"].includes(command) &&
+    ["status", "health", "disconnect", "reconnect", "revoke"].includes(command) &&
     rest.length === 0
   ) {
     await privateDirectory(directory);
@@ -93,7 +93,7 @@ try {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     throw new Error(
-      "Use login, import-direct, agent add/remove, setup, run, stdio, status, disconnect, reconnect, sign-out or revoke.",
+      "Use login, import-direct, agent add/remove, setup, run, stdio, status, health, disconnect, reconnect, sign-out or revoke.",
     );
   }
 } catch (error) {
