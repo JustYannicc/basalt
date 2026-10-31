@@ -155,12 +155,11 @@
     {
       "identity": "executor-atlassian",
       "file": "0017-atlassian.patch",
-      "content_sha256": "e8069655688f3fa7d494fbe8087cd8dd314d5937d919320c9e1627df35eb7cf8",
+      "content_sha256": "bcf97ed277ca32ab961b77ce974bb439221200a6e11107469f350edd1bbeb72f",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
-      "workflow_sensitive": false,
-      "sha256": "bcf97ed277ca32ab961b77ce974bb439221200a6e11107469f350edd1bbeb72f"
+      "workflow_sensitive": false
     },
     {
       "identity": "basalt-pool-access-hook",
@@ -202,13 +201,12 @@
     {
       "identity": "executor-zendesk-oauth",
       "file": "0022-zendesk-hosted-oauth.patch",
-      "content_sha256": "edec88a1140389181ee79ccdc27c8bd185fdee57a5a27e2498c5fd079e770303",
+      "content_sha256": "7f726db36d21e137e356c455026685435a0c7115569a86d27ffd4466e8b05524",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false,
-      "upstream_issue": 2374,
-      "sha256": "7f726db36d21e137e356c455026685435a0c7115569a86d27ffd4466e8b05524"
+      "upstream_issue": 2374
     },
     {
       "identity": "executor-slack-user-oauth",
