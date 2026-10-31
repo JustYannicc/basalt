@@ -1,0 +1,2284 @@
+diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
+new file mode 100644
+index 000000000..f343cd934
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/account-observations.ts
+@@ -0,0 +1,81 @@
++/** Account usage reads and refreshes. Seeing usage and refreshing it are separate hosted grants. */
++import type { AccountId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import type { ObservationPolicy } from "@executor-js/hosted-server/account-observations";
++export type { ObservationPolicy } from "@executor-js/hosted-server/account-observations";
++export type ObservationAudience = ObservationPolicy["read"];
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
++import { Data, Effect } from "effect";
++import { Atom } from "effect/reactivity";
++import { HostedClient } from "./api.ts";
++import { protectedQuery } from "./protected-query.ts";
++
++class AccountKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly account: AccountId;
++}> {}
++
++// Neither sent with the page nor kept after the row closes: every view reads the current policy
++// verdict, so a revoked grant never shows readings fetched under the old one. Reads never collect.
++const observations = Atom.family((key: AccountKey) =>
++  protectedQuery(browserOnly(HostedClient.query("accounts", "observations", { params: key }))),
++);
++/** The caller's view of an account's retained usage, with what the policy lets them do. */
++export const accountObservationsAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly account: AccountId;
++}) => observations(new AccountKey(key));
++
++const refreshObservations = Atom.family((key: AccountKey) =>
++  HostedClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.accounts.refreshObservations({ params: key }),
++    ).pipe(
++      // The response holds the new readings; the query read after it states the caller's grants.
++      Effect.tap((view) => Effect.sync(() => acknowledge(get, observations(key), () => view))),
++      // Access ended while the row was open: read the verdict again so its readings go too.
++      Effect.tapError((error) =>
++        error._tag === "OrganizationForbidden"
++          ? Effect.sync(() => get.refresh(observations(key)))
++          : Effect.void,
++      ),
++    ),
++  ),
++);
++/** Collect usage again where the policy allows it; the source's own limits still apply. */
++export const refreshAccountObservationsAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly account: AccountId;
++}) => refreshObservations(new AccountKey(key));
++
++const policy = Atom.family((key: AccountKey) =>
++  protectedQuery(HostedClient.query("accounts", "observationPolicy", { params: key })),
++);
++/** Who besides the account's managers may see and refresh its usage; managers only. */
++export const observationPolicyAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly account: AccountId;
++}) => policy(new AccountKey(key));
++
++const savePolicy = Atom.family((key: AccountKey) =>
++  HostedClient.runtime.fn((payload: ObservationPolicy, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.accounts.setObservationPolicy({ params: key, payload }),
++    ).pipe(
++      Effect.tap((saved) =>
++        Effect.sync(() => {
++          acknowledge(get, policy(key), () => saved);
++          invalidate(get, observations(key));
++        }),
++      ),
++      // A conflicting edit means the draft's revision is old; read the saved policy again.
++      Effect.tapError(() => Effect.sync(() => get.refresh(policy(key)))),
++    ),
++  ),
++);
++/** Policy saves compare the revision the editor loaded, like account sharing. */
++export const saveObservationPolicyAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly account: AccountId;
++}) => savePolicy(new AccountKey(key));
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+index b5847ea89..c9208552c 100644
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -16,6 +16,7 @@ import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-de
+ import { HostedClient } from "./api.ts";
+ import { inventoryAtom } from "./organization.ts";
+ import { toolsAtom } from "./apps.ts";
++import { accountObservationsAtom } from "./account-observations.ts";
+ 
+ class AccountKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+@@ -53,6 +54,8 @@ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+             current.id === key.account ? { ...current, health } : current,
+           ),
+         }));
++        // An app's check can also report usage, which the row then shows.
++        get.refresh(accountObservationsAtom(key));
+       }),
+     ),
+   );
+diff --git a/apps/hosted/web/src/implementation/components/sharing.tsx b/apps/hosted/web/src/implementation/components/sharing.tsx
+index 17b509609..606f78b79 100644
+--- a/apps/hosted/web/src/implementation/components/sharing.tsx
++++ b/apps/hosted/web/src/implementation/components/sharing.tsx
+@@ -22,6 +22,7 @@ import type {
+   AccessRevision,
+ } from "@executor-js/hosted-server/resource-access";
+ import { appError, type HostedError } from "../../contracts/errors.ts";
++import type { ObservationAudience } from "../../contracts/account-observations.ts";
+ import { Link } from "@tanstack/react-router";
+ import { useOrganizationRoute } from "./organization.tsx";
+ 
+@@ -46,6 +47,13 @@ type AudienceInputProps = {
+       readonly value: typeof SharedAudience.Type;
+       readonly onChange: (value: typeof SharedAudience.Type) => void;
+     }
++  | {
++      /** A grant beyond the account's managers, such as seeing its usage. */
++      readonly mode: "observation";
++      readonly question: string;
++      readonly value: ObservationAudience;
++      readonly onChange: (value: ObservationAudience) => void;
++    }
+ );
+ /** A group audience needs at least one group; the same rule applies when editing and creating. */
+ export const audienceError = (value: typeof AppAudience.Type) =>
+@@ -65,7 +73,9 @@ export function AudienceInput(props: AudienceInputProps) {
+       tabIndex={-1}
+     >
+       <label htmlFor={id} className="block text-sm font-medium">
+-        Who can use {props.subject ?? (props.mode === "app" ? "this app" : "this account")}?
++        {props.mode === "observation"
++          ? props.question
++          : `Who can use ${props.subject ?? (props.mode === "app" ? "this app" : "this account")}?`}
+       </label>
+       <Select
+         value={value.kind}
+@@ -73,6 +83,8 @@ export function AudienceInput(props: AudienceInputProps) {
+         onValueChange={(kind) => {
+           if (kind === "private" && props.mode === "app" && props.allowPrivate)
+             props.onChange({ kind: "private" });
++          else if (kind === "owners" && props.mode === "observation")
++            props.onChange({ kind: "owners" });
+           else if (kind === "groups")
+             props.onChange({ kind: "groups", groups: value.kind === "groups" ? value.groups : [] });
+           else if (kind === "everyone") props.onChange({ kind: "everyone" });
+@@ -89,6 +101,9 @@ export function AudienceInput(props: AudienceInputProps) {
+               {props.privateLabel}
+             </SelectItem>
+           )}
++          {props.mode === "observation" && (
++            <SelectItem value="owners">Account managers only</SelectItem>
++          )}
+           <SelectItem value="groups">Selected groups</SelectItem>
+           <SelectItem value="everyone">Everyone in the organization</SelectItem>
+         </SelectContent>
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+index 06d81b2ef..a94a6f2aa 100644
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -1,4 +1,5 @@
+ import { AccountAccessSettings } from "./resource-settings.tsx";
++import { AccountUsageSettings } from "./account-observations.tsx";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import { useAtomSet } from "@effect/atom-react";
+@@ -97,6 +98,7 @@ export function HostedAccountDialog({
+             <>
+               <AccountDialogIdentity data={data} />
+               <AccountAccessSettings account={id} />
++              {data.canManage && <AccountUsageSettings account={id} />}
+             </>
+           ) : (
+             <DeleteDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations.tsx b/apps/hosted/web/src/implementation/pages/account-observations.tsx
+new file mode 100644
+index 000000000..4ee1a6808
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/account-observations.tsx
+@@ -0,0 +1,215 @@
++/** Hosted account rows show usage under the policy the server enforces on every read. */
++import { useAtomSet } from "@effect/atom-react";
++import { Exit } from "effect";
++import { useState } from "react";
++import type { AccountId, App } from "@executor-js/sdk";
++import type { Group } from "@executor-js/hosted-server/groups";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import { Button } from "@executor-js/ui/components/button";
++import {
++  AccountObservationPlan,
++  AccountObservations,
++} from "@executor-js/ui/dashboard/account-observations";
++import { QueryView } from "@executor-js/ui/dashboard/context";
++import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
++import {
++  accountObservationsAtom,
++  observationPolicyAtom,
++  refreshAccountObservationsAtom,
++  saveObservationPolicyAtom,
++  type ObservationAudience,
++  type ObservationPolicy,
++} from "../../contracts/account-observations.ts";
++import { checkAccountAtom, checkAppAccountAtom } from "../../contracts/accounts.ts";
++import { appError, type HostedError } from "../../contracts/errors.ts";
++import { groupsAtom } from "../../contracts/groups.ts";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { useOrganizationRoute } from "../components/organization.tsx";
++import { AudienceInput, SharingFailure } from "../components/sharing.tsx";
++
++/**
++ * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
++ * Check now, which runs the same checks as the Check health dialog.
++ */
++export function HostedAccountObservations({
++  account,
++  apps,
++  app,
++  canReconnect,
++  plan = false,
++}: {
++  readonly account: AccountSummary;
++  readonly apps?: readonly App[];
++  readonly app?: App;
++  readonly canReconnect?: (app: App) => boolean;
++  readonly plan?: boolean;
++}) {
++  const { organization } = useOrganizationRoute();
++  const key = { organization, account: account.id };
++  const refresh = useAtomSet(refreshAccountObservationsAtom(key), { mode: "promiseExit" });
++  const check = useAtomSet(
++    app === undefined ? checkAccountAtom(key) : checkAppAccountAtom({ ...key, app: app.id }),
++    { mode: "promiseExit" },
++  );
++  return (
++    <AccountObservations<HostedError>
++      account={account}
++      query={accountObservationsAtom(key)}
++      refresh={() => refresh()}
++      {...(app === undefined
++        ? apps === undefined
++          ? {}
++          : {
++              health: {
++                apps,
++                check: () => check(),
++                ...(canReconnect === undefined ? {} : { canReconnect }),
++              },
++            }
++        : { health: { apps: [app], check: () => check(), showStatus: false } })}
++      plan={plan}
++      Failure={HostedFailure}
++    />
++  );
++}
++
++/** The reported plan beside the account's other metadata, when the caller may see usage. */
++export function HostedAccountPlan({ account }: { readonly account: AccountSummary }) {
++  const { organization } = useOrganizationRoute();
++  return (
++    <AccountObservationPlan
++      query={accountObservationsAtom({ organization, account: account.id })}
++    />
++  );
++}
++
++/**
++ * Who besides the account's managers may see its plan, limits and balances, and who may refresh
++ * them. Using a shared account grants neither. Only managers can read or change this.
++ */
++export function AccountUsageSettings({ account }: { readonly account: AccountId }) {
++  const { organization } = useOrganizationRoute();
++  const save = useAtomSet(saveObservationPolicyAtom({ organization, account }), {
++    mode: "promiseExit",
++  });
++  return (
++    <section className="space-y-4 border-t pt-5" aria-label="Usage access">
++      <div className="space-y-1">
++        <h3 className="text-sm font-medium">Usage</h3>
++        <p className="text-xs text-muted-foreground">
++          Using this account doesn't show its plan, limits or balances. Account managers always see
++          them.
++        </p>
++      </div>
++      <QueryView
++        query={observationPolicyAtom({ organization, account })}
++        Failure={HostedFailure}
++        pending={<DetailSkeleton label="Loading usage access" />}
++      >
++        {(policy) => (
++          <QueryView
++            query={groupsAtom(organization)}
++            Failure={HostedFailure}
++            pending={<DetailSkeleton label="Loading groups" />}
++          >
++            {(data) => <UsagePolicyEditor policy={policy} groups={data.groups} save={save} />}
++          </QueryView>
++        )}
++      </QueryView>
++    </section>
++  );
++}
++
++const missingGroups = (audience: ObservationAudience) =>
++  audience.kind === "groups" && audience.groups.length === 0;
++
++/** The draft keeps the revision it was loaded with, so a concurrent change fails instead. */
++function UsagePolicyEditor({
++  policy,
++  groups,
++  save,
++}: {
++  readonly policy: ObservationPolicy;
++  readonly groups: readonly Group[];
++  readonly save: (policy: ObservationPolicy) => Promise<Exit.Exit<ObservationPolicy, HostedError>>;
++}) {
++  const [draft, setDraft] = useState(policy);
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<string>();
++  const [saved, setSaved] = useState(false);
++  const [touched, setTouched] = useState(false);
++  const change = (part: "read" | "refresh") => (audience: ObservationAudience) => {
++    setDraft((current) => ({ ...current, [part]: audience }));
++    setSaved(false);
++  };
++  const invalid = missingGroups(draft.read) || missingGroups(draft.refresh);
++  return (
++    <form
++      noValidate
++      className="space-y-4"
++      onSubmit={async (event) => {
++        event.preventDefault();
++        setTouched(true);
++        if (invalid || pending) return;
++        setPending(true);
++        setError(undefined);
++        setSaved(false);
++        const exit = await save(draft);
++        setPending(false);
++        if (Exit.isFailure(exit)) return setError(appError(exit.cause));
++        setDraft(exit.value);
++        setSaved(true);
++      }}
++    >
++      <AudienceInput
++        mode="observation"
++        question="Who can see usage?"
++        value={draft.read}
++        groups={groups}
++        disabled={pending}
++        onBlur={() => setTouched(true)}
++        onChange={change("read")}
++        error={touched && missingGroups(draft.read) ? "Choose at least one group." : undefined}
++      />
++      <div className="space-y-1.5">
++        <AudienceInput
++          mode="observation"
++          question="Who can refresh usage?"
++          value={draft.refresh}
++          groups={groups}
++          disabled={pending}
++          onBlur={() => setTouched(true)}
++          onChange={change("refresh")}
++          error={touched && missingGroups(draft.refresh) ? "Choose at least one group." : undefined}
++        />
++        <p className="text-xs text-muted-foreground">
++          Refreshing also needs use of the account and permission to see its usage.
++        </p>
++      </div>
++      {error && <SharingFailure message={error} title="Could not save usage access" />}
++      <div className="flex flex-wrap items-center gap-3">
++        <Button type="submit" loading={pending}>
++          Save usage access
++        </Button>
++        <Button
++          type="button"
++          variant="outline"
++          disabled={pending}
++          onClick={() => {
++            setDraft(policy);
++            setError(undefined);
++            setSaved(false);
++            setTouched(false);
++          }}
++        >
++          Reset changes
++        </Button>
++        {saved && (
++          <span role="status" className="text-sm text-muted-foreground">
++            Saved
++          </span>
++        )}
++      </div>
++    </form>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
+index 39b330ef6..ff0955896 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
+@@ -18,6 +18,7 @@ import {
+   useOrganizationRoute,
+ } from "../components/organization.tsx";
+ import { OAuthClientsDialog } from "./oauth-clients.tsx";
++import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ 
+ /** The organization's account directory. */
+@@ -38,6 +39,7 @@ export function AccountsPage({
+ }) {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const directory = useQuery(resourceDirectoryAtom(organization));
++  const inventory = useQuery(resourceInventoryAtom(organization));
+   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+@@ -87,13 +89,53 @@ export function AccountsPage({
+             ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
+             : undefined;
+           return (
+-            access && (
+-              <span className="rounded border px-1.5 py-0.5 text-[10px]">
+-                {access.ownership.kind === "personal" ? "Personal" : "Shared"}
+-              </span>
+-            )
++            <>
++              {access && (
++                <span className="rounded border px-1.5 py-0.5 text-[10px]">
++                  {access.ownership.kind === "personal" ? "Personal" : "Shared"}
++                </span>
++              )}
++              <HostedAccountPlan account={account} />
++            </>
+           );
+         }}
++        accountDetails={(account, apps) => (
++          <HostedAccountObservations
++            account={account}
++            apps={apps}
++            canReconnect={(app) => {
++              if (
++                account.hostManaged === true ||
++                app.activeVersion === null ||
++                !Option.isSome(directory.data) ||
++                !Option.isSome(inventory.data)
++              )
++                return false;
++              const saved = inventory.data.value;
++              const listed = directory.data.value.apps.find((entry) => entry.app.id === app.id);
++              const usable = directory.data.value.accounts.some(
++                (entry) => entry.account.id === account.id && entry.access.canUse,
++              );
++              if (listed === undefined || !usable) return false;
++              return Object.values(app.requirements.accounts).some((requirement) => {
++                const method = requirement.definition.auth[account.method];
++                if (
++                  requirement.provider !== account.provider ||
++                  method === undefined ||
++                  method.type === "interactive" ||
++                  (method.type === "secrets" && method.provisioned === true)
++                )
++                  return false;
++                return requirement.scope === "user"
++                  ? listed.access.canUse && listed.linkedAccounts.includes(account.id)
++                  : listed.access.canManage &&
++                      (saved.appLinks ?? []).some(
++                        (link) => link.app === app.id && link.account === account.id,
++                      );
++              });
++            }}
++          />
++        )}
+       />
+       {dialog && (
+         <HostedAccountDialog
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+index d3b505d58..a7fab6b09 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
+@@ -41,6 +41,7 @@ import {
+ } from "../../contracts/accounts.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import { HostedAccountDialog } from "./account-actions.tsx";
++import { HostedAccountObservations } from "./account-observations.tsx";
+ import { catalogAtom } from "../../contracts/api.ts";
+ 
+ /** A requirement's sign-in methods, OAuth first: connecting a new account starts with the first. */
+@@ -162,6 +163,9 @@ export function AppAccounts({
+           links,
+           edit: editing(scope),
+           revalidate,
++          // Only accounts the caller can use; a shared account's own policy decides its usage.
++          accountDetails: (account) =>
++            usable(account) && <HostedAccountObservations account={account} app={app} plan />,
+           accountMenu: (account, slot, requirement, linked) =>
+             linked && (
+               <LinkedAccountMenu
+@@ -348,8 +352,8 @@ export function AppConnectionDialogContent({
+       <ConnectionNotices provider={form.provider} notices={connectionNotices} />
+       {siteRule !== undefined && account !== undefined && !oldAccountNeedsSite && (
+         <p className="text-sm text-muted-foreground">
+-          Site: <span className="font-medium text-foreground">{account.site ?? site}</span>. Reconnects keep
+-          this site; add another account to use a different one.
++          Site: <span className="font-medium text-foreground">{account.site ?? site}</span>.
++          Reconnects keep this site; add another account to use a different one.
+         </p>
+       )}
+       {oldAccountNeedsSite ? (
+diff --git a/apps/local/web/src/contracts/account-observations.ts b/apps/local/web/src/contracts/account-observations.ts
+new file mode 100644
+index 000000000..6cc811efd
+--- /dev/null
++++ b/apps/local/web/src/contracts/account-observations.ts
+@@ -0,0 +1,39 @@
++/** Account usage reads and refreshes. The local owner may see and refresh every saved account. */
++import type { AccountId, AccountObservationView } from "@executor-js/sdk";
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
++import type { AccountObservationsView } from "@executor-js/ui/dashboard/account-observations";
++import { Effect } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import { DashboardClient } from "./api.ts";
++
++const owned = (view: AccountObservationView): AccountObservationsView => ({
++  ...view,
++  canInspect: true,
++  canRefresh: true,
++});
++
++/** Retained readings; reading never collects. Loaded in the browser, after the page renders. */
++export const accountObservationsAtom = Atom.family((account: AccountId) =>
++  acknowledgedQuery(
++    Atom.map(
++      browserOnly(
++        DashboardClient.query("dashboard", "accountObservations", { params: { account } }),
++      ),
++      AsyncResult.map(owned),
++    ),
++  ),
++);
++
++/** Collect usage again; the source's own limits still apply. */
++export const refreshAccountObservationsAtom = Atom.family((account: AccountId) =>
++  DashboardClient.runtime.fn((_: void, get) =>
++    Effect.flatMap(DashboardClient, (client) =>
++      client.dashboard.refreshAccountObservations({ params: { account } }),
++    ).pipe(
++      Effect.tap((view) =>
++        Effect.sync(() => acknowledge(get, accountObservationsAtom(account), () => owned(view))),
++      ),
++    ),
++  ),
++);
+diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
+index 284573c22..126e8d855 100644
+--- a/apps/local/web/src/contracts/accounts.ts
++++ b/apps/local/web/src/contracts/accounts.ts
+@@ -7,6 +7,7 @@ import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/cont
+ import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
+ import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";
+ import { DashboardClient, liveQueryAtom, overviewAtom, toolsAtom } from "./api.ts";
++import { accountObservationsAtom } from "./account-observations.ts";
+ 
+ export const accountAtom = Atom.family((account: AccountId) =>
+   liveQueryAtom({
+@@ -66,6 +67,8 @@ export const checkAccountAtom = Atom.family((account: AccountId) =>
+               current.id === account ? { ...current, health } : current,
+             ),
+           }));
++          // An app's check can also report usage, which the row then shows.
++          get.refresh(accountObservationsAtom(account));
+         }),
+       ),
+     ),
+diff --git a/apps/local/web/src/implementation/pages/account-observations.tsx b/apps/local/web/src/implementation/pages/account-observations.tsx
+new file mode 100644
+index 000000000..b12eaeba3
+--- /dev/null
++++ b/apps/local/web/src/implementation/pages/account-observations.tsx
+@@ -0,0 +1,61 @@
++/** Local account rows show usage with the owner's own authority. */
++import { useAtomSet } from "@effect/atom-react";
++import type { App } from "@executor-js/sdk";
++import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import {
++  AccountObservationPlan,
++  AccountObservations,
++} from "@executor-js/ui/dashboard/account-observations";
++import {
++  accountObservationsAtom,
++  refreshAccountObservationsAtom,
++} from "../../contracts/account-observations.ts";
++import { checkAccountAtom } from "../../contracts/accounts.ts";
++import type { DashboardError } from "../../contracts/errors.ts";
++import { Failure } from "../components/common.tsx";
++
++/**
++ * Usage under an account's row. With `apps`, the block also shows those apps' checks and an inline
++ * Check now, which runs the same checks as the Check health dialog.
++ */
++export function LocalAccountObservations({
++  account,
++  apps,
++  app,
++  canReconnect,
++  plan = false,
++}: {
++  readonly account: AccountSummary;
++  readonly apps?: readonly App[];
++  readonly app?: App;
++  readonly canReconnect?: (app: App) => boolean;
++  readonly plan?: boolean;
++}) {
++  const refresh = useAtomSet(refreshAccountObservationsAtom(account.id), { mode: "promiseExit" });
++  const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
++  return (
++    <AccountObservations<DashboardError>
++      account={account}
++      query={accountObservationsAtom(account.id)}
++      refresh={() => refresh()}
++      {...(app === undefined
++        ? apps === undefined
++          ? {}
++          : {
++              health: {
++                apps,
++                check: () => check(),
++                ...(canReconnect === undefined ? {} : { canReconnect }),
++              },
++            }
++        : { health: { apps: [app], check: () => check(), showStatus: false } })}
++      plan={plan}
++      Failure={Failure}
++    />
++  );
++}
++
++/** The reported plan beside the account's other metadata. */
++export function LocalAccountPlan({ account }: { readonly account: AccountSummary }) {
++  return <AccountObservationPlan query={accountObservationsAtom(account.id)} />;
++}
+diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
+index 1eaccb82b..414927133 100644
+--- a/apps/local/web/src/implementation/pages/accounts.tsx
++++ b/apps/local/web/src/implementation/pages/accounts.tsx
+@@ -11,6 +11,7 @@ import {
+   LocalAccountDialog,
+   type AccountDialogKind,
+ } from "./account-actions.tsx";
++import { LocalAccountObservations, LocalAccountPlan } from "./account-observations.tsx";
+ /** Local product supplies its own action and typed route. */
+ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
+   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
+@@ -38,6 +39,26 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+             open={(kind) => setDialog({ account: account.id, kind })}
+           />
+         )}
++        accountMeta={(account) => <LocalAccountPlan account={account} />}
++        accountDetails={(account, apps) => (
++          <LocalAccountObservations
++            account={account}
++            apps={apps}
++            canReconnect={(app) =>
++              account.hostManaged !== true &&
++              app.activeVersion !== null &&
++              Object.values(app.requirements.accounts).some((requirement) => {
++                const method = requirement.definition.auth[account.method];
++                return (
++                  requirement.provider === account.provider &&
++                  method !== undefined &&
++                  method.type !== "interactive" &&
++                  !(method.type === "secrets" && method.provisioned === true)
++                );
++              })
++            }
++          />
++        )}
+       />
+       {dialog && (
+         <LocalAccountDialog
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+index 656b403b7..392d568c3 100644
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -17,6 +17,7 @@ import { Failure, LoadingRows } from "../components/common.tsx";
+ import { AppAccountForm } from "./account-form.tsx";
+ import { ReplaceCredentials } from "./account-credentials.tsx";
+ import { LocalAccountDialog } from "./account-actions.tsx";
++import { LocalAccountObservations } from "./account-observations.tsx";
+ import { Button } from "@executor-js/ui/components/button";
+ import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
+ import { QueryView } from "@executor-js/ui/dashboard/context";
+@@ -99,6 +100,7 @@ export function AppAccounts({
+   ): ScopeAccounts<DashboardError> => ({
+     links,
+     revalidate,
++    accountDetails: (account) => <LocalAccountObservations account={account} app={app} plan />,
+     edit: {
+       choices: (slot) => requirementChoicesAtom({ app: app.id, scope, requirement: slot }),
+       link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 78110c647..0df38024e 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -7762,6 +7762,17 @@ export const scenarios = plan({
+       local: na("Local has no organization sharing policy."),
+     },
+   },
++  accountObservationRows: {
++    fixtures: "actors",
++    file: "account-observation-rows.spec.ts",
++    title:
++      "account rows show retained usage and health, keep readings after a failed refresh and hide usage until the policy allows it",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback allowance service and controlled restarts."),
++      local: na("Exercises hosted sharing policy and rows."),
++    },
++  },
+   accountObservations: {
+     fixtures: "actors",
+     file: "account-observations.spec.ts",
+diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
+new file mode 100644
+index 000000000..e28b65a0e
+--- /dev/null
++++ b/e2e/tests/account-observation-rows.spec.ts
+@@ -0,0 +1,267 @@
++/** Account rows show retained usage beside independent health, only to callers who may see it. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import { linkAccount } from "../support/app-accounts.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Revision = Schema.Struct({ revision: Schema.String });
++const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
++const Retained = Schema.Struct({
++  reports: Schema.Array(Schema.Struct({ result: Schema.Struct({ observedAt: Schema.String }) })),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Account observation rows", (it) => {
++  it.effect(scenarios.accountObservationRows.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser,
++          evidence = yield* Evidence;
++        const f = yield* observationFixture({ observe: true, health: true, shared: true });
++        const reported = allowance();
++        yield* f.backend.answer({
++          status: 200,
++          body: {
++            ...reported,
++            observation: {
++              ...reported.observation,
++              windows: reported.observation.windows.map((window) => ({
++                ...window,
++                measure: { ...window.measure, unit: "RPM" },
++              })),
++            },
++          },
++        });
++        const appAccess = yield* body(
++          Revision,
++          yield* f.api.request(f.actors.owner, "GET", `${f.appPath}/access`),
++        );
++        expect(
++          (yield* f.api.request(f.actors.owner, "PATCH", `${f.appPath}/access`, {
++            revision: appAccess.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        yield* linkAccount(f.actors.member, f.appPath, "service", f.account);
++        const label = (yield* body(Detail, yield* f.detail())).account.label || "Unnamed account";
++        const accounts = `/org/${f.actors.organization.slug}/accounts`;
++        const block = (page: Page) =>
++          page.getByRole("group", { name: `Usage and health of ${label}`, exact: true });
++        const refreshButton = (page: Page) =>
++          block(page).getByRole("button", { name: "Refresh", exact: true });
++        const reading = (page: Page) => block(page).locator('[data-reading="requests"]');
++        // The plan sits on the account's own metadata line, outside the usage block.
++        const inventoryRow =
++          "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' inventory-row ')][1]";
++        const plan = (page: Page) =>
++          block(page).locator(inventoryRow).locator("[data-account-plan]");
++
++        yield* browser.login(f.actors.owner);
++        yield* browser.use("Open Accounts as the account manager", (page) =>
++          page.goto(accounts).then(() => block(page).getByText("No usage reported").waitFor()),
++        );
++        expect(yield* f.backend.calls, "showing retained usage collects nothing").toBe(0);
++
++        yield* browser.use("Refresh usage from the row", (page) =>
++          refreshButton(page)
++            .click()
++            .then(() => reading(page).getByText("88 of 100 RPM left").waitFor()),
++        );
++        expect(yield* f.backend.calls).toBe(1);
++        const fresh = yield* browser.use("Read the fresh row", (page) => {
++          const row = block(page);
++          const meter = row.getByRole("meter", { name: "Requests per minute", exact: true });
++          return Promise.all([
++            meter.getAttribute("aria-valuenow"),
++            meter.getAttribute("aria-valuemax"),
++            row.locator('[data-reading="credits"] [data-reading-value]').innerText(),
++            plan(page).allInnerTexts(),
++            refreshButton(page).getAttribute("aria-disabled"),
++            row.locator("[data-usage-source] time").getAttribute("datetime"),
++          ]);
++        });
++        expect(fresh.slice(0, 3)).toEqual(["88", "100", "$25.00 available"]);
++        const units = yield* browser.use("Keep RPM as a count while USD remains money", (page) =>
++          reading(page).innerText(),
++        );
++        expect(units).toContain("12 used");
++        expect(units).not.toContain("spent");
++        expect(units).not.toContain("88.00");
++        expect(fresh[3]).toContain("Developer");
++        expect(fresh[4], "the source's next allowed refresh holds Refresh").toBe("true");
++        const observedAt = (yield* body(Retained, yield* f.read())).reports[0]?.result.observedAt;
++        expect(fresh[5]).toBe(observedAt);
++        yield* evidence.attach(
++          "account-observation-row-fresh.png",
++          "image/png",
++          yield* browser.use("Capture the fresh row", (page) => block(page).screenshot()),
++        );
++
++        yield* browser.use("Check the credential inline", (page) =>
++          block(page)
++            .getByRole("button", { name: "Check now", exact: true })
++            .click()
++            .then(() =>
++              block(page).locator('[data-account-health] [data-check-status="healthy"]').waitFor(),
++            ),
++        );
++        expect(yield* f.backend.calls, "a credential check does not collect usage").toBe(1);
++
++        // A failed refresh keeps the reading, its original age and the healthy credential.
++        yield* f.backend.answer({ status: 503, body: {} });
++        yield* serverControl("stop");
++        yield* serverControl("clock/advance", 200, { milliseconds: 6 * 60_000 });
++        yield* serverControl("start");
++        yield* browser.use("Refresh after the source stops answering", (page) =>
++          page
++            .reload()
++            .then(() => refreshButton(page).click())
++            .then(() => block(page).locator("[data-attempt-note]").waitFor()),
++        );
++        expect(yield* f.backend.calls).toBe(2);
++        const failed = yield* browser.use("Read the retained row", (page) => {
++          const row = block(page);
++          return Promise.all([
++            row.locator("[data-attempt-note]").innerText(),
++            reading(page).locator("[data-reading-value]").innerText(),
++            reading(page).getAttribute("data-stale"),
++            row.locator("[data-usage-source] [data-freshness]").getAttribute("data-freshness"),
++            row.locator("[data-usage-source] time").getAttribute("datetime"),
++            row.getByRole("link", { name: /^Reconnect/ }).count(),
++            row.locator('[data-account-health] [data-check-status="healthy"]').count(),
++            refreshButton(page).getAttribute("aria-disabled"),
++          ]);
++        });
++        expect(failed[0]).toContain("Refresh failed");
++        expect(failed[0]).toContain("Showing the last successful reading.");
++        expect(failed[1]).toBe("88 of 100 RPM left");
++        expect(failed[2]).toBe("");
++        expect(failed[3]).toBe("stale");
++        expect(failed[4], "the retained reading keeps its source time").toBe(observedAt);
++        expect(failed[5], "a usage failure never asks to reconnect").toBe(0);
++        expect(failed[6]).toBe(1);
++        expect(failed[7]).toBe("true");
++        yield* evidence.attach(
++          "account-observation-row-failed.png",
++          "image/png",
++          yield* browser.use("Capture the retained row", (page) => block(page).screenshot()),
++        );
++
++        // Using a shared account shows its health, never its usage, until the policy allows it.
++        yield* browser.login(f.actors.member);
++        yield* browser.use("Open Accounts as a member who uses the account", (page) =>
++          page.goto(accounts).then(() => block(page).locator("[data-usage-restricted]").waitFor()),
++        );
++        const denied = yield* browser.use("Read the restricted row", (page) => {
++          const row = block(page);
++          return Promise.all([
++            row.locator("[data-reading]").count(),
++            row.getByText("88 of 100", { exact: false }).count(),
++            plan(page).count(),
++            row.getByRole("button", { name: "Refresh", exact: true }).count(),
++            row.locator("[data-usage-source]").count(),
++            row.locator("[data-account-health] [data-check-status]").count(),
++            row
++              .getByRole("button", { name: "Details", exact: true })
++              .click()
++              .then(() => row.locator("[data-observation-provenance]").count()),
++          ]);
++        });
++        expect(denied).toEqual([0, 0, 0, 0, 0, 1, 0]);
++        yield* evidence.attach(
++          "account-observation-row-restricted.png",
++          "image/png",
++          yield* browser.use("Capture the restricted row", (page) => block(page).screenshot()),
++        );
++
++        yield* browser.login(f.actors.owner);
++        yield* browser.use("Let members see usage from Manage access", (page) =>
++          page
++            .goto(accounts)
++            .then(() => page.getByRole("button", { name: `Manage ${label}`, exact: true }).click())
++            .then(() => page.getByRole("menuitem", { name: "Manage access", exact: true }).click())
++            .then(() => page.getByRole("combobox", { name: "Who can see usage?" }).click())
++            .then(() => page.getByRole("option", { name: "Everyone in the organization" }).click())
++            .then(() =>
++              page.getByRole("button", { name: "Save usage access", exact: true }).click(),
++            )
++            .then(() =>
++              page
++                .getByRole("region", { name: "Usage access" })
++                .getByRole("status")
++                .getByText("Saved")
++                .waitFor(),
++            ),
++        );
++        const policy = yield* f.api.request(
++          f.actors.owner,
++          "GET",
++          `${f.accountPath}/observations/access`,
++        );
++        expect(policy.body).toMatchObject({
++          read: { kind: "everyone" },
++          refresh: { kind: "owners" },
++        });
++
++        yield* browser.login(f.actors.member);
++        yield* browser.use("Open Accounts after the grant", (page) =>
++          page.goto(accounts).then(() => reading(page).getByText("88 of 100 RPM left").waitFor()),
++        );
++        expect(
++          yield* browser.use("Refresh stays with the account managers", (page) =>
++            refreshButton(page).getAttribute("aria-disabled"),
++          ),
++        ).toBe("true");
++        yield* browser.use("Open the app's accounts", (page) =>
++          page.goto(`/org/${f.actors.organization.slug}/apps/${f.app.id}?view=accounts`).then(() =>
++            page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
++              .locator('[data-reading="requests"]')
++              .getByText("88 of 100 RPM left")
++              .waitFor(),
++          ),
++        );
++        const appLayout = yield* browser.use(
++          "Keep the app account details inside its card",
++          (page) =>
++            page
++              .getByRole("region", { name: "Your accounts", exact: true })
++              .getByRole("group", { name: `Usage and health of ${label}`, exact: true })
++              .evaluate((element) => ({
++                width: element.clientWidth,
++                scrollWidth: element.scrollWidth,
++              })),
++        );
++        expect(appLayout.scrollWidth, JSON.stringify(appLayout)).toBeLessThanOrEqual(
++          appLayout.width,
++        );
++        expect(yield* f.backend.calls, "showing usage to more people collects nothing").toBe(2);
++
++        const narrow = yield* browser.use("Check the row at phone width in dark mode", (page) =>
++          page
++            .setViewportSize({ width: 390, height: 900 })
++            .then(() => page.emulateMedia({ colorScheme: "dark" }))
++            .then(() => page.goto(accounts))
++            .then(() => reading(page).getByText("88 of 100 RPM left").waitFor())
++            .then(() =>
++              page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++            ),
++        );
++        expect(narrow, "the row fits a phone without horizontal scrolling").toBe(true);
++        yield* evidence.attach(
++          "account-observation-row-phone-dark.png",
++          "image/png",
++          yield* browser.use("Capture the phone row", (page) => block(page).screenshot()),
++        );
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
+index e62839350..e537ca812 100644
+--- a/e2e/tests/account-status.spec.ts
++++ b/e2e/tests/account-status.spec.ts
+@@ -185,7 +185,7 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it)
+               .getAttribute("class"),
+             status.getByText("Rem unknown", { exact: true }).count(),
+             status.innerText(),
+-            header.getByText("Working", { exact: true }).count(),
++            header.getByText("Healthy", { exact: true }).count(),
+             row.locator("[data-account-name]").getAttribute("title"),
+             row
+               .locator("[data-account-name]")
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+new file mode 100644
+index 000000000..29ade88ac
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -0,0 +1,170 @@
++import type { AccountCheckStatus, App } from "@executor-js/sdk";
++import { Exit, type Cause } from "effect";
++import { useState, type ComponentType } from "react";
++import type { AccountSummary, FailureProps } from "../../contracts/dashboard.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
++import { Button, buttonVariants } from "../components/button.tsx";
++import { LocalTime, shortMoment } from "../components/local-time.tsx";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { cn } from "../lib/utils.ts";
++import { describeAccountCheck } from "./account-health.tsx";
++import { useDashboard } from "./context.tsx";
++
++const severity: readonly AccountCheckStatus[] = [
++  "credentials_rejected",
++  "forbidden",
++  "upstream_unavailable",
++  "check_failed",
++  "healthy",
++];
++const dots = {
++  good: "bg-emerald-500",
++  bad: "bg-destructive",
++  warn: "bg-amber-500",
++  muted: "bg-muted-foreground/50",
++};
++const states = {
++  good: "",
++  bad: "text-destructive",
++  warn: "text-amber-700 dark:text-amber-400",
++  muted: "",
++};
++
++/**
++ * The latest check of each app, one line per result, worst first. Only a current rejection offers
++ * Reconnect, in the app that reported it; a failed or timed-out check makes no claim about the
++ * sign-in.
++ */
++export function AccountHealthLine<E>({
++  account,
++  apps,
++  check,
++  showStatus = true,
++  canReconnect,
++  Failure,
++}: {
++  readonly account: AccountSummary;
++  readonly apps: readonly App[];
++  readonly check: () => Promise<Exit.Exit<unknown, E>>;
++  readonly showStatus?: boolean;
++  readonly canReconnect?: (app: App) => boolean;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  const brand = useProductBrand();
++  const { AppLink } = useDashboard();
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  const entries = (account.health?.apps ?? []).filter((entry) =>
++    apps.some((app) => app.id === entry.app),
++  );
++  const checkable = entries.some((entry) => entry.checkable);
++  const name = (id: string) => {
++    const app = apps.find((item) => item.id === id);
++    return app === undefined ? "an app" : appDisplayName(app, brand);
++  };
++  const groups = [true, false].flatMap((current) =>
++    severity.flatMap((status) => {
++      const matching = entries.flatMap((entry) =>
++        entry.check !== null && entry.check.current === current && entry.check.status === status
++          ? [{ app: entry.app, check: entry.check }]
++          : [],
++      );
++      const [first] = matching;
++      return first === undefined ? [] : [{ status, current, matching, first }];
++    }),
++  );
++  const run = async () => {
++    if (pending) return;
++    setPending(true);
++    setError(undefined);
++    const exit = await check();
++    setPending(false);
++    if (Exit.isFailure(exit)) setError(exit.cause);
++  };
++  const action = (
++    <Button
++      variant="outline"
++      size="xs"
++      className="ml-1"
++      loading={pending}
++      disabledReason={checkable ? undefined : "No app that uses this account defines a check."}
++      onClick={() => void run()}
++    >
++      Check now
++    </Button>
++  );
++  const rejected = groups.find((group) => group.current && group.status === "credentials_rejected");
++  const reconnect = rejected?.matching
++    .map((entry) => apps.find((app) => app.id === entry.app))
++    .find((app) => app !== undefined && canReconnect?.(app) === true);
++  if (!showStatus)
++    return (
++      <div data-account-health>
++        {action}
++        {error && <Failure cause={error} layout="compact" />}
++      </div>
++    );
++  return (
++    <div className="flex min-w-0 flex-col gap-0.75" data-account-health>
++      {groups.length === 0 && (
++        <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
++          <span>{checkable ? "Not checked yet" : "No app checks this account"}</span>
++          {action}
++        </div>
++      )}
++      {groups.map((group, index) => {
++        const { label, tone } = describeAccountCheck(group.status);
++        const latest = group.matching
++          .map((entry) => entry.check.checkedAt)
++          .reduce((a, b) => (a > b ? a : b), group.first.check.checkedAt);
++        const message = group.matching
++          .map((entry) => entry.check.message)
++          .find((value) => value !== undefined);
++        return (
++          <div key={`${group.status}:${group.current}`} className="flex min-w-0 flex-col gap-0.75">
++            <div className="flex min-h-6 flex-wrap items-center gap-x-1.5 gap-y-0.5">
++              <span
++                aria-hidden
++                className={cn("size-1.5 rounded-full", group.current ? dots[tone] : dots.muted)}
++              />
++              <span
++                className={cn("font-medium text-foreground", group.current && states[tone])}
++                data-check-status={group.status}
++                data-check-current={group.current}
++              >
++                {group.current ? label : `${label} · outdated`}
++              </span>
++              <span>
++                in{" "}
++                {group.matching.length === 1
++                  ? name(group.first.app)
++                  : `${group.matching.length} apps`}
++              </span>
++              <span aria-hidden>·</span>
++              <span>
++                checked <LocalTime value={latest} options={shortMoment} />
++              </span>
++              {index === 0 && action}
++              {index === 0 && reconnect !== undefined && (
++                <AppLink
++                  app={reconnect.id}
++                  view="accounts"
++                  className={buttonVariants({ variant: "outline", size: "xs" })}
++                  aria-label={`Reconnect in ${name(reconnect.id)}`}
++                >
++                  Reconnect
++                </AppLink>
++              )}
++            </div>
++            {message !== undefined && (
++              <span className="wrap-anywhere text-foreground/80" data-check-message>
++                {message}
++              </span>
++            )}
++          </div>
++        );
++      })}
++      {error && <Failure cause={error} layout="compact" />}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 744897664..13db1baa7 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -20,11 +20,8 @@ type AccountInfo = NonNullable<AccountHealth["info"]>;
+ /** What one app's latest check means for the reader; tone matches the other status pills. */
+ export const describeAccountCheck = (status: AccountCheckStatus) =>
+   Match.value(status).pipe(
+-    Match.when("healthy", () => ({ label: "Working", tone: "good" as const })),
+-    Match.when("credentials_rejected", () => ({
+-      label: "Sign-in rejected",
+-      tone: "bad" as const,
+-    })),
++    Match.when("healthy", () => ({ label: "Healthy", tone: "good" as const })),
++    Match.when("credentials_rejected", () => ({ label: "Needs re-auth", tone: "bad" as const })),
+     Match.when("forbidden", () => ({ label: "Missing permission", tone: "warn" as const })),
+     Match.when("upstream_unavailable", () => ({
+       label: "Service unavailable",
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+new file mode 100644
+index 000000000..e31097c36
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -0,0 +1,211 @@
++import type { AccountObservationRecord, App } from "@executor-js/sdk";
++import type { ReactNode } from "react";
++import type { AccountSummary } from "../../contracts/dashboard.ts";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { appDisplayName } from "../../contracts/product-brand.ts";
++import { useProductBrand } from "../hooks/product-brand.ts";
++import { describeAccountCheck } from "./account-health.tsx";
++import {
++  age,
++  attemptReasons,
++  balanceView,
++  moment,
++  windowView,
++} from "./account-observation-format.ts";
++
++// Narrow screens read each row as label/value pairs instead of a squeezed table.
++const tableClass = "w-full border-collapse text-[11px]";
++const headClass =
++  "border-b border-border py-0.75 pr-3 text-left font-normal text-muted-foreground max-[740px]:hidden";
++const rowClass =
++  "max-[740px]:block max-[740px]:border-b max-[740px]:border-border/60 max-[740px]:py-1.5";
++const cellClass =
++  "border-b border-border/60 py-1.25 pr-3 align-top wrap-anywhere max-[740px]:flex max-[740px]:gap-2.5 max-[740px]:border-0 max-[740px]:py-px max-[740px]:pr-0 max-[740px]:before:min-w-24 max-[740px]:before:text-muted-foreground max-[740px]:before:content-[attr(data-label)]";
++
++function Table({
++  caption,
++  columns,
++  rows,
++}: {
++  readonly caption: string;
++  readonly columns: readonly string[];
++  readonly rows: readonly { readonly key: string; readonly cells: readonly ReactNode[] }[];
++}) {
++  return (
++    <table className={tableClass}>
++      <caption className="pb-1 text-left font-medium text-foreground">{caption}</caption>
++      <thead>
++        <tr>
++          {columns.map((column) => (
++            <th key={column} scope="col" className={headClass}>
++              {column}
++            </th>
++          ))}
++        </tr>
++      </thead>
++      <tbody>
++        {rows.map((row) => (
++          <tr key={row.key} className={rowClass}>
++            {row.cells.map((cell, index) => (
++              <td key={columns[index]} data-label={columns[index]} className={cellClass}>
++                {cell}
++              </td>
++            ))}
++          </tr>
++        ))}
++      </tbody>
++    </table>
++  );
++}
++
++const lastRefresh = (
++  attempt: NonNullable<AccountObservationRecord["lastAttempt"]>,
++  now: number,
++  format: DisplayFormat,
++) => {
++  const at = moment(attempt.attemptedAt, now, format);
++  return attempt.outcome === "success"
++    ? `succeeded ${at}.`
++    : `failed ${at}: ${attemptReasons[attempt.outcome]}.`;
++};
++
++const checkReasons = {
++  unauthorized: "The service rejected the sign-in.",
++  forbidden: "The sign-in is missing a permission the check needs.",
++  rate_limited: "The service is limiting requests.",
++  unavailable: "The service did not answer.",
++  rejected: "The service rejected the request.",
++} as const;
++
++/**
++ * Every reading with its own read time, where each report came from and how its last refresh
++ * went, and every app's latest check with its reason. Shown only on request.
++ */
++export function ObservationDetails({
++  id,
++  reports,
++  account,
++  apps,
++  now,
++  format,
++}: {
++  readonly id: string;
++  readonly reports: readonly AccountObservationRecord[];
++  readonly account: AccountSummary;
++  readonly apps?: readonly App[] | undefined;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const brand = useProductBrand();
++  const read = (value: string, stale: boolean) => (
++    <>
++      <span className={stale ? "text-sign-in-warning" : undefined}>{age(value, now)}</span>{" "}
++      <time dateTime={value} className="text-muted-foreground">
++        {moment(value, now, format)}
++      </time>
++    </>
++  );
++  return (
++    <div
++      id={id}
++      data-observation-details
++      className="grid max-w-[900px] gap-3 border-t border-dashed border-border pt-2.5"
++    >
++      {reports.map((report) => {
++        const stale = report.freshness !== "fresh";
++        const observation = report.result?.observation;
++        const attempt = report.lastAttempt;
++        return (
++          <div key={report.source.id} className="grid gap-2">
++            {observation !== undefined && (
++              <Table
++                caption={reports.length > 1 ? `Readings from ${report.source.label}` : "Readings"}
++                columns={["Reading", "Amount", "Resets or expires", "Read"]}
++                rows={[
++                  ...(observation.plan === undefined
++                    ? []
++                    : [
++                        {
++                          key: "plan",
++                          cells: [
++                            "Plan",
++                            observation.plan.label,
++                            <span key="reset" className="text-muted-foreground">
++                              Not reported
++                            </span>,
++                            read(observation.plan.observedAt, stale),
++                          ],
++                        },
++                      ]),
++                  ...observation.windows.map((entry) => {
++                    const view = windowView(entry, now, format);
++                    return {
++                      key: `window:${entry.id}`,
++                      cells: [entry.label, view.detail, view.when, read(entry.observedAt, stale)],
++                    };
++                  }),
++                  ...observation.balances.map((entry) => {
++                    const view = balanceView(entry, now, format);
++                    return {
++                      key: `balance:${entry.id}`,
++                      cells: [entry.label, view.detail, view.when, read(entry.observedAt, stale)],
++                    };
++                  }),
++                ]}
++              />
++            )}
++            <p className="leading-[1.6] text-muted-foreground" data-observation-provenance>
++              <b className="font-medium text-foreground/80">Source:</b> the{" "}
++              {report.source.kind === "app" ? "app" : "driver"} {report.source.label}, version{" "}
++              {report.source.version}.{" "}
++              {report.freshness === "outdated" &&
++                "These readings came from an earlier version and stay until the next refresh. "}
++              {attempt !== null && (
++                <>
++                  <b className="font-medium text-foreground/80">Last refresh</b>{" "}
++                  {lastRefresh(attempt, now, format)}{" "}
++                  {attempt.outcome !== "success" &&
++                    report.result !== null &&
++                    "The amounts above are from the last successful read. "}
++                </>
++              )}
++              {report.result === null && "No reading has been saved yet. "}
++              {report.nextAllowedAt === null
++                ? "Next refresh allowed now."
++                : `Next refresh allowed at ${moment(report.nextAllowedAt, now, format)}.`}
++            </p>
++          </div>
++        );
++      })}
++      {apps !== undefined && apps.length > 0 && (
++        <Table
++          caption="Checks"
++          columns={["App", "Result", "Checked", "Reason"]}
++          rows={apps.map((app) => {
++            const entry = account.health?.apps.find((item) => item.app === app.id);
++            const check = entry?.check ?? null;
++            const result =
++              check === null ? (entry?.checkable === true ? "Not checked" : "No check") : undefined;
++            const { label } = check === null ? { label: "" } : describeAccountCheck(check.status);
++            return {
++              key: app.id,
++              cells: [
++                appDisplayName(app, brand),
++                result ?? (check?.current === false ? `${label} · outdated` : label),
++                check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
++                check?.message ??
++                  (check?.reason === undefined ? (
++                    <span key="reason" className="text-muted-foreground">
++                      None
++                    </span>
++                  ) : (
++                    checkReasons[check.reason]
++                  )),
++              ],
++            };
++          })}
++        />
++      )}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+new file mode 100644
+index 000000000..a0d65f64e
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -0,0 +1,267 @@
++/**
++ * What an account observation says, as text and drawn widths. Missing amounts stay unknown, a
++ * ratio stays a percentage, zero stays zero and an amount over its limit stays exact; only the
++ * drawn bar is clamped. Nothing here invents a capacity, a reset time or a refill.
++ */
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { formatMoment } from "../hooks/display-format.ts";
++
++type Result = NonNullable<AccountObservationRecord["result"]>;
++type Observation = Result["observation"];
++type Window = Observation["windows"][number];
++type Balance = Observation["balances"][number];
++export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
++
++const day = 86_400_000;
++
++/** Elapsed time in its two largest units, such as "2 h 14 min". */
++export const span = (milliseconds: number) => {
++  const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
++  if (minutes < 1) return "less than a minute";
++  if (minutes < 60) return `${minutes} min`;
++  const hours = Math.floor(minutes / 60);
++  if (hours < 24) return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
++  const days = Math.floor(hours / 24);
++  return `${days} ${days === 1 ? "day" : "days"}`;
++};
++
++/** A source instant as age. Hosts accept a minute of clock skew; a later instant reads as now. */
++export const age = (value: string, now: number) => {
++  const elapsed = now - Date.parse(value);
++  return elapsed < 60_000 ? "just now" : `${span(elapsed)} ago`;
++};
++
++/** Today's moments show the time only; others name the day as well. */
++export const moment = (value: string, now: number, format: DisplayFormat) => {
++  const time = { hour: "numeric", minute: "2-digit" } as const;
++  const sameDay =
++    formatMoment(value, format, { dateStyle: "short" }) ===
++    formatMoment(now, format, { dateStyle: "short" });
++  return formatMoment(
++    value,
++    format,
++    sameDay ? time : { weekday: "short", day: "numeric", month: "short", ...time },
++  );
++};
++
++const currencies = new Set(Intl.supportedValuesOf("currency"));
++const isCurrency = (unit: string) => currencies.has(unit);
++const isPercent = (unit: string) => unit === "%" || unit.toLowerCase() === "percent";
++
++export const amount = (value: number, unit: string, format: DisplayFormat, withUnit = false) => {
++  if (isCurrency(unit))
++    return new Intl.NumberFormat(format.locale, { style: "currency", currency: unit }).format(
++      value,
++    );
++  const number = new Intl.NumberFormat(format.locale, { maximumFractionDigits: 2 }).format(value);
++  if (isPercent(unit)) return `${number}%`;
++  return withUnit ? `${number} ${unit}` : number;
++};
++
++const toneOf = (ratio: number): ObservationMeterState =>
++  ratio <= 0 ? "exhausted" : ratio >= 0.7 ? "good" : ratio >= 0.3 ? "warn" : "bad";
++
++const periodSpan = (period: NonNullable<Window["period"]>) => {
++  const seconds = period.seconds;
++  if (seconds === undefined)
++    return period.value !== undefined && period.unit !== undefined
++      ? `${period.value}-${period.unit}`
++      : undefined;
++  const [size, unit]: readonly [number, string] =
++    seconds % 86_400 === 0
++      ? [86_400, "day"]
++      : seconds % 3_600 === 0
++        ? [3_600, "hour"]
++        : seconds % 60 === 0
++          ? [60, "minute"]
++          : [1, "second"];
++  return `${seconds / size}-${unit}`;
++};
++
++/** One reported window: its amount, drawn width and reset, exactly as the source gave them. */
++export function windowView(entry: Window, now: number, format: DisplayFormat) {
++  const { unit, used, limit } = entry.measure;
++  const unlimited = entry.measure.unlimited === true;
++  const remaining =
++    entry.measure.remaining ??
++    (used !== undefined && limit !== undefined ? limit - used : undefined);
++  const ratio =
++    entry.measure.remainingRatio ??
++    (remaining !== undefined && limit !== undefined && limit > 0 ? remaining / limit : undefined);
++  const over = remaining !== undefined && remaining < 0;
++  const short = (value: number) => amount(value, unit, format);
++  const long = (value: number) => amount(value, unit, format, true);
++  const phrase = (last: (value: number) => string) =>
++    remaining !== undefined && limit !== undefined
++      ? over
++        ? `${short(limit - remaining)} of ${last(limit)} used`
++        : `${short(remaining)} of ${last(limit)} left`
++      : remaining !== undefined
++        ? `${last(remaining)} left`
++        : used !== undefined
++          ? `${last(used)} used`
++          : undefined;
++  const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
++  const state: ObservationMeterState = unlimited
++    ? "unlimited"
++    : over || remaining === 0
++      ? "exhausted"
++      : ratio === undefined
++        ? "unknown"
++        : toneOf(ratio);
++  const absolute = phrase(long);
++  return {
++    state,
++    value: unlimited
++      ? "Unlimited"
++      : (phrase(long) ?? (percent === undefined ? "Usage unknown" : `${percent}% left`)),
++    flag: over
++      ? "Over limit"
++      : state === "exhausted"
++        ? "Exhausted"
++        : state === "warn" || state === "bad"
++          ? "Low"
++          : undefined,
++    detail: unlimited
++      ? "Unlimited"
++      : absolute !== undefined
++        ? `${absolute}${isCurrency(unit) ? ` (${unit})` : ""}`
++        : percent !== undefined
++          ? `${percent}% left (percent only)`
++          : limit !== undefined
++            ? `Unknown of ${long(limit)}`
++            : "Unknown",
++    // The bar draws the remaining share only; it never grows past full or below empty.
++    width: ratio === undefined || unlimited ? undefined : Math.min(100, Math.max(0, ratio * 100)),
++    aria:
++      remaining !== undefined && limit !== undefined
++        ? { now: Math.min(Math.max(0, remaining), limit), max: limit }
++        : percent !== undefined
++          ? { now: Math.min(100, Math.max(0, percent)), max: 100 }
++          : { now: undefined, max: limit ?? 100 },
++    note:
++      state === "unknown" && limit !== undefined && remaining === undefined
++        ? `Limit ${long(limit)}`
++        : used !== undefined && remaining !== undefined && limit !== undefined && !over
++          ? `${short(used)} ${isCurrency(unit) ? "spent" : "used"}`
++          : undefined,
++    ...windowTiming(entry, now, format),
++  };
++}
++
++/** A reset that already passed never refills the old reading; rolling windows have no reset. */
++function windowTiming(entry: Window, now: number, format: DisplayFormat) {
++  if (entry.resetsAt !== undefined) {
++    const at = Date.parse(entry.resetsAt);
++    const when = moment(entry.resetsAt, now, format);
++    if (at <= now)
++      return { timing: `Reset was due ${when}, not read since`, when: `Was due ${when}` };
++    return {
++      timing: at - now < day ? `Resets in ${span(at - now)}` : `Resets ${when}`,
++      when,
++    };
++  }
++  const length = entry.period === undefined ? undefined : periodSpan(entry.period);
++  if (entry.period?.mode === "rolling")
++    return {
++      timing: length === undefined ? "Rolling window" : `Rolling ${length} window`,
++      when: "Rolling, no single reset",
++    };
++  if (length !== undefined) return { timing: `${length} window`, when: "Reset not reported" };
++  return { timing: undefined, when: "Not reported" };
++}
++
++/** A reported balance, such as banked resets or credits. Expired balances are not minted again. */
++export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
++  const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
++  const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
++  const units =
++    !isCurrency(balance.unit) && Number.isInteger(balance.available) && balance.available > 0
++      ? balance.available
++      : 0;
++  return {
++    value: `${amount(balance.available, balance.unit, format, true)} available`,
++    detail: amount(balance.available, balance.unit, format, true),
++    expired: expires !== undefined && expires <= now,
++    // One pip per whole unit up to eight; larger counts read better as the number alone.
++    pips: units <= 8 ? units : 0,
++    timing:
++      expires === undefined
++        ? undefined
++        : expires <= now
++          ? `Expired ${when}`
++          : `Expires ${when} · in ${span(expires - now)}`,
++    when:
++      expires === undefined
++        ? "Does not expire"
++        : `${expires <= now ? "Expired" : "Expires"} ${when}`,
++  };
++}
++
++const offerings = {
++  subscription: "Subscription",
++  metered_api: "Metered API",
++  prepaid: "Prepaid",
++  other: undefined,
++  unknown: undefined,
++} satisfies Record<Observation["offering"], string | undefined>;
++
++/** The plan a source reported, or the kind of offering when it named no plan. */
++export const planLabel = (observation: Observation) =>
++  observation.plan?.label ?? offerings[observation.offering];
++
++export const attemptReasons = {
++  unavailable: "the source did not return a reading",
++  rate_limited: "the source is limiting requests",
++  invalid: "the source returned a reading that could not be used",
++  timed_out: "the source took too long to answer",
++} as const;
++
++/**
++ * The last refresh, when it failed. A failure never clears the retained reading; it says so. Only
++ * the credential check can say the sign-in needs repair, so no failure here asks for it.
++ */
++export function attemptNote(record: AccountObservationRecord, now: number, format: DisplayFormat) {
++  const attempt = record.lastAttempt;
++  if (attempt === null || attempt.outcome === "success") return undefined;
++  const retry = record.nextAllowedAt ?? attempt.retryAt;
++  return [
++    `Refresh failed ${age(attempt.attemptedAt, now)}: ${attemptReasons[attempt.outcome]}.`,
++    record.result === null ? undefined : "Showing the last successful reading.",
++    retry === undefined || Date.parse(retry) <= now
++      ? undefined
++      : `Next refresh at ${moment(retry, now, format)}.`,
++  ]
++    .filter((part) => part !== undefined)
++    .join(" ");
++}
++
++/** Why Refresh is unavailable right now, if it is. */
++export function refreshBlocked(
++  view: { readonly canRefresh: boolean; readonly reports: readonly AccountObservationRecord[] },
++  now: number,
++  format: DisplayFormat,
++) {
++  if (!view.canRefresh)
++    return "You can see this usage but not refresh it. Ask an account manager if you need to.";
++  if (view.reports.some((report) => report.collecting)) return "Usage is being read now.";
++  const next = view.reports.map((report) =>
++    report.nextAllowedAt === null ? now : Date.parse(report.nextAllowedAt),
++  );
++  const earliest = Math.min(...next);
++  if (next.length === 0 || earliest <= now) return undefined;
++  const at = moment(new Date(earliest).toISOString(), now, format);
++  return `Next refresh allowed at ${at}.`;
++}
++
++/** Every timestamp a record's readings carry, newest first. */
++export const readingTimes = (result: Result) =>
++  [
++    result.observedAt,
++    result.observation.plan?.observedAt,
++    ...result.observation.windows.map((entry) => entry.observedAt),
++    ...result.observation.balances.map((balance) => balance.observedAt),
++  ]
++    .filter((value) => value !== undefined)
++    .sort((a, b) => Date.parse(b) - Date.parse(a));
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+new file mode 100644
+index 000000000..080771381
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -0,0 +1,167 @@
++import type { AccountObservationRecord } from "@executor-js/sdk";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { cn } from "../lib/utils.ts";
++import {
++  age,
++  balanceView,
++  readingTimes,
++  windowView,
++  type ObservationMeterState,
++} from "./account-observation-format.ts";
++
++const fills = {
++  good: "bg-emerald-500",
++  warn: "bg-amber-500",
++  bad: "bg-destructive",
++  exhausted: "",
++  unknown: "",
++  unlimited: "",
++} satisfies Record<ObservationMeterState, string>;
++const flagTone = (flag: string, stale: boolean) =>
++  stale
++    ? ""
++    : flag === "Low"
++      ? "font-medium text-amber-700 dark:text-amber-400"
++      : "font-medium text-destructive";
++
++/** One cell per window or balance; a stale reading keeps its exact amount and drawn width. */
++export function ObservationReadings({
++  record,
++  source,
++  now,
++  format,
++}: {
++  readonly record: AccountObservationRecord;
++  readonly source?: string;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const result = record.result;
++  if (result === null) return null;
++  const { windows, balances } = result.observation;
++  if (windows.length === 0 && balances.length === 0) return null;
++  const stale = record.freshness !== "fresh";
++  const newest = Date.parse(readingTimes(result)[0] ?? result.observedAt);
++  // A reading older than the rest of its read names its own age.
++  const ownAge = (observedAt: string) =>
++    newest - Date.parse(observedAt) >= 60_000 ? (
++      <span className={stale ? "text-sign-in-warning" : undefined}>
++        read <time dateTime={observedAt}>{age(observedAt, now)}</time>
++      </span>
++    ) : null;
++  return (
++    <div
++      {...(source === undefined ? {} : { "aria-label": `Usage from ${source}`, role: "group" })}
++      data-observation-source={record.source.id}
++      data-freshness={record.freshness}
++      className="grid max-w-[900px] grid-cols-[repeat(auto-fill,_minmax(190px,_1fr))] gap-x-6 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]"
++    >
++      {windows.map((entry) => {
++        const reading = windowView(entry, now, format);
++        const sub = [reading.timing, reading.note].filter((part) => part !== undefined);
++        return (
++          <div
++            key={entry.id}
++            className="flex min-w-0 flex-col gap-1"
++            data-reading={entry.id}
++            data-meter-state={reading.state}
++            {...(stale ? { "data-stale": "" } : {})}
++          >
++            <div className="flex min-w-0 items-baseline justify-between gap-2">
++              <span className="truncate font-medium text-foreground" title={entry.label}>
++                {entry.label}
++              </span>
++              <span className="shrink-0 tabular-nums" data-reading-value>
++                {reading.value}
++                {reading.flag !== undefined && (
++                  <>
++                    {" · "}
++                    <span className={flagTone(reading.flag, stale)}>{reading.flag}</span>
++                  </>
++                )}
++              </span>
++            </div>
++            {reading.state !== "unlimited" && (
++              <span
++                role="meter"
++                aria-label={stale ? `${entry.label}, stale` : entry.label}
++                aria-valuemin={0}
++                aria-valuemax={reading.aria.max}
++                {...(reading.aria.now === undefined ? {} : { "aria-valuenow": reading.aria.now })}
++                aria-valuetext={[
++                  reading.value,
++                  reading.flag,
++                  stale ? `when last read ${age(entry.observedAt, now)}` : undefined,
++                  reading.timing,
++                ]
++                  .filter((part) => part !== undefined)
++                  .join(", ")}
++                className={cn(
++                  "block h-1.5 overflow-hidden rounded-full bg-border",
++                  reading.state === "unknown" &&
++                    "bg-[repeating-linear-gradient(135deg,var(--color-muted)_0_3px,var(--color-muted-foreground)_3px_4px)] opacity-55",
++                  reading.state === "exhausted" &&
++                    (stale
++                      ? "ring-1 ring-inset ring-muted-foreground/60"
++                      : "bg-destructive/20 ring-1 ring-inset ring-destructive/40"),
++                )}
++              >
++                {reading.width !== undefined && reading.width > 0 && (
++                  <span
++                    className={cn(
++                      "block h-full rounded-full",
++                      stale ? "bg-muted-foreground/45" : fills[reading.state],
++                    )}
++                    style={{ width: `${reading.width}%` }}
++                  />
++                )}
++              </span>
++            )}
++            <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground">
++              {sub.length > 0 && <span className="wrap-anywhere">{sub.join(" · ")}</span>}
++              {ownAge(entry.observedAt)}
++            </div>
++          </div>
++        );
++      })}
++      {balances.map((entry) => {
++        const balance = balanceView(entry, now, format);
++        return (
++          <div
++            key={entry.id}
++            className="flex min-w-0 flex-col gap-1"
++            data-reading={entry.id}
++            data-balance
++            {...(stale || balance.expired ? { "data-stale": "" } : {})}
++          >
++            <div className="flex min-w-0 items-baseline justify-between gap-2">
++              <span className="truncate font-medium text-foreground" title={entry.label}>
++                {entry.label}
++              </span>
++              <span className="shrink-0 tabular-nums" data-reading-value>
++                {balance.value}
++              </span>
++            </div>
++            <span className="flex h-1.5 gap-[3px]" aria-hidden>
++              {Array.from({ length: balance.pips }, (_, index) => (
++                <i
++                  key={index}
++                  className={cn(
++                    "w-4 rounded-full",
++                    stale || balance.expired ? "bg-muted-foreground/45" : "bg-foreground/55",
++                  )}
++                />
++              ))}
++            </span>
++            <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground">
++              {balance.timing !== undefined && (
++                <span className="wrap-anywhere">{balance.timing}</span>
++              )}
++              {ownAge(entry.observedAt)}
++            </div>
++          </div>
++        );
++      })}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+new file mode 100644
+index 000000000..4a9738f8a
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -0,0 +1,293 @@
++import type { AccountObservationRecord, App } from "@executor-js/sdk";
++import { useAtomValue } from "@effect/atom-react";
++import { Exit, Option, type Cause } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import { useEffect, useId, useState, type ComponentType } from "react";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
++import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
++import type { DisplayFormat } from "../../contracts/display.ts";
++import { Button } from "../components/button.tsx";
++import { useDisplayFormat } from "../hooks/display-format.ts";
++import { cn } from "../lib/utils.ts";
++import { AccountHealthLine } from "./account-health-line.tsx";
++import { ObservationDetails } from "./account-observation-details.tsx";
++import {
++  age,
++  attemptNote,
++  moment,
++  planLabel,
++  readingTimes,
++  refreshBlocked,
++} from "./account-observation-format.ts";
++import { ObservationReadings } from "./account-observation-readings.tsx";
++import { useQuery } from "./context.tsx";
++
++/** What a product lets the caller see of an account's reported usage. */
++export interface AccountObservationsView {
++  /** False: the caller may use the account but not see its usage; `reports` is then empty. */
++  readonly canInspect: boolean;
++  readonly canRefresh: boolean;
++  readonly reports: readonly AccountObservationRecord[];
++}
++
++/** One slow clock for every visible block: ages and countdowns move by the half minute. */
++const clock = Atom.readable((get) => {
++  if (typeof window === "undefined") return Date.now();
++  const timer = window.setInterval(() => get.setSelf(Date.now()), 30_000);
++  get.addFinalizer(() => window.clearInterval(timer));
++  return Date.now();
++});
++
++/**
++ * An account's reported usage under its row, with the latest credential checks when the row does
++ * not already show them. Usage and health have their own times, actions and failures, so a usage
++ * failure never reads as a sign-in problem. Products own both mutations and their authority.
++ */
++export function AccountObservations<E>({
++  account,
++  query,
++  refresh,
++  health,
++  plan = false,
++  Failure,
++}: {
++  readonly account: AccountSummary;
++  readonly query: Query<AccountObservationsView, E>;
++  /** Collect usage again; the product updates `query` from the response. */
++  readonly refresh: () => Promise<Exit.Exit<unknown, E>>;
++  /** The apps using the account and their check, where the row has no check of its own. */
++  readonly health?: {
++    readonly apps: readonly App[];
++    readonly check: () => Promise<Exit.Exit<unknown, E>>;
++    readonly showStatus?: boolean;
++    readonly canReconnect?: (app: App) => boolean;
++  };
++  /** Name the reported plan on the usage line, where the row has no metadata line for it. */
++  readonly plan?: boolean;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  const { result, refresh: reload } = useQuery(query);
++  const now = useAtomValue(clock);
++  const format = useDisplayFormat();
++  const [open, setOpen] = useState(false);
++  const details = useId();
++  const view = Option.getOrUndefined(AsyncResult.value(result));
++  const inspected = view?.canInspect === true ? view : undefined;
++  const collecting = inspected?.reports.some((report) => report.collecting) === true;
++  // Another request's collection is under a short lease; read again on the next clock tick.
++  useEffect(() => {
++    if (collecting) reload();
++  }, [collecting, now, reload]);
++  const label = account.label || "Unnamed account";
++  return (
++    <div
++      role="group"
++      aria-label={`${health === undefined ? "Usage" : "Usage and health"} of ${label}`}
++      data-account-observations
++      className="@container grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2.5 text-[11px] text-foreground/80"
++    >
++      {inspected?.reports.map(
++        (report) =>
++          report.result !== null && (
++            <ObservationReadings
++              key={report.source.id}
++              record={report}
++              {...(inspected.reports.length > 1 ? { source: report.source.label } : {})}
++              now={now}
++              format={format}
++            />
++          ),
++      )}
++      <div
++        className={cn(
++          "grid min-w-0 grid-cols-[minmax(0,_1fr)] items-start gap-x-6 gap-y-1.5 text-muted-foreground",
++          health === undefined
++            ? "@[740px]:grid-cols-[minmax(0,_1fr)_auto]"
++            : "@[740px]:grid-cols-[minmax(0,_1fr)_minmax(0,_1fr)_auto]",
++        )}
++      >
++        {health !== undefined && (
++          <AccountHealthLine account={account} {...health} Failure={Failure} />
++        )}
++        <UsageFact
++          result={result}
++          retry={reload}
++          refresh={refresh}
++          plan={plan}
++          now={now}
++          format={format}
++          Failure={Failure}
++        />
++        {(inspected !== undefined && inspected.reports.length > 0) || health !== undefined ? (
++          <Button
++            variant="ghost"
++            size="xs"
++            className="justify-self-start text-muted-foreground hover:text-foreground"
++            aria-expanded={open}
++            aria-controls={details}
++            onClick={() => setOpen((value) => !value)}
++          >
++            Details
++            <HugeiconsIcon
++              icon={ArrowDown01Icon}
++              strokeWidth={2}
++              aria-hidden
++              className={cn("transition-transform", open && "rotate-180")}
++            />
++          </Button>
++        ) : null}
++      </div>
++      {open && (
++        <ObservationDetails
++          id={details}
++          reports={inspected?.reports ?? []}
++          account={account}
++          apps={health?.apps}
++          now={now}
++          format={format}
++        />
++      )}
++    </div>
++  );
++}
++
++/** The plan or offering a source reported, for the account's metadata line. */
++export function AccountObservationPlan<E>({
++  query,
++}: {
++  readonly query: Query<AccountObservationsView, E>;
++}) {
++  const view = Option.getOrUndefined(AsyncResult.value(useAtomValue(query)));
++  return view?.canInspect === true ? <PlanTags view={view} /> : null;
++}
++
++function PlanTags({ view }: { readonly view: AccountObservationsView }) {
++  const labels = new Set(
++    view.reports.flatMap((report) => {
++      const label = report.result === null ? undefined : planLabel(report.result.observation);
++      return label === undefined ? [] : [label];
++    }),
++  );
++  return [...labels].map((label) => (
++    <span
++      key={label}
++      data-account-plan
++      className="rounded border px-1.5 py-0.5 text-[10px] text-foreground"
++    >
++      {label}
++    </span>
++  ));
++}
++
++/**
++ * Where usage came from and how old it is, with Refresh. Retained readings keep their original
++ * age after a failed refresh, and a denied caller sees no source, time or attempt.
++ */
++function UsageFact<E>({
++  result,
++  retry,
++  refresh,
++  plan,
++  now,
++  format,
++  Failure,
++}: {
++  readonly result: AsyncResult.AsyncResult<AccountObservationsView, E>;
++  readonly retry: () => void;
++  readonly refresh: () => Promise<Exit.Exit<unknown, E>>;
++  readonly plan: boolean;
++  readonly now: number;
++  readonly format: DisplayFormat;
++  readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
++}) {
++  const [pending, setPending] = useState(false);
++  const [error, setError] = useState<Cause.Cause<E>>();
++  const view = Option.getOrUndefined(AsyncResult.value(result));
++  const line = "flex min-h-6 min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5";
++  if (view === undefined)
++    return AsyncResult.isFailure(result) ? (
++      <div className="min-w-0">
++        <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
++      </div>
++    ) : (
++      <div role="status" className={line}>
++        Loading usage…
++      </div>
++    );
++  if (!view.canInspect)
++    return (
++      <div className={line} data-usage-restricted>
++        Usage isn't shared with you. Ask the owner if you need it.
++      </div>
++    );
++  const run = async () => {
++    if (pending) return;
++    setPending(true);
++    setError(undefined);
++    const exit = await refresh();
++    setPending(false);
++    if (Exit.isFailure(exit)) setError(exit.cause);
++  };
++  const blocked = refreshBlocked(view, now, format);
++  const action = (
++    <Button
++      variant="outline"
++      size="xs"
++      className="ml-1"
++      loading={pending}
++      disabledReason={pending ? undefined : blocked}
++      onClick={() => void run()}
++    >
++      Refresh
++    </Button>
++  );
++  return (
++    <div className="flex min-w-0 flex-col gap-0.75" data-usage>
++      {view.reports.length === 0 && (
++        <div className={line}>
++          <span>No usage reported for this account.</span>
++          {action}
++        </div>
++      )}
++      {view.reports.map((report, index) => {
++        const read = report.result === null ? undefined : readingTimes(report.result)[0];
++        const stale = report.freshness !== "fresh";
++        const note = attemptNote(report, now, format);
++        return (
++          <div key={report.source.id} className="flex min-w-0 flex-col gap-0.75">
++            <div className={line} data-usage-source={report.source.id}>
++              {index === 0 && plan && <PlanTags view={view} />}
++              <span>Usage from {report.source.label}</span>
++              <span aria-hidden>·</span>
++              {read === undefined ? (
++                <span>no reading yet</span>
++              ) : (
++                <span
++                  className={stale ? "text-sign-in-warning" : undefined}
++                  data-freshness={report.freshness}
++                >
++                  {stale ? "last read " : "read "}
++                  <time dateTime={read} title={moment(read, now, format)}>
++                    {age(read, now)}
++                  </time>
++                  {report.freshness === "outdated" && " by an earlier app version"}
++                </span>
++              )}
++              {index === 0 && action}
++            </div>
++            {note !== undefined && (
++              <span className="wrap-anywhere text-foreground/80" data-attempt-note>
++                {note}
++              </span>
++            )}
++          </div>
++        );
++      })}
++      {error && <Failure cause={error} layout="compact" />}
++      {AsyncResult.isFailure(result) && (
++        <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
++      )}
++    </div>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
+index 3cba9a141..a44bf314e 100644
+--- a/packages/ui/src/implementation/dashboard/accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts.tsx
+@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+-import type { AccountId } from "@executor-js/sdk";
++import type { AccountId, App } from "@executor-js/sdk";
+ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
+ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
+ 
+@@ -29,6 +29,8 @@ export function AccountsPage<E>({
+   readonly empty?: ReactNode;
+   readonly accountActions?: (account: AccountSummary) => ReactNode;
+   readonly accountMeta?: (account: AccountSummary) => ReactNode;
++  /** A full-width block under the row, such as the account's usage, given the apps using it. */
++  readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
+   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
+   readonly highlight?: AccountId | undefined;
+ }) {
+@@ -78,6 +80,7 @@ function AccountsList({
+   search,
+   accountActions,
+   accountMeta,
++  accountDetails,
+   highlight,
+   empty,
+   clearSearch,
+@@ -88,6 +91,7 @@ function AccountsList({
+   readonly clearSearch: () => void;
+   readonly accountActions?: (account: AccountSummary) => ReactNode;
+   readonly accountMeta?: (account: AccountSummary) => ReactNode;
++  readonly accountDetails?: (account: AccountSummary, apps: readonly App[]) => ReactNode;
+   readonly highlight?: AccountId | undefined;
+ }) {
+   const brand = useProductBrand();
+@@ -202,6 +206,11 @@ function AccountsList({
+                 <div className="flex items-center justify-end gap-2 max-[740px]:col-start-2 max-[740px]:row-start-1">
+                   {accountActions?.(account)}
+                 </div>
++                {accountDetails !== undefined && (
++                  <div className="col-span-full min-w-0 pl-11.5">
++                    {accountDetails(account, apps)}
++                  </div>
++                )}
+               </div>
+             );
+           })}
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index fec24b95f..0650c65b7 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -18,6 +18,7 @@ import type { RequirementChoice, RequirementLink } from "../../contracts/app-acc
+ import {
+   providerDisplayUrl,
+   accountNeedsSignIn,
++  currentAccountCheck,
+   type AccountDetail,
+   type AccountSummary,
+   type FailureProps,
+@@ -406,6 +407,8 @@ export interface ScopeAccounts<E> {
+     | undefined;
+   /** Check one linked account again; its result reaches `links` through the host's queries. */
+   readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
++  /** A block under each account the caller can use, such as its reported usage. */
++  readonly accountDetails?: ((account: AccountSummary) => ReactNode) | undefined;
+ }
+ 
+ /**
+@@ -748,6 +751,7 @@ function ReadOnlyChoices<E>({
+           </span>
+         </div>
+         <AccountStatus app={app} account={account} part="details" />
++        {!provisioned && data.accountDetails?.(account)}
+       </li>
+     );
+   });
+@@ -1091,6 +1095,7 @@ function ChoiceRow<E>({
+         </span>
+       </div>
+       <AccountStatus app={app} account={account} part="details" />
++      {!hostProvisioned && data.accountDetails?.(account)}
+       {error && (
+         <div className="w-full min-w-0 text-xs">
+           <Failure cause={error} />
+@@ -1180,7 +1185,10 @@ function RemoveAppBoundAccount({
+   );
+ }
+ 
+-/** An account's sign-in state, or this app's check of it. */
++/**
++ * An account's sign-in state, or this app's check of it. A current rejection offers the same
++ * reconnect as an expired sign-in; other failed checks say nothing about the credentials.
++ */
+ function AccountStatus({
+   app,
+   account,
+@@ -1203,7 +1211,12 @@ function AccountStatus({
+   if (account.signIn?.state === "unavailable")
+     return <span className="text-xs text-sign-in-warning">Unavailable</span>;
+   return (
+-    <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
++    <>
++      <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
++      {part === "header" &&
++        currentAccountCheck(account, app.id)?.status === "credentials_rejected" &&
++        reconnect}
++    </>
+   );
+ }
+ 

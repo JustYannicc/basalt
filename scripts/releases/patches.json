@@ -528,6 +528,15 @@
       "upstream_pull_request": 2469,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-account-observation-rows",
+      "file": "0060-account-observation-rows.patch",
+      "content_sha256": "4096ee0077ca5fcad86cca70e83434113b9950960b578d4e1f5fda0203410a0c",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
