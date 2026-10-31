@@ -92,7 +92,7 @@ export function deviceConnection(
       if (generation !== epoch) throw new Error("Connection state changed.");
       access = checked;
     } catch (error) {
-      if (state === "connected" && saved?.refreshPending) state = "sign-in-required";
+      if (state === "connected" && saved?.refreshPending && !pending) state = "sign-in-required";
       else if (state === "connected" && !signal.aborted) state = "disconnected";
       if (!signal.aborted || state !== "connected") access = undefined;
       throw error;

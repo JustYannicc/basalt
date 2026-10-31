@@ -16,8 +16,8 @@ export async function fixture() {
       runtime = undefined;
     }
   };
-  const start = async () => {
-    runtime = launch(["run"], home);
+  const start = async (execArgv: readonly string[] = []) => {
+    runtime = launch(["run"], home, execArgv);
     await ready(runtime, /Connection ready at /u);
     return JSON.parse(await readFile(join(home, "runtime.json"), "utf8")).origin as string;
   };

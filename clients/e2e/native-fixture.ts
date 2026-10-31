@@ -35,6 +35,7 @@ export async function nativeFixture() {
   let refuseRequest = false;
   const holds = new Set<() => void>();
   let accessGate: ReturnType<typeof gate> | undefined;
+  let refreshGate: ReturnType<typeof gate> | undefined;
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -71,6 +72,14 @@ export async function nativeFixture() {
         refreshes++;
         if (revoked || fields.get("refresh_token") !== refresh)
           return json(400, { error: "invalid_grant" });
+        const held = refreshGate;
+        refreshGate = undefined;
+        if (held) {
+          response.once("close", held.cancel);
+          held.arrive();
+          await held.released;
+          if (response.destroyed) return;
+        }
         if (loseRefresh) {
           request.socket.destroy();
           return;
@@ -283,6 +292,10 @@ export async function nativeFixture() {
     holdAccess: () => {
       accessGate = gate();
       return accessGate;
+    },
+    holdRefresh: () => {
+      refreshGate = gate();
+      return refreshGate;
     },
     approve: () => {
       approved = true;

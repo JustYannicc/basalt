@@ -8,8 +8,8 @@ import { request } from "node:http";
 
 export const main = fileURLToPath(new URL("../cli/main.mjs", import.meta.url));
 export const root = dirname(dirname(main));
-export function launch(args: readonly string[], home: string) {
-  const child = spawn(process.execPath, [main, "--home", home, ...args], {
+export function launch(args: readonly string[], home: string, execArgv: readonly string[] = []) {
+  const child = spawn(process.execPath, [...execArgv, main, "--home", home, ...args], {
     cwd: root,
     stdio: ["ignore", "pipe", "pipe"],
   });
