@@ -15,6 +15,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       "apps/pool/ui/public",
       "apps/pool/__tests__",
       "src/pool",
+      "src/pool/provider-accounts",
       ".upstream/packages/apps",
       ".upstream/packages/ui/src/implementation/styles/fonts",
     ])
@@ -29,6 +30,9 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       "src/pool/token.ts": "export const signer = true;",
       "src/pool/access-contract.ts": "export const accessPrefix = 'sba1';",
       "src/pool/native-contract.ts": "export const nativeControlPrefix = 'sbn1';",
+      "src/pool/account-acquisition-contract.ts": "export const accountAcquisitionPrefix = 'sbas1';",
+      "src/pool/provider-accounts/definitions.ts": "export type ProviderLab = 'fixture';",
+      "src/pool/provider-accounts/capabilities.ts": "import type { ProviderLab } from \"./definitions.ts\";",
       "apps/pool/ui/public/fonts.css": "stale local copy",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-sans.woff2": "sans",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-mono.woff2": "mono",
@@ -41,10 +45,10 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     const files = bundlePoolApp(root, upstream);
     assert.deepEqual(
       files.map((file) => file.path),
-      ["deployment.ts", "index.ts", "package.json", "ui/page.tsx", "ui/public/fonts.css"],
+      ["deployment.ts", "index.ts", "package.json", "provider-capabilities.ts", "provider-definitions.ts", "ui/page.tsx", "ui/public/fonts.css"],
     );
     // The page links the faces from the router, which serves the copies the bundler placed.
-    const fonts = files[4]!.content;
+    const fonts = files.find((file) => file.path === "ui/public/fonts.css")!.content;
     assert.match(
       fonts,
       new RegExp(

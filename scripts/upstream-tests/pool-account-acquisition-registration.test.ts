@@ -6,8 +6,8 @@ import { providerDeclaration } from "../../.upstream/packages/apps/src/host.ts";
 import { AccountId, OwnerId, identifyProvider } from "../../.upstream/packages/sdk/src/core.ts";
 import { makeAcquisitionRegistry } from "../../.upstream/packages/sdk/src/implementation/account-acquisition-registry.ts";
 import { poolAccountAcquisition } from "../../.upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts";
-import { providers } from "../../apps/provider-accounts/definitions.ts";
-import { providerCapabilities } from "../../apps/provider-accounts/capabilities.ts";
+import { providers } from "../../src/pool/provider-accounts/definitions.ts";
+import { providerCapabilities } from "../../src/pool/provider-accounts/capabilities.ts";
 import { HomeClient } from "../../src/pool/control.ts";
 import { handleAccountKeyMirror } from "../../src/pool/account-key-mirror.ts";
 

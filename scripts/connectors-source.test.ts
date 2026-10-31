@@ -51,6 +51,9 @@ test("connector source verification accepts the native contract and refuses subs
       "src/pool/access-contract.ts": "export const accessPrefix = 'sba1';\n",
       "src/pool/native-contract.ts": native,
       "src/pool/providers.json": "[]",
+      "src/pool/account-acquisition-contract.ts": "export const accountAcquisitionPrefix = 'sbas1';\n",
+      "src/pool/provider-accounts/definitions.ts": "export const providers = {};\n",
+      "src/pool/provider-accounts/capabilities.ts": "export const providerCapabilities = [];\n",
     }))
       write(path, content);
     const release = initialize(root);
@@ -68,6 +71,10 @@ test("connector source verification accepts the native contract and refuses subs
     write(generated, "export const nativeControlPrefix = 'substituted';\n");
     assert.throws(() => verifyConnectorsSource(root), /Generated pool runtime source differs/);
     write(generated, native);
+    const generatedDefinitions = ".upstream/apps/hosted/server/src/implementation/pool-provider-definitions.ts";
+    write(generatedDefinitions, "export const providers = { substituted: true };\n");
+    assert.throws(() => verifyConnectorsSource(root), /Generated pool runtime source differs/);
+    write(generatedDefinitions, "export const providers = {};\n");
     write("src/pool/native-contract.ts", "export const nativeControlPrefix = 'substituted';\n");
     assert.throws(() => verifyConnectorsSource(root), /Generated pool runtime source differs/);
   } finally {
