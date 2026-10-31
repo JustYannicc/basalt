@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { ClientOperation, OpenOperation } from "./transport.ts";
 
 export const Capability = Schema.Literals(["models", "tools"]);
 export type Capability = typeof Capability.Type;
@@ -75,9 +76,16 @@ export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
 /** The process owns forwarding; a credential source owns renewal and server-side revocation. */
 export interface CredentialSource {
   view(): ConnectionView;
-  credentials(signal: AbortSignal): Promise<ServiceCredentials>;
+  transport(signal: AbortSignal): Promise<ConnectionTransport>;
   disconnect(): Promise<void>;
   reconnect(): Promise<void>;
   signOut(): Promise<void>;
   revoke(): Promise<void>;
 }
+export type ConnectionTransport =
+  | { mode: "direct"; credentials: ServiceCredentials }
+  | {
+      mode: "device";
+      capabilities: readonly Capability[];
+      open(request: OpenOperation, signal: AbortSignal): ClientOperation;
+    };

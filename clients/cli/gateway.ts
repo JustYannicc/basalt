@@ -11,6 +11,7 @@ import {
 } from "./local-access.ts";
 import { forwardHttp, maximumRequestBytes } from "./http-forward.ts";
 import { forwardWebsocket } from "./websocket-forward.ts";
+import { forwardTunnelHttp, forwardTunnelWebsocket } from "./tunnel-forward.ts";
 
 const maximumActiveRequests = 32;
 
@@ -89,11 +90,17 @@ export async function startGateway(options: GatewayOptions) {
     active.add(controller);
     try {
       await transition;
-      const credentials = await options.source.credentials(controller.signal);
-      const service = credentials[capability];
-      if (!service)
-        return answer(response, 403, { error: "This connection has no access to this service." });
-      await forwardHttp(request, response, service, capability, controller.signal);
+      const transport = await options.source.transport(controller.signal);
+      if (transport.mode === "device") {
+        if (!transport.capabilities.includes(capability))
+          return answer(response, 403, { error: "This connection has no access to this service." });
+        await forwardTunnelHttp(request, response, transport, capability, controller.signal);
+      } else {
+        const service = transport.credentials[capability];
+        if (!service)
+          return answer(response, 403, { error: "This connection has no access to this service." });
+        await forwardHttp(request, response, service, capability, controller.signal);
+      }
     } catch {
       if (!response.headersSent && !response.destroyed)
         answer(response, 502, {
@@ -140,12 +147,26 @@ export async function startGateway(options: GatewayOptions) {
       socket.once("close", cancel);
       try {
         await transition;
-        const credentials = await options.source.credentials(controller.signal);
-        if (!credentials.models)
-          return socket.end(
-            "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        const transport = await options.source.transport(controller.signal);
+        if (transport.mode === "device") {
+          if (!transport.capabilities.includes("models"))
+            return socket.end(
+              "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            );
+          await forwardTunnelWebsocket(request, socket, head, transport, controller.signal);
+        } else {
+          if (!transport.credentials.models)
+            return socket.end(
+              "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            );
+          await forwardWebsocket(
+            request,
+            socket,
+            head,
+            transport.credentials.models,
+            controller.signal,
           );
-        await forwardWebsocket(request, socket, head, credentials.models, controller.signal);
+        }
       } finally {
         active.delete(controller);
         socket.off("close", cancel);

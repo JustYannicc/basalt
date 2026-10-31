@@ -25,6 +25,11 @@ export async function loadProfile(home: string): Promise<Profile> {
 }
 
 export async function importDirect(home: string, inputFile: string, storage: "os" | "file") {
+  return withStoppedConnection(home, () =>
+    withProfile(home, () => importDirectStopped(home, inputFile, storage)),
+  );
+}
+async function importDirectStopped(home: string, inputFile: string, storage: "os" | "file") {
   await privateDirectory(home);
   const input = await readPrivate(inputFile);
   if (input === undefined) throw new Error("The credentials file does not exist.");
@@ -38,6 +43,16 @@ export async function importDirect(home: string, inputFile: string, storage: "os
   const vault = await credentialStore(home, storage);
   await vault.write(JSON.stringify(credentials));
   await writePrivate(profilePath(home), JSON.stringify(profile));
+}
+
+export async function withStoppedConnection<T>(home: string, work: () => Promise<T>) {
+  await privateDirectory(home);
+  const release = await lock(home, { lockfilePath: join(home, ".running"), retries: 0 });
+  try {
+    return await work();
+  } finally {
+    await release();
+  }
 }
 
 export async function addAgent(home: string, id: string, capabilities: readonly Capability[]) {

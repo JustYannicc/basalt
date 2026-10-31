@@ -22,11 +22,11 @@ export function directConnection(
           ]
         : [],
     }),
-    credentials: async (signal) => {
+    transport: async (signal) => {
       signal.throwIfAborted();
       if (state !== "connected" || !credentials)
         throw new Error("The connection is not signed in.");
-      return credentials;
+      return { mode: "direct", credentials };
     },
     disconnect: async () => {
       state = "disconnected";
