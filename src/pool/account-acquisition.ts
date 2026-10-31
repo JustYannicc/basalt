@@ -177,7 +177,7 @@ export class HomeAccountAcquisitions {
     if (attempt.result) return this.finish(attempt, attempts, signal);
     if (attempt.expires <= this.now()) {
       // An unknown start is never repeated or assigned by a directory diff.
-      attempt.observed = rows((await this.home.data("/credentials", { signal })).files).flatMap((row) => text(row.id) ?? []);
+      attempt.observed = await this.currentProviderIds(attempt.provider, signal);
       attempt.result = { state: "failed", message: "Sign-in expired before its account could be confirmed. Start again." };
     } else if (attempt.state) {
       const status = await this.home.data(`/oauth/status?state=${encodeURIComponent(attempt.state)}`, { signal });
@@ -210,8 +210,8 @@ export class HomeAccountAcquisitions {
 
   private async finish(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
     if (!attempt.settled && attempt.result?.state === "failed" && attempt.observed === undefined) {
-      // A credential can outlive its final status. Exclude current IDs before releasing a legacy diff.
-      attempt.observed = rows((await this.home.data("/credentials", { signal })).files).flatMap((row) => text(row.id) ?? []);
+      // A credential can outlive its final status. Exclude its provider's IDs before releasing a legacy diff.
+      attempt.observed = await this.currentProviderIds(attempt.provider, signal);
     }
     // Retain the exact outcome before releasing the legacy attribution exclusion.
     await this.storage.put(storageKey, attempts);
@@ -219,6 +219,13 @@ export class HomeAccountAcquisitions {
     await this.attribution.settle(attempt.marker, attempt.observed ?? []);
     attempt.settled = true;
     await this.storage.put(storageKey, attempts);
+  }
+
+  private async currentProviderIds(provider: string, signal?: AbortSignal): Promise<string[]> {
+    return rows((await this.home.data("/credentials", { signal })).files).flatMap((row) => {
+      const id = text(row.id);
+      return id && (text(row.provider) ?? text(row.type)) === provider ? [id] : [];
+    });
   }
 
   private async arm(): Promise<void> {

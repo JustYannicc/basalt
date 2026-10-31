@@ -1919,6 +1919,32 @@ for (const outcome of ["lost-status", "missing-ids"] as const) {
   });
 }
 
+for (const outcome of ["lost-status", "missing-ids", "expiry"] as const) {
+  test(`an ambiguous global ${outcome} preserves another provider's completed legacy sign-in`, async () => {
+    const f = await fixture();
+    f.home.flow = "device";
+    const started = await f.acquire("start");
+    assert.equal(started.status, 200);
+    const native = await started.json() as { session: string };
+    const nativeState = [...f.home.sessions.keys()][0]!;
+    if (outcome === "expiry") f.advance(19 * 60_000);
+    const legacy = await f.start("pool-a", otherProvider);
+    f.home.addFile("global-account");
+    f.home.addFile("other-provider-account", otherProvider);
+    if (outcome === "lost-status") f.home.sessions.delete(nativeState);
+    else if (outcome === "missing-ids") f.home.sessions.set(nativeState, { provider, status: "ok" });
+    else f.advance(60_001);
+    f.restart();
+    const failed = await f.acquire("status", { session: native.session });
+    assert.equal(failed.status, 200);
+    assert.equal((await failed.json() as { state: string }).state, "failed");
+    f.home.sessions.set(state(legacy), { provider: otherProvider, status: "ok" });
+    await status(await f.poll(legacy), { status: "connected", accountId: "other-provider-account" });
+    assert.deepEqual(f.home.members.map((member) => member.auth_id), ["other-provider-account"]);
+    assert.ok(f.home.files.has("global-account"));
+  });
+}
+
 test("the alarm retains an unattended global result across eviction without attaching any pool", async () => {
   const f = await fixture();
   const startedResponse = await f.acquire("start");
