@@ -188,7 +188,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       } catch (error) { return failureResponse(error); }
     }
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
-    if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
+    if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
+      // Connect reads this when it opens; copying a setup prompt next mints a key in Home, so start
+      // a cold pool now rather than on that click. A failed warm is retried by the next Home call.
+      this.ctx.waitUntil(this.managementReady().catch(() => {}));
+      return this.computers.context(request);
+    }
     if (pathname === summaryPath) return this.usage.handle(request);
     if (pathname === modelHistoryPath || pathname === modelImportPath) return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
       signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,

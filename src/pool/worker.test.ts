@@ -152,7 +152,7 @@ test("native pool use is required before control, setup and usage can reach Home
   const values = new Map<string, unknown>([["pool-directory-v1", {
     pools: { [JSON.stringify(claims.pool)]: entry }, refusals: {}, people: {}, refusalsVersion: 2,
   }]]);
-  const worker = new PoolContainer({ container: {}, storage: {
+  const worker = new PoolContainer({ container: {}, waitUntil: () => {}, storage: {
     get: async (key: string) => structuredClone(values.get(key)),
     put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
   } }, {
@@ -174,6 +174,47 @@ test("native pool use is required before control, setup and usage can reach Home
   assert.equal(allowed.status, 200, await allowed.clone().text());
   const value = await allowed.json() as { pools: unknown };
   assert.deepEqual(value.pools, [{ id: claims.pool, name: "Pool", mine: false }]);
+});
+
+test("opening Connect starts a stopped pool without waiting for it", async () => {
+  const signingKey = "ab".repeat(32);
+  const claims = { pool: "fake-pool", owner: "fake-owner", organization: "fake-org" };
+  const entry = { ...claims, name: "Pool", users: ["fake-member"], managers: ["fake-owner"],
+    authorization: "executor-app-v1", ownerSource: "audience", pending: [], at: Date.now() };
+  const values = new Map<string, unknown>([["pool-directory-v1", {
+    pools: { [JSON.stringify(claims.pool)]: entry }, refusals: {}, people: {}, refusalsVersion: 2,
+  }]]);
+  let starts = 0;
+  let ready = false;
+  const container = {
+    running: false,
+    destroy: async () => { container.running = false; },
+    start: () => { starts++; container.running = true; },
+    setInactivityTimeout: async () => {},
+    getTcpPort: () => ({ fetch: async () => ready
+      ? Response.json({ boot_id: "fake-boot", started_at: "2026-01-01T00:00:00Z" })
+      : new Response(null, { status: 503 }) }),
+  };
+  const background: Promise<unknown>[] = [];
+  const worker = new PoolContainer({ container, waitUntil: (work: Promise<unknown>) => { background.push(work); }, storage: {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+    getAlarm: async () => null, setAlarm: async () => {},
+  } }, {
+    POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
+    POOL_MANAGEMENT_KEY: "fake-management-key", POOL_APP_SIGNING_KEY: signingKey, POOL_IMAGE_HASH: "fake-image",
+  });
+  const response = await worker.fetch(new Request("https://pool.example/pool/v1/setup-context", {
+    headers: { Authorization: `Bearer ${await signPoolToken(signingKey, claims)}`, "x-signalbox-caller": "fake-member" },
+  }));
+  // The page gets its context while the pool is still booting.
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(background.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(starts, 1);
+  ready = true;
+  await Promise.all(background);
+  assert.equal(starts, 1);
 });
 
 test("management calls share readiness for 30 seconds and rewarm when the container stops", async (t) => {
