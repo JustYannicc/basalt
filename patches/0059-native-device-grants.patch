@@ -1,0 +1,1926 @@
+--- a/packages/mcp-auth/src/implementation/device-authorization.ts
++++ b/packages/mcp-auth/src/implementation/device-authorization.ts
+@@ -56,6 +56,7 @@
+   clientId: Schema.NonEmptyString,
+   resource: Schema.NonEmptyString,
+   scopes: Schema.Array(Schema.String),
++  challenge: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u))),
+   /** The user code's key, so finishing the request also forgets it. */
+   userCode: Schema.NonEmptyString,
+   expiresAt: Schema.Number,
+@@ -70,7 +71,12 @@
+ const oauthError = (error: string, description: string) =>
+   new APIError("BAD_REQUEST", { error, error_description: description });
+ 
+-const deviceIdentifier = (key: string) => `device-code:${key}`;
++// Old servers cannot redeem a proof-bound code by dropping its unfamiliar JSON field.
++const boundKey = (key: string) => `bound:${key}`;
++const deviceIdentifier = (key: string) =>
++  key.startsWith("bound:")
++    ? `device-code-proof:${key.slice("bound:".length)}`
++    : `device-code:${key}`;
+ const userCodeIdentifier = (key: string) => `device-user-code:${key}`;
+ const pollIdentifier = (key: string) => `device-poll:${key}`;
+ 
+@@ -96,6 +102,8 @@
+   readonly provider: OAuthOptions<Scope[]>;
+   /** Whether a resource is one this host issues tokens for. */
+   readonly accepts: (resource: string) => boolean;
++  readonly requiresProof?: (resource: string) => boolean;
++  readonly verificationPath?: (resource: string) => string;
+   /** The signed-in browser user and session, refusing cross-origin and bearer requests. */
+   readonly session: (
+     ctx: GenericEndpointContext,
+@@ -213,18 +221,40 @@
+   const exchange = ({ ctx, provider }: OAuthExtensionGrantHandlerInput) =>
+     runAuth(
+       Effect.gen(function* () {
+-        const { device_code } = yield* parse(
+-          Schema.Struct({ device_code: Schema.NonEmptyString }),
++        const { device_code, code_verifier } = yield* parse(
++          Schema.Struct({
++            device_code: Schema.NonEmptyString,
++            code_verifier: Schema.optionalKey(Schema.String),
++          }),
+           ctx.body,
+         ).pipe(Effect.mapError(() => oauthError("invalid_request", "device_code is required.")));
+         const { client } = yield* authCall(() =>
+           Promise.resolve(provider.authenticateClient({ requireCredentials: false })),
+         );
+-        const key = yield* codeKey(ctx, "device", device_code);
+-        const found = yield* read(ctx, key);
++        let key = yield* codeKey(ctx, "device", device_code);
++        let found = yield* read(ctx, key);
++        if (Option.isNone(found)) {
++          key = boundKey(key);
++          found = yield* read(ctx, key);
++        }
+         if (Option.isNone(found) || found.value.request.clientId !== client.clientId)
+           return yield* Effect.fail(oauthError("invalid_grant", "Unknown device code."));
+         const { row, request } = found.value;
++        if (key.startsWith("bound:") !== (request.challenge !== undefined))
++          return yield* Effect.fail(oauthError("invalid_grant", "Unknown device code."));
++        if (request.challenge !== undefined) {
++          if (code_verifier === undefined || !/^[A-Za-z0-9._~-]{43,128}$/u.test(code_verifier))
++            return yield* Effect.fail(oauthError("invalid_grant", "The device proof is invalid."));
++          const challenge = yield* authCall(async () =>
++            Base64Url.encode(
++              new Uint8Array(
++                await crypto.subtle.digest("SHA-256", new TextEncoder().encode(code_verifier)),
++              ),
++            ),
++          );
++          if (challenge !== request.challenge)
++            return yield* Effect.fail(oauthError("invalid_grant", "The device proof is invalid."));
++        }
+         const now = yield* Clock.currentTimeMillis;
+         yield* pace(ctx, key, now, request.expiresAt + expiredSeconds * 1000);
+         if (now >= request.expiresAt) {
+@@ -297,6 +327,8 @@
+                 Schema.Struct({
+                   scope: Schema.optionalKey(Schema.String),
+                   resource: Schema.optionalKey(Schema.String),
++                  code_challenge: Schema.optionalKey(Schema.String),
++                  code_challenge_method: Schema.optionalKey(Schema.String),
+                 }),
+                 ctx.body,
+               ).pipe(
+@@ -312,6 +344,20 @@
+                   oauthError("invalid_target", "Name the URL to authorize as resource."),
+                 );
+               const resource = body.resource;
++              const challenge = body.code_challenge;
++              if (
++                (settings.requiresProof?.(resource) === true && challenge === undefined) ||
++                (challenge === undefined && body.code_challenge_method !== undefined) ||
++                (challenge !== undefined &&
++                  (body.code_challenge_method !== "S256" ||
++                    !/^[A-Za-z0-9_-]{43}$/u.test(challenge)))
++              )
++                return yield* Effect.fail(
++                  oauthError(
++                    "invalid_request",
++                    "Send a SHA-256 device challenge with method S256.",
++                  ),
++                );
+               const { clientId } = yield* authCall(() =>
+                 Promise.resolve(
+                   getOAuthProviderApi(
+@@ -323,7 +369,8 @@
+               );
+               const deviceCode = Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)));
+               const userCode = randomUserCode();
+-              const key = yield* codeKey(ctx, "device", deviceCode);
++              const hash = yield* codeKey(ctx, "device", deviceCode);
++              const key = challenge === undefined ? hash : boundKey(hash);
+               const userKey = yield* codeKey(ctx, "user", userCode);
+               const now = yield* Clock.currentTimeMillis;
+               const expiresAt = now + requestSeconds * 1000;
+@@ -331,6 +378,7 @@
+                 clientId,
+                 resource,
+                 scopes,
++                ...(challenge === undefined ? {} : { challenge }),
+                 userCode: userKey,
+                 expiresAt,
+                 decision: { status: "pending" },
+@@ -349,7 +397,10 @@
+                   expiresAt: new Date(expiresAt),
+                 }),
+               );
+-              const verification = new URL(deviceVerificationPath, settings.origin);
++              const verification = new URL(
++                settings.verificationPath?.(resource) ?? deviceVerificationPath,
++                settings.origin,
++              );
+               const complete = new URL(verification);
+               complete.searchParams.set("user_code", formatUserCode(userCode));
+               ctx.setHeader("Cache-Control", "no-store");
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -307,6 +307,64 @@
+       local: na("Local has no device verification page; its clients open a browser."),
+     },
+   },
++  deviceCodeProof: {
++    fixtures: "actors",
++    file: "device-code-proof.spec.ts",
++    title:
++      "Device codes bound to S256 proof refuse a missing or wrong verifier without consuming the approval",
++    targets: {
++      cloud: scheduled,
++      "self-host": scheduled,
++      local: na("Local has no device authorization endpoint."),
++    },
++  },
++  nativeGrantLifecycle: {
++    fixtures: "actors",
++    file: "native-grants.spec.ts",
++    title:
++      "Native grants require device proof, allow personal tools and refuse administration through renewal and revocation",
++    targets: {
++      cloud: na(
++        "The self-host fixture owns the external pool protocol and operator configuration.",
++      ),
++      "self-host": scheduled,
++      local: na("Local has no hosted device grants."),
++    },
++  },
++  nativeGrantRefreshRefusal: {
++    fixtures: "actors",
++    file: "native-grants.spec.ts",
++    title:
++      "Native refresh refuses removed pool access and membership even on a cached rotation replay",
++    targets: {
++      cloud: na(
++        "The self-host fixture owns the external pool protocol and operator configuration.",
++      ),
++      "self-host": scheduled,
++      local: na("Local has no hosted device grants."),
++    },
++  },
++  nativeGrantModelsOnly: {
++    fixtures: "actors",
++    file: "native-grants.spec.ts",
++    title:
++      "Models-only native grants refuse tools and recover from access-token expiry without widening",
++    targets: {
++      cloud: na("The self-host fixture owns the stopped clock and external pool protocol."),
++      "self-host": scheduled,
++      local: na("Local has no hosted device grants."),
++    },
++  },
++  deviceCodeProofRestart: {
++    fixtures: "actors",
++    file: "device-code-proof.spec.ts",
++    title: "Device code proof persists through a server restart and refuses expired codes",
++    targets: {
++      cloud: na("The self-host fixture owns restart and stopped-clock control."),
++      "self-host": scheduled,
++      local: na("Local has no device authorization endpoint."),
++    },
++  },
+   cloudRoleHostGrants: {
+     fixtures: "actors",
+     file: "cloud-role-hosts.spec.ts",
+--- /dev/null
++++ b/e2e/tests/device-code-proof.spec.ts
+@@ -0,0 +1,203 @@
++import { expect, layer } from "@effect/vitest";
++import { Crypto, Effect, Redacted, Schema } from "effect";
++import { Base64Url } from "effect/encoding";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
++const Started = Schema.Struct({ device_code: Schema.String, user_code: Schema.String });
++const OAuthError = Schema.Struct({ error: Schema.String });
++const Tokens = Schema.Struct({
++  access_token: Schema.RedactedFromValue(Schema.NonEmptyString),
++  refresh_token: Schema.RedactedFromValue(Schema.NonEmptyString),
++});
++const protocol = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    http = yield* HttpClient.HttpClient,
++    evidence = yield* Evidence;
++  const hosts = targetHosts(yield* Target);
++  const resource = `${hosts.api}/api`;
++  const crypto = yield* Crypto.Crypto;
++  let sequence = 0;
++  const form = (path: string, fields: Record<string, string>) =>
++    Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* http.execute(
++          HttpClientRequest.post(`${hosts.browser}/api/auth${path}`).pipe(
++            HttpClientRequest.bodyUrlParams(fields),
++          ),
++        );
++        const value: unknown = yield* response.json;
++        yield* evidence.json(`proof-${++sequence}.json`, { status: response.status });
++        return { status: response.status, body: value };
++      }),
++    ).pipe(Effect.orDie);
++  const register = Effect.scoped(
++    Effect.gen(function* () {
++      const response = yield* http.execute(
++        yield* HttpClientRequest.bodyJson(
++          HttpClientRequest.post(`${hosts.browser}/api/auth/oauth2/register`),
++          {
++            client_name: "Device proof protocol client",
++            token_endpoint_auth_method: "none",
++            grant_types: [deviceGrant, "refresh_token"],
++            response_types: [],
++            scope: "executor offline_access",
++          },
++        ),
++      );
++      expect(response.status).toBe(201);
++      const value: unknown = yield* response.json;
++      return yield* Schema.decodeUnknownEffect(Schema.Struct({ client_id: Schema.String }))(value);
++    }),
++  ).pipe(Effect.orDie);
++  const { client_id } = yield* register;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      const consents = yield* body(
++        Schema.Array(Schema.Struct({ id: Schema.String })),
++        yield* api.request(actors.owner, "GET", "/api/auth/oauth2/get-consents"),
++      );
++      for (const consent of consents)
++        yield* api.request(actors.owner, "POST", "/api/auth/oauth2/delete-consent", {
++          id: consent.id,
++        });
++    }).pipe(Effect.orDie),
++  );
++  const verifier = Base64Url.encode(yield* crypto.randomBytes(32));
++  const challenge = Base64Url.encode(
++    yield* crypto.digest("SHA-256", new TextEncoder().encode(verifier)),
++  );
++  const start = (
++    proof: Record<string, string> = { code_challenge: challenge, code_challenge_method: "S256" },
++  ) =>
++    form("/oauth2/device-authorization", {
++      client_id,
++      scope: "executor offline_access",
++      resource,
++      ...proof,
++    });
++  const poll = (deviceCode: string, input: Record<string, string> = {}) =>
++    form("/oauth2/token", {
++      grant_type: deviceGrant,
++      device_code: deviceCode,
++      client_id,
++      ...input,
++    });
++  const approve = (userCode: string) =>
++    api.request(
++      actors.owner,
++      "POST",
++      "/api/auth/device/decide",
++      { user_code: userCode, accept: true },
++      { "x-executor-organization": actors.organization.id },
++    );
++  const errorOf = (value: { status: number; body: unknown }) =>
++    Effect.gen(function* () {
++      expect(value.status).toBe(400);
++      return (yield* body(OAuthError, value)).error;
++    });
++  return {
++    api,
++    actors,
++    form,
++    register,
++    start,
++    poll,
++    approve,
++    errorOf,
++    verifier,
++    resource,
++    client_id,
++  };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Device proof", (it) => {
++  it.effect(scenarios.deviceCodeProof.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* protocol;
++        const started = yield* body(Started, yield* p.start());
++        expect(
++          yield* p.errorOf(yield* p.poll(started.device_code, { code_verifier: "x".repeat(43) })),
++        ).toBe("invalid_grant");
++        expect((yield* p.approve(started.user_code)).status).toBe(200);
++        const invalidPolls: ReadonlyArray<Record<string, string>> = [
++          {},
++          { code_verifier: "short" },
++          { code_verifier: "x".repeat(43) },
++        ];
++        for (const input of invalidPolls)
++          expect(yield* p.errorOf(yield* p.poll(started.device_code, input))).toBe("invalid_grant");
++        const other = yield* p.register;
++        expect(
++          yield* p.errorOf(
++            yield* p.poll(started.device_code, {
++              code_verifier: p.verifier,
++              client_id: other.client_id,
++            }),
++          ),
++        ).toBe("invalid_grant");
++        const issued = yield* p.poll(started.device_code, { code_verifier: p.verifier });
++        expect(issued.status).toBe(200);
++        const tokens = yield* body(Tokens, issued);
++        expect(
++          yield* p.errorOf(yield* p.poll(started.device_code, { code_verifier: p.verifier })),
++        ).toBe("invalid_grant");
++        const refreshed = yield* p.form("/oauth2/token", {
++          grant_type: "refresh_token",
++          client_id: p.client_id,
++          refresh_token: Redacted.value(tokens.refresh_token),
++          resource: p.resource,
++        });
++        expect(refreshed.status).toBe(200);
++        const legacy = yield* body(Started, yield* p.start({}));
++        expect((yield* p.approve(legacy.user_code)).status).toBe(200);
++        expect((yield* p.poll(legacy.device_code)).status).toBe(200);
++        const invalidProofs: ReadonlyArray<Record<string, string>> = [
++          { code_challenge: "x".repeat(43), code_challenge_method: "plain" },
++          { code_challenge: "short", code_challenge_method: "S256" },
++          { code_challenge: "x".repeat(43) },
++          { code_challenge_method: "S256" },
++        ];
++        for (const proof of invalidProofs)
++          expect(yield* p.errorOf(yield* p.start(proof))).toBe("invalid_request");
++      }),
++    ),
++  );
++
++  it.effect(scenarios.deviceCodeProofRestart.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* protocol;
++        const approved = yield* body(Started, yield* p.start());
++        expect((yield* p.approve(approved.user_code)).status).toBe(200);
++        yield* serverControl("restart");
++        expect(yield* p.errorOf(yield* p.poll(approved.device_code))).toBe("invalid_grant");
++        expect((yield* p.poll(approved.device_code, { code_verifier: p.verifier })).status).toBe(
++          200,
++        );
++        const expired = yield* body(Started, yield* p.start());
++        yield* serverControl("stop");
++        yield* serverControl("clock/advance", 200, { milliseconds: 601_000 });
++        yield* serverControl("start");
++        expect(
++          yield* p.errorOf(yield* p.poll(expired.device_code, { code_verifier: p.verifier })),
++        ).toBe("expired_token");
++        expect(
++          yield* p.errorOf(yield* p.poll(expired.device_code, { code_verifier: p.verifier })),
++        ).toBe("invalid_grant");
++      }),
++    ),
++  );
++});
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -4,6 +4,7 @@
+ import { defineRequestState } from "@better-auth/core/context";
+ import {
+   oauthProvider,
++  extendOAuthProvider,
+   seedOAuthResources,
+   getOAuthProviderApi,
+   type OAuthOptions,
+@@ -20,6 +21,9 @@
+ import { Clock, Effect, Option, Schema } from "effect";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
+ import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
++import { isNativeGrant, nativeGrants, type NativeGrantHost } from "./native-grants.ts";
++import { deviceVerificationPath } from "../contracts/device.ts";
++export { NativeGrantAccess, NativeGrantPolicy, type NativeGrantHost } from "./native-grants.ts";
+ import {
+   ConnectionId,
+   Grant,
+@@ -186,6 +190,7 @@
+    * Only hosts that serve that page and a signed-in browser session enable it.
+    */
+   readonly deviceAuthorization: boolean;
++  readonly native?: NativeGrantHost;
+ }
+ const accessTokenSeconds = 3600;
+ /** Better Auth's default refresh token lifetime, stated because idle grant expiry follows it. */
+@@ -219,12 +224,23 @@
+ /** Missing grant records fail closed, including credentials issued before this plugin was installed. */
+ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+   const { origin, resourceOrigins } = settings;
++  const resources = [
++    ...settings.resources,
++    ...(settings.native === undefined
++      ? []
++      : [
++          {
++            identifier: settings.native.audience,
++            allowedScopes: ["native", "offline_access"],
++          },
++        ]),
++  ];
+   const options = {
+     issuer: settings.issuer,
+-    scopes: settings.scopes,
+-    resources: settings.resources,
++    scopes: [...settings.scopes, ...(settings.native === undefined ? [] : ["native"])],
++    resources,
+     resourceSeedMode: "manual",
+-    clientRegistrationDefaultResources: settings.resources.map((resource) =>
++    clientRegistrationDefaultResources: resources.map((resource) =>
+       typeof resource === "string" ? resource : resource.identifier,
+     ),
+     allowDynamicClientRegistration: true,
+@@ -280,6 +296,7 @@
+     // audience, and grants still bind each token to exactly one of them.
+     enforcePerClientResources: false,
+   } satisfies OAuthOptions<Scope[]>;
++  const native = settings.native === undefined ? undefined : nativeGrants(settings.native, options);
+   /** Insert a connection's missing resources at every MCP origin; existing rows are kept. */
+   const seedConnectionResources = (context: OAuthResourceSeedContext, connection: ConnectionId) =>
+     seedOAuthResources(context, {
+@@ -453,6 +470,7 @@
+     });
+   const revoke = (ctx: GenericEndpointContext, id: GrantId) =>
+     Effect.gen(function* () {
++      if (isNativeGrant(id) && native !== undefined) yield* native.revoke(ctx, id);
+       yield* authCall(() =>
+         ctx.context.adapter.update({
+           model: "mcpGrant",
+@@ -1031,11 +1049,25 @@
+   const device = deviceAuthorizationPlugin({
+     origin,
+     provider: options,
+-    accepts: (resource) => grantTarget(resourceOrigins, [resource]) !== undefined,
++    accepts: (resource) =>
++      resource === settings.native?.audience ||
++      grantTarget(resourceOrigins, [resource]) !== undefined,
++    requiresProof: (resource) => resource === settings.native?.audience,
++    verificationPath: (resource) =>
++      resource === settings.native?.audience ? "/native/device" : deviceVerificationPath,
+     session: browserSession,
+     approve: (ctx, request) =>
+       Effect.gen(function* () {
+-        const grant = yield* createGrant(ctx, request.userId, request.clientId, [request.resource]);
++        const nativeRequest = request.resource === settings.native?.audience;
++        if (
++          nativeRequest &&
++          (!request.scopes.includes("native") ||
++            request.scopes.some((scope) => scope !== "native" && scope !== "offline_access"))
++        )
++          return yield* Effect.fail(new APIError("BAD_REQUEST"));
++        const grant = yield* nativeRequest && native !== undefined
++          ? native.create(ctx, request.userId, request.clientId)
++          : createGrant(ctx, request.userId, request.clientId, [request.resource]);
+         const now = yield* Clock.currentTimeMillis;
+         yield* authCall(() =>
+           ctx.context.adapter.create({
+@@ -1057,6 +1089,9 @@
+   });
+   const plugin = {
+     id: "executor-grants",
++    init: (ctx) => {
++      if (native !== undefined) extendOAuthProvider(ctx, native.extension);
++    },
+     schema: {
+       mcpGrant: {
+         fields: {
+@@ -1091,6 +1126,28 @@
+       },
+     },
+     endpoints: {
++      getNativeGrantAccess: createAuthEndpoint(
++        "/native/access",
++        { method: "GET", requireHeaders: true },
++        (ctx) =>
++          native === undefined
++            ? Promise.reject(new APIError("NOT_FOUND"))
++            : runAuth(native.authenticate(ctx)),
++      ),
++      revokeNativeGrant: createAuthEndpoint(
++        "/native/revoke",
++        { method: "POST", requireHeaders: true },
++        (ctx) =>
++          native === undefined
++            ? Promise.reject(new APIError("NOT_FOUND"))
++            : runAuth(
++                Effect.gen(function* () {
++                  const access = yield* native.authenticate(ctx);
++                  yield* revoke(ctx, access.id);
++                  return { revoked: true };
++                }),
++              ),
++      ),
+       getMcpGrantAccess: createAuthEndpoint(
+         "/mcp/grant-access",
+         { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },
+@@ -1461,6 +1518,15 @@
+     hooks: {
+       before: [
+         {
++          matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/token",
++          handler: createAuthMiddleware((ctx) =>
++            native !== undefined &&
++            Schema.is(Schema.Struct({ grant_type: Schema.Literal("refresh_token") }))(ctx.body)
++              ? runAuth(native.beforeRefresh(ctx))
++              : Promise.resolve(),
++          ),
++        },
++        {
+           matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/register",
+           handler: createAuthMiddleware(async (ctx) => {
+             const input = Schema.decodeUnknownOption(Registration)(ctx.body);
+@@ -1479,6 +1545,16 @@
+           matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/authorize",
+           handler: createAuthMiddleware(async (ctx) => {
+             const post = ctx.method === "POST";
++            const requested = post ? ctx.body : ctx.query;
++            if (
++              settings.native !== undefined &&
++              Schema.is(Schema.Struct({ resource: Schema.Literal(settings.native.audience) }))(
++                requested,
++              )
++            )
++              throw new APIError("BAD_REQUEST", {
++                message: "Native access requires device authorization.",
++              });
+             const input = Schema.decodeUnknownOption(AuthorizeRequest)(post ? ctx.body : ctx.query);
+             if (
+               Option.isNone(input) ||
+--- /dev/null
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -0,0 +1,250 @@
++import type { GenericEndpointContext } from "@better-auth/core";
++import {
++  getOAuthProviderApi,
++  type OAuthOptions,
++  type OAuthProviderExtension,
++  type Scope,
++} from "@better-auth/oauth-provider";
++import { APIError } from "better-auth/api";
++import { Effect, Schema } from "effect";
++import { GrantId } from "../contracts/grant.ts";
++import { authCall, parse, runAuth } from "./auth-call.ts";
++
++/** Kept outside GrantPolicy so an older server cannot interpret a device as API authority. */
++export const NativeGrantPolicy = Schema.Struct({
++  kind: Schema.Literal("native"),
++  models: Schema.Boolean,
++  computer: Schema.NonEmptyString,
++  pool: Schema.NonEmptyString,
++  toolsOrganization: Schema.optionalKey(Schema.NonEmptyString),
++}).check(Schema.makeFilter((policy) => policy.models || policy.toolsOrganization !== undefined));
++export type NativeGrantPolicy = typeof NativeGrantPolicy.Type;
++export const NativeGrantAccess = Schema.Struct({
++  id: GrantId,
++  userId: Schema.NonEmptyString,
++  clientId: Schema.NonEmptyString,
++  policy: NativeGrantPolicy,
++});
++export type NativeGrantAccess = typeof NativeGrantAccess.Type;
++export interface NativeGrantHost {
++  readonly audience: string;
++  /** Resolve the approving person's pool and optional personal tools, never device input. */
++  readonly approve: (
++    context: GenericEndpointContext,
++    userId: string,
++    grant: GrantId,
++  ) => Effect.Effect<NativeGrantPolicy, APIError>;
++  /** Current membership and the computer's revocation state, checked on issuance and use. */
++  readonly check: (
++    context: GenericEndpointContext,
++    access: NativeGrantAccess,
++  ) => Effect.Effect<void, APIError>;
++  readonly revoke: (
++    context: GenericEndpointContext,
++    access: NativeGrantAccess,
++  ) => Effect.Effect<void, APIError>;
++}
++const Stored = Schema.Struct({
++  id: GrantId,
++  userId: Schema.NonEmptyString,
++  clientId: Schema.NonEmptyString,
++  resource: Schema.NonEmptyString,
++  policy: Schema.String,
++  revoked: Schema.Boolean,
++});
++const Claims = Schema.Struct({
++  sub: Schema.NonEmptyString,
++  client_id: Schema.NonEmptyString,
++  grant_id: GrantId,
++  aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
++  scope: Schema.String,
++  cnf: Schema.optionalKey(Schema.Unknown),
++});
++const Consent = Schema.Struct({
++  resources: Schema.Array(Schema.String),
++  scopes: Schema.Array(Schema.String),
++});
++export const isNativeGrant = (id: string) => id.startsWith("native:");
++const invalid = () => new APIError("UNAUTHORIZED");
++
++/** Better Auth owns tokens; native authority lives in the existing revocable grant record. */
++export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope[]>) => {
++  const stored = (ctx: GenericEndpointContext, id: GrantId) =>
++    Effect.gen(function* () {
++      if (!isNativeGrant(id)) return yield* Effect.fail(invalid());
++      const row = yield* authCall(() =>
++        ctx.context.adapter.findOne({ model: "mcpGrant", where: [{ field: "id", value: id }] }),
++      ).pipe(Effect.flatMap((value) => parse(Stored, value)));
++      if (row.resource !== host.audience) return yield* Effect.fail(invalid());
++      const policy = yield* parse(Schema.fromJsonString(NativeGrantPolicy), row.policy);
++      return {
++        row,
++        access: NativeGrantAccess.make({ id, userId: row.userId, clientId: row.clientId, policy }),
++      };
++    });
++  const read = (ctx: GenericEndpointContext, id: GrantId) =>
++    Effect.gen(function* () {
++      const { row, access } = yield* stored(ctx, id);
++      if (row.revoked) return yield* Effect.fail(invalid());
++      const consent = yield* authCall(() =>
++        ctx.context.adapter.findOne({
++          model: "oauthConsent",
++          where: [
++            { field: "userId", value: row.userId },
++            { field: "clientId", value: row.clientId },
++            { field: "referenceId", value: id },
++          ],
++        }),
++      ).pipe(Effect.flatMap((value) => parse(Consent, value)));
++      if (
++        consent.resources.length !== 1 ||
++        consent.resources[0] !== host.audience ||
++        !consent.scopes.includes("native") ||
++        consent.scopes.some((scope) => scope !== "native" && scope !== "offline_access")
++      )
++        return yield* Effect.fail(invalid());
++      yield* host.check(ctx, access);
++      return access;
++    }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid())));
++  const checkIssue = (
++    ctx: GenericEndpointContext,
++    id: string | undefined,
++    resources: readonly string[] | undefined,
++    scopes: readonly string[],
++    userId: string | undefined,
++    clientId: string,
++  ) =>
++    Effect.gen(function* () {
++      const native = id !== undefined && isNativeGrant(id);
++      const audience = resources?.includes(host.audience) === true;
++      if (!native && !audience) return;
++      if (
++        !native ||
++        id === undefined ||
++        resources?.length !== 1 ||
++        !audience ||
++        !scopes.includes("native") ||
++        scopes.some((scope) => scope !== "native" && scope !== "offline_access")
++      )
++        return yield* Effect.fail(invalid());
++      const access = yield* read(ctx, GrantId.make(id));
++      if (access.userId !== userId || access.clientId !== clientId)
++        return yield* Effect.fail(invalid());
++    });
++  const extension: OAuthProviderExtension = {
++    claims: {
++      accessToken: (input) =>
++        runAuth(
++          checkIssue(
++            input.ctx,
++            input.referenceId,
++            input.resources,
++            input.scopes,
++            input.user?.id,
++            input.client.clientId,
++          ).pipe(Effect.as({})),
++        ),
++    },
++  };
++  return {
++    extension,
++    revoke: (ctx: GenericEndpointContext, id: GrantId) =>
++      stored(ctx, id).pipe(Effect.flatMap(({ access }) => host.revoke(ctx, access))),
++    create: (ctx: GenericEndpointContext, userId: string, clientId: string) =>
++      Effect.gen(function* () {
++        const id = GrantId.make(`native:${crypto.randomUUID()}`);
++        const policy = yield* host.approve(ctx, userId, id);
++        const row = yield* authCall(() =>
++          ctx.context.adapter.create({
++            model: "mcpGrant",
++            forceAllowId: true,
++            data: {
++              id,
++              userId,
++              clientId,
++              resource: host.audience,
++              policy: JSON.stringify(policy),
++              revoked: false,
++            },
++          }),
++        ).pipe(
++          Effect.catch((error) =>
++            host
++              .revoke(ctx, NativeGrantAccess.make({ id, userId, clientId, policy }))
++              .pipe(Effect.andThen(Effect.fail(error))),
++          ),
++        );
++        return yield* parse(Stored, row);
++      }),
++    authenticate: (ctx: GenericEndpointContext) =>
++      Effect.gen(function* () {
++        const token = ctx.headers?.get("authorization")?.match(/^Bearer ([^\s]+)$/iu)?.[1];
++        if (token === undefined) return yield* Effect.fail(invalid());
++        const payload = yield* authCall(() =>
++          Promise.resolve(getOAuthProviderApi(ctx, provider).requireActiveAccessToken(token)),
++        );
++        const claims = yield* parse(Claims, payload);
++        const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
++        const scopes = claims.scope.split(" ");
++        if (
++          claims.cnf !== undefined ||
++          audiences.length !== 1 ||
++          audiences[0] !== host.audience ||
++          !scopes.includes("native") ||
++          scopes.some((scope) => scope !== "native" && scope !== "offline_access")
++        )
++          return yield* Effect.fail(invalid());
++        const access = yield* read(ctx, claims.grant_id);
++        if (access.userId !== claims.sub || access.clientId !== claims.client_id)
++          return yield* Effect.fail(invalid());
++        return access;
++      }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid()))),
++    /** Rotation's replay cache can return tokens without invoking claim contributors again. */
++    beforeRefresh: (ctx: GenericEndpointContext) =>
++      Effect.gen(function* () {
++        const body = yield* parse(
++          Schema.Struct({
++            refresh_token: Schema.NonEmptyString,
++            resource: Schema.optionalKey(Schema.String),
++          }),
++          ctx.body,
++        );
++        const api = getOAuthProviderApi(ctx, provider);
++        const hash = yield* authCall(() =>
++          Promise.resolve(api.hashToken(body.refresh_token, "refresh_token")),
++        );
++        const row = yield* authCall(() =>
++          ctx.context.adapter.findOne({
++            model: "oauthRefreshToken",
++            where: [{ field: "token", value: hash }],
++          }),
++        );
++        const token = yield* parse(
++          Schema.NullOr(
++            Schema.Struct({
++              referenceId: Schema.optionalKey(Schema.NullOr(GrantId)),
++            }),
++          ),
++          row,
++        );
++        if (
++          token?.referenceId === undefined ||
++          token.referenceId === null ||
++          !isNativeGrant(token.referenceId)
++        )
++          return;
++        if (body.resource !== undefined && body.resource !== host.audience)
++          return yield* Effect.fail(invalid());
++        yield* read(ctx, token.referenceId);
++      }).pipe(
++        Effect.mapError((error) =>
++          error.statusCode === 503
++            ? error
++            : new APIError("BAD_REQUEST", {
++                error: "invalid_grant",
++                error_description: "This native device grant is no longer available.",
++              }),
++        ),
++      ),
++  };
++};
+--- a/apps/hosted/server/src/implementation/mcp-oauth.ts
++++ b/apps/hosted/server/src/implementation/mcp-oauth.ts
+@@ -11,7 +11,8 @@
+ /** Hosted membership composes with the shared OAuth grant lifecycle. */
+ import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
+ import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
+-import { Effect, Option, Schema } from "effect";
++import { Effect, Option, Schema, type Redacted } from "effect";
++import { nativeGrantHost } from "./native-grant-host.ts";
+ import {
+   grantOAuthPlugins,
+   authCall,
+@@ -20,6 +21,7 @@
+   type GrantOAuthOptions,
+   type RefreshRejection,
+   type OAuthResourceSeedContext,
++  type NativeGrantHost,
+ } from "@executor-js/mcp-auth/oauth";
+ import { AuthenticationUnavailable } from "../contracts/auth.ts";
+ import {
+@@ -75,7 +77,8 @@
+ export type GrantObservers = Pick<GrantOAuthOptions, "onRefreshRejected" | "onGrantCreated">;
+ 
+ /** The hosted grant's origins plus the host's grant observers. */
+-export type HostedOAuthOptions = HostedOAuthOrigins & GrantObservers;
++export type HostedOAuthOptions = HostedOAuthOrigins &
++  GrantObservers & { readonly native?: NativeGrantHost | undefined };
+ 
+ const hostedGrantOAuth = ({
+   origin,
+@@ -83,6 +86,7 @@
+   issuer,
+   onRefreshRejected,
+   onGrantCreated,
++  native,
+ }: HostedOAuthOptions) =>
+   grantOAuthPlugins({
+     origin,
+@@ -90,6 +94,7 @@
+     issuer,
+     onRefreshRejected,
+     onGrantCreated,
++    ...(native === undefined ? {} : { native }),
+     scopes: ["mcp", "executor", "offline_access"],
+     // The CLI signs in on machines without a browser, approving on the dashboard's device page.
+     deviceAuthorization: true,
+@@ -181,7 +186,13 @@
+ export const provisionHostedOAuthResources = (
+   origins: HostedOAuthOrigins,
+   context: OAuthResourceSeedContext,
+-) => hostedGrantOAuth(origins).provisionResources(context);
++  nativeSigningKey: Option.Option<Redacted.Redacted<string>> = Option.none(),
++  nativePoolOrigin?: string,
++) =>
++  hostedGrantOAuth({
++    ...origins,
++    native: nativeGrantHost(nativeSigningKey, origins.origin, nativePoolOrigin),
++  }).provisionResources(context);
+ 
+ /**
+  * Insert one existing connection's missing resources at every resource origin, as a new
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -10,10 +10,11 @@
+ import { RequireOrganization } from "../contracts/organization.ts";
+ import { explicitOrganizationAuth } from "./organization-auth.ts";
+ import { mcpOAuthPlugins, type GrantObservers } from "./mcp-oauth.ts";
++import { nativeGrantHost } from "./native-grant-host.ts";
+ import type { ResourceOrigins } from "@executor-js/mcp-auth";
+ import type { BetterAuthOptions } from "better-auth";
+ import { admin } from "better-auth/plugins/admin";
+-import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
++import { Config, ErrorReporter, Effect, Layer, Option, Redacted, Schema } from "effect";
+ import { HttpUrl } from "@executor-js/sdk/core";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+ import {
+@@ -45,6 +46,8 @@
+   url: Config.String("BETTER_AUTH_URL"),
+   secret: Config.Redacted("BETTER_AUTH_SECRET"),
+   oauthRedirectUri: Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(Config.option),
++  nativeSigningKey: Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++  nativePoolOrigin: Config.String("BASALT_POOL_ORIGIN").pipe(Config.option),
+ }).pipe(
+   Effect.flatMap(
+     Schema.decodeUnknownEffect(
+@@ -66,6 +69,8 @@
+         ),
+         secret: Schema.Redacted(Schema.String.check(Schema.isMinLength(32))),
+         oauthRedirectUri: Schema.Option(HttpUrl),
++        nativeSigningKey: Schema.Option(Schema.Redacted(Schema.String)),
++        nativePoolOrigin: Schema.Option(HttpUrl),
+       }),
+     ),
+   ),
+@@ -83,6 +88,8 @@
+     readonly issuer: string;
+     /** The name sign-in presents, such as in authenticator apps; Executor when unset. */
+     readonly brand?: ProductBrand;
++    readonly nativeSigningKey?: Option.Option<Redacted.Redacted<string>>;
++    readonly nativePoolOrigin?: Option.Option<string>;
+   },
+   ipAddressHeaders: string[],
+   observers: GrantObservers = {},
+@@ -103,6 +110,11 @@
+         origin: settings.url,
+         resourceOrigins: settings.resourceOrigins,
+         issuer: settings.issuer,
++        native: nativeGrantHost(
++          settings.nativeSigningKey ?? Option.none(),
++          settings.url,
++          Option.getOrUndefined(settings.nativePoolOrigin ?? Option.none()),
++        ),
+         ...observers,
+       }),
+     ],
+--- a/apps/hosted/cloud/src/implementation/auth-options.ts
++++ b/apps/hosted/cloud/src/implementation/auth-options.ts
+@@ -119,6 +119,8 @@
+     emulators,
+     ...social,
+     chatGpt: yield* chatGptSettings,
++    nativeSigningKey: yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++    nativePoolOrigin: yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option),
+   };
+ });
+ 
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -0,0 +1,191 @@
++import type { GenericEndpointContext } from "@better-auth/core";
++import {
++  NativeGrantAccess,
++  NativeGrantPolicy,
++  authCall,
++  type NativeGrantHost,
++} from "@executor-js/mcp-auth/oauth";
++import { APIError } from "better-auth/api";
++import { Clock, Effect, Option, Redacted, Schema } from "effect";
++import { signEnvelope } from "./pool-token.ts";
++import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
++
++const Created = Schema.Struct({
++  computer: Schema.Struct({ id: Schema.NonEmptyString }),
++  pool: Schema.NonEmptyString,
++  models: Schema.Boolean,
++  toolsOrganization: Schema.optionalKey(Schema.NonEmptyString),
++});
++const Membership = Schema.Struct({ role: Schema.String });
++
++const control = <A>(
++  secret: Redacted.Redacted<string>,
++  origin: string,
++  action: string,
++  value: Readonly<Record<string, unknown>>,
++  schema: Schema.Decoder<A>,
++) =>
++  Effect.gen(function* () {
++    const at = yield* Clock.currentTimeMillis;
++    const envelope = yield* authCall(() =>
++      signEnvelope(Redacted.value(secret), nativeControlPrefix, {
++        ...value,
++        action,
++        expiresAt: at + 30_000,
++      }),
++    );
++    const response = yield* authCall(() =>
++      fetch(new URL(nativeControlPath, origin), {
++        method: "POST",
++        headers: { "content-type": "application/json" },
++        body: JSON.stringify({ envelope }),
++        redirect: "error",
++        signal: AbortSignal.timeout(15_000),
++      }),
++    );
++    if (!response.ok) {
++      yield* authCall(() => response.body?.cancel() ?? Promise.resolve());
++      return yield* Effect.fail(
++        new APIError(
++          response.status === 401 || response.status === 403
++            ? "UNAUTHORIZED"
++            : "SERVICE_UNAVAILABLE",
++        ),
++      );
++    }
++    const body: unknown = yield* authCall(() => response.json());
++    return yield* Schema.decodeUnknownEffect(schema)(body).pipe(
++      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
++    );
++  });
++const computerIdentity = (access: NativeGrantAccess) => ({
++  user: access.userId,
++  grant: access.id,
++  computer: access.policy.computer,
++  pool: access.policy.pool,
++});
++export const checkNativeComputer = (
++  secret: Redacted.Redacted<string>,
++  origin: string,
++  access: NativeGrantAccess,
++) =>
++  control(
++    secret,
++    origin,
++    "check",
++    computerIdentity(access),
++    Schema.Struct({ active: Schema.Literal(true) }),
++  ).pipe(Effect.asVoid);
++
++const membership = (ctx: GenericEndpointContext, userId: string, organization: string) =>
++  authCall(() =>
++    ctx.context.adapter.findOne({
++      model: "member",
++      where: [
++        { field: "userId", value: userId },
++        { field: "organizationId", value: organization },
++      ],
++    }),
++  ).pipe(
++    Effect.flatMap((row) => Schema.decodeUnknownEffect(Membership)(row)),
++    Effect.mapError(() => new APIError("UNAUTHORIZED")),
++    Effect.asVoid,
++  );
++
++/** The approving browser selects a pool; the grant keeps its models and personal tools separate. */
++export const nativeGrantHost = (
++  key: Option.Option<Redacted.Redacted<string>>,
++  origin: string,
++  poolOrigin = origin,
++): NativeGrantHost | undefined => {
++  if (Option.isNone(key)) return undefined;
++  const secret = key.value;
++  return {
++    audience: `${origin}/native`,
++    approve: (ctx, userId, grant) =>
++      Effect.gen(function* () {
++        const intent = ctx.headers?.get("x-basalt-native-intent");
++        const name = ctx.headers?.get("x-basalt-native-name");
++        const pool = ctx.headers?.get("x-basalt-native-pool") ?? undefined;
++        const tools = ctx.headers?.get("x-basalt-native-tools") ?? "true";
++        const models = ctx.headers?.get("x-basalt-native-models") ?? "true";
++        if (
++          !intent ||
++          !name ||
++          !["true", "false"].includes(tools) ||
++          !["true", "false"].includes(models) ||
++          (models === "false" && tools === "false")
++        )
++          return yield* Effect.fail(
++            new APIError("BAD_REQUEST", {
++              message: "Choose a device name, pool and tools access.",
++            }),
++          );
++        const created = yield* control(
++          secret,
++          poolOrigin,
++          "register",
++          {
++            user: userId,
++            grant,
++            intent,
++            name,
++            pool,
++            tools: tools === "true",
++            models: models === "true",
++          },
++          Created,
++        );
++        const access = NativeGrantAccess.make({
++          id: grant,
++          userId,
++          clientId: "pending",
++          policy: NativeGrantPolicy.make({
++            kind: "native",
++            models: created.models,
++            computer: created.computer.id,
++            pool: created.pool,
++            ...(created.toolsOrganization === undefined
++              ? {}
++              : { toolsOrganization: created.toolsOrganization }),
++          }),
++        });
++        const validate = Effect.gen(function* () {
++          if (
++            (tools === "true") !== (created.toolsOrganization !== undefined) ||
++            created.models !== (models === "true")
++          )
++            return yield* Effect.fail(new APIError("FORBIDDEN"));
++          const organization = created.toolsOrganization;
++          if (organization === undefined) return;
++          yield* membership(ctx, userId, organization);
++        });
++        yield* validate.pipe(
++          Effect.catch((error) =>
++            control(
++              secret,
++              poolOrigin,
++              "revoke",
++              computerIdentity(access),
++              Schema.Struct({ revoked: Schema.Literal(true) }),
++            ).pipe(Effect.andThen(Effect.fail(error))),
++          ),
++        );
++        return access.policy;
++      }),
++    check: (ctx, access) =>
++      Effect.gen(function* () {
++        if (access.policy.toolsOrganization !== undefined)
++          yield* membership(ctx, access.userId, access.policy.toolsOrganization);
++        yield* checkNativeComputer(secret, poolOrigin, access);
++      }),
++    revoke: (_ctx, access) =>
++      control(
++        secret,
++        poolOrigin,
++        "revoke",
++        computerIdentity(access),
++        Schema.Struct({ revoked: Schema.Literal(true) }),
++      ).pipe(Effect.asVoid),
++  };
++};
+--- a/apps/hosted/server/src/implementation/bearer-access.ts
++++ b/apps/hosted/server/src/implementation/bearer-access.ts
+@@ -15,17 +15,19 @@
+  * with the database clock.
+  */
+ import { defaultKeyHasher } from "@better-auth/api-key";
+-import type { AuthorizationPolicy } from "@executor-js/authorization";
++import { selectedAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
++import { NativeGrantAccess, NativeGrantPolicy } from "@executor-js/mcp-auth/oauth";
++import { checkNativeComputer } from "./native-grant-host.ts";
+ import {
+   GrantId,
+   GrantPolicy,
+   grantAuthorization,
+   grantTarget,
+   type ApprovalMode,
+-  type GrantTarget,
++  GrantTarget,
+ } from "@executor-js/mcp-auth";
+ import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
+-import { Clock, Context, Effect, Option, Schema } from "effect";
++import { Clock, Config, Context, Effect, Option, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { ApiKeyId, ApiKeyMetadata } from "../contracts/api-keys.ts";
+ import {
+@@ -183,6 +185,8 @@
+   grantRevoked: Schema.NullOr(Schema.Boolean),
+   grantConnection: Schema.NullOr(Schema.String),
+   consentResources: Schema.NullOr(Schema.String),
++  consentScopes: Schema.NullOr(Schema.String),
++  memberships: Schema.String,
+   role: Schema.NullOr(Schema.String),
+   organizationSlug: Schema.NullOr(Schema.String),
+   connectionId: Schema.NullOr(Schema.String),
+@@ -240,6 +244,11 @@
+     g.revoked as "grantRevoked",
+     g.connection as "grantConnection",
+     consent.resources::text as "consentResources",
++    consent.scopes::text as "consentScopes",
++    (select coalesce(json_agg(json_build_object(
++        'organization', nm."organizationId", 'role', nm.role, 'slug', no.slug)), '[]'::json)::text
++      from member nm left join organization no on no.id = nm."organizationId"
++      where nm."userId" = g."userId") as memberships,
+     m.role as role,
+     o.slug as "organizationSlug",
+     mc.id as "connectionId",
+@@ -255,7 +264,7 @@
+   left join "user" u on u.id = t."userId"
+   left join "mcpGrant" g on g.id = t."referenceId"
+   left join lateral (
+-    select resources from "oauthConsent"
++    select resources, scopes from "oauthConsent"
+     where "userId" = g."userId" and "clientId" = g."clientId" and "referenceId" = g.id
+     limit 1) consent on true
+   left join member m on m."userId" = g."userId" and m."organizationId" = g.resource
+@@ -269,7 +278,7 @@
+   { origin, resourceOrigins }: HostedOAuthOrigins,
+   kind: "mcp" | "api",
+   token: string,
+-  request: BearerRequest,
++  request: BearerRequest & { readonly mode?: ApprovalMode | undefined },
+ ) =>
+   Effect.gen(function* () {
+     const header = request.headers.get("x-executor-organization");
+@@ -336,6 +345,80 @@
+       return yield* unauthorized;
+     // The consent's one resource, at any of this deployment's origins, is the token's audience.
+     const consented = row.consentResources === null ? [] : (strings(row.consentResources) ?? []);
++    if (grantId.startsWith("native:")) {
++      const nativeAudience = `${origin}/native`;
++      const consentScopes = strings(row.consentScopes) ?? [];
++      if (
++        kind !== "mcp" ||
++        (request.mode ?? "model") !== "model" ||
++        row.grantConnection !== null ||
++        audiences.length !== 1 ||
++        audiences[0] !== nativeAudience ||
++        consented.length !== 1 ||
++        consented[0] !== nativeAudience ||
++        row.grantResource !== nativeAudience ||
++        !scopes.includes("native") ||
++        !consentScopes.includes("native") ||
++        scopes.some(
++          (scope) =>
++            !consentScopes.includes(scope) || (scope !== "native" && scope !== "offline_access"),
++        ) ||
++        consentScopes.some((scope) => scope !== "native" && scope !== "offline_access")
++      )
++        return yield* unauthorized;
++      const native = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(NativeGrantPolicy))(
++        row.grantPolicy,
++      ).pipe(Effect.mapError(() => unauthorized));
++      const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
++        native.toolsOrganization,
++      ).pipe(Effect.mapError(() => forbidden("membership")));
++      const memberships = yield* Schema.decodeUnknownEffect(Memberships)(
++        jsonText(row.memberships),
++      ).pipe(Effect.mapError(() => unavailable));
++      const member = memberships.find((member) => member.organization === organization);
++      const role = yield* Schema.decodeUnknownEffect(OrganizationRole)(member?.role).pipe(
++        Effect.mapError(() => forbidden("membership")),
++      );
++      const requested = yield* requestedOrganization(
++        request,
++        header,
++        row.urlOrganizations,
++        row.headerOrganizations,
++      );
++      if (requested !== undefined && requested !== organization)
++        return yield* forbidden("organization_mismatch");
++      const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(
++        Config.option,
++        Effect.mapError(() => unavailable),
++      );
++      if (Option.isNone(key)) return yield* unauthorized;
++      const poolOrigin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(
++        Config.withDefault(origin),
++        Effect.mapError(() => unavailable),
++      );
++      yield* checkNativeComputer(
++        key.value,
++        poolOrigin,
++        NativeGrantAccess.make({
++          id: grantId,
++          userId: row.subject,
++          clientId: row.tokenClient,
++          policy: native,
++        }),
++      ).pipe(Effect.mapError((error) => (error.statusCode === 503 ? unavailable : unauthorized)));
++      return {
++        userId: row.subject,
++        clientId: row.tokenClient,
++        grant: {
++          id: grantId,
++          policy: GrantPolicy.make({ kind: "all" }),
++          target: GrantTarget.make({ kind: "mcp", mode: "model" }),
++        },
++        policy: selectedAuthority(["discover", "run"], { kind: "all" }),
++        access: { organization, owner: organizationOwner(organization), role },
++        organizationSlug: member?.slug ?? null,
++      };
++    }
+     const target: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
+     if (target === undefined) return yield* unauthorized;
+     if (
+@@ -383,6 +466,7 @@
+       userId: row.subject,
+       clientId: row.tokenClient,
+       grant: { id: grantId, policy, target },
++      policy: grantAuthorization(policy),
+       access: { organization, owner: organizationOwner(organization), role },
+       organizationSlug: row.organizationSlug,
+     };
+@@ -556,7 +640,7 @@
+         userId: grant.userId,
+         clientId: grant.clientId,
+         grant: grant.grant,
+-        policy: grantAuthorization(grant.grant.policy),
++        policy: grant.policy,
+         access: grant.access,
+       });
+     }
+@@ -605,7 +689,7 @@
+           Effect.map((grant) => ({
+             userId: grant.userId,
+             access: grant.access,
+-            policy: grantAuthorization(grant.grant.policy),
++            policy: grant.policy,
+             organizationSlug: grant.organizationSlug,
+           })),
+         );
+--- a/apps/hosted/self-host/src/auth.ts
++++ b/apps/hosted/self-host/src/auth.ts
+@@ -55,9 +55,12 @@
+     resourceOrigins: settings.resourceOrigins,
+     issuer: settings.issuer,
+   };
+-  yield* provisionHostedOAuthResources(origins, context).pipe(
+-    Effect.mapError(() => new AuthenticationUnavailable()),
+-  );
++  yield* provisionHostedOAuthResources(
++    origins,
++    context,
++    settings.nativeSigningKey,
++    Option.getOrUndefined(settings.nativePoolOrigin),
++  ).pipe(Effect.mapError(() => new AuthenticationUnavailable()));
+   const identity = Layer.succeed(Authentication, {
+     ...origins,
+     oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
+--- a/apps/hosted/cloud/src/implementation/auth-provisioning.ts
++++ b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
+@@ -4,7 +4,7 @@
+ import { provisionHostedOAuthResources } from "@executor-js/hosted-server";
+ import { databaseUrl } from "@executor-js/hosted-server/database";
+ import { migrationFailed } from "@executor-js/hosted-server/migrations";
+-import { Config, Duration, Effect, Redacted } from "effect";
++import { Config, Duration, Effect, Option, Redacted } from "effect";
+ import { unavailableAuthEmail } from "../contracts/email.ts";
+ import { cloudAuthOptions, cloudAuthSettings } from "./auth-options.ts";
+ import { migrationLimits, migrationSessionSettings } from "./migration-guard.ts";
+@@ -56,9 +56,12 @@
+     catch: migrationFailed("auth"),
+   });
+   const provision = Effect.gen(function* () {
+-    yield* provisionHostedOAuthResources(origins, yield* context).pipe(
+-      Effect.mapError(migrationFailed("auth")),
+-    );
++    yield* provisionHostedOAuthResources(
++      origins,
++      yield* context,
++      settings.nativeSigningKey,
++      Option.getOrUndefined(settings.nativePoolOrigin),
++    ).pipe(Effect.mapError(migrationFailed("auth")));
+   });
+   return { url, options, origins, context, provision };
+ });
+--- a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
+@@ -11,7 +11,7 @@
+ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
+ import { RuntimeContext } from "alchemy";
+ import { betterAuth } from "better-auth";
+-import { Effect, Layer, Option, Redacted } from "effect";
++import { Config, Effect, Layer, Option, Redacted } from "effect";
+ import type { SqlClient } from "effect/sql";
+ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+ import {
+@@ -35,9 +35,18 @@
+   { origin, resourceOrigins, issuer }: HostedOAuthOrigins,
+   database: AuthDatabaseService,
+   secret: string,
++  nativeSigningKey: Option.Option<Redacted.Redacted<string>>,
++  nativePoolOrigin: Option.Option<string>,
+ ) => {
+   const base = authOptions(
+-    { url: origin, resourceOrigins, issuer, oauthRedirectUri: Option.none() },
++    {
++      url: origin,
++      resourceOrigins,
++      issuer,
++      oauthRedirectUri: Option.none(),
++      nativeSigningKey,
++      nativePoolOrigin,
++    },
+     ["cf-connecting-ip"],
+   );
+   return betterAuth({
+@@ -169,9 +178,20 @@
+   };
+   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
+   const database = yield* AuthDatabase;
++  const nativeSigningKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const nativePoolOrigin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option);
+   let instance: ReturnType<typeof mcpGrantAuth> | undefined;
+   const native = secrets.authSecret.pipe(
+-    Effect.map((secret) => (instance ??= mcpGrantAuth(origins, database, Redacted.value(secret)))),
++    Effect.map(
++      (secret) =>
++        (instance ??= mcpGrantAuth(
++          origins,
++          database,
++          Redacted.value(secret),
++          nativeSigningKey,
++          nativePoolOrigin,
++        )),
++    ),
+   );
+   return mcpAuthentication(
+     origins,
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -49,6 +49,8 @@
+ const maxClockOffset = 40 * 86_400_000;
+ /** Operator settings a scenario may turn on between product generations. */
+ export const OperatorSettings = Schema.Struct({
++  POOL_APP_SIGNING_KEY: Schema.optionalKey(Schema.NonEmptyString),
++  BASALT_POOL_ORIGIN: Schema.optionalKey(Schema.NonEmptyString),
+   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
+   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
+   EXECUTOR_PRODUCT_NAME: Schema.optionalKey(Schema.NonEmptyString),
+--- /dev/null
++++ b/e2e/tests/native-grants.spec.ts
+@@ -0,0 +1,238 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { deployMcpApp } from "../support/mcp-app.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { App } from "../support/contracts.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import {
++  approveNative,
++  NativeAccess,
++  NativeTokens,
++  startNativeProtocol,
++} from "../support/native-grants.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Native grants", (it) => {
++  it.effect(scenarios.nativeGrantLifecycle.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          evidence = yield* Evidence,
++          mcp = yield* McpClient;
++        const p = yield* startNativeProtocol(actors.owner);
++        expect((yield* p.start(false)).status).toBe(400);
++        const tokens = yield* approveNative(p, true, false);
++        const access = yield* body(NativeAccess, yield* p.access(tokens));
++        expect(access.policy.models).toBe(false);
++        expect(access.policy.pool).toBe(p.pool);
++        expect(access.policy.toolsOrganization).toBe(actors.organization.id);
++        expect(access.id.startsWith("native:")).toBe(true);
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "GET",
++            `${prefix}/inventory`,
++            undefined,
++            p.headers(tokens.access_token),
++          )).status,
++        ).toBe(401);
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "POST",
++            "/api/auth/api-key/create",
++            { name: "Must not widen" },
++            p.headers(tokens.access_token),
++          )).status,
++        ).toBe(403);
++        const { receipt } = yield* deployMcpApp;
++        const deployment = yield* p.api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Native approval evidence",
++          files: [
++            {
++              path: "index.ts",
++              content: `import { mutation, defineApp, object, string, router } from "apps";
++import { always } from "apps/operations/approval";
++export default defineApp({}, { tools: router({
++  echo: mutation({ input: object({ message: string() }) }, async (_, input) => ({ ...input, receipt: ${JSON.stringify(receipt)} })),
++  approved: mutation({ input: object({}), approval: always() }, async () => ({ receipt: ${JSON.stringify(receipt)} })),
++}) });`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployment.status).toBe(200);
++        const app = yield* body(App, deployment);
++        yield* Effect.addFinalizer(() =>
++          p.api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const client = yield* mcp.connect(tokens.access_token, "native-grant");
++        const call = () =>
++          client.use("Execute through a native tools grant", (client, signal) =>
++            client.callTool(
++              {
++                name: "execute",
++                arguments: {
++                  code: `return await tools[${JSON.stringify(app.slug)}].echo({message:"native client"})`,
++                },
++              },
++              undefined,
++              { signal },
++            ),
++          );
++        const result = yield* call();
++        yield* evidence.json("native-tool-result.json", result);
++        const content = JSON.stringify(result);
++        expect(content).toContain(receipt);
++        expect(content).toContain("native client");
++        const paused = yield* client.use("Native grants preserve tool approval", (client, signal) =>
++          client.callTool(
++            {
++              name: "execute",
++              arguments: { code: `return await tools[${JSON.stringify(app.slug)}].approved({})` },
++            },
++            undefined,
++            { signal },
++          ),
++        );
++        const pending = yield* Schema.decodeUnknownEffect(
++          Schema.Struct({ status: Schema.Literal("approval-required"), requestId: Schema.String }),
++        )(paused.structuredContent);
++        const otherTokens = yield* approveNative(p, true, false);
++        const otherClient = yield* mcp.connect(otherTokens.access_token, "other-native-grant");
++        const wrong = yield* otherClient.use(
++          "Another grant cannot answer this approval",
++          (client, signal) =>
++            client.callTool(
++              {
++                name: "resume",
++                arguments: { requestId: pending.requestId, response: { action: "accept" } },
++              },
++              undefined,
++              { signal },
++            ),
++        );
++        expect(
++          (yield* Schema.decodeUnknownEffect(Schema.Struct({ status: Schema.String }))(
++            wrong.structuredContent,
++          )).status,
++        ).toBe("unavailable");
++        const resumed = yield* client.use(
++          "The original native grant answers its approval",
++          (client, signal) =>
++            client.callTool(
++              {
++                name: "resume",
++                arguments: { requestId: pending.requestId, response: { action: "accept" } },
++              },
++              undefined,
++              { signal },
++            ),
++        );
++        expect(JSON.stringify(resumed.structuredContent)).toContain(receipt);
++        const refreshed = yield* p.refresh(tokens);
++        expect(refreshed.status).toBe(200);
++        const renewed = yield* body(NativeTokens, refreshed);
++        expect((yield* body(NativeAccess, yield* p.access(renewed))).id).toBe(access.id);
++        expect(
++          (yield* p.refresh(renewed, { resource: `${new URL(p.resource).origin}/api` })).status,
++        ).toBe(400);
++        yield* serverControl("restart");
++        expect((yield* body(NativeAccess, yield* p.access(renewed))).policy).toEqual(access.policy);
++        expect(yield* p.upstream.created).toBe(2);
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "POST",
++            "/api/auth/native/revoke",
++            {},
++            p.headers(renewed.access_token),
++          )).status,
++        ).toBe(200);
++        expect((yield* p.access(renewed)).status).toBe(401);
++        expect((yield* p.refresh(renewed)).status).toBe(400);
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "GET",
++            "/mcp",
++            undefined,
++            p.headers(tokens.access_token),
++          )).status,
++        ).toBe(401);
++      }).pipe(Effect.provide(McpClient.layer)),
++    ),
++  );
++
++  it.effect(scenarios.nativeGrantRefreshRefusal.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const p = yield* startNativeProtocol(actors.member);
++        const tokens = yield* approveNative(p);
++        const first = yield* p.refresh(tokens);
++        expect(first.status).toBe(200);
++        const renewed = yield* body(NativeTokens, first);
++        expect((yield* p.access(renewed)).status).toBe(200);
++        yield* p.upstream.refuse(true);
++        // The old refresh token would hit Better Auth's successful-rotation replay cache.
++        expect((yield* p.refresh(tokens)).status).toBe(400);
++        expect((yield* p.access(renewed)).status).toBe(401);
++        yield* p.upstream.refuse(false);
++        expect((yield* p.refresh(tokens)).status).toBe(200);
++        const member = yield* body(
++          Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
++          yield* p.api.request(actors.member, "GET", "/api/auth/get-session"),
++        );
++        expect(
++          (yield* p.api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
++            organizationId: actors.organization.id,
++            memberIdOrEmail: member.user.email,
++          })).status,
++        ).toBe(200);
++        expect((yield* p.refresh(tokens)).status).toBe(400);
++        expect((yield* p.refresh(renewed)).status).toBe(400);
++        expect((yield* p.access(renewed)).status).toBe(401);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.nativeGrantModelsOnly.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const p = yield* startNativeProtocol(actors.owner);
++        const tokens = yield* approveNative(p, false);
++        const access = yield* body(NativeAccess, yield* p.access(tokens));
++        expect(access.policy.toolsOrganization).toBeUndefined();
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "GET",
++            "/mcp",
++            undefined,
++            p.headers(tokens.access_token),
++          )).status,
++        ).toBe(403);
++        yield* serverControl("stop");
++        yield* serverControl("clock/advance", 200, { milliseconds: 3_601_000 });
++        yield* serverControl("start");
++        expect((yield* p.access(tokens)).status).toBe(401);
++        const refreshed = yield* p.refresh(tokens);
++        expect(refreshed.status).toBe(200);
++        const renewed = yield* body(NativeTokens, refreshed);
++        expect((yield* p.access(renewed)).status).toBe(200);
++        expect((yield* body(NativeAccess, yield* p.access(renewed))).policy).toEqual(access.policy);
++      }),
++    ),
++  );
++});
+--- /dev/null
++++ b/e2e/support/native-grants.ts
+@@ -0,0 +1,153 @@
++import { expect } from "@effect/vitest";
++import { Crypto, Effect, Redacted, Schema } from "effect";
++import { Base64Url } from "effect/encoding";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { Actors } from "./actors.ts";
++import { Api, body, type Session } from "./api.ts";
++import { Target } from "./platform.ts";
++import { targetHosts } from "./role-hosts.ts";
++import { serverControl } from "./server-control.ts";
++import { nativePool } from "./native-pool.ts";
++
++export const NativeTokens = Schema.Struct({
++  access_token: Schema.RedactedFromValue(Schema.NonEmptyString),
++  refresh_token: Schema.RedactedFromValue(Schema.NonEmptyString),
++});
++export const NativeAccess = Schema.Struct({
++  id: Schema.String,
++  policy: Schema.Struct({
++    kind: Schema.Literal("native"),
++    models: Schema.Boolean,
++    computer: Schema.String,
++    pool: Schema.String,
++    toolsOrganization: Schema.optionalKey(Schema.String),
++  }),
++});
++export const startNativeProtocol = (session: Session) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      http = yield* HttpClient.HttpClient;
++    const target = yield* Target;
++    const hosts = targetHosts(target);
++    const resource = `${hosts.browser}/native`;
++    const pool = "pool-native-integration";
++    const upstream = yield* nativePool(actors.organization.id, pool);
++    yield* serverControl("stop");
++    yield* serverControl("environment", 200, {
++      POOL_APP_SIGNING_KEY: "ab".repeat(32),
++      BASALT_POOL_ORIGIN: upstream.origin,
++    });
++    yield* serverControl("start");
++    const anonymous = yield* api.session();
++    const form = (path: string, fields: Record<string, string>) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* http.execute(
++            HttpClientRequest.post(`${hosts.browser}/api/auth${path}`).pipe(
++              HttpClientRequest.bodyUrlParams(fields),
++            ),
++          );
++          const value: unknown = yield* response.json;
++          return { status: response.status, body: value };
++        }),
++      ).pipe(Effect.orDie);
++    const registration = yield* api.request(anonymous, "POST", "/api/auth/oauth2/register", {
++      client_name: "Native grant protocol client",
++      token_endpoint_auth_method: "none",
++      grant_types: ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"],
++      response_types: [],
++      scope: "native offline_access",
++    });
++    expect(registration.status).toBe(201);
++    const { client_id } = yield* body(Schema.Struct({ client_id: Schema.String }), registration);
++    const crypto = yield* Crypto.Crypto;
++    const verifier = Base64Url.encode(yield* crypto.randomBytes(32));
++    const challenge = Base64Url.encode(
++      yield* crypto.digest("SHA-256", new TextEncoder().encode(verifier)),
++    );
++    const headers = (token: Redacted.Redacted<string>) => ({
++      authorization: `Bearer ${Redacted.value(token)}`,
++    });
++    const refresh = (tokens: typeof NativeTokens.Type, extra: Record<string, string> = {}) =>
++      form("/oauth2/token", {
++        grant_type: "refresh_token",
++        client_id,
++        resource,
++        refresh_token: Redacted.value(tokens.refresh_token),
++        ...extra,
++      });
++    return {
++      api,
++      actors,
++      anonymous,
++      upstream,
++      pool,
++      resource,
++      verifier,
++      headers,
++      refresh,
++      form,
++      start: (proof = true) =>
++        form("/oauth2/device-authorization", {
++          client_id,
++          scope: "native offline_access",
++          resource,
++          ...(proof ? { code_challenge: challenge, code_challenge_method: "S256" } : {}),
++        }),
++      approve: (user_code: string, tools = true, models = true) =>
++        api.request(
++          session,
++          "POST",
++          "/api/auth/device/decide",
++          {
++            user_code,
++            accept: true,
++          },
++          {
++            "x-basalt-native-intent": "approved-native-intent",
++            "x-basalt-native-name": "Native protocol device",
++            "x-basalt-native-pool": pool,
++            "x-basalt-native-tools": String(tools),
++            "x-basalt-native-models": String(models),
++          },
++        ),
++      poll: (device_code: string, extra: Record<string, string> = { code_verifier: verifier }) =>
++        form("/oauth2/token", {
++          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
++          client_id,
++          device_code,
++          ...extra,
++        }),
++      access: (tokens: typeof NativeTokens.Type) =>
++        api.request(
++          anonymous,
++          "GET",
++          "/api/auth/native/access",
++          undefined,
++          headers(tokens.access_token),
++        ),
++    };
++  });
++export const approveNative = (
++  p: Effect.Success<ReturnType<typeof startNativeProtocol>>,
++  tools = true,
++  models = true,
++) =>
++  Effect.gen(function* () {
++    const response = yield* p.start();
++    expect(response.status).toBe(200);
++    const started = yield* body(
++      Schema.Struct({
++        device_code: Schema.String,
++        user_code: Schema.String,
++        verification_uri: Schema.String,
++      }),
++      response,
++    );
++    expect(new URL(started.verification_uri).pathname).toBe("/native/device");
++    expect((yield* p.approve(started.user_code, tools, models)).status).toBe(200);
++    const issued = yield* p.poll(started.device_code);
++    expect(issued.status).toBe(200);
++    return yield* body(NativeTokens, issued);
++  });
+--- /dev/null
++++ b/e2e/support/native-pool.ts
+@@ -0,0 +1,91 @@
++import { createServer } from "node:http";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++
++const Envelope = Schema.Struct({ envelope: Schema.String });
++const Assertion = Schema.Struct({
++  action: Schema.String,
++  user: Schema.String,
++  grant: Schema.String,
++  computer: Schema.optionalKey(Schema.String),
++  pool: Schema.optionalKey(Schema.String),
++  intent: Schema.optionalKey(Schema.String),
++  tools: Schema.optionalKey(Schema.Boolean),
++  models: Schema.optionalKey(Schema.Boolean),
++});
++
++/** An external pool protocol fixture; OAuth, consent, membership and tokens stay in the real host. */
++export const nativePool = (organization: string, pool: string) =>
++  Effect.gen(function* () {
++    let refused = false;
++    let created = 0;
++    const records = new Map<string, { user: string; computer: string; active: boolean }>();
++    const services = yield* Layer.build(
++      HttpRouter.serve(
++        HttpRouter.add(
++          "POST",
++          "/native/v1/control",
++          Effect.gen(function* () {
++            const request = yield* HttpServerRequest.HttpServerRequest;
++            const { envelope } = yield* request.json.pipe(
++              Effect.flatMap(Schema.decodeUnknownEffect(Envelope)),
++            );
++            const pieces = envelope.split(".");
++            if (pieces.length !== 3 || pieces[0] !== "sbn1")
++              return HttpServerResponse.empty({ status: 401 });
++            const decoded = yield* Schema.decodeUnknownEffect(Schema.StringFromBase64Url)(
++              pieces[1],
++            );
++            const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Assertion))(
++              decoded,
++            );
++            if (value.action === "register") {
++              if (
++                value.intent !== "approved-native-intent" ||
++                (value.pool !== undefined && value.pool !== pool)
++              )
++                return HttpServerResponse.empty({ status: 403 });
++              const computer = `native-computer-${++created}`;
++              records.set(value.grant, { user: value.user, computer, active: true });
++              return HttpServerResponse.jsonUnsafe({
++                computer: { id: computer },
++                pool,
++                models: value.models,
++                ...(value.tools ? { toolsOrganization: organization } : {}),
++              });
++            }
++            const record = records.get(value.grant);
++            if (
++              record === undefined ||
++              record.user !== value.user ||
++              record.computer !== value.computer ||
++              value.pool !== pool
++            )
++              return HttpServerResponse.empty({ status: 401 });
++            if (value.action === "revoke") {
++              record.active = false;
++              return HttpServerResponse.jsonUnsafe({ revoked: true });
++            }
++            return value.action === "check" && record.active && !refused
++              ? HttpServerResponse.jsonUnsafe({ active: true })
++              : HttpServerResponse.empty({ status: 401 });
++          }),
++        ),
++        { disableLogger: true, disableListenLog: true },
++      ).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address))
++      return yield* Effect.die("Native pool requires a TCP listener");
++    return {
++      origin: `http://127.0.0.1:${server.address.port}`,
++      refuse: (value: boolean) =>
++        Effect.sync(() => {
++          refused = value;
++        }),
++      created: Effect.sync(() => created),
++    };
++  });

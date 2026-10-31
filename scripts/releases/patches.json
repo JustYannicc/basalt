@@ -548,6 +548,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-native-device-grants",
+      "file": "0059-native-device-grants.patch",
+      "content_sha256": "c898fda2a39e936ca9eae9663180854ab4fb1425d272b7ff5744f5989465834a",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-account-observation-rows",
       "file": "0060-account-observation-rows.patch",
       "content_sha256": "05e0202c14bbaf2440b835c1018761b790f9e5d1c47eae6abb980ea82a8ac7dd",

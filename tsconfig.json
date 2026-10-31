@@ -28,6 +28,7 @@
   ],
   "exclude": [
     "src/pool/worker.ts",
+    "src/pool/native-response.worker.ts",
     "scripts/preview/stack"
   ]
 }

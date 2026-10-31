@@ -4,7 +4,7 @@ model {
 
     router = module "Router" {
       #basalt #v1 #passthrough #port
-      metadata { code "src/router.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|APP_UI_SERVICE=basalt.toolsGateway|ASSETS=basalt.clientAssets|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
+      metadata { code "src/router.ts|src/native-model.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|APP_UI_SERVICE=basalt.toolsGateway|ASSETS=basalt.clientAssets|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
     }
 
     brandConfig = part "Brand configuration" {
@@ -345,6 +345,11 @@ model {
   basalt.toolsGateway -[tool]-> basalt.publicConnectors "connectors"
   basalt.toolsGateway -[sync]-> basalt.publicVault "secret custody"
   basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
+
+  basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: validate native device grant before model ingress"
+  basalt.toolsGateway -[sync]-> basalt.router "signed native registration, access check or revocation"
+  basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: native control and short-lived model assertions"
+  basalt.modelGateway -[sync]-> basalt.router "native computer identity; model key remains server-side"
 
   basalt.router -[model]-> basalt.modelGateway "POOL_SERVICE: /v1 and /v1/*"
   basalt.modelGateway -[sync]-> basalt.poolDatabase "check active Home API-key candidates through uncached Hyperdrive before controller lookup"

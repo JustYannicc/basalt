@@ -1,10 +1,13 @@
 import type { Computer } from "../../apps/pool/ui/computer-types.ts";
 import type { SealedLink } from "./setup-links.ts";
+import type { SealedNativeKey } from "./native-key.ts";
 
 export interface StoredComputer {
   id: string; name: string; user: string; pool: string; createdAt: string; boundAt: string;
   state: "issuing" | "active" | "revoking" | "revoked" | "removed";
   keyId?: number; userId?: number;
+  /** The model key stays on the server; only a live matching OAuth grant can use it. */
+  native?: { grant: string; models: boolean; key?: SealedNativeKey; toolsOrganization?: string };
   /** Absent when the computer was set up for models only. */
   toolsKeyId?: string; toolsHash?: string;
   firstModelRequestAt: string | null; firstToolCallAt: string | null; revokedAt: string | null;
@@ -27,7 +30,8 @@ export const publicView = (computer: StoredComputer): Computer => ({
 });
 
 /** A models-only computer has no tools token. */
-export const hasTools = (computer: { toolsKeyId?: string }): boolean => computer.toolsKeyId !== undefined;
+export const hasTools = (computer: { toolsKeyId?: string; native?: { toolsOrganization?: string } }): boolean =>
+  computer.toolsKeyId !== undefined || computer.native?.toolsOrganization !== undefined;
 
 /** Include every destination whose backend write may have succeeded. */
 export const boundPools = (computer: StoredComputer): string[] =>
