@@ -8,6 +8,8 @@ The catalog serves a site-aware repository collaboration package. Each account k
 
 The tools gateway retains released app protocols 15 and 16 with their own provider schemas and validation dependencies. Later OAuth, site and account-health changes affect the live protocol without changing what a retained bundle accepts. Protocol 17's OAuth declaration has a separate frozen copy for the next protocol transition. Build checks the carried protocol records after preparing the pinned dependency; only the live record is regenerated through the official writer. This changes no service binding, storage or outside-service relationship.
 
+The outer MCP Apps bridge renews short-lived callback authority without reloading the guest, while the tools gateway rechecks the retained view's principal, grant, app version, source and accounts. An admitted approval retains its original issuer across renewal; new callbacks and resource reads still require unexpired authority.
+
 Tools-only scoped API keys carry their action policy through MCP access, and their `ext_` prefix makes older hosts reject them after rollback instead of granting full access.
 
 The shared workspace-service OAuth client allows the separate administration app's 18 administration scopes while keeping identity-only defaults and ordinary workspace consent requests unchanged. The build proof reads official catalog snapshots and public OIDC metadata, then checks client selection and mismatch refusal through the real self-host HTTP API with synthetic users. The source verifier includes the provider table when rebuilding the generated pool app. Live Workspace consent and API access remain acceptance work.

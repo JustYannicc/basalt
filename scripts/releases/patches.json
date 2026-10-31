@@ -528,6 +528,15 @@
       "upstream_pull_request": 2469,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-mcp-app-callback-renewal",
+      "file": "0058-mcp-app-callback-renewal.patch",
+      "content_sha256": "ca4850e7843514c80e0946e876c6e20889997288a26739fa9246e451ebfdc861",
+      "kind": "upstream",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
