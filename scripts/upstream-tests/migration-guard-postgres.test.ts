@@ -115,6 +115,10 @@ test("executor migration failures retain safe codes and versions without SQL or 
     const first = await migrate(fixtureUrl.toString());
     assert.equal(first.status, 0, first.stderr);
     await fixture.connect();
+    const { rows: [original] } = await fixture.query<{ value: string }>(
+      "select value from private_executor_settings where key = 'version'",
+    );
+    assert.ok(original);
     await fixture.query("update private_executor_settings set value = '4.0.1' where key = 'version'");
     await fixture.query(`create function reject_fixture_upgrade() returns event_trigger language plpgsql as $$
       begin raise exception using errcode = 'P0001', message = 'SYNTHETIC_DRIVER_SECRET',
@@ -129,7 +133,7 @@ test("executor migration failures retain safe codes and versions without SQL or 
     assert.doesNotMatch(failed.stderr, /SYNTHETIC_DRIVER_SECRET|SYNTHETIC_PARAMETER_SECRET|Failed to execute migration statement|ADD COLUMN/);
     assert.equal((await fixture.query("select value from private_executor_settings where key = 'version'")).rows[0].value, "4.0.1");
     await fixture.query("drop event trigger reject_fixture_upgrade");
-    await fixture.query("update private_executor_settings set value = '4.0.16' where key = 'version'");
+    await fixture.query("update private_executor_settings set value = $1 where key = 'version'", [original.value]);
     const recovered = await migrate(fixtureUrl.toString());
     assert.equal(recovered.status, 0, recovered.stderr);
   } finally {
