@@ -423,7 +423,6 @@ jobs:
           docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
       - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
-      - run: bun install --cwd scripts/pool-tests/sdk --frozen-lockfile
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:
