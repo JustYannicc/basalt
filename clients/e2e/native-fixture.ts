@@ -40,6 +40,8 @@ export async function nativeFixture() {
   let accessReads = 0;
   let healthReads = 0;
   let denyAccess = false;
+  let readyFailure: "close" | "timeout" | undefined;
+  let operationOpens = 0;
   let modelFailure: "unknown" | "not-started" | "disconnect" | undefined;
   const holds = new Set<() => void>();
   let accessGate: ReturnType<typeof gate> | undefined;
@@ -268,6 +270,7 @@ export async function nativeFixture() {
         const frame = JSON.parse(raw.toString());
         assert.equal(frame.id, 1);
         if (frame.type === "open") {
+          operationOpens++;
           operation = frame.operation;
           if (operation!.service === "models" && modelFailure === "not-started") {
             send({ type: "error", id: 1, code: "unavailable", outcome: "not-started" });
@@ -311,7 +314,8 @@ export async function nativeFixture() {
         }
       });
       peer.on("error", () => undefined);
-      send({ type: "ready", expiresAt: Date.now() + 600000, limits });
+      if (readyFailure === "close") peer.terminate();
+      else if (readyFailure !== "timeout") send({ type: "ready", expiresAt: Date.now() + 600000, limits });
     });
   });
   server.listen(0, "127.0.0.1");
@@ -360,6 +364,7 @@ export async function nativeFixture() {
     loseRefresh: () => {
       loseRefresh = true;
     },
+    failBeforeReady: (value: "close" | "timeout" | undefined) => { readyFailure = value; },
     failModel: (value: "unknown" | "not-started" | "disconnect" | undefined) => { modelFailure = value; },
     dropTool: (value: boolean) => {
       dropTool = value;
@@ -370,7 +375,7 @@ export async function nativeFixture() {
     interrupt: () => {
       for (const socket of sockets.clients) socket.terminate();
     },
-    counts: () => ({ refreshes, writes, cancels, polls, accessReads, healthReads, modelSends }),
+    counts: () => ({ refreshes, writes, cancels, polls, accessReads, healthReads, modelSends, operationOpens }),
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       sockets.close();

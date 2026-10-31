@@ -127,3 +127,25 @@ for (const mode of ["unknown", "disconnect"]) test(`direct model ${mode} forbids
   assert.equal(body.error.retryable, false);
   assert.equal(remote.modelCalls(), before + 1);
 });
+
+
+test("direct model connection refusal stays retryable before dispatch", async () => {
+  const unavailable = await remoteFixture();
+  await unavailable.close();
+  const isolated = await fixtureHome(unavailable.origin);
+  let connection: Awaited<ReturnType<typeof isolated.start>> | undefined;
+  try {
+    connection = await isolated.start();
+    const token = await isolated.secret("models");
+    const response = await fetch(`${connection.origin}/v1/responses`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "fixture-model" }),
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("x-should-retry"), null);
+    assert.deepEqual(await response.json(), { error: "Model access is unavailable." });
+    assert.equal(unavailable.modelCalls(), 0);
+  } finally {
+    try { await connection?.stop(); } finally { await isolated.remove(); }
+  }
+});

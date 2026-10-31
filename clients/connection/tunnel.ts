@@ -54,7 +54,7 @@ export function openTunnel(
   };
   const fail = () => {
     if (stopped || ended) return;
-    failure = notStarted ? new ModelRequestNotSent("The operation was refused before dispatch.") : new Error(
+    failure = !started || notStarted ? new ModelRequestNotSent("The operation was refused before dispatch.") : new Error(
       "Tunnel interrupted; the outcome may be unknown. The operation was not replayed.",
     );
     stopped = true;
