@@ -437,7 +437,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted driver accounts|^additive observation migrations|^protocol (17|18) refuses observations"
+          "^interactive accounts connect|^account observations coalesce|^driver acquisition labels|^driver reconnect cleanup|^driver reconnect instructions|^driver reconnect failures|^driver owner purge|^driver health captures|^driver observations coalesce|^missing driver hooks|^hosted driver accounts|^additive observation migrations|^protocol (17|18) refuses observations"
           --workers 1
       - name: Verify local account lifetime and observation provenance
         working-directory: .upstream

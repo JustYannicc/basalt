@@ -568,7 +568,7 @@
     {
       "identity": "executor-reusable-account-acquisition",
       "file": "0061-reusable-account-acquisition.patch",
-      "content_sha256": "f258cc68191bbf7cb86217ba8b37d4af06f75399c0ee465f2e5853e1a0225ea9",
+      "content_sha256": "e467dee5c5dcc2928ca8eae4d18e88ad75fdaecc2dbc33c6ad28d53faf39611c",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

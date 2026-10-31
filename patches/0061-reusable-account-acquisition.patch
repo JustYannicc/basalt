@@ -640,10 +640,10 @@ index 0000000..d16fec0
 +  });
 diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
 new file mode 100644
-index 0000000..a369de0
+index 0000000..fbad80e
 --- /dev/null
 +++ b/e2e/support/acquisition-product.ts
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,104 @@
 +import { Effect, FileSystem, Path } from "effect";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import { Target } from "./platform.ts";
@@ -683,7 +683,8 @@ index 0000000..a369de0
 +};
 +const driver = accountAcquisitionDriver({
 +  id: "synthetic-account-driver", revision: ${JSON.stringify(revision)},
-+  start: (ctx) => call(ctx, "start", InteractiveStart),
++  start: (ctx, reconnect) => call(ctx, "start", InteractiveStart,
++    reconnect === undefined ? {} : { ref: Redacted.value(reconnect.reference) }),
 +  status: (ctx, value) => call(ctx, "status", InteractiveStatus, value),
 +  submit: (ctx, value) => call(ctx, "submit", InteractiveStatus, value),
 +  cancel: async (ctx, value) => { await call(ctx, "cancel", Schema.Null, value); },
@@ -748,7 +749,7 @@ index 0000000..a369de0
 +  ctx.user.accounts.identity.map((account) => ({ id: account.id, method: account.method, fields: account.fields }))) }) });
 +`;
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
-index 0ce8306..f4af640 100644
+index 0ce8306..ea22578 100644
 --- a/e2e/support/interactive-account-backend.ts
 +++ b/e2e/support/interactive-account-backend.ts
 @@ -3,16 +3,18 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -771,7 +772,7 @@ index 0ce8306..f4af640 100644
  });
  type Input = typeof Input.Type;
  interface Session {
-@@ -21,13 +23,27 @@ interface Session {
+@@ -21,13 +23,32 @@ interface Session {
    readonly ref: string;
    readonly polls: number;
  }
@@ -781,6 +782,10 @@ index 0ce8306..f4af640 100644
 +  readonly release: Deferred.Deferred<void>;
 +}
  type FixtureAccountInfo = Readonly<Record<string, string>>;
++interface StartExposure {
++  readonly field: "url" | "code" | "message" | "label" | "placeholder";
++  readonly encoded: boolean;
++}
  
  export const interactiveAccountBackend = Effect.gen(function* () {
    const sessions = yield* Ref.make<ReadonlyMap<string, Session>>(new Map());
@@ -796,10 +801,11 @@ index 0ce8306..f4af640 100644
 +  const driverGates = yield* Ref.make<ReadonlyMap<DriverStep, DriverGate>>(new Map());
    const accountInfo = yield* Ref.make<FixtureAccountInfo | undefined>(undefined);
 +  const acquisitionFailure = yield* Ref.make<string | undefined>(undefined);
++  const startExposure = yield* Ref.make<StartExposure | undefined>(undefined);
    const refuseRemoval = yield* Ref.make(false);
    const refuseCancellation = yield* Ref.make(false);
    const removeRemaining = yield* Ref.make<number | undefined>(undefined);
-@@ -39,6 +55,7 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -39,6 +60,7 @@ export const interactiveAccountBackend = Effect.gen(function* () {
    const removalStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const submitGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const submitStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
@@ -807,7 +813,7 @@ index 0ce8306..f4af640 100644
    const statusGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const statusStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const routes = HttpRouter.add(
-@@ -65,6 +82,25 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -65,6 +87,25 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          ]);
        }
        if (input.caller === "") return HttpServerResponse.empty({ status: 403 });
@@ -833,7 +839,29 @@ index 0ce8306..f4af640 100644
        if (input.step === "start") {
          const id = yield* Ref.updateAndGet(next, (value) => value + 1);
          const session = `private-session-${id}`;
-@@ -82,7 +118,10 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -76,14 +117,34 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+             polls: 0,
+           }),
+         );
++        const exposure = yield* Ref.get(startExposure);
++        const reference = input.ref ?? "";
++        const shown = exposure?.encoded ? Buffer.from(reference).toString("base64") : reference;
++        const exposed =
++          exposure === undefined || input.ref === undefined
++            ? {}
++            : exposure.field === "url"
++              ? { url: `http://${request.headers.host}/authorize?ref=${shown}` }
++              : exposure.field === "label" || exposure.field === "placeholder"
++                ? {
++                    paste: {
++                      label: exposure.field === "label" ? shown : "Paste the final address",
++                      ...(exposure.field === "placeholder" ? { placeholder: shown } : {}),
++                    },
++                  }
++                : { [exposure.field]: shown };
+         return yield* HttpServerResponse.json({
+           session,
+           url: `http://${request.headers.host}/authorize`,
            ...(input.method === "paste"
              ? { paste: { label: "Paste the final address", placeholder: "http://localhost/..." } }
              : { code: `CODE-${id}` }),
@@ -843,9 +871,11 @@ index 0ce8306..f4af640 100644
 +            (yield* Ref.get(clockOffset)) +
 +            (input.method === "expired" ? -1 : 60_000),
            message: "Finish signing in, then return here.",
++          ...exposed,
          });
        }
-@@ -123,12 +162,20 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+       if (input.step === "remove") {
+@@ -123,12 +184,20 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          if (gate !== undefined) yield* Deferred.await(gate);
        }
        if (input.step === "submit") {
@@ -866,7 +896,7 @@ index 0ce8306..f4af640 100644
        if (input.method === "failure")
          return yield* HttpServerResponse.json({ state: "failed", message: "Synthetic refusal" });
        if (input.step === "submit")
-@@ -166,10 +213,40 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -166,10 +235,41 @@ export const interactiveAccountBackend = Effect.gen(function* () {
    );
    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
    if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
@@ -904,10 +934,11 @@ index 0ce8306..f4af640 100644
 +    holdCheck: holdDriver("check"),
      setAccountInfo: (value: FixtureAccountInfo) => Ref.set(accountInfo, value),
 +    failAcquisition: (message?: string) => Ref.set(acquisitionFailure, message),
++    exposeStartReference: (value?: StartExposure) => Ref.set(startExposure, value),
      refuseCancellation: (refuse: boolean) => Ref.set(refuseCancellation, refuse),
      refuseRemoval: (refuse: boolean) =>
        Ref.set(refuseRemoval, refuse).pipe(Effect.andThen(Ref.set(removeRemaining, undefined))),
-@@ -183,11 +260,13 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -183,11 +283,13 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          started = yield* Deferred.make<void>();
        yield* Ref.set(removalGate, gate);
        yield* Ref.set(removalStarted, started);
@@ -924,7 +955,7 @@ index 0ce8306..f4af640 100644
        };
      }),
      holdSubmit: Effect.gen(function* () {
-@@ -202,6 +281,16 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -202,6 +304,16 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          ),
        };
      }),
@@ -991,10 +1022,10 @@ index 60a65a9..5156be2 100644
                };
          const child = yield* processes.spawn(
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index c6c48d5..b7237e2 100644
+index c6c48d5..319f4ea 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7870,6 +7870,116 @@ export const scenarios = plan({
+@@ -7870,6 +7870,126 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
@@ -1009,6 +1040,16 @@ index c6c48d5..b7237e2 100644
 +      cloud: na(
 +        "Requires a process-owned public product composition and loopback credential service.",
 +      ),
++    },
++  },
++  accountAcquisitionStartPrivacy: {
++    fixtures: "actors",
++    file: "account-acquisition-cleanup.spec.ts",
++    title: "driver reconnect instructions refuse raw and encoded saved references",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises shared SDK start persistence through hosted Connect APIs."),
++      cloud: na("Requires process-owned registration and a loopback credential service."),
 +    },
 +  },
 +  accountAcquisitionFailurePrivacy: {
@@ -1113,10 +1154,10 @@ index c6c48d5..b7237e2 100644
      file: "account-observations-local.spec.ts",
 diff --git a/e2e/tests/account-acquisition-cleanup.spec.ts b/e2e/tests/account-acquisition-cleanup.spec.ts
 new file mode 100644
-index 0000000..e9bcbb3
+index 0000000..d466148
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-cleanup.spec.ts
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,233 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -1129,6 +1170,65 @@ index 0000000..e9bcbb3
 +const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
 +
 +layer(HostedLive, { excludeTestServices: true })("Driver acquisition output and cleanup", (it) => {
++  it.effect(scenarios.accountAcquisitionStartPrivacy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const actor = f.actors.member;
++        const { account } = yield* f.create(actor);
++        const cancelled: string[] = [];
++        for (const field of ["url", "code", "message", "label", "placeholder"] as const) {
++          for (const encoded of [false, true]) {
++            yield* f.backend.exposeStartReference({ field, encoded });
++            const pending = yield* f.pending(actor, f.manager.app.id, account);
++            expect(pending.status).toBe(200);
++            const connection = (yield* body(Resource, pending)).id;
++            const refused = yield* f.start(actor, connection);
++            expect(refused.status).toBe(422);
++            cancelled.push(`private-session-${cancelled.length + 2}`);
++            const calls = yield* f.backend.calls;
++            expect(calls.filter((call) => call.step === "start").at(-1)?.ref).toBe("opaque-1");
++            expect(
++              calls.filter((call) => call.step === "cancel").map((call) => call.session),
++            ).toEqual(cancelled);
++            const retained = yield* f.api.request(
++              actor,
++              "GET",
++              `${f.connectPath(connection)}/status`,
++            );
++            expect(retained.status).toBe(200);
++            expect((yield* f.backend.calls).length).toBe(calls.length);
++            for (const response of [refused, retained]) {
++              expect(JSON.stringify(response.body)).not.toContain("opaque-1");
++              expect(JSON.stringify(response.body)).not.toContain(
++                Buffer.from("opaque-1").toString("base64"),
++              );
++            }
++            expect(
++              (yield* f.api.request(actor, "POST", `${f.connectPath(connection)}/cancel`)).status,
++            ).toBe(200);
++          }
++        }
++        yield* f.backend.exposeStartReference();
++        const pending = yield* f.pending(actor, f.manager.app.id, account);
++        expect(pending.status).toBe(200);
++        const connection = (yield* body(Resource, pending)).id;
++        const safe = yield* f.start(actor, connection);
++        expect(safe.status).toBe(200);
++        const calls = (yield* f.backend.calls).length;
++        expect((yield* f.start(actor, connection)).body).toEqual(safe.body);
++        expect((yield* f.backend.calls).length).toBe(calls);
++        expect(
++          (yield* f.api.request(actor, "POST", `${f.connectPath(connection)}/cancel`)).status,
++        ).toBe(200);
++        expect(yield* f.backend.removeCalls).toEqual([]);
++        expect((yield* f.api.request(actor, "GET", `${f.prefix}/accounts/${account}`)).status).toBe(
++          200,
++        );
++      }),
++    ),
++  );
 +  it.effect(scenarios.accountAcquisitionFailurePrivacy.title, (context) =>
 +    withHostedCase(
 +      context,
@@ -6079,12 +6179,12 @@ index 0000000..74bc6a1
 +  });
 diff --git a/packages/sdk/src/implementation/account-acquisition-connect.ts b/packages/sdk/src/implementation/account-acquisition-connect.ts
 new file mode 100644
-index 0000000..658cf35
+index 0000000..710f047
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-connect.ts
-@@ -0,0 +1,130 @@
-+import { Clock, Effect, Redacted } from "effect";
-+import type { ConnectCommand } from "apps/contracts";
+@@ -0,0 +1,150 @@
++import { Clock, Effect, Redacted, Schema } from "effect";
++import { InteractiveStart, type ConnectCommand } from "apps/contracts";
 +import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
 +import type { InteractiveSession } from "../contracts/interactive-accounts.ts";
 +import type { Credentials } from "../contracts/storage.ts";
@@ -6093,7 +6193,7 @@ index 0000000..658cf35
 +import type { AcquisitionRegistry } from "./account-acquisition-registry.ts";
 +import { resolveAcquisitionBinding } from "./account-acquisition-bindings.ts";
 +import { invokeAcquisitionDriver } from "./account-acquisition-runtime.ts";
-+import { acquisitionStatusOutput } from "./account-acquisition-output.ts";
++import { acquisitionStartOutput, acquisitionStatusOutput } from "./account-acquisition-output.ts";
 +import { storedApp, storedVersion } from "./apps.ts";
 +
 +/** App intent selects a provider/method; only the host registry selects its implementation. */
@@ -6156,11 +6256,8 @@ index 0000000..658cf35
 +          )
 +            return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
 +          const deadline = (yield* Clock.currentTimeMillis) + 15_000;
-+          const statusOutput = (value: unknown) =>
-+            acquisitionStatusOutput(
-+              value,
-+              saved === undefined ? undefined : Redacted.value(saved.reference),
-+            );
++          const reference = saved === undefined ? undefined : Redacted.value(saved.reference);
++          const statusOutput = (value: unknown) => acquisitionStatusOutput(value, reference);
 +          return yield* invokeAcquisitionDriver<unknown, unknown>(
 +            registration,
 +            {
@@ -6174,16 +6271,39 @@ index 0000000..658cf35
 +              const driver = registration.driver;
 +              switch (command.step) {
 +                case "start":
-+                  return driver.start(
-+                    context,
-+                    saved === undefined
-+                      ? undefined
-+                      : {
-+                          ...context,
-+                          binding: saved.binding,
-+                          reference: saved.reference,
-+                        },
-+                  );
++                  return driver
++                    .start(
++                      context,
++                      saved === undefined
++                        ? undefined
++                        : {
++                            ...context,
++                            binding: saved.binding,
++                            reference: saved.reference,
++                          },
++                    )
++                    .pipe(
++                      Effect.flatMap(Schema.decodeUnknownEffect(InteractiveStart)),
++                      Effect.flatMap((started) =>
++                        acquisitionStartOutput(started, reference).pipe(
++                          Effect.onError(() =>
++                            driver
++                              .cancel(
++                                {
++                                  ...context,
++                                  operation: `${row.id}:${session.running ?? "cancel"}:cancel`,
++                                },
++                                { session: started.session },
++                              )
++                              .pipe(
++                                Effect.catch(() =>
++                                  Effect.logWarning("Interactive sign-in cleanup did not finish"),
++                                ),
++                              ),
++                          ),
++                        ),
++                      ),
++                    );
 +                case "status":
 +                  return driver
 +                    .status(context, { session: command.input.session })
@@ -6215,16 +6335,17 @@ index 0000000..658cf35
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-output.ts b/packages/sdk/src/implementation/account-acquisition-output.ts
 new file mode 100644
-index 0000000..e5dca20
+index 0000000..518ec95
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-output.ts
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,93 @@
 +import { Effect, Option, Schema, Struct } from "effect";
 +import {
 +  AccountCheckResult,
 +  AccountObservationResult,
 +  HostOperationFailed,
 +  HostOutputInvalid,
++  type InteractiveStart,
 +  InteractiveStatus,
 +  ProviderError,
 +} from "apps/contracts";
@@ -6234,6 +6355,15 @@ index 0000000..e5dca20
 +} from "@executor-js/utils/account-display-privacy";
 +import { privateAccountCheck } from "./account-status-output.ts";
 +import type { AccountId } from "../contracts/shared.ts";
++
++/** The session stays private; only the instructions may cross the caller boundary. */
++export const acquisitionStartOutput = (value: InteractiveStart, reference?: string) =>
++  Effect.gen(function* () {
++    const { session, ...instructions } = value;
++    if (!privateObservationStrings(instructions, {}, reference))
++      return yield* new HostOutputInvalid();
++    return { session, ...instructions };
++  });
 +
 +/** Unsafe identity text falls back to the host's account name without losing the acquired credential. */
 +export const acquisitionStatusOutput = (value: unknown, reference?: string) =>
