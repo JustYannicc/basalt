@@ -1,0 +1,719 @@
+diff --git a/apps/docs/content/api-keys.md b/apps/docs/content/api-keys.md
+--- a/apps/docs/content/api-keys.md
++++ b/apps/docs/content/api-keys.md
+@@ -7,9 +7,9 @@
+ 
+ Executor API keys are personal access tokens (PATs). A token authenticates as you
+ and uses your current permissions in the organization targeted by each request.
+-Tokens have no permission or tool-selection settings of their own. To limit
+-what an agent reaches, connect it through a
+-[scoped connection](/mcp#scoped-connections) instead.
++Tokens created in Account settings use your full current permissions. To select
++which apps and tools an agent reaches, use a
++[scoped connection](/mcp#scoped-connections).
+ 
+ Tokens belong to your account, not to an organization. They live under
+ **Account settings → Tokens** (`/account/tokens`), reached from your avatar menu,
+@@ -47,6 +47,19 @@
+ For `GET /api/context`, pass `?organization=<organization-id-or-slug>` instead. A token
+ limited to one organization can omit it.
+ Invalid, expired, or revoked tokens return `401`. Insufficient access returns `403`.
++
++## Tools-only clients
++
++A signed-in browser can create a tools-only key through
++`POST /api/auth/api-key/create` with
++`metadata: { organization: "<organization-id>", scope: "tools" }`.
++Tools-only keys start with `ext_`; older servers refuse them. The key can discover and run tools in that organization, with your current roles
++and the tools' existing approval rules. It cannot read app source, manage apps,
++change account settings or create more keys. Keep model gateway credentials
++separate. Omitting `scope` preserves ordinary personal token permissions.
++
++This limits the key's API authority. Connected tools still use the accounts and
++permissions you granted them; review those before giving a client tool access.
+ 
+ ## Expiry and revocation
+ 
+diff --git a/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts b/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts
+--- a/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts
++++ b/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts
+@@ -24,7 +24,7 @@
+   organizationOwner,
+   type OrganizationReference,
+ } from "@executor-js/hosted-server";
+-import { ApprovalMode, GrantId, type GrantPolicy } from "@executor-js/mcp-auth";
++import { ApprovalMode, GrantId, grantAuthorization, type GrantPolicy } from "@executor-js/mcp-auth";
+ import {
+   ConnectionId,
+   ConnectionPolicy,
+@@ -214,6 +214,7 @@
+     return McpAccess.make({
+       userId: input.user,
+       clientId: v1ForwardClient,
++      policy: grantAuthorization(policy),
+       grant: {
+         id: grantId({ user: input.user, organization, mode: input.mode, connection }),
+         policy,
+diff --git a/apps/hosted/server/src/contracts/api-keys.ts b/apps/hosted/server/src/contracts/api-keys.ts
+--- a/apps/hosted/server/src/contracts/api-keys.ts
++++ b/apps/hosted/server/src/contracts/api-keys.ts
+@@ -2,11 +2,16 @@
+ import { OrganizationId } from "./organization.ts";
+ /** Public identifier, never the bearer credential. */
+ export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
++/** Restrict a native key to tool discovery and execution without account administration. */
++export const ApiKeyScope = Schema.Literal("tools");
+ /**
+  * Stored key scope. A recorded organization pins the key to that organization;
+  * a key without one authorizes every organization the user belongs to.
+  */
+-export const ApiKeyMetadata = Schema.Struct({ organization: Schema.optional(OrganizationId) });
++export const ApiKeyMetadata = Schema.Struct({
++  organization: Schema.optional(OrganizationId),
++  scope: Schema.optional(ApiKeyScope),
++});
+ export type ApiKeyMetadata = typeof ApiKeyMetadata.Type;
+ /** Native Better Auth key metadata; secret hashes are excluded. */
+ export const ApiKeySummary = Schema.Struct({
+@@ -24,7 +29,12 @@
+ export const CreateApiKey = Schema.Struct({
+   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/u)),
+   expiresIn: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
+-  metadata: Schema.optional(Schema.Struct({ organization: OrganizationId })),
++  metadata: Schema.optional(
++    Schema.Struct({
++      organization: OrganizationId,
++      scope: Schema.optional(ApiKeyScope),
++    }),
++  ),
+ });
+ /** Only the native creation response contains the secret. */
+ export const CreatedApiKey = Schema.Struct({
+diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+--- a/apps/hosted/server/src/contracts/app-accounts.ts
++++ b/apps/hosted/server/src/contracts/app-accounts.ts
+@@ -213,7 +213,7 @@
+       success: AppAccountLink,
+       error: errors,
+     })
+-      .annotate(RequiredAction, forEveryone ? "manage" : "run")
++      .annotate(RequiredAction, "manage")
+       .annotate(
+         OpenApi.Description,
+         forEveryone
+@@ -225,7 +225,7 @@
+       success: Schema.Struct({ requirement: Schema.NonEmptyString, account: AccountId }),
+       error: errors,
+     })
+-      .annotate(RequiredAction, forEveryone ? "manage" : "run")
++      .annotate(RequiredAction, "manage")
+       .annotate(
+         OpenApi.Description,
+         forEveryone
+diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
+--- a/apps/hosted/server/src/contracts/mcp.ts
++++ b/apps/hosted/server/src/contracts/mcp.ts
+@@ -9,6 +9,7 @@
+ import type { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/agents";
+ import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
+ import type { AppSandboxAddress } from "@executor-js/mcp";
++import { AuthorizationPolicy } from "@executor-js/authorization";
+ import { Context, Schema } from "effect";
+ import type { Effect } from "effect";
+ import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
+@@ -20,6 +21,7 @@
+   clientId: Schema.NonEmptyString,
+   access: OrganizationAccess,
+   grant: Grant,
++  policy: AuthorizationPolicy,
+ });
+ export type McpAccess = typeof McpAccess.Type;
+ 
+diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/server/src/implementation/api-keys.ts
+--- a/apps/hosted/server/src/implementation/api-keys.ts
++++ b/apps/hosted/server/src/implementation/api-keys.ts
+@@ -3,11 +3,11 @@
+ import { SqlClient } from "effect/sql";
+ import { StorageError } from "@executor-js/sdk/core";
+ import type { GenericEndpointContext } from "@better-auth/core";
+-import { fullAuthority } from "@executor-js/authorization";
++import { fullAuthority, selectedAuthority } from "@executor-js/authorization";
+ import { authCall } from "@executor-js/mcp-auth/oauth";
+ import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+ import { Effect, Option, Redacted, Schema } from "effect";
+-import { ApiKeyId, ApiKeyMetadata, CreateApiKey } from "../contracts/api-keys.ts";
++import { ApiKeyId, ApiKeyMetadata, ApiKeyScope, CreateApiKey } from "../contracts/api-keys.ts";
+ import { OrganizationId } from "../contracts/organization.ts";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+@@ -26,6 +26,13 @@
+ 
+ /** Stored metadata; keys created before pinning existed carry none. */
+ const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
++
++// Older hosts reject this prefix instead of ignoring a scope they do not understand.
++const toolsKeyPrefix = "ext_";
++
++/** An omitted scope preserves existing keys; tools keys cannot manage the account or app source. */
++export const apiKeyAuthorization = (scope: typeof ApiKeyScope.Type | undefined) =>
++  scope === "tools" ? selectedAuthority(["discover", "run"], { kind: "all" }) : fullAuthority;
+ /** Pin a key to one organization; the auto-minted Executor app key always uses this. */
+ export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
+ 
+@@ -56,18 +63,25 @@
+           message: "You are not a member of that organization.",
+         });
+     }
++    if (input.value.metadata?.scope === "tools")
++      return { context: { body: { ...input.value, prefix: toolsKeyPrefix } } };
+   }
+   if (!["/api-key/create", "/api-key/list", "/api-key/get", "/api-key/delete"].includes(ctx.path))
+     throw new APIError("NOT_FOUND");
+ });
+ 
+ /** Native PATs select key authentication instead of the OAuth bearer path. */
+-export const isApiKey = (token: string) => token.startsWith("exp_");
++export const isApiKey = (token: string) =>
++  token.startsWith("exp_") || token.startsWith(toolsKeyPrefix);
++
++/** A scoped key cannot become unrestricted if its metadata is missing or damaged. */
++export const apiKeyScopeMatches = (token: string, scope: typeof ApiKeyScope.Type | undefined) =>
++  token.startsWith(toolsKeyPrefix) === (scope === "tools");
+ 
+ /** Project a native key into current-user authority; deleted users cannot retain access. */
+ const identity = (
+   ctx: GenericEndpointContext,
+-  key: { id: string; referenceId: string; metadata: unknown },
++  key: { id: string; referenceId: string; metadata: unknown; prefix: string | null },
+ ) =>
+   Effect.gen(function* () {
+     const user = yield* authCall(() =>
+@@ -85,10 +99,12 @@
+     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(key.metadata).pipe(
+       Effect.mapError(() => new APIError("UNAUTHORIZED")),
+     );
++    if (!apiKeyScopeMatches(key.prefix ?? "", metadata?.scope))
++      return yield* Effect.fail(new APIError("UNAUTHORIZED"));
+     return {
+       userId: key.referenceId,
+       key: { id },
+-      policy: fullAuthority,
++      policy: apiKeyAuthorization(metadata?.scope),
+       organization: metadata?.organization,
+     };
+   });
+diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
+--- a/apps/hosted/server/src/implementation/bearer-access.ts
++++ b/apps/hosted/server/src/implementation/bearer-access.ts
+@@ -15,7 +15,7 @@
+  * with the database clock.
+  */
+ import { defaultKeyHasher } from "@better-auth/api-key";
+-import { fullAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
++import type { AuthorizationPolicy } from "@executor-js/authorization";
+ import {
+   GrantId,
+   GrantPolicy,
+@@ -38,7 +38,7 @@
+ import { McpAccess, McpForbidden, McpForbiddenReason, McpUnauthorized } from "../contracts/mcp.ts";
+ import { AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+-import { isApiKey } from "./api-keys.ts";
++import { apiKeyAuthorization, apiKeyScopeMatches, isApiKey } from "./api-keys.ts";
+ import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
+ 
+ /**
+@@ -511,6 +511,7 @@
+     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
+       Effect.mapError(() => unauthorized),
+     );
++    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized;
+     const pinned = metadata?.organization;
+     // The named organization, else the one the key is pinned to.
+     const organization =
+@@ -534,6 +535,7 @@
+     return {
+       userId: row.userId,
+       id,
++      policy: apiKeyAuthorization(metadata?.scope),
+       access: { organization, owner: organizationOwner(organization), role },
+       organizationSlug: membership?.slug ?? null,
+     };
+@@ -554,6 +556,7 @@
+         userId: grant.userId,
+         clientId: grant.clientId,
+         grant: grant.grant,
++        policy: grantAuthorization(grant.grant.policy),
+         access: grant.access,
+       });
+     }
+@@ -562,6 +565,7 @@
+     return McpAccess.make({
+       userId: key.userId,
+       clientId: `pat:${key.id}`,
++      policy: key.policy,
+       grant: {
+         id: patGrantId({ token: key.id, organization: key.access.organization, mode }),
+         policy: { kind: "all" },
+@@ -592,7 +596,7 @@
+           Effect.map((key) => ({
+             userId: key.userId,
+             key: { id: key.id },
+-            policy: fullAuthority,
++            policy: key.policy,
+             access: key.access,
+             organizationSlug: key.organizationSlug,
+           })),
+diff --git a/apps/hosted/server/src/implementation/mcp-approvals.ts b/apps/hosted/server/src/implementation/mcp-approvals.ts
+--- a/apps/hosted/server/src/implementation/mcp-approvals.ts
++++ b/apps/hosted/server/src/implementation/mcp-approvals.ts
+@@ -1,5 +1,4 @@
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+-import { grantAuthorization } from "@executor-js/mcp-auth";
+ import { checkInvocationAccounts } from "./access.ts";
+ import { invocationAccounts } from "@executor-js/sdk/core";
+ import { CurrentUserId } from "../contracts/auth.ts";
+@@ -89,7 +88,7 @@
+     if (view.status === "pending") {
+       const backend = yield* hostedMcpBackend.pipe(
+         Effect.provideService(CurrentOrganization, access.access),
+-        Effect.provideService(CurrentAuthorization, grantAuthorization(access.grant.policy)),
++        Effect.provideService(CurrentAuthorization, access.policy),
+         Effect.provideService(CurrentUserId, access.userId),
+       );
+       const restricted = restrictMcpBackend<Error, never>(backend, Effect.succeed(access.grant));
+diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+--- a/apps/hosted/server/src/implementation/mcp-http.ts
++++ b/apps/hosted/server/src/implementation/mcp-http.ts
+@@ -1,7 +1,6 @@
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { CurrentUsage } from "../contracts/product-analytics.ts";
+ import { requiresToolMetadata } from "@executor-js/authorization";
+-import { grantAuthorization } from "@executor-js/mcp-auth";
+ import { GroupDatabase } from "../contracts/groups.ts";
+ import { CurrentUserId } from "../contracts/auth.ts";
+ import {
+@@ -203,7 +202,7 @@
+         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
+         const backend = yield* hostedMcpBackend.pipe(
+           Effect.provideService(CurrentOrganization, fresh.access),
+-          Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
++          Effect.provideService(CurrentAuthorization, fresh.policy),
+           Effect.provideService(CurrentUserId, fresh.userId),
+           Effect.provideService(CurrentMcpGrant, fresh.grant.id),
+         );
+@@ -324,10 +323,7 @@
+           !fold.result.value.access.canUse
+             ? Effect.succeed(undefined)
+             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
+-                Effect.provideService(
+-                  CurrentAuthorization,
+-                  grantAuthorization(access.grant.policy),
+-                ),
++                Effect.provideService(CurrentAuthorization, access.policy),
+                 Effect.provideService(CurrentUserId, access.userId),
+                 Effect.provideContext(services),
+                 Effect.option,
+@@ -417,7 +413,7 @@
+           // there again.
+           if (
+             (yield* ConcurrentStatements) === undefined ||
+-            requiresToolMetadata(grantAuthorization(access.grant.policy).tools, input.app)
++            requiresToolMetadata(access.policy.tools, input.app)
+           )
+             return yield* current.pipe(Effect.flatMap((fresh) => fresh.callTool(input, options)));
+           const batch = yield* StatementBatch;
+diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/server/src/implementation/mcp-oauth.ts
+--- a/apps/hosted/server/src/implementation/mcp-oauth.ts
++++ b/apps/hosted/server/src/implementation/mcp-oauth.ts
+@@ -1,6 +1,12 @@
+ import { ApiKeyId } from "../contracts/api-keys.ts";
+ import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
+-import { ApprovalMode, type ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
++import {
++  ApprovalMode,
++  type ConnectionId,
++  GrantId,
++  grantAuthorization,
++  mcpOAuthResources,
++} from "@executor-js/mcp-auth";
+ 
+ /** Hosted membership composes with the shared OAuth grant lifecycle. */
+ import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
+@@ -161,6 +167,7 @@
+     return McpAccess.make({
+       userId: identity.userId,
+       clientId: `pat:${identity.key.id}`,
++      policy: identity.policy,
+       grant: {
+         id: patGrantId({ token: identity.key.id, organization, mode }),
+         policy: { kind: "all" },
+@@ -199,6 +206,7 @@
+         userId: grant.userId,
+         clientId: grant.clientId,
+         grant: grant.grant,
++        policy: grantAuthorization(grant.grant.policy),
+         access: { organization, owner: organizationOwner(organization), role: member.role },
+       });
+     });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -6793,6 +6793,37 @@
+       local: na("Local pairs a device instead of signing a user in."),
+     },
+   },
++  toolsOnlyAccountLinks: {
++    fixtures: "actors",
++    file: "tools-only-account-links.spec.ts",
++    title: "Tools-only keys cannot change saved account links while browser and legacy keys can",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local uses its instance key."),
++    },
++  },
++  toolsOnlyApiKeyRestart: {
++    fixtures: "actors",
++    file: "tools-only-api-keys.spec.ts",
++    title: "Tools-only key access survives restart and stops at its expiry",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("This scenario advances the isolated self-host process clock."),
++      local: na("Local uses its instance key."),
++    },
++  },
++  toolsOnlyApiKeys: {
++    fixtures: "actors",
++    file: "tools-only-api-keys.spec.ts",
++    title:
++      "Tools-only API keys discover and execute without app administration and revoke active MCP clients",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local uses its instance key."),
++    },
++  },
+   namedApiKeys: {
+     fixtures: "actors",
+     file: "named-api-keys.spec.ts",
+diff --git a/e2e/tests/tools-only-account-links.spec.ts b/e2e/tests/tools-only-account-links.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/tools-only-account-links.spec.ts
+@@ -0,0 +1,94 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Redacted, Schema } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { accountLinks, requirementPath } from "../support/app-accounts.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { appAccountsFixture, who } from "../support/hosted-app-accounts.ts";
++
++const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
++
++layer(HostedLive, { excludeTestServices: true })("Tools-only account links", (it) => {
++  it.effect(scenarios.toolsOnlyAccountLinks.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const { actors, path, mailA, connect } = yield* appAccountsFixture;
++        const replacement = yield* connect(actors.member, "Replacement account", {
++          requirement: "extra",
++        });
++        const anonymous = yield* api.session();
++        const lifecycle = "/api/auth/api-key";
++        const keys: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach(
++            keys,
++            (keyId) => api.request(actors.member, "POST", `${lifecycle}/delete`, { keyId }),
++            { discard: true },
++          ).pipe(Effect.orDie),
++        );
++        const create = (tools: boolean) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.member, "POST", `${lifecycle}/create`, {
++              name: tools ? "Tools-only member" : "Legacy member",
++              metadata: {
++                organization: actors.organization.id,
++                ...(tools ? { scope: "tools" } : {}),
++              },
++            });
++            expect(response.status).toBe(200);
++            const key = yield* body(Key, response);
++            keys.push(key.id);
++            return { authorization: `Bearer ${Redacted.value(key.key)}` };
++          });
++        const scoped = yield* create(true);
++        const legacy = yield* create(false);
++        const requirement = requirementPath(path, "user", "service");
++        const before = yield* accountLinks(actors.member, path);
++        expect(
++          (yield* api.request(anonymous, "PUT", `${requirement}/${replacement}`, undefined, scoped))
++            .status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(anonymous, "DELETE", `${requirement}/${mailA}`, undefined, scoped))
++            .status,
++        ).toBe(403);
++        expect(yield* accountLinks(actors.member, path)).toEqual(before);
++        const call = (headers: Record<string, string>) =>
++          api
++            .request(
++              anonymous,
++              "POST",
++              `${path}/tools/call`,
++              { tool: "who", kind: "query", input: {} },
++              headers,
++            )
++            .pipe(Effect.flatMap(who));
++        expect((yield* call(scoped)).account).toBe(mailA);
++        expect(
++          (yield* api.request(anonymous, "PUT", `${requirement}/${replacement}`, undefined, legacy))
++            .status,
++        ).toBe(200);
++        expect((yield* call(legacy)).account).toBe(replacement);
++        expect(
++          (yield* api.request(
++            anonymous,
++            "DELETE",
++            `${requirement}/${replacement}`,
++            undefined,
++            legacy,
++          )).status,
++        ).toBe(200);
++        expect(yield* accountLinks(actors.member, path)).toEqual([["extra", replacement]]);
++        expect((yield* api.request(actors.member, "PUT", `${requirement}/${mailA}`)).status).toBe(
++          200,
++        );
++        expect(
++          (yield* api.request(actors.member, "DELETE", `${requirement}/${mailA}`)).status,
++        ).toBe(200);
++        expect(yield* accountLinks(actors.member, path)).toEqual([["extra", replacement]]);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/tools-only-api-keys.spec.ts b/e2e/tests/tools-only-api-keys.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/tools-only-api-keys.spec.ts
+@@ -0,0 +1,216 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Redacted, Schema } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { deployMcpApp } from "../support/mcp-app.ts";
++import { McpClient } from "../support/mcp-client.ts";
++import { serverControl } from "../support/server-control.ts";
++
++const Key = Schema.Struct({
++  id: Schema.String,
++  key: Schema.RedactedFromValue(Schema.NonEmptyString),
++  metadata: Schema.Struct({ organization: Schema.String, scope: Schema.optional(Schema.String) }),
++});
++const Execution = Schema.Struct({
++  execution: Schema.Union([
++    Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
++    Schema.Struct({ ok: Schema.Literal(false) }),
++  ]),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Tools-only keys", (it) => {
++  it.effect(scenarios.toolsOnlyApiKeys.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          evidence = yield* Evidence,
++          mcp = yield* McpClient;
++        const anonymous = yield* api.session();
++        const organization = actors.organization.id;
++        const prefix = `/api/organizations/${organization}`;
++        const lifecycle = "/api/auth/api-key";
++        const { app, receipt } = yield* deployMcpApp;
++        const keys: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach(
++            keys,
++            (keyId) => api.request(actors.owner, "POST", `${lifecycle}/delete`, { keyId }),
++            { discard: true },
++          ).pipe(Effect.orDie),
++        );
++        const create = (tools: boolean) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${lifecycle}/create`, {
++              name: tools ? "Tools-only client" : "Existing client",
++              metadata: { organization, ...(tools ? { scope: "tools" } : {}) },
++            });
++            expect(response.status).toBe(200);
++            const key = yield* body(Key, response);
++            keys.push(key.id);
++            return key;
++          });
++        const scoped = yield* create(true);
++        const legacy = yield* create(false);
++        expect(scoped.metadata).toEqual({ organization, scope: "tools" });
++        expect(Redacted.value(scoped.key).startsWith("ext_")).toBe(true);
++        expect(Redacted.value(legacy.key).startsWith("exp_")).toBe(true);
++        const headers = (key: typeof Key.Type) => ({
++          authorization: `Bearer ${Redacted.value(key.key)}`,
++        });
++        const call = (key: typeof Key.Type) =>
++          api.request(
++            anonymous,
++            "POST",
++            `${prefix}/apps/${app.id}/tools/call`,
++            { tool: "echo", kind: "mutation", input: { message: "scoped client" } },
++            headers(key),
++          );
++        yield* evidence.step(
++          "A tools-only key discovers and executes while refusing administration",
++          Effect.gen(function* () {
++            expect(
++              (yield* api.request(
++                anonymous,
++                "GET",
++                `${prefix}/inventory`,
++                undefined,
++                headers(scoped),
++              )).status,
++            ).toBe(200);
++            expect((yield* call(scoped)).body).toEqual({ message: "scoped client", receipt });
++            for (const suffix of [
++              `/apps/${app.id}/source`,
++              `/apps/${app.id}/versions`,
++              `/apps/${app.id}/workspace`,
++            ]) {
++              expect(
++                (yield* api.request(
++                  anonymous,
++                  "GET",
++                  `${prefix}${suffix}`,
++                  undefined,
++                  headers(scoped),
++                )).status,
++              ).toBe(403);
++            }
++            expect(
++              (yield* api.request(
++                anonymous,
++                "DELETE",
++                `${prefix}/apps/${app.id}`,
++                undefined,
++                headers(scoped),
++              )).status,
++            ).toBe(403);
++            expect(
++              (yield* api.request(
++                anonymous,
++                "POST",
++                `${lifecycle}/create`,
++                { name: "Must not widen" },
++                headers(scoped),
++              )).status,
++            ).toBe(403);
++            expect(
++              (yield* api.request(
++                anonymous,
++                "GET",
++                "/api/organizations/another-organization/inventory",
++                undefined,
++                headers(scoped),
++              )).status,
++            ).toBe(403);
++            expect(
++              (yield* api.request(
++                anonymous,
++                "GET",
++                `${prefix}/apps/${app.id}/source`,
++                undefined,
++                headers(legacy),
++              )).status,
++            ).toBe(200);
++            expect(
++              (yield* api.request(actors.owner, "POST", `${lifecycle}/create`, {
++                name: "Invalid scope",
++                metadata: { organization, scope: "manage" },
++              })).status,
++            ).toBe(400);
++          }),
++        );
++        const client = yield* mcp.connect(scoped.key, "tools-only-key");
++        const execute = (code: string) =>
++          client.use("Call tools using the scoped key", (client, signal) =>
++            client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
++          );
++        yield* evidence.step(
++          "The same key executes over MCP and refuses a revoked active connection",
++          Effect.gen(function* () {
++            const result = yield* execute(
++              `return await tools[${JSON.stringify(app.slug)}].echo({ message: "scoped client" })`,
++            );
++            expect(
++              (yield* Schema.decodeUnknownEffect(Execution)(result.structuredContent)).execution,
++            ).toEqual({ ok: true, value: { message: "scoped client", receipt } });
++            expect(
++              (yield* api.request(actors.owner, "POST", `${lifecycle}/delete`, {
++                keyId: scoped.id,
++              })).status,
++            ).toBe(200);
++            expect((yield* call(scoped)).status).toBe(401);
++            const denied = yield* Effect.result(
++              execute(
++                `return await tools[${JSON.stringify(app.slug)}].echo({ message: "revoked" })`,
++              ),
++            );
++            expect(denied._tag).toBe("Failure");
++            expect((yield* call(legacy)).status).toBe(200);
++          }),
++        );
++      }).pipe(Effect.provide(McpClient.layer)),
++    ),
++  );
++
++  it.effect(scenarios.toolsOnlyApiKeyRestart.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const anonymous = yield* api.session();
++        const organization = actors.organization.id;
++        const lifecycle = "/api/auth/api-key";
++        const created = yield* api.request(actors.owner, "POST", `${lifecycle}/create`, {
++          name: "Expiring tools client",
++          expiresIn: 60,
++          metadata: { organization, scope: "tools" },
++        });
++        expect(created.status).toBe(200);
++        const key = yield* body(Key, created);
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "POST", `${lifecycle}/delete`, { keyId: key.id })
++            .pipe(Effect.orDie),
++        );
++        const inventory = api.request(
++          anonymous,
++          "GET",
++          `/api/organizations/${organization}/inventory`,
++          undefined,
++          { authorization: `Bearer ${Redacted.value(key.key)}` },
++        );
++        expect((yield* inventory).status).toBe(200);
++        yield* serverControl("restart");
++        expect((yield* inventory).status).toBe(200);
++        yield* serverControl("stop");
++        yield* serverControl("clock/advance", 200, { milliseconds: 61_000 });
++        yield* serverControl("start");
++        expect((yield* inventory).status).toBe(401);
++      }),
++    ),
++  );
++});
