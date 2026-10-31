@@ -25,6 +25,7 @@ export function recipeSource(
       if (rootIndex) {
         content = content.replaceAll('"../common/', '"./common/');
         if (role === "operator") content = content.replace('"./reads.ts"', '"./operator/reads.ts"');
+        if (role === "pool-owner") content = content.replace('"./accounts.ts"', '"./pool-owner/accounts.ts"');
       }
       files.push({ path: rootIndex ? "index.ts" : `${directory}/${entry.name}`, content });
     }

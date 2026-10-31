@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { Effect } from "effect";
 import { recipeHarness, runtime, root, appsManifest, until } from "./recipes/harness.mjs";
 import { verifyScanHealth } from "./recipes/scan-health.mjs";
+import { verifyWatchingWorkflow } from "./recipes/watching-workflow.mjs";
 import { startRecipeUpstream } from "./recipes/upstream.mjs";
 
 const directory = resolve(
@@ -271,6 +272,15 @@ export default defineApp({}, { tools: router({ send }) });`,
     account,
     managementKey: key.key,
     directory,
+  });
+  yield* verifyWatchingWorkflow({
+    h,
+    deploy,
+    fixture,
+    checked,
+    account,
+    channel,
+    managementKey: key.key,
   });
   return { checks, syntheticMessagesOnly: true, runtimeDirectory: h.runtimeDirectory };
 });

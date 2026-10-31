@@ -98,8 +98,51 @@ export async function readPool(
       view.accounts.length > 100
     )
       return null;
+    if (
+      view.accounts.some((value) => {
+        const account = record(value);
+        return (
+          typeof account?.id !== "string" ||
+          !account.id ||
+          account.id.length > 200 ||
+          typeof account.provider !== "string" ||
+          !["active", "disabled", "unavailable", "error"].includes(text(account.state) ?? "")
+        );
+      })
+    )
+      return null;
+    if (new Set(view.accounts.map((value) => record(value)!.id)).size !== view.accounts.length)
+      return null;
+    const removals = record(view.removals);
+    const removalItems = list(removals?.items);
+    const historyValid =
+      removals !== undefined &&
+      Array.isArray(removals.items) &&
+      removalItems.length <= 100 &&
+      (removals.since === null || instant(removals.since) !== undefined) &&
+      removalItems.every((value) => {
+        const item = record(value);
+        return (
+          typeof item?.account === "string" &&
+          typeof item.actor === "string" &&
+          instant(item.at) !== undefined
+        );
+      });
     return {
       at: Date.now(),
+      ...(historyValid
+        ? {
+            removals: {
+              since: instant(removals?.since) ?? null,
+              items: removalItems.flatMap((value) => {
+                const item = record(value)!;
+                return item.actor === context.user.id
+                  ? [{ id: String(item.account), at: instant(item.at)! }]
+                  : [];
+              }),
+            },
+          }
+        : {}),
       owner: view.isOwner,
       provider,
       accounts: list(view.accounts).flatMap((value) => {
@@ -112,6 +155,16 @@ export async function readPool(
             state: text(account.state) ?? "unknown",
             fresh: account.freshness === "fresh",
             failed: account.readingFailed !== false,
+            observedAt: instant(account.observedAt) ?? 0,
+            ...(record(account.collection)
+              ? {
+                  collection: {
+                    status: text(record(account.collection)?.status) ?? "unknown",
+                    errorCode: text(record(account.collection)?.errorCode) ?? null,
+                    attemptedAt: instant(record(account.collection)?.lastAttemptAt) ?? 0,
+                  },
+                }
+              : {}),
             windows:
               windows.length > 8
                 ? []

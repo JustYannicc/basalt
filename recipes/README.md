@@ -39,6 +39,14 @@ and recovery needs two above 20% in every blocking window. Cached collection
 results never count as another observation. The low and exhausted states use
 one episode. The existing collection cap is preserved.
 
+Pool account checks compare the authorized pool inventory with their prior reading.
+A missing account asks the owner to review the pool only when capacity is impaired.
+Removal through the native pool controls stays quiet. Missing or truncated removal
+history stays unknown. Three distinct non-transient failed checks spanning at
+least 30 minutes can ask the owner to review or pause that account. Rate limiting
+and provider outages do not become reconnect requests. Pausing and resuming the
+account remain native pool actions.
+
 Quiet hours have no default timezone. Set them explicitly if wanted. They defer
 the nudge while the question remains in Approvals. `mute` takes a UTC timestamp;
 `unmute` reverses it. Declining the form ends that proposed action until recovery.

@@ -37,11 +37,14 @@ export interface PoolFact {
   at: number;
   owner: boolean;
   provider: string;
+  removals?: { since: number | null; items: Array<{ id: string; at: number }> };
   accounts: Array<{
     id: string;
     state: string;
     fresh: boolean;
     failed: boolean;
+    observedAt?: number;
+    collection?: { status: string; errorCode: string | null; attemptedAt: number };
     windows: Array<{
       id: string;
       remaining: number | null;

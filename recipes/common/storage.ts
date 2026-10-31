@@ -1,4 +1,5 @@
 import {
+  array,
   boolean,
   mutation,
   number,
@@ -48,11 +49,23 @@ export const saveObservation = mutation(
       evidenceUrl: string().optional(),
       attemptedSha: string().optional(),
       decision: string().optional(),
+      poolMembers: array(object({ id: string(), seenAt: number(), inUse: boolean() })).optional(),
+      poolChecks: array(
+        object({ id: string(), attempt: number(), since: number(), count: number() }),
+      ).optional(),
+      poolMissing: array(object({ id: string(), seenAt: number(), inUse: boolean() })).optional(),
     }),
   },
   async (ctx: Writer, input) => {
     if (!["healthy", "action", "unknown", "withdraw"].includes(input.verdict))
       throw new Error("Unknown observation verdict.");
+    for (const values of [input.poolMembers, input.poolChecks, input.poolMissing]) {
+      if (
+        values &&
+        (values.length > 100 || values.some((value) => !value.id || value.id.length > 200))
+      )
+        throw new Error("Pool observation exceeds its bounded inventory.");
+    }
     let withdrawn: Checkpoint["question"];
     const state = write(ctx, input.key, (before, tx) => {
       if (before.revision !== input.revision) return before;
@@ -77,6 +90,9 @@ export const saveObservation = mutation(
         ...(input.evidenceUrl === undefined ? {} : { evidenceUrl: input.evidenceUrl }),
         ...(input.attemptedSha === undefined ? {} : { attemptedSha: input.attemptedSha }),
         ...(input.decision === undefined ? {} : { decision: input.decision }),
+        ...(input.poolMembers === undefined ? {} : { poolMembers: input.poolMembers }),
+        ...(input.poolChecks === undefined ? {} : { poolChecks: input.poolChecks }),
+        ...(input.poolMissing === undefined ? {} : { poolMissing: input.poolMissing }),
       };
       const next = remember(before, observation);
       const current =

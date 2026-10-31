@@ -13,7 +13,7 @@ import {
 import { requirements } from "../common/installation.ts";
 import { configuration } from "../common/configuration.ts";
 import { observe } from "../common/human.ts";
-import { readQuota } from "../common/reads.ts";
+import { readPoolStatus } from "./accounts.ts";
 import { retainScans } from "../common/scan-health.ts";
 import { startTick } from "../common/triggers.ts";
 import { storageTools } from "../common/storage.ts";
@@ -21,7 +21,7 @@ import { storageTools } from "../common/storage.ts";
 const checkMyPool = workflow(
   {
     description:
-      "Confirm low or exhausted quota from two independent fresh readings. Recheck every blocking window after a capacity action.",
+      "Check fresh capacity, account availability and distinct persistent failures. Recheck every blocking window after a capacity action.",
     input: object({ target: string(), tick: number() }),
   },
   async (ctx: WorkflowContext<typeof requirements>, input) => {
@@ -34,9 +34,9 @@ const checkMyPool = workflow(
     return observe(
       ctx,
       `pool:${input.target}`,
-      (step, previous) => readQuota(step, pool.app, pool.provider, previous),
+      (step, previous) => readPoolStatus(step, pool.app, pool.provider, previous),
       link,
-      "The selected pool provider group needs capacity",
+      "The selected pool provider group needs your input",
       "checkMyPool",
     );
   },

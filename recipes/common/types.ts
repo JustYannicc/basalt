@@ -1,3 +1,14 @@
+export interface PoolMember {
+  id: string;
+  seenAt: number;
+  inUse: boolean;
+}
+export interface PoolCheck {
+  id: string;
+  attempt: number;
+  since: number;
+  count: number;
+}
 export type Verdict = "healthy" | "action" | "unknown" | "withdraw";
 /** Only opaque IDs, known codes, numbers and times cross a workflow checkpoint. */
 export interface Observation {
@@ -17,6 +28,9 @@ export interface Observation {
   evidenceUrl?: string;
   attemptedSha?: string;
   decision?: string;
+  poolMembers?: readonly PoolMember[];
+  poolChecks?: readonly PoolCheck[];
+  poolMissing?: readonly PoolMember[];
 }
 export interface Checkpoint {
   revision: number;
