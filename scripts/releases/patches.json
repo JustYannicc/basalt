@@ -503,6 +503,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-account-observations",
+      "file": "0053-account-observations.patch",
+      "content_sha256": "5f33dfea80de0a41467bfaf1620013862c5b91bbf506f8d0a4f81d111426d273",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "basalt-assistant-guide-brand",
       "file": "0057-assistant-guide-brand.patch",
       "content_sha256": "bfeef2c9a8911c5ff625ba85ad7ada7395d3931409ba11525695af8d0e5dab82",

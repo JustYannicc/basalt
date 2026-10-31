@@ -4,7 +4,6 @@ import {
   mutation,
   number,
   object,
-  ProviderError,
   query,
   type ConnectContext,
   type QueryContext,
@@ -13,15 +12,13 @@ import {
 } from "apps";
 import { never } from "apps/operations/approval";
 import {
-  type Account,
   type LoginFileAdded,
   type PoolView,
   type SignInStarted,
   type SignInStatus,
   type UsageSummary,
 } from "./contract.ts";
-import { accountStatus, checkFailure } from "./account-status.ts";
-import { subscriptionFailure } from "./account-health.ts";
+import { checkSubscription } from "./account-observations.ts";
 import { providers } from "./providers.ts";
 import { type AccountIdentity, loginFileMethod, prompt, signedIn, withIdentity } from "./sign-in.ts";
 import { requirements } from "./requirements.ts";
@@ -134,13 +131,7 @@ export default defineApp(requirements, {
         // A sign-in that already ended has nothing to cancel.
         if (method !== loginFileMethod) await control<null>(ctx, `/sign-ins${sessionPath(session)}`, { method: "DELETE" });
       },
-      check: async (ctx, { ref }) => {
-        const result = await control<Account>(ctx, `/accounts/${encodeURIComponent(ref)}/collect`, { method: "POST" });
-        if (!result.ok) throw new ProviderError({ reason: checkFailure(result.error) });
-        const failure = subscriptionFailure(result.value);
-        if (failure) throw new ProviderError({ reason: failure });
-        return accountStatus(result.value, providers);
-      },
+      check: (ctx, { ref }) => checkSubscription(ctx, ref),
       // Unlinking or deleting the account removes the subscription from the pool and its backend.
       remove: async (ctx, { ref }) => {
         const result = await control<null>(ctx, `/accounts/${encodeURIComponent(ref)}`, { method: "DELETE" });

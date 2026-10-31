@@ -1656,3 +1656,74 @@ for (const ownAtBoundary of [false, true]) {
     }), [0, 200, 400, 600, 800]);
   });
 }
+
+
+test("observation routes deny members before reading Home or attribution", async () => {
+  const f = await fixture();
+  for (const [path, method] of [["/accounts/a/observations", "GET"], ["/accounts/a/observations/refresh", "POST"]]) {
+    await error(await f.call(path!, { method, owner: false }), "not_owner", 403);
+  }
+  assert.equal(f.home.calls.length, 0);
+  assert.equal(f.storage.gets, 0);
+  assert.equal(f.storage.puts, 0);
+});
+
+test("observation routes keep raw diagnostics private and preserve quota on runtime rejection", async () => {
+  const f = await fixture();
+  f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+  f.home.files.set("a", { ...f.home.files.get("a"), status: "error" });
+  const at = f.deps.now().toISOString();
+  f.home.override = (path) => {
+    if (path.endsWith("/quota/credentials/a")) return Response.json({
+      credential: { credential_id: "a", plan: { name: "Pro", premium: true } },
+      windows: [{ id: "weekly", label: "Weekly", unit: "requests", remaining: 70, limit: 100, remaining_ratio: 0.7, observed_at: at }],
+      collection: { status: "success", freshness: "fresh", observed_at: at, last_attempt_at: at },
+      private_diagnostic: "never-expose-this-body",
+    });
+    if (path.endsWith("/credentials/a/model-states")) return Response.json({ credential: { credential_id: "a", refresh_blocked: true,
+      last_error: { http_status: 401, message: "never-expose-this-body" } } });
+    return undefined;
+  };
+  const response = await f.call("/accounts/a/observations");
+  assert.equal(response.status, 200, await response.clone().text());
+  const serialized = await response.text();
+  assert.equal(serialized.includes("never-expose-this-body"), false);
+  const result = JSON.parse(serialized);
+  assert.equal(result.account.credentialFailure, "unauthorized");
+  assert.equal(result.observation.observation.plan.label, "Pro");
+  assert.deepEqual(result.observation.observation.windows.map((w: { id: string }) => w.id), ["weekly"]);
+  assert.equal(result.observation.observation.windows[0].measure.limit, 100);
+  await error(await f.call("/accounts/a/observations", { pool: "pool-b" }), "not_found", 404);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 0);
+  assert.equal(f.storage.puts, 0, "observing never persists or expires OAuth attribution");
+});
+
+test("explicit observation refresh coalesces collection and preserves its persistent cap", async () => {
+  const f = await fixture();
+  f.home.addFile("a"); f.home.addGroup("pool-a", 10, ["a"]);
+  let collected = false;
+  f.home.override = (path) => {
+    if (path.endsWith("/quota/collect")) {
+      collected = true;
+      return Response.json({ accepted: 1, running: true }, { status: 202 });
+    }
+    if (path.endsWith("/quota/credentials/a")) return Response.json({
+      credential: { credential_id: "a" },
+      windows: [{ id: "weekly", label: "Weekly", unit: "requests", remaining: 12, limit: 20, observed_at: f.deps.now().toISOString() }],
+      collection: { status: collected ? "success" : "idle", freshness: collected ? "fresh" : "never",
+        observed_at: collected ? f.deps.now().toISOString() : null,
+        last_attempt_at: collected ? f.deps.now().toISOString() : null },
+    });
+    return undefined;
+  };
+  const responses = await Promise.all(Array.from({ length: 4 }, () => f.call("/accounts/a/observations/refresh", { method: "POST" })));
+  for (const response of responses) {
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json() as { observation: { observation: { windows: { id: string }[] } } };
+    assert.deepEqual(result.observation.observation.windows.map((window) => window.id), ["weekly"]);
+  }
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 1);
+  f.restart();
+  assert.equal((await f.call("/accounts/a/observations/refresh", { method: "POST" })).status, 200);
+  assert.equal(f.home.calls.filter((call) => call.path.endsWith("/quota/collect")).length, 1);
+});

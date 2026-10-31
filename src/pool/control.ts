@@ -17,7 +17,9 @@ import { openEnvelope, signEnvelope, verifyPoolToken } from "./token.ts";
 import { exportLoginFile } from "./login-export.ts";
 import { timePoolRead } from "./read-timing.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
-import { checkAccount } from "./account-check.ts";
+import { checkAccount, readCheckedAccount } from "./account-check.ts";
+import { quotaObservation } from "./quota-observation.ts";
+import { publicQuotaObservation } from "./quota-observation-public.ts";
 import { homeResponse } from "./home-response.ts";
 import { accountActionPath, type AccountAction, type AccountActions } from "./account-actions.ts";
 
@@ -456,6 +458,8 @@ const routes: Record<string, Route> = {
     catch { return fail(404, "not_found", "This account does not exist."); }
     return json(await checkAccount(ctx.home, ctx.client, ctx.deps.collection ?? unavailable(), id, ctx.request.signal));
   },
+  "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
+  "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
   "GET /pool": async ({ home, isOwner }) => json(await home.view(isOwner)),
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
@@ -546,6 +550,15 @@ const routes: Record<string, Route> = {
   "GET /sign-ins/status": async (ctx) => json(await attribution(ctx).status(ctx.home, await sessionFor(ctx))),
 };
 
+async function observeAccount(ctx: RouteContext, refresh: boolean): Promise<Response> {
+  const match = /^\/accounts\/([^/]+)\/observations(?:\/refresh)?$/.exec(ctx.url.pathname.slice(base.length));
+  let id: string;
+  try { id = decodeURIComponent(match?.[1] ?? ""); }
+  catch { return fail(404, "not_found", "This account does not exist."); }
+  const { account, quota } = await readCheckedAccount(ctx.home, ctx.client, ctx.deps.collection ?? unavailable(), id, ctx.request.signal, refresh);
+  return json({ account, observation: quota === null ? null : publicQuotaObservation(quotaObservation(quota)) });
+}
+
 async function accountAction(ctx: RouteContext): Promise<Response> {
   const match = accountActionPath.exec(ctx.url.pathname.slice(base.length));
   if (!match) return fail(404, "not_found", "This pool endpoint does not exist.");
@@ -570,6 +583,8 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   const path = url.pathname.slice(base.length);
   const action = accountActionPath.exec(path);
   const routePath = action ? action[2] === "resets" ? "/accounts/:id/resets" : "/accounts/:id/action"
+    : /^\/accounts\/[^/]+\/observations\/refresh$/.test(path) ? "/accounts/:id/observations/refresh"
+    : /^\/accounts\/[^/]+\/observations$/.test(path) ? "/accounts/:id/observations"
     : /^\/accounts\/[^/]+\/collect$/.test(path) ? "/accounts/:id/collect"
     : /^\/accounts\/[^/]+\/export$/.test(path) ? "/accounts/:id/export"
     : /^\/accounts\/[^/]+$/.test(path) ? "/accounts/:id" : path;
@@ -580,7 +595,8 @@ export async function authorizeControl(request: Request, signingKey: string, pre
   const collect = routeKey === "POST /accounts/:id/collect";
   const refresh = action?.[2] === "refresh" && request.method === "POST";
   if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner) return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
-  const isRead = collect || routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
+  const observation = routeKey === "GET /accounts/:id/observations" || routeKey === "POST /accounts/:id/observations/refresh";
+  const isRead = collect || observation || routeKey === "GET /pool" || routeKey === "GET /usage" || routeKey === "GET /accounts/:id/export";
   return { claims, url, route, routeKey, isOwner, isRead, isAccountAction: !!action };
 }
 

@@ -87,6 +87,12 @@ export interface Account {
   readonly inAccounts?: boolean;
 }
 
+/** Owner-only account observation read. The Worker never returns raw Home detail. */
+export interface AccountObservationResponse {
+  readonly account: Account;
+  readonly observation: import("./account-observation-contract.ts").PoolAccountObservation | null;
+}
+
 /** GET /pool */
 export interface PoolView {
   readonly isOwner: boolean;
