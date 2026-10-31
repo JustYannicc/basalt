@@ -14,6 +14,8 @@ import { githubRepository, sameArtifact } from "./sources.ts";
 import type { ArtifactPin, ClassificationReport, Evidence, PatchManifestV3, ReleasePins, SourceComparison } from "./types.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+// Digest checks need complete patch bytes; packaged assets exceed Node's default 1 MiB buffer.
+const gitMaxBuffer = 64 * 1024 * 1024;
 
 export type ClassificationInput = {
   baseGitCommit: string;
@@ -229,11 +231,11 @@ function pathExistsAt(repositoryRoot: string, commit: string, path: string): boo
 }
 
 function git(repositoryRoot: string, args: string[]): string {
-  return execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return gitBuffer(repositoryRoot, args).toString("utf8");
 }
 
 function gitBuffer(repositoryRoot: string, args: string[]): Buffer {
-  return execFileSync("git", args, { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync("git", args, { cwd: repositoryRoot, maxBuffer: gitMaxBuffer, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 function parseArgs(args: string[]): { base: string; candidate: string } {
