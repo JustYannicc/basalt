@@ -42,6 +42,7 @@ export const poolWorker = Effect.gen(function* () {
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
+      POOL_MODEL_HISTORY_ENABLED: String(yield* Config.Boolean("POOL_MODEL_HISTORY_ENABLED").pipe(Config.withDefault(false))),
       ...(yield* telemetryBindings),
       ...(Option.isSome(previousSigningKey) ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value } : {}),
       POOL_IMAGE_HASH: application.hash.pipe(Output.map((hash) => {

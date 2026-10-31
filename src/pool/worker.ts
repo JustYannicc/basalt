@@ -23,6 +23,10 @@ import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
 import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
+import { captureHomeRequests } from "./model-history/capture.ts";
+import { withHistoryDatabase } from "./model-history/database.ts";
+import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
+import { handleModelHistoryOperation, historyBackfillPath, historySchemaApplyPath, historySchemaCatalogPath } from "./model-history/operator.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv {
@@ -33,6 +37,7 @@ export interface PoolEnvironment extends TelemetryEnv {
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_IMAGE_HASH: string;
+  POOL_MODEL_HISTORY_ENABLED?: string;
 }
 
 export class PoolContainer extends DurableObject<PoolEnvironment> {
@@ -143,6 +148,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.prices.run();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
     await this.usage.observe().catch((error: unknown) => console.error("Pool usage observation failed", error));
+    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
+      try { await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, captureHomeRequests); }
+      catch { console.error("POOL_MODEL_HISTORY_FAILURE count=1"); }
+    }
   }
 
   async migrationInventory(): Promise<void> {
@@ -176,6 +185,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") return this.computers.context(request);
     if (pathname === summaryPath) return this.usage.handle(request);
+    if (pathname === modelHistoryPath) return handleModelHistory(request, {
+      signingKey: this.env.POOL_APP_SIGNING_KEY, previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+      permissions: (pool, caller) => this.computers.permissions(pool, caller),
+    });
     if (isControlPath(pathname)) return this.control.handle(request);
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
@@ -237,7 +251,10 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 /** Only a service binding that explicitly selects this named entrypoint can invoke it. */
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).pathname !== "/codex-websockets") return new Response(null, { status: 404 });
+    const path = new URL(request.url).pathname;
+    if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
+      return handleModelHistoryOperation(request, this.env.POOL_DATABASE_URL);
+    if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
       let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
       if (request.method === "POST") {
