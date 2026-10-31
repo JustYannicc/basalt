@@ -29,11 +29,12 @@ test("inventory distinguishes schema12 receipt states and cannot write through a
       deleted_api_key_count bigint not null, unknown_key_count bigint not null);
       create table auth (uuid text, id text, "index" text, provider text, disabled boolean, deleted_at timestamptz, auth_json jsonb);
       create table api_key (id bigint, user_id bigint, channels jsonb, deleted_at timestamptz, api_key text);
-      create table channel_group (id bigint, disabled boolean, deleted_at timestamptz);
+      create table channel_group (id bigint, disabled boolean, deleted_at timestamptz, channel_name text);
       create table channel_group_detail (id bigint, channel_group_id bigint, auth_id text, deleted_at timestamptz);
       insert into auth values ('auth-uuid', 'auth-id', 'auth-index', 'codex', false, null, '{"token":"SYNTHETIC_AUTH_SECRET"}');
       insert into api_key values (7, 9, '[11]', null, 'SYNTHETIC_KEY_SECRET');
-      insert into channel_group values (11, false, null);
+      insert into channel_group values (11, false, null, 'signalbox-pool-app_fixture'),
+        (12, false, null, 'SYNTHETIC_PRIVATE_CHANNEL_LABEL');
       insert into channel_group_detail values (13, 11, 'auth-id', null)`);
     assert.deepEqual(await privacyReceipt(client), { state: "missing_migration" });
     // Similar names must not satisfy this exact release's receipt selector.
@@ -56,6 +57,8 @@ test("inventory distinguishes schema12 receipt states and cannot write through a
     assert.deepEqual(report.receipt, receipt);
     assert.equal(report.sections.credentials?.[0]?.uuid, "auth-uuid");
     assert.equal(report.sections.keys?.[0]?.id, "7");
+    assert.equal(report.sections.channels?.[0]?.pool, "app_fixture");
+    assert.equal(report.sections.channels?.[1]?.pool, null);
     assert.equal(JSON.stringify(report).includes("SYNTHETIC"), false);
 
     await client.query(`alter table auth rename to stored_auth;

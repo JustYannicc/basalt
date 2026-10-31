@@ -221,9 +221,9 @@ jobs:
       - name: Install the suite's browser engine
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
-      - name: Verify the inventory through the real Cloud cron and authenticated job
+      - name: Verify the Cloud inventory and read-only retired-token command
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud pool migration inventory' --workers 1
+        run: bun run e2e:cloud --test-name '^Cloud pool migration inventory|^Cloud retired pool token command' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

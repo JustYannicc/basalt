@@ -82,6 +82,41 @@ For a normal release, rollback automatically redeploys the previous pins and the
 
 The simulated release and broken-patch checks verify update mechanics without cloud credentials. Live preview, automatic release merge, database restore and provider teardown acceptance remain pending until the required accounts and dedicated subscription secrets are configured.
 
+### Retire unused pool transport tokens
+
+This private operator command removes exact saved Executor account IDs after proving that they are replaced pool transport tokens with no retained use. It preserves Home credentials, backend keys and channel memberships. It never selects accounts by label or runs on a schedule. Preparing, merging or deploying the tooling gives no permission to run it against production.
+
+Keep the configuration and request files private, with mode `0600`. The configuration contains `target`, the PostgreSQL `database` URI, `encryptionKey`, and `poolSigningKeys` containing the current signing key and optionally the previous one. The request contains `organization` and an explicit `accounts` array. Credentials belong only in the configuration file.
+
+Collect the complete private `pool-v1` and `pool-storage-v1` inventory records for the same target. Place them in an inventory file with `target`, `homeRun`, `storageRun`, and `records`. Include every part and the terminal record for each chosen run. The command checks their hashes, coverage and timestamps, joins host accounts to pool directories, Home channels, computer keys and memberships, and blocks incomplete or ambiguous evidence. The existing private inventory jobs produce these records; this tool never calls a provider or refreshes inventory itself.
+
+From `.upstream`, first produce a read-only report:
+
+```sh
+EXECUTOR_RETIREMENT_CONFIGURATION="<private-configuration-file>" \
+  bun apps/hosted/cloud/scripts/retired-pool-tokens.ts \
+  --request "<private-request-file>" --inventory "<private-inventory-file>" \
+  > "<private-report-file>"
+```
+
+The dry run opens a read-only PostgreSQL transaction and rolls it back. It checks signed pool claims, the retained provider definition, the current replacement and its link, personal ownership, and retained references. A referenced or ambiguous account stays `keep`. Legacy methods that permit reconnect without an account lock also stay `keep`. Only provisioned plain-secret tokens in the supported storage layout can be retired. Reports contain IDs, blockers and a SHA-256; they exclude labels, tokens and ciphertext.
+
+Production apply requires a complete inventory, supported encrypted backup, recovery evidence and separate coordinator GO for the exact IDs. The report's `migrationGo: false` stays false. The `--go` hash binds a manual invocation to its report; it cannot supply that external authority. Create a separate request and fresh report for the exact accounts approved for deletion. Every listed account must be `retire`, the request IDs must equal the report IDs, and the report and inventories must be at most five minutes old when each deletion starts.
+
+```sh
+EXECUTOR_RETIREMENT_CONFIGURATION="<private-configuration-file>" \
+  bun apps/hosted/cloud/scripts/retired-pool-tokens.ts \
+  --request "<private-request-file>" --inventory "<private-inventory-file>" \
+  --apply --report "<private-report-file>" --go "<report-sha256>" \
+  --checkpoints "<private-checkpoint-directory>"
+```
+
+For each account, apply locks its organization, provider, pool app, replacement, account and policy, then repeats provenance and dependency checks immediately before deletion. It writes and verifies an encrypted, fsynced checkpoint before deleting. The checkpoint preserves the original account ciphertext, policy and affected health/observation rows. Keep that directory, its configuration encryption key, the exact report and the output receipt. These targeted checkpoints supplement the supported database backup.
+
+Deletion and its journal receipt commit together. The command reads the account back after commit. Repeating the same successful apply verifies the checkpoint, journal and absence of the account and reports `alreadyRecorded: true`; it does not repeat deletion. A batch stops on a changed account and retains earlier per-account outcomes. An incomplete result or lost connection requires inspecting the journal and retrying the exact invocation before deciding what happened. An expired report cannot start a pending deletion. Produce a new report for the remaining IDs after renewing inventory and approval. A checkpoint without a committed receipt may be left by a rolled-back transaction; keep it until the retry or recovery is resolved.
+
+With separate production recovery GO, use the original report, inventory and checkpoint directory and replace `--apply` with `--recover`. Its request may list a subset of the original report IDs so a partial batch can be recovered. Recovery authenticates the checkpoint and restores the same ID, original ciphertext, policy and cached rows in one transaction. It refuses to overwrite an existing account. A repeated successful recovery verifies the restored rows without rewriting them. An account restored from a report cannot be deleted again with that report. Recovery does not require the original report to remain fresh, and never restores or revokes a Home credential or backend key.
+
 ## Verification and remaining work
 
 `npm run check` exercises routing, configuration, the pool control API and the pool screen's helpers without credentials. `npm run check:providers` compares the provider table with the pinned Home source. `npm run check:build` renders the built sign-in pages and the patched emails under the brand and under a swapped name, and fails if either shows the tools service's name. `npm run prepare:upstream` prepares the pinned source; `npm run check:upstream` exercises the patched namespace adapter, empty-state recovery plan and encrypted Workflow replay; `npm run typecheck` checks Basalt scripts, router and the pool Worker; `npm run typecheck:upstream` runs the pinned upstream's own `bun run typecheck` over the patched checkout, so a carried patch fails Check on any type or Effect diagnostic error upstream's CI would reject; `npm run build` builds the upstream framework and every Worker the stack deploys, router included. Run installs, builds, checks and typechecks through the machine's shared heavy-work limiter when developing on a shared host.

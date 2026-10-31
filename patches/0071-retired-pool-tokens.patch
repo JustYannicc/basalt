@@ -1,0 +1,2407 @@
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts b/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..69ef4c5bc3ab8c6c8acc74363eb0ec492d4c1782
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts
+@@ -0,0 +1,231 @@
++import { Effect, Schema } from "effect";
++import type { PoolClient } from "pg";
++import {
++  Checkpoint,
++  ReportEnvelope,
++  RetirementConfiguration,
++  RetirementRefused,
++  RetirementRequest,
++  reportFreshMs,
++} from "./pool-token-retirement-contracts.ts";
++import { retirementCheckpoints } from "./pool-token-retirement-checkpoint.ts";
++import { retirementDatabase } from "./pool-token-retirement-database.ts";
++import {
++  inventoryFresh,
++  joinRetirementPool,
++  type RetirementInventory,
++} from "./pool-token-retirement-inventory.ts";
++import { retirementReader } from "./pool-token-retirement-reader.ts";
++
++export const retirePoolTokens = (
++  client: PoolClient,
++  request: typeof RetirementRequest.Type,
++  configuration: typeof RetirementConfiguration.Type,
++  envelope: typeof ReportEnvelope.Type,
++  inventory: RetirementInventory,
++  directory: string,
++  mode: "apply" | "recover",
++) =>
++  Effect.gen(function* () {
++    const report = envelope.report;
++    const ids = request.accounts.toSorted();
++    const reportedIds = report.accounts.map((account) => account.account).toSorted();
++    if (
++      new Set(ids).size !== ids.length ||
++      new Set(reportedIds).size !== reportedIds.length ||
++      (mode === "apply"
++        ? JSON.stringify(ids) !== JSON.stringify(reportedIds)
++        : ids.some((id) => !reportedIds.includes(id)))
++    )
++      return yield* new RetirementRefused({ reason: "report_ids_changed" });
++    if (
++      report.target !== configuration.target ||
++      inventory.target !== configuration.target ||
++      report.organization !== request.organization
++    )
++      return yield* new RetirementRefused({ reason: "report_target_changed" });
++    if (
++      report.external === null ||
++      report.external.homeHash !== inventory.homeHash ||
++      report.external.storageHash !== inventory.storageHash
++    )
++      return yield* new RetirementRefused({ reason: "report_inventory_changed" });
++    if (
++      report.accounts.some(
++        (account) => account.disposition !== "retire" || account.blockers.length !== 0,
++      )
++    )
++      return yield* new RetirementRefused({ reason: "report_has_blocked_accounts" });
++    const reader = yield* retirementReader(client, request.organization, configuration);
++    const database = retirementDatabase(reader, request.organization, envelope.sha256);
++    const checkpoints = yield* retirementCheckpoints(directory, configuration);
++    const identity = yield* reader.identity;
++    if (identity.database !== report.database)
++      return yield* new RetirementRefused({ reason: "report_database_changed" });
++    const fresh = Effect.gen(function* () {
++      const current = yield* reader.identity;
++      const now = Date.parse(current.snapshot),
++        at = Date.parse(report.snapshot),
++        until = Date.parse(report.expiresAt);
++      if (
++        !Number.isFinite(now) ||
++        !Number.isFinite(at) ||
++        until !== at + reportFreshMs ||
++        now < at - 5_000 ||
++        now > until ||
++        !inventoryFresh(inventory, now)
++      )
++        return yield* new RetirementRefused({ reason: "report_expired" });
++    });
++    // Validate all pending IDs before creating even the manual journal row. A completed batch
++    // may be read back after expiry, but no pending deletion gets that exception.
++    if (mode === "apply")
++      for (const candidate of report.accounts) {
++        if (!(yield* database.outcome(candidate.account))?.startsWith("deleted:")) yield* fresh;
++      }
++    const items: {
++      account: string;
++      outcome: string;
++      checkpoint: string;
++      alreadyRecorded: boolean;
++    }[] = [];
++    for (const candidate of report.accounts.filter((entry) => ids.includes(entry.account))) {
++      const result = yield* database
++        .transaction(
++          Effect.gen(function* () {
++            if (
++              candidate.pool === null ||
++              candidate.provider === null ||
++              candidate.replacement === null ||
++              candidate.person === null
++            )
++              return yield* new RetirementRefused({ reason: "report_provenance_missing" });
++            const pool = candidate.pool,
++              person = candidate.person;
++            yield* database.claim;
++            yield* database.lock(
++              candidate.account,
++              candidate.pool,
++              candidate.provider,
++              candidate.replacement,
++            );
++            const recorded = yield* database.outcome(candidate.account);
++            const current = yield* reader.account(candidate.account);
++            if (mode === "recover") {
++              const saved = yield* checkpoints.read(envelope.sha256, candidate.account);
++              if (saved.checkpoint.organization !== request.organization)
++                return yield* new RetirementRefused({ reason: "checkpoint_ownership_changed" });
++              if (recorded === `restored:${saved.digest}` && current !== undefined) {
++                const present = yield* database.snapshot(candidate.account, true);
++                if (JSON.stringify(present) !== JSON.stringify(saved.checkpoint.rows))
++                  return yield* new RetirementRefused({ reason: "recovery_destination_changed" });
++                return {
++                  account: candidate.account,
++                  outcome: "restored",
++                  checkpoint: saved.digest,
++                  alreadyRecorded: true,
++                };
++              }
++              if (recorded !== `deleted:${saved.digest}` || current !== undefined)
++                return yield* new RetirementRefused({ reason: "recovery_destination_occupied" });
++              yield* database.restore(candidate.account, saved.checkpoint.rows);
++              if (
++                JSON.stringify(yield* database.snapshot(candidate.account, true)) !==
++                JSON.stringify(saved.checkpoint.rows)
++              )
++                return yield* new RetirementRefused({ reason: "recovery_readback_failed" });
++              yield* database.record(candidate.account, `restored:${saved.digest}`);
++              return {
++                account: candidate.account,
++                outcome: "restored",
++                checkpoint: saved.digest,
++                alreadyRecorded: false,
++              };
++            }
++            if (recorded !== undefined) {
++              const saved = yield* checkpoints.read(envelope.sha256, candidate.account);
++              if (recorded !== `deleted:${saved.digest}` || current !== undefined)
++                return yield* new RetirementRefused({ reason: "recorded_outcome_changed" });
++              return {
++                account: candidate.account,
++                outcome: "deleted",
++                checkpoint: saved.digest,
++                alreadyRecorded: true,
++              };
++            }
++            const recheck = Effect.gen(function* () {
++              yield* fresh;
++              const facts = yield* reader.inspect(candidate.account);
++              const external = joinRetirementPool(inventory, request.organization, pool, person);
++              if (
++                facts.disposition !== "retire" ||
++                facts.fingerprint !== candidate.fingerprint ||
++                external.blockers.length > 0
++              )
++                return yield* new RetirementRefused({ reason: "candidate_changed" });
++            });
++            yield* recheck;
++            const checkpoint = yield* Schema.decodeUnknownEffect(Checkpoint)({
++              version: 1,
++              target: configuration.target,
++              organization: request.organization,
++              account: candidate.account,
++              reportSha256: envelope.sha256,
++              rows: yield* database.snapshot(candidate.account, true),
++            });
++            const digest = yield* checkpoints.save(checkpoint);
++            // The same account and policy locks remain held while the encrypted recovery point is fsynced.
++            yield* recheck;
++            yield* database.remove(candidate.account);
++            yield* database.record(candidate.account, `deleted:${digest}`);
++            return {
++              account: candidate.account,
++              outcome: "deleted",
++              checkpoint: digest,
++              alreadyRecorded: false,
++            };
++          }),
++        )
++        .pipe(
++          Effect.match({
++            onFailure: (error) => ({
++              ok: false as const,
++              reason: error instanceof RetirementRefused ? error.reason : "operation_unavailable",
++            }),
++            onSuccess: (item) => ({ ok: true as const, item }),
++          }),
++        );
++      if (!result.ok)
++        return {
++          complete: false,
++          mode,
++          writePerformed: null,
++          reportSha256: envelope.sha256,
++          items,
++          stoppedAt: candidate.account,
++          reason: result.reason,
++          externalActions: [],
++        };
++      const readback = yield* reader.account(candidate.account);
++      if ((mode === "apply") !== (readback === undefined))
++        return {
++          complete: false,
++          mode,
++          writePerformed: null,
++          reportSha256: envelope.sha256,
++          items,
++          stoppedAt: candidate.account,
++          reason: "post_commit_readback_changed",
++          externalActions: [],
++        };
++      items.push(result.item);
++    }
++    return {
++      complete: true,
++      mode,
++      writePerformed: items.some((item) => !item.alreadyRecorded),
++      reportSha256: envelope.sha256,
++      items,
++      externalActions: [],
++    };
++  }).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts b/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf39588cfe5cf542cc29f31ba23cd5e5a8cdd0a3
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts
+@@ -0,0 +1,104 @@
++import { AccountId, aesGcmCredentials } from "@executor-js/sdk/core";
++import { createHash } from "node:crypto";
++import { constants } from "node:fs";
++import { mkdir, open, stat } from "node:fs/promises";
++import { join } from "node:path";
++import { Effect, Redacted, Schema } from "effect";
++import {
++  Checkpoint,
++  RetirementConfiguration,
++  RetirementRefused,
++  RetirementUnavailable,
++} from "./pool-token-retirement-contracts.ts";
++
++export const sha256 = (value: string | Uint8Array) =>
++  createHash("sha256").update(value).digest("hex");
++const io = <A>(run: () => Promise<A>) =>
++  Effect.tryPromise({ try: run, catch: () => new RetirementUnavailable() });
++
++/** A checkpoint contains the original ciphertext and private metadata, so its entire file is encrypted. */
++export const retirementCheckpoints = (
++  directory: string,
++  configuration: typeof RetirementConfiguration.Type,
++) =>
++  Effect.gen(function* () {
++    const credentials = yield* aesGcmCredentials(configuration.encryptionKey, crypto);
++    const binding = (report: string, account: typeof AccountId.Type) =>
++      Schema.decodeUnknownSync(AccountId)(
++        `acc_retirement_${sha256(JSON.stringify([configuration.target, report, account]))}`,
++      );
++    const path = (report: string, account: typeof AccountId.Type) =>
++      join(directory, `${sha256(JSON.stringify([report, account]))}.enc`);
++    const read = (report: string, account: typeof AccountId.Type) =>
++      Effect.gen(function* () {
++        const bytes = yield* io(async () => {
++          const file = await open(path(report, account), constants.O_RDONLY | constants.O_NOFOLLOW);
++          try {
++            const info = await file.stat();
++            if (!info.isFile() || info.size > 2_000_000 || (info.mode & 0o077) !== 0)
++              throw new Error("Private checkpoint required");
++            return new Uint8Array(await file.readFile());
++          } finally {
++            await file.close();
++          }
++        });
++        const fields = yield* credentials.decrypt(binding(report, account), Redacted.make(bytes));
++        const checkpoint = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Checkpoint))(
++          Redacted.value(fields).checkpoint,
++        );
++        if (
++          checkpoint.target !== configuration.target ||
++          checkpoint.reportSha256 !== report ||
++          checkpoint.account !== account
++        )
++          return yield* new RetirementRefused({ reason: "checkpoint_binding_changed" });
++        return { checkpoint, digest: sha256(bytes) };
++      });
++    const save = (checkpoint: typeof Checkpoint.Type) =>
++      Effect.gen(function* () {
++        const json = JSON.stringify(checkpoint);
++        if (Buffer.byteLength(json) > 1_000_000)
++          return yield* new RetirementRefused({ reason: "checkpoint_limit_exceeded" });
++        const bytes = yield* credentials.encrypt(
++          binding(checkpoint.reportSha256, checkpoint.account),
++          Redacted.make({ checkpoint: json }),
++        );
++        yield* io(async () => {
++          await mkdir(directory, { recursive: true, mode: 0o700 });
++          const info = await stat(directory);
++          if (!info.isDirectory() || (info.mode & 0o077) !== 0)
++            throw new Error("Private checkpoint directory required");
++          const destination = path(checkpoint.reportSha256, checkpoint.account);
++          // Exclusive creation preserves the first recovery point after a rollback or an uncertain commit.
++          const file = await open(destination, "wx", 0o600).catch((error: unknown) => {
++            if (
++              typeof error === "object" &&
++              error !== null &&
++              "code" in error &&
++              error.code === "EEXIST"
++            )
++              return null;
++            throw error;
++          });
++          if (file !== null) {
++            try {
++              await file.writeFile(bytes);
++              await file.sync();
++            } finally {
++              await file.close();
++            }
++            const folder = await open(directory, "r");
++            try {
++              await folder.sync();
++            } finally {
++              await folder.close();
++            }
++          }
++        });
++        const retained = yield* read(checkpoint.reportSha256, checkpoint.account);
++        if (JSON.stringify(retained.checkpoint) !== json)
++          return yield* new RetirementRefused({ reason: "checkpoint_source_changed" });
++        return retained.digest;
++      });
++    return { read, save };
++  });
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts b/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..eea481c0b276ec4f41ac8730fff27d5d6582fc23
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts
+@@ -0,0 +1,117 @@
++import { AccountId } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++
++export const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512));
++export const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++const HexKey = Schema.RedactedFromValue(
++  Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/u)),
++);
++export const RetirementRequest = Schema.Struct({
++  organization: Identifier,
++  accounts: Schema.Array(AccountId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
++});
++export const RetirementConfiguration = Schema.Struct({
++  target: Identifier,
++  database: Schema.RedactedFromValue(
++    Schema.String.check(Schema.isPattern(/^postgres(?:ql)?:\/\//u)),
++  ),
++  encryptionKey: HexKey,
++  poolSigningKeys: Schema.Array(HexKey).check(Schema.isMinLength(1), Schema.isMaxLength(2)),
++});
++export const References = Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Identifier)));
++export const Candidate = Schema.Struct({
++  account: AccountId,
++  exists: Schema.Boolean,
++  provider: Schema.NullOr(Identifier),
++  method: Schema.NullOr(Identifier),
++  generation: Schema.NullOr(Schema.Int),
++  policyRevision: Schema.NullOr(Identifier),
++  pool: Schema.NullOr(Identifier),
++  person: Schema.NullOr(Identifier),
++  replacement: Schema.NullOr(AccountId),
++  replacementGeneration: Schema.NullOr(Schema.Int),
++  replacementPolicyRevision: Schema.NullOr(Identifier),
++  signedClaimsVerified: Schema.Boolean,
++  replacementVerified: Schema.Boolean,
++  fingerprint: Hash,
++  disposition: Schema.Literals(["retire", "keep", "missing"]),
++  blockers: Schema.Array(Schema.String),
++  dependencies: Schema.Record(Schema.String, References),
++});
++export const ExternalPool = Schema.Struct({
++  pool: Identifier,
++  person: Identifier,
++  blockers: Schema.Array(Schema.String),
++  channels: Schema.Array(Identifier),
++  keys: Schema.Array(
++    Schema.Struct({
++      id: Identifier,
++      user: Schema.NullOr(Identifier),
++      channels: Schema.Array(Identifier),
++      deleted: Schema.Boolean,
++    }),
++  ),
++  computers: References,
++  memberships: Schema.Array(
++    Schema.Struct({
++      id: Identifier,
++      channel: Identifier,
++      credential: Identifier,
++      deleted: Schema.Boolean,
++    }),
++  ),
++});
++export const ExternalEvidence = Schema.Struct({
++  target: Identifier,
++  homeHash: Hash,
++  storageHash: Hash,
++  homeSnapshot: Identifier,
++  storageSnapshot: Identifier,
++  pools: Schema.Array(ExternalPool),
++});
++export const RetirementReport = Schema.Struct({
++  version: Schema.Literal(1),
++  mode: Schema.Literal("dry-run"),
++  writePerformed: Schema.Literal(false),
++  applySupported: Schema.Literal(true),
++  migrationGo: Schema.Literal(false),
++  target: Identifier,
++  organization: Identifier,
++  database: Identifier,
++  snapshot: Identifier,
++  expiresAt: Identifier,
++  accounts: Schema.Array(Candidate),
++  external: Schema.NullOr(ExternalEvidence),
++  requiredBeforeProductionApply: Schema.Array(Schema.String),
++  externalActions: Schema.Array(Schema.String),
++});
++export const ReportEnvelope = Schema.Struct({ report: RetirementReport, sha256: Hash });
++export const CheckpointRows = Schema.Struct({
++  account: Schema.Record(Schema.String, Schema.Json),
++  policy: Schema.Record(Schema.String, Schema.Json),
++  checks: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++  reports: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++  observations: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++  driverChecks: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++  observationAccess: Schema.Array(Schema.Record(Schema.String, Schema.Json)),
++});
++export const Checkpoint = Schema.Struct({
++  version: Schema.Literal(1),
++  target: Identifier,
++  organization: Identifier,
++  account: AccountId,
++  reportSha256: Hash,
++  rows: CheckpointRows,
++});
++export class RetirementUnavailable extends Schema.TaggedError<RetirementUnavailable>()(
++  "RetirementUnavailable",
++  {},
++) {}
++export class RetirementRefused extends Schema.TaggedError<RetirementRefused>()(
++  "RetirementRefused",
++  {
++    reason: Schema.String,
++  },
++) {}
++export const reportFreshMs = 5 * 60_000;
++export const retirementStep = "basalt-retired-pool-tokens-v1:";
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-database.ts b/apps/hosted/cloud/scripts/pool-token-retirement-database.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d7b9d11aa762d33b9fbb4c32578d273695706c7c
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-database.ts
+@@ -0,0 +1,147 @@
++import { Effect, Schema } from "effect";
++import {
++  CheckpointRows,
++  Identifier,
++  RetirementRefused,
++  retirementStep,
++} from "./pool-token-retirement-contracts.ts";
++import { retirementReader } from "./pool-token-retirement-reader.ts";
++
++type Reader = Effect.Success<ReturnType<typeof retirementReader>>;
++const Row = Schema.Record(Schema.String, Schema.Json);
++const Records = Schema.Array(Schema.Struct({ row: Row }));
++// This is the current SDK's plain-secret removal layout. Identity, OAuth and acquisition
++// lifecycles are refused by the reader, rather than approximated by this private operation.
++const sidecars = [
++  { field: "checks", table: "executor_account_checks", key: "account" },
++  { field: "reports", table: "executor_account_reports", key: "id" },
++  { field: "observations", table: "executor_account_observations", key: "account" },
++  { field: "driverChecks", table: "executor_account_driver_checks", key: "account" },
++  { field: "observationAccess", table: "hosted_account_observation_access", key: "account_id" },
++] as const;
++
++export const retirementDatabase = (reader: Reader, organization: string, report: string) => {
++  const name = retirementStep + report;
++  const transaction = <A, E, R>(body: Effect.Effect<A, E, R>) =>
++    Effect.acquireUseRelease(
++      reader.query("BEGIN"),
++      () =>
++        Effect.gen(function* () {
++          yield* reader.query("SET LOCAL statement_timeout = '3s'");
++          yield* reader.query("SET LOCAL lock_timeout = '500ms'");
++          yield* reader.query("SET LOCAL idle_in_transaction_session_timeout = '5s'");
++          const value = yield* body;
++          yield* reader.query("COMMIT");
++          return value;
++        }),
++      () => reader.query("ROLLBACK").pipe(Effect.ignore),
++    );
++  const outcome = (account: string) =>
++    reader
++      .query(
++        `select outcome from private_hosted_data_step_items
++    where name = $1 and run = 'apply' and item = $2 and owner = $3`,
++        [name, account, `organization:${organization}`],
++      )
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ outcome: Identifier }))),
++        ),
++        Effect.map((rows) => rows[0]?.outcome),
++      );
++  const claim = Effect.gen(function* () {
++    yield* reader.query(
++      `insert into private_hosted_data_steps (name, run, mode) values ($1, 'apply', 'apply') on conflict do nothing`,
++      [name],
++    );
++    yield* reader.query(
++      `select name from private_hosted_data_steps where name = $1 and run = 'apply' for update`,
++      [name],
++    );
++  });
++  const record = (account: string, value: string) =>
++    reader.query(
++      `insert into private_hosted_data_step_items (name, run, item, owner, outcome, pass)
++    values ($1, 'apply', $2, $3, $4, 1) on conflict (name, run, item) do update set outcome = excluded.outcome`,
++      [name, account, `organization:${organization}`, value],
++    );
++  const lock = (account: string, pool: string, provider: string, replacement: string) =>
++    Effect.gen(function* () {
++      yield* reader.query("select id from organization where id = $1 for update", [organization]);
++      yield* reader.query("select id from executor_apps where id = $1 for update", [pool]);
++      yield* reader.query("select id from executor_providers where id = $1 for update", [provider]);
++      yield* reader.query(
++        "select id from executor_accounts where id in ($1, $2) order by id for update",
++        [account, replacement],
++      );
++      yield* reader.query(
++        "select account_id from hosted_account_access where account_id in ($1, $2) order by account_id for update",
++        [account, replacement],
++      );
++    });
++  const rows = (table: string, key: string, account: string, locked: boolean) =>
++    reader
++      .query(
++        `select to_jsonb(r) as row from ${table} r where ${key} = $1${locked ? " for update" : ""}`,
++        [account],
++      )
++      .pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Records)),
++        Effect.map((entries) =>
++          entries
++            .map((entry) => entry.row)
++            .toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
++        ),
++      );
++  const snapshot = (account: string, locked: boolean) =>
++    Effect.gen(function* () {
++      const accounts = yield* rows("executor_accounts", "id", account, locked);
++      const policies = yield* rows("hosted_account_access", "account_id", account, locked);
++      if (accounts.length !== 1 || policies.length !== 1)
++        return yield* new RetirementRefused({ reason: "checkpoint_source_missing" });
++      const caches = yield* Effect.forEach(sidecars, (sidecar) =>
++        rows(sidecar.table, sidecar.key, account, locked).pipe(
++          Effect.map((entries) => [sidecar.field, entries] as const),
++        ),
++      );
++      return yield* Schema.decodeUnknownEffect(CheckpointRows)({
++        account: accounts[0],
++        policy: policies[0],
++        ...Object.fromEntries(caches),
++      });
++    });
++  const remove = (account: string) =>
++    Effect.gen(function* () {
++      for (const sidecar of sidecars)
++        yield* reader.query(`delete from ${sidecar.table} where ${sidecar.key} = $1`, [account]);
++      const removed = yield* reader.query(
++        "delete from executor_accounts where id = $1 and owner = $2 returning id",
++        [account, `organization:${organization}`],
++      );
++      if (removed.length !== 1)
++        return yield* new RetirementRefused({ reason: "deletion_readback_failed" });
++    });
++  const restore = (account: string, saved: typeof CheckpointRows.Type) =>
++    Effect.gen(function* () {
++      if (
++        saved.account.id !== account ||
++        saved.account.owner !== `organization:${organization}` ||
++        saved.policy.account_id !== account ||
++        saved.policy.organization_id !== organization
++      )
++        return yield* new RetirementRefused({ reason: "checkpoint_ownership_changed" });
++      for (const sidecar of sidecars)
++        if ((yield* rows(sidecar.table, sidecar.key, account, true)).length > 0)
++          return yield* new RetirementRefused({ reason: "recovery_destination_occupied" });
++      const insert = (table: string, value: typeof Row.Type) =>
++        reader.query(
++          `insert into ${table} select * from jsonb_populate_record(null::${table}, $1::jsonb)`,
++          [JSON.stringify(value)],
++        );
++      yield* insert("executor_accounts", saved.account);
++      yield* insert("hosted_account_access", saved.policy);
++      for (const sidecar of sidecars)
++        for (const entry of saved[sidecar.field]) yield* insert(sidecar.table, entry);
++    });
++  return { transaction, outcome, claim, record, lock, snapshot, remove, restore };
++};
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts b/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d3659a4c32aabad011771547880db92c87d8c18
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts
+@@ -0,0 +1,287 @@
++import { createHash } from "node:crypto";
++import { Schema } from "effect";
++import {
++  Hash,
++  Identifier,
++  RetirementRefused,
++  reportFreshMs,
++} from "./pool-token-retirement-contracts.ts";
++
++const Source = Schema.Literals(["pool-v1", "pool-storage-v1"]);
++const Common = { inventory: Source, run: Identifier };
++const Record = Schema.Union([
++  Schema.Struct({
++    ...Common,
++    event: Schema.Literal("part"),
++    index: Schema.Int,
++    data: Schema.String,
++  }),
++  Schema.Struct({
++    ...Common,
++    event: Schema.Literal("end"),
++    complete: Schema.Boolean,
++    sha256: Schema.optionalKey(Hash),
++    chunks: Schema.optionalKey(Schema.Int),
++    bytes: Schema.optionalKey(Schema.Int),
++    coverage: Schema.optionalKey(Schema.Array(Schema.String)),
++    migrationGo: Schema.Literal(false),
++  }),
++]);
++export const InventoryBundle = Schema.Struct({
++  target: Identifier,
++  homeRun: Identifier,
++  storageRun: Identifier,
++  records: Schema.Array(Record).check(Schema.isMaxLength(100)),
++});
++const Home = Schema.Struct({
++  snapshot: Identifier,
++  sections: Schema.Struct({
++    credentials: Schema.Array(
++      Schema.Struct({
++        uuid: Identifier,
++        id: Schema.NullOr(Identifier),
++        index: Schema.NullOr(Identifier),
++        provider: Schema.NullOr(Identifier),
++        disabled: Schema.Boolean,
++        deleted: Schema.Boolean,
++      }),
++    ),
++    keys: Schema.Array(
++      Schema.Struct({
++        id: Identifier,
++        user_id: Schema.NullOr(Identifier),
++        channels: Schema.NullOr(Schema.Array(Schema.Int)),
++        deleted: Schema.Boolean,
++      }),
++    ),
++    channels: Schema.Array(
++      Schema.Struct({
++        id: Identifier,
++        pool: Schema.NullOr(Identifier),
++        disabled: Schema.Boolean,
++        deleted: Schema.Boolean,
++      }),
++    ),
++    memberships: Schema.Array(
++      Schema.Struct({
++        id: Identifier,
++        channel_group_id: Identifier,
++        auth_id: Identifier,
++        deleted: Schema.Boolean,
++      }),
++    ),
++  }),
++});
++const Storage = Schema.Struct({
++  snapshot: Identifier,
++  absentKeys: Schema.Array(Schema.String),
++  computers: Schema.NullOr(
++    Schema.Array(
++      Schema.Struct({
++        id: Identifier,
++        user: Identifier,
++        pool: Identifier,
++        state: Identifier,
++        keyId: Schema.NullOr(Schema.Int),
++        userId: Schema.NullOr(Schema.Int),
++        toolsKeyId: Schema.NullOr(Identifier),
++        switching: Schema.Array(Identifier),
++        switchingTo: Schema.NullOr(Identifier),
++      }),
++    ),
++  ),
++  pools: Schema.NullOr(
++    Schema.Array(
++      Schema.Struct({
++        pool: Identifier,
++        owner: Identifier,
++        organization: Identifier,
++        users: Schema.Array(Identifier),
++        pending: Schema.Array(Identifier),
++        provisioned: Schema.Array(Identifier),
++        deleted: Schema.Boolean,
++      }),
++    ),
++  ),
++  attribution: Schema.NullOr(
++    Schema.Struct({
++      assigned: Schema.Array(Identifier),
++      locks: Schema.Array(
++        Schema.Struct({
++          provider: Identifier,
++          pool: Identifier,
++          snapshot: Schema.Array(Identifier),
++          unconfirmedUploads: Schema.Array(Identifier),
++        }),
++      ),
++      sessions: Schema.Array(
++        Schema.Struct({
++          pool: Identifier,
++          provider: Identifier,
++          accountId: Schema.NullOr(Identifier),
++          pendingIds: Schema.Array(Identifier),
++        }),
++      ),
++      uploads: Schema.Array(
++        Schema.Struct({ pool: Identifier, id: Identifier, assigned: Schema.Boolean }),
++      ),
++    }),
++  ),
++});
++
++const unavailable = () => {
++  throw new RetirementRefused({ reason: "external_inventory_invalid" });
++};
++const reconstruct = (
++  bundle: typeof InventoryBundle.Type,
++  source: typeof Source.Type,
++  run: string,
++  coverage: ReadonlyArray<string>,
++) => {
++  const records = bundle.records.filter((entry) => entry.inventory === source && entry.run === run);
++  const ends = records.filter((entry) => entry.event === "end");
++  const end = ends[0];
++  if (
++    ends.length !== 1 ||
++    end?.complete !== true ||
++    end.sha256 === undefined ||
++    end.chunks === undefined ||
++    end.bytes === undefined ||
++    end.coverage === undefined ||
++    !coverage.every((name) => end.coverage?.includes(name))
++  )
++    return unavailable();
++  const parts = records
++    .filter((entry) => entry.event === "part")
++    .toSorted((a, b) => a.index - b.index);
++  if (
++    parts.length !== end.chunks ||
++    parts.length < 1 ||
++    parts.some((part, index) => part.index !== index || part.data.length > 8_000)
++  )
++    return unavailable();
++  const text = parts.map((part) => part.data).join("");
++  if (
++    Buffer.byteLength(text) !== end.bytes ||
++    end.bytes > 120_000 ||
++    createHash("sha256").update(text).digest("hex") !== end.sha256
++  )
++    return unavailable();
++  return { text, hash: end.sha256 };
++};
++
++export const readRetirementInventory = (raw: unknown) => {
++  const bundle = Schema.decodeUnknownSync(InventoryBundle)(raw);
++  const home = reconstruct(bundle, "pool-v1", bundle.homeRun, [
++    "home-credentials",
++    "home-keys",
++    "home-channels",
++    "home-memberships",
++  ]);
++  const storage = reconstruct(bundle, "pool-storage-v1", bundle.storageRun, [
++    "computer-registry-v1",
++    "pool-directory-v1",
++    "pool-control-v1",
++  ]);
++  return {
++    target: bundle.target,
++    homeHash: home.hash,
++    storageHash: storage.hash,
++    home: Schema.decodeUnknownSync(Schema.fromJsonString(Home))(home.text),
++    storage: Schema.decodeUnknownSync(Schema.fromJsonString(Storage))(storage.text),
++  };
++};
++export type RetirementInventory = ReturnType<typeof readRetirementInventory>;
++
++export const inventoryFresh = (inventory: RetirementInventory, at: number) =>
++  [inventory.home.snapshot, inventory.storage.snapshot].every((snapshot) => {
++    const age = at - Date.parse(snapshot);
++    return Number.isFinite(age) && age >= -5_000 && age <= reportFreshMs;
++  });
++
++/** Home keys route through channel IDs; computers retain the exact Home key IDs they own. */
++export const joinRetirementPool = (
++  inventory: RetirementInventory,
++  organization: string,
++  pool: string,
++  person: string,
++) => {
++  const blockers: string[] = [];
++  const storage = inventory.storage,
++    home = inventory.home.sections;
++  if (
++    storage.absentKeys.length > 0 ||
++    storage.computers === null ||
++    storage.pools === null ||
++    storage.attribution === null
++  )
++    blockers.push("pool_storage_incomplete");
++  const entries = storage.pools?.filter((entry) => entry.pool === pool) ?? [];
++  const entry = entries[0];
++  if (
++    entries.length !== 1 ||
++    entry?.organization !== organization ||
++    entry.owner !== person ||
++    entry.deleted
++  )
++    blockers.push("pool_directory_unproven");
++  const channels = home.channels.filter((channel) => channel.pool === pool && !channel.deleted);
++  if (channels.length > 1 || channels.some((channel) => channel.disabled))
++    blockers.push("backend_pool_ambiguous");
++  const channelIds = channels.map((channel) => channel.id);
++  const keys = home.keys.filter((key) =>
++    key.channels?.some((channel) => channelIds.includes(String(channel))),
++  );
++  if (home.keys.some((key) => !key.deleted && (key.channels === null || key.channels.length === 0)))
++    blockers.push("unrestricted_backend_key");
++  const computers = (storage.computers ?? []).filter((computer) =>
++    [computer.pool, ...computer.switching, computer.switchingTo].includes(pool),
++  );
++  for (const computer of computers) {
++    if (
++      ["issuing", "revoking"].includes(computer.state) ||
++      computer.switching.length > 0 ||
++      computer.switchingTo !== null
++    )
++      blockers.push("computer_operation_inflight");
++    if (computer.state === "active" && computer.keyId !== null) {
++      const found = keys.filter((key) => key.id === String(computer.keyId) && !key.deleted);
++      if (found.length !== 1 || found[0]?.user_id !== String(computer.userId))
++        blockers.push("computer_key_unproven");
++    }
++  }
++  if (
++    (entry?.pending.length ?? 0) > 0 ||
++    storage.attribution?.locks.some((lock) => lock.pool === pool) ||
++    storage.attribution?.sessions.some((session) => session.pool === pool) ||
++    storage.attribution?.uploads.some((upload) => upload.pool === pool)
++  )
++    blockers.push("pool_operation_inflight");
++  return {
++    pool,
++    person,
++    blockers: [...new Set(blockers)],
++    channels: channelIds,
++    keys: keys.map((key) => ({
++      id: key.id,
++      user: key.user_id,
++      channels: (key.channels ?? []).map(String),
++      deleted: key.deleted,
++    })),
++    computers: computers.map((computer) => ({
++      id: computer.id,
++      user: computer.user,
++      key: computer.keyId === null ? null : String(computer.keyId),
++      toolsKey: computer.toolsKeyId,
++      state: computer.state,
++    })),
++    memberships: home.memberships
++      .filter((membership) => channelIds.includes(membership.channel_group_id))
++      .map((membership) => ({
++        id: membership.id,
++        channel: membership.channel_group_id,
++        credential: membership.auth_id,
++        deleted: membership.deleted,
++      })),
++  };
++};
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1ed16b96aa02b8d3f4493c13ab911cbb7ed1c998
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
+@@ -0,0 +1,56 @@
++// This command reads fixed projections only. Labels never enter its candidate selection.
++export const accountQuery = `
++select a.id, a.owner, a.provider, a.method, a.credential_generation as generation,
++  case when octet_length(a.encrypted_credentials) <= 16384 then a.encrypted_credentials end as encrypted, p.organization_id as organization,
++  p.personal_user_id as person, p.kind, p.audience, p.revision,
++  d.definition::jsonb #>> '{auth,token,type}' as method_kind,
++  coalesce(d.definition::jsonb #> '{auth,token,provisioned}' = 'true'::jsonb, false) as provisioned,
++  a.identity_id, a.oauth_grant_id
++from executor_accounts a left join hosted_account_access p on p.account_id = a.id
++  left join executor_providers d on d.id = a.provider
++where a.id = $1`;
++
++export const poolQuery = `
++select pool.value ->> 'app' as app, pool.value ->> 'account' as replacement,
++  exists (select 1 from executor_apps a join executor_deployments d on d.code = a.code
++    where a.id = pool.value ->> 'app' and a.owner = $2
++      and d.requirements::jsonb #>> '{accounts,pool,provider}' = $3
++      and d.requirements::jsonb #>> '{accounts,pool,scope}' = 'app'
++      and d.requirements::jsonb #>> '{accounts,pool,cardinality}' = 'one') as declared
++from organization o cross join lateral
++  jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++where o.id = $1 and pool.key = $4`;
++
++export const replacementLinkQuery = `
++select app, requirement, subject from hosted_app_account_links
++where account = $1 and app = $2 and requirement = 'pool' and subject is null`;
++
++// Completed connections and dormant sources are retained references too. A later apply must
++// decide their lifecycle explicitly rather than treating an inactive state as permission.
++export const dependencyQueries = {
++  links: `select app as id, requirement, subject from hosted_app_account_links where account = $1 order by app, requirement, subject limit 101`,
++  groups: `select group_id as id from hosted_account_groups where account_id = $1 order by group_id limit 101`,
++  workflows: `select id, run from executor_workflow_accounts where account = $1 order by id limit 101`,
++  workflowRuns: `select id, status from executor_workflow_runs
++    where jsonb_path_exists(accounts::jsonb, '$.** ? (@ == $account)', jsonb_build_object('account', $1::text)) order by id limit 101`,
++  profiles: `select id, app from executor_installations
++    where jsonb_path_exists(accounts::jsonb, '$.** ? (@ == $account)', jsonb_build_object('account', $1::text)) order by id limit 101`,
++  webhooks: `select id, subscription from executor_webhook_accounts where account = $1 order by id limit 101`,
++  subscriptions: `select id, app, status from executor_webhooks
++    where source_account = $1 or jsonb_path_exists(accounts::jsonb, '$.** ? (@ == $account)', jsonb_build_object('account', $1::text))
++    order by id limit 101`,
++  webhookSources: `select id, app, status from executor_webhook_sources
++    where account = $1 or jsonb_path_exists(accounts::jsonb, '$.** ? (@ == $account)', jsonb_build_object('account', $1::text))
++    order by id limit 101`,
++  connections: `select id, state ->> 'status' as status from executor_account_connections
++    where reconnect_account = $1 or source_account = $1 or state #>> '{account,id}' = $1
++    order by id limit 101`,
++  defaults: `select o.id, p.key as person from organization o cross join lateral
++    jsonb_each(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) p
++    where p.value #>> '{}' = $1 order by o.id, p.key limit 101`,
++  pools: `select o.id, p.key as person, p.value ->> 'app' as app from organization o
++    cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
++    where p.value ->> 'account' = $1 order by o.id, p.key limit 101`,
++  acquisitions: `select account as id from executor_account_acquisitions where account = $1 limit 101`,
++  grantUsers: `select id from executor_accounts where oauth_grant_id = $1 order by id limit 101`,
++} as const;
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4a2a5e7368c731643e24d368455389cccaf1e916
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+@@ -0,0 +1,201 @@
++import { AccountId, aesGcmCredentials } from "@executor-js/sdk/core";
++import { verifyPoolToken } from "@executor-js/hosted-server/pool-token";
++import { createHash } from "node:crypto";
++import { Effect, Option, Redacted, Schema } from "effect";
++import type { PoolClient } from "pg";
++import {
++  accountQuery,
++  dependencyQueries,
++  poolQuery,
++  replacementLinkQuery,
++} from "./pool-token-retirement-queries.ts";
++import {
++  Identifier,
++  References,
++  RetirementConfiguration,
++  RetirementUnavailable,
++} from "./pool-token-retirement-contracts.ts";
++
++const Account = Schema.Struct({
++  id: AccountId,
++  owner: Identifier,
++  provider: Identifier,
++  method: Identifier,
++  generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  encrypted: Schema.NullOr(Schema.Uint8Array),
++  organization: Schema.NullOr(Identifier),
++  person: Schema.NullOr(Identifier),
++  kind: Schema.NullOr(Identifier),
++  audience: Schema.NullOr(Identifier),
++  revision: Schema.NullOr(Identifier),
++  method_kind: Schema.NullOr(Identifier),
++  provisioned: Schema.Boolean,
++  identity_id: Schema.NullOr(Identifier),
++  oauth_grant_id: Schema.NullOr(Identifier),
++});
++const Pool = Schema.Struct({
++  app: Identifier,
++  replacement: Schema.NullOr(AccountId),
++  declared: Schema.Boolean,
++});
++
++export const retirementReader = (
++  client: PoolClient,
++  organization: string,
++  configuration: typeof RetirementConfiguration.Type,
++) =>
++  Effect.gen(function* () {
++    const query = (text: string, values: ReadonlyArray<string> = []) =>
++      Effect.tryPromise({
++        try: () => client.query<Record<string, unknown>>(text, [...values]),
++        catch: () => new RetirementUnavailable(),
++      }).pipe(Effect.map((result) => result.rows));
++    const credentials = yield* aesGcmCredentials(configuration.encryptionKey, crypto);
++    const account = (id: string) =>
++      query(accountQuery, [id]).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Account))),
++        Effect.map((rows) => rows[0]),
++      );
++    const signedFor = (row: typeof Account.Type, app: string, person: string) =>
++      Effect.gen(function* () {
++        if (row.encrypted === null) return false;
++        const fields = yield* credentials
++          .decrypt(row.id, Redacted.make(row.encrypted))
++          .pipe(Effect.option);
++        if (Option.isNone(fields)) return false;
++        const token = Redacted.value(fields.value).token;
++        if (typeof token !== "string") return false;
++        for (const key of configuration.poolSigningKeys) {
++          const claims = yield* Effect.tryPromise({
++            try: () => verifyPoolToken(Redacted.value(key), token),
++            catch: () => new RetirementUnavailable(),
++          });
++          if (
++            claims?.pool === app &&
++            claims.owner === person &&
++            claims.organization === organization
++          )
++            return true;
++        }
++        return false;
++      });
++    const inspect = (id: typeof AccountId.Type) =>
++      Effect.gen(function* () {
++        const row = yield* account(id);
++        const dependencies: Record<string, typeof References.Type> = {};
++        const blockers: string[] = [];
++        if (row !== undefined) {
++          for (const [name, sql] of Object.entries(dependencyQueries)) {
++            const refs = yield* query(sql, [id]).pipe(
++              Effect.flatMap(Schema.decodeUnknownEffect(References)),
++            );
++            if (refs.length > 100) return yield* new RetirementUnavailable();
++            dependencies[name] = refs;
++            if (refs.length > 0) blockers.push(`reference:${name}`);
++          }
++        } else blockers.push("account_missing");
++        const owner = `organization:${organization}`;
++        const personal =
++          row !== undefined &&
++          row.owner === owner &&
++          row.organization === organization &&
++          row.kind === "personal" &&
++          row.audience === null &&
++          row.person !== null;
++        if (row !== undefined && (!personal || row.method !== "token"))
++          blockers.push("host_personal_token_unproven");
++        // Unmarked legacy methods can still start a reconnect without locking the account. Keep
++        // them until that path has a deletion-safe contract; signatures alone do not close the race.
++        if (
++          row !== undefined &&
++          (row.method_kind !== "secrets" ||
++            !row.provisioned ||
++            row.identity_id !== null ||
++            row.oauth_grant_id !== null)
++        )
++          blockers.push("unsupported_account_lifecycle");
++        const pools =
++          personal && row?.method === "token"
++            ? yield* query(poolQuery, [organization, owner, row.provider, row.person ?? ""]).pipe(
++                Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Pool))),
++              )
++            : [];
++        const pool = pools.length === 1 ? pools[0] : undefined;
++        if (pool === undefined || !pool.declared) blockers.push("retained_pool_provider_unproven");
++        const signed =
++          row !== undefined && pool?.declared === true && row.person !== null
++            ? yield* signedFor(row, pool.app, row.person)
++            : false;
++        if (!signed) blockers.push("signed_pool_claims_unproven");
++        let replacementVerified = false;
++        let replacement: typeof Account.Type | undefined;
++        if (
++          pool !== undefined &&
++          pool.declared &&
++          pool.replacement !== null &&
++          pool.replacement !== id &&
++          row?.person != null
++        ) {
++          replacement = yield* account(pool.replacement);
++          const links = yield* query(replacementLinkQuery, [pool.replacement, pool.app]);
++          replacementVerified =
++            replacement !== undefined &&
++            links.length === 1 &&
++            replacement.owner === owner &&
++            replacement.provider === row.provider &&
++            replacement.method === "token" &&
++            replacement.organization === organization &&
++            replacement.kind === "personal" &&
++            replacement.person === row.person &&
++            replacement.audience === null &&
++            (yield* signedFor(replacement, pool.app, row.person));
++        }
++        if (!replacementVerified) blockers.push("current_replacement_unproven");
++        const facts = {
++          account: id,
++          exists: row !== undefined,
++          provider: row?.provider ?? null,
++          method: row?.method ?? null,
++          generation: row?.generation ?? null,
++          policyRevision: row?.revision ?? null,
++          pool: pool?.app ?? null,
++          person: row?.person ?? null,
++          replacement: pool?.replacement ?? null,
++          replacementGeneration: replacement?.generation ?? null,
++          replacementPolicyRevision: replacement?.revision ?? null,
++          signedClaimsVerified: signed,
++          replacementVerified,
++          dependencies,
++        };
++        return {
++          ...facts,
++          fingerprint: createHash("sha256").update(JSON.stringify(facts)).digest("hex"),
++          disposition:
++            row === undefined
++              ? ("missing" as const)
++              : blockers.length === 0
++                ? ("retire" as const)
++                : ("keep" as const),
++          blockers,
++        };
++      });
++    const identity =
++      query(`select current_database() as database, clock_timestamp()::text as snapshot,
++    (select value from private_executor_settings where key = 'version') as version`).pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.Array(
++              Schema.Struct({
++                database: Identifier,
++                snapshot: Identifier,
++                version: Schema.Literal("4.0.25"),
++              }),
++            ),
++          ),
++        ),
++        Effect.flatMap((rows) =>
++          rows[0] === undefined ? new RetirementUnavailable() : Effect.succeed(rows[0]),
++        ),
++      );
++    return { query, account, inspect, identity };
++  });
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-report.ts b/apps/hosted/cloud/scripts/pool-token-retirement-report.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..60151a9a5c3d464bac04d94baac6b35511fed0ae
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-report.ts
+@@ -0,0 +1,117 @@
++import { Effect, Schema } from "effect";
++import type { PoolClient } from "pg";
++import {
++  RetirementConfiguration,
++  RetirementRefused,
++  RetirementReport,
++  RetirementRequest,
++  reportFreshMs,
++} from "./pool-token-retirement-contracts.ts";
++import { retirementReader } from "./pool-token-retirement-reader.ts";
++import {
++  inventoryFresh,
++  joinRetirementPool,
++  type RetirementInventory,
++} from "./pool-token-retirement-inventory.ts";
++export { RetirementConfiguration, RetirementRequest } from "./pool-token-retirement-contracts.ts";
++
++/** Dry runs never initialize the SDK, invoke a callback, or write a journal. */
++export const retiredPoolTokenReport = (
++  client: PoolClient,
++  input: typeof RetirementRequest.Type,
++  configuration: typeof RetirementConfiguration.Type,
++  inventory?: RetirementInventory,
++) =>
++  Effect.gen(function* () {
++    if (new Set(input.accounts).size !== input.accounts.length)
++      return yield* new RetirementRefused({ reason: "duplicate_account_ids" });
++    if (inventory !== undefined && inventory.target !== configuration.target)
++      return yield* new RetirementRefused({ reason: "inventory_target_changed" });
++    const reader = yield* retirementReader(client, input.organization, configuration);
++    return yield* Effect.acquireUseRelease(
++      reader.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"),
++      () =>
++        Effect.gen(function* () {
++          yield* reader.query("SET LOCAL statement_timeout = '3s'");
++          yield* reader.query("SET LOCAL lock_timeout = '500ms'");
++          yield* reader.query("SET LOCAL idle_in_transaction_session_timeout = '5s'");
++          yield* reader
++            .query("select current_setting('transaction_read_only') as setting")
++            .pipe(
++              Effect.flatMap(
++                Schema.decodeUnknownEffect(
++                  Schema.Array(Schema.Struct({ setting: Schema.Literal("on") })),
++                ),
++              ),
++            );
++          const identity = yield* reader.identity;
++          const at = Date.parse(identity.snapshot);
++          if (!Number.isFinite(at))
++            return yield* new RetirementRefused({ reason: "invalid_database_clock" });
++          const host = yield* Effect.forEach(input.accounts, reader.inspect);
++          const pools = new Map<string, ReturnType<typeof joinRetirementPool>>();
++          if (inventory !== undefined)
++            for (const candidate of host) {
++              if (candidate.pool !== null && candidate.person !== null)
++                pools.set(
++                  JSON.stringify([candidate.pool, candidate.person]),
++                  joinRetirementPool(
++                    inventory,
++                    input.organization,
++                    candidate.pool,
++                    candidate.person,
++                  ),
++                );
++            }
++          const accounts = host.map((candidate) => {
++            const external = pools.get(JSON.stringify([candidate.pool, candidate.person]));
++            const blockers = [...candidate.blockers];
++            if (inventory === undefined) blockers.push("external_inventory_required");
++            else if (!inventoryFresh(inventory, at)) blockers.push("external_inventory_stale");
++            if (external !== undefined) blockers.push(...external.blockers);
++            return {
++              ...candidate,
++              blockers,
++              disposition: candidate.exists
++                ? blockers.length === 0
++                  ? ("retire" as const)
++                  : ("keep" as const)
++                : ("missing" as const),
++            };
++          });
++          return yield* Schema.decodeUnknownEffect(RetirementReport)({
++            version: 1,
++            mode: "dry-run",
++            writePerformed: false,
++            applySupported: true,
++            migrationGo: false,
++            target: configuration.target,
++            organization: input.organization,
++            database: identity.database,
++            snapshot: identity.snapshot,
++            expiresAt: new Date(at + reportFreshMs).toISOString(),
++            accounts,
++            external:
++              inventory === undefined
++                ? null
++                : {
++                    target: inventory.target,
++                    homeHash: inventory.homeHash,
++                    storageHash: inventory.storageHash,
++                    homeSnapshot: inventory.home.snapshot,
++                    storageSnapshot: inventory.storage.snapshot,
++                    pools: [...pools.values()],
++                  },
++            requiredBeforeProductionApply: [
++              "exact-candidate-ids",
++              "supported-encrypted-backup",
++              "recovery-evidence",
++              "coordinator-go",
++            ],
++            externalActions: [],
++          });
++        }),
++      // Successful reports roll back too. PostgreSQL enforces the no-write guarantee.
++      () => reader.query("ROLLBACK").pipe(Effect.ignore),
++    );
++  }).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/scripts/retired-pool-tokens.ts b/apps/hosted/cloud/scripts/retired-pool-tokens.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d66293c045e0672a44a0ac12808255b2c1e1ed7
+--- /dev/null
++++ b/apps/hosted/cloud/scripts/retired-pool-tokens.ts
+@@ -0,0 +1,140 @@
++import { readFile } from "node:fs/promises";
++import { Pool } from "pg";
++import { Effect, Redacted, Schema } from "effect";
++import {
++  Hash,
++  ReportEnvelope,
++  RetirementConfiguration,
++  RetirementRequest,
++} from "./pool-token-retirement-contracts.ts";
++import { sha256 } from "./pool-token-retirement-checkpoint.ts";
++import { retiredPoolTokenReport } from "./pool-token-retirement-report.ts";
++import { readRetirementInventory } from "./pool-token-retirement-inventory.ts";
++import { retirePoolTokens } from "./pool-token-retirement-apply.ts";
++
++// Credentials stay in a private configuration file, never in argv or error output.
++const boundedJson = async (path: string, limit = 32_000) => {
++  const text = await readFile(path, "utf8");
++  if (Buffer.byteLength(text) > limit) throw new Error("Input limit exceeded");
++  return JSON.parse(text) as unknown;
++};
++const argumentsFor = (args: ReadonlyArray<string>) => {
++  const values = new Map<string, string>();
++  let mode: "dry-run" | "apply" | "recover" = "dry-run";
++  for (let index = 0; index < args.length; index++) {
++    const name = args[index];
++    if (name === "--apply" || name === "--recover") {
++      if (mode !== "dry-run") throw new Error("Choose one mode");
++      mode = name === "--apply" ? "apply" : "recover";
++    } else {
++      const value = args[++index];
++      if (
++        name === undefined ||
++        !["--request", "--inventory", "--report", "--go", "--checkpoints"].includes(name) ||
++        value === undefined ||
++        value.startsWith("--") ||
++        values.has(name)
++      )
++        throw new Error("Invalid arguments");
++      values.set(name, value);
++    }
++  }
++  const request = values.get("--request");
++  if (!request) throw new Error("Explicit account IDs are required");
++  if (mode === "dry-run" && ["--report", "--go", "--checkpoints"].some((name) => values.has(name)))
++    throw new Error("Unexpected write options");
++  if (
++    mode !== "dry-run" &&
++    ["--inventory", "--report", "--go", "--checkpoints"].some((name) => !values.has(name))
++  )
++    throw new Error("A matching report and explicit GO are required");
++  return { mode, request, values };
++};
++
++async function main() {
++  const args = argumentsFor(process.argv.slice(2));
++  const configurationFile = process.env.EXECUTOR_RETIREMENT_CONFIGURATION;
++  if (!configurationFile) throw new Error("Configuration is required");
++  const configuration = Schema.decodeUnknownSync(RetirementConfiguration)(
++    await boundedJson(configurationFile),
++  );
++  const request = Schema.decodeUnknownSync(RetirementRequest)(await boundedJson(args.request));
++  const inventoryFile = args.values.get("--inventory");
++  const inventory =
++    inventoryFile === undefined
++      ? undefined
++      : readRetirementInventory(await boundedJson(inventoryFile, 300_000));
++  const reportFile = args.values.get("--report"),
++    checkpointDirectory = args.values.get("--checkpoints");
++  let approved: typeof ReportEnvelope.Type | undefined;
++  if (reportFile !== undefined) {
++    const wire = Schema.decodeUnknownSync(Schema.Struct({ report: Schema.Json, sha256: Hash }))(
++      await boundedJson(reportFile, 120_000),
++    );
++    if (
++      sha256(JSON.stringify(wire.report)) !== wire.sha256 ||
++      args.values.get("--go") !== wire.sha256
++    )
++      throw new Error("Report approval changed");
++    approved = Schema.decodeUnknownSync(ReportEnvelope)(wire);
++  }
++  const pool = new Pool({
++    connectionString: Redacted.value(configuration.database),
++    max: 1,
++    connectionTimeoutMillis: 5_000,
++    query_timeout: 4_000,
++  });
++  pool.on("error", () => {});
++  try {
++    const client = await pool.connect();
++    try {
++      let output: unknown;
++      if (args.mode === "dry-run") {
++        const report = await Effect.runPromise(
++          retiredPoolTokenReport(client, request, configuration, inventory).pipe(
++            Effect.timeout("60 seconds"),
++          ),
++        );
++        output = { report, sha256: sha256(JSON.stringify(report)) };
++      } else {
++        if (approved === undefined || inventory === undefined || checkpointDirectory === undefined)
++          throw new Error("Incomplete write options");
++        const result = await Effect.runPromise(
++          retirePoolTokens(
++            client,
++            request,
++            configuration,
++            approved,
++            inventory,
++            checkpointDirectory,
++            args.mode,
++          ).pipe(Effect.timeout("60 seconds")),
++        );
++        output = result;
++        if (!result.complete) process.exitCode = 1;
++      }
++      const json = JSON.stringify(output);
++      if (Buffer.byteLength(json) > 120_000) throw new Error("Report limit exceeded");
++      process.stdout.write(json + "\n");
++    } finally {
++      client.release();
++    }
++  } finally {
++    await pool.end();
++  }
++}
++
++try {
++  await main();
++} catch {
++  // SQL and decoder causes may contain credentials, ciphertext or caller-controlled content.
++  const writeRequested = process.argv.includes("--apply") || process.argv.includes("--recover");
++  process.stderr.write(
++    JSON.stringify({
++      complete: false,
++      writePerformed: writeRequested ? null : false,
++      reason: "operation_unavailable",
++    }) + "\n",
++  );
++  process.exitCode = 1;
++}
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index a73438533a74c8ddea5887206c66f4e77cde69bc..040c2a542999ccdcbd5023b8e85b141ee596e708 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -41,7 +41,8 @@
+     "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts",
+     "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts",
+     "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
+-    "./account-key-mirror": "./src/implementation/account-key-mirror.ts"
++    "./account-key-mirror": "./src/implementation/account-key-mirror.ts",
++    "./pool-token": "./src/implementation/pool-token.ts"
+   },
+   "dependencies": {
+     "@better-auth/api-key": "1.7.5",
+diff --git a/e2e/support/retired-pool-token-command.ts b/e2e/support/retired-pool-token-command.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..42e513a98598a5f683bf2ca83ddd6fd29a45abf0
+--- /dev/null
++++ b/e2e/support/retired-pool-token-command.ts
+@@ -0,0 +1,116 @@
++import { createCipheriv, createHmac, randomBytes, randomUUID } from "node:crypto";
++import { Effect, FileSystem, Schema, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { Target } from "./platform.ts";
++
++const encryptionKey = "cd".repeat(32),
++  signingKey = "ab".repeat(32);
++export const retirementTarget = "synthetic-token-retirement";
++
++/** Retained pool tokens use the documented signed envelope, without exposing host secrets. */
++export const retirementToken = (pool: string, owner: string, organization: string) => {
++  const signed = `sbp1.${Buffer.from(JSON.stringify({ pool, owner, organization })).toString("base64url")}`;
++  return `${signed}.${createHmac("sha256", Buffer.from(signingKey, "hex")).update(signed).digest("base64url")}`;
++};
++export const retirementCredentials = (id: string, value: string) => {
++  const nonce = randomBytes(12),
++    cipher = createCipheriv("aes-256-gcm", Buffer.from(encryptionKey, "hex"), nonce);
++  cipher.setAAD(Buffer.from(id));
++  return Buffer.concat([
++    Buffer.from([1]),
++    nonce,
++    cipher.update(JSON.stringify({ token: value })),
++    cipher.final(),
++    cipher.getAuthTag(),
++  ]).toString("hex");
++};
++
++/** Exercise the actual operator CLI; every invocation gets private request and approval files. */
++export const retirementCommand = (organization: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target,
++      fs = yield* FileSystem.FileSystem,
++      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const directory = `${target.directory}/retirement-${randomUUID()}`;
++    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
++    yield* Effect.addFinalizer(() => fs.remove(directory, { recursive: true }).pipe(Effect.orDie));
++    const db = yield* fs
++      .readFileString(`${target.directory}/sso-database.json`)
++      .pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.fromJsonString(Schema.Struct({ database: Schema.String })),
++          ),
++        ),
++      );
++    const configuration = `${directory}/configuration.json`;
++    yield* fs.writeFileString(
++      configuration,
++      JSON.stringify({
++        target: retirementTarget,
++        database: db.database,
++        encryptionKey,
++        poolSigningKeys: [signingKey],
++      }),
++      { mode: 0o600 },
++    );
++    const execute = (
++      accounts: ReadonlyArray<string>,
++      options: { inventory?: unknown; report?: string; flags?: ReadonlyArray<string> } = {},
++    ) =>
++      Effect.gen(function* () {
++        const invocation = randomUUID(),
++          request = `${directory}/${invocation}-request.json`;
++        yield* fs.writeFileString(request, JSON.stringify({ organization, accounts }), {
++          mode: 0o600,
++        });
++        const args = ["apps/hosted/cloud/scripts/retired-pool-tokens.ts", "--request", request];
++        if (options.inventory !== undefined) {
++          const file = `${directory}/${invocation}-inventory.json`;
++          yield* fs.writeFileString(file, JSON.stringify(options.inventory), { mode: 0o600 });
++          args.push("--inventory", file);
++        }
++        if (options.report !== undefined) {
++          const file = `${directory}/${invocation}-report.json`;
++          yield* fs.writeFileString(file, options.report, { mode: 0o600 });
++          args.push("--report", file, "--checkpoints", `${directory}/checkpoints`);
++        }
++        args.push(...(options.flags ?? []));
++        const command = ChildProcess.make("bun", args, {
++          env: { PATH: process.env.PATH ?? "", EXECUTOR_RETIREMENT_CONFIGURATION: configuration },
++          extendEnv: false,
++        });
++        return {
++          capture: Effect.scoped(
++            Effect.gen(function* () {
++              const child = yield* processes.spawn(command);
++              const [exit, stdout] = yield* Effect.all(
++                [child.exitCode, child.stdout.pipe(Stream.decodeText(), Stream.mkString)],
++                { concurrency: "unbounded" },
++              );
++              return { exit: Number(exit), stdout };
++            }),
++          ),
++          run: processes.string(command),
++          exit: processes.exitCode(
++            ChildProcess.make("bun", args, {
++              env: {
++                PATH: process.env.PATH ?? "",
++                EXECUTOR_RETIREMENT_CONFIGURATION: configuration,
++              },
++              extendEnv: false,
++              stdout: "ignore",
++              stderr: "ignore",
++            }),
++          ),
++        };
++      });
++    const checkpoints = fs
++      .readDirectory(`${directory}/checkpoints`)
++      .pipe(
++        Effect.flatMap((names) =>
++          Effect.forEach(names, (name) => fs.readFile(`${directory}/checkpoints/${name}`)),
++        ),
++      );
++    return { execute, checkpoints, privateValues: [encryptionKey, signingKey, db.database] };
++  });
+diff --git a/e2e/support/retired-pool-token-fixture.ts b/e2e/support/retired-pool-token-fixture.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ad5accfb1d144248aab02c140913b1593075e5c
+--- /dev/null
++++ b/e2e/support/retired-pool-token-fixture.ts
+@@ -0,0 +1,210 @@
++import { expect } from "@effect/vitest";
++import { randomUUID } from "node:crypto";
++import { Effect, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { appsManifest } from "./apps-release.ts";
++import { writeRows } from "./cloud-rows.ts";
++import { retirementCredentials, retirementToken } from "./retired-pool-token-command.ts";
++
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Struct({ pool: Schema.Struct({ provider: Schema.String }) }),
++  }),
++});
++const source = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const pool = defineProvider({ name: "Retirement fixture pool", auth: {
++  token: secrets({ provisioned: true, label: "Pool access", fields: object({ token: string() }) }),
++} });
++export default defineApp({ app: { accounts: { pool } } }, {
++  tools: router({ present: query({ input: object({}) }, async () => ({ valid: true })) }),
++});`;
++export const retirementNames = [
++  "unused",
++  "unusedSecond",
++  "wrongProvider",
++  "badClaims",
++  "linked",
++  "workflow",
++  "webhook",
++  "pending",
++  "shared",
++  "current",
++  "legacy",
++] as const;
++
++/** Scoped retained rows cover old host-owned accounts that Connect intentionally cannot create. */
++export const retiredTokenFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const rows = (sql: string, params: ReadonlyArray<string> = []) =>
++    writeRows("sso-database.json", [{ sql, params }]).pipe(Effect.map((result) => result[0] ?? []));
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const session = yield* body(
++    Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++    yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++  );
++  const deploy = (name: string, content: string) =>
++    api
++      .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name,
++        files: [{ path: "index.ts", content }, appsManifest],
++      })
++      .pipe(
++        Effect.flatMap((response) => {
++          expect(response.status).toBe(200);
++          return body(App, response);
++        }),
++      );
++  const app = yield* deploy("Token retirement fixture", source);
++  const unrelated = yield* deploy(
++    "Ordinary token fixture",
++    source.replace("Retirement fixture pool", "Ordinary saved service"),
++  );
++  const legacy = yield* deploy(
++    "Legacy token fixture",
++    source
++      .replace("Retirement fixture pool", "Legacy unmarked pool")
++      .replace("provisioned: true", "provisioned: false"),
++  );
++  const ids = Object.fromEntries(retirementNames.map((name) => [name, `acc_${randomUUID()}`]));
++  const id = (name: (typeof retirementNames)[number]) => ids[name]!;
++  const owner = `organization:${actors.organization.id}`;
++  const validToken = retirementToken(app.id, session.user.id, actors.organization.id);
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      yield* rows(
++        "update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) - 'basaltPools')::text where id = $1",
++        [actors.organization.id],
++      );
++      for (const account of Object.values(ids)) {
++        for (const table of [
++          "executor_workflow_accounts",
++          "executor_webhook_accounts",
++          "executor_account_checks",
++        ])
++          yield* rows(`delete from ${table} where account = $1`, [account]);
++        yield* rows("delete from executor_account_connections where source_account = $1", [
++          account,
++        ]);
++        yield* rows("delete from executor_accounts where id = $1", [account]);
++      }
++      for (const fixture of [app, unrelated, legacy])
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${fixture.id}`)).status,
++        ).toBe(200);
++    }).pipe(Effect.orDie),
++  );
++  for (const name of retirementNames) {
++    const account = id(name),
++      token =
++        name === "badClaims"
++          ? retirementToken(unrelated.id, session.user.id, actors.organization.id)
++          : validToken;
++    yield* rows(
++      `insert into executor_accounts (id, owner, provider, method, label, encrypted_credentials, credential_generation, created_at)
++      values ($1, $2, $3, 'token', $4, decode($5, 'hex'), 0, now())`,
++      [
++        account,
++        owner,
++        name === "wrongProvider"
++          ? unrelated.requirements.accounts.pool.provider
++          : name === "legacy"
++            ? legacy.requirements.accounts.pool.provider
++            : app.requirements.accounts.pool.provider,
++        name === "unused" ? "An ordinary saved name" : "Pool access (retired)",
++        retirementCredentials(account, token),
++      ],
++    );
++    yield* rows(
++      `insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id, audience)
++      values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''))`,
++      [
++        account,
++        actors.organization.id,
++        session.user.id,
++        name === "shared" ? "shared" : "personal",
++        name === "shared" ? "" : session.user.id,
++        name === "shared" ? "everyone" : "",
++      ],
++    );
++  }
++  yield* rows(
++    `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++    [
++      JSON.stringify({ [session.user.id]: { app: app.id, account: id("current") } }),
++      actors.organization.id,
++    ],
++  );
++  const link = (account: string) =>
++    rows(
++      `insert into hosted_app_account_links (app, requirement, subject, account, linked_by, created_at) values ($1, 'pool', null, $2, $3, now())`,
++      [unrelated.id, account, session.user.id],
++    );
++  yield* rows(
++    `insert into hosted_app_account_links (app, requirement, subject, account, linked_by, created_at) values ($1, 'pool', null, $2, $3, now())`,
++    [app.id, id("current"), session.user.id],
++  );
++  yield* link(id("linked"));
++  yield* rows("insert into executor_workflow_accounts (id, account, run) values ($1, $2, $3)", [
++    `fixture_${randomUUID()}`,
++    id("workflow"),
++    `run_${randomUUID()}`,
++  ]);
++  yield* rows(
++    "insert into executor_webhook_accounts (id, account, subscription) values ($1, $2, $3)",
++    [`fixture_${randomUUID()}`, id("webhook"), `wh_${randomUUID()}`],
++  );
++  const pending = (account: string) =>
++    rows(
++      `insert into executor_account_connections (id, owner, provider, source_account, state, revision, created_at, expires_at, target, additional_targets)
++    values ($1, $2, $3, $4, '{"status":"cancelled"}'::jsonb, $5, now(), now() - interval '1 day', 'null'::jsonb, '[]'::jsonb)`,
++      [
++        `con_${randomUUID()}`,
++        owner,
++        app.requirements.accounts.pool.provider,
++        account,
++        randomUUID(),
++      ],
++    );
++  yield* pending(id("pending"));
++  yield* rows(
++    `insert into executor_account_checks (id, account, app, deployment, credential_generation, status, checked_at, account_info)
++    values ($1, $2, $3, 'v_synthetic', 0, 'healthy', now(), 'null'::jsonb)`,
++    [`fixture_${randomUUID()}`, id("unused"), app.id],
++  );
++  const snapshot = rows(
++    `select a.id, md5(to_jsonb(a)::text) as account, md5(to_jsonb(p)::text) as policy,
++    coalesce((select jsonb_agg(to_jsonb(c) order by c.id)::text from executor_account_checks c where c.account = a.id), '[]') as checks
++    from executor_accounts a join hosted_account_access p on p.account_id = a.id where a.owner = $1 order by a.id`,
++    [owner],
++  ).pipe(
++    Effect.flatMap(
++      Schema.decodeUnknownEffect(
++        Schema.Array(
++          Schema.Struct({
++            id: Schema.String,
++            account: Schema.String,
++            policy: Schema.String,
++            checks: Schema.String,
++          }),
++        ),
++      ),
++    ),
++  );
++  return {
++    app,
++    unrelated,
++    id,
++    ids: Object.values(ids),
++    owner,
++    person: session.user.id,
++    organization: actors.organization.id,
++    validToken,
++    rows,
++    snapshot,
++    link,
++    pending,
++  };
++});
+diff --git a/e2e/support/retired-pool-token-inventory.ts b/e2e/support/retired-pool-token-inventory.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bc59c14e89daf2c40699bdba6361122ab0334ba
+--- /dev/null
++++ b/e2e/support/retired-pool-token-inventory.ts
+@@ -0,0 +1,113 @@
++import { createHash } from "node:crypto";
++import { retirementTarget } from "./retired-pool-token-command.ts";
++
++/** The retained private inventories include live backend keys, which retirement must leave alone. */
++export const retirementInventory = (organization: string, pool: string, person: string) => {
++  const snapshot = new Date().toISOString();
++  const home = {
++    snapshot,
++    sections: {
++      credentials: [
++        {
++          uuid: "synthetic-native-credential",
++          id: "credential-1",
++          index: "1",
++          provider: "openai",
++          disabled: false,
++          deleted: false,
++        },
++      ],
++      keys: [{ id: "7", user_id: "9", channels: [11], deleted: false }],
++      channels: [{ id: "11", pool, disabled: false, deleted: false }],
++      memberships: [
++        {
++          id: "13",
++          channel_group_id: "11",
++          auth_id: "synthetic-native-credential",
++          deleted: false,
++        },
++      ],
++    },
++  };
++  const storage = {
++    snapshot,
++    absentKeys: [],
++    computers: [
++      {
++        id: "synthetic-computer",
++        user: person,
++        pool,
++        state: "active",
++        keyId: 7,
++        userId: 9,
++        toolsKeyId: null,
++        switching: [],
++        switchingTo: null,
++      },
++    ],
++    pools: [
++      {
++        pool,
++        owner: person,
++        organization,
++        users: [person],
++        pending: [],
++        provisioned: [person],
++        deleted: false,
++      },
++    ],
++    attribution: {
++      assigned: ["synthetic-native-credential"],
++      locks: [],
++      sessions: [],
++      uploads: [],
++    },
++  };
++  const records = (
++    inventory: "pool-v1" | "pool-storage-v1",
++    run: string,
++    value: unknown,
++    coverage: ReadonlyArray<string>,
++  ) => {
++    const data = JSON.stringify(value),
++      chunks = Array.from({ length: Math.ceil(data.length / 8_000) }, (_, index) => ({
++        inventory,
++        run,
++        event: "part",
++        index,
++        data: data.slice(index * 8_000, (index + 1) * 8_000),
++      }));
++    return [
++      ...chunks,
++      {
++        inventory,
++        run,
++        event: "end",
++        complete: true,
++        sha256: createHash("sha256").update(data).digest("hex"),
++        chunks: chunks.length,
++        bytes: Buffer.byteLength(data),
++        coverage,
++        migrationGo: false,
++      },
++    ];
++  };
++  return {
++    target: retirementTarget,
++    homeRun: "synthetic-home",
++    storageRun: "synthetic-storage",
++    records: [
++      ...records("pool-v1", "synthetic-home", home, [
++        "home-credentials",
++        "home-keys",
++        "home-channels",
++        "home-memberships",
++      ]),
++      ...records("pool-storage-v1", "synthetic-storage", storage, [
++        "computer-registry-v1",
++        "pool-directory-v1",
++        "pool-control-v1",
++      ]),
++    ],
++  };
++};
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 15cc6479fad8fef5df2fd1bc2da6a13cab0867c0..48c71b39e1681192832ba8cf798288117b5e1009 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2214,6 +2214,28 @@ export const scenarios = plan({
+       local: na("The inventory is an internal Cloud job using the Cloud runtime database."),
+     },
+   },
++  cloudRetiredPoolTokenDryRun: {
++    fixtures: "actors",
++    file: "retired-pool-tokens.spec.ts",
++    title:
++      "Cloud retired pool token command proves exact-ID retirement, rollback and encrypted recovery",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("This operator command reads the hosted Cloud PostgreSQL database."),
++      local: na("Local does not provision hosted pool transport tokens."),
++    },
++  },
++  cloudRetiredPoolTokenBatch: {
++    fixtures: "actors",
++    file: "retired-pool-token-batch.spec.ts",
++    title:
++      "Cloud retired pool token command resumes a partial batch and recovers exact selected IDs",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("This operator command uses hosted Cloud PostgreSQL."),
++      local: na("Local does not provision hosted pool transport tokens."),
++    },
++  },
+   cloudScheduleCoordinatorPlaced: {
+     fixtures: "actors",
+     file: "cloud-database-placement.spec.ts",
+diff --git a/e2e/tests/retired-pool-token-batch.spec.ts b/e2e/tests/retired-pool-token-batch.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..182323e12ce8a70ed08999c93c9fd6768e8c1c78
+--- /dev/null
++++ b/e2e/tests/retired-pool-token-batch.spec.ts
+@@ -0,0 +1,108 @@
++import { expect, layer } from "@effect/vitest";
++import { randomUUID } from "node:crypto";
++import { Effect, Schema } from "effect";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { retirementCommand } from "../support/retired-pool-token-command.ts";
++import { retiredTokenFixture } from "../support/retired-pool-token-fixture.ts";
++import { retirementInventory } from "../support/retired-pool-token-inventory.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Envelope = Schema.fromJsonString(Schema.Struct({ sha256: Schema.String }));
++const Result = Schema.fromJsonString(
++  Schema.Struct({
++    complete: Schema.Boolean,
++    stoppedAt: Schema.optionalKey(Schema.String),
++    items: Schema.Array(
++      Schema.Struct({
++        account: Schema.String,
++        outcome: Schema.String,
++        alreadyRecorded: Schema.Boolean,
++      }),
++    ),
++  }),
++);
++layer(RuntimeLive, { excludeTestServices: true })("Retired pool token batch recovery", (it) => {
++  it.effect(scenarios.cloudRetiredPoolTokenBatch.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* retiredTokenFixture,
++          evidence = yield* Evidence;
++        const command = yield* retirementCommand(f.organization);
++        const ids = [f.id("unused"), f.id("unusedSecond")],
++          inventory = retirementInventory(f.organization, f.app.id, f.person);
++        const approved = yield* (yield* command.execute(ids, { inventory })).run;
++        const hash = (yield* Schema.decodeUnknownEffect(Envelope)(approved)).sha256;
++        const invoke = (accounts: ReadonlyArray<string> = ids, mode = "--apply") =>
++          command.execute(accounts, { inventory, report: approved, flags: [mode, "--go", hash] });
++        const before = yield* f.snapshot;
++        const trigger = `retirement_batch_${randomUUID().replaceAll("-", "")}`;
++        const drop = Effect.gen(function* () {
++          yield* f.rows(`drop trigger if exists ${trigger} on private_hosted_data_step_items`);
++          yield* f.rows(`drop function if exists ${trigger}()`);
++        });
++        yield* Effect.addFinalizer(() => drop.pipe(Effect.orDie));
++        yield* f.rows(`create function ${trigger}() returns trigger language plpgsql as $$ begin
++      if NEW.item = '${f.id("unusedSecond")}' then raise exception 'SYNTHETIC_SECOND_ITEM_FAILURE'; end if; return NEW; end $$`);
++        yield* f.rows(
++          `create trigger ${trigger} before insert on private_hosted_data_step_items for each row execute function ${trigger}()`,
++        );
++        const partial = yield* evidence.step(
++          "An interrupted batch retains only the first committed deletion",
++          (yield* invoke()).capture,
++        );
++        expect(partial.exit).toBe(1);
++        expect(yield* Schema.decodeUnknownEffect(Result)(partial.stdout)).toMatchObject({
++          complete: false,
++          stoppedAt: f.id("unusedSecond"),
++          items: [{ account: f.id("unused"), outcome: "deleted", alreadyRecorded: false }],
++        });
++        expect(yield* f.snapshot).toEqual(before.filter((row) => row.id !== f.id("unused")));
++        yield* drop;
++        const resumed = yield* evidence.step(
++          "Retry reads the first receipt and deletes only the remaining exact ID",
++          (yield* invoke()).run.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Result))),
++        );
++        expect(resumed).toMatchObject({
++          complete: true,
++          items: [
++            { account: f.id("unused"), alreadyRecorded: true },
++            { account: f.id("unusedSecond"), alreadyRecorded: false },
++          ],
++        });
++        expect(yield* f.snapshot).toEqual(before.filter((row) => !ids.includes(row.id)));
++        expect(yield* (yield* invoke([f.id("current")], "--recover")).exit).toBe(1);
++        const recovered = yield* evidence.step(
++          "Recovery can restore an explicitly selected committed ID from the original batch",
++          (yield* invoke([f.id("unused")], "--recover")).run.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Result)),
++          ),
++        );
++        expect(recovered).toMatchObject({
++          complete: true,
++          items: [{ account: f.id("unused"), outcome: "restored", alreadyRecorded: false }],
++        });
++        expect(yield* f.snapshot).toEqual(before.filter((row) => row.id !== f.id("unusedSecond")));
++        expect(
++          yield* (yield* invoke([f.id("unused")], "--recover")).run.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Result)),
++          ),
++        ).toMatchObject({ complete: true, items: [{ alreadyRecorded: true }] });
++        expect(
++          yield* (yield* invoke([f.id("unusedSecond")], "--recover")).run.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Result)),
++          ),
++        ).toMatchObject({
++          complete: true,
++          items: [{ account: f.id("unusedSecond"), outcome: "restored" }],
++        });
++        expect(yield* f.snapshot).toEqual(before);
++        expect(yield* (yield* invoke()).exit).toBe(1);
++        expect(yield* f.snapshot).toEqual(before);
++        yield* evidence.json("retirement-batch.json", { resumed, recovered, productionGo: false });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/retired-pool-tokens.spec.ts b/e2e/tests/retired-pool-tokens.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a009125c7adf6b215865bef782382bb7daea7afd
+--- /dev/null
++++ b/e2e/tests/retired-pool-tokens.spec.ts
+@@ -0,0 +1,329 @@
++import { expect, layer } from "@effect/vitest";
++import { createHash, randomUUID } from "node:crypto";
++import { Effect, Schema } from "effect";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { retirementCommand } from "../support/retired-pool-token-command.ts";
++import { retiredTokenFixture } from "../support/retired-pool-token-fixture.ts";
++import { retirementInventory } from "../support/retired-pool-token-inventory.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Entry = Schema.Struct({
++  account: Schema.String,
++  disposition: Schema.String,
++  blockers: Schema.Array(Schema.String),
++  signedClaimsVerified: Schema.Boolean,
++  replacementVerified: Schema.Boolean,
++  dependencies: Schema.Record(
++    Schema.String,
++    Schema.Array(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
++  ),
++});
++const Output = Schema.fromJsonString(
++  Schema.Struct({
++    sha256: Schema.String,
++    report: Schema.Struct({
++      mode: Schema.Literal("dry-run"),
++      writePerformed: Schema.Literal(false),
++      applySupported: Schema.Literal(true),
++      migrationGo: Schema.Literal(false),
++      accounts: Schema.Array(Entry),
++      requiredBeforeProductionApply: Schema.Array(Schema.String),
++      external: Schema.Json,
++      externalActions: Schema.Array(Schema.String),
++    }),
++  }),
++);
++const Wire = Schema.fromJsonString(
++  Schema.Struct({ report: Schema.Record(Schema.String, Schema.Json), sha256: Schema.String }),
++);
++const Outcome = Schema.fromJsonString(
++  Schema.Struct({
++    complete: Schema.Literal(true),
++    mode: Schema.Literals(["apply", "recover"]),
++    writePerformed: Schema.Boolean,
++    items: Schema.Array(
++      Schema.Struct({
++        account: Schema.String,
++        outcome: Schema.String,
++        checkpoint: Schema.String,
++        alreadyRecorded: Schema.Boolean,
++      }),
++    ),
++    externalActions: Schema.Array(Schema.String),
++  }),
++);
++
++layer(RuntimeLive, { excludeTestServices: true })("Retired pool token operator", (it) => {
++  it.effect(scenarios.cloudRetiredPoolTokenDryRun.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* retiredTokenFixture,
++          evidence = yield* Evidence;
++        const command = yield* retirementCommand(f.organization);
++        const inventory = retirementInventory(f.organization, f.app.id, f.person),
++          inventoryBefore = JSON.stringify(inventory);
++        const before = yield* f.snapshot;
++        const dry = (ids: ReadonlyArray<string>, external: unknown = inventory) =>
++          command.execute(ids, { inventory: external }).pipe(Effect.flatMap((run) => run.run));
++        const write = (
++          raw: string,
++          ids: ReadonlyArray<string> = [f.id("unused")],
++          mode = "--apply",
++        ) =>
++          Effect.gen(function* () {
++            const envelope = yield* Schema.decodeUnknownEffect(Wire)(raw);
++            return yield* command.execute(ids, {
++              inventory,
++              report: raw,
++              flags: [mode, "--go", envelope.sha256],
++            });
++          });
++        const noInventory = yield* command.execute([f.id("unused")]);
++        const blocked = yield* noInventory.run.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(Output)),
++        );
++        expect(blocked.report.accounts[0]?.blockers).toContain("external_inventory_required");
++        expect(blocked.report.accounts[0]?.disposition).toBe("keep");
++        const raw = yield* evidence.step(
++          "A complete inventory keeps active, linked and ambiguous accounts",
++          dry(f.ids),
++        );
++        const report = yield* Schema.decodeUnknownEffect(Output)(raw);
++        const account = (name: Parameters<typeof f.id>[0]) =>
++          report.report.accounts.find((entry) => entry.account === f.id(name));
++        expect(account("unused")).toMatchObject({
++          disposition: "retire",
++          blockers: [],
++          signedClaimsVerified: true,
++          replacementVerified: true,
++        });
++        expect(account("wrongProvider")?.blockers).toContain("retained_pool_provider_unproven");
++        expect(account("badClaims")?.blockers).toContain("signed_pool_claims_unproven");
++        expect(account("shared")?.blockers).toContain("host_personal_token_unproven");
++        expect(account("legacy")?.blockers).toContain("unsupported_account_lifecycle");
++        for (const [name, reference] of [
++          ["linked", "links"],
++          ["workflow", "workflows"],
++          ["webhook", "webhooks"],
++          ["pending", "connections"],
++          ["current", "pools"],
++        ] as const) {
++          expect(account(name)?.disposition).toBe("keep");
++          expect(account(name)?.blockers).toContain(`reference:${reference}`);
++          expect(account(name)?.dependencies[reference]).toHaveLength(1);
++        }
++        expect(report.report.requiredBeforeProductionApply).toContain("supported-encrypted-backup");
++        expect(report.report.externalActions).toEqual([]);
++        expect(JSON.stringify(report.report.external)).toContain('"id":"7"');
++        expect(JSON.stringify(report.report.external)).toContain("synthetic-native-credential");
++        for (const privateValue of [
++          ...command.privateValues,
++          f.validToken,
++          "Pool access (retired)",
++          "An ordinary saved name",
++        ])
++          expect(raw).not.toContain(privateValue);
++        const full = yield* Schema.decodeUnknownEffect(Wire)(raw);
++        expect(createHash("sha256").update(JSON.stringify(full.report)).digest("hex")).toBe(
++          full.sha256,
++        );
++        expect(
++          (yield* dry(f.ids).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Output)))).report
++            .accounts,
++        ).toEqual(report.report.accounts);
++        expect(yield* f.snapshot).toEqual(before);
++
++        const approved = yield* dry([f.id("unused")]);
++        yield* evidence.step(
++          "Apply refuses missing GO, mismatched IDs, stale reports and incomplete inventory",
++          Effect.gen(function* () {
++            const journalBefore = yield* f.rows(
++              "select name from private_hosted_data_steps where name like 'basalt-retired-pool-tokens-v1:%' order by name",
++            );
++            expect(
++              yield* (yield* command.execute([f.id("unused")], { flags: ["--apply"] })).exit,
++            ).toBe(1);
++            expect(
++              yield* (yield* command.execute([f.id("unused")], {
++                inventory,
++                report: approved,
++                flags: ["--apply"],
++              })).exit,
++            ).toBe(1);
++            expect(yield* (yield* write(approved, [f.id("unused"), f.id("current")])).exit).toBe(1);
++            expect(yield* (yield* write(raw, f.ids)).exit).toBe(1);
++            const wire = yield* Schema.decodeUnknownEffect(Wire)(approved);
++            const old = {
++              ...wire.report,
++              snapshot: "2000-01-01T00:00:00.000Z",
++              expiresAt: "2000-01-01T00:05:00.000Z",
++            };
++            const stale = JSON.stringify({
++              report: old,
++              sha256: createHash("sha256").update(JSON.stringify(old)).digest("hex"),
++            });
++            expect(yield* (yield* write(stale)).exit).toBe(1);
++            const damaged = {
++              ...inventory,
++              records: inventory.records.map((record) =>
++                record.event === "end" ? { ...record, sha256: "0".repeat(64) } : record,
++              ),
++            };
++            expect(
++              yield* (yield* command.execute([f.id("unused")], { inventory: damaged })).exit,
++            ).toBe(1);
++            expect(
++              yield* (yield* command.execute([f.id("unused")], {
++                inventory: {
++                  ...inventory,
++                  records: inventory.records.filter((record) => record.event !== "end"),
++                },
++              })).exit,
++            ).toBe(1);
++            expect(
++              yield* (yield* command.execute([f.id("unused")], {
++                inventory: { ...inventory, target: "another-target" },
++              })).exit,
++            ).toBe(1);
++            expect(yield* f.snapshot).toEqual(before);
++            expect(
++              yield* f.rows(
++                "select name from private_hosted_data_steps where name like 'basalt-retired-pool-tokens-v1:%' order by name",
++              ),
++            ).toEqual(journalBefore);
++          }),
++        );
++        yield* evidence.step(
++          "Immediate rechecks preserve newly linked, reconnected and rotated accounts",
++          Effect.gen(function* () {
++            yield* f.link(f.id("unused"));
++            expect(yield* (yield* write(approved)).exit).toBe(1);
++            yield* f.rows("delete from hosted_app_account_links where account = $1", [
++              f.id("unused"),
++            ]);
++            yield* f.pending(f.id("unused"));
++            expect(yield* (yield* write(approved)).exit).toBe(1);
++            yield* f.rows("delete from executor_account_connections where source_account = $1", [
++              f.id("unused"),
++            ]);
++            yield* f.rows("update executor_accounts set credential_generation = 1 where id = $1", [
++              f.id("unused"),
++            ]);
++            expect(yield* (yield* write(approved)).exit).toBe(1);
++            expect(
++              yield* f.rows(
++                "select credential_generation::text as generation from executor_accounts where id = $1",
++                [f.id("unused")],
++              ),
++            ).toEqual([{ generation: "1" }]);
++            yield* f.rows("update executor_accounts set credential_generation = 0 where id = $1", [
++              f.id("unused"),
++            ]);
++            expect(yield* f.snapshot).toEqual(before);
++          }),
++        );
++        const fresh = yield* dry([f.id("unused")]);
++        const hash = (yield* Schema.decodeUnknownEffect(Wire)(fresh)).sha256;
++        const trigger = `retirement_failure_${randomUUID().replaceAll("-", "")}`;
++        const dropFailure = Effect.gen(function* () {
++          yield* f.rows(`drop trigger if exists ${trigger} on private_hosted_data_step_items`);
++          yield* f.rows(`drop function if exists ${trigger}()`);
++        });
++        yield* Effect.addFinalizer(() => dropFailure.pipe(Effect.orDie));
++        yield* f.rows(`create function ${trigger}() returns trigger language plpgsql as $$ begin
++      if NEW.item = '${f.id("unused")}' then raise exception 'SYNTHETIC_RETIREMENT_JOURNAL_FAILURE'; end if; return NEW; end $$`);
++        yield* f.rows(
++          `create trigger ${trigger} before insert on private_hosted_data_step_items for each row execute function ${trigger}()`,
++        );
++        yield* evidence.step(
++          "A journal failure rolls deletion back and keeps the encrypted recovery point",
++          Effect.gen(function* () {
++            expect(yield* (yield* write(fresh)).exit).toBe(1);
++            expect(yield* f.snapshot).toEqual(before);
++            expect(
++              yield* f.rows("select item from private_hosted_data_step_items where name = $1", [
++                `basalt-retired-pool-tokens-v1:${hash}`,
++              ]),
++            ).toEqual([]);
++            const files = yield* command.checkpoints;
++            expect(files).toHaveLength(1);
++            for (const file of files)
++              for (const marker of [
++                f.id("unused"),
++                "An ordinary saved name",
++                f.validToken,
++                ...command.privateValues,
++              ])
++                expect(Buffer.from(file).includes(Buffer.from(marker))).toBe(false);
++          }),
++        );
++        yield* dropFailure;
++        const applied = yield* evidence.step(
++          "Only the exact retired unused account is deleted, with post-commit readback",
++          (yield* write(fresh)).run.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Outcome))),
++        );
++        expect(applied).toMatchObject({
++          complete: true,
++          mode: "apply",
++          writePerformed: true,
++          externalActions: [],
++          items: [{ account: f.id("unused"), outcome: "deleted", alreadyRecorded: false }],
++        });
++        expect(yield* f.snapshot).toEqual(before.filter((row) => row.id !== f.id("unused")));
++        expect(
++          yield* f.rows("select account from executor_account_checks where account = $1", [
++            f.id("unused"),
++          ]),
++        ).toEqual([]);
++        expect(
++          yield* (yield* write(fresh)).run.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Outcome)),
++          ),
++        ).toMatchObject({
++          complete: true,
++          writePerformed: false,
++          items: [{ alreadyRecorded: true }],
++        });
++        const restored = yield* evidence.step(
++          "Recovery restores the same ID, ciphertext, policy and cached check exactly once",
++          (yield* write(fresh, [f.id("unused")], "--recover")).run.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Outcome)),
++          ),
++        );
++        expect(restored).toMatchObject({
++          complete: true,
++          mode: "recover",
++          writePerformed: true,
++          items: [{ account: f.id("unused"), outcome: "restored", alreadyRecorded: false }],
++        });
++        expect(yield* f.snapshot).toEqual(before);
++        expect(
++          yield* (yield* write(fresh, [f.id("unused")], "--recover")).run.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Outcome)),
++          ),
++        ).toMatchObject({
++          complete: true,
++          writePerformed: false,
++          items: [{ alreadyRecorded: true }],
++        });
++        expect(yield* (yield* write(fresh)).exit).toBe(1);
++        expect(yield* f.snapshot).toEqual(before);
++        expect(JSON.stringify(inventory)).toBe(inventoryBefore);
++        expect(
++          (yield* dry([f.id("unused")]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Output))))
++            .report.accounts[0],
++        ).toMatchObject({ disposition: "retire", signedClaimsVerified: true });
++        yield* evidence.json("retirement-tooling.json", {
++          accounts: report.report.accounts,
++          applied,
++          restored,
++          backendInventoryUnchanged: true,
++          productionGo: false,
++        });
++      }),
++    ),
++  );
++});
