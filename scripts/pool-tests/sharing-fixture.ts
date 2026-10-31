@@ -5,6 +5,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ComputerStorage } from "../../src/pool/computers.ts";
 import { FixtureDiagnostics } from "./sharing-diagnostics.ts";
 
+const fixtureSigningKey = "ab".repeat(32);
+
 export class MemoryStorage implements ComputerStorage {
   private values = new Map<string, unknown>();
   async get<T>(key: string): Promise<T | undefined> {
@@ -69,7 +71,7 @@ export class SharingFixture {
   private network: string | undefined;
   private imageAttempted = false;
   private buildImage: boolean;
-  private logRedactions = ["fixture-management-key", "fixture-only"];
+  private logRedactions = ["fixture-management-key", "fixture-only", fixtureSigningKey];
   private release = () => {};
   private gate = new Promise<void>((resolve) => { this.release = resolve; });
   private upstream = createServer(async (request, response) => {
@@ -185,6 +187,7 @@ export class SharingFixture {
       "--publish", "127.0.0.1::8317", "--publish", "127.0.0.1::8318", "--publish", "127.0.0.1::8327",
       "--env", `POOL_DATABASE_URL=postgresql://fixture_admin:fixture-only@${postgres}:5432/basalt_pool`,
       "--env", `POOL_MANAGEMENT_KEY=${this.managementKey}`, "--env", "POOL_MANAGEMENT_ALLOW_REMOTE=true",
+      "--env", `POOL_APP_SIGNING_KEY=${fixtureSigningKey}`,
       ...this.poolContainerArgs];
     docker([...this.runArgs, this.image], this.operationTimeoutMs);
     this.stage("pool container start complete");

@@ -30,18 +30,38 @@ RUN mkdir -p /out/plugins && \
       -o /out/plugins/gemini-cli.so ./cmd/geminicli && \
     cp LICENSE /out/plugins/LICENSE-gemini-cli
 COPY plugin_probe.go /build/plugin_probe.go
+COPY native_policy_home_test.go.tmpl /build/native_policy_home_test.go.tmpl
+COPY native_policy_home_host_helper.go.tmpl /build/native_policy_home_host_helper.go
+COPY native_policy /build/native_policy
+RUN mkdir -p /out/plugins && \
+    cd /build/native_policy && \
+    CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -buildmode=c-shared \
+      -o /out/plugins/basalt-native-policy.so .
+RUN cd /source/home && \
+    printf '{"Replace":{"/source/home/internal/cliproxy/auth/native_policy_home_test.go":"/build/native_policy_home_test.go.tmpl"}}' \
+      > /tmp/native-policy-overlay.json && \
+    CGO_ENABLED=1 \
+      POOL_NATIVE_POLICY_TEST_PLUGIN_DIR=/out/plugins \
+      POOL_NATIVE_POLICY_SOCKET=/dev/shm/cliproxy-pool/native-policy-home-test.sock \
+      POOL_APP_SIGNING_KEY=1111111111111111111111111111111111111111111111111111111111111111 \
+      POOL_APP_SIGNING_KEY_PREVIOUS= \
+      go test -p=2 -mod=readonly -overlay=/tmp/native-policy-overlay.json \
+        ./internal/cliproxy/auth \
+        -run '^TestNativePolicyPluginVetoesRealHomeDispatchAndPreservesBuiltinSelection$' \
+        -count=1 -v && \
+    rm -f /tmp/native-policy-overlay.json
+RUN mkdir -p /source/home/cmd/native-policy-test && \
+    cp /build/native_policy_home_host_helper.go /source/home/cmd/native-policy-test/main.go && \
+    cd /source/home && \
+    CGO_ENABLED=1 go build -p=2 -mod=readonly -buildvcs=false \
+      -o /out/native-policy-test-host ./cmd/native-policy-test && \
+    rm -rf /source/home/cmd/native-policy-test
 RUN cd /source/node && \
     CGO_ENABLED=1 go build -p=2 -mod=readonly -o /out/plugin-probe /build/plugin_probe.go && \
     /out/plugin-probe /out/plugins && \
     cd /source/home && \
     CGO_ENABLED=1 go build -p=2 -mod=readonly -o /out/home-plugin-probe /build/plugin_probe.go && \
     /out/home-plugin-probe /out/plugins
-
-FROM --platform=$BUILDPLATFORM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 AS legacy-fetch
-ARG TARGETARCH
-WORKDIR /build
-COPY releases.json fetch_releases.py ./
-RUN python3 fetch_releases.py --arch "$TARGETARCH" --destination /out
 
 FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337 AS runtime-base
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata \
@@ -55,6 +75,7 @@ COPY child_signals.py /opt/pool/child_signals.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY readiness.py /opt/pool/readiness.py
+COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY healthcheck.py /opt/pool/healthcheck.py
 ENV HOME=/dev/shm/cliproxy-pool \
     PYTHONUNBUFFERED=1 \
@@ -66,13 +87,6 @@ HEALTHCHECK --interval=10s --timeout=4s --start-period=180s --retries=3 \
 USER pool
 ENTRYPOINT ["python3", "-m", "pool.supervisor"]
 
-# The upgrade regression starts the released binaries against its disposable DB.
-FROM runtime-base AS legacy-runtime
-COPY --from=legacy-fetch /out/home/cli-proxy-api /usr/local/bin/cliproxy-home
-COPY --from=legacy-fetch /out/node/cli-proxy-api /usr/local/bin/cliproxy-node
-COPY --from=legacy-fetch /out/home/LICENSE /usr/share/licenses/cliproxy-home/LICENSE
-COPY --from=legacy-fetch /out/node/LICENSE /usr/share/licenses/cliproxy-node/LICENSE
-
 FROM runtime-base AS runtime
 COPY --from=source-build /out/home/cli-proxy-api /usr/local/bin/cliproxy-home
 COPY --from=source-build /out/node/cli-proxy-api /usr/local/bin/cliproxy-node
@@ -80,6 +94,7 @@ COPY --from=source-build /out/home/LICENSE /usr/share/licenses/cliproxy-home/LIC
 COPY --from=source-build /out/node/LICENSE /usr/share/licenses/cliproxy-node/LICENSE
 
 COPY --from=source-build /out/plugins/gemini-cli.so /opt/pool/plugins/gemini-cli.so
+COPY --from=source-build /out/plugins/basalt-native-policy.so /opt/pool/plugins/basalt-native-policy.so
 COPY --from=source-build /out/plugins/LICENSE-gemini-cli /usr/share/licenses/gemini-cli/LICENSE
 # Probe shadow copies are build evidence, not runtime image contents.
 RUN --mount=from=source-build,source=/out/plugin-probe,target=/tmp/plugin-probe \
@@ -87,3 +102,9 @@ RUN --mount=from=source-build,source=/out/plugin-probe,target=/tmp/plugin-probe 
     /tmp/plugin-probe /opt/pool/plugins && \
     /tmp/home-plugin-probe /opt/pool/plugins && \
     rm -rf /tmp/cliproxy-pluginhost
+RUN --mount=from=source-build,source=/out/native-policy-test-host,target=/tmp/native-policy-test-host \
+    --mount=type=bind,source=test_native_policy_integration.py,target=/tmp/test-native-policy-integration.py,readonly \
+    --mount=type=bind,source=test_native_policy_observation.py,target=/tmp/test_native_policy_observation.py,readonly \
+    POOL_NATIVE_POLICY_TEST_HOST=/tmp/native-policy-test-host \
+    POOL_NATIVE_POLICY_TEST_PLUGIN_DIR=/opt/pool/plugins \
+    PYTHONPATH=/opt python3 /tmp/test-native-policy-integration.py

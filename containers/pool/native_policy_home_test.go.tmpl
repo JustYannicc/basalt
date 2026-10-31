@@ -1,0 +1,400 @@
+package auth
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginhost"
+	homelogging "github.com/router-for-me/CLIProxyAPIHome/internal/logging"
+	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
+	log "github.com/sirupsen/logrus"
+)
+
+const (
+	nativePolicyPluginID       = "basalt-native-policy"
+	nativePolicyModel          = "basalt-native-policy-probe"
+	nativePolicyProbeLogPrefix = "pool-native-policy-probe:"
+	nativePool                 = "basalt-native-policy-test-pool"
+	nativeOrg                  = "basalt-native-policy-test-org"
+	nativeKeyHex               = "1111111111111111111111111111111111111111111111111111111111111111"
+)
+
+type testProjection struct {
+	Pool         string   `json:"pool"`
+	Organization string   `json:"organization"`
+	Revision     int64    `json:"revision"`
+	ExpiresAt    int64    `json:"expiresAt"`
+	Accounts     []string `json:"accounts"`
+	Dirty        bool     `json:"dirty"`
+}
+
+type testAssertion struct {
+	Pool      string `json:"pool"`
+	Revision  int64  `json:"revision"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+func TestNativePolicyPluginVetoesRealHomeDispatchAndPreservesBuiltinSelection(t *testing.T) {
+	pluginDir := os.Getenv("POOL_NATIVE_POLICY_TEST_PLUGIN_DIR")
+	if pluginDir == "" {
+		t.Skip("set POOL_NATIVE_POLICY_TEST_PLUGIN_DIR when building the pinned native plugin")
+	}
+	instanceBefore := newNativePolicyHomeInstance(t, pluginDir)
+	if !instanceBefore.host.HasScheduler() {
+		t.Fatal("loaded native policy plugin did not register a scheduler")
+	}
+
+	allowedIDs := []string{
+		"__basalt_native_policy_auth_allowed_a__",
+		"__basalt_native_policy_auth_allowed_b__",
+	}
+	blockedID := "__basalt_native_policy_auth_blocked__"
+	projectionExpiry := time.Now().Add(15 * time.Second).UnixMilli()
+	projection := testProjection{
+		Pool: nativePool, Organization: nativeOrg, Revision: 1,
+		ExpiresAt: projectionExpiry, Accounts: allowedIDs,
+	}
+	if result := nativePolicyUDSRequest(t, instanceBefore.socketPath, "/install", map[string]any{
+		"projection": testSignedEnvelope(t, "sbm-policy1", projection),
+	}); result["installed"] != true || result["revision"] != float64(1) {
+		t.Fatalf("projection install response = %#v", result)
+	}
+
+	logger := log.StandardLogger()
+	originalOutput := logger.Out
+	originalFormatter := logger.Formatter
+	originalLevel := logger.Level
+	originalReportCaller := logger.ReportCaller
+	var homeOutput bytes.Buffer
+	log.SetOutput(&homeOutput)
+	log.SetFormatter(&homelogging.LogFormatter{})
+	log.SetReportCaller(true)
+	log.SetLevel(log.InfoLevel)
+	t.Cleanup(func() {
+		log.SetOutput(originalOutput)
+		log.SetFormatter(originalFormatter)
+		log.SetReportCaller(originalReportCaller)
+		log.SetLevel(originalLevel)
+	})
+	probeNonce := strings.Repeat("n", 32)
+	probe := nativePolicyUDSRequest(t, instanceBefore.socketPath, "/probe", map[string]any{"nonce": probeNonce})
+	instance, okInstance := probe["instance"].(string)
+	if probe["ok"] != true || probe["nonce"] != probeNonce || !okInstance || len(instance) != 32 {
+		t.Fatalf("same-instance sentinel probe response = %#v", probe)
+	}
+	for _, forbidden := range []string{"pool", "organization", "accounts", "auth_id"} {
+		if _, exists := probe[forbidden]; exists {
+			t.Fatalf("sentinel probe returned account or pool data in %q", forbidden)
+		}
+	}
+	probeLog := homeOutput.String()
+	for _, required := range []string{
+		"[CLIProxyAPIHome] ", "[info ]", nativePolicyProbeLogPrefix + probeNonce,
+		"plugin_id=" + nativePolicyPluginID,
+	} {
+		if !strings.Contains(probeLog, required) {
+			t.Fatalf("Home host-log heartbeat = %q, missing %q", probeLog, required)
+		}
+	}
+	for _, forbidden := range allowedIDs {
+		if strings.Contains(probeLog, forbidden) {
+			t.Fatalf("Home host-log heartbeat disclosed an auth ID: %q", probeLog)
+		}
+	}
+
+	assertion := testSignedEnvelope(t, "sbm-use1", testAssertion{
+		Pool: nativePool, Revision: 1, ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(),
+	})
+	options := Options{Headers: http.Header{"X-Signalbox-Native-Policy": []string{assertion}}}
+
+	builtinManager := NewManager(nil, &RoundRobinSelector{}, nil)
+	policyManager := NewManager(nil, &RoundRobinSelector{}, nil)
+	for _, id := range allowedIDs {
+		item := syntheticPolicyAuth(id)
+		registerNativePolicyTestAuth(t, builtinManager, item)
+		registerNativePolicyTestManagerAuth(t, policyManager, item)
+	}
+	policyManager.SetPluginScheduler(instanceBefore.host)
+	builtinCounts, builtinElapsed, builtinPickWall, errDispatch := runNativePolicyDispatchWorkload(builtinManager, options, 4, 512)
+	if errDispatch != nil {
+		t.Fatalf("builtin Home dispatch workload: %v", errDispatch)
+	}
+	policyCounts, policyElapsed, policyPickWall, errDispatch := runNativePolicyDispatchWorkload(policyManager, options, 4, 512)
+	if errDispatch != nil {
+		t.Fatalf("native policy Home dispatch workload: %v", errDispatch)
+	}
+	if !reflect.DeepEqual(builtinCounts, policyCounts) {
+		t.Fatalf("permitted dispatch distribution = %#v, builtin = %#v", policyCounts, builtinCounts)
+	}
+	t.Logf("Home dispatch workers=4 calls=2048 builtin_amortized_wall_ns_per_pick=%d policy_amortized_wall_ns_per_pick=%d builtin_pick_wall_p50_ns=%d builtin_pick_wall_p95_ns=%d policy_pick_wall_p50_ns=%d policy_pick_wall_p95_ns=%d picks=%#v",
+		builtinElapsed.Nanoseconds()/2048, policyElapsed.Nanoseconds()/2048,
+		percentile(builtinPickWall, 50), percentile(builtinPickWall, 95),
+		percentile(policyPickWall, 50), percentile(policyPickWall, 95), policyCounts)
+
+	loadDone := make(chan error, 1)
+	go func() {
+		_, _, _, errLoad := runNativePolicyDispatchWorkload(policyManager, options, 4, 2048)
+		loadDone <- errLoad
+	}()
+	probeWall := make([]int64, 0, 16)
+	probeCPU := make([]int64, 0, 16)
+	for i := 0; i < 16; i++ {
+		nonce := fmt.Sprintf("probe_%02d_%s", i, strings.Repeat("p", 24))
+		started := time.Now()
+		loadedProbe := nativePolicyUDSRequest(t, instanceBefore.socketPath, "/probe", map[string]any{"nonce": nonce})
+		probeWall = append(probeWall, time.Since(started).Nanoseconds())
+		probeCPU = append(probeCPU, nativePolicyProbeCPU(t, loadedProbe))
+	}
+	if errLoad := <-loadDone; errLoad != nil {
+		t.Fatalf("four-worker probe load: %v", errLoad)
+	}
+	t.Logf("Home probe under four-worker load samples=%d wall_p50_ns=%d wall_p95_ns=%d callback_cpu_p50_ns=%d callback_cpu_p95_ns=%d",
+		len(probeWall), percentile(probeWall, 50), percentile(probeWall, 95),
+		percentile(probeCPU, 50), percentile(probeCPU, 95))
+
+	blockedManager := NewManager(nil, &RoundRobinSelector{}, nil)
+	blockedManager.SetPluginScheduler(instanceBefore.host)
+	registerNativePolicyTestManagerAuth(t, blockedManager, syntheticPolicyAuth(allowedIDs[0]))
+	registerNativePolicyTestAuth(t, blockedManager, syntheticPolicyAuth(blockedID))
+	decision, errDispatch := blockedManager.Dispatch(context.Background(), []string{"codex"}, nativePolicyModel, options)
+	if errDispatch == nil || decision != nil || errDispatch.Error() != "native account membership denied this pick" {
+		t.Fatalf("mixed-permission Home dispatch = %#v, %v; want the documented hard-veto error", decision, errDispatch)
+	}
+
+	setNativePolicyPluginEnabled(t, instanceBefore.host, pluginDir, false)
+	if instanceBefore.host.HasScheduler() {
+		t.Fatal("disabled Home plugin remained registered as a scheduler")
+	}
+	if _, errStat := os.Stat(instanceBefore.socketPath); !os.IsNotExist(errStat) {
+		t.Fatalf("plugin disable left native policy socket: %v", errStat)
+	}
+	applyNativePolicyPlugin(t, instanceBefore.host, pluginDir)
+	probe = nativePolicyUDSRequest(t, instanceBefore.socketPath, "/probe", map[string]any{"nonce": probeNonce})
+	if probe["ok"] != true || probe["instance"] == instance {
+		t.Fatalf("plugin disable/re-enable probe = %#v, want a new instance identity", probe)
+	}
+	reenabledInstance := probe["instance"]
+
+	if !instanceBefore.host.UnloadPlugin(nativePolicyPluginID) {
+		t.Fatal("Home plugin host did not unload native policy plugin")
+	}
+	if _, errStat := os.Stat(instanceBefore.socketPath); !os.IsNotExist(errStat) {
+		t.Fatalf("plugin unload left native policy socket: %v", errStat)
+	}
+	applyNativePolicyPlugin(t, instanceBefore.host, pluginDir)
+	probe = nativePolicyUDSRequest(t, instanceBefore.socketPath, "/probe", map[string]any{"nonce": probeNonce})
+	if probe["ok"] != true || probe["instance"] == reenabledInstance {
+		t.Fatalf("plugin unload/reload probe = %#v, want a new instance identity", probe)
+	}
+}
+
+func newNativePolicyHomeInstance(t testing.TB, pluginDir string) *nativePolicyHomeInstance {
+	t.Helper()
+	if got := os.Getenv("POOL_APP_SIGNING_KEY"); got != nativeKeyHex {
+		t.Fatal("set the native policy signing key before starting the Home test process")
+	}
+	if got := os.Getenv("POOL_APP_SIGNING_KEY_PREVIOUS"); got != "" {
+		t.Fatal("clear the previous native policy signing key before starting the Home test process")
+	}
+	socketPath := strings.TrimSpace(os.Getenv("POOL_NATIVE_POLICY_SOCKET"))
+	if !filepath.IsAbs(socketPath) || !strings.HasPrefix(filepath.Clean(socketPath), "/dev/shm/cliproxy-pool/") {
+		t.Fatal("set a native policy socket under /dev/shm/cliproxy-pool before starting the Home test process")
+	}
+	if errMkdir := os.MkdirAll(filepath.Dir(socketPath), 0o700); errMkdir != nil {
+		t.Fatalf("create Home test socket directory: %v", errMkdir)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	return loadNativePolicyHomeInstance(t, pluginDir, socketPath)
+}
+
+type nativePolicyHomeInstance struct {
+	host       *pluginhost.Host
+	socketPath string
+}
+
+func loadNativePolicyHomeInstance(tb testing.TB, pluginDir, socketPath string) *nativePolicyHomeInstance {
+	tb.Helper()
+	host := pluginhost.New()
+	applyNativePolicyPlugin(tb, host, pluginDir)
+	if !host.HasScheduler() {
+		host.ShutdownAll()
+		tb.Fatalf("native policy plugin did not load from %s", pluginDir)
+	}
+	tb.Cleanup(host.ShutdownAll)
+	return &nativePolicyHomeInstance{host: host, socketPath: socketPath}
+}
+
+func applyNativePolicyPlugin(tb testing.TB, host *pluginhost.Host, pluginDir string) {
+	tb.Helper()
+	enabled := true
+	setNativePolicyPluginEnabledWithValue(tb, host, pluginDir, &enabled)
+}
+
+func setNativePolicyPluginEnabled(tb testing.TB, host *pluginhost.Host, pluginDir string, value bool) {
+	tb.Helper()
+	setNativePolicyPluginEnabledWithValue(tb, host, pluginDir, &value)
+}
+
+func setNativePolicyPluginEnabledWithValue(tb testing.TB, host *pluginhost.Host, pluginDir string, enabled *bool) {
+	tb.Helper()
+	host.ApplyConfig(context.Background(), pluginhost.RuntimeConfig{
+		Enabled: true,
+		Dir:     pluginDir,
+		Configs: map[string]pluginhost.PluginInstanceConfig{
+			nativePolicyPluginID: {Enabled: enabled},
+		},
+	})
+}
+
+func syntheticPolicyAuth(id string) *Auth {
+	return &Auth{
+		ID: id, Provider: "codex", Status: StatusActive,
+		Attributes: map[string]string{"auth_kind": "oauth"},
+	}
+}
+
+func registerNativePolicyTestAuth(tb testing.TB, manager *Manager, item *Auth) {
+	tb.Helper()
+	registry.GetGlobalRegistry().RegisterClient(item.ID, item.Provider, []*registry.ModelInfo{{ID: nativePolicyModel}})
+	tb.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(item.ID) })
+	registerNativePolicyTestManagerAuth(tb, manager, item)
+}
+
+func registerNativePolicyTestManagerAuth(tb testing.TB, manager *Manager, item *Auth) {
+	tb.Helper()
+	if _, errRegister := manager.Register(context.Background(), item); errRegister != nil {
+		tb.Fatalf("register synthetic Home auth: %v", errRegister)
+	}
+}
+
+func runNativePolicyDispatchWorkload(manager *Manager, options Options, workers, picksPerWorker int) (map[string]int, time.Duration, []int64, error) {
+	counts := make(map[string]int)
+	pickWall := make([]int64, workers*picksPerWorker)
+	var countsMu sync.Mutex
+	errors := make(chan error, workers)
+	var wait sync.WaitGroup
+	started := time.Now()
+	for worker := 0; worker < workers; worker++ {
+		workerIndex := worker
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for pick := 0; pick < picksPerWorker; pick++ {
+				pickStarted := time.Now()
+				decision, errDispatch := manager.Dispatch(context.Background(), []string{"codex"}, nativePolicyModel, options)
+				pickWall[workerIndex*picksPerWorker+pick] = time.Since(pickStarted).Nanoseconds()
+				if errDispatch != nil {
+					errors <- errDispatch
+					return
+				}
+				if decision == nil || decision.Auth == nil {
+					errors <- fmt.Errorf("Home dispatch returned no auth")
+					return
+				}
+				countsMu.Lock()
+				counts[decision.Auth.ID]++
+				countsMu.Unlock()
+			}
+		}()
+	}
+	wait.Wait()
+	close(errors)
+	for errDispatch := range errors {
+		if errDispatch != nil {
+			return nil, time.Since(started), pickWall, errDispatch
+		}
+	}
+	return counts, time.Since(started), pickWall, nil
+}
+
+func percentile(samples []int64, percentile int) int64 {
+	ordered := append([]int64(nil), samples...)
+	sort.Slice(ordered, func(left, right int) bool { return ordered[left] < ordered[right] })
+	index := (len(ordered)*percentile + 99) / 100
+	if index < 1 {
+		index = 1
+	}
+	if index > len(ordered) {
+		index = len(ordered)
+	}
+	return ordered[index-1]
+}
+
+func nativePolicyUDSRequest(tb testing.TB, socketPath, route string, payload any) map[string]any {
+	tb.Helper()
+	encoded, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		tb.Fatalf("encode UDS request: %v", errMarshal)
+	}
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", socketPath)
+	}}
+	client := &http.Client{Transport: transport, Timeout: time.Second}
+	defer transport.CloseIdleConnections()
+	response, errRequest := client.Post("http://native-policy"+route, "application/json", strings.NewReader(string(encoded)))
+	if errRequest != nil {
+		tb.Fatalf("native policy UDS request %s: %v", route, errRequest)
+	}
+	defer response.Body.Close()
+	raw, errRead := io.ReadAll(response.Body)
+	if errRead != nil {
+		tb.Fatalf("read native policy UDS response: %v", errRead)
+	}
+	var result map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &result); errUnmarshal != nil {
+		tb.Fatalf("decode native policy UDS response: %v", errUnmarshal)
+	}
+	if response.StatusCode != http.StatusOK {
+		tb.Fatalf("native policy UDS %s returned %d: %#v", route, response.StatusCode, result)
+	}
+	return result
+}
+
+func nativePolicyProbeCPU(tb testing.TB, response map[string]any) int64 {
+	tb.Helper()
+	value, ok := response["cpu_ns"].(float64)
+	if !ok || value < 0 {
+		tb.Fatalf("native policy probe omitted valid callback CPU measurement: %#v", response)
+	}
+	return int64(value)
+}
+
+func testSignedEnvelope(tb testing.TB, prefix string, payload any) string {
+	tb.Helper()
+	raw, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		tb.Fatalf("encode signed payload: %v", errMarshal)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	signed := prefix + "." + encoded
+	key := mustDecodeHex(tb, nativeKeyHex)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(signed))
+	return signed + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func mustDecodeHex(tb testing.TB, value string) []byte {
+	tb.Helper()
+	decoded, errDecode := hex.DecodeString(value)
+	if errDecode != nil {
+		tb.Fatalf("decode test key: %v", errDecode)
+	}
+	return decoded
+}

@@ -1,0 +1,378 @@
+package main
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	stdlog "log"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginhost"
+	homeauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+	homelogging "github.com/router-for-me/CLIProxyAPIHome/internal/logging"
+	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
+	log "github.com/sirupsen/logrus"
+)
+
+const (
+	pluginID  = "basalt-native-policy"
+	modelID   = "basalt-native-policy-integration-probe"
+	poolID    = "basalt-native-policy-integration-pool"
+	orgID     = "basalt-native-policy-integration-org"
+	readyLine = "POOL_NATIVE_POLICY_TEST_HOME_READY"
+)
+
+type helper struct {
+	mu         sync.Mutex
+	pluginDir  string
+	host       *pluginhost.Host
+	manager    *homeauth.Manager
+	options    homeauth.Options
+	allowedIDs []string
+	enabled    bool
+	loadMu     sync.Mutex
+	loadStop   chan struct{}
+	loadDone   chan struct{}
+	loadResult map[string]any
+	stop       chan struct{}
+	stopOnce   sync.Once
+}
+
+type projection struct {
+	Pool         string   `json:"pool"`
+	Organization string   `json:"organization"`
+	Revision     int64    `json:"revision"`
+	ExpiresAt    int64    `json:"expiresAt"`
+	Accounts     []string `json:"accounts"`
+	Dirty        bool     `json:"dirty"`
+}
+
+type assertion struct {
+	Pool      string `json:"pool"`
+	Revision  int64  `json:"revision"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+func main() {
+	homelogging.SetupBaseLogger()
+	log.SetOutput(io.Discard)
+	log.SetLevel(log.InfoLevel)
+	pluginDir := strings.TrimSpace(os.Getenv("POOL_NATIVE_POLICY_TEST_PLUGIN_DIR"))
+	if pluginDir == "" {
+		log.Fatal("test plugin directory is required")
+	}
+	port, errPort := strconv.Atoi(os.Getenv("POOL_NATIVE_POLICY_TEST_HOME_PORT"))
+	if errPort != nil || port < 1 || port > 65535 {
+		log.Fatal("test Home port is invalid")
+	}
+	if strings.TrimSpace(os.Getenv("POOL_NATIVE_POLICY_SOCKET")) == "" {
+		log.Fatal("native policy socket is required")
+	}
+	if _, errKey := signingKey(); errKey != nil {
+		log.Fatal("native policy signing key is invalid")
+	}
+
+	host := pluginhost.New()
+	service := &helper{
+		pluginDir:  pluginDir,
+		host:       host,
+		allowedIDs: []string{"__native_policy_allowed_a__", "__native_policy_allowed_b__"},
+		stop:       make(chan struct{}),
+	}
+	if errEnable := service.setEnabled(true); errEnable != nil {
+		log.WithError(errEnable).Fatal("failed to load test native policy plugin")
+	}
+	service.newManager()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v8/management/plugins", service.plugins)
+	mux.HandleFunc("POST /native-policy-test/disable", service.disable)
+	mux.HandleFunc("POST /native-policy-test/enable", service.enable)
+	mux.HandleFunc("POST /native-policy-test/fuse", service.fuse)
+	mux.HandleFunc("POST /native-policy-test/load/start", service.startLoad)
+	mux.HandleFunc("POST /native-policy-test/load/stop", service.stopLoad)
+	mux.HandleFunc("POST /native-policy-test/shutdown", service.shutdown)
+	listener, errListen := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if errListen != nil {
+		log.WithError(errListen).Fatal("failed to listen for test management requests")
+	}
+	server := &http.Server{Handler: mux, ErrorLog: stdlog.New(io.Discard, "", 0)}
+	log.SetOutput(os.Stdout)
+	go func() {
+		<-service.stop
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+	}()
+	fmt.Println(readyLine)
+	if errServe := server.Serve(listener); errServe != nil && !errors.Is(errServe, http.ErrServerClosed) {
+		log.WithError(errServe).Error("test management server stopped")
+	}
+	service.stopLoadWork()
+	host.ShutdownAll()
+}
+
+func (s *helper) newManager() {
+	manager := homeauth.NewManager(nil, &homeauth.RoundRobinSelector{}, nil)
+	for _, id := range s.allowedIDs {
+		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: modelID}})
+		item := &homeauth.Auth{
+			ID: id, Provider: "codex", Status: homeauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "oauth"},
+		}
+		if _, errRegister := manager.Register(context.Background(), item); errRegister != nil {
+			log.WithError(errRegister).Fatal("failed to register test auth")
+		}
+	}
+	manager.SetPluginScheduler(s.host)
+	key, _ := signingKey()
+	token := signEnvelope(key, "sbm-use1", assertion{
+		Pool: poolID, Revision: 1, ExpiresAt: time.Now().Add(2 * time.Hour).UnixMilli(),
+	})
+	s.manager = manager
+	s.options = homeauth.Options{Headers: http.Header{"X-Signalbox-Native-Policy": []string{token}}}
+}
+
+func (s *helper) setEnabled(enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value := enabled
+	s.host.ApplyConfig(context.Background(), pluginhost.RuntimeConfig{
+		Enabled: true,
+		Dir:     s.pluginDir,
+		Configs: map[string]pluginhost.PluginInstanceConfig{
+			pluginID: {Enabled: &value},
+		},
+	})
+	if s.host.HasScheduler() != enabled {
+		return fmt.Errorf("scheduler registration did not follow enabled=%t", enabled)
+	}
+	s.enabled = enabled
+	if !enabled {
+		return nil
+	}
+	key, errKey := signingKey()
+	if errKey != nil {
+		return errKey
+	}
+	expiresAt := time.Now().Add(15 * time.Second).UnixMilli()
+	policy := signEnvelope(key, "sbm-policy1", projection{
+		Pool: poolID, Organization: orgID, Revision: 1,
+		ExpiresAt: expiresAt, Accounts: s.allowedIDs,
+	})
+	result, errRequest := nativePolicyUDSRequest("/install", map[string]string{"projection": policy})
+	if errRequest != nil {
+		return errRequest
+	}
+	if result["installed"] != true || result["revision"] != float64(1) {
+		return fmt.Errorf("native policy projection was not installed")
+	}
+	return nil
+}
+
+func (s *helper) plugins(writer http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	enabled := s.enabled
+	s.mu.Unlock()
+	registered := s.host.HasScheduler()
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"plugins_enabled": true,
+		"plugins": []map[string]any{{
+			"id": pluginID, "registered": registered,
+			"enabled": enabled, "effective_enabled": enabled && registered,
+		}},
+	})
+}
+
+func (s *helper) disable(writer http.ResponseWriter, _ *http.Request) {
+	if err := s.setEnabled(false); err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"error": "disable_failed"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"disabled": true})
+}
+
+func (s *helper) enable(writer http.ResponseWriter, _ *http.Request) {
+	if err := s.setEnabled(true); err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]any{"error": "enable_failed"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"enabled": true})
+}
+
+func (s *helper) fuse(writer http.ResponseWriter, _ *http.Request) {
+	log.WithField("plugin_id", pluginID).Errorf(
+		"pluginhost: plugin panic recovered: private-panic-sentinel\nruntime trace sentinel",
+	)
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (s *helper) startLoad(writer http.ResponseWriter, _ *http.Request) {
+	s.loadMu.Lock()
+	if s.loadStop != nil {
+		s.loadMu.Unlock()
+		writeJSON(writer, http.StatusConflict, map[string]any{"error": "load_already_running"})
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.loadStop = stop
+	s.loadDone = done
+	s.loadResult = nil
+	s.loadMu.Unlock()
+
+	const workers = 4
+	started := make(chan struct{}, workers)
+	var wait sync.WaitGroup
+	var countMu sync.Mutex
+	var picks int64
+	var firstError error
+	var errorMu sync.Mutex
+	begin := time.Now()
+	for worker := 0; worker < workers; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			started <- struct{}{}
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				decision, errDispatch := s.manager.Dispatch(
+					context.Background(), []string{"codex"}, modelID, s.options,
+				)
+				if errDispatch != nil || decision == nil || decision.Auth == nil {
+					errorMu.Lock()
+					if firstError == nil {
+						firstError = fmt.Errorf("native policy load dispatch failed: %v", errDispatch)
+					}
+					errorMu.Unlock()
+					return
+				}
+				countMu.Lock()
+				picks++
+				countMu.Unlock()
+			}
+		}()
+	}
+	for worker := 0; worker < workers; worker++ {
+		<-started
+	}
+	go func() {
+		wait.Wait()
+		errorMu.Lock()
+		loadError := firstError
+		errorMu.Unlock()
+		countMu.Lock()
+		completed := picks
+		countMu.Unlock()
+		s.loadMu.Lock()
+		s.loadResult = map[string]any{
+			"workers": workers, "picks": completed,
+			"duration_ns": time.Since(begin).Nanoseconds(),
+			"error":       loadError != nil,
+		}
+		s.loadStop = nil
+		close(done)
+		s.loadMu.Unlock()
+	}()
+	writeJSON(writer, http.StatusAccepted, map[string]any{"started": true, "workers": workers})
+}
+
+func (s *helper) stopLoad(writer http.ResponseWriter, _ *http.Request) {
+	result, stopped := s.stopLoadWork()
+	if !stopped {
+		writeJSON(writer, http.StatusConflict, map[string]any{"error": "load_not_running"})
+		return
+	}
+	if result["error"] == true {
+		writeJSON(writer, http.StatusInternalServerError, result)
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
+func (s *helper) stopLoadWork() (map[string]any, bool) {
+	s.loadMu.Lock()
+	stop := s.loadStop
+	done := s.loadDone
+	s.loadMu.Unlock()
+	if stop == nil || done == nil {
+		return nil, false
+	}
+	close(stop)
+	<-done
+	s.loadMu.Lock()
+	result := s.loadResult
+	s.loadMu.Unlock()
+	return result, true
+}
+
+func (s *helper) shutdown(writer http.ResponseWriter, _ *http.Request) {
+	writer.WriteHeader(http.StatusNoContent)
+	s.stopOnce.Do(func() { close(s.stop) })
+}
+
+func nativePolicyUDSRequest(route string, payload any) (map[string]any, error) {
+	encoded, errMarshal := json.Marshal(payload)
+	if errMarshal != nil {
+		return nil, errMarshal
+	}
+	path := os.Getenv("POOL_NATIVE_POLICY_SOCKET")
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", path)
+	}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	response, errRequest := client.Post("http://native-policy"+route, "application/json", strings.NewReader(string(encoded)))
+	if errRequest != nil {
+		return nil, errRequest
+	}
+	defer response.Body.Close()
+	var result map[string]any
+	if errDecode := json.NewDecoder(response.Body).Decode(&result); errDecode != nil {
+		return nil, errDecode
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("native policy UDS %s returned %d", route, response.StatusCode)
+	}
+	return result, nil
+}
+
+func signingKey() ([]byte, error) {
+	value := strings.TrimSpace(os.Getenv("POOL_APP_SIGNING_KEY"))
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return nil, errors.New("invalid signing key")
+	}
+	return hex.DecodeString(value)
+}
+
+func signEnvelope(key []byte, prefix string, payload any) string {
+	raw, _ := json.Marshal(payload)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	unsigned := prefix + "." + encoded
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(unsigned))
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func writeJSON(writer http.ResponseWriter, status int, value any) {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(value)
+}

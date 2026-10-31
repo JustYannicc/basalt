@@ -134,12 +134,25 @@ class OutputPrivacyTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         child = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
         failure = StartupError(f"{RESPONSE_SENTINEL} Authorization: Bearer {TOKEN_SENTINEL}")
+
+        class HealthyPolicyMonitor:
+            def __init__(self, _ready: readiness.Readiness, _management_key: str) -> None:
+                pass
+
+            def run(self, stop: Any) -> None:
+                stop.wait()
+
+        def start_ready_server(ready: readiness.Readiness) -> None:
+            if not ready.refresh_policy_lease("a" * 32):
+                raise AssertionError("fixture could not establish the policy lease")
+
         with (
             tempfile.TemporaryDirectory() as root,
             patch.object(supervisor, "ROOT", pathlib.Path(root)),
             patch.object(supervisor, "env_required", return_value=TOKEN_SENTINEL),
             patch.object(supervisor, "require_tmpfs"),
-            patch.object(supervisor, "start_ready_server", return_value=None),
+            patch.object(supervisor, "start_ready_server", side_effect=start_ready_server),
+            patch.object(supervisor, "PolicyHealthMonitor", HealthyPolicyMonitor),
             patch.object(supervisor, "child_environment", return_value={}),
             patch.object(supervisor, "Child", return_value=child),
             patch.object(supervisor, "wait_for_home", return_value="ready"),
@@ -215,7 +228,12 @@ class OutputPrivacyTests(unittest.TestCase):
 
     def test_http_handler_failure_cannot_print_response_token_or_address(self) -> None:
         class ExplodingHandler(readiness.ReadyHandler):
-            def _send(self, status: int, payload: dict[str, str]) -> None:
+            def _send(
+                self,
+                status: int,
+                payload: dict[str, Any],
+                extra_headers: dict[str, str] | None = None,
+            ) -> None:
                 raise RuntimeError(f"{RESPONSE_SENTINEL} {TOKEN_SENTINEL}")
 
         stdout, stderr = io.StringIO(), io.StringIO()

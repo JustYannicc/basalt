@@ -22,6 +22,9 @@ from .child_signals import (
     HOME_INIT_FAILURE_MARKER,
     HOME_MAINTENANCE_FAILURE_MARKER,
     MAX_HOME_SIGNAL_INTEGER,
+    NativePolicyFuseParser,
+    NativePolicyProbeParser,
+    NATIVE_POLICY_PROBE_LOG_PREFIX,
     privacy_audit_line,
     safe_child_output_line,
 )
@@ -37,10 +40,19 @@ class FakeStream:
 
 
 class BootstrapContractTests(unittest.TestCase):
-    def read_child_output(self, name: str, lines: list[str]) -> list[str]:
+    def read_child_output(
+        self,
+        name: str,
+        lines: list[str],
+        on_policy_probe: Any = None,
+    ) -> list[str]:
         child = object.__new__(Child)
         child.name = name
         child.config_empty = threading.Event()
+        child._on_policy_fused = None
+        child._on_policy_probe = on_policy_probe
+        child._fuse_parser = NativePolicyFuseParser()
+        child._policy_probe_parser = NativePolicyProbeParser()
         child.process = cast(Any, SimpleNamespace(stdout=FakeStream(lines)))
         captured = io.StringIO()
         with redirect_stdout(captured):
@@ -160,6 +172,20 @@ class BootstrapContractTests(unittest.TestCase):
         )
         joined = "\n".join(output)
         self.assertNotIn("sentinel", joined)
+
+    def test_read_output_consumes_native_policy_probe_heartbeat(self) -> None:
+        nonce = "n" * 32
+        observed: list[str] = []
+        output = self.read_child_output(
+            "home",
+            [
+                "[CLIProxyAPIHome] [2026-10-31 10:00:00] [--------] [info ] "
+                f"plugin_id=basalt-native-policy {NATIVE_POLICY_PROBE_LOG_PREFIX}{nonce}\n"
+            ],
+            observed.append,
+        )
+        self.assertEqual(output, [])
+        self.assertEqual(observed, [nonce])
 
     def test_read_output_forwards_pinned_home_formatter_signals(self) -> None:
         messages = [
@@ -354,6 +380,9 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertTrue(readiness.authorized("Bearer fixture-management-key"))
         self.assertFalse(readiness.authorized("Bearer wrong"))
         readiness.set_ready(True)
+        ready, _ = readiness.snapshot()
+        self.assertFalse(ready)
+        self.assertTrue(readiness.refresh_policy_lease("a" * 32))
         ready, _ = readiness.snapshot()
         self.assertTrue(ready)
 

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .pool_contract import (
     ROOT,
@@ -28,7 +28,13 @@ from .pool_contract import (
     require_tmpfs,
 )
 from .readiness import Readiness, start_ready_server
-from .child_signals import privacy_audit_line, safe_child_output_line
+from .child_signals import (
+    NativePolicyFuseParser,
+    NativePolicyProbeParser,
+    privacy_audit_line,
+    safe_child_output_line,
+)
+from .policy_monitor import PolicyHealthMonitor
 from .runtime_signals import (
     FailureCategory,
     StartupPhase,
@@ -52,8 +58,14 @@ class Child:
         command: list[str],
         env: dict[str, str],
         cwd: pathlib.Path,
+        on_policy_fused: Callable[[], None] | None = None,
+        on_policy_probe: Callable[[str], None] | None = None,
     ) -> None:
         self.name = name
+        self._on_policy_fused = on_policy_fused
+        self._on_policy_probe = on_policy_probe
+        self._fuse_parser = NativePolicyFuseParser()
+        self._policy_probe_parser = NativePolicyProbeParser()
         self.config_empty = threading.Event()
         self.process = subprocess.Popen(
             command,
@@ -75,6 +87,17 @@ class Child:
         while line := stream.readline(8192):
             if BOOTSTRAP_MARKER in line:
                 self.config_empty.set()
+            fused = self._fuse_parser.feed(self.name, line)
+            if fused is not None:
+                print(fused, flush=True)
+                if self._on_policy_fused is not None:
+                    self._on_policy_fused()
+                continue
+            probe_nonce = self._policy_probe_parser.feed(self.name, line)
+            if probe_nonce is not None:
+                if self._on_policy_probe is not None:
+                    self._on_policy_probe(probe_nonce)
+                continue
             # Provider errors can contain full responses. Do not forward them.
             safe = safe_child_output_line(self.name, line)
             if safe is not None:
@@ -147,6 +170,7 @@ def main() -> int:
     children: list[Child] = []
     ready_server = None
     readiness = None
+    policy_monitor_thread = None
     stop = threading.Event()
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
@@ -159,6 +183,13 @@ def main() -> int:
         pathlib.Path(ROOT / "tmp").mkdir(mode=0o700, exist_ok=True)
         readiness = Readiness(management_key)
         ready_server = start_ready_server(readiness)
+        policy_monitor = PolicyHealthMonitor(readiness, management_key)
+        policy_monitor_thread = threading.Thread(
+            target=policy_monitor.run,
+            args=(stop,),
+            daemon=True,
+        )
+        policy_monitor_thread.start()
 
         def request_stop(signum: int, frame: Any) -> None:
             stop.set()
@@ -174,6 +205,8 @@ def main() -> int:
                 [HOME_BINARY, "-addr", "0.0.0.0:8327"],
                 child_environment("home", management_key),
                 ROOT,
+                readiness.note_policy_fused,
+                readiness.note_policy_probe,
             )
             children.append(home_child)
             home_state = wait_for_home(home_child, management_key, stop)
@@ -183,12 +216,15 @@ def main() -> int:
             with startup_phase(StartupPhase.BOOTSTRAP_IMPORT, supervisor_started_ns):
                 home_child.process.wait()
                 import_initial_config(management_key, allow_remote)
+            readiness.home_process_restarted()
             with startup_phase(StartupPhase.HOME_BOOT, supervisor_started_ns):
                 home_child = Child(
                     "home",
                     [HOME_BINARY, "-addr", "0.0.0.0:8327"],
                     child_environment("home", management_key),
                     ROOT,
+                    readiness.note_policy_fused,
+                    readiness.note_policy_probe,
                 )
                 children[-1] = home_child
                 home_state = wait_for_home(home_child, management_key, stop)
@@ -220,8 +256,9 @@ def main() -> int:
                         raise StartupError(
                             f"{child.name} exited before the pool was healthy (exit {exit_code})"
                         )
-                if check_services(management_key, node_id):
-                    readiness.set_ready(True)
+                services_ready = check_services(management_key, node_id)
+                readiness.set_ready(services_ready)
+                if services_ready and readiness.snapshot()[0]:
                     break
                 time.sleep(0.5)
             if stop.is_set():
@@ -246,6 +283,9 @@ def main() -> int:
     finally:
         if readiness is not None:
             readiness.set_ready(False)
+        stop.set()
+        if policy_monitor_thread is not None:
+            policy_monitor_thread.join(timeout=1)
         if ready_server is not None:
             ready_server.shutdown()
             ready_server.server_close()
