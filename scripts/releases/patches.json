@@ -611,6 +611,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-workflow-input-approvals",
+      "file": "0068-workflow-input-approvals.patch",
+      "content_sha256": "5b0596e540e776718138e5a214414b046a9b6b5d79ff704735f678a7a774757e",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": true
+    },
+    {
       "identity": "basalt-native-display-metadata",
       "file": "0069-native-display-metadata.patch",
       "content_sha256": "b2691cf776ee128eda7dbef94fe64a86f6f8fffaaadf11dfbbe5e8a78ddb8404",
