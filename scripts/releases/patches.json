@@ -595,7 +595,7 @@
     {
       "identity": "basalt-atomic-pool-setup",
       "file": "0065-atomic-pool-setup.patch",
-      "content_sha256": "7e31367b97b9b9fd5b25bcf53a5a01ed83efa1eacc217a45bda1fb88e381f590",
+      "content_sha256": "5eb212da3fa369def7b21fe74fb51886a03b1f1def67e00a0b9cd25403a4ab9d",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

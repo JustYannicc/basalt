@@ -136,10 +136,9 @@ index 452c680..db77a93 100644
      deferOnboarding: true,
 diff --git a/e2e/tests/pool-setup-atomic.spec.ts b/e2e/tests/pool-setup-atomic.spec.ts
 new file mode 100644
-index 0000000..d278938
 --- /dev/null
 +++ b/e2e/tests/pool-setup-atomic.spec.ts
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,151 @@
 +/** Hold the real setup transaction at metadata publication, then inspect public visibility. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
@@ -166,6 +165,14 @@ index 0000000..d278938
 +        const key = `pool-setup:${suffix}`;
 +        const rows = (sql: string, params: readonly (string | number)[] = []) =>
 +          database.run({ sql, params });
++        const deferJobs = (organization: string) =>
++          rows(
++            "update hosted_provisioning set available_at = now() + interval '1 day' where organization_id = $1 and status = 'queued'",
++            [organization],
++          );
++        // Any product request dispatches queued jobs. Keep this unrelated team's setup from
++        // racing cleanup, which cannot defer jobs that have already started.
++        yield* deferJobs(actors.organization.id);
 +        // Only this team's pool metadata write waits. All calls still use the ordinary product.
 +        yield* rows(`create function ${fn}() returns trigger language plpgsql as $$ begin
 +      if new.slug = '${slug}' and coalesce(new.metadata::jsonb -> 'basaltPools', '{}'::jsonb) <> '{}'::jsonb then
@@ -200,10 +207,7 @@ index 0000000..d278938
 +            yield* database.release;
 +            // The managed lab has no deployed pool receiver for organization-removal notifications.
 +            for (const organization of [team.id, actors.organization.id]) {
-+              yield* rows(
-+                "update hosted_provisioning set available_at = now() + interval '1 day' where organization_id = $1 and status = 'queued'",
-+                [organization],
-+              );
++              yield* deferJobs(organization);
 +              yield* rows(
 +                "update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) - 'basaltPools')::text where id = $1",
 +                [organization],
