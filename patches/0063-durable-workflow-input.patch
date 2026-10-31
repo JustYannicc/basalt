@@ -57,10 +57,10 @@ index 0152de3..ad04f66 100644
          safe(
            step.do({
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 68e3aef..55102c9 100644
+index 9fa15f4..7aff010 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -115,6 +115,8 @@ export const selfHostExecutorServices = <E, R>(
+@@ -116,6 +116,8 @@ export const selfHostExecutorServices = <E, R>(
          blobs,
          runtime,
          workflows,
@@ -257,10 +257,10 @@ index 0000000..9e0601f
 +      ),
 +);
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 67ce6cb..930fad2 100644
+index 5fdd452..0b45053 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -4,6 +4,7 @@ import {
+@@ -6,6 +6,7 @@ import {
    InteractiveRetirementFailed,
    InteractiveReconnectUnsupported,
  } from "@executor-js/sdk";
@@ -268,7 +268,7 @@ index 67ce6cb..930fad2 100644
  import {
    blockedRecovery,
    LocalOwnerMigration,
-@@ -906,6 +907,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -929,6 +930,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
      )
      .middleware(DashboardAccess),
    DashboardSchedules.middleware(DashboardAccess),
@@ -364,7 +364,7 @@ index 0000000..5cfa862
 +    }),
 +  );
 diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
-index 904b418..7d2744e 100644
+index 31ced11..350b716 100644
 --- a/apps/local/server/src/implementation/server.ts
 +++ b/apps/local/server/src/implementation/server.ts
 @@ -1,3 +1,4 @@
@@ -372,7 +372,7 @@ index 904b418..7d2744e 100644
  import { localSourceFormatter } from "@executor-js/app-management/source-format";
  import {
    publishedSkillRoutes,
-@@ -171,6 +172,8 @@ export const localApi = (
+@@ -172,6 +173,8 @@ export const localApi = (
          blobs,
          runtime,
          workflows,
@@ -381,7 +381,7 @@ index 904b418..7d2744e 100644
          registry,
          cache: {
            memory: makeDeclarationCache(evaluation.limits),
-@@ -282,7 +285,10 @@ export const localApi = (
+@@ -289,7 +292,10 @@ export const localApi = (
            if (Result.isFailure(pathname)) return HttpServerResponse.empty({ status: 400 });
            const target = pathname.success.replace(/\/$/, "");
            // SDK review primitives are only delivered through the product's browser session routes.
@@ -393,7 +393,7 @@ index 904b418..7d2744e 100644
              return HttpServerResponse.empty({ status: 403 });
            // Product protection stays at the host boundary, not in the reusable SDK.
            if (request.method !== "GET" && request.method !== "HEAD") {
-@@ -511,6 +517,7 @@ export const localApi = (
+@@ -518,6 +524,7 @@ export const localApi = (
          HttpApiBuilder.layer(DashboardApi).pipe(
            Layer.provide(dashboardApi.handlers),
            Layer.provide(localScheduleHandlers(executor, sql, config, auth)),
@@ -401,7 +401,7 @@ index 904b418..7d2744e 100644
            Layer.provide(localAppBrowserHandlers(executor, sql)),
            Layer.provide(localMcpConnectionHandlers(executor, sql, oauth)),
            Layer.provide(dashboardApi.access),
-@@ -530,6 +537,7 @@ export const localApi = (
+@@ -537,6 +544,7 @@ export const localApi = (
          HttpRouter.add("GET", "/connect", web.document),
          HttpRouter.add("GET", "/approvals", web.document),
          HttpRouter.add("GET", "/approvals/:run", web.document),
@@ -444,6 +444,18 @@ index 0000000..fbeb3cd
 +      )
 +      .handle("withdraw", ({ params }) => executor.workflowInputs.withdraw(params)),
 +  );
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index ebdf942..8facdd7 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -48,6 +48,7 @@ export const profileAppCopiesPending = (
+ 
+ /** Reconstruct a pre-acquisition layout instead of leaving later tables under an older version. */
+ export const beforeAccountAcquisition = (): ReadonlyArray<{ readonly sql: string }> => [
++  { sql: "DROP TABLE executor_workflow_inputs" },
+   { sql: "DROP TABLE executor_account_driver_checks" },
+   { sql: "DROP TABLE executor_account_acquisitions" },
+ ];
 diff --git a/e2e/support/workflow-input-app.ts b/e2e/support/workflow-input-app.ts
 new file mode 100644
 index 0000000..d202b25
@@ -495,10 +507,10 @@ index 0000000..d202b25
 +  },
 +];
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index e889f4b..a17b683 100644
+index 319f4ea..ae2230e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7818,6 +7818,56 @@ export const scenarios = plan({
+@@ -8214,6 +8214,56 @@ export const scenarios = plan({
        cloud: na("Hosted caller identity has a separate shared-app scenario."),
      },
    },
@@ -555,6 +567,57 @@ index e889f4b..a17b683 100644
    workflowStarts: {
      fixtures: "actors",
      file: "workflows.spec.ts",
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index 34d5f61..0e64c79 100644
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -17,6 +17,37 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+       Effect.gen(function* () {
+         const fixture = yield* statusAccount(accountStatusSource);
+         expect((yield* fixture.check()).status).toBe(200);
++        // The prior 4.0.21 layout retains every account table when questions are added.
++        const retainedTables = [
++          "executor_accounts",
++          "executor_account_observations",
++          "executor_account_reports",
++          "executor_account_acquisitions",
++          "executor_account_driver_checks",
++        ];
++        const retainedQueries = retainedTables.map((table) => ({
++          sql: `SELECT row_to_json(saved) AS row FROM ${table} AS saved ORDER BY row_to_json(saved)::text`,
++        }));
++        const beforeInput = yield* legacyStorage([
++          ...retainedQueries,
++          { sql: "DROP TABLE executor_workflow_inputs" },
++          { sql: "UPDATE private_executor_settings SET value = '4.0.21' WHERE key = 'version'" },
++        ]);
++        yield* serverControl("start");
++        const afterInput = yield* legacyStorage(retainedQueries);
++        expect(afterInput).toEqual(beforeInput.slice(0, retainedTables.length));
++        yield* serverControl("start");
++        yield* serverControl("restart");
++        const [inputVersion, inputTables] = yield* legacyStorage([
++          { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
++          {
++            sql: "SELECT table_name FROM information_schema.tables WHERE table_name = 'executor_workflow_inputs'",
++          },
++        ]);
++        expect(inputVersion).toEqual([{ value: "4.0.22" }]);
++        expect(inputTables).toEqual([{ table_name: "executor_workflow_inputs" }]);
++        yield* serverControl("start");
++        expect((yield* fixture.read()).status).toBe(200);
+         const inherited = yield* reportingUpgradeFixture;
+         // Rebuild only the previous reporting-free layout; its selected site and health stay saved.
+         const site = "https://retained-account.example.test";
+@@ -43,7 +74,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.21" }]);
++        expect(version).toEqual([{ value: "4.0.22" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
 diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
 new file mode 100644
 index 0000000..193a3b1
@@ -1037,15 +1100,15 @@ index 1fc856f..20da163 100644
  
  ## Scheduled mutations
  
-diff --git a/packages/apps/protocols/19.json b/packages/apps/protocols/19.json
+diff --git a/packages/apps/protocols/21.json b/packages/apps/protocols/21.json
 new file mode 100644
-index 0000000..bfd1621
+index 0000000..6b359b3
 --- /dev/null
-+++ b/packages/apps/protocols/19.json
-@@ -0,0 +1,872 @@
++++ b/packages/apps/protocols/21.json
+@@ -0,0 +1,873 @@
 +{
-+  "protocol": 19,
-+  "previous": 18,
++  "protocol": 21,
++  "previous": 20,
 +  "messages": {
 +    "workflowStep": {
 +      "_tag": "Union",
@@ -1909,6 +1972,7 @@ index 0000000..bfd1621
 +    "cacheCommand",
 +    "cacheReply",
 +    "accountCheck",
++    "accountObservation",
 +    "accounts",
 +    "migrate"
 +  ],
@@ -1916,10 +1980,10 @@ index 0000000..bfd1621
 +  "shared": {}
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index 25b4053..f0af3c3 100644
+index 4ec2a4d..e1cb66b 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
-@@ -24,6 +24,7 @@ import {
+@@ -25,6 +25,7 @@ import {
    type WorkflowHostControls,
  } from "./workflows.ts";
  export * from "./workflows.ts";
@@ -1927,28 +1991,28 @@ index 25b4053..f0af3c3 100644
  export * from "./failure.ts";
  import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
  export { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
-@@ -92,9 +93,10 @@ export { protocol14 } from "./protocols/14.ts";
- export { protocol15 } from "./protocols/15.ts";
- export { protocol16 } from "./protocols/16.ts";
+@@ -95,9 +96,10 @@ export { protocol16 } from "./protocols/16.ts";
  export { protocol17 } from "./protocols/17.ts";
-+export { protocol18 } from "./protocols/18.ts";
+ export { protocol18 } from "./protocols/18.ts";
+ export { protocol19 } from "./protocols/19.ts";
++export { protocol20 } from "./protocols/20.ts";
  export * from "./connect.ts";
  export {
--  current as protocol18,
-+  current as protocol19,
+-  current as protocol20,
++  current as protocol21,
    AccountCheckCommand,
    CredentialHost,
    MigrateCommand,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 3172054..31485cb 100644
+index c2c6731..c281c94 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
   * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
   * This file has no imports so the package build script can read it directly.
   */
--export const frameworkProtocol = 18;
-+export const frameworkProtocol = 19;
+-export const frameworkProtocol = 20;
++export const frameworkProtocol = 21;
 diff --git a/packages/apps/src/contracts/protocols/15.ts b/packages/apps/src/contracts/protocols/15.ts
 index ee93678..d8c95d6 100644
 --- a/packages/apps/src/contracts/protocols/15.ts
@@ -1990,7 +2054,7 @@ index a0b53c4..0219861 100644
    WorkflowRunId,
  } from "../workflows.ts";
 diff --git a/packages/apps/src/contracts/protocols/17.ts b/packages/apps/src/contracts/protocols/17.ts
-index e763586..8d90205 100644
+index 1840ebd..3425ba0 100644
 --- a/packages/apps/src/contracts/protocols/17.ts
 +++ b/packages/apps/src/contracts/protocols/17.ts
 @@ -13,6 +13,7 @@
@@ -2001,7 +2065,7 @@ index e763586..8d90205 100644
  import { ConnectCommand } from "../connect.ts";
  import { ProviderSite } from "@executor-js/utils/account-site";
  import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-@@ -47,7 +48,6 @@ import {
+@@ -51,7 +52,6 @@ import {
    WorkflowControlCommand,
    WorkflowFailure,
    WorkflowReplay,
@@ -2010,11 +2074,52 @@ index e763586..8d90205 100644
    WorkflowRunId,
  } from "../workflows.ts";
 diff --git a/packages/apps/src/contracts/protocols/18.ts b/packages/apps/src/contracts/protocols/18.ts
-new file mode 100644
-index 0000000..88a80a2
---- /dev/null
+index ee490bd..72ea122 100644
+--- a/packages/apps/src/contracts/protocols/18.ts
 +++ b/packages/apps/src/contracts/protocols/18.ts
-@@ -0,0 +1,673 @@
+@@ -13,6 +13,7 @@
+  * imports them, so a change here never edits a released protocol.
+  */
+ import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
+ import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
+ import { ConnectCommand } from "../connect.ts";
+ import { ProviderSite } from "@executor-js/utils/account-site";
+@@ -52,7 +53,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/19.ts b/packages/apps/src/contracts/protocols/19.ts
+index 0839e4b..7e339cc 100644
+--- a/packages/apps/src/contracts/protocols/19.ts
++++ b/packages/apps/src/contracts/protocols/19.ts
+@@ -14,6 +14,7 @@ import { AccountObservationResult } from "../account-observation.ts";
+  * imports them, so a change here never edits a released protocol.
+  */
+ import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
+ import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
+ import { ConnectCommand } from "../connect.ts";
+ import { ProviderSite } from "@executor-js/utils/account-site";
+@@ -48,7 +49,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/20.ts b/packages/apps/src/contracts/protocols/20.ts
+new file mode 100644
+index 0000000..ae90f86
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/20.ts
+@@ -0,0 +1,682 @@
++import { AccountObservationResult } from "../account-observation.ts";
 +/**
 + * The host protocol this framework speaks: every message that crosses between a host and an app
 + * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
@@ -2035,7 +2140,7 @@ index 0000000..88a80a2
 +import { ConnectCommand } from "../connect.ts";
 +import { ProviderSite } from "@executor-js/utils/account-site";
 +import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-+const frameworkProtocol = 18;
++const frameworkProtocol = 20;
 +import {
 +  DatabaseFieldReserved,
 +  DatabaseLimitExceeded,
@@ -2192,6 +2297,7 @@ index 0000000..88a80a2
 +  health: Schema.optionalKey(Schema.Literal(true)),
 +  /** This slot can check app-acquired references through connect.check. */
 +  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
 +});
 +export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
 +
@@ -2425,6 +2531,10 @@ index 0000000..88a80a2
 +  requirement: Schema.NonEmptyString,
 +});
 +export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++export const AccountObserveCommand = Schema.Struct({
++  operation: Schema.Literal("account-observe"),
++  requirement: Schema.NonEmptyString,
++});
 +
 +/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
 +export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
@@ -2505,6 +2615,7 @@ index 0000000..88a80a2
 +    arguments: JsonValue,
 +  }),
 +  AccountCheckCommand,
++  AccountObserveCommand,
 +  MigrateCommand,
 +]);
 +/** Parsed portable dispatch request. */
@@ -2656,13 +2767,14 @@ index 0000000..88a80a2
 +  workflowControl: "bundle",
 +  cacheCommand: "bundle",
 +  accountCheck: "bundle",
++  accountObservation: "bundle",
 +  migrate: "bundle",
 +} as const satisfies Record<string, "host" | "bundle">;
 +/** A message name every protocol so far has used. */
 +export type MessageName = keyof typeof messageDirections;
 +
 +/** Every message of the current protocol. The snapshot records them by name. */
-+export const protocol18 = {
++export const protocol20 = {
 +  version: frameworkProtocol,
 +  schemas: {
 +    invocation: HostInvocation,
@@ -2681,6 +2793,7 @@ index 0000000..88a80a2
 +    cacheCommand: CacheCommand,
 +    cacheReply: CacheReply,
 +    accountCheck: AccountCheckResult,
++    accountObservation: Schema.NullOr(AccountObservationResult),
 +    accounts: ResolvedAccounts,
 +    migrate: MigrateResult,
 +  },
@@ -2688,24 +2801,44 @@ index 0000000..88a80a2
 +  readonly version: number;
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
+diff --git a/packages/apps/src/contracts/protocols/3.ts b/packages/apps/src/contracts/protocols/3.ts
+index 6c9c96a..f9941a4 100644
+--- a/packages/apps/src/contracts/protocols/3.ts
++++ b/packages/apps/src/contracts/protocols/3.ts
+@@ -10,6 +10,7 @@
+  * See notes/apps-publishing.md.
+  */
+ import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
+ import {
+   CacheCommand,
+   CacheReply,
+@@ -34,7 +35,6 @@ import {
+   ProviderError,
+   SkillLoadFailed,
+   WorkflowControlCommand,
+-  WorkflowRpcCommand,
+   protocol1,
+ } from "./1.ts";
+ import { SkillCatalogResponse } from "./2.ts";
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index b3e8d54..c33f03d 100644
+index c44211c..9e1e46e 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
-@@ -24,6 +24,8 @@ import { protocol16 } from "./16.ts";
+@@ -26,6 +26,8 @@ import { protocol17 } from "./17.ts";
+ import { protocol18 } from "./18.ts";
+ import { protocol19 } from "./19.ts";
  
- import { protocol17 } from "./17.ts";
- 
-+import { protocol18 } from "./18.ts";
++import { protocol20 } from "./20.ts";
 +
  export const releasedProtocols = [
    protocol1,
    protocol2,
-@@ -42,4 +44,5 @@ export const releasedProtocols = [
-   protocol15,
-   protocol16,
+@@ -46,4 +48,5 @@ export const releasedProtocols = [
    protocol17,
-+  protocol18,
+   protocol18,
+   protocol19,
++  protocol20,
  ] as const;
 diff --git a/packages/apps/src/contracts/protocols/workflow-before-input.ts b/packages/apps/src/contracts/protocols/workflow-before-input.ts
 new file mode 100644
@@ -2987,10 +3120,10 @@ index e3c1bb1..156bad7 100644
          Effect.gen(function* () {
            const services = yield* Effect.context<never>();
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
-index cf3e371..e7fda25 100644
+index 9c3008b..b653ac9 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
-@@ -382,3 +382,9 @@ export {
+@@ -383,3 +383,9 @@ export {
  } from "./implementation/schedules.ts";
  
  export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";
@@ -3001,10 +3134,10 @@ index cf3e371..e7fda25 100644
 +  WorkflowInputRequest,
 +} from "./contracts/workflow-input.ts";
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 60821c8..e34ff92 100644
+index e078a0a..020b6c0 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -313,6 +313,12 @@ export interface ExecutorInputs {
+@@ -325,6 +325,12 @@ export interface ExecutorInputs {
    /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
    readonly hooks?: ResourceLifecycle;
    readonly workflows?: WorkflowRuntime;
@@ -3036,10 +3169,10 @@ index 8e1b5d5..ebc3420 100644
    .add(RegistryGroup);
  
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 36fe1bb..8330c58 100644
+index 72bac8f..aa84f22 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
-@@ -30,3 +30,5 @@ export * from "./source.ts";
+@@ -33,3 +33,5 @@ export * from "./source.ts";
  export * from "./public-files.ts";
  export * from "./registry.ts";
  export * from "./publications.ts";
@@ -3202,18 +3335,18 @@ index 2399ee6..a759c56 100644
  }
  export type { WorkflowDriver };
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index ec39e0f..7cbeb86 100644
+index ae694d5..cb577e1 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -60,6 +60,20 @@ export interface AppProtocol {
  }
  
- /** Protocol 18 adds source-bound MCP Apps resources and callbacks. */
-+/** Protocol 19 adds durable workflow questions. */
-+const protocol19: AppProtocol = {
-+  version: 19,
+ /** Host acquisition declarations are distinct from app-owned connection handlers. */
++/** Durable workflow questions add a retained step message. */
++const protocol21: AppProtocol = {
++  version: 21,
 +  workerEntry: appBridge,
-+  nodeEntry: nodeAppEntry(19),
++  nodeEntry: nodeAppEntry(21),
 +  invocation: (input) => JSON.stringify(input),
 +  request: (command) => command,
 +  refuse: () => undefined,
@@ -3223,22 +3356,22 @@ index ec39e0f..7cbeb86 100644
 +  sealedCredentials: true,
 +};
 +
- const protocol18: AppProtocol = {
-   version: 18,
+ const protocol20: AppProtocol = {
+   version: 20,
    workerEntry: appBridge,
-@@ -464,6 +478,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
-     protocol16,
-     protocol17,
+@@ -503,6 +517,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol18,
-+    protocol19,
+     protocol19,
+     protocol20,
++    protocol21,
    ].map((protocol) => [protocol.version, protocol]),
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index a3bd0f6..b1baaa3 100644
+index debd092..466e511 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -930,6 +930,9 @@ export const makeApps = (
+@@ -942,6 +942,9 @@ export const makeApps = (
              );
              yield* assertAppRemovalAllowed(tx, app.id);
              if (lifecycle) yield* lifecycle.appRemoving(app.id);
@@ -3273,10 +3406,10 @@ index 6ac7889..03c3f7e 100644
          if (response.status !== 200) throw new Error("Workflow request failed");
          return response.json();
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 7ef3410..6cf02aa 100644
+index 6d694ba..a04bb48 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -133,6 +133,7 @@ export const createExecutor = (
+@@ -187,6 +187,7 @@ export const createExecutor = (
        crypto,
        declarations,
        options.workflows,
@@ -3284,7 +3417,7 @@ index 7ef3410..6cf02aa 100644
      );
      const webhooks = makeWebhooks(
        options.database,
-@@ -245,6 +246,7 @@ export const createExecutor = (
+@@ -309,6 +310,7 @@ export const createExecutor = (
          );
      return {
        [WebhookSourceHost]: { tick: webhookSources.tick },
@@ -3293,23 +3426,23 @@ index 7ef3410..6cf02aa 100644
        [RepositoryHost]: {
          request: (input, request) =>
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index c0dfd91..010d194 100644
+index 86a4130..53ae43d 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
- /** Bound query handle sharing the host connection and reactive transaction context. */
+@@ -7,7 +7,7 @@ import type { ExecutorDatabase } from "./storage.ts";
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
--export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
-+export const database = (storage: ExecutorDatabase) => storage.orm("4.0.18");
+ export const database = (storage: ExecutorDatabase) => ({
+-  ...storage.orm("4.0.21"),
++  ...storage.orm("4.0.22"),
+   lockAccountObservation: storage.lockAccountObservation,
+ });
  /**
-  * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
-index b3bd206..3ca24f3 100644
+index 7e35638..8f7cc23 100644
 --- a/packages/sdk/src/implementation/handlers.ts
 +++ b/packages/sdk/src/implementation/handlers.ts
-@@ -144,6 +144,20 @@ export const executorHandlers = (executor: Executor) =>
+@@ -162,6 +162,20 @@ export const executorHandlers = (executor: Executor) =>
          .handle("check", ({ params }) => executor.owners.check(params))
          .handle("remove", ({ params }) => executor.owners.remove(params)),
      ),
@@ -3331,10 +3464,10 @@ index b3bd206..3ca24f3 100644
        handlers.handle("list", ({ params, query }) =>
          executor.apps.workflows.list({ ...params, ...query }),
 diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/implementation/owner-moves.ts
-index 8d35aa5..47bfae0 100644
+index 3ecc986..410d9a3 100644
 --- a/packages/sdk/src/implementation/owner-moves.ts
 +++ b/packages/sdk/src/implementation/owner-moves.ts
-@@ -81,6 +81,7 @@ const ownerTables = [
+@@ -85,6 +85,7 @@ const ownerTables = [
    "schedules",
    "scheduledRuns",
    "workflowRuns",
@@ -3343,7 +3476,7 @@ index 8d35aa5..47bfae0 100644
    "webhookSources",
    "eventSubscriptions",
 diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
-index bdebb77..a5e83a1 100644
+index a4e773c..ee82f86 100644
 --- a/packages/sdk/src/implementation/owners.ts
 +++ b/packages/sdk/src/implementation/owners.ts
 @@ -92,6 +92,9 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
@@ -3357,7 +3490,7 @@ index bdebb77..a5e83a1 100644
            yield* query(() =>
              tx.deleteMany("workflowAccounts", {
 diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
-index 0df1eb7..bdaba13 100644
+index 4809772..2f89eeb 100644
 --- a/packages/sdk/src/implementation/promise.ts
 +++ b/packages/sdk/src/implementation/promise.ts
 @@ -1,3 +1,9 @@
@@ -3370,7 +3503,7 @@ index 0df1eb7..bdaba13 100644
  import { CheckOAuthSetup } from "../contracts/oauth.ts";
  import { OAuthClientInputs } from "../contracts/oauth-clients.ts";
  import {
-@@ -127,6 +133,14 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
+@@ -141,6 +147,14 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
        check: (input) => run(OwnerInputs.check, input, executor.owners.check),
        remove: (input) => run(OwnerInputs.remove, input, executor.owners.remove),
      },
@@ -3460,19 +3593,19 @@ index 8541b6e..c73d08e 100644
                  settle(() =>
                    workflow.do(name, Schema.encodeSync(WorkflowStepOptions)(options), () =>
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index db1bc6f..74f1a9a 100644
+index d0d8445..3434ff3 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
-@@ -17,6 +17,8 @@ import {
-   version4015Tables,
+@@ -21,6 +21,8 @@ import {
    version4016Tables,
    version4017Tables,
-+  version4018Tables,
+   version4019Tables,
++  version4022Tables,
 +  workflowInputIndexes,
    appScheduleIndex,
    scopedRunKeyIndex,
    version402Tables,
-@@ -68,6 +70,7 @@ const appViewIndexes = [
+@@ -73,6 +75,7 @@ const appViewIndexes = [
  /** Every index of the current layout, for a new database. Upgrades add each in its own step. */
  export const currentIndexes = [
    ...appViewIndexes,
@@ -3480,14 +3613,14 @@ index db1bc6f..74f1a9a 100644
    scopedRunKeyIndex,
    webhooksContextKey,
    schedulesCopy,
-@@ -684,6 +687,26 @@ export const storageSchemas = [
+@@ -748,6 +751,26 @@ export const storageSchemas = [
        }),
      },
    }),
 +  // Additive: the previous server neither reads nor writes workflow questions.
 +  schema({
-+    version: "4.0.18",
-+    tables: version4018Tables,
++    version: "4.0.22",
++    tables: version4022Tables,
 +    relations: {
 +      accounts: ({ one }) => ({
 +        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
@@ -3508,17 +3641,25 @@ index db1bc6f..74f1a9a 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
-index bd27c1e..ef1e6cd 100644
+index 2897f7e..6080ea8 100644
 --- a/packages/sdk/src/implementation/storage-schema.ts
 +++ b/packages/sdk/src/implementation/storage-schema.ts
-@@ -874,3 +874,26 @@ export const scopedRunKeyIndex =
+@@ -1,3 +1,5 @@
++import { accountAcquisitions } from "./account-acquisition-schema.ts";
++import { accountDriverChecks } from "./account-driver-check-schema.ts";
+ import { accountObservations } from "./account-observation-schema.ts";
+ import { WorkflowRunId } from "../contracts/workflows.ts";
+ import { AppSlug } from "../contracts/app-slug.ts";
+@@ -916,3 +918,28 @@ export const scopedRunKeyIndex =
  /** One app schedule per declaration; members' copies stay unique by `executor_schedules_copy`. */
  export const appScheduleIndex =
    "CREATE UNIQUE INDEX IF NOT EXISTS executor_schedules_app ON executor_schedules (app, name) WHERE actor IS NULL";
 +
 +/** Questions and wake receipts survive process loss; form content is encrypted. */
-+export const version4018Tables = {
-+  ...version4017Tables,
++export const version4022Tables = {
++  ...version4019Tables,
++  accountAcquisitions,
++  accountDriverChecks,
 +  workflowInputs: table("executor_workflow_inputs", {
 +    id: idColumn("id", Schema.String, { type: "varchar(80)" }),
 +    app: column("app", AppId, { type: "varchar(255)" }),
@@ -3539,15 +3680,15 @@ index bd27c1e..ef1e6cd 100644
 +  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_run ON executor_workflow_inputs (run)",
 +] as const;
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index decbfc0..57d682b 100644
+index ac9fbbf..d953ed5 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
 @@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
--    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
-+    const db = bindOrm(client.orm("4.0.18"), sql, reactivity);
+-    const db = bindOrm(client.orm("4.0.21"), sql, reactivity);
++    const db = bindOrm(client.orm("4.0.22"), sql, reactivity);
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
@@ -3555,8 +3696,8 @@ index decbfc0..57d682b 100644
              yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
                discard: true,
              });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.17")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.18")));
+-          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.21")));
++          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.22")));
            return;
          }
          // Execute every registered upgrade in order. A direct diff to latest can skip
@@ -3564,11 +3705,11 @@ index decbfc0..57d682b 100644
        Effect.mapError(() => new StorageError()),
      );
      return {
--      orm: (_version: "4.0.17") => db,
-+      orm: (_version: "4.0.18") => db,
-       reactivity,
-       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
-       toolSearch: makeToolSearchStore(sql),
+-      orm: (_version: "4.0.21") => db,
++      orm: (_version: "4.0.22") => db,
+       // The ORM forbids primary-key updates. Lock without changing source data or provenance.
+       lockAccountObservation: (id: string) =>
+         sql`update executor_account_observations set id = id where id = ${id}`.pipe(
 diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/sdk/src/implementation/worker-workflow-rpc.ts
 index e977f1c..ac8a41c 100644
 --- a/packages/sdk/src/implementation/worker-workflow-rpc.ts
@@ -4235,15 +4376,15 @@ index d1714bd..a19a641 100644
            while (true) {
              const after = cursor;
 diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
-index 591f09e..550f464 100644
+index 4c3dbed..e742541 100644
 --- a/playground/sdk/storage.ts
 +++ b/playground/sdk/storage.ts
 @@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
        Effect.gen(function* () {
          const storage = yield* makeExecutorStorage({ provider: "postgresql" });
          yield* storage.migrate;
--        const orm = storage.orm("4.0.17");
-+        const orm = storage.orm("4.0.18");
+-        const orm = storage.orm("4.0.21");
++        const orm = storage.orm("4.0.22");
          const createdAt = new Date("2026-01-01T00:00:00.000Z");
          const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
            id: "dpl_example",

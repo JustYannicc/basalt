@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Effect, Schedule } from "effect";
-import { root, runtime } from "./recipes/harness.mjs";
+import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
 import { verifyPoolJourneys } from "./recipes/pool-journeys.mjs";
 import { verifyPoolNegativeControls } from "./recipes/pool-negative-controls.mjs";
@@ -30,6 +30,17 @@ const program = Effect.gen(function* () {
         : Effect.fail("normal onboarding must provision the owner's pool app");
     }),
     Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 240 }),
+  );
+  // Pool app deployment precedes the transaction that attaches its host-managed account.
+  const links = yield* until(
+    h.request("GET", `${h.appPath(pool.id)}/accounts/app`),
+    (accounts) => accounts.some((link) => link.requirement === "pool" && link.hostManaged === true),
+    "native pool provisioning did not attach its managed account",
+  );
+  checked(
+    "native pool provisioning commits its managed account link",
+    links.some((link) => link.requirement === "pool"),
+    true,
   );
   h.fixture.seed(pool.id, "synthetic-account-a");
   const view = yield* h.call(pool.id, "view");

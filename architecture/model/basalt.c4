@@ -59,7 +59,7 @@ model {
 
     workflowRecipes = module "Editable check recipes" {
       #basalt #v1
-      description "Ordinary private apps with user schedules, native workflow waits and app SQL checkpoints. The source owns detection and nudge deduplication; Executor owns credentials, permissions and Approvals. Delivery starts disabled, destinations come from the owner, and customized copies stay untouched."
+      description "Ordinary private apps with user schedules, native workflow waits and app SQL checkpoints. The source owns detection and nudge deduplication; Executor owns credentials, permissions and durable workflow input. Delivery starts disabled, destinations come from the owner, and customized copies stay untouched."
       metadata { code "recipes"; libraries "apps" }
     }
 
@@ -266,7 +266,7 @@ model {
   basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
   basalt.catalog -[sync]-> basalt.workflowRecipes "serve editable defaults as app source"
   basalt.build -[sync]-> basalt.workflowRecipes "package ordinary app sources"
-  basalt.workflowRecipes -[sync]-> basalt.toolsGateway "use native workflows, schedules, SQL, Approvals and connected tools"
+  basalt.workflowRecipes -[sync]-> basalt.toolsGateway "use native workflows, schedules, SQL, workflow input and connected tools"
   basalt.catalog -[sync]-> basalt.brandConfig "read connector copy brand"
   basalt.site -[sync]-> basalt.brandConfig "read site copy, operator and links"
   basalt.site -[sync]-> basalt.clientAssets "serve brand logo and fonts"

@@ -20,12 +20,18 @@ The channel's existing policy must permit the agreed unattended send. A workflow
 form answer does not authorize a protected tool.
 
 Run `configure` with `deliveryEnabled: false`, then use Run now on its schedule.
-Inspect the read results and Approvals question before approving delivery and
+Inspect the read results and pending workflow input before approving delivery and
 enabling the schedule. Delivery consent is bound to a hash of this copy's
 configuration, including its selected channel formatter. Changing it requires
 configuring the copy again; retained older runs cannot use the new consent to
 send to an old destination. Schedules start paused and delivery starts off. This
 repository does not configure or activate production copies.
+
+This backend release exposes workflow questions through the public workflow-input
+APIs and native workflow history. Hosted answers require the recipient's browser
+session; a tool or API key cannot approve a question for them. The Approvals form
+card is a separate UI change. Keep a dry-run copy paused unless the recipient has
+a verified way to inspect and answer its questions.
 
 Use a separate private copy for each owner. These recipes bind their SQL state
 to the person who configures them. Do not share a copy containing private watch
@@ -48,7 +54,7 @@ and provider outages do not become reconnect requests. Pausing and resuming the
 account remain native pool actions.
 
 Quiet hours have no default timezone. Set them explicitly if wanted. They defer
-the nudge while the question remains in Approvals. `mute` takes a UTC timestamp;
+the nudge while the workflow input remains pending. `mute` takes a UTC timestamp;
 `unmute` reverses it. Declining the form ends that proposed action until recovery.
 Deferring sets a wake time and the next scan rechecks the facts before asking
 again. Pausing a schedule stops future scans; existing waiting workflows remain.

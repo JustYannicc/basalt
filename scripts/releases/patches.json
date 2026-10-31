@@ -585,10 +585,10 @@
     },
     {
       "identity": "executor-durable-workflow-input",
-      "file": "0055-durable-workflow-input.patch",
-      "content_sha256": "cc9cd70dd05da2685638149b224699928ba73c46cbe501a736388ab1a3a4dc62",
+      "file": "0063-durable-workflow-input.patch",
+      "content_sha256": "1807d0f876ef8bbd7d411fb63950a1295c90ec4d6e922f4e7fa1fe3f35073246",
       "kind": "upstream",
-      "upstream_pull_request": null,
+      "upstream_pull_request": 2471,
       "database_sensitive": true,
       "workflow_sensitive": true
     }
