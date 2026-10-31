@@ -4188,10 +4188,10 @@ index 00000000..4ed5845c
 +});
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
 new file mode 100644
-index 00000000..9790fc80
+index 00000000..39fd2085
 --- /dev/null
 +++ b/e2e/tests/account-identity-screens.spec.ts
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,327 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { TestLive, withCase } from "../support/case.ts";
@@ -4263,9 +4263,11 @@ index 00000000..9790fc80
 +          (yield* body(Schema.Struct({ authorizationUrl: Schema.String }), started))
 +            .authorizationUrl,
 +        );
-+        expect(new Set(redirect.searchParams.get("scope")?.split(" "))).toEqual(
-+          new Set([...scopes, "openid", "email", "profile"]),
-+        );
++        expect(redirect.searchParams.get("scope")?.split(" ")).toEqual([
++          ...scopes,
++          "openid",
++          "email",
++        ]);
 +        expect(redirect.searchParams.get("include_granted_scopes")).toBe("true");
 +        expect(redirect.searchParams.get("access_type")).toBe("offline");
 +        expect(redirect.searchParams.get("prompt")).toBe("consent");
@@ -4584,6 +4586,94 @@ index 1c148332..a3601283 100644
          });
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+index 4b0fe77a..764d3eda 100644
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -1091,47 +1091,44 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
+           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
+         });
+-        const [
+-          allowed,
+-          defaults,
+-          wider,
+-          admin,
+-          adminEndpointMismatch,
+-          adminScopeMismatch,
+-        ] = yield* Effect.all(
+-          [
+-            signIn("calendar", [calendar]),
+-            // A provider that asks for no scopes gets the client's defaults.
+-            signIn("defaults", []),
+-            // A scope outside the client's allowed scopes.
+-            signIn("wider", [calendar, cloudPlatform]),
+-            signInAdmin("matching", adminScopes),
+-            signInAdmin("endpoint-mismatch", adminScopes, {
+-              authorizationUrl: "https://accounts.google.com/o/oauth2/v2/authorize",
+-              tokenUrl: google.tokenUrl,
+-              tokenEndpointAuthMethod: "client_secret_post",
+-            }),
+-            signInAdmin("scope-mismatch", [...adminScopes, cloudPlatform]),
+-          ],
+-          { concurrency: "unbounded" },
+-        );
++        const [allowed, defaults, wider, admin, adminEndpointMismatch, adminScopeMismatch] =
++          yield* Effect.all(
++            [
++              signIn("calendar", [calendar]),
++              // Google still requests the identity scopes when the app declares none.
++              signIn("defaults", []),
++              // A scope outside the client's allowed scopes.
++              signIn("wider", [calendar, cloudPlatform]),
++              signInAdmin("matching", adminScopes),
++              signInAdmin("endpoint-mismatch", adminScopes, {
++                authorizationUrl: "https://accounts.google.com/o/oauth2/v2/authorize",
++                tokenUrl: google.tokenUrl,
++                tokenEndpointAuthMethod: "client_secret_post",
++              }),
++              signInAdmin("scope-mismatch", [...adminScopes, cloudPlatform]),
++            ],
++            { concurrency: "unbounded" },
++          );
+         expect(allowed.setup).toMatchObject({
+           firstParty: { label: "Executor for Google" },
+-          scopes: [calendar],
++          scopes: [calendar, "openid", "email"],
+         });
+         expect(allowed.started.status, JSON.stringify(allowed.started.body)).toBe(200);
+         // Signing in goes to Google with the operator's client, asking for a refresh token.
+         const sent = new URL((yield* body(Redirect, allowed.started)).authorizationUrl);
+         expect(`${sent.origin}${sent.pathname}`).toBe(google.authorizationUrl);
+         expect(sent.searchParams.get("client_id")).toBe(clientId);
+-        expect(sent.searchParams.get("scope")).toBe(calendar);
++        expect(sent.searchParams.get("scope")).toBe(`${calendar} openid email`);
+         expect(sent.searchParams.get("access_type")).toBe("offline");
+         expect(sent.searchParams.get("prompt")).toBe("consent");
+-        expect(sent.searchParams.has("include_granted_scopes")).toBe(false);
++        expect(sent.searchParams.get("include_granted_scopes")).toBe("true");
+         expect(defaults.setup).toMatchObject({
+           firstParty: { label: "Executor for Google" },
+-          scopes: ["openid", "email", "profile"],
++          scopes: ["openid", "email"],
+         });
++        expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
++        const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
++        expect(defaultsUrl.searchParams.get("scope")).toBe("openid email");
+         expect(defaults.setup.scopes).not.toContain(adminDirectoryUser);
+         expect(admin.setup).toMatchObject({
+           mode: "automatic",
+@@ -1143,9 +1140,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         const adminUrl = new URL((yield* body(Redirect, admin.started)).authorizationUrl);
+         expect(adminUrl.origin + adminUrl.pathname).toBe(google.authorizationUrl);
+         expect(adminUrl.searchParams.get("client_id")).toBe(clientId);
+-        expect(new Set((adminUrl.searchParams.get("scope") ?? "").split(" "))).toEqual(
+-          new Set(adminScopes),
+-        );
++        expect(adminUrl.searchParams.get("scope")?.split(" ")).toEqual(adminScopes);
+         expect(adminUrl.searchParams.get("access_type")).toBe("offline");
+         expect(adminUrl.searchParams.get("prompt")).toBe("consent");
+         for (const mismatch of [adminEndpointMismatch, adminScopeMismatch]) {
 diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
 index d52cbdfc..ab696796 100644
 --- a/e2e/tests/legacy-profile-schedules.spec.ts
@@ -8511,10 +8601,10 @@ index aa84f22f..338f179e 100644
  export * from "./oauth-clients.ts";
 diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
 new file mode 100644
-index 00000000..1b3a688f
+index 00000000..8c6aa1d8
 --- /dev/null
 +++ b/packages/sdk/src/contracts/oauth-families.ts
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,45 @@
 +import type { DeclaredAuthMethod } from "apps/contracts";
 +type AuthMethod = typeof DeclaredAuthMethod.Type;
 +
@@ -8546,14 +8636,17 @@ index 00000000..1b3a688f
 +    ? { ...method, identity: { issuer: "https://accounts.google.com", name: "Google" } }
 +    : method;
 +
-+/** Consent-only defaults keep stored declarations and their provider hashes unchanged. */
++/**
++ * Consent-only defaults keep stored declarations and their provider hashes unchanged.
++ * UserInfo's stable subject and email label suffice for grouping; profile claims are optional.
++ */
 +export const oauthIdentityConsent = (method: AuthMethod) =>
 +  method.type === "oauth2" &&
 +  method.grant !== "client_credentials" &&
 +  googleAuthorization(method) &&
 +  method.identity?.issuer === "https://accounts.google.com"
 +    ? {
-+        scopes: ["openid", "email", "profile"],
++        scopes: ["openid", "email"],
 +        authorizationParams: { include_granted_scopes: "true" },
 +      }
 +    : undefined;
@@ -14129,10 +14222,16 @@ index 2aa24489..dafbdcd7 100644
 +  registrationGrantTypes,
 +} from "./oauth-protocol-shared.ts";
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 4c2b904d..5a2a8532 100644
+index 4c2b904d..1512ce0e 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -121,8 +121,17 @@ import {
+@@ -1,4 +1,5 @@
+ import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
++import { oauthIdentityConsent } from "../contracts/oauth-families.ts";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+ /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
+ import {
+@@ -121,8 +122,17 @@ import {
    registrationGrantTypes,
    type OAuthProtocolFailed,
  } from "./oauth-protocol.ts";
@@ -14151,7 +14250,7 @@ index 4c2b904d..5a2a8532 100644
  import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
  
  /**
-@@ -595,9 +604,9 @@ export const makeOAuth = (
+@@ -595,9 +605,9 @@ export const makeOAuth = (
     * held (§6). Scopes are whitespace-delimited, and also split on the server's
     * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
     */
@@ -14163,7 +14262,7 @@ index 4c2b904d..5a2a8532 100644
      return scope
        .split(/\s+/u)
        .flatMap((part) => (separator === undefined ? [part] : part.split(separator)))
-@@ -1508,26 +1517,52 @@ export const makeOAuth = (
+@@ -1508,26 +1518,52 @@ export const makeOAuth = (
      },
      resolved: Resolved,
      existing: Account | undefined,
@@ -14219,7 +14318,7 @@ index 4c2b904d..5a2a8532 100644
        if (choice === undefined) {
          const reusable =
            previous === undefined ||
-@@ -1570,13 +1605,19 @@ export const makeOAuth = (
+@@ -1570,13 +1606,19 @@ export const makeOAuth = (
            // registered client is automatic: the sign-in finds it again while it is usable, and
            // keeps it when the service offers no other. Either way a refusal fails rather than
            // fall back to the copy the grant holds of the same client.
@@ -14240,7 +14339,7 @@ index 4c2b904d..5a2a8532 100644
          return yield* automaticChoice(input, resolved, reconnecting).pipe(
            Effect.catchTag("OAuthClientUnavailable", (error) =>
              reusable === undefined
-@@ -1643,12 +1684,89 @@ export const makeOAuth = (
+@@ -1643,19 +1685,102 @@ export const makeOAuth = (
          return yield* new OAuthClientUnavailable(input);
        const explicitClient =
          input.client !== undefined && !Schema.is(OAuthAutomaticClient)(input.client);
@@ -14332,8 +14431,12 @@ index 4c2b904d..5a2a8532 100644
        if (chosen.kind === "firstParty")
          return yield* beginFirstParty(
            input,
-@@ -1656,6 +1774,9 @@ export const makeOAuth = (
-           chosen.firstParty,
+           existing,
+-          chosen.firstParty,
++          {
++            ...chosen.firstParty,
++            identityParams: oauthIdentityConsent(method)?.authorizationParams,
++          },
            resolved.redirect,
            method.response,
 +          "identity" in method ? method.identity : undefined,
@@ -14342,7 +14445,7 @@ index 4c2b904d..5a2a8532 100644
          );
        const stored = chosen.kind === "stored" ? chosen.use : undefined;
        const save = "save" in chosen && chosen.save === true;
-@@ -1781,6 +1902,11 @@ export const makeOAuth = (
+@@ -1781,6 +1906,11 @@ export const makeOAuth = (
          ...(stored === undefined ? {} : { storedClient: stored }),
          ...(save ? { saveClient: true } : {}),
          response: method.response,
@@ -14354,7 +14457,7 @@ index 4c2b904d..5a2a8532 100644
        });
        return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
      }).pipe(Effect.withSpan("oauth.beginOAuth"));
-@@ -1796,14 +1922,49 @@ export const makeOAuth = (
+@@ -1796,14 +1926,49 @@ export const makeOAuth = (
        const now = yield* Clock.currentTimeMillis;
        const encrypted = yield* encrypt(id, attempt);
        const pending = yield* openConnection(db, input);
@@ -14407,8 +14510,16 @@ index 4c2b904d..5a2a8532 100644
          }),
        );
        return {
-@@ -1833,6 +1994,9 @@ export const makeOAuth = (
-     firstParty: { readonly client: FirstPartyOAuthClient; readonly scopes: readonly string[] },
+@@ -1830,9 +1995,16 @@ export const makeOAuth = (
+       readonly site?: string | undefined;
+     },
+     existing: Account | undefined,
+-    firstParty: { readonly client: FirstPartyOAuthClient; readonly scopes: readonly string[] },
++    firstParty: {
++      readonly client: FirstPartyOAuthClient;
++      readonly scopes: readonly string[];
++      readonly identityParams?: Readonly<Record<string, string>> | undefined;
++    },
      redirect: URL | undefined,
      response: JsonObject,
 +    identity: typeof OAuthAttempt.Type.identity,
@@ -14417,15 +14528,18 @@ index 4c2b904d..5a2a8532 100644
    ) =>
      Effect.gen(function* () {
        if (protocol === undefined) return yield* new OAuthClientUnavailable(input);
-@@ -1848,7 +2012,14 @@ export const makeOAuth = (
+@@ -1848,7 +2020,17 @@ export const makeOAuth = (
            redirectUri: redirect.href,
            scopes: firstParty.scopes,
            ...(scopeSeparator === undefined ? {} : { scopeSeparator }),
 -          ...(authorizationParams === undefined ? {} : { authorizationParams }),
-+          ...(authorizationParams === undefined && loginHint === undefined
++          ...(authorizationParams === undefined &&
++          firstParty.identityParams === undefined &&
++          loginHint === undefined
 +            ? {}
 +            : {
 +                authorizationParams: {
++                  ...firstParty.identityParams,
 +                  ...authorizationParams,
 +                  ...(loginHint === undefined ? {} : { login_hint: loginHint }),
 +                },
@@ -14433,7 +14547,7 @@ index 4c2b904d..5a2a8532 100644
            ...(resource === undefined ? {} : { resource }),
          })
          .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
-@@ -1862,6 +2033,9 @@ export const makeOAuth = (
+@@ -1862,6 +2044,9 @@ export const makeOAuth = (
          firstParty: firstParty.client.id,
          ...(input.site === undefined ? {} : { site: input.site }),
          response,
@@ -14443,7 +14557,7 @@ index 4c2b904d..5a2a8532 100644
        });
        return yield* saveAttempt(input, id, attempt, authorization.authorizationUrl);
      }).pipe(Effect.withSpan("oauth.beginFirstParty"));
-@@ -1892,6 +2066,9 @@ export const makeOAuth = (
+@@ -1892,6 +2077,9 @@ export const makeOAuth = (
        return yield* beginOAuth(
          {
            ...rest,
@@ -14453,7 +14567,7 @@ index 4c2b904d..5a2a8532 100644
            owner: connection.owner,
            provider: connection.provider,
            ...(connection.target.site === undefined ? {} : { site: connection.target.site }),
-@@ -1903,7 +2080,7 @@ export const makeOAuth = (
+@@ -1903,7 +2091,7 @@ export const makeOAuth = (
        ).pipe(
          // Agents reading the request learn what the person connecting was shown.
          Effect.tapError((error) =>
@@ -14462,7 +14576,7 @@ index 4c2b904d..5a2a8532 100644
              ? recordSignInFailure(db, crypto, input, connection.oauthAttempt, error)
              : Effect.void,
          ),
-@@ -2018,6 +2195,13 @@ export const makeOAuth = (
+@@ -2018,6 +2206,13 @@ export const makeOAuth = (
        if (attempt.connection !== input.connection) return yield* failed("sign_in_replaced");
        const connection = yield* openConnection(db, input);
        if (connection.oauthAttempt !== id) return yield* failed("sign_in_replaced");
@@ -14476,7 +14590,7 @@ index 4c2b904d..5a2a8532 100644
        const redirect = new URL(attempt.redirectUri);
        if (
          callback.origin !== redirect.origin ||
-@@ -2052,7 +2236,15 @@ export const makeOAuth = (
+@@ -2052,7 +2247,15 @@ export const makeOAuth = (
            Schema.is(OAuthCompletionFailed)(error) ||
            Schema.is(AccountConnectionRefused)(error) ||
            Schema.is(AccountConnectionTargetChanged)(error)
@@ -14493,7 +14607,7 @@ index 4c2b904d..5a2a8532 100644
              : Effect.void,
          ),
        );
-@@ -2212,9 +2404,36 @@ export const makeOAuth = (
+@@ -2212,9 +2415,36 @@ export const makeOAuth = (
              }),
          ),
        );
@@ -14530,7 +14644,7 @@ index 4c2b904d..5a2a8532 100644
          response: attempt.response,
          fields,
          redirectUri: attempt.redirectUri,
-@@ -2254,7 +2473,7 @@ export const makeOAuth = (
+@@ -2254,7 +2484,7 @@ export const makeOAuth = (
          ? undefined
          : (savedClient?.row.id ?? holding?.id ?? attempt.storedClient?.id);
        /** The grant for the account's credential generation it starts. */
@@ -14539,7 +14653,7 @@ index 4c2b904d..5a2a8532 100644
          decode(
            OAuthGrant,
            isFirstPartyAttempt(attempt)
-@@ -2273,7 +2492,9 @@ export const makeOAuth = (
+@@ -2273,7 +2503,9 @@ export const makeOAuth = (
                    : { tokenResponse: attempt.tokenResponse }),
                  generation,
                },
@@ -14550,7 +14664,7 @@ index 4c2b904d..5a2a8532 100644
        const encryptedCredentials = yield* encrypt(attempt.account, fields);
        const ready = `ready_${yield* nextId}`;
        return yield* savingConnection(
-@@ -2281,7 +2502,16 @@ export const makeOAuth = (
+@@ -2281,7 +2513,16 @@ export const makeOAuth = (
          input.connection,
          transaction(db, (tx) =>
            Effect.gen(function* () {
@@ -14568,7 +14682,7 @@ index 4c2b904d..5a2a8532 100644
              // A newer sign-in started while the token exchange was running.
              if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
              // A person may have removed the stored client while its code was being exchanged. The
-@@ -2326,10 +2556,13 @@ export const makeOAuth = (
+@@ -2326,10 +2567,13 @@ export const makeOAuth = (
                    set: {
                      encryptedCredentials,
                      credentialGeneration: generation,
@@ -14582,7 +14696,7 @@ index 4c2b904d..5a2a8532 100644
              } else {
                yield* query(() =>
                  tx.create("accounts", {
-@@ -2341,6 +2574,7 @@ export const makeOAuth = (
+@@ -2341,6 +2585,7 @@ export const makeOAuth = (
                );
                if (lifecycle) yield* lifecycle.accountCreated(saved);
              }
@@ -14590,7 +14704,7 @@ index 4c2b904d..5a2a8532 100644
              const grant = {
                encrypted: yield* grantOf(generation),
                status: ready,
-@@ -2353,6 +2587,21 @@ export const makeOAuth = (
+@@ -2353,6 +2598,21 @@ export const makeOAuth = (
                  update: grant,
                }),
              );
@@ -14612,7 +14726,7 @@ index 4c2b904d..5a2a8532 100644
              yield* query(() =>
                tx.updateMany("oauthAttempts", {
                  where: (b) => b("id", "=", id),
-@@ -2366,7 +2615,13 @@ export const makeOAuth = (
+@@ -2366,7 +2626,13 @@ export const makeOAuth = (
                  reconnectAccount: current.reconnectAccount,
                  target: { app: current.target.app, requirement: current.target.requirement },
                });
@@ -14627,7 +14741,7 @@ index 4c2b904d..5a2a8532 100644
              // Credentials a client was registered with during this sign-in are that client's and
              // are not saved again. The grant then names a client that does not exist, which is
              // harmless: its copy of the credentials still resolves to the client holding them.
-@@ -2381,7 +2636,7 @@ export const makeOAuth = (
+@@ -2381,7 +2647,7 @@ export const makeOAuth = (
                    set: { confirmed: true },
                  }),
                );
@@ -14636,7 +14750,7 @@ index 4c2b904d..5a2a8532 100644
            }),
          ),
        );
-@@ -2419,6 +2674,12 @@ export const makeOAuth = (
+@@ -2419,6 +2685,12 @@ export const makeOAuth = (
        /** Record why the grant cannot be used on this span; only fixed vocabularies and codes. */
        const reconnect = (reason: ReconnectReason, cause?: OAuthFailureCause) =>
          reconnectRequired("oauth.resolve", account.id, reason, cause);
@@ -14649,7 +14763,7 @@ index 4c2b904d..5a2a8532 100644
        // Set once this call has waited for another renewal of the grant. The token it then reads
        // is that renewal's result, and is used until it expires rather than renewed ahead again.
        let awaited = false;
-@@ -2426,16 +2687,29 @@ export const makeOAuth = (
+@@ -2426,16 +2698,29 @@ export const makeOAuth = (
        while (true) {
          const ahead =
            readAhead !== undefined && !awaited && !resolution.contested
@@ -14683,7 +14797,7 @@ index 4c2b904d..5a2a8532 100644
          if (row.status === "reconnect") return yield* reconnect("grant_unusable");
          const now = yield* Clock.currentTimeMillis;
          // A renewal holds the grant. Its row still carries the grant it started from.
-@@ -2453,7 +2727,30 @@ export const makeOAuth = (
+@@ -2453,7 +2738,30 @@ export const makeOAuth = (
          // An unconfirmed claim was abandoned by a process that stopped before saving a result.
          // Renew again from the saved grant, as it would have. See renewalLease.
          const abandoned = claimed;
@@ -14715,7 +14829,7 @@ index 4c2b904d..5a2a8532 100644
          const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
          // The service refused exactly the credentials this grant still holds. A grant another
          // call has renewed since then holds different ones, which this call uses instead.
-@@ -2462,7 +2759,10 @@ export const makeOAuth = (
+@@ -2462,7 +2770,10 @@ export const makeOAuth = (
          const held = (fields: JsonObject): AccountCredential => ({
            fields: Redacted.make(fields),
            firstParty: isFirstPartyGrant(grant) ? grant.firstParty : undefined,
@@ -14727,7 +14841,7 @@ index 4c2b904d..5a2a8532 100644
          });
          if (refused && !renewable) return held(grant.fields);
          if (
-@@ -2537,12 +2837,12 @@ export const makeOAuth = (
+@@ -2537,12 +2848,12 @@ export const makeOAuth = (
              const settled = yield* transaction(db, (tx) =>
                Effect.gen(function* () {
                  const current = yield* query(() =>
@@ -14742,7 +14856,7 @@ index 4c2b904d..5a2a8532 100644
                      // Anything but a refusal releases the claim with the grant and its refresh
                      // token unchanged, so a later call can renew it.
                      set:
-@@ -2615,40 +2915,44 @@ export const makeOAuth = (
+@@ -2615,40 +2926,44 @@ export const makeOAuth = (
              decode(OAuthGrant, {
                ...Struct.omit(base, ["expiresAt"]),
                fields,
@@ -14795,7 +14909,7 @@ index 4c2b904d..5a2a8532 100644
                          b("status", "=", claim),
                          b("encrypted", "=", current.encrypted),
                        ),
-@@ -2656,16 +2960,17 @@ export const makeOAuth = (
+@@ -2656,16 +2971,17 @@ export const makeOAuth = (
                    }),
                  );
                  const written = yield* query(() =>
@@ -14820,7 +14934,7 @@ index 4c2b904d..5a2a8532 100644
                return true;
              }),
            );
-@@ -2674,7 +2979,8 @@ export const makeOAuth = (
+@@ -2674,7 +2990,8 @@ export const makeOAuth = (
              return undefined;
            }
            yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
@@ -14830,7 +14944,7 @@ index 4c2b904d..5a2a8532 100644
          });
          // From claiming the grant to settling it, the renewal cannot be interrupted: a caller that
          // times out or disconnects would otherwise abandon a live claim, and with it any rotated
-@@ -2687,12 +2993,12 @@ export const makeOAuth = (
+@@ -2687,12 +3004,12 @@ export const makeOAuth = (
              const claimedAt = new Date(yield* Clock.currentTimeMillis);
              yield* query(() =>
                db.updateMany("oauthGrants", {
@@ -14845,7 +14959,7 @@ index 4c2b904d..5a2a8532 100644
              );
              if (current?.status !== claim) return undefined;
              heldClaims.add(claim);
-@@ -2713,7 +3019,7 @@ export const makeOAuth = (
+@@ -2713,7 +3030,7 @@ export const makeOAuth = (
                  Effect.flatMap((confirmedAt) =>
                    query(() =>
                      db.updateMany("oauthGrants", {
@@ -14854,7 +14968,7 @@ index 4c2b904d..5a2a8532 100644
                        set: { updatedAt: new Date(confirmedAt) },
                      }),
                    ),
-@@ -2853,34 +3159,55 @@ export const makeOAuth = (
+@@ -2853,34 +3170,55 @@ export const makeOAuth = (
     * outcome is known only once a live resolve renews it. A grant that needs reconnecting is
     * recorded as the span's outcome, as `resolve` records it, and fails only after the span.
     */
@@ -14937,7 +15051,7 @@ index 4c2b904d..5a2a8532 100644
      }).pipe(
        Effect.withSpan("oauth.usable"),
        Effect.flatMap((checked) =>
-@@ -3048,23 +3375,57 @@ export const makeOAuth = (
+@@ -3048,23 +3386,57 @@ export const makeOAuth = (
        selected,
      ),
    ) =>
@@ -15011,7 +15125,7 @@ index 4c2b904d..5a2a8532 100644
      });
    /**
     * The service refused these credentials. Renew the grant once, or read a renewal another call
-@@ -3190,11 +3551,14 @@ export const makeOAuth = (
+@@ -3190,11 +3562,14 @@ export const makeOAuth = (
    const revocation = (account: AccountId) =>
      Effect.gen(function* () {
        if (protocol === undefined) return { revocation: "manual" as const };
@@ -15028,7 +15142,7 @@ index 4c2b904d..5a2a8532 100644
        if (grant === undefined) return { revocation: "manual" as const };
        const accessToken = grant.fields["access_token"];
        const token =
-@@ -3420,7 +3784,9 @@ export const makeOAuth = (
+@@ -3420,7 +3795,9 @@ export const makeOAuth = (
      resolveOwnedFirstParty,
      resolveSelected,
      renewRejected,
