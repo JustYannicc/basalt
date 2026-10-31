@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.pool.json",
+  "include": ["recipes/**/*.ts"],
+  "exclude": []
+}
