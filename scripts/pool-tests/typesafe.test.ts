@@ -96,6 +96,9 @@ test("native TypeSafe SDK retains protocol, Home authority, errors, usage and ac
     assert.equal(upstream.calls.length, afterSecondPool);
     assert.equal((await post("/v1/chat/completions", JSON.stringify({ model: "jev-latest", messages: [] }))).status, 415);
     assert.equal(upstream.calls.length, afterSecondPool);
+    await fixture.replaceImage(candidate);
+    const resumedSdk = new TypeSafeClient({ baseURL: `${fixture.node}/typesafe`, apiKey: keyA.key, defaultModel: "jev-latest", retry: { maxRetries: 0 } });
+    assert.equal((await resumedSdk.systemOne({ state: "resumed", questions: { decision: noul("Can it continue?") } })).answers.decision.noul, 0.75);
     for (const status of [400, 401, 413, 415, 422, 429, 529]) {
       upstream.failure = status;
       const response = await post("/typesafe/v1/systemone", JSON.stringify(body));
@@ -109,9 +112,6 @@ test("native TypeSafe SDK retains protocol, Home authority, errors, usage and ac
     assert.equal((await post("/v1/systemone", JSON.stringify(body))).status, 502);
     assert.equal(upstream.calls.length, before + 1, "An uncertain send must not retry another account");
     upstream.disconnect = false;
-    await fixture.replaceImage(candidate);
-    const resumedSdk = new TypeSafeClient({ baseURL: `${fixture.node}/typesafe`, apiKey: keyA.key, defaultModel: "jev-latest", retry: { maxRetries: 0 } });
-    assert.equal((await resumedSdk.systemOne({ state: "resumed", questions: { decision: noul("Can it continue?") } })).answers.decision.noul, 0.75);
     assert.deepEqual(await fixture.diagnostics.scan(["synthetic-typesafe-a", "synthetic-typesafe-b", "private-typesafe-state-173"]), { database: 0, files: 0, logs: 0 });
   } finally {
     try { await fixture?.close(); } finally { await upstream.provider.close(); }

@@ -11,7 +11,7 @@ import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
 import { failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
-import { nativeControlPath, nativeSessionPath } from "./native-contract.ts";
+import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
 import { nativeSession } from "./native-response.worker.ts";
 import {
   hasActiveHomeApiKey,
