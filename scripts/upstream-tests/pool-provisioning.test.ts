@@ -129,7 +129,8 @@ const fixture = <A>(
           'create table member (id text, "organizationId" text, "userId" text, role text)',
           "create table executor_apps (id text primary key, owner text, name text unique, active_deployment text, files jsonb, workspace jsonb, copied_from jsonb)",
           "create table executor_deployments (id text primary key, requirements jsonb, app text, files jsonb, created_at timestamptz default clock_timestamp())",
-          "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text)",
+          "create table executor_accounts (id text primary key, owner text, provider text, token text, method text, label text, credential_generation integer not null default 0)",
+          "create table executor_account_acquisitions (account text primary key, owner text not null, provider text not null, method text not null, driver text not null, driver_revision text not null, generation integer not null, revision text not null, removal jsonb default null)",
           // Account deletion reads connection state to tell app-acquired accounts apart.
           "create table executor_account_connections (id text primary key, owner text, state jsonb, created_at timestamptz default now())",
           "create table hosted_app_access (id text, organization_id text, creator_id text, audience text, revision text default gen_random_uuid()::text)",
@@ -319,7 +320,8 @@ const fixture = <A>(
                 assert.equal(input.label, "Pool access");
                 const id = Schema.decodeUnknownSync(AccountId)(`acc_fixture_${++nextId}`);
                 const fields = Redacted.value(input.fields) as { token: string };
-                yield* sql`insert into executor_accounts values (${id}, ${input.owner}, ${input.provider}, ${fields.token}, ${input.method}, ${input.label})`;
+                yield* sql`insert into executor_accounts (id, owner, provider, token, method, label)
+                  values (${id}, ${input.owner}, ${input.provider}, ${fields.token}, ${input.method}, ${input.label})`;
                 const account = { id, owner: input.owner } as Account;
                 yield* lifecycle.hooks.accountCreated(account);
                 return account;
@@ -1310,7 +1312,7 @@ test("a member-job retry repairs a provisioned link after the bundle deploy comm
         assert.equal(oldLink!.provider, oldPoolProvider);
 
         const candidate = Schema.decodeUnknownSync(AccountId)("acc_guard_candidate");
-        yield* sql`insert into executor_accounts values (
+        yield* sql`insert into executor_accounts (id, owner, provider, token, method, label) values (
           ${candidate}, ${organizationContracts.organizationOwner(organization)},
           ${provisionedPoolProvider}, 'candidate token', 'token', 'candidate'
         )`;
