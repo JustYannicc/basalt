@@ -806,6 +806,27 @@ index f27305ee3..4be568401 100644
 +
 +export const protocol17Framework = retainedObservationFramework(17);
 +export const protocol18Framework = retainedObservationFramework(18);
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index d7b399630..e05ef6f83 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -47,7 +47,7 @@ export const profileAppCopiesPending = (
+ ];
+ 
+ /**
+- * Undo SDK 4.0.17 through 4.0.14 and label the database 4.0.13, as an upgrade from the version
++ * Undo SDK 4.0.18 through 4.0.14 and label the database 4.0.13, as an upgrade from the version
+  * before app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
+  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
+  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
+@@ -55,6 +55,7 @@ export const profileAppCopiesPending = (
+  * ledger row and table.
+  */
+ export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
++  { sql: "DROP TABLE executor_account_observations" },
+   { sql: "DROP TABLE executor_app_views" },
+   { sql: "ALTER TABLE executor_accounts DROP COLUMN site" },
+   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index e889f4b30..2130cb0b2 100644
 --- a/e2e/test-plan.ts
@@ -1651,7 +1672,7 @@ index 000000000..b5d738768
 +  );
 +});
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
-index 1ca4e8359..2fac47d84 100644
+index 1ca4e8359..ea1cd28bd 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -1,4 +1,4 @@
@@ -1660,6 +1681,15 @@ index 1ca4e8359..2fac47d84 100644
  import { expect, layer } from "@effect/vitest";
  import { Effect } from "effect";
  import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -24,7 +24,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.17" }]);
++        expect(version).toEqual([{ value: "4.0.18" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
 @@ -68,7 +68,11 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
            },
          ]);
@@ -1673,6 +1703,19 @@ index 1ca4e8359..2fac47d84 100644
          ]);
          yield* serverControl("start");
        }),
+diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
+index 434c397bc..e1a72b6e0 100644
+--- a/e2e/tests/app-accounts-upgrade.spec.ts
++++ b/e2e/tests/app-accounts-upgrade.spec.ts
+@@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
+       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
+       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
+     });
+-    expect(version).toEqual([{ value: "4.0.17" }]);
++    expect(version).toEqual([{ value: "4.0.18" }]);
+     expect(step).toEqual([{ name: "app_account_links" }]);
+     // The member's user link as it was, and the app link without a subject.
+     expect(linksAfter).toEqual([
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
 index 9080f8702..952b15e57 100644
 --- a/e2e/tests/app-package.spec.ts
@@ -1686,6 +1729,107 @@ index 9080f8702..952b15e57 100644
          });
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+index 908cac99f..b9f683aa7 100644
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes step 9's ledger row and the table step 9 creates, and writes the profiles an
++ * fixture removes steps 9 and 10 from the ledger and their tables, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -58,6 +58,7 @@ const ledger = [
+   "require_connection_targets",
+   "oauth_client_access",
+   "app_account_links",
++  "account_observations",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
+@@ -226,6 +227,10 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
+         yield* evidence.json("fixture.json", fixture);
+ 
+         // The database as step 9 finds it: profiles, no links, ledger through step 8.
++        yield* legacyStorage([
++          { sql: "DROP TABLE hosted_account_observation_access" },
++          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
++        ]);
+         const [recorded, rolledBack] = yield* legacyStorage([
+           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+           {
+@@ -325,8 +330,9 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
+             createdAt: "2026-01-08 00:00:00",
+           }),
+         ]);
+-        // The fixture is an upgrade while step 9 is the latest hosted step.
+-        expect(recorded, "current hosted ledger").toEqual(ledger);
++        expect(recorded, "step 10 is pending before rebuilding step 9").toEqual(
++          ledger.slice(0, -1),
++        );
+         expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
+         yield* serverControl("start");
+ 
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index 8f0e461e6..61fef9904 100644
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -312,6 +312,8 @@ const upgradeFixture = (
+       return [
+         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+         ...beforeAppAccounts(),
++        { sql: "DROP TABLE hosted_account_observation_access" },
++        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
+         { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
+         { sql: "DROP TABLE hosted_app_account_links" },
+         ...beforeProfileRemoval(),
+@@ -628,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.17" }]);
++        expect(version).toEqual([{ value: "4.0.18" }]);
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+         );
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index cd00deab5..3457c78c4 100644
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -132,7 +132,7 @@ const expectUpgraded = (
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.17" }]);
++  expect(version).toEqual([{ value: "4.0.18" }]);
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
+@@ -256,6 +256,8 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
+         yield* legacyStorage([
+           // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
+           // idempotently, and none are left to convert.
++          { sql: "DROP TABLE hosted_account_observation_access" },
++          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 10" },
+           { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 9` },
+           // Before step 8 no client had an audience, whose rows name stored clients.
+           { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index 042f9309e..5f74feeda 100644
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.17" }]);
++        expect(version).toEqual([{ value: "4.0.18" }]);
+         expect(credentials).toEqual([
+           { client: ids.a },
+           { client: ids.a },
 diff --git a/packages/apps/protocols/19.json b/packages/apps/protocols/19.json
 new file mode 100644
 index 000000000..6426ad5d0
@@ -7446,6 +7590,19 @@ index b0266758b..1bd68eed2 100644
  /**
   * The display with every item that collides with a short credential removed, or undefined when
   * any string carries a credential or the input exceeds the bounds. Removing a colliding item keeps
+diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
+index 591f09e20..550f464c2 100644
+--- a/playground/sdk/storage.ts
++++ b/playground/sdk/storage.ts
+@@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
+       Effect.gen(function* () {
+         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+         yield* storage.migrate;
+-        const orm = storage.orm("4.0.17");
++        const orm = storage.orm("4.0.18");
+         const createdAt = new Date("2026-01-01T00:00:00.000Z");
+         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
+           id: "dpl_example",
 diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
 index 4e3699a6d..441c80760 100644
 --- a/scripts/check-app-protocols.ts
