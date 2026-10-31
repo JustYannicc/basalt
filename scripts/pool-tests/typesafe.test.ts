@@ -25,8 +25,7 @@ test("native TypeSafe SDK retains protocol, Home authority, errors, usage and ac
     await fixture.data("/config", "PATCH", { requests: { "proxy-url": upstream.provider.url } });
     const client = new HomeClient((path, init) => fixture!.fetchHome(path, init));
     const first = new PoolHome(client, "fixture-typesafe-a"), second = new PoolHome(client, "fixture-typesafe-b");
-    const ids: string[] = [];
-    for (const token of ["synthetic-typesafe-a", "synthetic-typesafe-b"]) {
+    async function mirror(token: string) {
       const reference = randomUUID();
       for (let attempt = 0; attempt < 2; attempt++) {
         const at = Date.now();
@@ -39,7 +38,26 @@ test("native TypeSafe SDK retains protocol, Home authority, errors, usage and ac
         }), { home: client, signingKey: "ab".repeat(32) });
         assert.equal(saved.status, 200);
       }
-      ids.push(reference);
+      return reference;
+    }
+    const ids: string[] = [await mirror("synthetic-typesafe-a"), await mirror("synthetic-typesafe-b")];
+    async function isolatedKey(name: string) {
+      const reference = await mirror("synthetic-typesafe-a");
+      const pool = new PoolHome(client, `fixture-typesafe-${name}`);
+      await pool.add([reference]);
+      const key = await new ComputerHome(client).mint("typesafe-owner", pool.pool, `typesafe-computer-${name}`);
+      return { key: key.key, reference };
+    }
+    async function awaitBlocked(reference: string) {
+      const deadline = Date.now() + 10_000;
+      do {
+        const state = await fixture!.data<{ credentials: { models: { blocked: boolean }[] }[] }>(
+          `/credentials/model-states?credential_id=${reference}&model=jev-latest`,
+        );
+        if (state.credentials.some(row => row.models.some(model => model.blocked))) return;
+        await delay(25);
+      } while (Date.now() < deadline);
+      assert.fail("Home did not apply the injected credential failure");
     }
     const credentials = await fixture.data<{ files: { id: string }[] }>("/credentials");
     assert.equal(credentials.files.filter(row => ids.includes(row.id)).length, 2);
@@ -99,17 +117,25 @@ test("native TypeSafe SDK retains protocol, Home authority, errors, usage and ac
     await fixture.replaceImage(candidate);
     const resumedSdk = new TypeSafeClient({ baseURL: `${fixture.node}/typesafe`, apiKey: keyA.key, defaultModel: "jev-latest", retry: { maxRetries: 0 } });
     assert.equal((await resumedSdk.systemOne({ state: "resumed", questions: { decision: noul("Can it continue?") } })).answers.decision.noul, 0.75);
+    // Home applies failed usage asynchronously. Fault cases must not share scheduling state.
     for (const status of [400, 401, 413, 415, 422, 429, 529]) {
+      const fault = await isolatedKey(`error-${status}`);
       upstream.failure = status;
-      const response = await post("/typesafe/v1/systemone", JSON.stringify(body));
+      const before = upstream.calls.length;
+      const response = await post("/typesafe/v1/systemone", JSON.stringify(body), {}, fault.key);
       assert.equal(response.status, status);
       assert.equal(response.headers.get("Retry-After"), "7");
       assert.deepEqual(await response.json(), { detail: `native-typesafe-${status}` });
+      assert.equal(upstream.calls.length, before + 1);
+      if (status === 401 || status === 429) await awaitBlocked(fault.reference);
     }
+    const uncertain = await isolatedKey("uncertain");
     upstream.failure = 0;
     upstream.disconnect = true;
     const before = upstream.calls.length;
-    assert.equal((await post("/v1/systemone", JSON.stringify(body))).status, 502);
+    const disconnected = await post("/v1/systemone", JSON.stringify(body), {}, uncertain.key);
+    assert.equal(disconnected.status, 502);
+    assert.deepEqual(await disconnected.json(), { detail: "TypeSafe request outcome is unknown" });
     assert.equal(upstream.calls.length, before + 1, "An uncertain send must not retry another account");
     upstream.disconnect = false;
     assert.deepEqual(await fixture.diagnostics.scan(["synthetic-typesafe-a", "synthetic-typesafe-b", "private-typesafe-state-173"]), { database: 0, files: 0, logs: 0 });
