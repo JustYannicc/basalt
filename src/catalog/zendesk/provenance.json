@@ -3,7 +3,7 @@
   "package": "zendesk",
   "sourceSdk": "apps@0.0.1-beta.104-basalt.1",
   "origin": "Derived from the provided Zendesk source snapshot and official Zendesk Support API OpenAPI document",
-  "snapshotSha256": "51c506d2f982cf206ecaf0063b432732a6d9289292078c6d3fcb66e336319c33",
+  "snapshotSha256": "350d809ce992804e5718ba8add4c91801bdbafd99da56e06ecddacf221b6559e",
   "originalFileSha256": {
     "README.md": "c7d846db12cb3721610d7331e5bc468de7cb0a4fe872ab56050a1920440edde1",
     "configuration.ts": "299bcabbf11d78f27e07ed3a3aa5b266a13172becba59048d9cc46e8f7436b81",
@@ -11,7 +11,7 @@
     "package.json": "5511f2c53b7800d3743be6b66a6e3d9a5d69a7b954ae99ab860ef093c2cb0734"
   },
   "catalogFileSha256": {
-    "README.md": "56b74883a1528d975404f48494bf97c8de64817f71746f78fa245be5bb12fcf0",
+    "README.md": "2b34ba95fd4fca77be6947f86dbbf32a3691dfb150ff872e4907ece2834d10de",
     "configuration.ts": "42af2f136d77123d28f13bafa3badc5876972f0febd1aaca8891300631f58492",
     "icon.ts": "4e006f5d4490b7ebbbb8d4038637b7aed2c6dcd4b42619a268c2699523fc40d3",
     "index.ts": "122dbd6c64b30cd7aafe446a50857794e3923edf118a2f8e4fbfb99ea729f348",
