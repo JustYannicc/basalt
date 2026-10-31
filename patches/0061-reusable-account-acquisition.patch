@@ -131,6 +131,37 @@ index ae2d077..cb8c915 100644
        return yield* refuse("app_bound");
      const retiring =
        yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed'
+diff --git a/apps/hosted/server/src/implementation/interactive-accounts.ts b/apps/hosted/server/src/implementation/interactive-accounts.ts
+index 8f4ed8f..8c33bfc 100644
+--- a/apps/hosted/server/src/implementation/interactive-accounts.ts
++++ b/apps/hosted/server/src/implementation/interactive-accounts.ts
+@@ -4,7 +4,7 @@ import { Effect } from "effect";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
+ import { currentOwner, ownedConnection } from "./access.ts";
+-import { checkConnection } from "./connection-policy.ts";
++import { checkConnection, connectionAccess } from "./connection-policy.ts";
+ import { accountDestination } from "./resource-lifecycle.ts";
+ import { activeVersion, versionAccounts } from "./app-accounts.ts";
+ 
+@@ -52,6 +52,15 @@ export const submitInteractive = (connection: AccountConnectionId, value: string
+   });
+ export const cancelInteractive = (connection: AccountConnectionId) =>
+   Effect.gen(function* () {
+-    const { executor, input } = yield* connectionContext(connection);
+-    yield* executor[InteractiveHost].cancel(input);
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const owner = yield* currentOwner;
++    // The creator can release their attempt after the saved account is gone or changed.
++    const access = yield* connectionAccess(connection);
++    const app = yield* executor.apps.get({ owner, app: access.target.app });
++    const accounts = yield* versionAccounts(
++      activeVersion(app),
++      undefined,
++      access.target.requirement,
++    );
++    yield* executor[InteractiveHost].cancel({ owner, connection, accounts });
+   });
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 index 9608f08..cd2ac93 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
@@ -271,10 +302,10 @@ index f023607..de2a153 100644
          "Account is set up automatically",
 diff --git a/e2e/support/account-acquisition-fixture.ts b/e2e/support/account-acquisition-fixture.ts
 new file mode 100644
-index 0000000..458026f
+index 0000000..5ba4bfb
 --- /dev/null
 +++ b/e2e/support/account-acquisition-fixture.ts
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,118 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "./actors.ts";
@@ -303,6 +334,7 @@ index 0000000..458026f
 +    const prefix = `/api/organizations/${actors.organization.id}`;
 +    const apps: string[] = [];
 +    const accounts: { id: string; actor: Session }[] = [];
++    const trackAccount = (actor: Session, id: string) => accounts.push({ id, actor });
 +    yield* Effect.addFinalizer(() =>
 +      Effect.gen(function* () {
 +        yield* serverControl("start");
@@ -370,7 +402,7 @@ index 0000000..458026f
 +        const completed = yield* submit(actor, connection);
 +        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
 +        const { account } = yield* body(Connected, completed);
-+        accounts.push({ id: account.id, actor });
++        trackAccount(actor, account.id);
 +        expect(JSON.stringify(completed.body)).not.toContain("opaque-");
 +        expect(JSON.stringify(completed.body)).not.toContain("private-session-");
 +        return { account: account.id, connection };
@@ -389,11 +421,12 @@ index 0000000..458026f
 +      start,
 +      submit,
 +      create,
++      trackAccount,
 +    };
 +  });
 diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
 new file mode 100644
-index 0000000..8f603ab
+index 0000000..a369de0
 --- /dev/null
 +++ b/e2e/support/acquisition-product.ts
 @@ -0,0 +1,103 @@
@@ -420,30 +453,30 @@ index 0000000..8f603ab
 +    const source = `
 +import * as Runtime from ${JSON.stringify(hosted ? "@effect/platform-bun/BunRuntime" : "@effect/platform-node/NodeRuntime")};
 +${hosted ? 'import { main } from "@executor-js/hosted-self-host/server";' : 'import { launch } from "@executor-js/local-server";\nimport * as NodeServices from "@effect/platform-node/NodeServices";'}
-+import { AccountAcquisitionConfiguration, ProviderId, type AccountAcquisitionDriver, type AccountAcquisitionContext } from "@executor-js/sdk/core";
++import { AccountAcquisitionConfiguration, ProviderId, type AccountAcquisitionContext } from "@executor-js/sdk/core";
++import { accountAcquisitionDriver } from "@executor-js/sdk";
 +import { InteractiveStart, InteractiveStatus, AccountCheckResult, AccountObservationResult, HostOperationFailed } from "apps/contracts";
 +import { Effect, Redacted, Schema } from "effect";
 +
-+const call = <A, I>(context: AccountAcquisitionContext, step: string, schema: Schema.Codec<A, I>, data: object = {}) =>
-+  Effect.tryPromise({ try: async () => {
++const call = async <A, I>(context: AccountAcquisitionContext, step: string, schema: Schema.Codec<A, I>, data: object = {}) => {
 +    const response = await context.fetch(${JSON.stringify(input.origin + "/connect")}, {
 +      method: "POST", signal: context.signal,
 +      headers: { authorization: "Bearer synthetic-backend-key", "content-type": "application/json" },
 +      body: JSON.stringify({ step, method: context.method, caller: context.owner, operation: context.operation, ...data }),
 +    });
-+    if (!response.ok) throw new Error("Synthetic backend refused the operation");
-+    return await response.json();
-+  }, catch: () => new HostOperationFailed({}) }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(schema)));
-+const driver: AccountAcquisitionDriver = {
++    if (!response.ok) throw new HostOperationFailed({});
++    return Schema.decodeUnknownSync(schema)(await response.json());
++};
++const driver = accountAcquisitionDriver({
 +  id: "synthetic-account-driver", revision: ${JSON.stringify(revision)},
 +  start: (ctx) => call(ctx, "start", InteractiveStart),
 +  status: (ctx, value) => call(ctx, "status", InteractiveStatus, value),
 +  submit: (ctx, value) => call(ctx, "submit", InteractiveStatus, value),
-+  cancel: (ctx, value) => call(ctx, "cancel", Schema.Null, value).pipe(Effect.asVoid),
-+  remove: (ctx) => call(ctx, "remove", Schema.Null, { ref: Redacted.value(ctx.reference) }).pipe(Effect.asVoid),
-+  ${input.check === false ? "" : input.check === "void" ? "check: () => Effect.void," : 'check: (ctx) => call(ctx, "check", AccountCheckResult, { ref: Redacted.value(ctx.reference) }),'}
++  cancel: async (ctx, value) => { await call(ctx, "cancel", Schema.Null, value); },
++  remove: async (ctx) => { await call(ctx, "remove", Schema.Null, { ref: Redacted.value(ctx.reference) }); },
++  ${input.check === false ? "" : input.check === "void" ? "check: async () => undefined," : 'check: (ctx) => call(ctx, "check", AccountCheckResult, { ref: Redacted.value(ctx.reference) }),'}
 +  ${input.observe === false ? "" : 'observeAccount: (ctx) => call(ctx, "observe", AccountObservationResult, { ref: Redacted.value(ctx.reference) }),'}
-+};
++});
 +const configuration = { registrations: [{
 +  provider: ProviderId.make(${JSON.stringify(input.provider)}), method: "paste", current: true, driver,
 +  fetch: globalThis.fetch,
@@ -501,7 +534,7 @@ index 0000000..8f603ab
 +  ctx.user.accounts.identity.map((account) => ({ id: account.id, method: account.method, fields: account.fields }))) }) });
 +`;
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
-index 0ce8306..3c85a8e 100644
+index 0ce8306..2cb6f77 100644
 --- a/e2e/support/interactive-account-backend.ts
 +++ b/e2e/support/interactive-account-backend.ts
 @@ -3,16 +3,18 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -550,7 +583,15 @@ index 0ce8306..3c85a8e 100644
    const accountInfo = yield* Ref.make<FixtureAccountInfo | undefined>(undefined);
    const refuseRemoval = yield* Ref.make(false);
    const refuseCancellation = yield* Ref.make(false);
-@@ -65,6 +80,25 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -39,6 +54,7 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+   const removalStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+   const submitGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+   const submitStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
++  const nextSubmit = yield* Ref.make<DriverGate | undefined>(undefined);
+   const statusGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+   const statusStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
+   const routes = HttpRouter.add(
+@@ -65,6 +81,25 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          ]);
        }
        if (input.caller === "") return HttpServerResponse.empty({ status: 403 });
@@ -576,7 +617,7 @@ index 0ce8306..3c85a8e 100644
        if (input.step === "start") {
          const id = yield* Ref.updateAndGet(next, (value) => value + 1);
          const session = `private-session-${id}`;
-@@ -82,7 +116,10 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -82,7 +117,10 @@ export const interactiveAccountBackend = Effect.gen(function* () {
            ...(input.method === "paste"
              ? { paste: { label: "Paste the final address", placeholder: "http://localhost/..." } }
              : { code: `CODE-${id}` }),
@@ -588,7 +629,19 @@ index 0ce8306..3c85a8e 100644
            message: "Finish signing in, then return here.",
          });
        }
-@@ -166,9 +203,38 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -123,6 +161,11 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+         if (gate !== undefined) yield* Deferred.await(gate);
+       }
+       if (input.step === "submit") {
++        const next = yield* Ref.getAndSet(nextSubmit, undefined);
++        if (next !== undefined) {
++          yield* Deferred.succeed(next.started, undefined);
++          yield* Deferred.await(next.release);
++        }
+         const gate = yield* Ref.get(submitGate),
+           started = yield* Ref.get(submitStarted);
+         if (started !== undefined) yield* Deferred.succeed(started, undefined);
+@@ -166,9 +209,38 @@ export const interactiveAccountBackend = Effect.gen(function* () {
    );
    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
    if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
@@ -627,7 +680,7 @@ index 0ce8306..3c85a8e 100644
      setAccountInfo: (value: FixtureAccountInfo) => Ref.set(accountInfo, value),
      refuseCancellation: (refuse: boolean) => Ref.set(refuseCancellation, refuse),
      refuseRemoval: (refuse: boolean) =>
-@@ -183,11 +249,13 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -183,11 +255,13 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          started = yield* Deferred.make<void>();
        yield* Ref.set(removalGate, gate);
        yield* Ref.set(removalStarted, started);
@@ -644,6 +697,23 @@ index 0ce8306..3c85a8e 100644
        };
      }),
      holdSubmit: Effect.gen(function* () {
+@@ -202,6 +276,16 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+         ),
+       };
+     }),
++    holdNextSubmit: Effect.gen(function* () {
++      const started = yield* Deferred.make<void>(),
++        gate = yield* Deferred.make<void>();
++      yield* Ref.set(nextSubmit, { started, release: gate });
++      const release = Deferred.succeed(gate, undefined).pipe(
++        Effect.andThen(Ref.set(nextSubmit, undefined)),
++      );
++      yield* Effect.addFinalizer(() => release);
++      return { started: Deferred.await(started), release };
++    }),
+     holdStatus: Effect.gen(function* () {
+       const gate = yield* Deferred.make<void>(),
+         started = yield* Deferred.make<void>();
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
 index 931d791..3ac3326 100644
 --- a/e2e/support/managed-server.ts
@@ -694,10 +764,10 @@ index 931d791..3ac3326 100644
                };
          const child = yield* processes.spawn(
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 9fc16b0..6193cdd 100644
+index c1466fc..8544080 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7812,6 +7812,76 @@ export const scenarios = plan({
+@@ -7812,6 +7812,96 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
@@ -712,6 +782,26 @@ index 9fc16b0..6193cdd 100644
 +      cloud: na(
 +        "Requires a process-owned public product composition and loopback credential service.",
 +      ),
++    },
++  },
++  accountAcquisitionIdentity: {
++    fixtures: "actors",
++    file: "account-acquisition-cleanup.spec.ts",
++    title: "driver acquisition labels never expose raw or encoded references",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises the shared SDK output guard through hosted Connect APIs."),
++      cloud: na("Requires process-owned registration and a loopback credential service."),
++    },
++  },
++  accountAcquisitionCleanup: {
++    fixtures: "actors",
++    file: "account-acquisition-cleanup.spec.ts",
++    title: "driver reconnect cleanup releases stale attempts without revoking the newer credential",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises shared SDK cleanup through hosted Connect APIs."),
++      cloud: na("Requires process-owned registration and a loopback credential service."),
 +    },
 +  },
 +  accountAcquisitionObservations: {
@@ -774,6 +864,148 @@ index 9fc16b0..6193cdd 100644
    accountObservationsLocal: {
      legacyStorage: true,
      file: "account-observations-local.spec.ts",
+diff --git a/e2e/tests/account-acquisition-cleanup.spec.ts b/e2e/tests/account-acquisition-cleanup.spec.ts
+new file mode 100644
+index 0000000..dd8e166
+--- /dev/null
++++ b/e2e/tests/account-acquisition-cleanup.spec.ts
+@@ -0,0 +1,136 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
++import { linkAccount } from "../support/app-accounts.ts";
++import { Resource } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++
++layer(HostedLive, { excludeTestServices: true })("Driver acquisition output and cleanup", (it) => {
++  it.effect(scenarios.accountAcquisitionIdentity.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        let sequence = 0;
++        for (const step of ["submit", "status"] as const) {
++          for (const encoded of [false, true]) {
++            const reference = `opaque-${++sequence}`;
++            const label = encoded ? Buffer.from(reference).toString("base64") : reference;
++            yield* f.backend.setAccountInfo({ displayName: label });
++            const pending = yield* f.pending(f.actors.member);
++            expect(pending.status).toBe(200);
++            const connection = (yield* body(Resource, pending)).id;
++            expect((yield* f.start(f.actors.member, connection)).status).toBe(200);
++            const status = () =>
++              f.api.request(f.actors.member, "GET", `${f.connectPath(connection)}/status`);
++            if (step === "status")
++              expect((yield* status()).body).toMatchObject({ state: "waiting" });
++            const response = yield* step === "submit"
++              ? f.submit(f.actors.member, connection)
++              : status();
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const { account } = yield* body(Connected, response);
++            f.trackAccount(f.actors.member, account.id);
++            const detail = yield* f.api.request(
++              f.actors.member,
++              "GET",
++              `${f.prefix}/accounts/${account.id}`,
++            );
++            expect(detail.status).toBe(200);
++            for (const value of [response.body, detail.body]) {
++              expect(JSON.stringify(value)).not.toContain(reference);
++              expect(JSON.stringify(value)).not.toContain(
++                Buffer.from(reference).toString("base64"),
++              );
++            }
++          }
++        }
++      }),
++    ),
++  );
++
++  it.effect(scenarios.accountAcquisitionCleanup.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const actor = f.actors.member;
++        const { account } = yield* f.create(actor);
++        const accountPath = `${f.prefix}/accounts/${account}`;
++        const consumer = yield* f.deploy("Reconnect generation consumer");
++        yield* linkAccount(actor, consumer.path, "identity", account);
++        const used = () =>
++          f.api.request(actor, "POST", `${consumer.path}/tools/call`, {
++            tool: "ids",
++            kind: "query",
++            input: {},
++          });
++        const reconnect = () =>
++          Effect.gen(function* () {
++            const pending = yield* f.pending(actor, consumer.app.id, account);
++            expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++            const id = (yield* body(Resource, pending)).id;
++            expect((yield* f.start(actor, id)).status).toBe(200);
++            return id;
++          });
++        const older = yield* reconnect();
++        const hold = yield* f.backend.holdNextSubmit;
++        const finishing = yield* f.submit(actor, older).pipe(Effect.forkChild);
++        yield* hold.started;
++        const newer = yield* reconnect();
++        expect((yield* f.submit(actor, newer)).body).toMatchObject({
++          state: "connected",
++          account: { id: account },
++        });
++        yield* hold.release;
++        expect((yield* Fiber.join(finishing)).status).toBe(422);
++        expect((yield* used()).body).toEqual([
++          { id: account, method: "paste", fields: { ref: "opaque-3" } },
++        ]);
++        const cancellations = () =>
++          f.backend.calls.pipe(
++            Effect.map((calls) =>
++              calls.filter((call) => call.step === "cancel").map((call) => call.session),
++            ),
++          );
++        expect(yield* cancellations()).toEqual(["private-session-2"]);
++        expect(yield* f.backend.removeCalls).toEqual([]);
++
++        const stale = yield* reconnect();
++        const latest = yield* reconnect();
++        expect((yield* f.submit(actor, latest)).body).toMatchObject({
++          state: "connected",
++          account: { id: account },
++        });
++        const cancel = (id: string) => f.api.request(actor, "POST", `${f.connectPath(id)}/cancel`);
++        expect((yield* cancel(stale)).status).toBe(200);
++        expect((yield* cancel(stale)).status).toBe(200);
++        expect(yield* cancellations()).toEqual(["private-session-2", "private-session-4"]);
++        expect((yield* used()).body).toEqual([
++          { id: account, method: "paste", fields: { ref: "opaque-5" } },
++        ]);
++        expect(yield* f.backend.removeCalls).toEqual([]);
++
++        const deleted = yield* reconnect();
++        expect((yield* f.api.request(actor, "DELETE", accountPath)).status).toBe(200);
++        for (const other of [f.actors.owner, f.actors.admin])
++          expect(
++            (yield* f.api.request(other, "POST", `${f.connectPath(deleted)}/cancel`)).status,
++          ).toBe(403);
++        expect(yield* cancellations()).toEqual(["private-session-2", "private-session-4"]);
++        expect((yield* cancel(deleted)).status).toBe(200);
++        expect(yield* cancellations()).toEqual([
++          "private-session-2",
++          "private-session-4",
++          "private-session-6",
++        ]);
++        expect((yield* f.backend.removeCalls).map((call) => call.ref)).toEqual(["opaque-5"]);
++        expect((yield* f.api.request(actor, "GET", accountPath)).status).toBe(403);
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/account-acquisition-health.spec.ts b/e2e/tests/account-acquisition-health.spec.ts
 new file mode 100644
 index 0000000..38a4422
@@ -5263,6 +5495,94 @@ index c76ff77..ecee8a5 100644
    | import("./account-connection.ts").AccountConnectionTargetChanged
    | import("./interactive-errors.ts").InteractiveRetirementBusy
    | import("./interactive-errors.ts").InteractiveRetirementFailed;
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 8e89671..bfe9a7c 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -31,6 +31,10 @@ export {
+ export { executorDatabase } from "./implementation/storage-migrations.ts";
+ export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
+ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
++export {
++  accountAcquisitionDriver,
++  type PromiseAccountAcquisitionDriver,
++} from "./implementation/account-acquisition-adapter.ts";
+ 
+ /** Optional Web Crypto adapter; callers retain signing-key custody. */
+ export { aesGcmCredentials } from "./implementation/credentials.ts";
+diff --git a/packages/sdk/src/implementation/account-acquisition-adapter.ts b/packages/sdk/src/implementation/account-acquisition-adapter.ts
+new file mode 100644
+index 0000000..ef13666
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-acquisition-adapter.ts
+@@ -0,0 +1,67 @@
++import { Effect } from "effect";
++import type {
++  AccountCheckResult,
++  AccountObservationResult,
++  InteractiveStart,
++  InteractiveStatus,
++} from "apps/contracts";
++import type {
++  AccountAcquisitionAccountContext,
++  AccountAcquisitionContext,
++  AccountAcquisitionDriver,
++} from "../contracts/account-acquisition-driver.ts";
++
++/** Promise callbacks for hosts whose credential backend is authored outside Effect. */
++export interface PromiseAccountAcquisitionDriver<
++  Context extends AccountAcquisitionAccountContext = AccountAcquisitionAccountContext,
++> {
++  readonly id: string;
++  readonly revision: string;
++  readonly start: (
++    context: AccountAcquisitionContext,
++    reconnect?: Context,
++  ) => Promise<InteractiveStart>;
++  readonly status: (
++    context: AccountAcquisitionContext,
++    input: { readonly session: string },
++  ) => Promise<InteractiveStatus>;
++  readonly submit?: (
++    context: AccountAcquisitionContext,
++    input: { readonly session: string; readonly value: string },
++  ) => Promise<InteractiveStatus>;
++  readonly cancel: (
++    context: AccountAcquisitionContext,
++    input: { readonly session: string },
++  ) => Promise<void>;
++  readonly remove: (context: Context) => Promise<void>;
++  readonly check?: (context: Context) => Promise<AccountCheckResult | void>;
++  readonly observeAccount?: (context: Context) => Promise<AccountObservationResult | void>;
++}
++
++const callback = <A>(run: () => Promise<A>) =>
++  Effect.tryPromise({ try: run, catch: (error) => error });
++
++/** The host owns callback lifetime and aborts the supplied context signal when it ends. */
++export const accountAcquisitionDriver = <Context extends AccountAcquisitionAccountContext>(
++  driver: PromiseAccountAcquisitionDriver<Context>,
++): AccountAcquisitionDriver<Context> => {
++  const { submit, check, observeAccount } = driver;
++  return {
++    id: driver.id,
++    revision: driver.revision,
++    start: (context, reconnect) => callback(() => driver.start(context, reconnect)),
++    status: (context, input) => callback(() => driver.status(context, input)),
++    cancel: (context, input) => callback(() => driver.cancel(context, input)),
++    remove: (context) => callback(() => driver.remove(context)),
++    ...(submit === undefined
++      ? {}
++      : {
++          submit: (context: AccountAcquisitionContext, input: Parameters<typeof submit>[1]) =>
++            callback(() => submit(context, input)),
++        }),
++    ...(check === undefined ? {} : { check: (context: Context) => callback(() => check(context)) }),
++    ...(observeAccount === undefined
++      ? {}
++      : { observeAccount: (context: Context) => callback(() => observeAccount(context)) }),
++  };
++};
 diff --git a/packages/sdk/src/implementation/account-acquisition-bindings.ts b/packages/sdk/src/implementation/account-acquisition-bindings.ts
 new file mode 100644
 index 0000000..74bc6a1
@@ -5371,10 +5691,10 @@ index 0000000..74bc6a1
 +  });
 diff --git a/packages/sdk/src/implementation/account-acquisition-connect.ts b/packages/sdk/src/implementation/account-acquisition-connect.ts
 new file mode 100644
-index 0000000..e2e7197
+index 0000000..01f98e5
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-connect.ts
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,125 @@
 +import { Clock, Effect } from "effect";
 +import type { ConnectCommand } from "apps/contracts";
 +import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
@@ -5385,6 +5705,7 @@ index 0000000..e2e7197
 +import type { AcquisitionRegistry } from "./account-acquisition-registry.ts";
 +import { resolveAcquisitionBinding } from "./account-acquisition-bindings.ts";
 +import { invokeAcquisitionDriver } from "./account-acquisition-runtime.ts";
++import { acquisitionStatusOutput } from "./account-acquisition-output.ts";
 +import { storedApp, storedVersion } from "./apps.ts";
 +
 +/** App intent selects a provider/method; only the host registry selects its implementation. */
@@ -5430,19 +5751,22 @@ index 0000000..e2e7197
 +        provider: row.provider,
 +        method: session.method,
 +      });
-+      const saved =
-+        row.reconnectAccount === null
-+          ? undefined
-+          : yield* resolve({ account: row.reconnectAccount, owner: row.owner });
-+      if (
-+        row.reconnectAccount !== null &&
-+        (saved === undefined ||
-+          saved.binding.generation !== selected.generation ||
-+          saved.binding.revision !== selected.bindingRevision)
-+      )
-+        return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
 +      return (command: ConnectCommand) =>
 +        Effect.gen(function* () {
++          const advancing =
++            command.step === "start" || command.step === "status" || command.step === "submit";
++          const saved =
++            !advancing || row.reconnectAccount === null
++              ? undefined
++              : yield* resolve({ account: row.reconnectAccount, owner: row.owner });
++          if (
++            advancing &&
++            row.reconnectAccount !== null &&
++            (saved === undefined ||
++              saved.binding.generation !== selected.generation ||
++              saved.binding.revision !== selected.bindingRevision)
++          )
++            return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
 +          const deadline = (yield* Clock.currentTimeMillis) + 15_000;
 +          return yield* invokeAcquisitionDriver<unknown, unknown>(
 +            registration,
@@ -5468,14 +5792,18 @@ index 0000000..e2e7197
 +                        },
 +                  );
 +                case "status":
-+                  return driver.status(context, { session: command.input.session });
++                  return driver
++                    .status(context, { session: command.input.session })
++                    .pipe(Effect.flatMap(acquisitionStatusOutput));
 +                case "submit":
 +                  return driver.submit === undefined
 +                    ? Effect.fail(new AccountAcquisitionUnavailable({ reason: "unsupported" }))
-+                    : driver.submit(context, {
-+                        session: command.input.session,
-+                        value: command.input.value,
-+                      });
++                    : driver
++                        .submit(context, {
++                          session: command.input.session,
++                          value: command.input.value,
++                        })
++                        .pipe(Effect.flatMap(acquisitionStatusOutput));
 +                case "cancel":
 +                  return driver.cancel(context, { session: command.input.session });
 +                case "remove":
@@ -5494,21 +5822,37 @@ index 0000000..e2e7197
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-output.ts b/packages/sdk/src/implementation/account-acquisition-output.ts
 new file mode 100644
-index 0000000..f06a4ab
+index 0000000..161ee9e
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-output.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,79 @@
 +import { Effect, Option, Schema, Struct } from "effect";
 +import {
 +  AccountCheckResult,
 +  AccountObservationResult,
 +  HostOperationFailed,
 +  HostOutputInvalid,
++  InteractiveStatus,
 +  ProviderError,
 +} from "apps/contracts";
-+import { privateObservationStrings } from "@executor-js/utils/account-display-privacy";
++import {
++  privateAccountDisplay,
++  privateObservationStrings,
++} from "@executor-js/utils/account-display-privacy";
 +import { privateAccountCheck } from "./account-status-output.ts";
 +import type { AccountId } from "../contracts/shared.ts";
++
++/** Unsafe identity text falls back to the host's account name without losing the acquired credential. */
++export const acquisitionStatusOutput = (value: unknown) =>
++  Effect.gen(function* () {
++    const result = yield* Schema.decodeUnknownEffect(InteractiveStatus)(value).pipe(
++      Effect.mapError(() => new HostOutputInvalid()),
++    );
++    if (result.state !== "connected" || result.accountInfo === undefined) return result;
++    const { accountInfo, ...connected } = result;
++    const shown = privateAccountDisplay({ accountInfo }, {}, result.ref);
++    return shown === undefined ? connected : { ...connected, accountInfo: shown.accountInfo };
++  });
 +
 +/** A malformed optional allowance must not change a valid credential-health verdict. */
 +export const acquisitionCheckOutput = (value: unknown, reference: string) =>
@@ -5773,10 +6117,10 @@ index 0000000..c46b439
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-runtime.ts b/packages/sdk/src/implementation/account-acquisition-runtime.ts
 new file mode 100644
-index 0000000..94999a9
+index 0000000..65c9667
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-runtime.ts
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,125 @@
 +import { Clock, Effect, Redacted, Schema, type Crypto } from "effect";
 +import { HostOperationFailed, HostOperationNotFound } from "apps/contracts";
 +import type {
@@ -5828,36 +6172,8 @@ index 0000000..94999a9
 +  registry: AcquisitionRegistry,
 +) => {
 +  const resolve = resolveAcquisitionBinding(db, credentials);
-+  const resolveRemoval = resolveAcquisitionBinding(db, credentials, true);
 +  return {
 +    resolve,
-+    prepareRemoval: (input: { readonly account: AccountId; readonly owner: OwnerId }) =>
-+      Effect.gen(function* () {
-+        const saved = yield* resolveRemoval(input);
-+        if (saved === undefined) return Effect.void;
-+        const registration = yield* registry.retained(saved.binding);
-+        return Effect.gen(function* () {
-+          const deadline = (yield* Clock.currentTimeMillis) + 15_000;
-+          yield* invokeAcquisitionDriver(
-+            registration,
-+            {
-+              owner: saved.binding.owner,
-+              provider: saved.binding.provider,
-+              method: saved.binding.method,
-+              operation:
-+                saved.binding.removal?.operation ??
-+                `${saved.binding.account}:${saved.binding.revision}:delete`,
-+              deadline,
-+            },
-+            (context) =>
-+              registration.driver.remove({
-+                ...context,
-+                binding: saved.binding,
-+                reference: saved.reference,
-+              }),
-+          );
-+        });
-+      }),
 +    source: (input: { readonly account: AccountId; readonly owner?: OwnerId }) =>
 +      Effect.gen(function* () {
 +        const resolved = yield* resolve(input);
@@ -7189,19 +7505,20 @@ index 0000000..c836480
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5e2bbbb..0c2ad8e 100644
+index 5e2bbbb..38487b4 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
  import { makeAccountObservations } from "./account-observations.ts";
  import { makeObservationReader } from "./account-observation-read.ts";
  import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
 -import { transaction } from "./database.ts";
 +import { query, transaction } from "./database.ts";
++import { validateRemovalChange } from "./removal-validation.ts";
  import { makeInteractiveRetirement } from "./interactive-retirement.ts";
  import { WebhookSourceHost } from "../contracts/webhooks.ts";
  import { makeWebhookSources } from "./webhook-sources.ts";
-@@ -45,6 +45,18 @@ import { makeWebhooks } from "./webhooks.ts";
+@@ -45,6 +46,18 @@ import { makeWebhooks } from "./webhooks.ts";
  import { makeAppData } from "./app-storage.ts";
  import { makeInteractiveAccounts } from "./interactive-accounts.ts";
  import { InteractiveHost } from "../contracts/interactive-accounts.ts";
@@ -7220,7 +7537,7 @@ index 5e2bbbb..0c2ad8e 100644
  import { makeAccountConnections } from "./account-connections.ts";
  import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
  import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
-@@ -77,6 +89,23 @@ export const createExecutor = (
+@@ -77,6 +90,23 @@ export const createExecutor = (
      const credentials =
        options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
      const db = database(options.database);
@@ -7244,7 +7561,7 @@ index 5e2bbbb..0c2ad8e 100644
      const sources = gitSourceStorage(options.git);
      const origin = options.origin ?? hostedExecutorOrigin;
      const catalog = makeRegistry(
-@@ -203,6 +232,7 @@ export const createExecutor = (
+@@ -203,6 +233,7 @@ export const createExecutor = (
        runtime,
        oauth.resolveSelected,
        options.hooks,
@@ -7252,7 +7569,7 @@ index 5e2bbbb..0c2ad8e 100644
      );
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
-@@ -225,6 +255,7 @@ export const createExecutor = (
+@@ -225,6 +256,7 @@ export const createExecutor = (
        crypto,
        apps.list,
        makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
@@ -7260,7 +7577,7 @@ index 5e2bbbb..0c2ad8e 100644
      );
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
-@@ -235,6 +266,7 @@ export const createExecutor = (
+@@ -235,6 +267,7 @@ export const createExecutor = (
        apps.list,
        options.hooks,
        fromHealth,
@@ -7268,7 +7585,7 @@ index 5e2bbbb..0c2ad8e 100644
      );
      const schedules = makeSchedules(
        options.database,
-@@ -308,6 +340,7 @@ export const createExecutor = (
+@@ -308,6 +341,7 @@ export const createExecutor = (
        ]),
        [OwnerMovesHost]: makeOwnerMoves(db, credentials),
        [InteractiveHost]: { ...interactive, ...retirement },
@@ -7276,7 +7593,7 @@ index 5e2bbbb..0c2ad8e 100644
        scheduler: schedules.dispatcher,
        events,
        schedules: schedules.operations,
-@@ -319,6 +352,14 @@ export const createExecutor = (
+@@ -319,6 +353,14 @@ export const createExecutor = (
                Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
              );
              if (saved === undefined) return yield* accountOperations.remove(input);
@@ -7291,7 +7608,7 @@ index 5e2bbbb..0c2ad8e 100644
              if (
                (yield* interactive.binding({ owner: saved.owner, account: saved.id })) === undefined
              )
-@@ -340,6 +381,19 @@ export const createExecutor = (
+@@ -340,6 +382,19 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -7311,9 +7628,12 @@ index 5e2bbbb..0c2ad8e 100644
          submit: (input) =>
            interactive
              .clearAttempt({ ...input, type: "secrets" })
-@@ -393,12 +447,26 @@ export const createExecutor = (
+@@ -392,11 +447,31 @@ export const createExecutor = (
+         ...ownerOperations,
          remove: (input) =>
            Effect.gen(function* () {
++            const removable = validateRemovalChange(db, ownerOperations.remove(input));
++            yield* removable;
              const acquired = yield* retirement.acquired({ owner: input.owner });
 +            const driverAccounts = yield* query(() =>
 +              db.findMany("accountAcquisitions", {
@@ -7325,19 +7645,21 @@ index 5e2bbbb..0c2ad8e 100644
                owner: input.owner,
                accounts: acquired,
              });
-+            const cleanupDrivers = yield* prepareInteractiveCleanup(
-+              acquisitionRuntime.prepareRemoval,
-+              {
-+                owner: input.owner,
-+                accounts: driverAccounts.map((binding) => binding.account),
-+              },
-+            );
++            // Retain removal receipts until the owner purge commits, including after a failed purge.
++            for (const binding of driverAccounts)
++              yield* retireAcquisition(
++                { owner: input.owner, account: binding.account },
++                Effect.void,
++              ).pipe(
++                Effect.catchTags({
++                  AccountNotFound: () => Effect.fail(new StorageError()),
++                  InteractiveRetirementBusy: () => Effect.fail(new StorageError()),
++                  InteractiveRetirementFailed: () => Effect.fail(new StorageError()),
++                }),
++              );
              const result = yield* ownerOperations.remove(input);
              yield* cleanup;
-+            yield* cleanupDrivers;
              return result;
-           }),
-       },
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
 index ccf8bd9..86a4130 100644
 --- a/packages/sdk/src/implementation/database.ts
@@ -7840,6 +8162,21 @@ index 2f75f2c..ac9fbbf 100644
        reactivity,
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
+diff --git a/packages/sdk/src/index.ts b/packages/sdk/src/index.ts
+index 4c9bdb8..4008457 100644
+--- a/packages/sdk/src/index.ts
++++ b/packages/sdk/src/index.ts
+@@ -25,6 +25,10 @@ export {
+ } from "./implementation/runtime.ts";
+ export { executorDatabase } from "./implementation/storage-migrations.ts";
+ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
++export {
++  accountAcquisitionDriver,
++  type PromiseAccountAcquisitionDriver,
++} from "./implementation/account-acquisition-adapter.ts";
+ /** Create an in-process Executor using caller-owned storage, runtime and credential encryption. */
+ export const createExecutor = (options: ExecutorOptions): Promise<Executor> =>
+   Effect.runPromise(
 diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
 index b73ee7c..4c3dbed 100644
 --- a/playground/sdk/storage.ts
