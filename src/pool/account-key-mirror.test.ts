@@ -53,20 +53,28 @@ test("a Home response with a different identity never acknowledges a mirror", as
     { home, signingKey, now: () => now })).status, 503);
 });
 
-test("oversized unsigned mirror bodies stop reading and cancel before reaching Home", async () => {
-  let reads = 0, cancelled = false, calls = 0;
-  const stream = new ReadableStream<Uint8Array>({
+test("oversized unsigned mirror bodies deliver at most one overflow byte before cancellation", async () => {
+  let delivered = 0, cancelled = false, calls = 0;
+  const stream = new ReadableStream({
+    type: "bytes",
     pull(controller) {
-      if (++reads <= 256) controller.enqueue(new Uint8Array(16_384));
-      else controller.close();
+      const view = controller.byobRequest?.view;
+      if (view === null || view === undefined) {
+        controller.enqueue(new Uint8Array(16_384));
+        delivered += 16_384;
+      } else {
+        const size = Math.min(view.byteLength, 16_384);
+        delivered += size;
+        controller.byobRequest!.respond(size);
+      }
     },
     cancel() { cancelled = true; },
-  }, { highWaterMark: 0 });
+  });
   const init = { method: "POST", body: stream, duplex: "half" };
   const incoming = new Request(`https://pool.example${accountMirrorPath}`, init);
   const home = new HomeClient(async () => { calls++; return Response.json({}); });
   assert.equal((await handleAccountKeyMirror(incoming, { home, signingKey })).status, 413);
   assert.equal(cancelled, true);
-  assert.equal(reads, 5);
+  assert.equal(delivered, 65_537);
   assert.equal(calls, 0);
 });

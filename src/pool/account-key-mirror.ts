@@ -7,20 +7,22 @@ export const accountMirrorPrefix = "sbam1";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 async function mirrorBody(request: Request): Promise<string | undefined> {
-  const reader = request.body?.getReader();
+  const reader = request.body?.getReader({ mode: "byob" });
   if (!reader) return "";
-  const bytes = new Uint8Array(65_536);
+  let bytes = new Uint8Array(65_537);
   let size = 0;
   try {
     for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (size + value.byteLength > bytes.byteLength) {
+      // A default reader can deliver an arbitrarily large pre-auth chunk before we reject it.
+      const { value, done } = await reader.read(bytes.subarray(size));
+      if (value === undefined) break;
+      bytes = new Uint8Array(value.buffer);
+      size += value.byteLength;
+      if (size > 65_536) {
         void reader.cancel().catch(() => {});
         return undefined;
       }
-      bytes.set(value, size);
-      size += value.byteLength;
+      if (done) break;
     }
   } finally { reader.releaseLock(); }
   return new TextDecoder().decode(bytes.subarray(0, size));
