@@ -586,7 +586,7 @@
     {
       "identity": "executor-durable-workflow-input",
       "file": "0063-durable-workflow-input.patch",
-      "content_sha256": "29e6cf29de029f161df2832b7bd20ea660c4e9647e12a0b1d5fed494974a5d9a",
+      "content_sha256": "0db70706069b66b81bd07d230b67dc1bd479bf28688942399d6dfc1a12989665",
       "kind": "upstream",
       "upstream_pull_request": 2471,
       "database_sensitive": true,
