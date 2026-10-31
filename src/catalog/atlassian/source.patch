@@ -607,7 +607,7 @@ diff --git a/openapi.ts b/openapi.ts
 new file mode 100644
 --- /dev/null
 +++ b/openapi.ts
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,35 @@
 +import type { OpenapiToolNamesOptions } from "apps/openapi";
 +import coverage from "./api-coverage.json" with { type: "json" };
 +import { apiOrigin } from "./configuration.js";
@@ -627,10 +627,20 @@ new file mode 100644
 +    methods: { oauth: [{ scheme: api.scheme, field: "access_token", part: "value", prefix: "" }] },
 +    oauth: [],
 +    kinds: Object.fromEntries(api.queries.map((id) => [id, "query" as const])),
-+    patches: api.excluded.map((operation) => ({
-+      op: "remove" as const,
-+      path: `/paths/${pointer(operation.path)}/${operation.method}`,
-+    })),
++    patches: [
++      ...api.excluded.map((operation) => ({
++        op: "remove" as const,
++        path: `/paths/${pointer(operation.path)}/${operation.method}`,
++      })),
++      // The documented flat and nested page bodies must match only their own branch.
++      ...(name === "confluenceV2"
++        ? ["PageBodyWrite", "PageNestedBodyWrite"].map((schema) => ({
++            op: "add" as const,
++            path: `/components/schemas/${schema}/additionalProperties`,
++            value: false,
++          }))
++        : []),
++    ],
 +  } satisfies OpenapiToolNamesOptions & { title: string };
 +}
 diff --git a/transport.ts b/transport.ts
@@ -1358,13 +1368,15 @@ diff --git a/README.md b/README.md
 new file mode 100644
 --- /dev/null
 +++ b/README.md
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,21 @@
 +# Atlassian Cloud
 +
 +Personal OAuth 2.0 access to Jira Platform, Jira Service Management and Confluence REST v1/v2.
 +All API writes require approval. Existing site, Jira and Confluence read shortcuts remain available.
 +Every imported operation requires a cloudId from listSites and sends credentials only to api.atlassian.com.
 +Connect/Forge-owned operations, Basic-only endpoints and Beta-only scopes are excluded.
++Confluence v2 page bodies accept the documented flat or nested representation. The OpenAPI adapter
++closes those two object schemas so their oneOf alternatives do not both match the same valid input.
 +JSM experimental methods send X-ExperimentalApi: opt-in. Attachment, avatar and watcher requests
 +include the exact X-Atlassian-Token header their API operation documents. Read-only POST operations are queries.
 +

@@ -98,7 +98,7 @@ export function atlassianApiFixture() {
           title: payload.title,
           spaceId: payload.spaceId,
           status: "current",
-          body: { storage: payload.body },
+          body: { storage: payload.body.storage ?? payload.body },
           version: { number: 1 },
         };
         pages.set(person.key, value);
@@ -114,7 +114,7 @@ export function atlassianApiFixture() {
             ...pages.get(person.key),
             title: payload.title,
             version: payload.version,
-            body: { storage: payload.body },
+            body: { storage: payload.body.storage ?? payload.body },
           });
         else pages.delete(person.key);
         record(payload);

@@ -9,12 +9,12 @@
     "provider.ts": "9a9a127f5a4210dd5d9e89023628dbea45e825edcad73a98a7d5309a68d943f4",
     "queries.ts": "927fa8b89149009c494d8259678d3907ad318d05b1e865efdd33c098e9574691",
     "configuration.ts": "190d47f9f198c4b524588f437e294f2dabae2cc6ab8953023733ec7ee3516c39",
-    "openapi.ts": "c8ae03b8168e017c8d0295023576ce75b7f528ac3d59026bb558316878482812",
+    "openapi.ts": "98dcc378f4fbf5e14acf3aa03f09979cde9fc76aede3f27d052c75a080ff5059",
     "transport.ts": "8ea342f9cc0085a4bb789d49b410d6c990c78db6fca81bb16709dd092252cf39",
     "api-coverage.json": "8811053d7885c0b5cdeee1702ef4558d8990d24e9b2170a250b6f7463431f149",
-    "README.md": "a601e351718a965be6255f2ee830b02b56094d9ffb22aba78e47e1843fb0ff46"
+    "README.md": "7668f7754d797c20b7c4aba316dda89e985d07740cbe54c894a9b68d3c75da4b"
   },
-  "snapshotSha256": "a9c3c70ac14a9c67dcc10c968c4de8f33ff61ed06007a1d61bc4981456b418b6",
+  "snapshotSha256": "2704676e2d2ae1412f042d6152ee92846ccf35af0f35e5a387ec31d49a76ce82",
   "publicSource": {
     "snapshotSha256": "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
     "files": {
@@ -24,7 +24,7 @@
   },
   "localPatch": {
     "path": "source.patch",
-    "sha256": "c0618785419895df76d144bf3bce90de05cec3f28e6ff708984fc06c4c8a2621"
+    "sha256": "8d7596c5dffda96be867692cb51d9e78a1b6d16db10e487034d12162651b2cca"
   },
   "capabilities": {
     "checkedAt": "2026-10-31",

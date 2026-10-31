@@ -70,7 +70,8 @@ export async function proveAtlassianWrites({
     evidence(`${name}:accept`, result);
     check(
       result.structuredContent?.status === "completed" &&
-        result.structuredContent?.execution?.ok === true,
+        result.structuredContent?.execution?.ok === true &&
+        result.structuredContent?.execution?.value?.ok === true,
       `${name} approval runs the real router successfully`,
     );
     check(provider.writes.length === before + 1, `${name} reaches the API exactly once`);
@@ -184,7 +185,8 @@ export async function proveAtlassianWrites({
       person,
     );
     const pageId = index === 0 ? "9101" : "9202";
-    const pageBody = { representation: "storage", value: `<p>${person.pageMarker}</p>` };
+    const flatBody = { representation: "storage", value: `<p>${person.pageMarker}</p>` };
+    const pageBody = index === 0 ? flatBody : { storage: flatBody };
     await write(
       client,
       "confluenceV2.page.createPage",
