@@ -424,6 +424,220 @@ index 0000000..5ba4bfb
 +      trackAccount,
 +    };
 +  });
+diff --git a/e2e/support/account-acquisition-sdk.ts b/e2e/support/account-acquisition-sdk.ts
+new file mode 100644
+index 0000000..d16fec0
+--- /dev/null
++++ b/e2e/support/account-acquisition-sdk.ts
+@@ -0,0 +1,208 @@
++import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { acquisitionAppSource } from "./acquisition-product.ts";
++import { appsManifest } from "./apps-release.ts";
++import { lockedNpmRegistry } from "./npm-registry.ts";
++import { Target } from "./platform.ts";
++
++const Ready = Schema.Struct({ port: Schema.Number, owner: Schema.String, app: Schema.String });
++const Checks = Schema.Struct({ count: Schema.Number });
++const program = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { nativeRepositories } from "@executor-js/app-source/node";
++import {
++  createExecutor, makeExecutorStorage, executorHandlers, ExecutorApi, OwnerId, StorageError,
++  type Executor, type ExecutorOptions, type ResourceLifecycle,
++} from "@executor-js/sdk/core";
++import { accountAcquisitionDriver } from "@executor-js/sdk";
++import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
++import { memoryRegistry } from "@executor-js/sdk/testing";
++import { InteractiveStart, InteractiveStatus, HostOperationFailed } from "apps/contracts";
++import { Console, Deferred, Effect, Layer, Path, Redacted, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer } from "effect/http";
++import { HttpApiBuilder } from "effect/http-api";
++import { SqlClient } from "effect/sql";
++import { pgliteLayer } from "fumadb-effect/pglite";
++import { createServer } from "node:http";
++
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import * as Runtime from "@effect/platform-node/NodeRuntime";
++import { FetchHttpClient, HttpServerRequest, HttpServerResponse } from "effect/http";
++
++const input = INPUT;
++const backendOrigin = input.backendOrigin;
++Runtime.runMain(Effect.scoped(Effect.gen(function* () {
++
++  const path = yield* Path.Path;
++  const directory = input.directory;
++  const database = yield* Layer.build(pgliteLayer());
++  const sql = yield* SqlClient.SqlClient.pipe(Effect.provideContext(database));
++  const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(Effect.provideContext(database));
++  yield* storage.migrate;
++  // An adapter failure after external cleanup must roll back the purge, retaining its receipt.
++  yield* sql\`create table purge_fault (blocked boolean not null)\`;
++  yield* sql\`insert into purge_fault values (false)\`;
++  yield* sql\`create function refuse_purge() returns trigger language plpgsql as $$
++    begin
++      if exists(select 1 from purge_fault where blocked) then
++        raise exception 'Synthetic purge storage failure';
++      end if;
++      return old;
++    end $$\`;
++  yield* sql\`create trigger refuse_purge before delete on executor_apps for each row execute function refuse_purge()\`;
++  const secret = Redacted.make("a".repeat(64));
++  const blobs = filesystemBlobStore({ directory: path.join(directory, "blobs") });
++  const ready = yield* Deferred.make<Executor>();
++  const host = yield* workerdApps({
++    directory: path.join(directory, "workerd"), blobs, executor: Deferred.await(ready),
++    npmRegistry: input.npmRegistry, encryptionKey: secret, allowPrivateAppFetch: true,
++  });
++  const retireChecks = yield* Ref.make(0);
++  const hooks: ResourceLifecycle = {
++    userLinks: () => Effect.succeed([]), appLinks: () => Effect.succeed([]),
++    sourceActorLost: () => Effect.void,
++    appResolving: (_app, accounts) => Effect.succeed(new Set(accounts.map((a) => a.id))),
++    removalResolving: (_app, accounts) => Effect.succeed(new Set(accounts.map((a) => a.id))),
++    accountsResolving: (accounts) => Effect.succeed(new Set(accounts.map((a) => a.id))),
++    connectionCompleting: () => Effect.void, appCreated: () => Effect.void,
++    appRemoving: () => Effect.void, appAccountConnected: () => Effect.void,
++    accountCreated: () => Effect.void, accountRemoving: () => Effect.void,
++    accountRetiring: () => Ref.update(retireChecks, (n) => n + 1).pipe(Effect.andThen(Effect.fail(new StorageError()))),
++  };
++  const options: ExecutorOptions = {
++    database: storage, secret, blobs, git: nativeRepositories(path.join(directory, "repositories")),
++    runtime: host.runtime, workflows: host.workflows, registry: memoryRegistry(), hooks,
++  };
++  const initial = yield* createExecutor(options).pipe(Effect.provide(NodeCrypto.layer));
++  yield* Deferred.succeed(ready, initial);
++  const owner = OwnerId.make("purge-owner-first");
++  const files = input.files;
++  const { app } = yield* initial.apps.deploy({ owner, name: "Owner purge manager", files });
++  const provider = app.requirements.accounts.identity!.provider;
++  const call = async <A, I>(context: import("@executor-js/sdk/core").AccountAcquisitionContext,
++    step: string, schema: Schema.Codec<A, I>, data: object = {}) => {
++    const response = await context.fetch(\`\${backendOrigin}/connect\`, {
++      method: "POST", signal: context.signal,
++      headers: { authorization: "Bearer synthetic-backend-key", "content-type": "application/json" },
++      body: JSON.stringify({ step, method: context.method, caller: context.owner, operation: context.operation, ...data }),
++    });
++    if (!response.ok) throw new HostOperationFailed({});
++    return Schema.decodeUnknownSync(schema)(await response.json());
++  };
++  const driver = accountAcquisitionDriver({
++    id: "synthetic-purge-driver", revision: "purge-r1",
++    start: (ctx) => call(ctx, "start", InteractiveStart),
++    status: (ctx, input) => call(ctx, "status", InteractiveStatus, input),
++    submit: (ctx, input) => call(ctx, "submit", InteractiveStatus, input),
++    cancel: async (ctx, input) => { await call(ctx, "cancel", Schema.Null, input); },
++    remove: async (ctx) => { await call(ctx, "remove", Schema.Null, { ref: Redacted.value(ctx.reference) }); },
++  });
++  const executor = yield* createExecutor({ ...options,
++    acquisition: { registrations: [{ provider, method: "paste", current: true, driver, fetch: globalThis.fetch }] },
++  }).pipe(Effect.provide(NodeCrypto.layer));
++  const routes = Layer.mergeAll(
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    HttpRouter.add("POST", "/_fixture/purge-fault", Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const blocked = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Boolean)));
++      yield* sql\`update purge_fault set blocked = \${blocked}\`;
++      return yield* HttpServerResponse.json(null);
++    }).pipe(Effect.orDie)),
++    HttpRouter.add("GET", "/_fixture/retire-checks", Effect.gen(function* () {
++      return yield* HttpServerResponse.json({ count: yield* Ref.get(retireChecks) });
++    })),
++  );
++  const services = yield* Layer.build(HttpRouter.serve(routes, {
++    disableLogger: true, disableListenLog: true,
++  }).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))));
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("SDK fixture must listen on TCP");
++  yield* Console.log(JSON.stringify({ port: server.address.port, owner, app: app.id }));
++  return yield* Effect.never;
++})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))));
++`;
++
++/** Run the complete public SDK HTTP host in its own process with real PostgreSQL, Git and workerd adapters. */
++export const acquisitionSdk = (backendOrigin: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target;
++    const fs = yield* FileSystem.FileSystem;
++    const path = yield* Path.Path;
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const client = yield* HttpClient.HttpClient;
++    const files = [
++      { path: "index.ts", content: acquisitionAppSource(backendOrigin) },
++      appsManifest,
++    ] as const;
++    const registry = yield* lockedNpmRegistry;
++    const entry = path.join(target.directory, "owner-purge-sdk.ts");
++    const input = {
++      directory: path.join(target.directory, "owner-purge-sdk"),
++      backendOrigin,
++      npmRegistry: registry.url,
++      files,
++    };
++    const source = program.replace("INPUT", JSON.stringify(input) + " as const");
++    yield* fs.writeFileString(entry, source);
++    const config = path.join(target.directory, "owner-purge-sdk-tsconfig.json");
++    yield* fs.writeFileString(
++      config,
++      JSON.stringify({
++        extends: path.resolve("tsconfig.json"),
++        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++        files: [entry],
++        include: [],
++        exclude: [],
++      }),
++    );
++    const checked = yield* processes.exitCode(
++      ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++        stdout: "inherit",
++        stderr: "inherit",
++      }),
++    );
++    if (checked !== 0) return yield* Effect.die("Public SDK host entry failed its typecheck");
++    const child = yield* processes.spawn(
++      ChildProcess.make("node", [entry], { stdout: "pipe", stderr: "inherit" }),
++    );
++    const line = yield* child.stdout.pipe(
++      Stream.decodeText(),
++      Stream.splitLines,
++      Stream.filter((line) => line.startsWith('{"port":')),
++      Stream.runHead,
++    );
++    if (Option.isNone(line)) return yield* Effect.die("Public SDK host exited before listening");
++    const ready = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line.value);
++    const origin = `http://127.0.0.1:${ready.port}`;
++    const request = (method: "GET" | "POST" | "DELETE", route: string, data?: unknown) =>
++      Effect.gen(function* () {
++        const base = HttpClientRequest.make(method)(origin + route);
++        const configured =
++          data === undefined ? base : yield* HttpClientRequest.bodyJson(data)(base);
++        const response = yield* client.execute(configured);
++        const text = yield* response.text;
++        const body = text.length
++          ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text)
++          : null;
++        return { status: response.status, body };
++      });
++    return {
++      owner: ready.owner,
++      app: ready.app,
++      files,
++      request,
++      retireChecks: request("GET", "/_fixture/retire-checks").pipe(
++        Effect.flatMap((r) => Schema.decodeUnknownEffect(Checks)(r.body)),
++        Effect.map((r) => r.count),
++      ),
++      blockPurge: (blocked: boolean) =>
++        request("POST", "/_fixture/purge-fault", blocked).pipe(
++          Effect.flatMap((r) =>
++            r.status === 200
++              ? Effect.void
++              : Effect.die("Could not control the synthetic storage fault"),
++          ),
++        ),
++    };
++  });
 diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
 new file mode 100644
 index 0000000..a369de0
@@ -534,7 +748,7 @@ index 0000000..a369de0
 +  ctx.user.accounts.identity.map((account) => ({ id: account.id, method: account.method, fields: account.fields }))) }) });
 +`;
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
-index 0ce8306..2cb6f77 100644
+index 0ce8306..f4af640 100644
 --- a/e2e/support/interactive-account-backend.ts
 +++ b/e2e/support/interactive-account-backend.ts
 @@ -3,16 +3,18 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -557,7 +771,7 @@ index 0ce8306..2cb6f77 100644
  });
  type Input = typeof Input.Type;
  interface Session {
-@@ -21,12 +23,25 @@ interface Session {
+@@ -21,13 +23,27 @@ interface Session {
    readonly ref: string;
    readonly polls: number;
  }
@@ -581,9 +795,11 @@ index 0ce8306..2cb6f77 100644
 +  const driverHealthStatus = yield* Ref.make(200);
 +  const driverGates = yield* Ref.make<ReadonlyMap<DriverStep, DriverGate>>(new Map());
    const accountInfo = yield* Ref.make<FixtureAccountInfo | undefined>(undefined);
++  const acquisitionFailure = yield* Ref.make<string | undefined>(undefined);
    const refuseRemoval = yield* Ref.make(false);
    const refuseCancellation = yield* Ref.make(false);
-@@ -39,6 +54,7 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+   const removeRemaining = yield* Ref.make<number | undefined>(undefined);
+@@ -39,6 +55,7 @@ export const interactiveAccountBackend = Effect.gen(function* () {
    const removalStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const submitGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const submitStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
@@ -591,7 +807,7 @@ index 0ce8306..2cb6f77 100644
    const statusGate = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const statusStarted = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
    const routes = HttpRouter.add(
-@@ -65,6 +81,25 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -65,6 +82,25 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          ]);
        }
        if (input.caller === "") return HttpServerResponse.empty({ status: 403 });
@@ -617,7 +833,7 @@ index 0ce8306..2cb6f77 100644
        if (input.step === "start") {
          const id = yield* Ref.updateAndGet(next, (value) => value + 1);
          const session = `private-session-${id}`;
-@@ -82,7 +117,10 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -82,7 +118,10 @@ export const interactiveAccountBackend = Effect.gen(function* () {
            ...(input.method === "paste"
              ? { paste: { label: "Paste the final address", placeholder: "http://localhost/..." } }
              : { code: `CODE-${id}` }),
@@ -629,7 +845,7 @@ index 0ce8306..2cb6f77 100644
            message: "Finish signing in, then return here.",
          });
        }
-@@ -123,6 +161,11 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -123,12 +162,20 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          if (gate !== undefined) yield* Deferred.await(gate);
        }
        if (input.step === "submit") {
@@ -641,7 +857,16 @@ index 0ce8306..2cb6f77 100644
          const gate = yield* Ref.get(submitGate),
            started = yield* Ref.get(submitStarted);
          if (started !== undefined) yield* Deferred.succeed(started, undefined);
-@@ -166,9 +209,38 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+         if (gate !== undefined) yield* Deferred.await(gate);
+       }
+       if (input.method === "slow") return yield* Effect.never;
++      const failure = yield* Ref.get(acquisitionFailure);
++      if (failure !== undefined)
++        return yield* HttpServerResponse.json({ state: "failed", message: failure });
+       if (input.method === "failure")
+         return yield* HttpServerResponse.json({ state: "failed", message: "Synthetic refusal" });
+       if (input.step === "submit")
+@@ -166,10 +213,40 @@ export const interactiveAccountBackend = Effect.gen(function* () {
    );
    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
    if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
@@ -678,9 +903,11 @@ index 0ce8306..2cb6f77 100644
 +    holdObservation: holdDriver("observe"),
 +    holdCheck: holdDriver("check"),
      setAccountInfo: (value: FixtureAccountInfo) => Ref.set(accountInfo, value),
++    failAcquisition: (message?: string) => Ref.set(acquisitionFailure, message),
      refuseCancellation: (refuse: boolean) => Ref.set(refuseCancellation, refuse),
      refuseRemoval: (refuse: boolean) =>
-@@ -183,11 +255,13 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+       Ref.set(refuseRemoval, refuse).pipe(Effect.andThen(Ref.set(removeRemaining, undefined))),
+@@ -183,11 +260,13 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          started = yield* Deferred.make<void>();
        yield* Ref.set(removalGate, gate);
        yield* Ref.set(removalStarted, started);
@@ -697,7 +924,7 @@ index 0ce8306..2cb6f77 100644
        };
      }),
      holdSubmit: Effect.gen(function* () {
-@@ -202,6 +276,16 @@ export const interactiveAccountBackend = Effect.gen(function* () {
+@@ -202,6 +281,16 @@ export const interactiveAccountBackend = Effect.gen(function* () {
          ),
        };
      }),
@@ -764,10 +991,10 @@ index 931d791..3ac3326 100644
                };
          const child = yield* processes.spawn(
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index c1466fc..8544080 100644
+index c1466fc..dd8e576 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7812,6 +7812,96 @@ export const scenarios = plan({
+@@ -7812,6 +7812,116 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
@@ -782,6 +1009,26 @@ index c1466fc..8544080 100644
 +      cloud: na(
 +        "Requires a process-owned public product composition and loopback credential service.",
 +      ),
++    },
++  },
++  accountAcquisitionFailurePrivacy: {
++    fixtures: "actors",
++    file: "account-acquisition-cleanup.spec.ts",
++    title: "driver reconnect failures redact raw and encoded references before retaining messages",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises shared SDK failure persistence through hosted Connect APIs."),
++      cloud: na("Requires process-owned registration and a loopback credential service."),
++    },
++  },
++  accountAcquisitionOwnerPurge: {
++    file: "account-acquisition-owner-purge.spec.ts",
++    title:
++      "driver owner purge retains receipts through storage failure without applying individual deletion policy",
++    targets: {
++      "self-host": scheduled,
++      local: na("Local intentionally excludes the owner-purge SDK API."),
++      cloud: na("Uses a complete loopback SDK host with real PGlite and workerd adapters."),
 +    },
 +  },
 +  accountAcquisitionIdentity: {
@@ -866,10 +1113,10 @@ index c1466fc..8544080 100644
      file: "account-observations-local.spec.ts",
 diff --git a/e2e/tests/account-acquisition-cleanup.spec.ts b/e2e/tests/account-acquisition-cleanup.spec.ts
 new file mode 100644
-index 0000000..dd8e166
+index 0000000..e9bcbb3
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-cleanup.spec.ts
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,174 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -882,6 +1129,44 @@ index 0000000..dd8e166
 +const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
 +
 +layer(HostedLive, { excludeTestServices: true })("Driver acquisition output and cleanup", (it) => {
++  it.effect(scenarios.accountAcquisitionFailurePrivacy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const actor = f.actors.member;
++        const { account } = yield* f.create(actor);
++        for (const step of ["submit", "status"] as const) {
++          for (const message of ["opaque-1", Buffer.from("opaque-1").toString("base64")]) {
++            const pending = yield* f.pending(actor, f.manager.app.id, account);
++            expect(pending.status).toBe(200);
++            const connection = (yield* body(Resource, pending)).id;
++            expect((yield* f.start(actor, connection)).status).toBe(200);
++            yield* f.backend.failAcquisition(message);
++            const status = () => f.api.request(actor, "GET", `${f.connectPath(connection)}/status`);
++            const failed = yield* step === "submit" ? f.submit(actor, connection) : status();
++            expect(failed.status).toBe(200);
++            expect(failed.body).toMatchObject({ state: "failed" });
++            const calls = (yield* f.backend.calls).length;
++            const retained = yield* status();
++            expect(retained.body).toEqual(failed.body);
++            expect((yield* f.backend.calls).length).toBe(calls);
++            expect(JSON.stringify(failed.body)).not.toContain("opaque-1");
++            expect(JSON.stringify(failed.body)).not.toContain(
++              Buffer.from("opaque-1").toString("base64"),
++            );
++            expect(
++              (yield* f.api.request(actor, "POST", `${f.connectPath(connection)}/cancel`)).status,
++            ).toBe(200);
++          }
++        }
++        expect(yield* f.backend.removeCalls).toEqual([]);
++        expect((yield* f.api.request(actor, "GET", `${f.prefix}/accounts/${account}`)).status).toBe(
++          200,
++        );
++      }),
++    ),
++  );
 +  it.effect(scenarios.accountAcquisitionIdentity.title, (context) =>
 +    withHostedCase(
 +      context,
@@ -1515,6 +1800,109 @@ index 0000000..ab4f540
 +        });
 +        yield* f.backend.driverHealth({});
 +        expect((yield* check()).body).toMatchObject({ driver: { check: { status: "healthy" } } });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/account-acquisition-owner-purge.spec.ts b/e2e/tests/account-acquisition-owner-purge.spec.ts
+new file mode 100644
+index 0000000..e9cd528
+--- /dev/null
++++ b/e2e/tests/account-acquisition-owner-purge.spec.ts
+@@ -0,0 +1,97 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { acquisitionSdk } from "../support/account-acquisition-sdk.ts";
++import { interactiveAccountBackend } from "../support/interactive-account-backend.ts";
++import { body } from "../support/api.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++layer(TestLive, { excludeTestServices: true })("SDK owner purge", (it) => {
++  it.effect(scenarios.accountAcquisitionOwnerPurge.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const backend = yield* interactiveAccountBackend;
++        const sdk = yield* acquisitionSdk(backend.origin);
++        const connect = (owner: string, app: string) =>
++          Effect.gen(function* () {
++            const pending = yield* sdk.request("POST", "/v1/account-connections", {
++              owner,
++              target: { app, requirement: "identity" },
++            });
++            expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++            const connection = (yield* body(Resource, pending)).id;
++            expect(
++              (yield* sdk.request("POST", "/v1/account-connections/interactive/start", {
++                owner,
++                connection,
++                method: "paste",
++              })).status,
++            ).toBe(200);
++            const completed = yield* sdk.request(
++              "POST",
++              "/v1/account-connections/interactive/submit",
++              {
++                owner,
++                connection,
++                value: "http://localhost:48765/done?code=synthetic",
++              },
++            );
++            expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++            return (yield* body(Connected, completed)).account.id;
++          });
++        const first = yield* connect(sdk.owner, sdk.app);
++        expect(
++          (yield* sdk.request("DELETE", `/v1/accounts/${first}?owner=${sdk.owner}`)).status,
++        ).toBe(500);
++        expect(yield* sdk.retireChecks).toBe(1);
++        expect(yield* backend.removeCalls).toEqual([]);
++        yield* sdk.blockPurge(true);
++        expect((yield* sdk.request("DELETE", `/v1/owners/${sdk.owner}`)).status).toBe(500);
++        expect(yield* backend.removeCalls).toEqual([]);
++        expect((yield* sdk.request("GET", `/v1/accounts/${first}?owner=${sdk.owner}`)).status).toBe(
++          200,
++        );
++        yield* sdk.blockPurge(false);
++        const purged = yield* sdk.request("DELETE", `/v1/owners/${sdk.owner}`);
++        expect(purged.status, JSON.stringify(purged.body)).toBe(200);
++        expect(purged.body).toMatchObject({ accounts: 1, apps: 1 });
++        expect(yield* sdk.retireChecks).toBe(1);
++        expect((yield* backend.removeCalls).map((call) => call.ref)).toEqual(["opaque-1"]);
++
++        const owner = "purge-owner-second";
++        const deployed = yield* sdk.request("POST", "/v1/apps/deploy", {
++          owner,
++          name: "Purge retry manager",
++          files: sdk.files,
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = (yield* body(Schema.Struct({ app: Resource }), deployed)).app.id;
++        const account = yield* connect(owner, app);
++        const hold = yield* backend.holdRemoval;
++        const removing = yield* sdk.request("DELETE", `/v1/owners/${owner}`).pipe(Effect.forkChild);
++        yield* hold.started;
++        yield* sdk.blockPurge(true);
++        yield* hold.release;
++        expect((yield* Fiber.join(removing)).status).toBe(500);
++        expect((yield* sdk.request("GET", `/v1/accounts/${account}?owner=${owner}`)).status).toBe(
++          200,
++        );
++        const completed = yield* backend.removeCalls;
++        expect(completed.map((call) => call.ref)).toEqual(["opaque-1", "opaque-2"]);
++        expect(completed[1]?.operation).toBeTruthy();
++        yield* sdk.blockPurge(false);
++        expect((yield* sdk.request("DELETE", `/v1/owners/${owner}`)).status).toBe(200);
++        expect(yield* backend.removeCalls).toEqual(completed);
++        expect((yield* sdk.request("DELETE", `/v1/owners/${owner}`)).status).toBe(200);
++        expect(yield* backend.removeCalls).toEqual(completed);
++        expect((yield* sdk.request("GET", `/v1/accounts/${account}?owner=${owner}`)).status).toBe(
++          404,
++        );
++        expect(yield* sdk.retireChecks).toBe(1);
 +      }),
 +    ),
 +  );
@@ -5691,11 +6079,11 @@ index 0000000..74bc6a1
 +  });
 diff --git a/packages/sdk/src/implementation/account-acquisition-connect.ts b/packages/sdk/src/implementation/account-acquisition-connect.ts
 new file mode 100644
-index 0000000..01f98e5
+index 0000000..658cf35
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-connect.ts
-@@ -0,0 +1,125 @@
-+import { Clock, Effect } from "effect";
+@@ -0,0 +1,130 @@
++import { Clock, Effect, Redacted } from "effect";
 +import type { ConnectCommand } from "apps/contracts";
 +import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
 +import type { InteractiveSession } from "../contracts/interactive-accounts.ts";
@@ -5768,6 +6156,11 @@ index 0000000..01f98e5
 +          )
 +            return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
 +          const deadline = (yield* Clock.currentTimeMillis) + 15_000;
++          const statusOutput = (value: unknown) =>
++            acquisitionStatusOutput(
++              value,
++              saved === undefined ? undefined : Redacted.value(saved.reference),
++            );
 +          return yield* invokeAcquisitionDriver<unknown, unknown>(
 +            registration,
 +            {
@@ -5794,7 +6187,7 @@ index 0000000..01f98e5
 +                case "status":
 +                  return driver
 +                    .status(context, { session: command.input.session })
-+                    .pipe(Effect.flatMap(acquisitionStatusOutput));
++                    .pipe(Effect.flatMap(statusOutput));
 +                case "submit":
 +                  return driver.submit === undefined
 +                    ? Effect.fail(new AccountAcquisitionUnavailable({ reason: "unsupported" }))
@@ -5803,7 +6196,7 @@ index 0000000..01f98e5
 +                          session: command.input.session,
 +                          value: command.input.value,
 +                        })
-+                        .pipe(Effect.flatMap(acquisitionStatusOutput));
++                        .pipe(Effect.flatMap(statusOutput));
 +                case "cancel":
 +                  return driver.cancel(context, { session: command.input.session });
 +                case "remove":
@@ -5822,10 +6215,10 @@ index 0000000..01f98e5
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-output.ts b/packages/sdk/src/implementation/account-acquisition-output.ts
 new file mode 100644
-index 0000000..161ee9e
+index 0000000..e5dca20
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-output.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,83 @@
 +import { Effect, Option, Schema, Struct } from "effect";
 +import {
 +  AccountCheckResult,
@@ -5843,14 +6236,18 @@ index 0000000..161ee9e
 +import type { AccountId } from "../contracts/shared.ts";
 +
 +/** Unsafe identity text falls back to the host's account name without losing the acquired credential. */
-+export const acquisitionStatusOutput = (value: unknown) =>
++export const acquisitionStatusOutput = (value: unknown, reference?: string) =>
 +  Effect.gen(function* () {
 +    const result = yield* Schema.decodeUnknownEffect(InteractiveStatus)(value).pipe(
 +      Effect.mapError(() => new HostOutputInvalid()),
 +    );
++    if (result.state === "failed" && !privateObservationStrings(result, {}, reference))
++      return { state: "failed" as const, message: "The account sign-in could not finish." };
 +    if (result.state !== "connected" || result.accountInfo === undefined) return result;
 +    const { accountInfo, ...connected } = result;
-+    const shown = privateAccountDisplay({ accountInfo }, {}, result.ref);
++    const acquired = privateAccountDisplay({ accountInfo }, {}, result.ref);
++    const shown =
++      acquired === undefined ? undefined : privateAccountDisplay(acquired, {}, reference);
 +    return shown === undefined ? connected : { ...connected, accountInfo: shown.accountInfo };
 +  });
 +
@@ -7505,7 +7902,7 @@ index 0000000..c836480
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5e2bbbb..38487b4 100644
+index 5e2bbbb..6d694ba 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,7 +1,8 @@
@@ -7537,7 +7934,7 @@ index 5e2bbbb..38487b4 100644
  import { makeAccountConnections } from "./account-connections.ts";
  import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
  import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
-@@ -77,6 +90,23 @@ export const createExecutor = (
+@@ -77,6 +90,30 @@ export const createExecutor = (
      const credentials =
        options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
      const db = database(options.database);
@@ -7558,10 +7955,17 @@ index 5e2bbbb..38487b4 100644
 +      acquisitionRegistry,
 +      options.hooks,
 +    );
++    // Owner removal authorizes the whole purge, independently of a person's account rights.
++    const retireAcquisitionForOwnerPurge = makeAcquisitionRetirement(
++      db,
++      credentials,
++      crypto,
++      acquisitionRegistry,
++    );
      const sources = gitSourceStorage(options.git);
      const origin = options.origin ?? hostedExecutorOrigin;
      const catalog = makeRegistry(
-@@ -203,6 +233,7 @@ export const createExecutor = (
+@@ -203,6 +240,7 @@ export const createExecutor = (
        runtime,
        oauth.resolveSelected,
        options.hooks,
@@ -7569,7 +7973,7 @@ index 5e2bbbb..38487b4 100644
      );
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
-@@ -225,6 +256,7 @@ export const createExecutor = (
+@@ -225,6 +263,7 @@ export const createExecutor = (
        crypto,
        apps.list,
        makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
@@ -7577,7 +7981,7 @@ index 5e2bbbb..38487b4 100644
      );
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
-@@ -235,6 +267,7 @@ export const createExecutor = (
+@@ -235,6 +274,7 @@ export const createExecutor = (
        apps.list,
        options.hooks,
        fromHealth,
@@ -7585,7 +7989,7 @@ index 5e2bbbb..38487b4 100644
      );
      const schedules = makeSchedules(
        options.database,
-@@ -308,6 +341,7 @@ export const createExecutor = (
+@@ -308,6 +348,7 @@ export const createExecutor = (
        ]),
        [OwnerMovesHost]: makeOwnerMoves(db, credentials),
        [InteractiveHost]: { ...interactive, ...retirement },
@@ -7593,7 +7997,7 @@ index 5e2bbbb..38487b4 100644
        scheduler: schedules.dispatcher,
        events,
        schedules: schedules.operations,
-@@ -319,6 +353,14 @@ export const createExecutor = (
+@@ -319,6 +360,14 @@ export const createExecutor = (
                Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
              );
              if (saved === undefined) return yield* accountOperations.remove(input);
@@ -7608,7 +8012,7 @@ index 5e2bbbb..38487b4 100644
              if (
                (yield* interactive.binding({ owner: saved.owner, account: saved.id })) === undefined
              )
-@@ -340,6 +382,19 @@ export const createExecutor = (
+@@ -340,6 +389,19 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -7628,7 +8032,7 @@ index 5e2bbbb..38487b4 100644
          submit: (input) =>
            interactive
              .clearAttempt({ ...input, type: "secrets" })
-@@ -392,11 +447,31 @@ export const createExecutor = (
+@@ -392,11 +454,31 @@ export const createExecutor = (
          ...ownerOperations,
          remove: (input) =>
            Effect.gen(function* () {
@@ -7647,7 +8051,7 @@ index 5e2bbbb..38487b4 100644
              });
 +            // Retain removal receipts until the owner purge commits, including after a failed purge.
 +            for (const binding of driverAccounts)
-+              yield* retireAcquisition(
++              yield* retireAcquisitionForOwnerPurge(
 +                { owner: input.owner, account: binding.account },
 +                Effect.void,
 +              ).pipe(
