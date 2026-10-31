@@ -542,7 +542,6 @@ test("the old /setup page sends people to their own organization's Connect page"
   assert.equal((await page(unverified)).headers.get("location"), "/");
 });
 
-
 test("a host that ignores tools-only scope cannot publish a broad setup token", async () => {
   const f = fixture({ tools: ({ path }) => path === "/api/auth/api-key/create"
     ? json({ id: "legacy-key", key: "exp_legacy-broad-secret" }) : undefined });
