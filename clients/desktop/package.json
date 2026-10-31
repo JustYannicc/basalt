@@ -31,7 +31,7 @@
     "appId": "run.signalbox.client.development",
     "artifactName": "Signalbox-Client-${version}-${os}-${arch}.${ext}",
     "directories": {
-      "output": ".artifacts"
+      "output": "dist-packages"
     },
     "files": [
       ".dist/**",
