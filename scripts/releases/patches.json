@@ -613,7 +613,7 @@
     {
       "identity": "executor-workflow-input-approvals",
       "file": "0068-workflow-input-approvals.patch",
-      "content_sha256": "6ca7583b59d333bc1e3ed13e78db807b87d007ed5b228ca337752201fd4c950c",
+      "content_sha256": "6cbe830be4784b3e74d003f5f25f0fdaf51c09b84cb1d20562bfea8541204438",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

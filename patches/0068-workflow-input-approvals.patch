@@ -2349,6 +2349,19 @@ index 12c2899..6f8f902 100644
    workflowInputDefaults: {
      fixtures: "actors",
      file: "workflow-input-defaults.spec.ts",
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+index a360128..12d2d12 100644
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+           reason:
+-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23. Declare a supported apps version.",
++            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24. Declare a supported apps version.",
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(
 diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
 index 193a3b1..8935b05 100644
 --- a/e2e/tests/local-workflow-inputs.spec.ts
