@@ -14663,3 +14663,15 @@ diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
  };
  
  /**
+diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
+--- a/playground/sdk/storage.ts
++++ b/playground/sdk/storage.ts
+@@ -10,7 +10,7 @@
+       Effect.gen(function* () {
+         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+         yield* storage.migrate;
+-        const orm = storage.orm("4.0.16");
++        const orm = storage.orm("4.0.17");
+         const createdAt = new Date("2026-01-01T00:00:00.000Z");
+         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
+           id: "dpl_example",
