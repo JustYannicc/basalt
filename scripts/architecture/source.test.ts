@@ -51,6 +51,15 @@ test("host and SDK evidence resolves to the calling module", () => {
   expect(result.dependencies.map(d => `${d.source}->${d.target}`)).toEqual(["router->service", "router->service"]);
 });
 
+test("a module's declared listener permits internal loopback calls without allowing other hosts", () => {
+  const root = fixture({ "src/connection.ts": "fetch('http://127.0.0.1:8123/mcp'); fetch('http://localhost/mcp'); fetch('https://unmodelled.invalid/');" });
+  const result = sourceDependencies(root, [module("connection", "src/connection.ts", {
+    endpointHosts: ["127.0.0.1", "localhost"],
+  })], []);
+  expect(result.dependencies).toEqual([]);
+  expect(result.errors).toEqual(["src/connection.ts:1: Unmodelled outside host: unmodelled.invalid"]);
+});
+
 test("computed egress and undeclared service bindings cannot disappear from the check", () => {
   const root = fixture({ "src/router.ts": "fetch(destination); fetch(env.URL); env.UNKNOWN.fetch(request);" });
   const errors = sourceDependencies(root, [module("router", "src/router.ts", { endpointHosts: ["api.example.invalid"] })], []).errors;

@@ -9,6 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  client-connection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --cwd clients --frozen-lockfile
+      - run: bun run --cwd clients typecheck
+      - name: Verify headless connection through independent processes
+        run: bun run --cwd clients test
   slack-health:
     runs-on: ubuntu-latest
     timeout-minutes: 10
