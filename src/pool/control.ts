@@ -1,5 +1,6 @@
 import { accountsView } from "./accounts-view.ts";
 import { mapBounded } from "./bounded.ts";
+import { poolGroupPrefix } from "./pool-group.ts";
 import providers from "./providers.json" with { type: "json" };
 import {
   callerHeader,
@@ -78,7 +79,7 @@ export interface Session {
 export interface Group { id: number; channel_name: string }
 export interface Member { id: number; channel_group_id: number; auth_id: string }
 export interface Membership { groups: Group[]; members: Member[] }
-export const poolGroupPrefix = "signalbox-pool-";
+export { poolGroupPrefix };
 export const signInTtlMs = 20 * 60_000;
 const management = "/v8/management";
 const sessionPrefix = "sbs1";

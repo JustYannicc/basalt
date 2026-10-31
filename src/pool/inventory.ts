@@ -2,7 +2,7 @@ import type pg from "pg";
 import { poolDatabase } from "./database-settings.ts";
 import { privacyReceipt } from "./privacy-receipt.ts";
 import { inventoryFailure, inventoryRecord } from "./inventory-record.ts";
-import { poolGroupPrefix } from "./control.ts";
+import { poolGroupPrefix } from "./pool-group.ts";
 
 export const inventoryCron = "13 * * * *";
 const rowLimit = 1_000;
