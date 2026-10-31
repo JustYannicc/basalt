@@ -184,6 +184,16 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   }
   const { search } = url;
   const pathname = servicePath(url.pathname);
+  if (pathname === "/native/device" || pathname === "/native/device/") {
+    if (request.method !== "GET" && request.method !== "HEAD")
+      return new Response(null, { status: 405, headers: { Allow: "GET, HEAD", "Cache-Control": "no-store" } });
+    const asset = await env.ASSETS?.fetch(new Request(new URL("/native-device/index.html", url), { method: request.method }));
+    if (!asset || asset.status === 404) return notFoundPage();
+    const page = new Response(asset.body, asset);
+    page.headers.set("Cache-Control", "no-store");
+    page.headers.set("Referrer-Policy", "no-referrer");
+    return page;
+  }
   if (pathname === tunnelPath) return handleTunnel(request, env, context);
   if (pathname === nativeSessionPath) return Promise.resolve(notFoundPage());
   if (pathname.startsWith("/catalog/")) return env.CATALOG_SERVICE.fetch(request);

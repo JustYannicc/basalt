@@ -20,6 +20,7 @@ test("private setup routes never reach a service from the public router", async 
 
 test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
   const paths = [
+    "/device?user_code=BCDF-GHJK",
     "/settings?tab=keys",
     "/login",
     "/org/team/apps",
@@ -58,6 +59,40 @@ test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
     assert.strictEqual(forwarded, request, `${path} should keep the original request`);
     assert.strictEqual(response, toolsResponse, `${path} should keep the upstream response`);
   }
+});
+
+test("native approval serves its own page and keeps device codes out of the asset URL", async () => {
+  const assets: Request[] = [];
+  const env: RouterEnv = {
+    ...envWithToolsService(async () => { throw new Error("native approval reached the generic device page"); }),
+    ASSETS: { fetch: async (request) => {
+      assets.push(request);
+      return new URL(request.url).pathname === "/native-device/index.html"
+        ? new Response(request.method === "HEAD" ? null : "<html>Native approval</html>", { headers: { "Content-Type": "text/html" } })
+        : new Response(null, { status: 404 });
+    } },
+  };
+  for (const path of ["/native/device", "/native/device/"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const response = await handleRequest(new Request(`https://app.signalbox.run${path}?user_code=BCDF-GHJK`, { method }), env);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+      assert.equal(response.headers.get("x-frame-options"), "DENY");
+      assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+      assert.equal(assets.at(-1)?.url, "https://app.signalbox.run/native-device/index.html");
+      assert.equal(assets.at(-1)?.method, method);
+      assert.equal(await response.text(), method === "HEAD" ? "" : "<html>Native approval</html>");
+    }
+  }
+  const before = assets.length;
+  const response = await handleRequest(new Request("https://app.signalbox.run/native/device", { method: "POST" }), env);
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("allow"), "GET, HEAD");
+  assert.equal(assets.length, before);
+  assert.equal((await handleRequest(new Request("https://app.signalbox.run/native/device"), {
+    ...env, ASSETS: undefined,
+  })).status, 404);
 });
 
 test("preserves a POST body and headers and returns the streamed tools response", async () => {

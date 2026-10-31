@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "effect": "4.0.1",
     "smol-toml": "1.8.0"
   }
 }
