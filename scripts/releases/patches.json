@@ -359,24 +359,6 @@
       "workflow_sensitive": false
     },
     {
-      "identity": "executor-app-query-authorization",
-      "file": "0039-app-query-authorization.patch",
-      "content_sha256": "c1905c1fd28109cbbcf8b7e807ec3078a5e18a18260ca5cb72fa0d8a9844b86f",
-      "kind": "upstream",
-      "upstream_pull_request": 2453,
-      "database_sensitive": false,
-      "workflow_sensitive": false
-    },
-    {
-      "identity": "executor-google-admin-shared-oauth",
-      "file": "0039-google-admin-shared-oauth.patch",
-      "content_sha256": "e4743654a179ec198047f193226ee3d234b1d45b6e99ad17d0f953e6d2766f54",
-      "kind": "upstream",
-      "upstream_pull_request": 2460,
-      "database_sensitive": false,
-      "workflow_sensitive": false
-    },
-    {
       "identity": "executor-google-byo-choice",
       "file": "0039-google-byo-choice.patch",
       "content_sha256": "272c5eb114c90e30a51dec1a9e960a81675ce9ac97f8bc341afbda7a0845c296",
@@ -410,6 +392,15 @@
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-app-query-authorization",
+      "file": "0039-app-query-authorization.patch",
+      "content_sha256": "c1905c1fd28109cbbcf8b7e807ec3078a5e18a18260ca5cb72fa0d8a9844b86f",
+      "kind": "upstream",
+      "upstream_pull_request": 2453,
+      "database_sensitive": false,
       "workflow_sensitive": false
     },
     {
@@ -467,12 +458,12 @@
       "workflow_sensitive": false
     },
     {
-      "identity": "basalt-host-managed-account-recovery",
-      "file": "0049-host-managed-account-recovery.patch",
-      "content_sha256": "3bb540904a5ca04b7f469495a962b69365a354f6dffb937752dbc6819b6a3cfb",
-      "kind": "overlay",
-      "upstream_pull_request": null,
-      "database_sensitive": true,
+      "identity": "executor-google-admin-shared-oauth",
+      "file": "0039-google-admin-shared-oauth.patch",
+      "content_sha256": "e4743654a179ec198047f193226ee3d234b1d45b6e99ad17d0f953e6d2766f54",
+      "kind": "upstream",
+      "upstream_pull_request": 2460,
+      "database_sensitive": false,
       "workflow_sensitive": false
     },
     {
@@ -485,9 +476,18 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-host-managed-account-recovery",
+      "file": "0049-host-managed-account-recovery.patch",
+      "content_sha256": "3bb540904a5ca04b7f469495a962b69365a354f6dffb937752dbc6819b6a3cfb",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-mcp-apps",
       "file": "0051-mcp-apps.patch",
-      "content_sha256": "3c0ae4ad223e99249c063f3b34a09f5f1fc30c0bdc89f9f014402faf91296909",
+      "content_sha256": "89ff08fb78543d6ef5edfd650d6c318628a198f38119b0893223a88da593fa81",
       "kind": "upstream",
       "upstream_pull_request": null,
       "database_sensitive": true,

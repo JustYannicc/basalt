@@ -1,13 +1,41 @@
+diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts/build-site.ts
+--- a/apps/hosted/cloud/scripts/build-site.ts
++++ b/apps/hosted/cloud/scripts/build-site.ts
+@@ -2,6 +2,7 @@
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+ import { createHash } from "node:crypto";
+ import { Effect, FileSystem, Path, Schema } from "effect";
++import { appAssetPaths } from "@executor-js/mcp/asset-paths";
+ import { siteRedirects } from "../src/implementation/site-redirects.ts";
+ import {
+   RetainedAssetList,
+@@ -89,6 +90,11 @@
+   };
+   // The hash-named pool seed is public source, separate from dashboard document routes.
+   for (const asset of poolAssets) addAsset(asset, path.join("_basalt", asset.relative));
++  for (const relative of Object.values(appAssetPaths))
++    addAsset({
++      source: path.join(root, "apps/hosted/cloud/.generated/mcp-apps", path.basename(relative)),
++      relative: relative.slice(1),
++    });
+   for (const asset of marketingAssets) addAsset(asset);
+   for (const asset of dashboardAssets) addAsset(asset);
+   for (const asset of docsAssets) addAsset(asset, path.join(docsPrefix, asset.relative));
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -1,3 +1,5 @@
-+import { appSandboxAddress, appSandboxLabel, appSandboxResponse } from "@executor-js/mcp";
+@@ -1,3 +1,10 @@
++import {
++  McpAppAssets,
++  appSandboxAddress,
++  appSandboxLabel,
++  appSandboxResponse,
++} from "@executor-js/mcp";
 +import { HostedExecutor } from "@executor-js/hosted-server";
  import { requestServices } from "@executor-js/hosted-server";
  import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
  /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
-@@ -13,7 +15,13 @@
+@@ -13,7 +20,13 @@
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Cause, Config, Effect, Layer, Option, Predicate } from "effect";
  import { HttpApiBuilder } from "effect/http-api";
@@ -22,16 +50,49 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
  import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
  import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
  // Failures are logged as telemetry records them: tags and fixed sentences, never values.
-@@ -171,8 +179,17 @@
+@@ -34,6 +47,8 @@
+   telemetryBindings,
+ } from "./infrastructure/telemetry.ts";
+ 
++import { cloudSite } from "./infrastructure/site.ts";
++import { cloudMcpAppAssets } from "./infrastructure/mcp-app-assets.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+@@ -92,6 +107,7 @@
+   Effect.gen(function* () {
+     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
+     const { dev } = yield* AlchemyContext;
++    const site = yield* cloudSite;
+     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+     const placementRegion = yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION").pipe(
+       Config.option,
+@@ -101,6 +117,13 @@
+     return {
+       main: import.meta.url,
+       build: workerBuild("app-pages"),
++      assets: {
++        directory: site.outdir,
++        hash: site.hash.output,
++        runWorkerFirst: true,
++        htmlHandling: "none" as const,
++        notFoundHandling: "none" as const,
++      },
+       ...(yield* cloudObservability),
+       env: {
+         ...(yield* postHogBindings).env,
+@@ -171,8 +194,19 @@
        Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
      );
      const lifetime = yield* previewLifetime;
 +    const sandbox = appSandboxAddress(base);
++    const readAppAsset = yield* cloudMcpAppAssets;
 +    const selected = Effect.gen(function* () {
 +      const request = yield* HttpServerRequest.HttpServerRequest;
 +      return yield* appSandboxLabel(request.headers.host, sandbox) === undefined
 +        ? appUi.frameResponse(handle)
 +        : appSandboxResponse(Effect.flatten(HostedExecutor), sandbox).pipe(
++            Effect.provideService(McpAppAssets, readAppAsset),
 +            Effect.provide(executor),
 +          );
 +    });
@@ -41,6 +102,47 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
          // Every GET reaches the page route, so an unmatched route is another method. Not found,
          // as on self-host.
          Effect.catchIf(
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts b/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts
+@@ -0,0 +1,36 @@
++import type { Fetcher } from "@cloudflare/workers-types";
++import type { McpAppAssetSource } from "@executor-js/mcp";
++import { appAssetPaths } from "@executor-js/mcp/asset-paths";
++import * as Cloudflare from "alchemy/Cloudflare";
++import { Effect, Schema } from "effect";
++
++const Assets = Schema.declare(
++  (value): value is Pick<Fetcher, "fetch"> =>
++    typeof value === "object" &&
++    value !== null &&
++    "fetch" in value &&
++    typeof value.fetch === "function",
++);
++const unavailable = () => new Error("MCP Apps assets are unavailable.");
++
++/** The browser code stays in static storage; the existing bridge still returns inline HTML. */
++export const cloudMcpAppAssets = Effect.gen(function* () {
++  const environment = yield* Cloudflare.WorkerEnvironment;
++  return ((asset) =>
++    Effect.gen(function* () {
++      // Reflection discovers bindings without a live asset service; read it only on a request.
++      const assets = yield* Schema.decodeUnknownEffect(Assets)(environment.ASSETS).pipe(
++        Effect.mapError(unavailable),
++      );
++      return yield* Effect.tryPromise({
++        try: async () => {
++          const response = await assets.fetch(
++            new URL(appAssetPaths[asset], "https://assets.invalid").href,
++          );
++          if (!response.ok) throw unavailable();
++          return response.text();
++        },
++        catch: unavailable,
++      });
++    })) satisfies McpAppAssetSource;
++});
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
@@ -51,25 +153,35 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/c
    CallStateCache,
    type CallState,
    ConcurrentStatements,
-@@ -15,7 +16,8 @@
+@@ -15,7 +16,9 @@
    mcpSessionKey,
  } from "@executor-js/hosted-server";
  import { PgPool } from "@effect/sql-pg";
 -import { runningPrograms } from "@executor-js/mcp";
++import { cloudMcpAppAssets } from "./mcp-app-assets.ts";
 +import { cloudAppUiBase } from "../contracts/app-ui.ts";
-+import { appSandboxAddress, runningPrograms } from "@executor-js/mcp";
++import { McpAppAssets, appSandboxAddress, runningPrograms } from "@executor-js/mcp";
  import * as Cloudflare from "alchemy/Cloudflare";
  import * as PgConnection from "@effect/sql-pg/PgConnection";
  import { Effect, Option, type Layer, type Scope } from "effect";
-@@ -56,6 +58,7 @@
+@@ -56,6 +59,8 @@
    keys,
    idFromName,
  }: McpSessionServices) {
++  const readAppAsset = yield* cloudMcpAppAssets;
 +  const sandbox = appSandboxAddress(yield* cloudAppUiBase.pipe(Effect.orDie));
    const reportErrors = yield* cloudSentry;
    const analytics = yield* cloudAnalytics;
    const objectDatabase = yield* cloudObjectDatabase;
-@@ -120,6 +123,7 @@
+@@ -80,6 +85,7 @@
+     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
+     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
+       Effect.provideService(CurrentProductBrand, brand),
++      Effect.provideService(McpAppAssets, readAppAsset),
+       Effect.provide(HttpServer.layerServices),
+     );
+     const objectId = state.id.toString();
+@@ -120,6 +126,7 @@
          access,
          dispatchHostedMcp(access, address, handler.http).pipe(
            Effect.provideService(CurrentUserId, access.userId),
@@ -99,16 +211,67 @@ diff --git a/apps/hosted/cloud/src/infrastructure/schedules.ts b/apps/hosted/clo
              );
              // Each emit attempts its deliveries at once; this retries the ones still due.
              yield* executor.events.deliver({ maxDeliveries: 64 }).pipe(
+diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/src/infrastructure/site.ts
+--- a/apps/hosted/cloud/src/infrastructure/site.ts
++++ b/apps/hosted/cloud/src/infrastructure/site.ts
+@@ -1,4 +1,5 @@
+ /** One build owns the shared marketing, docs and dashboard output. */
++import { appAssetPaths } from "@executor-js/mcp/asset-paths";
+ import * as Command from "alchemy/Command";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+ import { Stage } from "alchemy/Stage";
+@@ -27,6 +28,7 @@
+     env: {
+       // Generated assets are outside tracked source; the version invalidates Command.Build's input hash.
+       BASALT_POOL_APP_VERSION: poolAppVersion,
++      EXECUTOR_MCP_APP_ASSETS: Object.values(appAssetPaths).join(","),
+       ...analytics.build,
+       ...sentry.build,
+       ...environment,
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -22,6 +22,7 @@
+   telemetryBindings,
+ } from "./infrastructure/telemetry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
++import { cloudSite } from "./infrastructure/site.ts";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+ /** The executor and MCP identity are built once per isolate and shared by its objects. */
+@@ -44,8 +45,16 @@
+ export default McpServer.make(
+   Effect.gen(function* () {
+     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
++    const site = yield* cloudSite;
+     return {
+       main: import.meta.url,
++      assets: {
++        directory: site.outdir,
++        hash: site.hash.output,
++        runWorkerFirst: true,
++        htmlHandling: "none" as const,
++        notFoundHandling: "none" as const,
++      },
+       build: workerBuild("mcp-server"),
+       ...(yield* cloudObservability),
+       workersDev: false,
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,11 @@
 +import { AppViewsHost } from "@executor-js/sdk/core";
-+import { appSandboxAddress, appSandboxLabel, appSandboxResponse } from "@executor-js/mcp";
++import {
++  McpAppAssets,
++  appSandboxAddress,
++  appSandboxLabel,
++  appSandboxResponse,
++} from "@executor-js/mcp";
++import { embeddedMcpAppAssets } from "@executor-js/mcp/embedded-app-assets";
  import { localSourceFormatter } from "@executor-js/app-management/source-format";
  import { publishedSkillRoutes } from "@executor-js/app-templates/executor";
  import {
-@@ -17,6 +19,7 @@
+@@ -17,6 +25,7 @@
  import {
    browserTelemetry,
    requestServices,
@@ -116,7 +279,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
    HostedExecutor,
    ScheduledAuthority,
    ScheduleWakeup,
-@@ -79,6 +82,11 @@
+@@ -79,6 +88,11 @@
          : effect.pipe(Effect.provideService(ProductAnalytics, analytics.product));
      const scheduler = yield* Effect.gen(function* () {
        const executor = yield* Effect.flatten(HostedExecutor);
@@ -128,7 +291,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        const authorize = yield* ScheduledAuthority;
        const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
          Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-@@ -110,9 +118,11 @@
+@@ -110,9 +124,11 @@
        origin: auth.origin,
        oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
      });
@@ -141,12 +304,13 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        yield* appUiAddressScheme,
        yield* appUiEmbedded,
      );
-@@ -235,11 +245,19 @@
+@@ -235,11 +251,20 @@
        withHostPipeline(
          Effect.gen(function* () {
            const request = yield* HttpServerRequest.HttpServerRequest;
 +          if (appSandboxLabel(request.headers.host, sandbox) !== undefined)
 +            return yield* appSandboxResponse(Effect.flatten(HostedExecutor), sandbox).pipe(
++              Effect.provideService(McpAppAssets, embeddedMcpAppAssets),
 +              Effect.provide(executorServices),
 +            );
            if (Option.isSome(addresses.fromHost(request.headers.host)))
@@ -162,6 +326,31 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        ),
      );
      return routes;
+diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
+--- a/apps/hosted/self-host/src/mcp.ts
++++ b/apps/hosted/self-host/src/mcp.ts
+@@ -11,7 +11,8 @@
+   makeHostedMcp,
+   mcpSessionKey,
+ } from "@executor-js/hosted-server";
+-import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";
++import { embeddedMcpAppAssets } from "@executor-js/mcp/embedded-app-assets";
++import { McpAppAssets, McpLimits, defaultMcpLimits } from "@executor-js/mcp";
+ import { PgliteClient } from "@effect/sql-pglite";
+ import { Config, Effect, RcMap, Schema } from "effect";
+ import { HttpServerResponse } from "effect/http";
+@@ -31,7 +32,10 @@
+     // Each session keeps what its callers' last tool calls read (CallStateCache).
+     lookup: (_key: string) =>
+       Effect.map(
+-        makeHostedMcp(undefined, limits).pipe(Effect.provideService(CurrentProductBrand, brand)),
++        makeHostedMcp(undefined, limits).pipe(
++          Effect.provideService(CurrentProductBrand, brand),
++          Effect.provideService(McpAppAssets, embeddedMcpAppAssets),
++        ),
+         (handler) => ({
+           ...handler,
+           calls: new Map<string, CallState>(),
 diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
 --- a/apps/hosted/server/src/contracts/mcp.ts
 +++ b/apps/hosted/server/src/contracts/mcp.ts
@@ -265,12 +454,18 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
 diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src/implementation/mcp.ts
 --- a/apps/local/server/src/implementation/mcp.ts
 +++ b/apps/local/server/src/implementation/mcp.ts
-@@ -13,7 +13,15 @@
+@@ -9,11 +9,21 @@
+   untargetedLinkRefusal,
+   type Grant,
+ } from "@executor-js/mcp-auth";
++import { embeddedMcpAppAssets } from "@executor-js/mcp/embedded-app-assets";
+ import { localRequest } from "./auth.ts";
  import type { ServerConfig } from "../contracts/config.ts";
  import { LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
  /** Local access and documentation I/O for the shared MCP implementation. */
 -import { makeMcp, refusedMcpRequest, type McpBackend, type McpLimits } from "@executor-js/mcp";
 +import {
++  McpAppAssets,
 +  makeMcpAppViews,
 +  deferredMcpAppViews,
 +  appSandboxAddress,
@@ -282,7 +477,7 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
  import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
  import {
    ElicitationFailed,
-@@ -168,6 +176,13 @@
+@@ -168,6 +178,13 @@
            }),
        },
        backend: {
@@ -296,7 +491,16 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
          listSkills: (input, options) =>
            Effect.flatMap(RequestBackend, (b) => b.listSkills(input, options)),
          readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
-@@ -217,7 +232,22 @@
+@@ -196,7 +213,7 @@
+       instructions: executorIntro,
+       limits,
+       annotateSkillRead,
+-    });
++    }).pipe(Effect.provideService(McpAppAssets, embeddedMcpAppAssets));
+     const http = Effect.gen(function* () {
+       const request = yield* localRequest(config.port, config.browserOrigin);
+       const address = requestedMcpAddress(new URL(request.url, oauth.origin));
+@@ -217,7 +234,22 @@
          return grant;
        });
        const grant = yield* current;
@@ -323,34 +527,42 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
 diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
 --- a/apps/local/server/src/implementation/server.ts
 +++ b/apps/local/server/src/implementation/server.ts
-@@ -79,6 +79,8 @@
+@@ -79,6 +79,14 @@
  import { localOwner, localOwners } from "./owners.ts";
  import { appUi } from "./app-ui.ts";
  import { appAuthentication, appRequest } from "./app-auth.ts";
 +import { AppViewsHost } from "@executor-js/sdk/core";
-+import { appSandboxAddress, appSandboxLabel, appSandboxResponse } from "@executor-js/mcp";
++import {
++  McpAppAssets,
++  appSandboxAddress,
++  appSandboxLabel,
++  appSandboxResponse,
++} from "@executor-js/mcp";
++import { embeddedMcpAppAssets } from "@executor-js/mcp/embedded-app-assets";
  import { appFromHost } from "../contracts/app-ui.ts";
  import { AppUiApi } from "apps/ui/contracts";
  import { appSignInCallbackPath } from "apps/ui/auth";
-@@ -244,6 +246,11 @@
+@@ -243,6 +251,11 @@
+       );
        const scheduleConcurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
          Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-       );
++      );
 +      yield* executor[AppViewsHost].cleanup.pipe(
 +        Effect.catch(() => Effect.logError("App view cleanup failed")),
 +        Effect.repeat(Schedule.spaced("1 minute")),
 +        Effect.forkScoped,
-+      );
+       );
        const scheduler = startScheduleWorker(executor, () => Effect.void, {
          ...defaultScheduleWorkerOptions,
-         runner: "local",
-@@ -549,6 +556,9 @@
+@@ -549,6 +562,11 @@
          withHostPipeline(
            Effect.gen(function* () {
              const request = yield* HttpServerRequest.HttpServerRequest;
 +            const sandbox = appSandboxAddress(`http://localhost:${config.port}`);
 +            if (appSandboxLabel(request.headers.host, sandbox) !== undefined)
-+              return yield* appSandboxResponse(Effect.succeed(executor), sandbox);
++              return yield* appSandboxResponse(Effect.succeed(executor), sandbox).pipe(
++                Effect.provideService(McpAppAssets, embeddedMcpAppAssets),
++              );
              return yield* appFromHost(request.headers.host, config.port) === undefined
                ? productHandler
                : appHandler.pipe(requestTiming);
@@ -2374,6 +2586,15 @@ diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
+@@ -62,7 +62,7 @@
+     "docs:audit": "bun run --cwd apps/docs audit",
+     "docs:eval": "bun run --cwd apps/docs eval",
+     "hosted:cloud:worker-sizes": "bun run --cwd apps/hosted/cloud worker-sizes",
+-    "hosted:cloud:site:build": "bun run --parallel marketing:build docs:build hosted:cloud:web:build && node apps/hosted/cloud/scripts/build-site.ts",
++    "hosted:cloud:site:build": "bun run mcp:apps --static && bun run --parallel marketing:build docs:build hosted:cloud:web:build && node apps/hosted/cloud/scripts/build-site.ts",
+     "site:links": "node apps/hosted/cloud/scripts/check-site-links.ts",
+     "workspace:check": "bash scripts/workspace-check.sh",
+     "reference:effect": "bun scripts/reference-effect.ts",
 @@ -71,7 +71,7 @@
      "format:check": "oxfmt --check .",
      "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings",
@@ -11658,7 +11879,15 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
 diff --git a/packages/mcp/package.json b/packages/mcp/package.json
 --- a/packages/mcp/package.json
 +++ b/packages/mcp/package.json
-@@ -10,6 +10,7 @@
+@@ -5,11 +5,14 @@
+   "sideEffects": false,
+   "exports": {
+     ".": "./src/index.ts",
+-    "./browser": "./src/contracts/browser.ts"
++    "./browser": "./src/contracts/browser.ts",
++    "./asset-paths": "./src/implementation/app-asset-paths.ts",
++    "./embedded-app-assets": "./src/implementation/embedded-app-assets.ts"
+   },
    "dependencies": {
      "@executor-js/sdk": "workspace:*",
      "@executor-js/utils": "workspace:*",
@@ -11666,6 +11895,19 @@ diff --git a/packages/mcp/package.json b/packages/mcp/package.json
      "@opencode-ai/codemode": "0.0.0-dev-19272",
      "acorn": "8.15.0",
      "apps": "workspace:*",
+diff --git a/packages/mcp/src/contracts/app-assets.ts b/packages/mcp/src/contracts/app-assets.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp/src/contracts/app-assets.ts
+@@ -0,0 +1,8 @@
++import { Context, Effect } from "effect";
++
++export type McpAppAssetSource = (asset: "renderer" | "sandbox") => Effect.Effect<string, Error>;
++
++/** Products supply browser bytes without making Cloud compile them as server JavaScript. */
++export const McpAppAssets = Context.Reference<McpAppAssetSource>("mcp/AppAssets", {
++  defaultValue: () => () => Effect.fail(new Error("MCP Apps assets are unavailable.")),
++});
 diff --git a/packages/mcp/src/contracts/app-bridge.ts b/packages/mcp/src/contracts/app-bridge.ts
 new file mode 100644
 --- /dev/null
@@ -11856,6 +12098,18 @@ diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/
    execution: Schema.Union([
      Schema.Struct({ ...CodeMode.Success.fields, toolCalls: Schema.Array(McpToolCall) }),
      Schema.Struct({
+diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp/src/implementation/app-asset-paths.ts
+@@ -0,0 +1,7 @@
++// Generated by scripts/build-mcp-apps.ts.
++export const appAssetPaths = {
++  renderer:
++    "/_executor/mcp-apps/renderer-773ae3f0198d5152bb926cd9f9a6101a4acfc0222ae33976ef31eacb8dbe2859.js",
++  sandbox:
++    "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
++} as const;
 diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/implementation/app-assets.ts
 new file mode 100644
 --- /dev/null
@@ -11908,7 +12162,7 @@ diff --git a/packages/mcp/src/implementation/app-sandbox.ts b/packages/mcp/src/i
 new file mode 100644
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-sandbox.ts
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,70 @@
 +import { AppViewsHost, type Executor } from "@executor-js/sdk/core";
 +import { Effect, Schema } from "effect";
 +import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -11917,7 +12171,7 @@ new file mode 100644
 +  sandboxHeaders,
 +  type AppSandboxAddress,
 +} from "../contracts/app-sandbox.ts";
-+import { appAssets } from "./app-assets.ts";
++import { McpAppAssets } from "../contracts/app-assets.ts";
 +
 +export const appSandboxAddress = (base: string | undefined): AppSandboxAddress | undefined => {
 +  if (base === undefined) return undefined;
@@ -11958,8 +12212,9 @@ new file mode 100644
 +    const store = (yield* executor)[AppViewsHost];
 +    const signed = yield* store.verifySandboxPolicy(label, token);
 +    const policy = yield* Schema.decodeUnknownEffect(AppSandboxPolicy)(JSON.parse(signed));
++    const script = yield* (yield* McpAppAssets)("sandbox");
 +    return HttpServerResponse.text(
-+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}</style></head><body><script type="module">${appAssets.sandbox.replaceAll("</script", "<\\/script")}</script></body></html>`,
++      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}</style></head><body><script type="module">${script.replaceAll("</script", "<\\/script")}</script></body></html>`,
 +      {
 +        contentType: "text/html",
 +        headers: sandboxHeaders(policy),
@@ -11973,14 +12228,16 @@ new file mode 100644
 +    ),
 +  );
 +
-+export const appBridgeHtml = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
++export const appBridgeHtml = (
++  renderer: string,
++) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
 +:root{color-scheme:light dark;font-family:var(--font-sans,system-ui,sans-serif);font-size:14px;color:var(--color-text-primary,light-dark(#171717,#ededed));background:var(--color-background-primary,light-dark(#fff,#101010))}*{box-sizing:border-box}body{margin:0}body>div:first-of-type{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px;border-bottom:1px solid var(--color-border-primary,light-dark(#e6e6e6,#303030))}.app-identity{display:flex;flex:1;flex-wrap:wrap;gap:6px;min-width:80px;overflow-wrap:anywhere}.app-identity strong{font-weight:500}.subtle{font-size:12px;color:var(--color-text-secondary,light-dark(#666,#aaa))}button{font:inherit;color:inherit;background:var(--color-background-primary,light-dark(#fff,#101010));border:1px solid var(--color-border-primary,light-dark(#e6e6e6,#303030));border-radius:var(--border-radius-md,7px);padding:7px 12px;min-height:36px;touch-action:manipulation}button:focus-visible,[role=status]:focus-visible{outline:2px solid currentColor;outline-offset:3px}[role=status]{padding:36px 22px;min-height:200px;max-width:500px;line-height:1.5}[role=status] h2{margin:0 0 8px;font-size:18px;font-weight:500}[role=status] p{margin:0}iframe{display:block}[hidden]{display:none!important}
-+</style></head><body><script type="module">${appAssets.renderer.replaceAll("</script", "<\\/script")}</script></body></html>`;
++</style></head><body><script type="module">${renderer.replaceAll("</script", "<\\/script")}</script></body></html>`;
 diff --git a/packages/mcp/src/implementation/app-tools.ts b/packages/mcp/src/implementation/app-tools.ts
 new file mode 100644
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-tools.ts
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,303 @@
 +/** Native MCP registrations preserve host-only metadata outside model-visible structured content. */
 +import {
 +  AppViewUnavailable,
@@ -11994,6 +12251,7 @@ new file mode 100644
 +import type { McpBackend } from "../contracts/backend.ts";
 +import type { McpAppViewsBackend } from "../contracts/app-views.ts";
 +import { appBridgeResource, decodeAppResource } from "../contracts/app-bridge.ts";
++import type { McpAppAssetSource } from "../contracts/app-assets.ts";
 +import { appBridgeHtml } from "./app-sandbox.ts";
 +import { diagnosticSummary } from "./diagnostics.ts";
 +import { currentMcpAppProfile } from "./app-capability.ts";
@@ -12119,7 +12377,7 @@ new file mode 100644
 +    );
 +  });
 +
-+export const appTools = (backend: McpBackend<Error>) =>
++export const appTools = (backend: McpBackend<Error>, readAsset: McpAppAssetSource) =>
 +  Layer.effectDiscard(
 +    Effect.gen(function* () {
 +      if (backend.appViews === undefined) return;
@@ -12132,13 +12390,13 @@ new file mode 100644
 +          mimeType: "text/html;profile=mcp-app",
 +        }),
 +        annotations: Context.empty(),
-+        handle: views.rendererPolicy.pipe(
-+          Effect.map(({ frameDomains }) => ({
++        handle: Effect.all([views.rendererPolicy, readAsset("renderer")]).pipe(
++          Effect.map(([{ frameDomains }, renderer]) => ({
 +            contents: [
 +              {
 +                uri: appBridgeResource,
 +                mimeType: "text/html;profile=mcp-app",
-+                text: appBridgeHtml,
++                text: appBridgeHtml(renderer),
 +                _meta: {
 +                  ui: {
 +                    prefersBorder: false,
@@ -12506,6 +12764,17 @@ new file mode 100644
 +      ),
 +    ),
 +});
+diff --git a/packages/mcp/src/implementation/embedded-app-assets.ts b/packages/mcp/src/implementation/embedded-app-assets.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp/src/implementation/embedded-app-assets.ts
+@@ -0,0 +1,6 @@
++/** Binaries keep the same browser bytes without a runtime filesystem dependency. */
++import { Effect } from "effect";
++import type { McpAppAssetSource } from "../contracts/app-assets.ts";
++import { appAssets } from "./app-assets.ts";
++
++export const embeddedMcpAppAssets: McpAppAssetSource = (asset) => Effect.succeed(appAssets[asset]);
 diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/implementation/execute.ts
 --- a/packages/mcp/src/implementation/execute.ts
 +++ b/packages/mcp/src/implementation/execute.ts
@@ -12725,15 +12994,24 @@ diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implem
  /** One execution manager with model, native and browser delivery adapters. */
  import {
    Cause,
-@@ -29,6 +30,7 @@
+@@ -29,6 +30,8 @@
  import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
  import { skills } from "./skills.ts";
  import { eventsHandler } from "./events.ts";
 +import { appTools } from "./app-tools.ts";
++import { McpAppAssets } from "../contracts/app-assets.ts";
  
  // Observe the final protocol value after timeout, admission and resume handling.
  const observeExecution =
-@@ -188,9 +190,15 @@
+@@ -150,6 +153,7 @@
+ /** Build protocol state and its browser accessors together. Hosts authorize browser calls separately from MCP. */
+ export const makeMcp = (options: McpOptions) =>
+   Effect.gen(function* () {
++    const readAppAsset = yield* McpAppAssets;
+     const executions = yield* makeExecutions(options.limits, options.beforeExecute);
+     const handler = (mode: ElicitationMode) =>
+       Effect.gen(function* () {
+@@ -188,9 +192,15 @@
            );
          // Search and describe read the catalog directly; call runs as an execution so it can pause.
          const search = (input: Parameters<typeof searchCatalog>[2]) =>
@@ -12751,23 +13029,24 @@ diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implem
          const toolkit =
            mode === "native"
              ? McpServer.toolkit(NativeMcpToolkit).pipe(
-@@ -309,6 +317,7 @@
+@@ -309,6 +319,7 @@
                  );
          return yield* Layer.mergeAll(
            toolkit,
-+          appTools(options.backend),
++          appTools(options.backend, readAppAsset),
            McpServer.events(eventsHandler(options.backend)),
          ).pipe(
            Layer.provide(
 diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
 --- a/packages/mcp/src/index.ts
 +++ b/packages/mcp/src/index.ts
-@@ -13,3 +13,13 @@
+@@ -13,3 +13,14 @@
  export * from "./contracts/browser-tools.ts";
  
  export * from "./contracts/targets.ts";
 +
 +export * from "./contracts/app-views.ts";
++export * from "./contracts/app-assets.ts";
 +export { makeMcpAppViews } from "./implementation/app-views-backend.ts";
 +export {
 +  appSandboxAddress,
@@ -14313,8 +14592,9 @@ diff --git a/scripts/build-mcp-apps.ts b/scripts/build-mcp-apps.ts
 new file mode 100644
 --- /dev/null
 +++ b/scripts/build-mcp-apps.ts
-@@ -0,0 +1,21 @@
-+/** Embed the renderer so Workers and binaries serve the same bytes without runtime file reads. */
+@@ -0,0 +1,42 @@
++/** One browser build feeds binary embeddings and Cloud static assets. */
++import { createHash } from "node:crypto";
 +if (process.versions.bun !== "1.4.2") throw new Error("Build MCP Apps assets with Bun 1.4.2.");
 +const entries = ["renderer", "sandbox"] as const;
 +const assets: Record<string, string> = {};
@@ -14334,7 +14614,27 @@ new file mode 100644
 +if (process.argv.includes("--check")) {
 +  if ((await Bun.file(path).text()) !== generated)
 +    throw new Error("MCP Apps assets are stale. Run bun run mcp:apps.");
-+} else await Bun.write(path, generated);
++} else if (!process.argv.includes("--static")) await Bun.write(path, generated);
++const script = (entry: (typeof entries)[number]) => {
++  const value = assets[entry];
++  if (value === undefined) throw new Error("Missing MCP Apps bundle");
++  return value;
++};
++const assetPath = (entry: (typeof entries)[number]) =>
++  `/_executor/mcp-apps/${entry}-${createHash("sha256").update(script(entry)).digest("hex")}.js`;
++const paths = { renderer: assetPath("renderer"), sandbox: assetPath("sandbox") };
++const manifestPath = "packages/mcp/src/implementation/app-asset-paths.ts";
++const manifest = `// Generated by scripts/build-mcp-apps.ts.\nexport const appAssetPaths = {\n${entries.map((entry) => `  ${entry}:\n    ${JSON.stringify(paths[entry])},`).join("\n")}\n} as const;\n`;
++if (process.argv.includes("--check") || process.argv.includes("--static")) {
++  if ((await Bun.file(manifestPath).text()) !== manifest)
++    throw new Error("MCP Apps asset paths are stale. Run bun run mcp:apps.");
++} else await Bun.write(manifestPath, manifest);
++if (process.argv.includes("--static"))
++  for (const entry of entries)
++    await Bun.write(
++      `apps/hosted/cloud/.generated/mcp-apps/${paths[entry].slice(paths[entry].lastIndexOf("/") + 1)}`,
++      script(entry),
++    );
 diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
 --- a/scripts/check-app-protocols.ts
 +++ b/scripts/check-app-protocols.ts
