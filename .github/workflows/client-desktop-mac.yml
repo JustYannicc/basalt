@@ -29,4 +29,5 @@ jobs:
           path: |
             clients/desktop/.artifacts/*.dmg
             clients/desktop/.artifacts/*.zip
+          include-hidden-files: true
           if-no-files-found: error
