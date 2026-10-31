@@ -19,7 +19,7 @@ model {
     }
 
     build = module "Build" {
-      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml"; libraries "@effect/platform-node|alchemy|esbuild"; bindings "platform.env.POOL_OPERATIONS=basalt.modelGateway" }
+      metadata { code "scripts|e2e/slack/catalog.mjs|e2e/slack/run.ts|containers/pool/fetch_releases.py|containers/pool/fetch_sources.py|containers/pool/Dockerfile|.github/workflows/ci.yml|.github/workflows/app-lint.yml|.github/workflows/gemini-native-benchmark.yml"; libraries "@effect/platform-node|alchemy|esbuild"; bindings "platform.env.POOL_OPERATIONS=basalt.modelGateway" }
     }
 
     deployment = module "Deployment" {
