@@ -21,6 +21,7 @@ export function deviceConnection(
 ): CredentialSource {
   let saved: DeviceCredentials | undefined = initial;
   let access: NativeAccess | undefined;
+  let display: NativeAccess["display"];
   let state: ConnectionView["state"] = "connected";
   let pending: Promise<void> | undefined;
   let epoch = 0;
@@ -91,6 +92,7 @@ export function deviceConnection(
         throw new Error("Native access is incompatible.");
       if (generation !== epoch) throw new Error("Connection state changed.");
       access = checked;
+      display = checked.display;
     } catch (error) {
       if (state === "connected" && saved?.refreshPending && !pending) state = "sign-in-required";
       else if (state === "connected" && !signal.aborted) state = "disconnected";
@@ -106,10 +108,13 @@ export function deviceConnection(
     return saved;
   };
   return {
+    origins: () => (saved ? [saved.origin] : []),
     view: () => ({
       state,
       mode: "device",
       capabilities: state === "connected" ? capabilities() : [],
+      ...(display ? { display } : {}),
+      ...(saved ? { origin: saved.origin } : {}),
     }),
     transport: async (signal) => {
       const current = await authorize(signal);
@@ -142,6 +147,7 @@ export function deviceConnection(
       epoch++;
       state = "sign-in-required";
       access = undefined;
+      display = undefined;
       await pending?.catch(() => undefined);
       saved = undefined;
       await store.remove();
@@ -162,6 +168,7 @@ export function deviceConnection(
       epoch++;
       state = "revoked";
       access = undefined;
+      display = undefined;
       saved = undefined;
       await store.remove();
     },

@@ -9,6 +9,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Capability, ServiceCredentials } from "../contracts/connection.ts";
 import { normalizeModelSearch } from "../contracts/tunnel.ts";
+import { modelHeaders } from "./model-headers.ts";
 
 const requestHeaders = new Set([
   "accept",
@@ -68,7 +69,12 @@ export async function forwardHttp(
   const headers: Record<string, string | string[]> = {};
   for (const [name, value] of Object.entries(incoming.headers))
     if (requestHeaders.has(name) && value !== undefined) headers[name] = value;
-  headers.authorization = `Bearer ${service.token}`;
+  Object.assign(
+    headers,
+    capability === "models"
+      ? modelHeaders(incoming, service.token)
+      : { authorization: `Bearer ${service.token}` },
+  );
   headers["accept-encoding"] = "identity";
   const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
   await new Promise<void>((resolve, reject) => {

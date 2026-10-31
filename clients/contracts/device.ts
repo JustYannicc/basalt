@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { Origin } from "./connection.ts";
+import { ConnectionDisplay, Origin } from "./connection.ts";
 
 const Secret = Schema.NonEmptyString.check(
   Schema.makeFilter((value) => value.length <= 16_384 && !/\s/u.test(value)),
@@ -31,6 +31,7 @@ export const NativeAccess = Schema.Struct({
     toolsOrganization: Schema.optionalKey(Schema.NonEmptyString),
   }),
   expiresAt: Positive,
+  display: Schema.optionalKey(ConnectionDisplay),
 });
 export type NativeAccess = typeof NativeAccess.Type;
 export const readNativeAccess = Schema.decodeUnknownSync(NativeAccess);

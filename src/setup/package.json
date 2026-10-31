@@ -2,6 +2,9 @@
   "name": "computer-setup",
   "private": true,
   "type": "module",
+  "exports": {
+    "./files": { "types": "./files.d.mts", "import": "./files.mjs" }
+  },
   "dependencies": {
     "effect": "4.0.1",
     "smol-toml": "1.8.0"

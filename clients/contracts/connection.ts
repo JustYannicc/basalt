@@ -63,10 +63,28 @@ export interface ServiceCredentials {
   readonly models?: typeof Service.Type;
   readonly tools?: typeof ToolsService.Type;
 }
+const PoolDisplay = Schema.Struct({ id: Schema.NonEmptyString, name: Schema.String });
+export const ConnectionDisplay = Schema.Struct({
+  account: Schema.Struct({
+    name: Schema.String,
+    email: Schema.NonEmptyString,
+    emailVerified: Schema.Boolean,
+  }),
+  pool: PoolDisplay,
+  pools: Schema.Array(PoolDisplay),
+});
 export const ConnectionView = Schema.Struct({
   state: Schema.Literals(["connected", "disconnected", "sign-in-required", "revoked"]),
   mode: Schema.Literals(["direct", "device"]),
   capabilities: Schema.Array(Capability),
+  display: Schema.optionalKey(ConnectionDisplay),
+  origin: Schema.optionalKey(Origin),
+  health: Schema.optionalKey(
+    Schema.Struct({
+      state: Schema.Literals(["online", "offline"]),
+      checkedAt: Schema.Int,
+    }),
+  ),
 });
 export type ConnectionView = typeof ConnectionView.Type;
 export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
@@ -76,6 +94,7 @@ export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
 /** The process owns forwarding; a credential source owns renewal and server-side revocation. */
 export interface CredentialSource {
   view(): ConnectionView;
+  origins(): readonly string[];
   transport(signal: AbortSignal): Promise<ConnectionTransport>;
   disconnect(): Promise<void>;
   reconnect(): Promise<void>;

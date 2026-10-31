@@ -3,9 +3,11 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
+import type { ConnectionView } from "../contracts/connection.ts";
 
 /** External protocol peer. It owns no client implementation or credential source. */
 export async function nativeFixture() {
+  let display: ConnectionView["display"];
   const sockets = new WebSocketServer({ noServer: true });
   const limits = {
     frameBytes: 32768,
@@ -33,16 +35,30 @@ export async function nativeFixture() {
   let denial = false,
     foreignApproval = false;
   let refuseRequest = false;
+  let offline = false;
+  let accessReads = 0;
+  let healthReads = 0;
+  let denyAccess = false;
   const holds = new Set<() => void>();
   let accessGate: ReturnType<typeof gate> | undefined;
   let refreshGate: ReturnType<typeof gate> | undefined;
   const server = createServer(async (request, response) => {
+    if (offline) {
+      request.socket.destroy();
+      return;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(chunk);
     const raw = Buffer.concat(chunks).toString();
     const fields = new URLSearchParams(raw);
     const json = (status: number, body: unknown) =>
       response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (request.url === "/" && request.method === "HEAD") {
+      assert.equal(request.headers.authorization, undefined);
+      assert.equal(request.headers["x-api-key"], undefined);
+      healthReads++;
+      return json(404, {});
+    }
     if (request.url === "/api/auth/oauth2/register") {
       const body = JSON.parse(raw);
       assert.equal(body.token_endpoint_auth_method, "none");
@@ -106,6 +122,8 @@ export async function nativeFixture() {
       });
     }
     if (request.url === "/api/auth/native/access") {
+      accessReads++;
+      if (denyAccess) return json(401, {});
       const held = accessGate;
       accessGate = undefined;
       if (held) {
@@ -127,6 +145,7 @@ export async function nativeFixture() {
           toolsOrganization: "personal-tools",
         },
         expiresAt: Date.now() + 3600000,
+        ...(display ? { display } : {}),
       });
     }
     if (request.url === "/api/auth/native/revoke") {
@@ -289,6 +308,12 @@ export async function nativeFixture() {
   origin = `http://127.0.0.1:${address.port}`;
   return {
     origin,
+    offline: (value: boolean) => {
+      offline = value;
+    },
+    denyAccess: (value: boolean) => {
+      denyAccess = value;
+    },
     holdAccess: () => {
       accessGate = gate();
       return accessGate;
@@ -299,6 +324,13 @@ export async function nativeFixture() {
     },
     approve: () => {
       approved = true;
+    },
+    beginApproval: () => {
+      approved = false;
+      denial = false;
+    },
+    display: (value: ConnectionView["display"]) => {
+      display = value;
     },
     deny: () => {
       denial = true;
@@ -324,7 +356,7 @@ export async function nativeFixture() {
     interrupt: () => {
       for (const socket of sockets.clients) socket.terminate();
     },
-    counts: () => ({ refreshes, writes, cancels, polls }),
+    counts: () => ({ refreshes, writes, cancels, polls, accessReads, healthReads }),
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       sockets.close();

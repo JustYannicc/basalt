@@ -15,6 +15,9 @@ import { run } from "./run.ts";
 import { bridgeStdio } from "./stdio.ts";
 import { login } from "./login.ts";
 import { DeviceOAuthError } from "../connection/device-oauth.ts";
+import { setupAgents } from "./setup.ts";
+import { readAgentSelection } from "../contracts/setup.ts";
+import { signOut } from "./sign-out.ts";
 
 const args = process.argv.slice(2);
 const homeFlag = args.indexOf("--home");
@@ -57,6 +60,19 @@ try {
   } else if (command === "agent" && rest[0] === "remove" && rest.length === 2) {
     await removeAgent(directory, rest[1]);
     process.stderr.write("Local agent access removed.\n");
+  } else if (command === "setup") {
+    const selection = { claude: "keep", codex: "keep" };
+    let apply = false;
+    for (let index = 0; index < rest.length; index++) {
+      const flag = rest[index];
+      if (flag === "--yes") apply = true;
+      else if (["--claude", "--codex"].includes(flag)) selection[flag.slice(2)] = rest[++index];
+      else
+        throw new Error(
+          "Use setup [--claude connect|keep|undo] [--codex connect|keep|undo] [--yes].",
+        );
+    }
+    await setupAgents(directory, readAgentSelection(selection), apply);
   } else if (command === "run" && rest.length === 0) {
     await run(directory);
   } else if (command === "stdio" && rest[0] === "--agent" && rest.length === 2) {
@@ -65,8 +81,11 @@ try {
     if (!agent || typeof agent.token !== "string")
       throw new Error("Create an agent credential first.");
     await bridgeStdio(ipcPath(directory), agent.token);
+  } else if (command === "sign-out" && rest.length === 0) {
+    await signOut(directory);
+    process.stderr.write("Saved credentials removed.\n");
   } else if (
-    ["status", "disconnect", "reconnect", "sign-out", "revoke"].includes(command) &&
+    ["status", "health", "disconnect", "reconnect", "revoke"].includes(command) &&
     rest.length === 0
   ) {
     await privateDirectory(directory);
@@ -74,7 +93,7 @@ try {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     throw new Error(
-      "Use login, import-direct, agent add/remove, run, stdio, status, disconnect, reconnect, sign-out or revoke.",
+      "Use login, import-direct, agent add/remove, setup, run, stdio, status, health, disconnect, reconnect, sign-out or revoke.",
     );
   }
 } catch (error) {

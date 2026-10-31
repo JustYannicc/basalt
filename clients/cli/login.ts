@@ -12,6 +12,7 @@ export async function login(
   origin: string,
   storage: "os" | "file",
   browser: boolean,
+  options?: { signal: AbortSignal; show: (url: string, code: string) => Promise<void> },
 ) {
   return withStoppedConnection(home, async () => {
     const raw = await readPrivate(profilePath(home));
@@ -24,13 +25,17 @@ export async function login(
     const store = await credentialStore(home, storage);
     await store.read();
     const controller = new AbortController();
+    const signal = options
+      ? AbortSignal.any([controller.signal, options.signal])
+      : controller.signal;
     const abort = () => controller.abort(new Error("Sign-in cancelled."));
     process.once("SIGINT", abort);
     process.once("SIGTERM", abort);
     try {
       const credentials = await signInDevice(origin, {
-        signal: controller.signal,
+        signal,
         show: async (url, code) => {
+          if (options) return options.show(url, code);
           process.stderr.write(
             `Approve this device in your browser: ${url}\nConfirmation code: ${code}\n`,
           );
@@ -44,7 +49,7 @@ export async function login(
         {
           headers: { authorization: `Bearer ${credentials.accessToken}` },
         },
-        controller.signal,
+        signal,
       );
       if (!response.ok) throw new Error("The new device cannot access this server.");
       const access = readNativeAccess(await response.json());

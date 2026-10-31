@@ -1,0 +1,295 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --surface: light-dark(#fff, #0a0a0a);
+  --text: light-dark(#111, #ededed);
+  --muted: light-dark(#666, #aaa);
+  --line: light-dark(#eaeaea, #292929);
+  --soft: light-dark(#fafafa, #151515);
+  --button: light-dark(#0a0a0a, #fff);
+  --on-button: light-dark(#fff, #111);
+  --danger: light-dark(#b4261a, #e99b95);
+  color: var(--text);
+  background: var(--surface);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button,
+select,
+input {
+  font: inherit;
+  color: inherit;
+}
+button,
+select {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 8px 12px;
+}
+button {
+  cursor: pointer;
+  transition: background-color 120ms ease-out;
+}
+button:hover:not(:disabled) {
+  background: var(--soft);
+}
+button:active:not(:disabled) {
+  filter: brightness(0.9);
+}
+button:disabled,
+select:disabled,
+input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+button.primary {
+  background: var(--button);
+  color: var(--on-button);
+  border-color: var(--button);
+}
+button.primary:hover:not(:disabled) {
+  filter: brightness(0.85);
+}
+button.plain {
+  border: 0;
+  min-height: 32px;
+  padding: 4px 0;
+  color: var(--muted);
+  text-align: left;
+  background: none;
+}
+button.plain:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+}
+button.danger {
+  color: var(--danger);
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--muted);
+  outline-offset: 3px;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 500;
+}
+header span:last-child {
+  color: var(--muted);
+  font-weight: 400;
+}
+.content {
+  max-width: 620px;
+  margin: auto;
+  padding: 28px;
+  display: grid;
+  gap: 24px;
+}
+h1,
+h2,
+p {
+  margin: 0;
+}
+h1 {
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  font-weight: 500;
+  text-wrap: balance;
+}
+h2 {
+  font-size: 15px;
+  font-weight: 500;
+}
+.heading,
+.section {
+  display: grid;
+  gap: 8px;
+}
+.section {
+  gap: 12px;
+}
+.secondary {
+  color: var(--muted);
+  font-size: 13px;
+}
+.connection-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+}
+.dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+.dot.connected {
+  background: currentColor;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--line);
+  padding: 13px 0;
+  font-size: 13px;
+}
+.row:first-child {
+  padding-top: 0;
+}
+.value {
+  display: grid;
+  justify-items: end;
+  min-width: 0;
+  text-align: right;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.value small {
+  font-size: 12px;
+}
+.value button {
+  font-size: 12px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.agent {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-height: 46px;
+  font-size: 13px;
+}
+.agent label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.agent input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--button);
+}
+.agent select {
+  min-width: 0;
+  max-width: 62%;
+  font-size: 12px;
+}
+.notice {
+  padding: 14px;
+  background: var(--soft);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  display: grid;
+  gap: 12px;
+}
+.review ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 14px;
+}
+.review li {
+  display: grid;
+  gap: 4px;
+}
+.review li strong {
+  font-weight: 500;
+}
+.review li small {
+  color: var(--muted);
+}
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.code {
+  font-size: 18px;
+}
+.approval-url {
+  color: var(--muted);
+  font-size: 12px;
+}
+details {
+  color: var(--muted);
+  font-size: 12px;
+}
+summary {
+  cursor: pointer;
+  padding: 6px 0;
+}
+details p {
+  margin-top: 10px;
+  line-height: 1.7;
+}
+.server {
+  display: grid;
+  gap: 6px;
+  margin: 16px 0 8px;
+}
+.server input {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.background-help {
+  font-size: 12px;
+}
+@media (max-width: 440px) {
+  .content {
+    padding: 22px;
+  }
+  button,
+  select {
+    min-height: 44px;
+  }
+  .row {
+    gap: 12px;
+  }
+  .agent {
+    flex-wrap: wrap;
+  }
+  .agent select {
+    max-width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}

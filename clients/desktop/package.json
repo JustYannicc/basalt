@@ -1,0 +1,61 @@
+{
+  "name": "@signalbox/desktop-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Connect your local agents to Signalbox models and tools.",
+  "homepage": "https://github.com/JustYannicc/basalt",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": ".dist/main.cjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "electron .",
+    "package:mac": "electron-builder --mac dmg zip --publish never",
+    "package:win": "electron-builder --win nsis zip --publish never",
+    "package:linux": "electron-builder --linux AppImage deb --publish never"
+  },
+  "dependencies": {
+    "@napi-rs/keyring": "2.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "electron": "44.4.5",
+    "electron-builder": "26.15.6",
+    "esbuild": "0.28.2",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "build": {
+    "appId": "run.signalbox.client.development",
+    "artifactName": "Signalbox-Client-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist-packages"
+    },
+    "files": [
+      ".dist/**",
+      "package.json",
+      "node_modules/@napi-rs/**"
+    ],
+    "asarUnpack": [
+      ".dist/connection.mjs",
+      "node_modules/@napi-rs/**"
+    ],
+    "npmRebuild": false,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "identity": null
+    },
+    "win": {
+      "signAndEditExecutable": false
+    },
+    "linux": {
+      "executableName": "signalbox-client",
+      "category": "Utility",
+      "maintainer": "Signalbox"
+    },
+    "publish": null
+  },
+  "productName": "Signalbox Client"
+}
