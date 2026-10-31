@@ -1,0 +1,8 @@
+{
+  "name": "basalt-native-provider-proof",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@typesafe-ai/sdk": "0.7.0"
+  }
+}

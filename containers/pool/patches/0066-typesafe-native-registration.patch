@@ -1,0 +1,140 @@
+diff --git a/internal/cmd/run.go b/internal/cmd/run.go
+--- a/internal/cmd/run.go
++++ b/internal/cmd/run.go
+@@ -12,7 +12,9 @@
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/nativeapi"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
++	sdkaccess "github.com/router-for-me/CLIProxyAPI/v8/sdk/access"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -31,7 +33,10 @@
+ 
+ // StartServiceWithPluginHost builds and runs the proxy service with a shared plugin host.
+ func StartServiceWithPluginHost(cfg *config.Config, configPath string, localPassword string, host *pluginhost.Host, serverOptions ...api.ServerOption) {
++	requestAccess := sdkaccess.NewManager()
+ 	builder := cliproxy.NewBuilder().
++		WithRequestAccessManager(requestAccess).
++		WithServerOptions(nativeapi.Routes(api.AuthMiddleware(requestAccess))).
+ 		WithConfig(cfg).
+ 		WithConfigPath(configPath).
+ 		WithLocalManagementPassword(localPassword)
+@@ -75,7 +80,10 @@
+ 
+ // StartServiceBackgroundWithPluginHost starts the proxy service with a shared plugin host.
+ func StartServiceBackgroundWithPluginHost(cfg *config.Config, configPath string, localPassword string, host *pluginhost.Host, serverOptions ...api.ServerOption) (cancel func(), done <-chan struct{}) {
++	requestAccess := sdkaccess.NewManager()
+ 	builder := cliproxy.NewBuilder().
++		WithRequestAccessManager(requestAccess).
++		WithServerOptions(nativeapi.Routes(api.AuthMiddleware(requestAccess))).
+ 		WithConfig(cfg).
+ 		WithConfigPath(configPath).
+ 		WithLocalManagementPassword(localPassword)
+diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
+--- a/internal/api/server_routes.go
++++ b/internal/api/server_routes.go
+@@ -710,6 +710,9 @@
+ 	cfg := s.getConfig()
+ 	models := make([]map[string]any, 0, len(entries))
+ 	for _, entry := range entries {
++		if entry.nativeProtocol != "" {
++			continue
++		}
+ 		models = append(models, formatHomeCodexModelWithSettings(entry, cfg))
+ 	}
+ 
+@@ -893,6 +896,10 @@
+ }
+ 
+ type homeModelEntry struct {
++	nativeProtocol         string
++	nativeEndpoints        []string
++	description            string
++	releaseDate            string
+ 	id                     string
+ 	created                int64
+ 	ownedBy                string
+@@ -932,6 +939,11 @@
+ 		if entry.ownedBy != "" {
+ 			model["owned_by"] = entry.ownedBy
+ 		}
++		if entry.nativeProtocol != "" {
++			model["protocols"] = []string{entry.nativeProtocol}
++			model["endpoints"] = entry.nativeEndpoints
++			model["capability"] = "native"
++		}
+ 		filtered = append(filtered, model)
+ 	}
+ 	s.writeModelListResponse(c, "openai", gin.H{
+@@ -943,6 +955,9 @@
+ func formatHomeClaudeModels(entries []homeModelEntry) []map[string]any {
+ 	out := make([]map[string]any, 0, len(entries))
+ 	for _, entry := range entries {
++		if entry.nativeProtocol != "" {
++			continue
++		}
+ 		out = append(out, formatHomeClaudeModel(entry))
+ 	}
+ 	return out
+@@ -996,6 +1011,9 @@
+ 	action := strings.TrimPrefix(c.Param("action"), "/")
+ 	action = strings.TrimSpace(action)
+ 	for _, entry := range entries {
++		if entry.nativeProtocol != "" {
++			continue
++		}
+ 		if homeGeminiModelMatches(entry, action) {
+ 			c.JSON(http.StatusOK, formatHomeGeminiModel(entry))
+ 			return
+@@ -1063,6 +1081,9 @@
+ func formatHomeGeminiModels(entries []homeModelEntry) []map[string]any {
+ 	out := make([]map[string]any, 0, len(entries))
+ 	for _, entry := range entries {
++		if entry.nativeProtocol != "" {
++			continue
++		}
+ 		out = append(out, formatHomeGeminiModel(entry))
+ 	}
+ 	return out
+@@ -1220,6 +1241,10 @@
+ 			indexByID[id] = len(out)
+ 			out = append(out, homeModelEntry{
+ 				id:                     id,
++				nativeProtocol:         nativeProtocolFromHomeModel(model),
++				nativeEndpoints:        nativeEndpointsFromHomeModel(model),
++				description:            homeModelString(model, "description"),
++				releaseDate:            homeModelString(model, "version"),
+ 				created:                homeModelInt64Value(model, "created"),
+ 				ownedBy:                ownedBy,
+ 				displayName:            displayName,
+@@ -1306,3 +1331,27 @@
+ 	}
+ 	return 0
+ }
++
++// Native model contracts reuse Home's existing provider metadata without a catalog registry in the edge.
++func nativeProtocolFromHomeModel(model map[string]any) string {
++	value := homeModelString(model, "type")
++	if !strings.HasPrefix(value, "native:") {
++		return ""
++	}
++	return strings.TrimPrefix(value, "native:")
++}
++func homeModelString(model map[string]any, key string) string {
++	value, _ := model[key].(string)
++	return value
++}
++func nativeEndpointsFromHomeModel(model map[string]any) []string {
++	result := []string{}
++	if values, ok := model["supportedGenerationMethods"].([]any); ok {
++		for _, raw := range values {
++			if value, ok := raw.(string); ok && strings.HasPrefix(value, "/v1/") {
++				result = append(result, value)
++			}
++		}
++	}
++	return result
++}
