@@ -332,6 +332,24 @@ test("unknown routes and lookalike boundaries return not_found", async () => {
   await error(response, "not_found", 404);
 });
 
+test("Kimi regional sign-ins and login files retain their provider identity", async () => {
+  const f = await fixture();
+  f.home.flow = "device";
+  for (const id of ["kimi", "kimi-ai"]) {
+    const started = await f.start("pool-a", id);
+    const session = f.home.sessions.get(state(started))!;
+    assert.equal(session.provider, id);
+    f.home.addFile(`signed-in-${id}`, id);
+    session.status = "ok";
+    await status(await f.poll(started), { status: "connected", accountId: `signed-in-${id}` });
+    const uploaded = await f.call("/login-files", { body: { type: id, access_token: "synthetic-token" } });
+    assert.equal(uploaded.status, 200);
+    const { accountId } = await uploaded.json() as { accountId: string };
+    const view = await (await f.call("/pool")).json() as PoolView;
+    assert.equal(view.accounts.find((account) => account.id === accountId)?.provider, id);
+  }
+});
+
 test("unknown providers are rejected locally and Home 404 is mapped", async () => {
   const f = await fixture();
   await error(await f.call("/sign-ins", { body: { provider: "no-such-provider" } }), "unknown_provider");
