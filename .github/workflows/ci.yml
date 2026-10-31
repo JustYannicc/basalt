@@ -433,6 +433,9 @@ jobs:
       - name: Build the isolated account test assets
         working-directory: .upstream
         run: bun run e2e:prepare
+      - name: Install Chromium for the account tests
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
       - name: Verify reusable acquisition, health and retained account compatibility
         working-directory: .upstream
         run: >-
