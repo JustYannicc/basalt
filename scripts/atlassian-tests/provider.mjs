@@ -108,7 +108,7 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
     const log = { method: request.method, path: url.pathname, status: 500, person: null };
     requests.push(log);
     try {
-      const specification = /^\/openapi\/([a-zA-Z]+)\.json$/.exec(url.pathname);
+      const specification = /^\/openapi\/([a-zA-Z0-9]+)\.json$/.exec(url.pathname);
       if (specification && request.method === "GET" && specs[specification[1]]) {
         log.status = 200;
         response.writeHead(200, { "content-type": "application/json" });

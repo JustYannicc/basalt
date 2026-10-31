@@ -10,7 +10,7 @@ const text = (result) => JSON.stringify(result.structuredContent ?? result);
 export async function discover(client, slug, names) {
   const paths = {};
   for (const name of names) {
-    const path = `${slug}.${name}`;
+    const path = `tools[${JSON.stringify(slug)}].${name}`;
     const result = await call(client, "search", { query: path, limit: 1 });
     assert.ok(!result.isError, `Search failed: ${path}`);
     assert.ok(
