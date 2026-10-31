@@ -300,7 +300,7 @@ diff --git a/provider.ts b/provider.ts
 new file mode 100644
 --- /dev/null
 +++ b/provider.ts
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,57 @@
 +import {
 +  array,
 +  bearer,
@@ -340,10 +340,9 @@ new file mode 100644
 +});
 +
 +export const requirements = { user: { accounts: { atlassian } } };
-+export type Context = QueryContext<typeof requirements>;
 +
 +export const apiFetch = (
-+  context: Context,
++  context: QueryContext<typeof requirements>,
 +  url: string,
 +  options: { readonly method?: "GET" | "POST"; readonly body?: unknown } = {},
 +) => {
@@ -363,10 +362,11 @@ diff --git a/queries.ts b/queries.ts
 new file mode 100644
 --- /dev/null
 +++ b/queries.ts
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,160 @@
 +import { array, boolean, decodeJson, json, number, object, query, string } from "apps";
++import type { QueryContext } from "apps";
 +import { never } from "apps/operations/approval";
-+import { apiFetch, apiOrigin, accessibleResourcesUrl, type Context } from "./provider.js";
++import { apiFetch, apiOrigin, accessibleResourcesUrl, type requirements } from "./provider.js";
 +
 +const boundedNumber = (value: number | undefined, fallback: number, maximum: number) =>
 +  Math.max(1, Math.min(maximum, Math.trunc(value ?? fallback)));
@@ -386,7 +386,7 @@ new file mode 100644
 +    approval: never(),
 +    input: object({}),
 +  },
-+  async (context: Context) => {
++  async (context: QueryContext<typeof requirements>) => {
 +    const response = await apiFetch(context, accessibleResourcesUrl);
 +    return decodeJson(response, Sites);
 +  },
@@ -417,7 +417,7 @@ new file mode 100644
 +      limit: number().optional(),
 +    }),
 +  },
-+  async (context: Context, { cloudId, cql, limit }) => {
++  async (context: QueryContext<typeof requirements>, { cloudId, cql, limit }) => {
 +    const params = new URLSearchParams({
 +      cql,
 +      limit: String(boundedNumber(limit, 25, 100)),
@@ -447,7 +447,7 @@ new file mode 100644
 +    approval: never(),
 +    input: object({ cloudId: string({ minLength: 1 }), pageId: string({ minLength: 1 }) }),
 +  },
-+  async (context: Context, { cloudId, pageId }) => {
++  async (context: QueryContext<typeof requirements>, { cloudId, pageId }) => {
 +    const base = `${apiOrigin}/ex/confluence/${encodeURIComponent(cloudId)}/wiki/rest/api`;
 +    const params = new URLSearchParams({ expand: "body.storage,space,version" });
 +    const response = await apiFetch(
@@ -478,7 +478,7 @@ new file mode 100644
 +    approval: never(),
 +    input: object({ cloudId: string({ minLength: 1 }), issueKey: string({ minLength: 1 }) }),
 +  },
-+  async (context: Context, { cloudId, issueKey }) => {
++  async (context: QueryContext<typeof requirements>, { cloudId, issueKey }) => {
 +    const base = `${apiOrigin}/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
 +    const params = new URLSearchParams({
 +      fields: "summary,description,status,issuetype,project,updated",
@@ -508,7 +508,7 @@ new file mode 100644
 +      maxResults: number().optional(),
 +    }),
 +  },
-+  async (context: Context, { cloudId, jql, maxResults }) => {
++  async (context: QueryContext<typeof requirements>, { cloudId, jql, maxResults }) => {
 +    const base = `${apiOrigin}/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
 +    const response = await apiFetch(context, `${base}/search/jql`, {
 +      method: "POST",
