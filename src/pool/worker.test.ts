@@ -93,6 +93,27 @@ test("the Durable Object alarm provisions pending pool members", async () => {
   assert.ok(alarm);
 });
 
+test("a restarted object keeps an already running container alive before any request", async () => {
+  const env = {
+    POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
+    POOL_MANAGEMENT_KEY: "fake-management-key", POOL_APP_SIGNING_KEY: "ab".repeat(32), POOL_IMAGE_HASH: "fake-image",
+  };
+  const timeouts: number[] = [];
+  const pending: Promise<unknown>[] = [];
+  const object = (running: boolean) => new PoolContainer({
+    container: { running, setInactivityTimeout: async (ms: number) => { timeouts.push(ms); } },
+    waitUntil: (work: Promise<unknown>) => { pending.push(work); },
+    storage: { get: async () => undefined, put: async () => {} },
+  }, env);
+  object(true);
+  await Promise.all(pending);
+  // The same two hours a warm start sets; an object with no request to serve never warms.
+  assert.deepEqual(timeouts, [2 * 60 * 60_000]);
+  object(false);
+  await Promise.all(pending);
+  assert.equal(timeouts.length, 1);
+});
+
 test("signed access changes reach the computer queue before generic pool-token control routing", async () => {
   const signingKey = "ab".repeat(32);
   const values = new Map<string, unknown>();
