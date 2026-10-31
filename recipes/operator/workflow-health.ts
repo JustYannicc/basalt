@@ -44,6 +44,7 @@ export async function readWorkflowHealth(step: Step): Promise<Observation> {
           workflow: text(scan?.workflow) ?? "",
           checkedAt: numeric(scan?.checkedAt) ?? 0,
           successfulAt: numeric(scan?.successfulAt) ?? 0,
+          progressAt: numeric(scan?.progressAt) ?? 0,
           known: numeric(scan?.known) ?? 0,
         };
       });

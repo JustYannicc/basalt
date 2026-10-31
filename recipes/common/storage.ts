@@ -35,6 +35,7 @@ export const saveObservation = mutation(
       cursor: string(),
       at: number(),
       verdict: string(),
+      readComplete: boolean().optional(),
       code: string(),
       failures: number(),
       successes: number(),
@@ -59,6 +60,7 @@ export const saveObservation = mutation(
         cursor: input.cursor,
         at: input.at,
         verdict: input.verdict as Observation["verdict"],
+        readComplete: input.readComplete ?? input.verdict !== "unknown",
         code: input.code,
         failures: input.failures,
         successes: input.successes,
@@ -77,8 +79,15 @@ export const saveObservation = mutation(
         ...(input.decision === undefined ? {} : { decision: input.decision }),
       };
       const next = remember(before, observation);
-      if (next !== before)
-        rememberScan(tx, input.workflow, input.key, observation.verdict !== "unknown");
+      const current =
+        observation.at >= before.observation.at &&
+        !(
+          observation.sourceAt !== undefined &&
+          before.observation.sourceAt !== undefined &&
+          observation.sourceAt < before.observation.sourceAt
+        );
+      // Re-reading fresh cached facts completes a scan without advancing confirmation counts.
+      rememberScan(tx, input.workflow, input.key, current && observation.readComplete === true);
       if (before.open && (!next.open || next.episode !== before.episode))
         withdrawn = before.question;
       return next;

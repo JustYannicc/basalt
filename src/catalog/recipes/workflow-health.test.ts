@@ -4,7 +4,13 @@ import { workflowHealthCondition } from "../../../recipes/operator/workflow-heal
 const now = Date.UTC(2026, 9, 31, 12);
 const expected = [{ name: "check", maximumAgeMinutes: 10 }];
 const configuredAt = now - 3600000;
-const success = { workflow: "check", checkedAt: now - 60000, successfulAt: now - 60000, known: 1 };
+const success = {
+  workflow: "check",
+  checkedAt: now - 60000,
+  successfulAt: now - 60000,
+  progressAt: now - 60000,
+  known: 1,
+};
 test("live delivery failure survives incomplete scan metadata", () => {
   assert.equal(workflowHealthCondition(now, configuredAt, expected, [success], []), "healthy");
   for (const status of ["uncertain", "refused", "claimed", "submitted"])
@@ -41,7 +47,7 @@ test("current scan timestamps detect stalls without waiting for human responses 
       now,
       configuredAt,
       expected,
-      [{ ...success, successfulAt: now - 660000 }],
+      [{ ...success, successfulAt: now - 660000, progressAt: now - 660000 }],
       [],
     ),
     "action",
@@ -75,7 +81,7 @@ test("unknown reads cannot claim health; every configured workflow must stay fre
       now,
       configuredAt,
       expected,
-      [{ ...success, successfulAt: 0, known: 0 }],
+      [{ ...success, successfulAt: 0, progressAt: configuredAt, known: 0 }],
       [],
     ),
     "action",

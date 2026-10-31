@@ -258,3 +258,17 @@ test("a different failed release replaces the question and decline without waiti
   assert.equal(replacement.ownerRun, undefined);
   assert.equal(replacement.receipt, undefined);
 });
+
+test("fresh complete reads keep scanning healthy while a condition awaits confirmation", () => {
+  const first = poolObservation(pool(now, 0.8, 0.8));
+  assert.equal(first.verdict, "unknown");
+  assert.equal(first.readComplete, true);
+  const stale = pool(now, 0.8, 0.8);
+  stale.accounts[0]!.fresh = false;
+  assert.equal(poolObservation(stale).readComplete, false);
+  const availability = availabilityObservation(now, "healthy", emptyCheckpoint());
+  assert.equal(availability.verdict, "unknown");
+  assert.equal(availability.readComplete, true);
+  assert.equal(availabilityObservation(now, "unknown", emptyCheckpoint()).readComplete, false);
+  assert.equal(serviceErrorsObservation(now, []).readComplete, false);
+});

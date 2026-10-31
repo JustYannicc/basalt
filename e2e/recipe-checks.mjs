@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Effect } from "effect";
 import { recipeHarness, runtime, root, appsManifest, until } from "./recipes/harness.mjs";
+import { verifyScanHealth } from "./recipes/scan-health.mjs";
 import { startRecipeUpstream } from "./recipes/upstream.mjs";
 
 const directory = resolve(
@@ -24,20 +25,21 @@ const program = Effect.gen(function* () {
   const h = yield* recipeHarness(directory, fixture.origin);
   const deploy = (name, files) =>
     h.request("POST", `${h.prefix}/apps/deploy`, { name, files: [...files, appsManifest] });
-  const resource = yield* deploy("Synthetic monitored account", [
+  const resourceFiles = [
     {
       path: "index.ts",
       content: `
 import { defineApp, defineProvider, object, string, secrets, ProviderError, decodeJson, json } from "apps";
 const resource = defineProvider({ name: "Synthetic monitored resource", auth: { apiKey: secrets({ label: "Synthetic key", fields: object({ token: string() }) }) },
-  async health({ fetch, signal }) { const value = await decodeJson(await fetch(${JSON.stringify(`${fixture.origin}/health`)}, { signal }), json());
+  async health({ fetch, signal, account }) { const value = await decodeJson(await fetch(${JSON.stringify(`${fixture.origin}/health`)}, { signal, headers: { "x-fixture-account": account.fields.token } }), json());
     if (value.status === "rejected") throw new ProviderError({ reason: "unauthorized", status: 401 });
     if (value.status === "transient") throw new ProviderError({ reason: "unavailable", status: 429 });
     return {}; }
 });
 export default defineApp({ user: { accounts: { resource } } }, {});`,
     },
-  ]);
+  ];
+  const resource = yield* deploy("Synthetic monitored account", resourceFiles);
   const account = yield* h.connect(resource.id, "resource", { token: "synthetic-key" });
   const channel = yield* deploy("Synthetic connected channel", [
     {
@@ -130,9 +132,10 @@ export default defineApp({}, { tools: router({ send }) });`,
     (value) => !value.open,
     "healthy check did not withdraw the question",
   );
-  const question = yield* h.request(
-    "GET",
-    `${h.appPath(copy.id)}/workflow-inputs/${pending.question.id}`,
+  const question = yield* until(
+    h.request("GET", `${h.appPath(copy.id)}/workflow-inputs/${pending.question.id}`),
+    (value) => value.status === "withdrawn",
+    "recovery did not withdraw the native question",
   );
   checked("recovery withdraws the waiting question", question.status, "withdrawn");
   const finished = yield* until(
@@ -259,6 +262,16 @@ export default defineApp({}, { tools: router({ send }) });`,
     ),
     true,
   );
+  yield* verifyScanHealth({
+    h,
+    deploy,
+    fixture,
+    checked,
+    resourceFiles,
+    account,
+    managementKey: key.key,
+    directory,
+  });
   return { checks, syntheticMessagesOnly: true, runtimeDirectory: h.runtimeDirectory };
 });
 try {

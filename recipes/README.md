@@ -69,7 +69,8 @@ For workflow health, list each watched recipe app, its expected workflow names
 and the maximum successful-scan age in minutes. Include schedule slack. The
 check reads current delivery checkpoints while a question waits, and detects
 missed successful scans separately from legitimate human waits. Scan timestamps
-come from completed reads, independently of retained workflow history. A failed
+come from completed reads, independently of retained workflow history. A complete
+fresh read counts while its condition awaits confirmation. A failed
 or stalled read needs attention once it exceeds the configured age. A missing or
 unconfigured watch stays unknown.
 

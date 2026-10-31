@@ -4,6 +4,7 @@ export interface Observation {
   cursor: string;
   at: number;
   verdict: Verdict;
+  readComplete?: boolean;
   code: string;
   failures: number;
   successes: number;

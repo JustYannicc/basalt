@@ -133,8 +133,14 @@ export const deliveryHealth = query(
   async (ctx: QueryContext<typeof requirements>) => {
     const current = controls(ctx);
     const scans = ctx.sql
-      .exec<{ workflow: string; checkedAt: number; successfulAt: number; known: number }>(
-        "SELECT workflow, MIN(checked_at) AS checkedAt, MIN(successful_at) AS successfulAt, MIN(CASE WHEN successful_at >= checked_at THEN 1 ELSE 0 END) AS known FROM scans GROUP BY workflow LIMIT 1001",
+      .exec<{
+        workflow: string;
+        checkedAt: number;
+        successfulAt: number;
+        progressAt: number;
+        known: number;
+      }>(
+        "SELECT workflow, MIN(checked_at) AS checkedAt, MIN(successful_at) AS successfulAt, MIN(MAX(expected_at, successful_at)) AS progressAt, MIN(CASE WHEN successful_at >= expected_at AND successful_at >= checked_at THEN 1 ELSE 0 END) AS known FROM scans GROUP BY workflow LIMIT 1001",
       )
       .toArray();
     return {

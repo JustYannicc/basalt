@@ -10,9 +10,10 @@ export function rememberScan(
 ) {
   const now = Date.now();
   tx.exec(
-    "INSERT INTO scans (workflow, key, checked_at, successful_at) VALUES (?, ?, ?, ?) ON CONFLICT(workflow, key) DO UPDATE SET checked_at = excluded.checked_at, successful_at = CASE WHEN ? THEN excluded.successful_at ELSE scans.successful_at END",
+    "INSERT INTO scans (workflow, key, expected_at, checked_at, successful_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(workflow, key) DO UPDATE SET checked_at = excluded.checked_at, successful_at = CASE WHEN ? THEN excluded.successful_at ELSE scans.successful_at END",
     workflow,
     key,
+    now,
     now,
     successful ? now : 0,
     successful ? 1 : 0,
@@ -31,6 +32,14 @@ export function retainScans(
       workflow,
       ...(keys.length ? keys : [""]),
     );
+    const now = Date.now();
+    for (const key of keys)
+      tx.exec(
+        "INSERT INTO scans (workflow, key, expected_at, checked_at, successful_at) VALUES (?, ?, ?, 0, 0) ON CONFLICT(workflow, key) DO NOTHING",
+        workflow,
+        key,
+        now,
+      );
     if (!keys.length) rememberScan(tx, workflow, "", true);
   });
 }

@@ -15,14 +15,17 @@ export function availabilityObservation(
 ) {
   const failures = status === "failed" ? previous.observation.failures + 1 : 0;
   const successes = status === "healthy" ? previous.observation.successes + 1 : 0;
-  return fact(
-    `availability:${at}`,
-    at,
-    status === "unknown" ? "availability-unknown" : "availability",
-    failures >= 3 ? "action" : successes >= 3 ? "healthy" : "unknown",
-    failures,
-    successes,
-  );
+  return {
+    ...fact(
+      `availability:${at}`,
+      at,
+      status === "unknown" ? "availability-unknown" : "availability",
+      failures >= 3 ? "action" : successes >= 3 ? "healthy" : "unknown",
+      failures,
+      successes,
+    ),
+    readComplete: status !== "unknown",
+  };
 }
 export interface RuntimeFact {
   at: number;
@@ -67,6 +70,7 @@ export function runtimeObservation(current: RuntimeFact, previous: Checkpoint) {
       count,
       successful ? firstSuccess : current.at,
     ),
+    readComplete: true,
     lastUnexpectedAt: lastBoot,
     flapping: flapping || (wasFlapping && !healthy),
   };
@@ -98,12 +102,15 @@ export function serviceErrorsObservation(at: number, buckets: HttpBucket[]) {
     ordered.every((bucket) => bucket.errors >= 10 && bucket.errors / bucket.requests >= 0.2);
   const below =
     valid && ordered.every((bucket) => bucket.errors < 5 || bucket.errors / bucket.requests < 0.05);
-  return fact(
-    ordered.map((bucket) => String(bucket.start)).join(":") || `http-unknown:${at}`,
-    at,
-    critical ? "service-errors-critical" : "service-errors",
-    elevated ? "action" : below ? "healthy" : "unknown",
-  );
+  return {
+    ...fact(
+      ordered.map((bucket) => String(bucket.start)).join(":") || `http-unknown:${at}`,
+      at,
+      critical ? "service-errors-critical" : "service-errors",
+      elevated ? "action" : below ? "healthy" : "unknown",
+    ),
+    readComplete: valid,
+  };
 }
 export function errorSpikeObservation(
   at: number,
@@ -126,6 +133,7 @@ export function errorSpikeObservation(
       successes,
       since,
     ),
+    readComplete: true,
     openingRate,
   };
 }

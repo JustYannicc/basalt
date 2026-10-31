@@ -100,6 +100,7 @@ export function poolObservation(fact: PoolFact, previous = emptyCheckpoint()): O
     allLow && accounts.every((account) => account.windows.some((window) => window.remaining === 0));
   return {
     cursor: cursor || `unknown:${fact.at}`,
+    readComplete: valid,
     at: fact.at,
     verdict: opening ? "action" : closing ? "healthy" : "unknown",
     code: !valid

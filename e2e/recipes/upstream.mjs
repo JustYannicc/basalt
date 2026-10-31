@@ -7,11 +7,17 @@ export async function startRecipeUpstream() {
   let hold = false;
   let accepted;
   const replies = new Set();
+  const healthReplies = new Set();
+  let heldToken;
+  let healthAccepted;
   const sends = [];
   const server = createServer(async (request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.url === "/health") {
-      response.end(JSON.stringify({ status: health }));
+      if (request.headers["x-fixture-account"] === heldToken && heldToken !== undefined) {
+        healthReplies.add(response);
+        healthAccepted?.();
+      } else response.end(JSON.stringify({ status: health }));
       return;
     }
     if (request.url !== "/send" || request.method !== "POST") {
@@ -33,6 +39,17 @@ export async function startRecipeUpstream() {
     setHealth(value) {
       health = value;
     },
+    holdHealth(token) {
+      heldToken = token;
+      return new Promise((resolve) => {
+        healthAccepted = resolve;
+      });
+    },
+    releaseHealth() {
+      heldToken = undefined;
+      for (const response of healthReplies) response.end(JSON.stringify({ status: health }));
+      healthReplies.clear();
+    },
     holdNext() {
       hold = true;
       return new Promise((resolve) => {
@@ -46,6 +63,7 @@ export async function startRecipeUpstream() {
     },
     async stop() {
       this.release();
+      this.releaseHealth();
       server.closeAllConnections();
       await new Promise((resolve, reject) =>
         server.close((error) =>

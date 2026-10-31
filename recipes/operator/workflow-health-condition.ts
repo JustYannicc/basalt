@@ -6,6 +6,7 @@ export interface ScanHealth {
   workflow: string;
   checkedAt: number;
   successfulAt: number;
+  progressAt: number;
   known: number;
 }
 export interface DeliveryState {
@@ -43,9 +44,9 @@ export function workflowHealthCondition(
     )
       return "unknown";
     const current = scans.find((value) => value.workflow === scan.name);
-    const successfulAt = Math.max(configuredAt, current?.successfulAt ?? 0);
-    if (successfulAt > now || (current?.checkedAt ?? 0) > now) return "unknown";
-    if (now - successfulAt > maximumAge) return "action";
+    const progressAt = Math.max(configuredAt, current?.progressAt ?? 0);
+    if (progressAt > now || (current?.checkedAt ?? 0) > now) return "unknown";
+    if (now - progressAt > maximumAge) return "action";
     if (!current || current.successfulAt < configuredAt || current.known !== 1) unknown = true;
   }
   return unknown ? "unknown" : "healthy";
