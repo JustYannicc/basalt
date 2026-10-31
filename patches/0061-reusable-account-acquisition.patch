@@ -942,19 +942,19 @@ index 0ce8306..f4af640 100644
        const gate = yield* Deferred.make<void>(),
          started = yield* Deferred.make<void>();
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 931d791..3ac3326 100644
+index 60a65a9..5156be2 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
-@@ -49,6 +49,8 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
- const maxClockOffset = 40 * 86_400_000;
- /** Operator settings a scenario may turn on between product generations. */
+@@ -51,6 +51,8 @@ const maxClockOffset = 40 * 86_400_000;
  export const OperatorSettings = Schema.Struct({
+   POOL_APP_SIGNING_KEY: Schema.optionalKey(Schema.NonEmptyString),
+   BASALT_POOL_ORIGIN: Schema.optionalKey(Schema.NonEmptyString),
 +  /** A full product entry composed through its public API, with typed host capabilities. */
 +  EXECUTOR_E2E_PRODUCT_ENTRY: Schema.optionalKey(Schema.NonEmptyString),
    EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
    EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
    EXECUTOR_PRODUCT_NAME: Schema.optionalKey(Schema.NonEmptyString),
-@@ -152,6 +154,7 @@ export const startManagedServer = (
+@@ -154,6 +156,7 @@ export const startManagedServer = (
      /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
      let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
      const env = {
@@ -962,7 +962,7 @@ index 931d791..3ac3326 100644
        PATH: runtimePath,
        NODE_ENV: "test",
        HOST: "127.0.0.1",
-@@ -250,10 +253,16 @@ export const startManagedServer = (
+@@ -252,10 +255,16 @@ export const startManagedServer = (
              : path.join(coverageDirectory, String(generation++));
          // The product's workerd logs its function events here; see workerd-coverage.ts.
          if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
@@ -981,7 +981,7 @@ index 931d791..3ac3326 100644
              : {
                  command: "bun",
                  args:
-@@ -272,7 +281,7 @@ export const startManagedServer = (
+@@ -274,7 +283,7 @@ export const startManagedServer = (
                      : [
                          // Bun accepts Node's --import preload, so self-host can advance wall time too.
                          ...preloads.flatMap((url) => ["--import", url.href]),
@@ -991,10 +991,10 @@ index 931d791..3ac3326 100644
                };
          const child = yield* processes.spawn(
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index c1466fc..dd8e576 100644
+index c6c48d5..b7237e2 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7812,6 +7812,116 @@ export const scenarios = plan({
+@@ -7870,6 +7870,116 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
