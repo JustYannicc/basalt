@@ -9,7 +9,7 @@ import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
 import { failureResponse } from "./json.ts";
-import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
+import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
 import {
@@ -52,6 +52,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
+    // A restarted object, after a deploy or an eviction, has lost its container's inactivity
+    // timeout, and the platform stops a running container soon after the object goes idle.
+    // Requests that never warm the pool, like an hourly inventory or setup polling, did exactly that.
+    if (ctx.container?.running) ctx.waitUntil(ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs));
     this.lifecycle = this.createLifecycle(ctx, env);
     const onProductEvent: ProductEventCallback = (event: ProductEvent, accountId: string) => {
       ctx.waitUntil(captureProduct(env, event, accountId));
