@@ -113,19 +113,32 @@ test(
 );
 
 for (const mode of ["unknown", "disconnect"]) test(`direct model ${mode} forbids retry without replaying the request`, async () => {
-  const before = remote.modelCalls();
-  const response = await fetch(`${runtime.origin}/v1/responses`, {
-    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ model: "fixture-model", mode }),
-  });
-  assert.equal(response.status, 502);
-  assert.equal(response.headers.get("x-should-retry"), "false");
-  assert.equal(response.headers.get("retry-after"), null);
-  assert.equal(response.headers.get("retry-after-ms"), null);
-  const body = await response.json() as { error: { code: string; retryable: boolean } };
-  assert.equal(body.error.code, "upstream_outcome_unknown");
-  assert.equal(body.error.retryable, false);
-  assert.equal(remote.modelCalls(), before + 1);
+  // The upgrade-burst case owns a different process and cannot consume this case's request slots.
+  const upstream = await remoteFixture();
+  const isolated = await fixtureHome(upstream.origin);
+  let connection: Awaited<ReturnType<typeof isolated.start>> | undefined;
+  try {
+    connection = await isolated.start();
+    const key = await isolated.secret("models");
+    const input = { model: "fixture-model", mode, input: "flushed-request-body" };
+    const response = await fetch(`${connection.origin}/v1/responses`, {
+      method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("x-should-retry"), "false");
+    assert.equal(response.headers.get("retry-after"), null);
+    assert.equal(response.headers.get("retry-after-ms"), null);
+    const body = await response.json() as { error: { code: string; retryable: boolean } };
+    assert.equal(body.error.code, "upstream_outcome_unknown");
+    assert.equal(body.error.retryable, false);
+    assert.equal(upstream.modelCalls(), 1);
+    assert.deepEqual(upstream.modelRequests(), [input]);
+  } finally {
+    try { await connection?.stop(); } finally {
+      try { await upstream.close(); } finally { await isolated.remove(); }
+    }
+  }
 });
 
 

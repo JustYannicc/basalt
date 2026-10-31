@@ -20,6 +20,7 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 
 /** External protocol fixtures exercise transport mechanics, not deployed model/tool acceptance. */
 export async function remoteFixture() {
+  const modelRequests: Record<string, unknown>[] = [];
   const finishStream = deferred<void>();
   const cancelled = deferred<void>();
   const websocketBytes = deferred<Buffer>();
@@ -80,6 +81,8 @@ export async function remoteFixture() {
         return;
       }
       const input = await body(request);
+      // A fault after body EOF proves the request reached upstream before its outcome became unknown.
+      modelRequests.push(input);
       modelCalls++;
       if (input.mode === "disconnect") {
         request.socket.destroy();
@@ -148,6 +151,7 @@ export async function remoteFixture() {
     websocketBytes,
     calls: () => calls,
     modelCalls: () => modelCalls,
+    modelRequests: () => [...modelRequests],
     slowBytes: () => slowBytes,
     slowTotal,
     close: () =>

@@ -265,7 +265,8 @@ test(
     const previous = runtime.origin;
     await command(["disconnect"], profile.home);
     let response = await fetch(`${runtime.origin}/v1/models`, { headers: headers() });
-    assert.equal(response.status, 502);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("x-should-retry"), null);
     await response.body?.cancel();
     await command(["reconnect"], profile.home);
     await runtime.stop();
@@ -316,7 +317,8 @@ test(
     await chmod(profileFile, 0o600);
     await command(["sign-out"], profile.home);
     const response = await fetch(`${runtime.origin}/v1/models`, { headers: headers() });
-    assert.equal(response.status, 502);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("x-should-retry"), null);
     await response.body?.cancel();
     assert.equal(
       JSON.parse((await command(["status"], profile.home)).stdout).state,

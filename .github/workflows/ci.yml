@@ -77,6 +77,7 @@ jobs:
         if: always()
         with:
           name: native-client-product
+          include-hidden-files: true
           path: |
             .generated/native-client-*/result.json
             .generated/native-client-*/failure.txt

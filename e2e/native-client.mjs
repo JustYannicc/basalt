@@ -233,7 +233,8 @@ const program = Effect.gen(function* () {
       await Effect.runPromise(pool.refuse(true));
       await assert.rejects(interruptedReader.read(), /terminated|abort|socket|interrupted/u);
       const denied = await fetch(`${origin}/v1/models`, { headers });
-      assert.equal(denied.status, 502);
+      assert.equal(denied.status, 503);
+      assert.equal(denied.headers.get("x-should-retry"), null);
       await denied.body.cancel();
       assert.equal(JSON.parse((await command(["status"])).stdout).state, "sign-in-required");
       await Effect.runPromise(pool.refuse(false));
