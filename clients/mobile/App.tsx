@@ -35,6 +35,7 @@ function Home() {
   const [customServer, setCustomServer] = useState(!defaultOrigin);
   const [screen, setScreen] = useState<"home" | "model" | "tools">("home");
   const connection = snapshot.connection;
+  const origin = connection?.origin;
   const busy = Boolean(snapshot.busy);
   const connected = connection?.state === "connected" && connection.health?.state !== "offline";
   useEffect(() => {
@@ -124,6 +125,16 @@ function Home() {
                   <Label small muted>
                     {connection.origin}
                   </Label>
+                )}
+                {connection?.state === "connected" && origin && (
+                  <Button
+                    label="Choose pool in browser"
+                    secondary
+                    disabled={busy}
+                    onPress={() => {
+                      void controller.signIn(origin);
+                    }}
+                  />
                 )}
                 {connected && (
                   <>
