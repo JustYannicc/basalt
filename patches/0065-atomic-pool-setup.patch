@@ -1,0 +1,292 @@
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+index 4e5ee58..d403400 100644
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -290,6 +290,38 @@ export const poolDefaults = (
+     )).trim();
+     const origin = { ...poolSource, name: `${productName || defaultProductBrand.name} pool` };
+     const poolAppFiles = yield* poolSeed.files;
++    let createdAtomically = false;
++    // appCreated runs inside the SDK's publication transaction, after compilation. A failed
++    // link/metadata write rolls back the app too, so no caller can observe a half-created pool.
++    const publish = (app: App) =>
++      Effect.gen(function* () {
++        const current = yield* lockedState();
++        if (
++          current === undefined ||
++          Object.hasOwn(current.pools, user) ||
++          Object.values(current.pools).some((pool) => pool.app === app.id) ||
++          app.activeVersion === null
++        )
++          return yield* new StorageError();
++        yield* lockAppLinks(sql, app.id);
++        const repaired = yield* repairPoolAccount(
++          executor,
++          sql,
++          key.value,
++          organization,
++          user,
++          app,
++        );
++        yield* record({
++          app: app.id,
++          version: app.activeVersion,
++          bundle: poolAppVersion,
++          account: repaired.account,
++          tokenKeyVersion,
++        });
++        createdAtomically = true;
++        intent = true;
++      }).pipe(Effect.mapError(() => new StorageError()));
+     let candidate: App | undefined;
+     for (let suffix = 1; suffix <= 100; suffix++) {
+       const name = poolName(member.name, member.email, suffix);
+@@ -300,7 +332,7 @@ export const poolDefaults = (
+           from: { files: poolAppFiles, origin, activation: "deploy" },
+         })
+         .pipe(
+-          poolAppSetup(user),
++          poolAppSetup(user, publish),
+           Effect.catchTags({
+             AppNameTaken: () => Effect.succeed(undefined),
+             AppSlugTaken: () => Effect.succeed(undefined),
+@@ -326,6 +358,8 @@ export const poolDefaults = (
+     }
+     if (candidate === undefined) return yield* new StorageError();
+     const app = candidate;
++    if (createdAtomically) return;
++    // Adopt candidates left by earlier deploy-first releases through the existing repair path.
+     const changed = yield* executor[StorageHost].transaction(
+       Effect.gen(function* () {
+         const current = yield* lockedState();
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 445fb3d..a5bdb50 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -51,14 +51,21 @@ export const memberAppCreation =
+       Effect.provideService(AppCreation, { kind: "member" }),
+       Effect.provideService(CurrentUserId, user),
+     );
++type PoolSetupCommit = ResourceLifecycle["appCreated"];
++const PoolSetupCommit = Context.Reference<PoolSetupCommit | undefined>("hosted/PoolSetupCommit", {
++  defaultValue: () => undefined,
++});
+ const PoolSetupUser = Context.Reference<string | undefined>("hosted/PoolSetupUser", {
+   defaultValue: () => undefined,
+ });
+ /** Only pool provisioning uses the stricter verified-owner check at deploy commit time. */
+ export const poolAppSetup =
+-  (user: string) =>
++  (user: string, commit?: PoolSetupCommit) =>
+   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+-    memberAppCreation(user)(effect).pipe(Effect.provideService(PoolSetupUser, user));
++    memberAppCreation(user)(effect).pipe(
++      Effect.provideService(PoolSetupUser, user),
++      Effect.provideService(PoolSetupCommit, commit),
++    );
+ 
+ type AccountCreation =
+   | typeof ConnectionDestination.Type
+@@ -497,6 +504,8 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+           const creator = intent.kind === "system" ? null : yield* member(organization, user);
+           yield* sql`insert into hosted_app_access (id, organization_id, creator_id, audience)
+         values (${app.id}, ${organization}, ${creator}, ${intent.kind === "member" ? "private" : "everyone"})`;
++          const commit = yield* PoolSetupCommit;
++          if (commit !== undefined) yield* commit(app);
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+       accountCreated: (account) =>
+         Effect.gen(function* () {
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 0aa738b..18008a0 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -285,6 +285,11 @@ const notRunInCi: Partial<
+     { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
+   >
+ > = {
++  cloudPoolSetupAtomic: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt host-managed-accounts job runs it with an isolated synthetic pool signing key.",
++  },
+   cloudPoolAccountRecovery: {
+     targets: ["cloud"],
+     reason:
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 452c680..db77a93 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8113,6 +8113,17 @@ export const scenarios = plan({
+       local: na("Exercises hosted account checks and rows."),
+     },
+   },
++  cloudPoolSetupAtomic: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "pool-setup-atomic.spec.ts",
++    title: "Cloud pool account recovery publishes the pool and native account link atomically",
++    targets: {
++      "self-host": na("The Cloud host owns automatic pool setup."),
++      cloud: { status: "scheduled", runtime: "managed" },
++      local: na("The Cloud host owns automatic pool setup."),
++    },
++  },
+   cloudPoolAccountRecovery: {
+     fixtures: "actors",
+     deferOnboarding: true,
+diff --git a/e2e/tests/pool-setup-atomic.spec.ts b/e2e/tests/pool-setup-atomic.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-setup-atomic.spec.ts
+@@ -0,0 +1,151 @@
++/** Hold the real setup transaction at metadata publication, then inspect public visibility. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Pool setup publication", (it) => {
++  it.effect(scenarios.cloudPoolSetupAtomic.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          database = yield* cloudLocks,
++          evidence = yield* Evidence;
++        const suffix = randomUUID().replaceAll("-", "");
++        const slug = `atomic-pool-${suffix}`;
++        const fn = `pool_setup_${suffix}`;
++        const key = `pool-setup:${suffix}`;
++        const rows = (sql: string, params: readonly (string | number)[] = []) =>
++          database.run({ sql, params });
++        const deferJobs = (organization: string) =>
++          rows(
++            "update hosted_provisioning set available_at = now() + interval '1 day' where organization_id = $1 and status = 'queued'",
++            [organization],
++          );
++        // Any product request dispatches queued jobs. Keep this unrelated team's setup from
++        // racing cleanup, which cannot defer jobs that have already started.
++        yield* deferJobs(actors.organization.id);
++        // Only this team's pool metadata write waits. All calls still use the ordinary product.
++        yield* rows(`create function ${fn}() returns trigger language plpgsql as $$ begin
++      if new.slug = '${slug}' and coalesce(new.metadata::jsonb -> 'basaltPools', '{}'::jsonb) <> '{}'::jsonb then
++        perform pg_advisory_xact_lock(hashtextextended('${key}', 0));
++      end if; return new; end $$`);
++        yield* rows(
++          `create trigger ${fn} before update of metadata on organization for each row execute function ${fn}()`,
++        );
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* database.release;
++            yield* rows(`drop trigger if exists ${fn} on organization`);
++            yield* rows(`drop function if exists ${fn}()`);
++          }).pipe(Effect.orDie),
++        );
++        const held = yield* database.hold({
++          sql: "select pg_backend_pid() as pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
++          params: [key],
++        });
++        const pid = held[0]?.pid;
++        expect(typeof pid).toBe("number");
++        const team = yield* body(
++          Schema.Struct({ id: Schema.String }),
++          yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
++            name: "Atomic pool evidence",
++            slug,
++            keepCurrentActiveOrganization: true,
++          }),
++        );
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* database.release;
++            // The managed lab has no deployed pool receiver for organization-removal notifications.
++            for (const organization of [team.id, actors.organization.id]) {
++              yield* deferJobs(organization);
++              yield* rows(
++                "update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) - 'basaltPools')::text where id = $1",
++                [organization],
++              );
++            }
++          }).pipe(Effect.orDie),
++        );
++        const prefix = `/api/organizations/${team.id}`;
++        const deadline = (yield* Clock.currentTimeMillis) + 60000;
++        while (true) {
++          const blocked = yield* rows(
++            "select pid from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid))",
++            [Number(pid)],
++          );
++          if (blocked.length > 0) break;
++          expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++          yield* Effect.sleep("50 millis");
++        }
++        const Apps = Schema.Array(
++          Schema.Struct({
++            id: Schema.String,
++            copiedFrom: Schema.NullOr(Schema.Struct({ reference: Schema.String })),
++          }),
++        );
++        const list = () =>
++          api
++            .request(actors.owner, "GET", `${prefix}/apps`)
++            .pipe(Effect.flatMap((response) => body(Apps, response)));
++        const pool = (apps: typeof Apps.Type) =>
++          apps.find(
++            (app) =>
++              app.copiedFrom?.reference ===
++              "https://github.com/JustYannicc/basalt/tree/main/apps/pool",
++          );
++        const before = yield* list();
++        yield* evidence.json("blocked-pool-publication.json", {
++          apps: before,
++          blockedByOwnedTransaction: true,
++        });
++        expect(
++          pool(before),
++          "Pool must stay unpublished until its native link and metadata commit",
++        ).toBeUndefined();
++        yield* database.release;
++        let app = pool(yield* list());
++        while (app === undefined) {
++          expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++          yield* Effect.sleep("50 millis");
++          app = pool(yield* list());
++        }
++        const linked = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/apps/${app.id}/accounts/app`,
++        );
++        expect(linked.status).toBe(200);
++        expect(linked.body).toEqual(
++          expect.arrayContaining([
++            expect.objectContaining({ requirement: "pool", hostManaged: true }),
++          ]),
++        );
++        const metadata = yield* rows(
++          "select metadata::jsonb -> 'basaltPools' as pools from organization where id = $1",
++          [team.id],
++        );
++        expect(Object.values(metadata[0]?.pools ?? {})).toEqual(
++          expect.arrayContaining([expect.objectContaining({ app: app.id })]),
++        );
++        yield* evidence.json("committed-pool-publication.json", {
++          app: app.id,
++          links: linked.body,
++          metadata,
++        });
++        // The member's separate session still cannot use this owner's private pool.
++        expect(
++          (yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}/accounts/app`))
++            .status,
++        ).toBe(403);
++      }),
++    ),
++  );
++});
