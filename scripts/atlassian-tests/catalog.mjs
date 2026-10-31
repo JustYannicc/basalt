@@ -44,10 +44,11 @@ function assertSource(source, paths, hashes) {
 async function verifyPatch(published, source, patch) {
   const scratch = await mkdtemp(join(tmpdir(), "atlassian-patch-proof-"));
   try {
+    execFileSync("git", ["init", "--quiet"], { cwd: scratch, stdio: "pipe" });
     for (const file of published.files) await writeFile(join(scratch, file.path), file.content);
     const patchPath = join(scratch, "source.patch");
     await writeFile(patchPath, patch);
-    execFileSync("git", ["apply", "--no-index", "--unsafe-paths", patchPath], {
+    execFileSync("git", ["apply", patchPath], {
       cwd: scratch,
       stdio: "pipe",
     });
@@ -152,7 +153,13 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
     files,
     sourceHash,
     provenance,
-    overrides: { apiUrls, authUrls, apiHosts, openapiUrls: Object.keys(coverage).length },
+    overrides: {
+      apiUrls,
+      authUrls,
+      apiHosts,
+      openapiUrls: Object.keys(coverage).length,
+      approvalNegativeControl: negativeControl,
+    },
   };
 }
 
