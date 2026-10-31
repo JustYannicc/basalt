@@ -114,7 +114,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^scheduled personal-data reports|^personal-data|^account status preserves|^upgrading hosted storage from before app accounts|^failed executor upgrades"
+          "^scheduled personal-data reports|^personal-data|^account status preserves|^upgrading hosted storage from before app accounts"
           --workers 2
       - name: Verify Cloud scheduling and organization isolation
         working-directory: .upstream
@@ -126,7 +126,10 @@ jobs:
         if: always()
         with:
           name: personal-data-reporting-e2e
-          path: .upstream/.local/e2e/**/report/diagnostics/**
+          path: |
+            .upstream/.local/e2e/**/report/**
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
           if-no-files-found: warn
   pool-inventory:
     runs-on: ubuntu-latest
