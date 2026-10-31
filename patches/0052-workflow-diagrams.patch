@@ -297,10 +297,10 @@ index 0000000..54096d1
 +  appsManifest,
 +];
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 6dc6931..4f4df1d 100644
+index b81e94d..51d71bf 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -1797,6 +1797,26 @@ export const scenarios = plan({
+@@ -1799,6 +1799,26 @@ export const scenarios = plan({
        local: na("Local uses its paired dashboard scenario."),
      },
    },
@@ -1008,10 +1008,10 @@ index 0000000..42d46d8
 +}
 diff --git a/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx b/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx
 new file mode 100644
-index 0000000..3a992f6
+index 0000000..a556cd9
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/workflow-diagram-cards.tsx
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,300 @@
 +import { HugeiconsIcon } from "@hugeicons/react";
 +import {
 +  CodeIcon,
@@ -1042,7 +1042,13 @@ index 0000000..3a992f6
 +const selectedFrame =
 +  "border-primary shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)] hover:border-primary";
 +
-+const END_LABEL = { done: "Done", fails: "Fails", next: "Next", exit: "Exit loop" } as const;
++const END_LABEL = {
++  done: "Done",
++  fails: "Fails",
++  next: "Next",
++  exit: "Exit loop",
++  return: "Returns",
++} as const;
 +
 +export function Card({
 +  app,
@@ -2153,10 +2159,10 @@ index 0000000..8a550ed
 +}
 diff --git a/packages/workflow-graph/src/contracts/graph.ts b/packages/workflow-graph/src/contracts/graph.ts
 new file mode 100644
-index 0000000..9d04388
+index 0000000..3e944e1
 --- /dev/null
 +++ b/packages/workflow-graph/src/contracts/graph.ts
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,135 @@
 +/**
 + * A workflow drawn from its source. The tree mirrors the code: a block is a list of nodes that run
 + * top to bottom, and decisions, loops, parallel groups and try blocks hold their own blocks. Edges
@@ -2261,8 +2267,9 @@ index 0000000..9d04388
 +}
 +
 +/**
-+ * Where a path stops: a `return` (`done`), an uncaught `throw` (`fails`), or, inside a loop, a
-+ * `continue` (`next`) or `break` (`exit`).
++ * Where a path stops: a `return` (`done`), an uncaught `throw` (`fails`), inside a loop a
++ * `continue` (`next`) or `break` (`exit`), or a helper's or callback's own `return` where the rest
++ * of its code can't be drawn around it (`return`).
 + */
 +export interface EndNode {
 +  readonly type: "end";
@@ -2270,7 +2277,7 @@ index 0000000..9d04388
 +  /** The file and line the node was written at; a helper's steps keep their own file. */
 +  readonly file: string;
 +  readonly line: number;
-+  readonly outcome: "done" | "fails" | "next" | "exit";
++  readonly outcome: "done" | "fails" | "next" | "exit" | "return";
 +}
 +
 +export type WorkflowNode = StepNode | BranchNode | LoopNode | ParallelNode | TryNode | EndNode;
@@ -3975,10 +3982,10 @@ index 0000000..1816f08
 +}
 diff --git a/packages/workflow-graph/src/implementation/walker.ts b/packages/workflow-graph/src/implementation/walker.ts
 new file mode 100644
-index 0000000..0465942
+index 0000000..f22a9f0
 --- /dev/null
 +++ b/packages/workflow-graph/src/implementation/walker.ts
-@@ -0,0 +1,751 @@
+@@ -0,0 +1,801 @@
 +import type * as t from "@babel/types";
 +import type { Arm, EndNode, Label, WorkflowNode } from "../contracts/graph.ts";
 +import {
@@ -3991,6 +3998,7 @@ index 0000000..0465942
 +  memberName,
 +  patternNames,
 +  resolve,
++  rootName,
 +  spend,
 +  unwrap,
 +  type At,
@@ -4032,6 +4040,13 @@ index 0000000..0465942
 +  /** What an unlabelled `break` leaves. */
 +  readonly breaks: "loop" | "switch" | undefined;
 +  readonly inLoop: boolean;
++  /**
++   * A `return` from a helper or callback here can be folded: the rest of the block is drawn in the
++   * branch that goes on. Inside a loop, `switch` or `try` it can't, and draws a "Returns" marker.
++   */
++  readonly foldsReturn: boolean;
++  /** A `continue` here goes on to a `for` loop's update steps, drawn after the body. */
++  readonly continuesToUpdate: boolean;
 +  readonly helpers: ReadonlyArray<t.Node>;
 +}
 +
@@ -4048,6 +4063,8 @@ index 0000000..0465942
 +  readonly breaks: boolean;
 +  readonly caught: boolean;
 +  readonly jumps: boolean;
++  /** Some path left with a `continue` that goes on to the loop's update. */
++  readonly skips: boolean;
 +}
 +
 +const EMPTY: Block = {
@@ -4057,6 +4074,7 @@ index 0000000..0465942
 +  breaks: false,
 +  caught: false,
 +  jumps: false,
++  skips: false,
 +};
 +
 +/** Past this many nodes the walk stops adding to the workflow and marks its graph partial. */
@@ -4064,6 +4082,8 @@ index 0000000..0465942
 +
 +export class Walker {
 +  private count = 0;
++  /** Receiver names the code writes to; from then on they are not trusted as `ctx` or `ctx.step`. */
++  private readonly tainted = new Set<string>();
 +  /** Set when the graph shows only part of the workflow: the budget or node limit ran out, or a helper calls itself. */
 +  partial = false;
 +
@@ -4102,6 +4122,8 @@ index 0000000..0465942
 +      catches: false,
 +      breaks: undefined,
 +      inLoop: false,
++      foldsReturn: true,
++      continuesToUpdate: false,
 +      helpers,
 +    };
 +    fn.params.forEach((param, index) => {
@@ -4141,11 +4163,19 @@ index 0000000..0465942
 +  /** A run of statements in their own block scope; it stops at the first one no path gets past. */
 +  statements(list: ReadonlyArray<t.Statement>, outer: Scope): Block {
 +    const scope = this.child(outer);
-+    for (const statement of list)
++    for (const statement of list) {
 +      if (statement.type === "FunctionDeclaration" && statement.id) {
 +        this.bind(scope, [statement.id.name]);
 +        scope.env.set(statement.id.name, { node: statement, env: scope.env });
 +      }
++      // A block's `let`, `const` and class names shadow outer ones from the block's start, before
++      // their declaration runs; reading them there throws, so they resolve to nothing.
++      if (statement.type === "ClassDeclaration" && statement.id)
++        this.bind(scope, [statement.id.name]);
++      if (statement.type === "VariableDeclaration" && statement.kind !== "var")
++        for (const declarator of statement.declarations)
++          this.bind(scope, patternNames(declarator.id));
++    }
 +    return this.sequence(list, scope);
 +  }
 +
@@ -4194,7 +4224,13 @@ index 0000000..0465942
 +      case "ReturnStatement": {
 +        const nodes = node.argument ? this.expression(node.argument, scope) : [];
 +        if (scope.exit === "workflow") nodes.push(this.end(node, scope, "done"));
-+        return { ...EMPTY, nodes, ends: true, returns: scope.exit !== "workflow" };
++        else if (!scope.foldsReturn) nodes.push(this.end(node, scope, "return"));
++        return {
++          ...EMPTY,
++          nodes,
++          ends: true,
++          returns: scope.exit !== "workflow" && scope.foldsReturn,
++        };
 +      }
 +      case "ThrowStatement": {
 +        const nodes = node.argument ? this.expression(node.argument, scope) : [];
@@ -4205,6 +4241,7 @@ index 0000000..0465942
 +        if (scope.breaks === "switch" && !node.label) return { ...EMPTY, ends: true, breaks: true };
 +        return { ...EMPTY, nodes: [this.end(node, scope, "exit")], ends: true, jumps: true };
 +      case "ContinueStatement":
++        if (scope.continuesToUpdate && !node.label) return { ...EMPTY, ends: true, skips: true };
 +        return {
 +          ...EMPTY,
 +          nodes: scope.inLoop ? [this.end(node, scope, "next")] : [],
@@ -4273,7 +4310,7 @@ index 0000000..0465942
 +    const yes = this.statement(node.consequent, this.child(scope));
 +    const no = node.alternate ? this.statement(node.alternate, this.child(scope)) : EMPTY;
 +    const leavesQuietly = (arm: Block) =>
-+      arm.ends && !terminal(arm.nodes) && (arm.returns || arm.breaks) && !arm.caught;
++      arm.ends && !terminal(arm.nodes) && (arm.returns || arm.breaks || arm.skips) && !arm.caught;
 +    const fold =
 +      rest !== undefined &&
 +      rest.from < rest.list.length &&
@@ -4328,7 +4365,10 @@ index 0000000..0465942
 +          if (statement.type === "BreakStatement" && !statement.label) break collect;
 +          path.push(statement);
 +        }
-+      const block = this.statements(path, this.child(scope, { breaks: "switch" }));
++      const block = this.statements(
++        path,
++        this.child(scope, { breaks: "switch", foldsReturn: false }),
++      );
 +      arms.push({ label: names.join(", "), body: block.nodes });
 +      blocks.push(block);
 +      names = [];
@@ -4349,7 +4389,12 @@ index 0000000..0465942
 +  }
 +
 +  private loopScope(scope: Scope): Scope {
-+    return this.child(scope, { breaks: "loop", inLoop: true });
++    return this.child(scope, {
++      breaks: "loop",
++      inLoop: true,
++      foldsReturn: false,
++      continuesToUpdate: false,
++    });
 +  }
 +
 +  private eachLoop(node: t.ForOfStatement | t.ForInStatement, scope: Scope): Block {
@@ -4380,10 +4425,10 @@ index 0000000..0465942
 +        ? this.statement(node.init, inner).nodes
 +        : this.expression(node.init, inner);
 +    const test = node.test ? this.expression(node.test, inner) : [];
-+    const body = this.statement(node.body, inner);
-+    // The update is drawn after passes that reach the end of the body; after a `continue` it is
-+    // part of what "Next" means.
-+    const update = node.update && !body.ends ? this.expression(node.update, inner) : [];
++    // A `continue` goes on to the update, so when the update has steps it flows into them.
++    const updateSteps = node.update ? this.expression(node.update, inner) : [];
++    const body = this.statement(node.body, { ...inner, continuesToUpdate: updateSteps.length > 0 });
++    const update = !body.ends || body.skips ? updateSteps : [];
 +    return this.loop(
 +      node,
 +      scope,
@@ -4429,7 +4474,7 @@ index 0000000..0465942
 +    detail: string | undefined,
 +    once: boolean,
 +  ): Block {
-+    const flags = { ...body, jumps: false, breaks: false };
++    const flags = { ...body, jumps: false, breaks: false, skips: false };
 +    const ends = once && body.ends && !body.jumps;
 +    if (pass.length === 0) return { ...flags, nodes: before, ends };
 +    return {
@@ -4458,15 +4503,17 @@ index 0000000..0465942
 +    const handler = node.handler;
 +    const body = this.statements(
 +      node.block.body,
-+      this.child(scope, { catches: scope.catches || !!handler }),
++      this.child(scope, { catches: scope.catches || !!handler, foldsReturn: false }),
 +    );
 +    let failure = EMPTY;
 +    if (handler) {
-+      const inner = this.child(scope);
++      const inner = this.child(scope, { foldsReturn: false });
 +      if (handler.param) this.bind(inner, patternNames(handler.param));
 +      failure = this.statements(handler.body.body, inner);
 +    }
-+    const cleanup = node.finalizer ? this.statements(node.finalizer.body, scope) : EMPTY;
++    const cleanup = node.finalizer
++      ? this.statements(node.finalizer.body, this.child(scope, { foldsReturn: false }))
++      : EMPTY;
 +    const ends = cleanup.ends || (body.ends && (!handler || failure.ends));
 +    const flags = merge(
 +      merge({ ...body, caught: handler ? false : body.caught }, failure),
@@ -4512,8 +4559,12 @@ index 0000000..0465942
 +    if (current.type === "AssignmentExpression" || current.type === "UpdateExpression") {
 +      const target = current.type === "AssignmentExpression" ? current.left : current.argument;
 +      const nodes = this.inOrder(children(current), scope);
-+      // A written name is no longer what it was declared as, and no longer a receiver.
++      // A written name is no longer what it was declared as, and no longer a receiver, on any
++      // path after the write, including one that writes only conditionally or to a property.
 +      forgetWritten(scope.env, current);
++      const root = rootName(target);
++      if (root !== undefined && (scope.contexts.has(root) || scope.steps.has(root)))
++        this.tainted.add(root);
 +      if (unwrap(target).type === "Identifier") this.bind(scope, patternNames(unwrap(target)));
 +      return nodes;
 +    }
@@ -4567,12 +4618,17 @@ index 0000000..0465942
 +
 +  private isContext(node: t.Node, scope: Scope): boolean {
 +    const current = unwrap(node);
-+    return current.type === "Identifier" && scope.contexts.has(current.name);
++    return (
++      current.type === "Identifier" &&
++      scope.contexts.has(current.name) &&
++      !this.tainted.has(current.name)
++    );
 +  }
 +
 +  private isStepReceiver(node: t.Node, scope: Scope): boolean {
 +    const current = unwrap(node);
-+    if (current.type === "Identifier") return scope.steps.has(current.name);
++    if (current.type === "Identifier")
++      return scope.steps.has(current.name) && !this.tainted.has(current.name);
 +    if (current.type !== "MemberExpression" || memberName(current) !== "step") return false;
 +    return this.isContext(current.object, scope);
 +  }
@@ -4710,6 +4766,7 @@ index 0000000..0465942
 +    breaks: a.breaks || b.breaks,
 +    caught: a.caught || b.caught,
 +    jumps: a.jumps || b.jumps,
++    skips: a.skips || b.skips,
 +  };
 +}
 +
