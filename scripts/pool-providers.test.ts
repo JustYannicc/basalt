@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   assertProviderIdsMatch,
   buildProviderTable,
-  extractCanonicalOAuthProviderIds,
+  extractOAuthProviderIds,
   renderProviderTable,
 } from "./pool-providers.ts";
 
@@ -34,8 +34,8 @@ func (h *Handler) ImportOAuthV8(c *gin.Context) {
 }
 `;
 
-test("extracts only canonical ids from the signin provider switch", () => {
-  assert.deepEqual(extractCanonicalOAuthProviderIds(oauthFixture), ["alpha", "beta", "gamma"]);
+test("preserves every signin selector while excluding import-only providers", () => {
+  assert.deepEqual(extractOAuthProviderIds(oauthFixture), ["alpha", "beta", "beta-alias", "gamma"]);
 });
 
 test("preserves names, title-cases new ids, and drops vanished ids", () => {
@@ -56,13 +56,14 @@ test("preserves names, title-cases new ids, and drops vanished ids", () => {
   );
 });
 
-test("renders one JSON table with no alias rows", () => {
+test("renders every accepted signin selector", () => {
   assert.equal(
-    renderProviderTable(buildProviderTable(extractCanonicalOAuthProviderIds(oauthFixture))),
+    renderProviderTable(buildProviderTable(extractOAuthProviderIds(oauthFixture))),
     `${JSON.stringify(
       [
         { id: "alpha", name: "Alpha" },
         { id: "beta", name: "Beta" },
+        { id: "beta-alias", name: "Beta Alias" },
         { id: "gamma", name: "Gamma" },
       ],
       null,
@@ -75,5 +76,14 @@ test("rejects a provider table whose ids differ from the pinned source", () => {
   assert.throws(
     () => assertProviderIdsMatch(["alpha"], ["alpha", "delta"], "fixture@commit"),
     /Provider ids differ from fixture@commit: expected alpha, delta; found alpha/,
+  );
+});
+
+test("keeps Kimi's regional login when both selectors use the same handler", () => {
+  const source = oauthFixture.replace('"beta", "beta-alias"', '"kimi", "kimi-ai"');
+  assert.deepEqual(extractOAuthProviderIds(source), ["alpha", "kimi", "kimi-ai", "gamma"]);
+  assert.throws(
+    () => extractOAuthProviderIds(source.replace('case "gamma"', 'case "kimi-ai"')),
+    /Duplicate OAuth provider id: kimi-ai/,
   );
 });

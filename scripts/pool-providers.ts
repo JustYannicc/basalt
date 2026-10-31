@@ -164,7 +164,7 @@ function parseStringCaseLabels(expression: string): string[] {
   return labels;
 }
 
-export function extractCanonicalOAuthProviderIds(goSource: string): string[] {
+export function extractOAuthProviderIds(goSource: string): string[] {
   const functionPattern = /\bfunc\s+\([^)]*\)\s*StartOAuthV8\s*\([^)]*\)\s*\{/g;
   const functionMatch = functionPattern.exec(goSource);
   if (!functionMatch) throw new Error("Could not find StartOAuthV8 in pinned OAuth source");
@@ -181,13 +181,14 @@ export function extractCanonicalOAuthProviderIds(goSource: string): string[] {
 
   for (const expression of findDirectCaseExpressions(switchBody)) {
     const labels = parseStringCaseLabels(expression);
-    // In a multi-label Go case, the first value is the canonical provider id; later values are aliases.
-    const canonicalId = labels[0];
-    if (!canonicalId) continue;
-    if (ids.includes(canonicalId)) throw new Error(`Duplicate canonical OAuth provider id: ${canonicalId}`);
-    ids.push(canonicalId);
+    // Shared handlers can select different login domains and credential types, as Kimi does.
+    for (const id of labels) {
+      if (!id) continue;
+      if (ids.includes(id)) throw new Error(`Duplicate OAuth provider id: ${id}`);
+      ids.push(id);
+    }
   }
-  if (ids.length === 0) throw new Error("No canonical OAuth provider ids found in StartOAuthV8");
+  if (ids.length === 0) throw new Error("No OAuth provider ids found in StartOAuthV8");
   return ids;
 }
 
@@ -310,7 +311,7 @@ async function main(): Promise<void> {
   if (args.length > 0 && !check) throw new Error("Usage: node scripts/pool-providers.ts [--check]");
 
   const pinned = await fetchPinnedOAuthSource();
-  const ids = extractCanonicalOAuthProviderIds(pinned.source);
+  const ids = extractOAuthProviderIds(pinned.source);
   const existing = await readExistingProviders();
   const generated = buildProviderTable(ids, existing);
   const rendered = renderProviderTable(generated);

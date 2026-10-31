@@ -20,6 +20,11 @@
     "site": "kimi.com"
   },
   {
+    "id": "kimi-ai",
+    "name": "Kimi .ai",
+    "site": "kimi.ai"
+  },
+  {
     "id": "xai",
     "name": "Grok",
     "site": "x.ai"

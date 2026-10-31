@@ -34,10 +34,16 @@ function placeRouterFonts(root: string, upstream: string) {
   for (const file of fontFiles) copyFileSync(join(fonts, file), join(served, file));
 }
 
+// Auth method keys are part of the saved Subscription identity. New methods belong to
+// canonical provider apps and must not change this legacy definition before migration.
+const legacySubscriptionProviders = new Set([
+  "claude", "codex", "antigravity", "kimi", "xai", "devin", "meta",
+]);
+
 type ProviderRow = { id: string; name: string; site?: string };
 function providerTable(root: string): readonly ProviderRow[] {
   const table: ProviderRow[] = JSON.parse(readFileSync(join(root, "src/pool/providers.json"), "utf8"));
-  return table.map(({ id, name, site }) => ({ id, name, ...(site ? { site } : {}) }));
+  return table.filter(({ id }) => legacySubscriptionProviders.has(id)).map(({ id, name, site }) => ({ id, name, ...(site ? { site } : {}) }));
 }
 
 /** Bundle the app after patches choose the host's framework release. */

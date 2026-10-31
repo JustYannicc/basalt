@@ -5,7 +5,7 @@ import { GitHubApi } from "./github.ts";
 import { activePatchFiles, decidePatchRemovals, readPatchManifest } from "./patches.ts";
 import { patchManifestPath, updatedManifest } from "./patch-registry.ts";
 import { githubRepository, latestReleasedArtifact, latestToolsCandidate, sameArtifact } from "./sources.ts";
-import { buildProviderTable, extractCanonicalOAuthProviderIds, renderProviderTable, type PoolProvider } from "../pool-providers.ts";
+import { buildProviderTable, extractOAuthProviderIds, renderProviderTable, type PoolProvider } from "../pool-providers.ts";
 import type { ArtifactPin, PatchRemovalReceipt, ReleasePins } from "./types.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -142,7 +142,7 @@ async function generateProviderTable(rootPath: string, api: Pick<GitHubApi, "get
   if (file.encoding !== "base64") throw new Error("Pinned Home provider source was not returned as base64");
   const source = Buffer.from(file.content, "base64").toString("utf8");
   const existing = JSON.parse(readFileSync(join(rootPath, "src/pool/providers.json"), "utf8")) as PoolProvider[];
-  const ids = extractCanonicalOAuthProviderIds(source);
+  const ids = extractOAuthProviderIds(source);
   return renderProviderTable(buildProviderTable(ids, existing));
 }
 

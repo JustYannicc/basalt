@@ -93,6 +93,19 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     );
     bundlePoolApp(root, upstream);
     assert.equal(readFileSync(join(output, "pool-app-source.ts"), "utf8"), generated);
+    writeFileSync(join(root, "apps/pool/providers.ts"), "generated provider table");
+    const table = join(root, "src/pool/providers.json");
+    writeFileSync(table, JSON.stringify([{ id: "kimi", name: "Kimi", site: "kimi.com" }]));
+    const legacyProviders = bundlePoolApp(root, upstream).find((file) => file.path === "providers.ts")!.content;
+    writeFileSync(table, JSON.stringify([
+      { id: "kimi", name: "Kimi", site: "kimi.com" },
+      { id: "kimi-ai", name: "Kimi .ai", site: "kimi.ai" },
+    ]));
+    const expanded = bundlePoolApp(root, upstream);
+    assert.equal(expanded.find((file) => file.path === "providers.ts")!.content, legacyProviders,
+      "new backend selectors must not change existing Subscription account definitions");
+    rmSync(join(root, "apps/pool/providers.ts"));
+    bundlePoolApp(root, upstream);
     writeFileSync(join(root, "apps/pool/ui/page.tsx"), "changed UI");
     bundlePoolApp(root, upstream);
     assert.equal(readdirSync(assets).length, 1, "only the current seed is published");
