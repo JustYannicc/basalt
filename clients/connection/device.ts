@@ -33,7 +33,8 @@ export function deviceConnection(
       : [];
   const validate = async (signal: AbortSignal) => {
     const current = saved;
-    if (state !== "connected" || !current || current.refreshPending) {
+    if (state !== "connected") throw new Error("The connection is not connected.");
+    if (!current || current.refreshPending) {
       state = "sign-in-required";
       throw new Error("Sign in again before using this device.");
     }

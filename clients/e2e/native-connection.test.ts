@@ -128,6 +128,7 @@ test(
       const refused = await fetch(`${origin}/v1/models`, { headers });
       assert.equal(refused.status, 502);
       await refused.body?.cancel();
+      assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "revoked");
     } finally {
       await f.close();
     }
@@ -164,6 +165,12 @@ test(
         const closed = once(socket, "close");
         await command(["disconnect"], f.home);
         await closed;
+        assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "disconnected");
+        const refused = await fetch(`${origin}/v1/models`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        assert.equal(refused.status, 502);
+        await refused.body?.cancel();
         assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "disconnected");
         await command(["reconnect"], f.home);
         assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
