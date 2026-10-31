@@ -14,6 +14,7 @@ import { requirements } from "../common/installation.ts";
 import { configuration } from "../common/configuration.ts";
 import { observe } from "../common/human.ts";
 import { readQuota } from "../common/reads.ts";
+import { retainScans } from "../common/scan-health.ts";
 import { startTick } from "../common/triggers.ts";
 import { storageTools } from "../common/storage.ts";
 
@@ -36,6 +37,7 @@ const checkMyPool = workflow(
       (step, previous) => readQuota(step, pool.app, pool.provider, previous),
       link,
       "The selected pool provider group needs capacity",
+      "checkMyPool",
     );
   },
 );
@@ -44,6 +46,11 @@ const tick = mutation(
   async (ctx: MutationContext<typeof requirements>) => {
     if (configuration.pools.length > 20)
       return { status: "unconfigured", code: "bound-the-watch-list", started: 0 };
+    retainScans(
+      ctx,
+      "checkMyPool",
+      configuration.pools.map((pool) => `pool:${pool.app}:${pool.provider}`),
+    );
     for (const pool of configuration.pools)
       await startTick(ctx, "checkMyPool", `${pool.app}:${pool.provider}`, 5 * 60000);
     return { status: "started", started: configuration.pools.length };

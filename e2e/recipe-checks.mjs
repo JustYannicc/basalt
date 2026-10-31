@@ -155,6 +155,25 @@ export default defineApp({}, { tools: router({ send }) });`,
   checked("temporary 429 opens no question", (yield* checkpoint()).open, false);
   checked("temporary 429 sends nothing", fixture.sends.length, 1);
   fixture.setHealth("rejected");
+  yield* h.call(
+    copy.id,
+    "mute",
+    { key: `account:${account.id}`, until: Date.now() + 600000 },
+    "mutation",
+  );
+  const mutedRun = yield* scan();
+  yield* until(
+    h.request("GET", `${h.appPath(copy.id)}/workflow-runs/${mutedRun.id}`),
+    (value) => value.status === "complete",
+    "muted scan did not finish",
+  );
+  checked(
+    "muting keeps the failure visible without a nudge",
+    (yield* checkpoint()).open && fixture.sends.length === 1,
+    true,
+  );
+  yield* h.call(copy.id, "unmute", { key: `account:${account.id}` }, "mutation");
+  checked("unmute reverses the resource mute", (yield* checkpoint()).mutedUntil, 0);
   const accepted = fixture.holdNext();
   yield* scan();
   yield* Effect.promise(() => accepted).pipe(Effect.timeout("15 seconds"));
@@ -169,6 +188,7 @@ export default defineApp({}, { tools: router({ send }) });`,
           key: `account:${account.id}`,
           episode: submitted.episode,
           question: submitted.question.id,
+          attempt: crypto.randomUUID(),
         },
         "mutation",
       ),
@@ -179,6 +199,30 @@ export default defineApp({}, { tools: router({ send }) });`,
     false,
     false,
   ]);
+  yield* h.approved(copy.id, "configure", { deliveryEnabled: false });
+  for (const attempt of [undefined, "different-callback-attempt"]) {
+    const fenced = yield* h.call(
+      copy.id,
+      "deliveryResult",
+      {
+        key: `account:${account.id}`,
+        episode: submitted.episode,
+        status: "refused",
+        ...(attempt === undefined ? {} : { attempt }),
+      },
+      "mutation",
+    );
+    checked(
+      `replay refusal with ${attempt === undefined ? "no" : "wrong"} attempt preserves uncertain submission`,
+      fenced.notified,
+      "submitted",
+    );
+  }
+  const retry = yield* h.approveResult(copy.id, "retryRefusedDelivery", {
+    key: `account:${account.id}`,
+  });
+  checked("owner approval cannot retry an uncertain submission", retry.status, "failed");
+  yield* h.approved(copy.id, "configure", { deliveryEnabled: true });
   yield* h.control("kill");
   fixture.release();
   yield* h.restartAfterCrash;
@@ -199,10 +243,20 @@ export default defineApp({}, { tools: router({ send }) });`,
     "post-restart scan did not finish",
   );
   checked("lost reply and restart cannot send again", fixture.sends.length, 2);
+  const tickResult = yield* h.call(copy.id, "tick", {}, "mutation");
+  checked("native schedule mutation retains its current resource inventory", tickResult.started, 1);
   const health = yield* h.call(copy.id, "deliveryHealth");
   checked(
     "workflow health sees the unresolved send during the human wait",
     health.deliveries.some((value) => ["submitted", "uncertain"].includes(value.status)),
+    true,
+  );
+  checked(
+    "native scans publish current heartbeat while waiting for a human",
+    health.scans.some(
+      (value) =>
+        value.workflow === "checkMyConnections" && value.successfulAt > 0 && value.known === 1,
+    ),
     true,
   );
   return { checks, syntheticMessagesOnly: true, runtimeDirectory: h.runtimeDirectory };

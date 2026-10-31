@@ -66,18 +66,24 @@ export const recipeHarness = (directory, fixtureOrigin) =>
     const appPath = (id) => `${prefix}/apps/${id}`;
     const call = (id, tool, input = {}, kind = "query") =>
       request("POST", `${appPath(id)}/tools/call`, { tool, input, kind });
-    const approved = (id, tool, input) =>
+    const approveResult = (id, tool, input) =>
       Effect.gen(function* () {
         const path = `${appPath(id)}/tools`;
         const run = yield* request("POST", `${path}/run`, { tool, input, kind: "mutation" });
-        if (run.status === "completed") return run.value;
+        if (run.status === "completed") return run;
         assert.equal(run.status, "approval-required");
         const answer = yield* request("POST", `${path}/approvals/${run.requestId}`, {
           response: { action: "accept", content: {} },
         });
-        assert.equal(answer.result?.status, "completed", JSON.stringify(answer));
-        return answer.result.value;
+        return answer.result;
       });
+    const approved = (id, tool, input) =>
+      approveResult(id, tool, input).pipe(
+        Effect.map((result) => {
+          assert.equal(result?.status, "completed", JSON.stringify(result));
+          return result.value;
+        }),
+      );
     const connect = (id, slot, fields) =>
       Effect.gen(function* () {
         const connection = yield* request(
@@ -113,6 +119,7 @@ export const recipeHarness = (directory, fixtureOrigin) =>
       appPath,
       call,
       approved,
+      approveResult,
       connect,
       control,
       restartAfterCrash,

@@ -53,7 +53,8 @@ only after an identified refusal before execution, never after an ambiguous send
 Saving an answer is shown separately from a verified healthy resource.
 The send callback commits its submission claim before calling the connector. If
 that callback replays after a lost receipt, it cannot acquire another submission.
-An interrupted attempt stays uncertain even if it stopped before sending.
+An interrupted attempt stays uncertain even if it stopped before sending. A
+replayed preflight refusal cannot change an earlier submission into a safe retry.
 
 Production metric readers are deliberately explicit. The GitHub release reader
 expects the documented `workflow_runs` response from the selected production
@@ -67,7 +68,9 @@ until their actual connector contract is verified.
 For workflow health, list each watched recipe app, its expected workflow names
 and the maximum successful-scan age in minutes. Include schedule slack. The
 check reads current delivery checkpoints while a question waits, and detects
-missed successful scans separately from legitimate human waits. A missing or
+missed successful scans separately from legitimate human waits. Scan timestamps
+come from completed reads, independently of retained workflow history. A failed
+or stalled read needs attention once it exceeds the configured age. A missing or
 unconfigured watch stays unknown.
 
 An approved budget and complete authorized service-wide capacity inventory are

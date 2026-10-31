@@ -29,6 +29,7 @@ import { storageTools } from "../common/storage.ts";
 const input = object({ target: string(), tick: number() });
 const page = () => `/org/${encodeURIComponent(configuration.organization)}/apps`;
 function check(
+  name: string,
   description: string,
   read: (
     step: WorkflowStepContext<typeof requirements>,
@@ -40,25 +41,37 @@ function check(
     async (ctx: WorkflowContext<typeof requirements>, value) => {
       if (!configuration.organization)
         return { status: "unconfigured", code: "organization-required" };
-      return observe(ctx, `production:${value.target}`, read, page(), description);
+      return observe(ctx, `production:${value.target}`, read, page(), description, name);
     },
   );
 }
 const checkProductionRelease = check(
+  "checkProductionRelease",
   "Review the failed production release and its existing release gates",
   readRelease,
 );
-const checkPoolRuntime = check("Review the shared pool runtime and verify readiness", readRuntime);
+const checkPoolRuntime = check(
+  "checkPoolRuntime",
+  "Review the shared pool runtime and verify readiness",
+  readRuntime,
+);
 const checkServiceErrors = check(
+  "checkServiceErrors",
   "Review the sustained production HTTP error rate",
   readServiceErrors,
 );
 const checkPublicAvailability = check(
+  "checkPublicAvailability",
   "Review public routing and an authenticated backend read",
   readAvailability,
 );
-const checkErrorSpike = check("Review the production error-event spike", readErrorSpike);
+const checkErrorSpike = check(
+  "checkErrorSpike",
+  "Review the production error-event spike",
+  readErrorSpike,
+);
 const checkWorkflowHealth = check(
+  "checkWorkflowHealth",
   "Review the failed configured check workflow",
   readWorkflowHealth,
 );

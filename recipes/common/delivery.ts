@@ -66,6 +66,7 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
   if (!claimed) return "deferred";
   const result = await ctx.step.do("send configured nudge", noRetry, async (step) => {
     // The provider may accept a send even when its HTTP response or workflow receipt is lost.
+    let attempt: string | undefined;
     try {
       const consent = record(await tool(step, { app: question.app, tool: "settings", input: {} }));
       const latest = record(
@@ -87,16 +88,18 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
         return { status: "refused" };
       const channel = configuration.channel;
       if (channel === null) return { status: "refused" };
+      const candidate = crypto.randomUUID();
       const acquired = await tool(
         step,
         {
           app: question.app,
           tool: "beginDelivery",
-          input: { key, episode: previous.episode, question: question.id },
+          input: { key, episode: previous.episode, question: question.id, attempt: candidate },
         },
         "mutation",
       );
       if (acquired !== true) return { status: "uncertain" };
+      attempt = candidate;
       const result = await tool(
         step,
         {
@@ -108,10 +111,11 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
       );
       const receipt = channel.receipt(result);
       return receipt && /^[a-zA-Z0-9_.:-]{1,200}$/.test(receipt)
-        ? { status: "sent", receipt }
-        : { status: "uncertain" };
+        ? { status: "sent", receipt, attempt }
+        : { status: "uncertain", attempt };
     } catch (error) {
       return {
+        ...(attempt === undefined ? {} : { attempt }),
         status:
           error instanceof ReadUnavailable &&
           error.reason !== undefined &&
@@ -121,14 +125,14 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
       };
     }
   });
-  await ctx.step.runMutation("save delivery receipt", deliveryResult, {
+  const saved = await ctx.step.runMutation("save delivery receipt", deliveryResult, {
     key,
     episode: previous.episode,
     ...result,
   });
-  return result.status === "uncertain"
+  return ["claimed", "submitted", "uncertain"].includes(saved.notified)
     ? "delivery-uncertain"
-    : result.status === "refused"
+    : saved.notified === "refused"
       ? "delivery-refused"
       : "sent";
 }

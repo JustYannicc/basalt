@@ -51,7 +51,10 @@ export const claimNudge = mutation(
 );
 /** The callback acquires this once per actual attempt, outside its replayed step receipt. */
 export const beginDelivery = mutation(
-  { approval: undefined, input: object({ key: string(), episode: number(), question: string() }) },
+  {
+    approval: undefined,
+    input: object({ key: string(), episode: number(), question: string(), attempt: string() }),
+  },
   async (ctx: Writer, input) => {
     const revision = await configurationRevision();
     let acquired = false;
@@ -80,6 +83,7 @@ export const beginDelivery = mutation(
         ...current,
         revision: current.revision + 1,
         notified: "submitted",
+        deliveryAttempt: input.attempt,
         deliveryAt: Date.now(),
       };
     });
@@ -94,6 +98,7 @@ export const deliveryResult = mutation(
       episode: number(),
       status: string(),
       receipt: string().optional(),
+      attempt: string().optional(),
     }),
   },
   async (ctx: Writer, input) => {
@@ -103,7 +108,15 @@ export const deliveryResult = mutation(
     )
       throw new Error("Invalid delivery receipt.");
     return write(ctx, input.key, (current) =>
-      current.episode !== input.episode || !["claimed", "submitted"].includes(current.notified)
+      current.episode !== input.episode ||
+      !(
+        (current.notified === "claimed" &&
+          current.deliveryAttempt === undefined &&
+          input.attempt === undefined) ||
+        (current.notified === "submitted" &&
+          input.attempt !== undefined &&
+          input.attempt === current.deliveryAttempt)
+      )
         ? current
         : {
             ...current,
@@ -119,19 +132,21 @@ export const deliveryHealth = query(
   { input: object({}) },
   async (ctx: QueryContext<typeof requirements>) => {
     const current = controls(ctx);
-    const rows = ctx.sql
-      .exec<{ state: string }>("SELECT state FROM checkpoints LIMIT 1001")
+    const scans = ctx.sql
+      .exec<{ workflow: string; checkedAt: number; successfulAt: number; known: number }>(
+        "SELECT workflow, MIN(checked_at) AS checkedAt, MIN(successful_at) AS successfulAt, MIN(CASE WHEN successful_at >= checked_at THEN 1 ELSE 0 END) AS known FROM scans GROUP BY workflow LIMIT 1001",
+      )
       .toArray();
     return {
       configuredAt: current.configured_at,
       current: current.configuration_revision === (await configurationRevision()),
-      complete: rows.length <= 1000,
-      deliveries: rows.slice(0, 1000).flatMap(({ state }) => {
-        const value: Checkpoint = JSON.parse(state);
-        return value.open && value.notified !== "none"
-          ? [{ status: value.notified, at: value.deliveryAt ?? 0 }]
-          : [];
-      }),
+      complete: scans.length <= 1000,
+      scans: scans.slice(0, 1000),
+      deliveries: ctx.sql
+        .exec<{ status: string; at: number }>(
+          "SELECT json_extract(state, '$.notified') AS status, MIN(COALESCE(json_extract(state, '$.deliveryAt'), 0)) AS at FROM checkpoints WHERE json_extract(state, '$.open') = 1 AND json_extract(state, '$.notified') != 'none' GROUP BY json_extract(state, '$.notified')",
+        )
+        .toArray(),
     };
   },
 );

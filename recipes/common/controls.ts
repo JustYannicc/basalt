@@ -85,7 +85,8 @@ export const retryRefusedDelivery = mutation(
     write(ctx, input.key, (current) => {
       if (current.notified !== "refused")
         throw new Error("There is no known safe refused delivery to retry.");
-      return { ...current, revision: current.revision + 1, notified: "none" };
+      const { deliveryAttempt: _attempt, ...remaining } = current;
+      return { ...remaining, revision: current.revision + 1, notified: "none" };
     }),
 );
 export const controlTools = { configure, settings, mute, unmute, retryRefusedDelivery };

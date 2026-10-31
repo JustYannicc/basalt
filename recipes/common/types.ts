@@ -25,6 +25,7 @@ export interface Checkpoint {
   declined: boolean;
   notified: "none" | "claimed" | "submitted" | "sent" | "uncertain" | "refused";
   deliveryAt?: number;
+  deliveryAttempt?: string;
   receipt?: string;
   question?: { id: string; app: string; reviewUrl: string; run: string };
   mutedUntil: number;
@@ -63,6 +64,7 @@ export function remember(previous: Checkpoint, observation: Observation): Checkp
   const opening = observation.verdict === "action" && (!previous.open || replaced);
   const {
     receipt: _receipt,
+    deliveryAttempt: _attempt,
     question: _question,
     ownerRun: _ownerRun,
     ...withoutQuestion

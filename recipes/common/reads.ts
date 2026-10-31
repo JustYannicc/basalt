@@ -18,7 +18,8 @@ const unknown = (at: number, code: string): Observation => ({
 export async function connectionTargets(context: MutationContext<typeof requirements>) {
   if (configuration.accounts.length) return [...new Set(configuration.accounts)];
   const inventory = record(await api(context, "GET", "inventory"));
-  return list(inventory?.accounts).flatMap((value) => {
+  if (!Array.isArray(inventory?.accounts)) throw new Error("Account inventory is unavailable.");
+  return inventory.accounts.flatMap((value) => {
     const account = record(value),
       health = record(account?.health);
     return typeof account?.id === "string" &&

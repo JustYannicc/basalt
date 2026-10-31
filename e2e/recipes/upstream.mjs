@@ -48,7 +48,9 @@ export async function startRecipeUpstream() {
       this.release();
       server.closeAllConnections();
       await new Promise((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
+        server.close((error) =>
+          error && error.code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve(),
+        ),
       );
     },
   };

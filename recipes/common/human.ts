@@ -43,6 +43,7 @@ export async function ask(
   readAgain: ReadAgain,
   link: string,
   label: string,
+  workflow: string,
 ) {
   const now = await clock(ctx, "question clock");
   const claim = await ctx.step.runMutation("claim question", claimQuestion, {
@@ -135,6 +136,7 @@ export async function ask(
   const saved = await ctx.step.runMutation("remember verification", saveObservation, {
     key,
     revision: current.revision,
+    workflow,
     ...verified,
   });
   if (saved.withdrawn) await withdraw(ctx, saved.withdrawn, "withdraw recovered verification");
@@ -162,6 +164,7 @@ export async function observe(
   readAgain: ReadAgain,
   link: string,
   label: string,
+  workflow: string,
 ) {
   const currentSettings = await ctx.step.runQuery("check private ownership", settings, {});
   if (!currentSettings.current) return { status: "unconfigured", code: "configuration-changed" };
@@ -170,7 +173,7 @@ export async function observe(
   const { state, withdrawn } = await ctx.step.runMutation(
     "remember current facts",
     saveObservation,
-    { key, revision: previous.revision, ...observation },
+    { key, revision: previous.revision, workflow, ...observation },
   );
   if (withdrawn) await withdraw(ctx, withdrawn, "withdraw recovered question");
   if (state.open && state.question)
@@ -196,5 +199,5 @@ export async function observe(
       code: observation.code,
     };
   if (observation.verdict !== "action") return { status: "unknown", code: observation.code };
-  return ask(ctx, key, state, readAgain, link, label);
+  return ask(ctx, key, state, readAgain, link, label, workflow);
 }

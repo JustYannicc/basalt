@@ -11,6 +11,7 @@ import {
 import { configurationRevision } from "./configuration-revision.ts";
 import { requirements } from "./installation.ts";
 import { remember, type Checkpoint, type Observation } from "./types.ts";
+import { rememberScan } from "./scan-health.ts";
 import { controls, read, write } from "./state.ts";
 import { controlTools } from "./controls.ts";
 import { claimNudge, beginDelivery, deliveryResult, deliveryHealth } from "./delivery-storage.ts";
@@ -30,6 +31,7 @@ export const saveObservation = mutation(
     input: object({
       key: string(),
       revision: number(),
+      workflow: string(),
       cursor: string(),
       at: number(),
       verdict: string(),
@@ -51,7 +53,7 @@ export const saveObservation = mutation(
     if (!["healthy", "action", "unknown", "withdraw"].includes(input.verdict))
       throw new Error("Unknown observation verdict.");
     let withdrawn: Checkpoint["question"];
-    const state = write(ctx, input.key, (before) => {
+    const state = write(ctx, input.key, (before, tx) => {
       if (before.revision !== input.revision) return before;
       const observation: Observation = {
         cursor: input.cursor,
@@ -75,6 +77,8 @@ export const saveObservation = mutation(
         ...(input.decision === undefined ? {} : { decision: input.decision }),
       };
       const next = remember(before, observation);
+      if (next !== before)
+        rememberScan(tx, input.workflow, input.key, observation.verdict !== "unknown");
       if (before.open && (!next.open || next.episode !== before.episode))
         withdrawn = before.question;
       return next;
