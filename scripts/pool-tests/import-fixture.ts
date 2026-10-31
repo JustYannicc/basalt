@@ -16,6 +16,10 @@ export interface ProviderRequest {
 
 /** Local HTTPS tunnel that never forwards synthetic OAuth requests to a provider. */
 export class SyntheticOAuthProvider {
+  private readonly native: ((request: IncomingMessage, response: ServerResponse, body: Buffer) => Promise<boolean>) | undefined;
+  constructor(native?: (request: IncomingMessage, response: ServerResponse, body: Buffer) => Promise<boolean>) {
+    this.native = native;
+  }
   readonly requests: ProviderRequest[] = [];
   private directory = "";
   private certificate = "";
@@ -47,7 +51,7 @@ export class SyntheticOAuthProvider {
     const cert = spawnSync("openssl", [
       "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", this.certificate,
       "-days", "2", "-subj", "/CN=Basalt synthetic provider", "-addext",
-      "subjectAltName=DNS:api.anthropic.com,DNS:platform.claude.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:auth.openai.com,DNS:cloudcode-pa.googleapis.com",
+      "subjectAltName=DNS:api.anthropic.com,DNS:platform.claude.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:auth.openai.com,DNS:cloudcode-pa.googleapis.com,DNS:api.typesafe.ai",
       "-addext", "basicConstraints=critical,CA:TRUE",
     ], { encoding: "utf8", timeout: 15_000 });
     assert.equal(cert.status, 0, cert.error?.message ?? cert.stderr);
@@ -59,7 +63,7 @@ export class SyntheticOAuthProvider {
     this.proxy.on("connect", (request, socket, head) => {
       const authority = request.url ?? "";
       if (!new Set([
-        "api.anthropic.com:443", "platform.claude.com:443", "chatgpt.com:443", "api.openai.com:443", "auth.openai.com:443", "cloudcode-pa.googleapis.com:443",
+        "api.anthropic.com:443", "platform.claude.com:443", "chatgpt.com:443", "api.openai.com:443", "auth.openai.com:443", "cloudcode-pa.googleapis.com:443", "api.typesafe.ai:443",
       ]).has(authority.toLowerCase())) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
@@ -89,8 +93,11 @@ export class SyntheticOAuthProvider {
     const pathname = new URL(path, "https://synthetic.invalid").pathname;
     const method = request.method ?? "GET";
     this.requests.push({ authority, method, path });
-    let body = "";
-    for await (const chunk of request) body += chunk;
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const raw = Buffer.concat(chunks);
+    if (this.native && await this.native(request, response, raw)) return;
+    const body = raw.toString();
     if (authority.startsWith("api.anthropic.com") && pathname === "/api/oauth/profile") {
       response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
         account: { uuid: "synthetic-claude-account", email: "synthetic-claude@example.invalid" },

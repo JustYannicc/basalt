@@ -127,6 +127,9 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "    basalt-native-policy:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
+        "    typesafe:\n"
+        "      enabled: true\n"
+        "      load-in-home: true\n"
         "observability:\n"
         "  logs:\n"
         "    request-log: false\n"
@@ -271,6 +274,7 @@ def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
             "configs": {
                 "gemini-cli": {"enabled": True, "load-in-home": True},
                 "basalt-native-policy": {"enabled": True, "load-in-home": True},
+                "typesafe": {"enabled": True, "load-in-home": True},
             },
         },
     }
@@ -338,5 +342,3 @@ def check_services(management_key: str, node_id: str) -> bool:
 
 def home_boot_requires_import(exit_code: int | None, saw_empty_config: bool) -> bool:
     return exit_code is not None and exit_code != 0 and saw_empty_config
-
-

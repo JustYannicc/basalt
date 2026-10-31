@@ -23,6 +23,9 @@ test("only an explicitly enabled acquisition registration exposes its opaque hos
     generation: 3,
     revision: "binding-r3",
     removal: null,
+    mirrorReference: null,
+    mirrorReady: true,
+    mirrorOperation: null,
   };
   const stored = {
     id: account,

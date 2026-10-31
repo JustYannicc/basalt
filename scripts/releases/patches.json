@@ -611,6 +611,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-account-key-mirrors",
+      "file": "0066-account-key-mirrors.patch",
+      "content_sha256": "8576066ae0f8752c9e39b07d65e65fa68ef3caac058d1d88388b51547896a416",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "basalt-native-pool-membership",
       "file": "0067-native-pool-membership.patch",
       "content_sha256": "8476564fa6112f415ef9fa2c2b0c3c43d47d5cbc83eef00f62ec7c6eaebb8b70",
@@ -622,7 +631,7 @@
     {
       "identity": "executor-workflow-input-approvals",
       "file": "0068-workflow-input-approvals.patch",
-      "content_sha256": "5b0596e540e776718138e5a214414b046a9b6b5d79ff704735f678a7a774757e",
+      "content_sha256": "aea5d4251f1ad3d228346cfb32d206ff8f75178ec40c962c7b0477bb9491bb89",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -640,6 +649,6 @@
   ],
   "pool_carries": {
     "manifest": "containers/pool/sources.json",
-    "content_sha256": "15f01fcfadf9f70068f08c307f0d787f539742f252a7d6df95b14a9bafa04ef0"
+    "content_sha256": "01dc0201f75f7dce30621f8578f4fdf0b6ef53e1cf7cab0b7648823969699f9a"
   }
 }
