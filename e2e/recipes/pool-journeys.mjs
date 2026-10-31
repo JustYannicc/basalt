@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { until } from "./harness.mjs";
 import { poolRecipeScenario } from "./pool-scenario.mjs";
 
@@ -32,11 +32,30 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       (yield* checkpoint(app)).observation.poolMembers[0].inUse,
       true,
     );
-    const removed = yield* h.call(
-      pool.id,
-      "removeAccount",
-      { id: "synthetic-account-a" },
-      "mutation",
+    const deletion = fixture.holdRemoval("synthetic-account-a");
+    const removing = yield* Effect.forkChild(
+      h.call(pool.id, "removeAccount", { id: "synthetic-account-a" }, "mutation"),
+    );
+    yield* Effect.promise(() => deletion.started);
+    let concurrentBaseline;
+    try {
+      fixture.seed(pool.id, "synthetic-account-a", { attemptedAt: Date.now() });
+      yield* read(app);
+      concurrentBaseline = (yield* checkpoint(app)).observation.poolMembers[0].seenAt;
+      checked(
+        "native observation advances while deletion awaits Home",
+        concurrentBaseline > 0,
+        true,
+      );
+    } finally {
+      deletion.release();
+    }
+    const removed = yield* Fiber.join(removing);
+    const afterRemoval = yield* h.call(pool.id, "view");
+    checked(
+      "acknowledged native removal receipt follows its concurrent observation",
+      Date.parse(afterRemoval.value.removals.items[0].at) >= concurrentBaseline,
+      true,
     );
     checked("native owner removal succeeds", removed.ok, true);
     yield* read(app);
@@ -114,7 +133,27 @@ export const verifyPoolJourneys = (h, pool, checked) =>
       stillExhausted.question?.id,
       missing.question.id,
     );
-    yield* healthy(app, "synthetic-account-c");
+    fixture.seed(pool.id, "synthetic-account-c", { remaining: 0.15 });
+    yield* read(app);
+    checked(
+      "ordinary capacity cannot close an already confirmed quota episode",
+      (yield* checkpoint(app)).open,
+      true,
+    );
+    checked(
+      "native checkpoint retains the open quota condition across account observations",
+      (yield* checkpoint(app)).observation.poolQuotaOpen,
+      true,
+    );
+    fixture.seed(pool.id, "synthetic-account-c");
+    yield* read(app);
+    checked(
+      "one high native reading cannot close the quota episode",
+      (yield* checkpoint(app)).open,
+      true,
+    );
+    fixture.seed(pool.id, "synthetic-account-c");
+    yield* read(app);
     yield* until(
       h.request("GET", `${h.appPath(app.id)}/workflow-inputs/${missing.question.id}`),
       (value) => value.status === "withdrawn",

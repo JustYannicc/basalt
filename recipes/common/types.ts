@@ -28,6 +28,7 @@ export interface Observation {
   evidenceUrl?: string;
   attemptedSha?: string;
   decision?: string;
+  poolQuotaOpen?: boolean;
   poolMembers?: readonly PoolMember[];
   poolChecks?: readonly PoolCheck[];
   poolMissing?: readonly PoolMember[];

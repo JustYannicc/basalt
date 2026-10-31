@@ -524,7 +524,7 @@ const routes: Record<string, Route> = {
     let id: string;
     try { id = decodeURIComponent(ctx.url.pathname.slice(`${base}/accounts/`.length)); }
     catch { return fail(404, "not_found", "This account does not exist."); }
-    await ctx.home.remove(id, () => attribution(ctx).removed(id, { pool: ctx.pool, actor: ctx.accountId, at: ctx.now }));
+    await ctx.home.remove(id, () => attribution(ctx).removed(id, { pool: ctx.pool, actor: ctx.accountId, at: ctx.deps.now?.() ?? new Date() }));
     return json(null);
   },
   "POST /sign-ins/callback": async (ctx) => {

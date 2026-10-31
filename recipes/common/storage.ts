@@ -49,6 +49,7 @@ export const saveObservation = mutation(
       evidenceUrl: string().optional(),
       attemptedSha: string().optional(),
       decision: string().optional(),
+      poolQuotaOpen: boolean().optional(),
       poolMembers: array(object({ id: string(), seenAt: number(), inUse: boolean() })).optional(),
       poolChecks: array(
         object({ id: string(), attempt: number(), since: number(), count: number() }),
@@ -90,6 +91,7 @@ export const saveObservation = mutation(
         ...(input.evidenceUrl === undefined ? {} : { evidenceUrl: input.evidenceUrl }),
         ...(input.attemptedSha === undefined ? {} : { attemptedSha: input.attemptedSha }),
         ...(input.decision === undefined ? {} : { decision: input.decision }),
+        ...(input.poolQuotaOpen === undefined ? {} : { poolQuotaOpen: input.poolQuotaOpen }),
         ...(input.poolMembers === undefined ? {} : { poolMembers: input.poolMembers }),
         ...(input.poolChecks === undefined ? {} : { poolChecks: input.poolChecks }),
         ...(input.poolMissing === undefined ? {} : { poolMissing: input.poolMissing }),

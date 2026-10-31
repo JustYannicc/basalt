@@ -1774,3 +1774,32 @@ test("a refused credential deletion cannot create a removal-intent receipt", asy
   assert.deepEqual(view.removals, { since: null, items: [] });
   assert.deepEqual(view.accounts.map((account) => account.id), ["retained"]);
 });
+
+
+test("native removal intent follows observations made while deletion awaits acknowledgement", async () => {
+  const f = await fixture();
+  f.home.addFile("delayed"); f.home.addGroup("pool-a", 10, ["delayed"]);
+  const entered = deferred(), release = deferred();
+  f.home.override = async (path, init) => {
+    if (path.includes("/credentials?id=delayed") && init?.method === "DELETE") {
+      entered.resolve();
+      await release.promise;
+    }
+    return undefined;
+  };
+  const removing = f.call("/accounts/delayed", { method: "DELETE" });
+  await entered.promise;
+  let observedAt: number;
+  try {
+    f.advance(1000);
+    const during = await (await f.call("/pool")).json() as PoolView;
+    assert.equal(during.accounts[0]!.id, "delayed");
+    observedAt = f.deps.now().getTime();
+    f.advance(1000);
+  } finally { release.resolve(); }
+  assert.equal((await removing).status, 200);
+  const after = await (await f.call("/pool")).json() as PoolView;
+  assert.equal(after.accounts.length, 0);
+  assert.ok(Date.parse(after.removals!.items[0]!.at) >= observedAt);
+  assert.equal(after.removals!.items[0]!.at, f.deps.now().toISOString());
+});

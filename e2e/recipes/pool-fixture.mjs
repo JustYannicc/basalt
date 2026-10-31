@@ -29,6 +29,7 @@ export async function startPoolFixture(signingKey) {
   const users = new Map();
   const accessCalls = [];
   const collections = new Map();
+  const removals = new Map();
   const timers = new Set();
   const home = async (path, init) => {
     const url = new URL(path, "http://synthetic-home.test");
@@ -43,6 +44,12 @@ export async function startPoolFixture(signingKey) {
     }
     if (route === "/credentials") {
       if (init?.method === "DELETE") {
+        const removal = removals.get(url.searchParams.get("id"));
+        if (removal) {
+          removal.enter();
+          await removal.released;
+          removals.delete(url.searchParams.get("id"));
+        }
         files.delete(url.searchParams.get("id"));
         return Response.json({ status: "ok" });
       }
@@ -182,6 +189,17 @@ export async function startPoolFixture(signingKey) {
         reset_credits: null,
       });
     },
+    holdRemoval(id) {
+      let enter, release;
+      const started = new Promise((resolve) => {
+        enter = resolve;
+      });
+      const released = new Promise((resolve) => {
+        release = resolve;
+      });
+      removals.set(id, { enter, released, release });
+      return { started, release };
+    },
     completeCollectionAt(id, at, complete) {
       collections.set(id, { at, complete });
     },
@@ -190,6 +208,8 @@ export async function startPoolFixture(signingKey) {
       readings.delete(id);
     },
     async stop() {
+      for (const removal of removals.values()) removal.release();
+      removals.clear();
       for (const timer of timers) {
         clearTimeout(timer.id);
         timer.reject(new Error("Synthetic collection closed"));

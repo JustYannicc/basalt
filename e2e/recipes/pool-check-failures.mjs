@@ -4,7 +4,7 @@ import { until } from "./harness.mjs";
 /** Distinct source attempts must span the real thirty-minute threshold before native action. */
 export const verifyPoolCheckFailures = (h, pool, scenario, checked) =>
   Effect.gen(function* () {
-    const { fixture, channel, copy, checkpoint, scan, read, healthy } = scenario;
+    const { fixture, channel, copy, checkpoint, scan, read } = scenario;
     const app = yield* copy("owner", channel);
     fixture.disappear("synthetic-account-f");
     const id = "synthetic-account-g";
@@ -86,7 +86,13 @@ export const verifyPoolCheckFailures = (h, pool, scenario, checked) =>
       fixture.sends.length,
       before + 1,
     );
-    yield* healthy(app, id);
+    fixture.seed(pool.id, id, { remaining: 0.15 });
+    yield* read(app);
+    checked(
+      "successful native checks recover at fifteen percent without a quota episode",
+      (yield* checkpoint(app)).open,
+      false,
+    );
     yield* until(
       h.request("GET", `${h.appPath(app.id)}/workflow-inputs/${opening.question.id}`),
       (value) => value.status === "withdrawn",

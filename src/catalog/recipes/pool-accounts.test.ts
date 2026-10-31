@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { poolStatusObservation } from "../../../recipes/pool-owner/pool-condition.ts";
 import { poolAccountsObservation } from "../../../recipes/pool-owner/account-condition.ts";
 import type { PoolFact } from "../../../recipes/common/conditions.ts";
 import { emptyCheckpoint, remember } from "../../../recipes/common/types.ts";
@@ -134,4 +135,39 @@ test("a cached success may finish after its attempt; older success cannot erase 
   const ignored = poolAccountsObservation(oldSuccess, state);
   assert.equal(ignored.verdict, "unknown");
   assert.equal(ignored.poolChecks![0]!.count, 1);
+});
+
+test("successful account checks recover at ordinary capacity without a quota episode", () => {
+  let state = emptyCheckpoint();
+  for (const elapsed of [0, 15, 30]) {
+    state = remember(state, poolStatusObservation(rejected(now + elapsed * 60000), state));
+  }
+  assert.equal(state.open, true);
+  assert.equal(state.observation.code, "pool-account-checks-failed");
+  const recovered = fact(now + 31 * 60000);
+  recovered.accounts[0]!.windows[0]!.remaining = 0.15;
+  state = remember(state, poolStatusObservation(recovered, state));
+  assert.equal(state.open, false);
+});
+
+test("a confirmed quota episode survives account actions until two high readings", () => {
+  let state = emptyCheckpoint();
+  for (const elapsed of [0, 1]) {
+    const low = fact(now + elapsed * 60000);
+    low.accounts[0]!.windows[0]!.remaining = 0.05;
+    state = remember(state, poolStatusObservation(low, state));
+  }
+  assert.equal(state.open, true);
+  for (const elapsed of [2, 17, 32]) {
+    state = remember(state, poolStatusObservation(rejected(now + elapsed * 60000), state));
+  }
+  assert.equal(state.observation.code, "pool-account-checks-failed");
+  const ordinary = fact(now + 33 * 60000);
+  ordinary.accounts[0]!.windows[0]!.remaining = 0.15;
+  state = remember(state, poolStatusObservation(ordinary, state));
+  assert.equal(state.open, true);
+  state = remember(state, poolStatusObservation(fact(now + 34 * 60000), state));
+  assert.equal(state.open, true);
+  state = remember(state, poolStatusObservation(fact(now + 35 * 60000), state));
+  assert.equal(state.open, false);
 });
