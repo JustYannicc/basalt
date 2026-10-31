@@ -102,6 +102,7 @@ export async function startGateway(options: GatewayOptions) {
       response.off("close", cancel);
     }
   };
+  const origin = new URL("http://127.0.0.1");
   let authority = "";
   const tcp = createServer((request, response) => {
     void handle(request, response, authority).catch(() => {
@@ -169,7 +170,8 @@ export async function startGateway(options: GatewayOptions) {
     });
   try {
     await listen(tcp, { host: "127.0.0.1", port: options.port });
-    authority = `127.0.0.1:${(tcp.address() as AddressInfo).port}`;
+    origin.port = String((tcp.address() as AddressInfo).port);
+    authority = origin.host;
     await listen(ipc, { path: options.ipcPath });
     if (process.platform !== "win32") await chmod(options.ipcPath, 0o600);
   } catch (error) {
@@ -179,7 +181,7 @@ export async function startGateway(options: GatewayOptions) {
     throw error;
   }
   return {
-    origin: `http://127.0.0.1:${(tcp.address() as AddressInfo).port}`,
+    origin: origin.origin,
     close: async () => {
       closed = true;
       interrupt();
