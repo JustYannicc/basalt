@@ -21,6 +21,7 @@ export async function startNativeClientWorker(root) {
   const slowChunk = Buffer.alloc(64 * 1024, "x");
   const holds = new Set();
   let nextCancellation;
+  let display;
   const model = createServer((request, response) => {
     assert.ok(request.headers["x-basalt-native-assertion"]);
     assert.equal(request.headers.cookie, undefined);
@@ -111,6 +112,8 @@ export async function startNativeClientWorker(root) {
                 signal: request.signal,
               },
             );
+            if (target.pathname === "/api/auth/native/access" && response.ok)
+              display = (await response.clone().json()).display;
             if (token && !refreshing && response.ok && initialToken) {
               initialToken = false;
               // A shorter external lifetime hint requests real renewal without waiting an hour.
@@ -164,6 +167,7 @@ export async function startNativeClientWorker(root) {
     },
     refreshes: () => refreshes,
     progress: () => ({ ...slow }),
+    display: () => display,
     nextCancellation: () => {
       const before = cancelled;
       return {

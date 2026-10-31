@@ -1,0 +1,358 @@
+diff --git a/apps/hosted/server/src/implementation/native-grant-display.ts b/apps/hosted/server/src/implementation/native-grant-display.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/native-grant-display.ts
+@@ -0,0 +1,47 @@
++import type { GenericEndpointContext } from "@better-auth/core";
++import {
++  authCall,
++  type NativeGrantAccess,
++  type NativeGrantDisplay,
++  type NativePoolMetadata,
++} from "@executor-js/mcp-auth/oauth";
++import { APIError } from "better-auth/api";
++import { Effect, Schema } from "effect";
++
++const Account = Schema.Struct({
++  id: Schema.NonEmptyString,
++  name: Schema.optionalKey(Schema.NullOr(Schema.String)),
++  email: Schema.NonEmptyString,
++  emailVerified: Schema.Boolean,
++});
++
++/** Identity comes from the authenticated grant, never display input or a browser session. */
++export const nativeGrantDisplay = (
++  ctx: GenericEndpointContext,
++  access: NativeGrantAccess,
++  metadata: NativePoolMetadata | undefined,
++): Effect.Effect<NativeGrantDisplay | undefined, APIError> =>
++  Effect.gen(function* () {
++    // Retained pool Workers can authorize the grant before their display projection is deployed.
++    if (metadata === undefined) return undefined;
++    const row = yield* authCall(() =>
++      ctx.context.adapter.findOne({
++        model: "user",
++        where: [{ field: "id", value: access.userId }],
++      }),
++    );
++    const account = yield* Schema.decodeUnknownEffect(Account)(row).pipe(
++      Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
++    );
++    if (account.id !== access.userId || metadata.pool.id !== access.policy.pool)
++      return yield* Effect.fail(new APIError("UNAUTHORIZED"));
++    return {
++      account: {
++        name: account.name?.trim() || account.email,
++        email: account.email,
++        emailVerified: account.emailVerified,
++      },
++      pool: metadata.pool,
++      pools: access.policy.models ? metadata.pools : [],
++    };
++  });
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -2,12 +2,14 @@
+ import {
+   NativeGrantAccess,
+   NativeGrantPolicy,
++  NativePoolMetadata,
+   authCall,
+   type NativeGrantHost,
+ } from "@executor-js/mcp-auth/oauth";
+ import { APIError } from "better-auth/api";
+ import { Clock, Effect, Option, Redacted, Schema } from "effect";
+ import { signEnvelope } from "./pool-token.ts";
++import { nativeGrantDisplay } from "./native-grant-display.ts";
+ import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
+ 
+ const Created = Schema.Struct({
+@@ -100,6 +102,22 @@
+ ): NativeGrantHost | undefined => {
+   if (Option.isNone(key)) return undefined;
+   const secret = key.value;
++  const check = (ctx: GenericEndpointContext, access: NativeGrantAccess, display = false) =>
++    Effect.gen(function* () {
++      if (access.policy.toolsOrganization !== undefined)
++        yield* membership(ctx, access.userId, access.policy.toolsOrganization);
++      const result = yield* control(
++        secret,
++        poolOrigin,
++        "check",
++        { ...computerIdentity(access), ...(display ? { display: true } : {}) },
++        Schema.Struct({
++          active: Schema.Literal(true),
++          display: Schema.optionalKey(NativePoolMetadata),
++        }),
++      );
++      return result.display;
++    });
+   return {
+     audience: `${origin}/native`,
+     approve: (ctx, userId, grant) =>
+@@ -173,11 +191,10 @@
+         );
+         return access.policy;
+       }),
+-    check: (ctx, access) =>
++    check: (ctx, access, options) =>
+       Effect.gen(function* () {
+-        if (access.policy.toolsOrganization !== undefined)
+-          yield* membership(ctx, access.userId, access.policy.toolsOrganization);
+-        yield* checkNativeComputer(secret, poolOrigin, access);
++        const display = yield* check(ctx, access, options?.display === true);
++        if (options?.display) return yield* nativeGrantDisplay(ctx, access, display);
+       }),
+     revoke: (_ctx, access) =>
+       control(
+diff --git a/e2e/support/native-grants.ts b/e2e/support/native-grants.ts
+--- a/e2e/support/native-grants.ts
++++ b/e2e/support/native-grants.ts
+@@ -15,6 +15,17 @@
+ });
+ export const NativeAccess = Schema.Struct({
+   id: Schema.String,
++  display: Schema.optionalKey(
++    Schema.Struct({
++      account: Schema.Struct({
++        name: Schema.String,
++        email: Schema.String,
++        emailVerified: Schema.Boolean,
++      }),
++      pool: Schema.Struct({ id: Schema.String, name: Schema.String }),
++      pools: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
++    }),
++  ),
+   policy: Schema.Struct({
+     kind: Schema.Literal("native"),
+     models: Schema.Boolean,
+diff --git a/e2e/support/native-pool.ts b/e2e/support/native-pool.ts
+--- a/e2e/support/native-pool.ts
++++ b/e2e/support/native-pool.ts
+@@ -13,6 +13,7 @@
+   intent: Schema.optionalKey(Schema.String),
+   tools: Schema.optionalKey(Schema.Boolean),
+   models: Schema.optionalKey(Schema.Boolean),
++  display: Schema.optionalKey(Schema.Boolean),
+ });
+ 
+ /** An external pool protocol fixture; OAuth, consent, membership and tokens stay in the real host. */
+@@ -20,7 +21,11 @@
+   Effect.gen(function* () {
+     let refused = false;
+     let created = 0;
+-    const records = new Map<string, { user: string; computer: string; active: boolean }>();
++    let displayEnabled = true;
++    const records = new Map<
++      string,
++      { user: string; computer: string; active: boolean; models: boolean }
++    >();
+     const sessions = new Map<string, Set<() => void>>();
+     const close = (grant: string) => {
+       for (const end of sessions.get(grant) ?? []) end();
+@@ -52,7 +57,12 @@
+               )
+                 return HttpServerResponse.empty({ status: 403 });
+               const computer = `native-computer-${++created}`;
+-              records.set(value.grant, { user: value.user, computer, active: true });
++              records.set(value.grant, {
++                user: value.user,
++                computer,
++                active: true,
++                models: value.models === true,
++              });
+               return HttpServerResponse.jsonUnsafe({
+                 computer: { id: computer },
+                 pool,
+@@ -74,7 +84,22 @@
+               return HttpServerResponse.jsonUnsafe({ revoked: true });
+             }
+             return value.action === "check" && record.active && !refused
+-              ? HttpServerResponse.jsonUnsafe({ active: true })
++              ? HttpServerResponse.jsonUnsafe({
++                  active: true,
++                  ...(value.display && displayEnabled
++                    ? {
++                        display: {
++                          pool: { id: pool, name: "Native protocol pool" },
++                          pools: record.models
++                            ? [
++                                { id: pool, name: "Native protocol pool" },
++                                { id: "shared-native-pool", name: "Shared native pool" },
++                              ]
++                            : [],
++                        },
++                      }
++                    : {}),
++                })
+               : HttpServerResponse.empty({ status: 401 });
+           }),
+         ),
+@@ -94,6 +119,10 @@
+           if (value) for (const grant of sessions.keys()) close(grant);
+         }),
+       created: Effect.sync(() => created),
++      display: (enabled: boolean) =>
++        Effect.sync(() => {
++          displayEnabled = enabled;
++        }),
+       watch: (grant: string, end: () => void) => {
+         if (!records.get(grant)?.active || refused) {
+           end();
+diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
+--- a/e2e/tests/native-grants.spec.ts
++++ b/e2e/tests/native-grants.spec.ts
+@@ -30,6 +30,40 @@
+         const tokens = yield* approveNative(p, true, false);
+         const access = yield* body(NativeAccess, yield* p.access(tokens));
+         expect(access.policy.models).toBe(false);
++        const session = yield* body(
++          Schema.Struct({
++            user: Schema.Struct({
++              name: Schema.String,
++              email: Schema.String,
++              emailVerified: Schema.Boolean,
++            }),
++          }),
++          yield* p.api.request(
++            actors.owner,
++            "GET",
++            "/api/auth/get-session?disableCookieCache=true&disableRefresh=true",
++          ),
++        );
++        expect(access.display?.account).toEqual(session.user);
++        expect(access.display?.pool).toEqual({ id: p.pool, name: "Native protocol pool" });
++        expect(access.display?.pools).toEqual([]);
++        const foreignBrowser = yield* body(
++          NativeAccess,
++          yield* p.api.request(
++            actors.member,
++            "GET",
++            "/api/auth/native/access",
++            undefined,
++            p.headers(tokens.access_token),
++          ),
++        );
++        expect(foreignBrowser.display?.account).toEqual(session.user);
++        yield* p.upstream.display(false);
++        const retainedPool = yield* body(NativeAccess, yield* p.access(tokens));
++        expect(retainedPool.display).toBeUndefined();
++        expect(retainedPool.policy).toEqual(access.policy);
++        yield* p.upstream.display(true);
++
+         expect(access.policy.pool).toBe(p.pool);
+         expect(access.policy.toolsOrganization).toBe(actors.organization.id);
+         expect(access.id.startsWith("native:")).toBe(true);
+@@ -214,6 +248,12 @@
+         const tokens = yield* approveNative(p, false);
+         const access = yield* body(NativeAccess, yield* p.access(tokens));
+         expect(access.policy.toolsOrganization).toBeUndefined();
++        expect(access.display?.pool).toEqual({ id: p.pool, name: "Native protocol pool" });
++        expect(access.display?.pools).toEqual([
++          { id: p.pool, name: "Native protocol pool" },
++          { id: "shared-native-pool", name: "Shared native pool" },
++        ]);
++
+         expect(
+           (yield* p.api.request(
+             p.anonymous,
+diff --git a/packages/mcp-auth/src/contracts/native-display.ts b/packages/mcp-auth/src/contracts/native-display.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp-auth/src/contracts/native-display.ts
+@@ -0,0 +1,15 @@
++import { Schema } from "effect";
++
++const Pool = Schema.Struct({ id: Schema.NonEmptyString, name: Schema.String });
++export const NativePoolMetadata = Schema.Struct({ pool: Pool, pools: Schema.Array(Pool) });
++export type NativePoolMetadata = typeof NativePoolMetadata.Type;
++export const NativeGrantDisplay = Schema.Struct({
++  account: Schema.Struct({
++    name: Schema.String,
++    email: Schema.NonEmptyString,
++    emailVerified: Schema.Boolean,
++  }),
++  pool: Pool,
++  pools: Schema.Array(Pool),
++});
++export type NativeGrantDisplay = typeof NativeGrantDisplay.Type;
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -8,6 +8,7 @@
+ import { APIError } from "better-auth/api";
+ import { Effect, Schema } from "effect";
+ import { GrantId } from "../contracts/grant.ts";
++import type { NativeGrantDisplay } from "../contracts/native-display.ts";
+ import { authCall, parse, runAuth } from "./auth-call.ts";
+ 
+ /** Kept outside GrantPolicy so an older server cannot interpret a device as API authority. */
+@@ -38,7 +39,8 @@
+   readonly check: (
+     context: GenericEndpointContext,
+     access: NativeGrantAccess,
+-  ) => Effect.Effect<void, APIError>;
++    options?: { display?: boolean },
++  ) => Effect.Effect<void | NativeGrantDisplay, APIError>;
+   readonly revoke: (
+     context: GenericEndpointContext,
+     access: NativeGrantAccess,
+@@ -83,7 +85,7 @@
+         access: NativeGrantAccess.make({ id, userId: row.userId, clientId: row.clientId, policy }),
+       };
+     });
+-  const read = (ctx: GenericEndpointContext, id: GrantId) =>
++  const read = (ctx: GenericEndpointContext, id: GrantId, includeDisplay = false) =>
+     Effect.gen(function* () {
+       const { row, access } = yield* stored(ctx, id);
+       if (row.revoked) return yield* Effect.fail(invalid());
+@@ -104,8 +106,8 @@
+         consent.scopes.some((scope) => scope !== "native" && scope !== "offline_access")
+       )
+         return yield* Effect.fail(invalid());
+-      yield* host.check(ctx, access);
+-      return access;
++      const display = yield* host.check(ctx, access, { display: includeDisplay });
++      return { ...access, ...(typeof display === "object" ? { display } : {}) };
+     }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid())));
+   const checkIssue = (
+     ctx: GenericEndpointContext,
+@@ -177,7 +179,7 @@
+         );
+         return yield* parse(Stored, row);
+       }),
+-    authenticate: (ctx: GenericEndpointContext) =>
++    authenticate: (ctx: GenericEndpointContext, options?: { display?: boolean }) =>
+       Effect.gen(function* () {
+         const token = ctx.headers?.get("authorization")?.match(/^Bearer ([^\s]+)$/iu)?.[1];
+         if (token === undefined) return yield* Effect.fail(invalid());
+@@ -195,7 +197,7 @@
+           scopes.some((scope) => scope !== "native" && scope !== "offline_access")
+         )
+           return yield* Effect.fail(invalid());
+-        const access = yield* read(ctx, claims.grant_id);
++        const access = yield* read(ctx, claims.grant_id, options?.display === true);
+         if (access.userId !== claims.sub || access.clientId !== claims.client_id)
+           return yield* Effect.fail(invalid());
+         return { ...access, expiresAt: claims.exp * 1000 };
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -24,6 +24,7 @@
+ import { isNativeGrant, nativeGrants, type NativeGrantHost } from "./native-grants.ts";
+ import { deviceVerificationPath } from "../contracts/device.ts";
+ export { NativeGrantAccess, NativeGrantPolicy, type NativeGrantHost } from "./native-grants.ts";
++export { NativeGrantDisplay, NativePoolMetadata } from "../contracts/native-display.ts";
+ import {
+   ConnectionId,
+   Grant,
+@@ -1132,7 +1133,7 @@
+         (ctx) =>
+           native === undefined
+             ? Promise.reject(new APIError("NOT_FOUND"))
+-            : runAuth(native.authenticate(ctx)),
++            : runAuth(native.authenticate(ctx, { display: true })),
+       ),
+       revokeNativeGrant: createAuthEndpoint(
+         "/native/revoke",

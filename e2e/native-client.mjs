@@ -20,6 +20,7 @@ import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accoun
 import { startNativeClientWorker } from "./native-client-worker.mjs";
 import { nativeClientCli } from "./native-client-cli.mjs";
 import { nativeSlowReader } from "./native-client-reader.mjs";
+import { verifyNativeDisplay } from "./native-display.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -138,6 +139,14 @@ const program = Effect.gen(function* () {
       assert.equal(worker.refreshes(), 1, "The native CLI renews the actual hosted grant once.");
       const token = JSON.parse(await readFile(join(home, "agent-proof.json"), "utf8")).token;
       const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      await verifyNativeDisplay({
+        worker,
+        origin,
+        headers,
+        owner,
+        poolId: "pool-native-client",
+        setDisplay: (enabled) => Effect.runPromise(pool.display(enabled)),
+      });
       const response = await fetch(`${origin}/v1/responses`, {
         method: "POST",
         headers,
@@ -231,6 +240,7 @@ const program = Effect.gen(function* () {
       const evidence = {
         realRouter: true,
         actualHostedNativeGrant: true,
+        nativeDisplayMetadata: true,
         actualHostedMcpTool: true,
         nativeRenewals: worker.refreshes(),
         firstChunkBeforeCompletion: true,
