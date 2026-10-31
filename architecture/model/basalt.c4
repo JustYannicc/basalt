@@ -173,7 +173,8 @@ model {
         A named private operator entrypoint returns bounded catalog and count-only plans using
         the Worker's database connection. Schema writes require explicit GO and matching hashes;
         remote invocation retains a target-bound private plan and started receipt. Capture defaults
-        off and cannot create its own activation cursor. Forward, historical and repeating sweep
+        off; production enables it after approved schema and backfill activation. Capture cannot
+        create its own activation cursor. Forward, historical and repeating sweep
         cursors commit with their request rows. Each sweep freezes its upper bound so sustained
         arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;
         Home charges round half up to twelve decimal places without rejecting extra precision.
