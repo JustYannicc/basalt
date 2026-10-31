@@ -165,6 +165,16 @@ model {
       }
     }
 
+    clientMobile = module "Phone client" {
+      #basalt #deep
+      description "Phone sign-in uses browser approval and stores its grant in device-only secure storage. The shared connection adapter streams models and calls cloud tools through the native tunnel. Tool approval and input continue the original request. Backgrounding interrupts active work; returning checks device access. The phone runs no local server or agent process."
+      metadata {
+        code "clients/mobile"
+        libraries "expo|expo-constants|expo-crypto|expo-dev-client|expo-secure-store|expo-system-ui|expo-web-browser|react|react-native|react-native-safe-area-context|effect|node:path"
+        endpointHosts "127.0.0.1|localhost"
+      }
+    }
+
     poolRuntime = module "Pool runtime" {
       #basalt #v1 #deep
       description """
@@ -372,6 +382,9 @@ model {
   basalt.clientConnection -[sync]-> basalt.setupInstaller "preview and apply selected agents through the shared backup engine"
   basalt.clientConnection -[sync]-> basalt.brandConfig "read local setup markers"
   basalt.clientDesktop -[sync]-> basalt.clientConnection "supervise the owned process and use its typed controls"
+  basalt.clientMobile -[sync]-> basalt.clientConnection "use native grants and stream cloud requests"
+  basalt.clientMobile -[sync]-> basalt.brandConfig "read the product name and default server at build time"
+  basalt.clientMobile -[sync]-> basalt.router "open native approval in the system browser"
   basalt.clientDesktop -[sync]-> basalt.brandConfig "read product name and default server"
   basalt.clientDesktop -[sync]-> basalt.router "select the native browser approval origin"
   localClient -[sync]-> basalt.clientDesktop "sign in and review local agent configuration"

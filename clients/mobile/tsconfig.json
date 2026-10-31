@@ -1,0 +1,12 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "erasableSyntaxOnly": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["react"]
+  },
+  "include": ["**/*.ts", "**/*.tsx", "../contracts/**/*.ts", "../connection/**/*.ts"]
+}

@@ -50,6 +50,15 @@ export async function startNativeClientWorker(root) {
     request.on("data", (chunk) => chunks.push(chunk));
     request.once("end", async () => {
       response.writeHead(200, { "content-type": "text/event-stream" });
+      if (url.pathname === "/v1/chat/completions") {
+        const requestBody = JSON.parse(Buffer.concat(chunks).toString());
+        assert.equal(requestBody.model, "synthetic-model");
+        response.write(
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "Phone reply 🌍" } }] })}\n\n`,
+        );
+        response.end("data: [DONE]\n\n");
+        return;
+      }
       response.write("data: first\n\n");
       if (JSON.parse(Buffer.concat(chunks).toString() || "{}").mode === "slow") {
         try {

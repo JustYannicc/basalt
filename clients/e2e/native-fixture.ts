@@ -6,7 +6,13 @@ import { WebSocketServer } from "ws";
 import type { ConnectionView } from "../contracts/connection.ts";
 
 /** External protocol peer. It owns no client implementation or credential source. */
-export async function nativeFixture() {
+export async function nativeFixture(
+  services?: (request: {
+    operation: { service: string; method: string; path: string; transport: string };
+    headers: Record<string, string>;
+    body: string;
+  }) => { status: number; headers?: Record<string, string>; chunks?: readonly Uint8Array[] },
+) {
   let display: ConnectionView["display"];
   const sockets = new WebSocketServer({ noServer: true });
   const limits = {
@@ -180,6 +186,7 @@ export async function nativeFixture() {
         message: Buffer[] = [],
         outputCredit = 0,
         running = false;
+      let requestHeaders: Record<string, string> = {};
       const output: {
         bytes: Buffer;
         text: boolean;
@@ -224,6 +231,20 @@ export async function nativeFixture() {
         send({ type: "response", id: 1, status, headers });
       const finish = () => {
         assert.ok(operation);
+        if (services) {
+          const result = services({
+            operation,
+            headers: requestHeaders,
+            body: Buffer.concat(body).toString(),
+          });
+          response(result.status, result.headers);
+          const chunks = result.chunks ?? [];
+          chunks.forEach((chunk, index) =>
+            data(Buffer.from(chunk), false, false, index === chunks.length - 1),
+          );
+          if (!chunks.length) send({ type: "end", id: 1 });
+          return;
+        }
         if (operation.service === "tools") {
           const rpc = JSON.parse(Buffer.concat(body).toString());
           if (rpc.method === "tools/call") {
@@ -272,6 +293,7 @@ export async function nativeFixture() {
         if (frame.type === "open") {
           operationOpens++;
           operation = frame.operation;
+          requestHeaders = frame.headers;
           if (operation!.service === "models" && modelFailure === "not-started") {
             send({ type: "error", id: 1, code: "unavailable", outcome: "not-started" });
             return;

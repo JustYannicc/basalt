@@ -24,3 +24,8 @@ public/native-device/index.html
 clients/desktop/.dist/
 clients/desktop/.artifacts/
 clients/desktop/dist-packages/
+clients/mobile/.expo/
+clients/mobile/android/
+clients/mobile/ios/
+clients/mobile/dist-ios/
+clients/mobile/dist-android/

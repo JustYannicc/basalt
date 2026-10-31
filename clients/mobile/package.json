@@ -1,0 +1,34 @@
+{
+  "name": "@signalbox/mobile-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Use your Signalbox models and tools on your phone.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "typecheck": "tsc --noEmit",
+    "export:ios": "expo export --platform ios --output-dir dist-ios --max-workers 2",
+    "export:android": "expo export --platform android --output-dir dist-android --max-workers 2",
+    "prebuild": "expo prebuild --no-install"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "effect": "4.0.1",
+    "expo": "58.0.14",
+    "expo-constants": "58.0.12",
+    "expo-crypto": "58.0.7",
+    "expo-dev-client": "58.0.14",
+    "expo-secure-store": "58.0.2",
+    "expo-system-ui": "58.0.6",
+    "expo-web-browser": "58.0.6",
+    "react": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-safe-area-context": "5.10.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "typescript": "7.0.2"
+  }
+}
