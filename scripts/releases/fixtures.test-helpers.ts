@@ -71,6 +71,7 @@ export function makeReleaseRoot(): string {
     format_version: 1,
     artifacts: { home: current.home, node: current.node },
   }, null, 2)}\n`);
+  writeFileSync(join(root, "containers/pool/sources.json"), '{"format_version":1,"plugins":{}}\n');
   writeFileSync(join(root, "scripts/releases/patches.json"), `${JSON.stringify(patchManifest, null, 2)}\n`);
   writeFileSync(join(root, "src/pool/providers.json"), '[\n  {"id":"claude","name":"Claude"}\n]\n');
   for (const patch of patchManifest.patches) writeFileSync(join(root, "patches", patch.file), patchFixtureContent(patch.file));

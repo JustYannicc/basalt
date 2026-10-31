@@ -1,0 +1,33 @@
+name: Temporary Gemini native amd64 benchmark
+on:
+  push:
+    branches: [fix/gemini-cli-plugin]
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      BENCHMARK_BASE_SHA: 53284f127e644107d656c3ae03d3e03eaeb0c72c
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the exact Alpine baseline
+        run: |
+          mkdir -p "$RUNNER_TEMP/gemini-alpine"
+          git archive "$BENCHMARK_BASE_SHA" containers/pool | tar -x -C "$RUNNER_TEMP/gemini-alpine"
+          docker build --progress plain --platform linux/amd64 --target runtime --tag basalt-gemini:alpine-amd64 "$RUNNER_TEMP/gemini-alpine/containers/pool" 2>&1 | tee "$RUNNER_TEMP/gemini-alpine-build.log"
+      - name: Build the Bookworm candidate
+        run: docker build --progress plain --platform linux/amd64 --target runtime --tag basalt-gemini:bookworm-amd64 containers/pool 2>&1 | tee "$RUNNER_TEMP/gemini-bookworm-build.log"
+      - name: Measure native startup and retained-database restarts
+        run: python3 containers/pool/test_native_benchmark.py --native --arch amd64 --runs 10 --output "$RUNNER_TEMP/gemini-native-measurements.json" 2>&1 | tee "$RUNNER_TEMP/gemini-native-measurements.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gemini-native-amd64-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/gemini-*-build.log
+            ${{ runner.temp }}/gemini-native-measurements.*
+          retention-days: 7

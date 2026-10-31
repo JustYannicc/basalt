@@ -246,3 +246,16 @@ test("pool update plan preserves unrelated provider data and artifact pins", asy
   assert.ok(releasesFile);
   assert.deepEqual(JSON.parse(releasesFile).artifacts.node, originalNode);
 });
+
+
+test("Home updates retain the pinned plugins' distinct login provider IDs", async (context) => {
+  const root = makeReleaseRoot();
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "containers/pool/sources.json"), JSON.stringify({
+    format_version: 1, plugins: { "fixture-bundle": { auth_providers: ["fixture-login"] } },
+  }));
+  const plan = await planUpdate(root, "home", fakeApi());
+  const providers = plan.files.find((file) => file.path === "src/pool/providers.json")?.content;
+  assert.ok(providers);
+  assert.ok(JSON.parse(providers).some((provider: { id: string }) => provider.id === "fixture-login"));
+});

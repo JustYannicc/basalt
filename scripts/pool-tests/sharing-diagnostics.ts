@@ -122,7 +122,8 @@ print('1')
     const script = `import json,pathlib,sys
 secrets=[s.encode() for s in json.loads(sys.argv[1])]
 hits=0
-for p in pathlib.Path('/dev/shm/cliproxy-pool').rglob('*'):
+paths=[p for root in ['/dev/shm/cliproxy-pool','/tmp'] for p in pathlib.Path(root).rglob('*')]
+for p in paths:
  if not p.is_file(): continue
  name=p.name.lower()
  if not (name.endswith('.log') or name.startswith(('request-log-parts-', 'error-', 'request-'))): continue
