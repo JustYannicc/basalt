@@ -1,0 +1,4249 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 1ce0c1a..89d8563 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -144,6 +144,8 @@ export const cloudExecutor = Effect.fn(function* (
+         blobs: yield* cachedVersionSources(origin, blobs),
+         runtime: yield* makeRuntime,
+         workflows,
++        workflowInputUrl: ({ owner, app, id }) =>
++          `${origin}/org/${encodeURIComponent(owner)}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+         registry: {
+           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
+             Effect.provideContext(services),
+diff --git a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
+index 24b26f3..f4ece11 100644
+--- a/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/workflow-runtime.ts
+@@ -123,6 +123,16 @@ export const cloudWorkflows = Effect.gen(function* () {
+     locate(run).pipe(Effect.map(({ state }) => state));
+   return {
+     status,
++    signalInput: (run, id) =>
++      Effect.gen(function* () {
++        const located = yield* locate(run);
++        const namespace = yield* binding;
++        yield* safe(
++          native(async () =>
++            (await namespace.get(located.instance)).sendEvent({ type: id, payload: null }),
++          ),
++        );
++      }),
+     start: (run) =>
+       Effect.gen(function* () {
+         if ((yield* status(run)).status !== "missing") return;
+diff --git a/apps/hosted/cloud/src/infrastructure/workflows.ts b/apps/hosted/cloud/src/infrastructure/workflows.ts
+index 0152de3..ad04f66 100644
+--- a/apps/hosted/cloud/src/infrastructure/workflows.ts
++++ b/apps/hosted/cloud/src/infrastructure/workflows.ts
+@@ -121,6 +121,19 @@ const runLegacyWorkflow = (input: {
+     const services = yield* Effect.context<never>();
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const driver: WorkflowDriver = {
++      waitForInput: (name, id, expiresAt) =>
++        Effect.gen(function* () {
++          const remaining = expiresAt - (yield* Clock.currentTimeMillis);
++          if (remaining <= 0) return;
++          yield* safe(step.waitForEvent(name, { type: id, timeout: remaining })).pipe(
++            Effect.catch((error) =>
++              Effect.flatMap(Clock.currentTimeMillis, (now) =>
++                now >= expiresAt ? Effect.void : Effect.fail(error),
++              ),
++            ),
++            Effect.asVoid,
++          );
++        }),
+       do: (name, options, work) =>
+         safe(
+           step.do({
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index 68e3aef..55102c9 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -115,6 +115,8 @@ export const selfHostExecutorServices = <E, R>(
+         blobs,
+         runtime,
+         workflows,
++        workflowInputUrl: ({ owner, app, id }) =>
++          `${origin}/org/${encodeURIComponent(owner)}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+         registry,
+         hooks: lifecycle.hooks,
+         oauth: {
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+index 6b26522..c7f41f6 100644
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -1,4 +1,5 @@
+ import { hostCookieName } from "./browser.ts";
++import { HostedWorkflowInputs } from "./workflow-inputs.ts";
+ import { HostedAppAccounts } from "./app-accounts.ts";
+ import { HostedResourceAccess } from "./resource-access.ts";
+ import { HostedOAuthClients } from "./oauth-clients.ts";
+@@ -169,6 +170,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
+     HostedWebhookSetup,
+     HostedWebhooks,
+     HostedWorkflows,
++    HostedWorkflowInputs,
+     HostedApps,
+     HostedSkills,
+     HostedSchedules,
+diff --git a/apps/hosted/server/src/contracts/workflow-inputs.ts b/apps/hosted/server/src/contracts/workflow-inputs.ts
+new file mode 100644
+index 0000000..4797ba0
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/workflow-inputs.ts
+@@ -0,0 +1,65 @@
++/** Durable workflow questions share the product's authenticated Approvals boundary. */
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import {
++  AppId,
++  WorkflowInput,
++  WorkflowInputId,
++  WorkflowInputPage,
++  WorkflowErrors,
++} from "@executor-js/sdk/core";
++import { ElicitationResponse, WorkflowInputEvidence } from "apps/contracts";
++import {
++  OrganizationReference,
++  OrganizationForbidden,
++  RequireOrganization,
++} from "./organization.ts";
++import { BrowserSessionOnly, Forbidden } from "./auth.ts";
++const errors = [...WorkflowErrors, OrganizationForbidden, Forbidden] as const;
++const organization = { organization: OrganizationReference };
++const target = { ...organization, app: AppId, id: WorkflowInputId };
++const path = "/api/organizations/:organization/apps/:app/workflow-inputs/:id";
++export const HostedWorkflowInputs = HttpApiGroup.make("workflowInputs")
++  .add(
++    HttpApiEndpoint.get("list", "/api/organizations/:organization/workflow-inputs", {
++      params: organization,
++      query: {
++        app: Schema.optional(AppId),
++        pending: Schema.optional(Schema.Boolean),
++        after: Schema.optional(WorkflowInputId),
++      },
++      success: WorkflowInputPage,
++      error: errors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.get("get", path, {
++      params: target,
++      success: WorkflowInput,
++      error: errors,
++    }).annotate(BrowserSessionOnly, true),
++  )
++  .add(
++    HttpApiEndpoint.post("answer", path, {
++      params: target,
++      payload: Schema.Struct({ response: ElicitationResponse }),
++      success: WorkflowInput,
++      error: errors,
++    }).annotate(BrowserSessionOnly, true),
++  )
++  .add(
++    HttpApiEndpoint.post("updateEvidence", `${path}/evidence`, {
++      params: target,
++      payload: Schema.Struct({ evidence: WorkflowInputEvidence }),
++      success: WorkflowInput,
++      error: errors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("withdraw", `${path}/withdraw`, {
++      params: target,
++      success: WorkflowInput,
++      error: errors,
++    }),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+index b3d8f66..ee68d40 100644
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -1,3 +1,4 @@
++import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
+ import { hostedAppAccountHandlers } from "./app-account-links.ts";
+ import {
+   AppGitOrigins,
+@@ -84,6 +85,7 @@ export const hostedHandlers = Layer.mergeAll(
+   hostedWebhookSetupHandlers,
+   hostedWebhookHandlers,
+   hostedWorkflowHandlers,
++  hostedWorkflowInputHandlers,
+   hostedAppHandlers,
+   hostedSkillHandlers,
+   hostedAccountHandlers,
+diff --git a/apps/hosted/server/src/implementation/workflow-inputs.ts b/apps/hosted/server/src/implementation/workflow-inputs.ts
+new file mode 100644
+index 0000000..9e0601f
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/workflow-inputs.ts
+@@ -0,0 +1,75 @@
++/** A response never changes the workflow's saved execution actor. */
++import { Effect } from "effect";
++import { HttpApiBuilder } from "effect/http-api";
++import { AppId } from "@executor-js/sdk/core";
++import { HostedApi } from "../contracts/api.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { currentOwner, browserOnly } from "./access.ts";
++import { requireAppAccess } from "./resource-policy.ts";
++import { requireWorkflowAccess } from "./workflow-access.ts";
++
++export const hostedWorkflowInputHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "workflowInputs",
++  (handlers) =>
++    handlers
++      .handle("list", ({ query }) =>
++        Effect.gen(function* () {
++          const owner = yield* currentOwner;
++          const executor = yield* Effect.flatten(HostedExecutor);
++          const page = yield* executor.workflowInputs.list({ ...query, owner });
++          const items = yield* Effect.filter(page.items, (input) =>
++            requireWorkflowAccess(executor, owner, AppId.make(input.app), input.run).pipe(
++              Effect.as(true),
++              Effect.catchTags({
++                OrganizationForbidden: () => Effect.succeed(false),
++                AccountNotFound: () => Effect.succeed(false),
++              }),
++            ),
++          );
++          return { ...page, items };
++        }),
++      )
++      .handle("get", ({ params }) =>
++        Effect.gen(function* () {
++          yield* browserOnly;
++          const owner = yield* currentOwner;
++          const executor = yield* Effect.flatten(HostedExecutor);
++          yield* requireAppAccess(params.app, "use");
++          const input = yield* executor.workflowInputs.get({ ...params, owner });
++          yield* requireWorkflowAccess(executor, owner, params.app, input.run);
++          return input;
++        }),
++      )
++      .handle("answer", ({ params, payload }) =>
++        Effect.gen(function* () {
++          yield* browserOnly;
++          const owner = yield* currentOwner;
++          const executor = yield* Effect.flatten(HostedExecutor);
++          yield* requireAppAccess(params.app, "use");
++          const input = yield* executor.workflowInputs.get({ ...params, owner });
++          yield* requireWorkflowAccess(executor, owner, params.app, input.run);
++          return yield* executor.workflowInputs.answer({ ...params, ...payload, owner });
++        }),
++      )
++      .handle("updateEvidence", ({ params, payload }) =>
++        Effect.gen(function* () {
++          const owner = yield* currentOwner;
++          const executor = yield* Effect.flatten(HostedExecutor);
++          yield* requireAppAccess(params.app, "use");
++          const input = yield* executor.workflowInputs.get({ ...params, owner });
++          yield* requireWorkflowAccess(executor, owner, params.app, input.run);
++          return yield* executor.workflowInputs.updateEvidence({ ...params, ...payload, owner });
++        }),
++      )
++      .handle("withdraw", ({ params }) =>
++        Effect.gen(function* () {
++          const owner = yield* currentOwner;
++          const executor = yield* Effect.flatten(HostedExecutor);
++          yield* requireAppAccess(params.app, "use");
++          const input = yield* executor.workflowInputs.get({ ...params, owner });
++          yield* requireWorkflowAccess(executor, owner, params.app, input.run);
++          return yield* executor.workflowInputs.withdraw({ ...params, owner });
++        }),
++      ),
++);
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+index 67ce6cb..930fad2 100644
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -4,6 +4,7 @@ import {
+   InteractiveRetirementFailed,
+   InteractiveReconnectUnsupported,
+ } from "@executor-js/sdk";
++import { DashboardWorkflowInputs } from "./workflow-inputs.ts";
+ import {
+   blockedRecovery,
+   LocalOwnerMigration,
+@@ -906,6 +907,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+     )
+     .middleware(DashboardAccess),
+   DashboardSchedules.middleware(DashboardAccess),
++  DashboardWorkflowInputs.middleware(DashboardAccess),
+   DashboardAppBrowser.middleware(DashboardAccess),
+   DashboardWorkflows.middleware(DashboardAccess),
+   DashboardWebhooks.middleware(DashboardAccess),
+diff --git a/apps/local/server/src/contracts/management.ts b/apps/local/server/src/contracts/management.ts
+index ef9b046..6407604 100644
+--- a/apps/local/server/src/contracts/management.ts
++++ b/apps/local/server/src/contracts/management.ts
+@@ -25,6 +25,7 @@ export const LocalExecutorApi = HttpApi.make("executor").add(
+   ExecutorApi.groups.webhooks,
+   ExecutorApi.groups.appWorkflows,
+   ExecutorApi.groups.appWorkflowRuns,
++  ExecutorApi.groups.workflowInputs,
+   ExecutorApi.groups.publications,
+   ExecutorApi.groups.registry,
+ );
+@@ -43,6 +44,13 @@ const api = HttpApi.make("local-management")
+   .add(ExecutorApi.groups.webhooks)
+   .add(ExecutorApi.groups.appWorkflows)
+   .add(ExecutorApi.groups.appWorkflowRuns)
++  .add(
++    HttpApiGroup.make("workflowInputs").add(
++      ExecutorApi.groups.workflowInputs.endpoints.list,
++      ExecutorApi.groups.workflowInputs.endpoints.withdraw,
++      ExecutorApi.groups.workflowInputs.endpoints.updateEvidence,
++    ),
++  )
+   .add(
+     HttpApiGroup.make("schedules").add(
+       DashboardApi.groups.schedules.endpoints.list,
+diff --git a/apps/local/server/src/contracts/workflow-inputs.ts b/apps/local/server/src/contracts/workflow-inputs.ts
+new file mode 100644
+index 0000000..5cfa862
+--- /dev/null
++++ b/apps/local/server/src/contracts/workflow-inputs.ts
+@@ -0,0 +1,55 @@
++/** The local subject reviews durable questions through the paired dashboard. */
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import {
++  AppId,
++  WorkflowInput,
++  WorkflowInputId,
++  WorkflowInputPage,
++  WorkflowErrors,
++} from "@executor-js/sdk/core";
++import { ElicitationResponse, WorkflowInputEvidence } from "apps/contracts";
++const target = { app: AppId, id: WorkflowInputId };
++const path = "/dashboard/api/apps/:app/workflow-inputs/:id";
++export const DashboardWorkflowInputs = HttpApiGroup.make("workflowInputs")
++  .add(
++    HttpApiEndpoint.get("list", "/dashboard/api/workflow-inputs", {
++      query: {
++        app: Schema.optional(AppId),
++        pending: Schema.optional(Schema.Boolean),
++        after: Schema.optional(WorkflowInputId),
++      },
++      success: WorkflowInputPage,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.get("get", path, {
++      params: target,
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("answer", path, {
++      params: target,
++      payload: Schema.Struct({ response: ElicitationResponse }),
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("updateEvidence", `${path}/evidence`, {
++      params: target,
++      payload: Schema.Struct({ evidence: WorkflowInputEvidence }),
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("withdraw", `${path}/withdraw`, {
++      params: target,
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  );
+diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
+index 904b418..7d2744e 100644
+--- a/apps/local/server/src/implementation/server.ts
++++ b/apps/local/server/src/implementation/server.ts
+@@ -1,3 +1,4 @@
++import { localWorkflowInputHandlers } from "./workflow-inputs.ts";
+ import { localSourceFormatter } from "@executor-js/app-management/source-format";
+ import {
+   publishedSkillRoutes,
+@@ -171,6 +172,8 @@ export const localApi = (
+         blobs,
+         runtime,
+         workflows,
++        workflowInputUrl: ({ app, id }) =>
++          `${config.browserOrigin ?? `http://localhost:${config.port}`}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+         registry,
+         cache: {
+           memory: makeDeclarationCache(evaluation.limits),
+@@ -282,7 +285,10 @@ export const localApi = (
+           if (Result.isFailure(pathname)) return HttpServerResponse.empty({ status: 400 });
+           const target = pathname.success.replace(/\/$/, "");
+           // SDK review primitives are only delivered through the product's browser session routes.
+-          if (/^\/v1\/scheduled-runs\/[^/]+\/approval$/.test(target))
++          if (
++            /^\/v1\/scheduled-runs\/[^/]+\/approval$/.test(target) ||
++            /^\/v1\/apps\/[^/]+\/workflow-inputs\/[^/]+\/answer$/.test(target)
++          )
+             return HttpServerResponse.empty({ status: 403 });
+           // Product protection stays at the host boundary, not in the reusable SDK.
+           if (request.method !== "GET" && request.method !== "HEAD") {
+@@ -511,6 +517,7 @@ export const localApi = (
+         HttpApiBuilder.layer(DashboardApi).pipe(
+           Layer.provide(dashboardApi.handlers),
+           Layer.provide(localScheduleHandlers(executor, sql, config, auth)),
++          Layer.provide(localWorkflowInputHandlers(executor, config, auth)),
+           Layer.provide(localAppBrowserHandlers(executor, sql)),
+           Layer.provide(localMcpConnectionHandlers(executor, sql, oauth)),
+           Layer.provide(dashboardApi.access),
+@@ -530,6 +537,7 @@ export const localApi = (
+         HttpRouter.add("GET", "/connect", web.document),
+         HttpRouter.add("GET", "/approvals", web.document),
+         HttpRouter.add("GET", "/approvals/:run", web.document),
++        HttpRouter.add("GET", "/approvals/workflow/:app/:input", web.document),
+         HttpRouter.add("GET", "/account-connect/:connection", web.document),
+         HttpRouter.add("GET", "/accounts", web.document),
+         HttpRouter.add("GET", "/accounts/:account", web.document),
+diff --git a/apps/local/server/src/implementation/workflow-inputs.ts b/apps/local/server/src/implementation/workflow-inputs.ts
+new file mode 100644
+index 0000000..fbeb3cd
+--- /dev/null
++++ b/apps/local/server/src/implementation/workflow-inputs.ts
+@@ -0,0 +1,29 @@
++import { Effect } from "effect";
++import { HttpApiBuilder } from "effect/http-api";
++import type { Executor } from "@executor-js/sdk/core";
++import { DashboardApi } from "../contracts/dashboard.ts";
++import type { ServerConfig } from "../contracts/config.ts";
++import type { LocalAuth } from "./auth.ts";
++import { browserOnly } from "./dashboard.ts";
++
++export const localWorkflowInputHandlers = (
++  executor: Executor,
++  config: ServerConfig,
++  auth: LocalAuth,
++) =>
++  HttpApiBuilder.group(DashboardApi, "workflowInputs", (handlers) =>
++    handlers
++      .handle("list", ({ query }) => executor.workflowInputs.list(query))
++      .handle("get", ({ params }) =>
++        browserOnly(config, auth).pipe(Effect.andThen(executor.workflowInputs.get(params))),
++      )
++      .handle("answer", ({ params, payload }) =>
++        browserOnly(config, auth).pipe(
++          Effect.andThen(executor.workflowInputs.answer({ ...params, ...payload })),
++        ),
++      )
++      .handle("updateEvidence", ({ params, payload }) =>
++        executor.workflowInputs.updateEvidence({ ...params, ...payload }),
++      )
++      .handle("withdraw", ({ params }) => executor.workflowInputs.withdraw(params)),
++  );
+diff --git a/e2e/support/workflow-input-app.ts b/e2e/support/workflow-input-app.ts
+new file mode 100644
+index 0000000..d202b25
+--- /dev/null
++++ b/e2e/support/workflow-input-app.ts
+@@ -0,0 +1,44 @@
++/** An ordinary authored app asks, records one continuation and keeps consent separate. */
++import { appsManifest } from "./apps-release.ts";
++export const workflowInputFiles = [
++  appsManifest,
++  {
++    path: "index.ts",
++    content: `import { defineApp, workflow, query, mutation, object, string, number, router } from "apps";
++const rows = query({ input: object({}) }, async (ctx) => ctx.sql.exec("SELECT question, answer FROM receipts ORDER BY question").toArray());
++const save = mutation({ input: object({ question: string(), answer: string() }) }, async (ctx, input) => {
++  ctx.sql.transaction((tx) => tx.exec("INSERT INTO receipts (question, answer) VALUES (?, ?)", input.question, input.answer));
++  return null;
++});
++const protectedAction = mutation({ input: object({}), approval: () => "user-approval" }, async () => "must not run");
++const ask = workflow({ input: object({ timeoutMs: number(), protected: string() }) }, async (ctx, input) => {
++  const question = await ctx.step.requestInput("choose", {
++    timeoutMs: input.timeoutMs,
++    form: { mode: "form", message: "Choose a synthetic action", requestedSchema: {
++      type: "object", properties: { choice: { type: "string", enum: ["continue", "defer"] } }, required: ["choice"],
++    } },
++    evidence: [{ label: "Origin", value: "synthetic" }],
++    links: [{ label: "Open Accounts", href: "/accounts" }],
++  });
++  const result = await ctx.step.waitForInput("answer", question);
++  if (result.status === "answered" && result.response.action === "accept") {
++    await ctx.step.runMutation("record", save, { question: question.id, answer: String(result.response.content?.choice) });
++    if (input.protected === "yes") await ctx.step.runMutation("protected", protectedAction, {});
++  }
++  return result;
++});
++const many = workflow({ input: object({ timeoutMs: number(), protected: string() }) }, async (ctx, input) => {
++  let last;
++  for (let index = 0; index < 105; index++) last = await ctx.step.requestInput("question " + index, {
++    timeoutMs: input.timeoutMs,
++    form: { mode: "form", message: "A synthetic paginated question", requestedSchema: { type: "object", properties: {} } },
++  });
++  return ctx.step.waitForInput("wait", last);
++});
++export default defineApp({}, { tools: router({ rows, save, protectedAction }), workflows: { ask, many } });`,
++  },
++  {
++    path: "migrations/0001_receipts.sql",
++    content: "CREATE TABLE receipts (question TEXT PRIMARY KEY, answer TEXT NOT NULL);",
++  },
++];
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index e889f4b..a17b683 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -7818,6 +7818,56 @@ export const scenarios = plan({
+       cloud: na("Hosted caller identity has a separate shared-app scenario."),
+     },
+   },
++  localWorkflowInput: {
++    file: "local-workflow-inputs.spec.ts",
++    title: "local durable workflow input is visible and answered only through the paired browser",
++    targets: {
++      local: scheduled,
++      "self-host": na("Local pairing boundary."),
++      cloud: na("Local pairing boundary."),
++    },
++  },
++  workflowInputLifecycle: {
++    fixtures: "actors",
++    file: "workflow-inputs.spec.ts",
++    title: "durable workflow input survives restart and concurrent valid answers resume once",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Restart owns an isolated self-host process."),
++      local: na("Hosted routes have a separate local counterpart."),
++    },
++  },
++  workflowInputPagination: {
++    fixtures: "actors",
++    file: "workflow-inputs.spec.ts",
++    title: "durable workflow input pages past inaccessible questions without losing its cursor",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Hosted app access filtering."),
++    },
++  },
++  workflowInputRevocation: {
++    fixtures: "actors",
++    file: "workflow-inputs.spec.ts",
++    title: "durable workflow input rechecks revoked app access and removed membership",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Hosted membership and app access."),
++    },
++  },
++  workflowInputAuthority: {
++    fixtures: "actors",
++    file: "workflow-inputs.spec.ts",
++    title:
++      "durable workflow input enforces recipients, withdrawal, expiry and downstream tool consent",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Hosted authority and organization routes."),
++    },
++  },
+   workflowStarts: {
+     fixtures: "actors",
+     file: "workflows.spec.ts",
+diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
+new file mode 100644
+index 0000000..193a3b1
+--- /dev/null
++++ b/e2e/tests/local-workflow-inputs.spec.ts
+@@ -0,0 +1,119 @@
++/** The local bearer API can observe work; only a paired browser answers the human question. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Redacted, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Target } from "../support/platform.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { workflowInputFiles } from "../support/workflow-input-app.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(TestLive, { excludeTestServices: true })("Local durable input", (it) => {
++  it.effect(scenarios.localWorkflowInput.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          target = yield* Target;
++        const agent = yield* api.session();
++        const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
++        const deployed = yield* agent.send(
++          "POST",
++          "/v1/apps/deploy",
++          { owner: "local", name: "Local durable input", files: workflowInputFiles },
++          headers,
++        );
++        expect(deployed.status).toBe(200);
++        const { app } = yield* body(
++          Schema.Struct({ app: Schema.Struct({ id: Schema.String }) }),
++          deployed,
++        );
++        const path = `/v1/apps/${app.id}`;
++        let runId: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            if (runId !== undefined)
++              yield* agent.send(
++                "POST",
++                `${path}/workflow-runs/${runId}/terminate`,
++                undefined,
++                headers,
++              );
++            expect((yield* agent.send("DELETE", path, undefined, headers)).status).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        const started = yield* agent.send(
++          "POST",
++          `${path}/workflow-runs`,
++          { workflow: "ask", input: { timeoutMs: 86400000, protected: "no" } },
++          headers,
++        );
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        runId = (yield* body(Schema.Struct({ id: Schema.String }), started)).id;
++        const browser = yield* api.session();
++        const pairing = yield* body(
++          Schema.Struct({ url: Schema.String }),
++          yield* browser.send("POST", "/auth/pair", undefined, headers),
++        );
++        expect(
++          (yield* api.request(browser, "POST", "/auth/exchange", {
++            token: new URL(pairing.url).hash.slice("#pair=".length),
++          })).status,
++        ).toBe(200);
++        const Inputs = Schema.Array(Schema.Struct({ id: Schema.String, run: Schema.String }));
++        let question: string | undefined;
++        const deadline = (yield* Clock.currentTimeMillis) + 20000;
++        while (question === undefined) {
++          const response = yield* api.request(
++            browser,
++            "GET",
++            "/dashboard/api/workflow-inputs?pending=true",
++          );
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          question = (yield* body(Schema.Struct({ items: Inputs }), response)).items.find(
++            (input) => input.run === runId,
++          )?.id;
++          expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++          if (question === undefined) yield* Effect.sleep("50 millis");
++        }
++        const answer = { response: { action: "accept", content: { choice: "continue" } } };
++        expect(
++          (yield* agent.send("POST", `${path}/workflow-inputs/${question}/answer`, answer, headers))
++            .status,
++        ).toBe(403);
++        expect(
++          (yield* browser.send(
++            "POST",
++            `/dashboard/api/apps/${app.id}/workflow-inputs/${question}`,
++            answer,
++            headers,
++          )).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(
++            browser,
++            "POST",
++            `/dashboard/api/apps/${app.id}/workflow-inputs/${question}`,
++            answer,
++          )).status,
++        ).toBe(200);
++        const Run = Schema.Struct({
++          status: Schema.String,
++          output: Schema.optionalKey(Schema.Json),
++        });
++        while (true) {
++          const run = yield* body(
++            Run,
++            yield* agent.send("GET", `${path}/workflow-runs/${runId}`, undefined, headers),
++          );
++          if (run.status === "complete") {
++            expect(run.output).toMatchObject({ status: "answered" });
++            break;
++          }
++          expect(run.status).not.toBe("errored");
++          expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++          yield* Effect.sleep("50 millis");
++        }
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/workflow-inputs.spec.ts b/e2e/tests/workflow-inputs.spec.ts
+new file mode 100644
+index 0000000..772d428
+--- /dev/null
++++ b/e2e/tests/workflow-inputs.spec.ts
+@@ -0,0 +1,288 @@
++/** Durable human input through the actual hosted HTTP and workflow engine. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Schema } from "effect";
++import { Api, body, type Session } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { serverControl } from "../support/server-control.ts";
++import { workflowInputFiles } from "../support/workflow-input-app.ts";
++import { freeSeat } from "../support/seats.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Input = Schema.Struct({
++  id: Schema.String,
++  run: Schema.String,
++  app: Schema.String,
++  status: Schema.String,
++  reviewUrl: Schema.optionalKey(Schema.String),
++});
++const Run = Schema.Struct({
++  id: Schema.String,
++  status: Schema.String,
++  output: Schema.optionalKey(Schema.Json),
++  error: Schema.optionalKey(Schema.String),
++});
++const fixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const deploy = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: "Durable input fixture",
++    files: workflowInputFiles,
++  });
++  expect(deploy.status, JSON.stringify(deploy.body)).toBe(200);
++  const app = yield* body(Schema.Struct({ id: Schema.String }), deploy);
++  const path = `${prefix}/apps/${app.id}`;
++  const runs: Array<{ id: string; actor: Session }> = [];
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      for (const run of runs)
++        yield* api.request(run.actor, "POST", `${path}/workflow-runs/${run.id}/terminate`);
++      expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++    }).pipe(Effect.orDie),
++  );
++  const start = (
++    timeoutMs = 86400000,
++    protectedAction = "no",
++    actor = actors.owner,
++    workflow = "ask",
++  ) =>
++    Effect.gen(function* () {
++      const response = yield* api.request(actor, "POST", `${path}/workflow-runs`, {
++        workflow,
++        input: { timeoutMs, protected: protectedAction },
++      });
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const run = yield* body(Run, response);
++      runs.push({ id: run.id, actor });
++      return run;
++    });
++  const pending = (run: string, actor = actors.owner) =>
++    Effect.gen(function* () {
++      const deadline = (yield* Clock.currentTimeMillis) + 20000;
++      while (true) {
++        const response = yield* api.request(actor, "GET", `${prefix}/workflow-inputs?pending=true`);
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const input = (yield* body(
++          Schema.Struct({ items: Schema.Array(Input) }),
++          response,
++        )).items.find((input) => input.run === run);
++        if (input !== undefined) return input;
++        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++        yield* Effect.sleep("50 millis");
++      }
++    });
++  const wait = (run: string) =>
++    Effect.gen(function* () {
++      const deadline = (yield* Clock.currentTimeMillis) + 20000;
++      while (true) {
++        const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs/${run}`);
++        expect(response.status).toBe(200);
++        const result = yield* body(Run, response);
++        if (["complete", "errored", "terminated"].includes(result.status)) return result;
++        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++        yield* Effect.sleep("50 millis");
++      }
++    });
++  const answer = (id: string, choice: string, actor = actors.owner) =>
++    api.request(actor, "POST", `${path}/workflow-inputs/${id}`, {
++      response: { action: "accept", content: { choice } },
++    });
++  const rows = () =>
++    api.request(actors.owner, "POST", `${path}/tools/call`, {
++      tool: "rows",
++      kind: "query",
++      input: {},
++    });
++  const share = (kind: "private" | "everyone") =>
++    Effect.gen(function* () {
++      const access = yield* body(
++        Schema.Struct({ revision: Schema.String }),
++        yield* api.request(actors.owner, "GET", `${path}/access`),
++      );
++      expect(
++        (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++          revision: access.revision,
++          audience: { kind },
++        })).status,
++      ).toBe(200);
++    });
++  return { api, actors, prefix, path, start, pending, wait, answer, rows, share };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Durable workflow input", (it) => {
++  it.effect(scenarios.workflowInputLifecycle.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture;
++        const run = yield* f.start();
++        const input = yield* f.pending(run.id);
++        expect(input.reviewUrl).toContain(`/approvals/workflow/${input.app}/${input.id}`);
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${f.path}/workflow-inputs/${input.id}`))
++            .body,
++        ).toMatchObject({ evidence: [{ label: "Origin", value: "synthetic" }] });
++        const evidence = [{ label: "Latest check", value: "source-rejected" }];
++        const updated = yield* f.api.request(
++          f.actors.owner,
++          "POST",
++          `${f.path}/workflow-inputs/${input.id}/evidence`,
++          { evidence },
++        );
++        expect(updated.status).toBe(200);
++        expect(updated.body).toMatchObject({ id: input.id, status: "pending", evidence });
++        expect((yield* f.answer(input.id, "invalid")).status).toBe(400);
++        expect((yield* f.pending(run.id)).id).toBe(input.id);
++        // Crash recovery must use the same question and its retained workflow, without an MCP session.
++        yield* serverControl("restart");
++        expect((yield* f.pending(run.id)).id).toBe(input.id);
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${f.path}/workflow-inputs/${input.id}`))
++            .body,
++        ).toMatchObject({ evidence });
++        const responses = yield* Effect.all(
++          [f.answer(input.id, "continue"), f.answer(input.id, "defer")],
++          { concurrency: 2 },
++        );
++        expect(responses.map((response) => response.status)).toEqual([200, 200]);
++        const result = yield* f.wait(run.id);
++        expect(result.status).toBe("complete");
++        const receipts = yield* f.rows();
++        expect(receipts.status).toBe(200);
++        expect(receipts.body).toEqual([
++          expect.objectContaining({
++            question: input.id,
++            answer: expect.stringMatching(/^(continue|defer)$/),
++          }),
++        ]);
++        expect((yield* f.answer(input.id, "continue")).status).toBe(200);
++        expect(
++          (yield* f.api.request(
++            f.actors.owner,
++            "POST",
++            `${f.path}/workflow-inputs/${input.id}/evidence`,
++            { evidence: [] },
++          )).body,
++        ).toMatchObject({ status: "answered", evidence });
++        expect((yield* f.rows()).body).toEqual(receipts.body);
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${f.prefix}/workflow-inputs?pending=true`))
++            .body,
++        ).toMatchObject({ items: [] });
++      }),
++    ),
++  );
++  it.effect(scenarios.workflowInputPagination.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture;
++        yield* f.share("everyone");
++        const run = yield* f.start(86400000, "no", f.actors.member, "many");
++        yield* f.pending(run.id, f.actors.member);
++        const Page = Schema.Struct({
++          items: Schema.Array(Input),
++          next: Schema.optionalKey(Schema.String),
++        });
++        const page = (after?: string) =>
++          f.api
++            .request(
++              f.actors.member,
++              "GET",
++              `${f.prefix}/workflow-inputs?pending=true${after ? `&after=${after}` : ""}`,
++            )
++            .pipe(Effect.flatMap((response) => body(Page, response)));
++        const deadline = (yield* Clock.currentTimeMillis) + 60000;
++        while (true) {
++          const first = yield* page();
++          const second = first.next === undefined ? undefined : yield* page(first.next);
++          if (first.items.length === 100 && second?.items.length === 5) break;
++          expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++          yield* Effect.sleep("50 millis");
++        }
++        yield* Effect.addFinalizer(() => f.share("everyone").pipe(Effect.orDie));
++        yield* f.share("private");
++        const hidden = yield* page();
++        expect(hidden.items).toEqual([]);
++        expect(hidden.next).toBeDefined();
++        const final = yield* page(hidden.next);
++        expect(final.items).toEqual([]);
++        expect(final.next).toBeUndefined();
++      }),
++    ),
++  );
++  it.effect(scenarios.workflowInputRevocation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture;
++        yield* f.share("everyone");
++        const run = yield* f.start(86400000, "no", f.actors.member);
++        const question = yield* f.pending(run.id, f.actors.member);
++        const read = () =>
++          f.api.request(f.actors.member, "GET", `${f.path}/workflow-inputs/${question.id}`);
++        expect((yield* read()).status).toBe(200);
++        yield* f.share("private");
++        expect((yield* read()).status).toBe(403);
++        expect((yield* f.answer(question.id, "continue", f.actors.member)).status).toBe(403);
++        yield* f.share("everyone");
++        expect((yield* read()).body).toMatchObject({ status: "pending" });
++        const seat = yield* freeSeat;
++        yield* Effect.addFinalizer(() => seat.rejoin.pipe(Effect.orDie));
++        expect((yield* read()).status).toBe(403);
++        expect((yield* f.answer(question.id, "continue", f.actors.member)).status).toBe(403);
++        expect((yield* f.rows()).body).toEqual([]);
++      }),
++    ),
++  );
++  it.effect(scenarios.workflowInputAuthority.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture;
++        yield* f.share("everyone");
++        expect(
++          (yield* f.api.request(f.actors.member, "POST", `${f.path}/tools/call`, {
++            tool: "rows",
++            kind: "query",
++            input: {},
++          })).status,
++        ).toBe(200);
++        const run = yield* f.start(86400000, "yes");
++        const input = yield* f.pending(run.id);
++        expect(
++          (yield* f.api.request(f.actors.member, "GET", `${f.path}/workflow-inputs/${input.id}`))
++            .status,
++        ).toBeGreaterThanOrEqual(400);
++        expect(
++          (yield* f.api.request(f.actors.member, "POST", `${f.path}/workflow-inputs/${input.id}`, {
++            response: { action: "accept", content: { choice: "continue" } },
++          })).status,
++        ).toBeGreaterThanOrEqual(400);
++        expect((yield* f.answer(input.id, "continue")).status).toBe(200);
++        expect(yield* f.wait(run.id)).toMatchObject({ status: "errored", error: "approval" });
++        const withdrawn = yield* f.start();
++        const old = yield* f.pending(withdrawn.id);
++        expect(
++          (yield* f.api.request(
++            f.actors.owner,
++            "POST",
++            `${f.path}/workflow-inputs/${old.id}/withdraw`,
++          )).status,
++        ).toBe(200);
++        expect(yield* f.wait(withdrawn.id)).toMatchObject({
++          status: "complete",
++          output: { status: "withdrawn" },
++        });
++        expect((yield* f.answer(old.id, "continue")).body).toMatchObject({ status: "withdrawn" });
++        const expired = yield* f.start(1000);
++        expect(yield* f.wait(expired.id)).toMatchObject({
++          status: "complete",
++          output: { status: "expired" },
++        });
++        expect((yield* f.rows()).body).toHaveLength(1);
++      }),
++    ),
++  );
++});
+diff --git a/packages/app-templates/executor/skills/app-authoring/workflows.md b/packages/app-templates/executor/skills/app-authoring/workflows.md
+index 1fc856f..20da163 100644
+--- a/packages/app-templates/executor/skills/app-authoring/workflows.md
++++ b/packages/app-templates/executor/skills/app-authoring/workflows.md
+@@ -34,8 +34,56 @@ starting a workflow is never part of a SQL transaction.
+ The SDK namespace is `executor.apps.workflowRuns`, with discovery through
+ `executor.apps.workflows.list`. Do not invent `executor.workflowRuns`.
+ 
+-V1 has no webhook/event wait, durable human-input request, or restart helper.
+-Background operations retain approval rules and fail if they require live input.
++## Waiting for a person
++
++A user workflow can persist a question, then park until its saved actor answers:
++
++```ts
++const question = await ctx.step.requestInput("pick an action", {
++  timeoutMs: 7 * 24 * 60 * 60 * 1000,
++  form: {
++    mode: "form",
++    message: "What should happen next?",
++    requestedSchema: {
++      type: "object",
++      properties: { action: { type: "string", enum: ["continue", "defer"] } },
++      required: ["action"],
++    },
++  },
++  links: [{ label: "Open Accounts", href: "/accounts" }],
++});
++// The question is committed before a separate step sends its reviewUrl through a connector.
++const answer = await ctx.step.waitForInput("wait for action", question);
++if (answer.status === "answered" && answer.response.action === "accept") {
++  // Recheck the resource and the chosen action's permission before acting.
++}
++```
++
++`requestInput` uses the standard flat form schema. `timeoutMs` is required and
++ranges from 1 millisecond to 30 days. The question retains its stable run/step
++identity across replay; changing a replayed request fails with `conflict`.
++`waitForInput` returns `answered` with an accept/decline/cancel response, or
++`expired` or `withdrawn`. A valid first answer wins, including across restarts.
++Invalid responses leave the question pending. Terminating the run withdraws it.
++
++Hosted and local Approvals routes require the initiating person's signed-in
++browser and current app/account access. The response never changes the run's
++execution actor. Questions cannot currently be assigned to another person or
++role, and app-scope workflows cannot request one. A review URL locates the
++question; it grants no access. Answering a form grants no downstream tool
++permission and does not establish that a repair succeeded.
++
++The SDK's `workflowInputs` operations list, read, answer and withdraw questions.
++Listings return `{ items, next? }`, at most 100 in ID order; pass `next` as `after`
++to continue, including when a page has no currently accessible items.
++Browser-only reads/answers are not exposed through the local bearer API.
++`workflowInputs.updateEvidence` replaces bounded display facts while the question
++is pending. It preserves the form, deadline, identity and any saved response.
++Use it for later observations of the same decision. Use withdrawal when recovery
++makes a pending decision obsolete; a changed
++decision needs a new question. A schedule pause alone does not cancel its runs.
++Background tools still cannot use live `elicit`; use a durable question in the
++workflow instead. General event waits and restart controls are not exposed.
+ 
+ ## Scheduled mutations
+ 
+diff --git a/packages/apps/protocols/19.json b/packages/apps/protocols/19.json
+new file mode 100644
+index 0000000..bfd1621
+--- /dev/null
++++ b/packages/apps/protocols/19.json
+@@ -0,0 +1,872 @@
++{
++  "protocol": 19,
++  "previous": 18,
++  "messages": {
++    "workflowStep": {
++      "_tag": "Union",
++      "types": [
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "input"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "command",
++              "type": {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "operation",
++                        "type": {
++                          "_tag": "Literal",
++                          "literal": "request"
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "stepId",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "name",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMaxLength",
++                                "payload": {
++                                  "maxLength": 200
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "request",
++                        "type": {
++                          "_tag": "Objects",
++                          "propertySignatures": [
++                            {
++                              "name": "form",
++                              "type": {
++                                "$message": "elicitationRequest"
++                              },
++                              "isOptional": false
++                            },
++                            {
++                              "name": "evidence",
++                              "type": {
++                                "_tag": "Arrays",
++                                "rest": [
++                                  {
++                                    "_tag": "Objects",
++                                    "propertySignatures": [
++                                      {
++                                        "name": "label",
++                                        "type": {
++                                          "_tag": "String",
++                                          "checks": [
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMinLength",
++                                                "payload": {
++                                                  "minLength": 1
++                                                }
++                                              }
++                                            },
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMaxLength",
++                                                "payload": {
++                                                  "maxLength": 120
++                                                }
++                                              }
++                                            }
++                                          ]
++                                        },
++                                        "isOptional": false
++                                      },
++                                      {
++                                        "name": "value",
++                                        "type": {
++                                          "_tag": "String",
++                                          "checks": [
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMaxLength",
++                                                "payload": {
++                                                  "maxLength": 500
++                                                }
++                                              }
++                                            }
++                                          ]
++                                        },
++                                        "isOptional": false
++                                      }
++                                    ]
++                                  }
++                                ],
++                                "checks": [
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isMaxLength",
++                                      "payload": {
++                                        "maxLength": 12
++                                      }
++                                    }
++                                  }
++                                ]
++                              },
++                              "isOptional": true
++                            },
++                            {
++                              "name": "timeoutMs",
++                              "type": {
++                                "_tag": "Number",
++                                "checks": [
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isInt",
++                                      "payload": null
++                                    }
++                                  },
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isBetween",
++                                      "payload": {
++                                        "minimum": 1,
++                                        "maximum": 2592000000
++                                      }
++                                    }
++                                  }
++                                ]
++                              },
++                              "isOptional": false
++                            },
++                            {
++                              "name": "links",
++                              "type": {
++                                "_tag": "Arrays",
++                                "rest": [
++                                  {
++                                    "_tag": "Objects",
++                                    "propertySignatures": [
++                                      {
++                                        "name": "label",
++                                        "type": {
++                                          "_tag": "String",
++                                          "checks": [
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMinLength",
++                                                "payload": {
++                                                  "minLength": 1
++                                                }
++                                              }
++                                            },
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMaxLength",
++                                                "payload": {
++                                                  "maxLength": 120
++                                                }
++                                              }
++                                            }
++                                          ]
++                                        },
++                                        "isOptional": false
++                                      },
++                                      {
++                                        "name": "href",
++                                        "type": {
++                                          "_tag": "String",
++                                          "checks": [
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMinLength",
++                                                "payload": {
++                                                  "minLength": 1
++                                                }
++                                              }
++                                            },
++                                            {
++                                              "_tag": "Filter",
++                                              "representation": {
++                                                "id": "effect/schema/isMaxLength",
++                                                "payload": {
++                                                  "maxLength": 2048
++                                                }
++                                              }
++                                            },
++                                            {
++                                              "_tag": "Filter"
++                                            }
++                                          ]
++                                        },
++                                        "isOptional": false
++                                      }
++                                    ]
++                                  }
++                                ],
++                                "checks": [
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isMaxLength",
++                                      "payload": {
++                                        "maxLength": 8
++                                      }
++                                    }
++                                  }
++                                ]
++                              },
++                              "isOptional": true
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  },
++                  {
++                    "_tag": "Objects",
++                    "propertySignatures": [
++                      {
++                        "name": "operation",
++                        "type": {
++                          "_tag": "Literal",
++                          "literal": "get"
++                        },
++                        "isOptional": false
++                      },
++                      {
++                        "name": "id",
++                        "type": {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isPattern",
++                                "payload": {
++                                  "source": "^wfi_[a-f0-9]{64}$",
++                                  "flags": "u"
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        "isOptional": false
++                      }
++                    ]
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "input-wait"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 200
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "id",
++              "type": {
++                "_tag": "String"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "expiresAt",
++              "type": {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isFinite",
++                      "payload": null
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "do"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 200
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "options",
++              "type": {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "retries",
++                    "type": {
++                      "_tag": "Objects",
++                      "propertySignatures": [
++                        {
++                          "name": "limit",
++                          "type": {
++                            "_tag": "Number",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isInt",
++                                  "payload": null
++                                }
++                              },
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isGreaterThanOrEqualTo",
++                                  "payload": {
++                                    "minimum": 0
++                                  }
++                                }
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        },
++                        {
++                          "name": "delay",
++                          "type": {
++                            "_tag": "Union",
++                            "types": [
++                              {
++                                "_tag": "Number",
++                                "checks": [
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isFinite",
++                                      "payload": null
++                                    }
++                                  },
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isGreaterThanOrEqualTo",
++                                      "payload": {
++                                        "minimum": 0
++                                      }
++                                    }
++                                  }
++                                ]
++                              },
++                              {
++                                "_tag": "String",
++                                "checks": [
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isMinLength",
++                                      "payload": {
++                                        "minLength": 1
++                                      }
++                                    }
++                                  }
++                                ]
++                              }
++                            ],
++                            "checks": [
++                              {
++                                "_tag": "Filter"
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        },
++                        {
++                          "name": "backoff",
++                          "type": {
++                            "_tag": "Union",
++                            "types": [
++                              {
++                                "_tag": "Literal",
++                                "literal": "constant"
++                              },
++                              {
++                                "_tag": "Literal",
++                                "literal": "linear"
++                              },
++                              {
++                                "_tag": "Literal",
++                                "literal": "exponential"
++                              }
++                            ]
++                          },
++                          "isOptional": true
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  },
++                  {
++                    "name": "timeout",
++                    "type": {
++                      "_tag": "Union",
++                      "types": [
++                        {
++                          "_tag": "Number",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isFinite",
++                                "payload": null
++                              }
++                            },
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isGreaterThanOrEqualTo",
++                                "payload": {
++                                  "minimum": 0
++                                }
++                              }
++                            }
++                          ]
++                        },
++                        {
++                          "_tag": "String",
++                          "checks": [
++                            {
++                              "_tag": "Filter",
++                              "representation": {
++                                "id": "effect/schema/isMinLength",
++                                "payload": {
++                                  "minLength": 1
++                                }
++                              }
++                            }
++                          ]
++                        }
++                      ],
++                      "checks": [
++                        {
++                          "_tag": "Filter"
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "sleep"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 200
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "duration",
++              "type": {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Number",
++                    "checks": [
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isFinite",
++                          "payload": null
++                        }
++                      },
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isGreaterThanOrEqualTo",
++                          "payload": {
++                            "minimum": 0
++                          }
++                        }
++                      }
++                    ]
++                  },
++                  {
++                    "_tag": "String",
++                    "checks": [
++                      {
++                        "_tag": "Filter",
++                        "representation": {
++                          "id": "effect/schema/isMinLength",
++                          "payload": {
++                            "minLength": 1
++                          }
++                        }
++                      }
++                    ]
++                  }
++                ],
++                "checks": [
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "until"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 200
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "timestamp",
++              "type": {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isFinite",
++                      "payload": null
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "context"
++              },
++              "isOptional": false
++            }
++          ]
++        },
++        {
++          "_tag": "Objects",
++          "propertySignatures": [
++            {
++              "name": "operation",
++              "type": {
++                "_tag": "Literal",
++                "literal": "invoke"
++              },
++              "isOptional": false
++            },
++            {
++              "name": "kind",
++              "type": {
++                "_tag": "Union",
++                "types": [
++                  {
++                    "_tag": "Literal",
++                    "literal": "query"
++                  },
++                  {
++                    "_tag": "Literal",
++                    "literal": "mutation"
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "name",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "input",
++              "type": {
++                "_tag": "Declaration",
++                "representation": {
++                  "id": "effect/schema/Json",
++                  "payload": null
++                }
++              },
++              "isOptional": false
++            },
++            {
++              "name": "stepId",
++              "type": {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            },
++            {
++              "name": "timeout",
++              "type": {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isFinite",
++                      "payload": null
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isGreaterThanOrEqualTo",
++                      "payload": {
++                        "minimum": 0
++                      }
++                    }
++                  }
++                ]
++              },
++              "isOptional": false
++            }
++          ]
++        }
++      ]
++    }
++  },
++  "unchanged": [
++    "invocation",
++    "request",
++    "response",
++    "requirements",
++    "catalog",
++    "catalogSummary",
++    "sharedCatalog",
++    "skills",
++    "elicitationRequest",
++    "elicitationReply",
++    "workflowStepReply",
++    "workflowControl",
++    "cacheCommand",
++    "cacheReply",
++    "accountCheck",
++    "accounts",
++    "migrate"
++  ],
++  "references": {},
++  "shared": {}
++}
+diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+index 25b4053..f0af3c3 100644
+--- a/packages/apps/src/contracts/host.ts
++++ b/packages/apps/src/contracts/host.ts
+@@ -24,6 +24,7 @@ import {
+   type WorkflowHostControls,
+ } from "./workflows.ts";
+ export * from "./workflows.ts";
++export * from "./workflow-input.ts";
+ export * from "./failure.ts";
+ import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
+ export { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
+@@ -92,9 +93,10 @@ export { protocol14 } from "./protocols/14.ts";
+ export { protocol15 } from "./protocols/15.ts";
+ export { protocol16 } from "./protocols/16.ts";
+ export { protocol17 } from "./protocols/17.ts";
++export { protocol18 } from "./protocols/18.ts";
+ export * from "./connect.ts";
+ export {
+-  current as protocol18,
++  current as protocol19,
+   AccountCheckCommand,
+   CredentialHost,
+   MigrateCommand,
+diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index 3172054..31485cb 100644
+--- a/packages/apps/src/contracts/protocol-version.ts
++++ b/packages/apps/src/contracts/protocol-version.ts
+@@ -3,4 +3,4 @@
+  * snapshot. Its schemas are `protocols/current.ts`; released protocols are frozen. See notes/apps-publishing.md.
+  * This file has no imports so the package build script can read it directly.
+  */
+-export const frameworkProtocol = 18;
++export const frameworkProtocol = 19;
+diff --git a/packages/apps/src/contracts/protocols/15.ts b/packages/apps/src/contracts/protocols/15.ts
+index ee93678..d8c95d6 100644
+--- a/packages/apps/src/contracts/protocols/15.ts
++++ b/packages/apps/src/contracts/protocols/15.ts
+@@ -13,6 +13,7 @@
+  * imports them, so a change here never edits a released protocol.
+  */
+ import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
+ import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
+ const frameworkProtocol = 15;
+ import {
+@@ -44,7 +45,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/16.ts b/packages/apps/src/contracts/protocols/16.ts
+index a0b53c4..0219861 100644
+--- a/packages/apps/src/contracts/protocols/16.ts
++++ b/packages/apps/src/contracts/protocols/16.ts
+@@ -13,6 +13,7 @@
+  * imports them, so a change here never edits a released protocol.
+  */
+ import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
+ 
+ import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
+ const frameworkProtocol = 16;
+@@ -45,7 +46,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/17.ts b/packages/apps/src/contracts/protocols/17.ts
+index e763586..8d90205 100644
+--- a/packages/apps/src/contracts/protocols/17.ts
++++ b/packages/apps/src/contracts/protocols/17.ts
+@@ -13,6 +13,7 @@
+  * imports them, so a change here never edits a released protocol.
+  */
+ import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
+ import { ConnectCommand } from "../connect.ts";
+ import { ProviderSite } from "@executor-js/utils/account-site";
+ import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
+@@ -47,7 +48,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/18.ts b/packages/apps/src/contracts/protocols/18.ts
+new file mode 100644
+index 0000000..88a80a2
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/18.ts
+@@ -0,0 +1,673 @@
++/**
++ * The host protocol this framework speaks: every message that crosses between a host and an app
++ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
++ *
++ * This module is live. The framework and the SDK read the current boundary from here, through
++ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
++ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
++ * this module must keep running every bundle a released protocol retained. A change that no longer
++ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
++ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
++ *
++ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
++ * imports them, so a change here never edits a released protocol.
++ */
++import { Schema } from "effect";
++import { WorkflowRpcCommand } from "./workflow-before-input.ts";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
++import { ConnectCommand } from "../connect.ts";
++import { ProviderSite } from "@executor-js/utils/account-site";
++import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
++const frameworkProtocol = 18;
++import {
++  DatabaseFieldReserved,
++  DatabaseLimitExceeded,
++  DatabaseSchema,
++} from "@executor-js/app-data/contracts";
++import { OpenapiResponseError } from "../api-response-error.ts";
++import {
++  ApprovalElicitation,
++  ElicitationFailed,
++  ElicitationReply,
++  FormElicitation,
++} from "../elicitation.ts";
++import { DeclaredEvents, EmittedEvents } from "../events.ts";
++import { FailureDetail, UpstreamError } from "../failure.ts";
++import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { ProviderError } from "../provider-error.ts";
++import { RouterIcon } from "../router.ts";
++import { AppIcons } from "../icons.ts";
++import { Placements } from "../placement.ts";
++import { OperationSchedule } from "../schedules.ts";
++import { AccountId, JsonObject, JsonValue } from "../schema.ts";
++import { AppSkillName, AppSkills } from "../skills.ts";
++import { ToolAnnotations } from "../tools.ts";
++import { WebhookCommand } from "../webhook-protocol.ts";
++import {
++  WorkflowCommand,
++  WorkflowControlCommand,
++  WorkflowFailure,
++  WorkflowReplay,
++  WorkflowRpcResult,
++  WorkflowRunId,
++} from "../workflows.ts";
++
++/** An MCP failure as it crosses the host boundary. Apps throw the author-facing class from `apps/mcp`. */
++export class McpError extends Schema.TaggedError<McpError>()("McpError", {
++  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
++  reason: Schema.Literals([
++    "request",
++    "unauthorized",
++    "invalid_response",
++    "timeout",
++    "invalid_input",
++  ]),
++  status: Schema.optional(Schema.Number),
++  /** The JSON-RPC error the server stated. */
++  upstream: Schema.optional(UpstreamError),
++  /**
++   * The refused request carried the session ID the server issued at initialization, so a 404 reads
++   * as a session the server may have lost. Chooses the explanation only; the host never decides from
++   * it whose side a failure is on.
++   */
++  session: Schema.optional(Schema.Literal(true)),
++}) {}
++
++/** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */
++export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
++  reason: Schema.Literals([
++    "source",
++    "request",
++    "rate_limited",
++    "document",
++    "limit",
++    "changed",
++    "encoding",
++  ]),
++  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
++  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  /** What the service's answer points to as missing: the repository, or the branch or tag. */
++  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
++}) {}
++
++/**
++ * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
++ * domain, matching exactly one more label. Lowercase, without a scheme or path.
++ */
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++/**
++ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
++ * other string field is secret.
++ */
++const exposure = {
++  /** Not secret: app code reads the real value and forms show it. */
++  plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /** Secret, but app code reads the real value, for signing and similar uses. */
++  raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /**
++   * The only places the outbound network substitutes this method's secret fields: whole header
++   * values and query parameters, each an exact template. Part of the provider's identity. In an
++   * invocation, an account's provider carries the placements granted to that account, which can
++   * be narrower than the app's declaration.
++   */
++  request: Schema.optionalKey(Placements),
++};
++
++/** Serializable authentication declarations interpreted by the trusted host. */
++export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({ type: Schema.Literal("interactive"), label: Schema.String, ...exposure }),
++  Schema.Struct({
++    type: Schema.Literal("secrets"),
++    provisioned: Schema.optionalKey(Schema.Literal(true)),
++    label: Schema.String,
++    fields: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[0].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[1].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[2].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[3].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++]);
++
++/** A credential-free provider declaration with the hosts its credentials may be sent to. */
++export const DeclaredProvider = Schema.Struct({
++  name: Schema.NonEmptyString,
++  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
++  site: Schema.optionalKey(ProviderSite),
++  hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
++});
++/** Credential-free provider declaration; content matching remains host policy. */
++export type DeclaredProvider = typeof DeclaredProvider.Type;
++
++/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
++export const DeclaredAccountSlot = Schema.Struct({
++  definition: DeclaredProvider,
++  cardinality: Schema.Literals(["one", "many"]),
++  /**
++   * The slot's provider defines an account check. Kept beside the definition, not in it, so
++   * adding or editing a check never changes the provider's identity.
++   */
++  health: Schema.optionalKey(Schema.Literal(true)),
++  /** This slot can check app-acquired references through connect.check. */
++  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++});
++export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
++
++/** One scope's requirements, by name. */
++export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
++export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
++
++/** Account slots available without binding accounts or evaluating the app factory. */
++export const DeclaredRequirements = Schema.Struct({
++  /** Protocol support of this retained framework build, not an author-declared requirement. */
++  capabilities: Schema.optionalKey(
++    Schema.Struct({
++      skills: Schema.Literal(true),
++      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
++      toolIndex: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts skills sources and reports whether the catalog includes a live loader. */
++      skillSources: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts scheduled inspection. Earlier builds reject it as an excess field. */
++      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
++      /**
++       * Accepts inspect definitions and answers it with a shared catalog. Earlier builds reject it
++       * as an excess field.
++       */
++      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
++    }),
++  ),
++  /**
++   * The document database an app of protocol 9 or earlier declared. Apps of this protocol declare
++   * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
++   */
++  database: Schema.optionalKey(DatabaseSchema),
++  /**
++   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
++   * for every caller and for background work; `user` requirements by each caller's linked
++   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
++   * requirements only.
++   */
++  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
++  /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
++  sql: Schema.optionalKey(Schema.Literal(true)),
++  /** The events the app declares, so a host lists them without evaluating the app. */
++  events: Schema.optionalKey(DeclaredEvents),
++  /** The icons the app declares, so a host shows them without evaluating the app. */
++  icons: Schema.optionalKey(AppIcons),
++});
++/** Parsed declared account requirements. */
++export type DeclaredRequirements = typeof DeclaredRequirements.Type;
++
++/**
++ * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
++ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
++ * the hosts and placements granted to this account.
++ */
++export const ResolvedAccount = Schema.Struct({
++  id: AccountId,
++  site: Schema.optionalKey(Schema.String),
++  provider: DeclaredProvider,
++  method: Schema.NonEmptyString,
++  /**
++   * Changes when the account is reconnected or its credentials replaced, not on renewal. Hosts
++   * send it since credential generations; `apps@0.0.1-beta.0` and `beta.1` ignore it.
++   */
++  generation: Schema.optionalKey(Schema.Int),
++  fields: JsonObject,
++});
++/** Parsed host account binding. */
++export type ResolvedAccount = typeof ResolvedAccount.Type;
++
++/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
++export const ResolvedAccountSlots = Schema.Record(
++  Schema.NonEmptyString,
++  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
++);
++export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
++
++/**
++ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
++ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
++ */
++export const ResolvedAccounts = Schema.Struct({
++  app: ResolvedAccountSlots,
++  user: Schema.optionalKey(ResolvedAccountSlots),
++});
++/** Parsed host selections, kept redacted until native account binding. */
++export type ResolvedAccounts = typeof ResolvedAccounts.Type;
++
++/** Trusted approval for one decoded call. Never accepted in public command JSON. */
++export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
++export type TrustedToolApproval = typeof TrustedToolApproval.Type;
++
++/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
++export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++/**
++ * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
++ * tool's full dotted path. `router` is the path of the router that owns it, omitted at the root.
++ * `readOnly` marks a query; a tool without it is a mutation.
++ */
++export const HostedTool = Schema.Struct({
++  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
++  name: Schema.NonEmptyString,
++  router: Schema.optionalKey(Schema.NonEmptyString),
++  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  description: Schema.String,
++  inputSchema: JsonObject,
++  readOnly: Schema.optionalKey(Schema.Boolean),
++  title: Schema.optionalKey(Schema.String),
++  outputSchema: Schema.optionalKey(JsonObject),
++  annotations: Schema.optionalKey(ToolAnnotations),
++  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
++});
++/** Parsed live tool description. */
++export type HostedTool = typeof HostedTool.Type;
++
++/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedToolSummary = HostedTool.mapFields(
++  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
++);
++export type HostedToolSummary = typeof HostedToolSummary.Type;
++
++/**
++ * The module or declared capability shape could not be hosted. The detail names what the app
++ * declared wrongly; declarations bind no accounts.
++ */
++export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
++  "HostDeclarationInvalid",
++  FailureDetail,
++) {}
++/** Fresh app evaluation failed before calling a tool. */
++export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
++  "HostEvaluationFailed",
++  FailureDetail,
++) {}
++
++/** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
++export const HostRouterError = Schema.Union([
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++]);
++export type HostRouterError = typeof HostRouterError.Type;
++
++/**
++ * One router in a live catalog. `path` is "" for the app's root router. `skill` names the skill
++ * that carries this router's instructions. A router with `error` lists none of its tools.
++ */
++export const HostedRouter = Schema.Struct({
++  path: Schema.String,
++  title: Schema.optionalKey(Schema.String),
++  description: Schema.optionalKey(Schema.String),
++  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
++  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
++  skill: Schema.optionalKey(AppSkillName),
++  error: Schema.optionalKey(HostRouterError),
++});
++export type HostedRouter = typeof HostedRouter.Type;
++
++/** A live evaluation's tools and the routers that group them. */
++export const HostedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedTool),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalog = typeof HostedCatalog.Type;
++
++/** A catalog without tool schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedCatalogSummary = Schema.Struct({
++  tools: Schema.Array(HostedToolSummary),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
++
++/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
++export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
++export type SharedSchemaKey = typeof SharedSchemaKey.Type;
++
++/**
++ * A tool of a shared catalog. The `$defs` of each schema `shared` names is the position of its
++ * entries in the catalog's `defs`; the tool's other fields are as `HostedTool`'s.
++ */
++export const HostedSharedTool = Schema.Struct({
++  ...HostedTool.fields,
++  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
++});
++export type HostedSharedTool = typeof HostedSharedTool.Type;
++
++/**
++ * A catalog that sends each `$defs` its tools' schemas hold once, and each definition in them
++ * once. Routers such as the OpenAPI importer give every tool the definitions its schemas reach,
++ * which for a densely connected document is most of the document again for each tool, under the
++ * same few hundred `$defs`. Putting each tool's `$defs` back gives the `HostedCatalog` the bundle
++ * evaluated. Only builds that declare the sharedDefinitions capability send it, and only when
++ * the inspection asks.
++ */
++export const HostedSharedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedSharedTool),
++  routers: Schema.Array(HostedRouter),
++  definitions: Schema.Array(JsonValue),
++  /** Each distinct `$defs`, its entries naming positions in `definitions`. */
++  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
++});
++export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
++
++/**
++ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
++ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
++ * `cached` says the loader read through the app cache, so the cache's freshness and invalidation
++ * govern its publisher reads.
++ */
++export const SkillSources = Schema.Struct({
++  skills: AppSkills,
++  dynamic: Schema.Boolean,
++  cached: Schema.optionalKey(Schema.Boolean),
++});
++export type SkillSources = typeof SkillSources.Type;
++/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
++export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
++
++/** Whether a tool reads or writes. */
++export const ToolKind = Schema.Literals(["query", "mutation"]);
++
++/**
++ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
++ * as a single account even when the slot takes many. The app factory is not evaluated.
++ */
++export const AccountCheckCommand = Schema.Struct({
++  operation: Schema.Literal("account-check"),
++  requirement: Schema.NonEmptyString,
++});
++export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++
++/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
++export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
++export type MigrateCommand = typeof MigrateCommand.Type;
++
++/** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */
++export const MigrateResult = Schema.Array(
++  Schema.Struct({ id: Schema.Int, name: Schema.NonEmptyString }),
++);
++export type MigrateResult = typeof MigrateResult.Type;
++
++/** Framework-owned dispatch, independent of app-authored HTTP routing. */
++export const HostRequest = Schema.Union([
++  ...ConnectCommand.members,
++  WorkflowCommand,
++  WebhookCommand,
++  Schema.Struct({ operation: Schema.Literal("requirements") }),
++  Schema.Struct({
++    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
++    detail: Schema.optionalKey(Schema.Literal("summary")),
++    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
++    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /**
++     * Describe only declared operations that have schedules, without dynamic tool discovery.
++     * Only builds that declare the scheduledTools capability accept this.
++     */
++    scheduled: Schema.optionalKey(Schema.Literal(true)),
++    /**
++     * Answer with a HostedSharedCatalog, each shared `$defs` entry sent once. Only builds that
++     * declare the sharedDefinitions capability accept this.
++     */
++    definitions: Schema.optionalKey(Schema.Literal("shared")),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("skills"),
++    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
++    sources: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("query"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("mutate"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("call"),
++    tool: Schema.NonEmptyString,
++    /**
++     * The caller's claim; the bundle rejects a call whose tool has the other kind. The host omits
++     * it for a tool its catalog does not list, and then opens storage for writing.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
++  }),
++  AccountCheckCommand,
++  MigrateCommand,
++]);
++/** Parsed portable dispatch request. */
++export type HostRequest = typeof HostRequest.Type;
++
++/** The dispatch request did not match the protocol. */
++export class HostRequestInvalid extends Schema.TaggedError<HostRequestInvalid>()(
++  "HostRequestInvalid",
++  {},
++) {}
++/** Host-supplied accounts did not satisfy the declared slots or native method schemas. */
++export class HostAccountsInvalid extends Schema.TaggedError<HostAccountsInvalid>()(
++  "HostAccountsInvalid",
++  {},
++) {}
++/** No query or mutation matched the requested name. */
++export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFound>()(
++  "HostOperationNotFound",
++  {},
++) {}
++/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
++export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
++  "HostOperationFailed",
++  FailureDetail,
++) {}
++/** The freshly evaluated catalog did not contain the requested tool. */
++export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
++  "HostToolNotFound",
++  {},
++) {}
++/** The tool exists but is a query called as a mutation, or the reverse. Nothing ran. */
++export class HostKindMismatch extends Schema.TaggedError<HostKindMismatch>()("HostKindMismatch", {
++  tool: Schema.NonEmptyString,
++  requested: ToolKind,
++  actual: ToolKind,
++}) {}
++/** One failing input location and its expected shape; never the supplied value. */
++export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
++/** Input decoding reports at most this many problems. */
++export const maxInputProblems = 10;
++/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
++export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
++  problems: Schema.optionalKey(
++    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
++  ),
++}) {}
++/** The tool's approval policy blocked this call before its tool body ran. */
++export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
++/** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
++export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
++  "HostToolApprovalRequired",
++  { input: JsonValue, elicitation: ApprovalElicitation },
++) {}
++/** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
++export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
++  "HostToolPolicyFailed",
++  {},
++) {}
++/** A tool result was not JSON; the result is never included in the error. */
++export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
++  "HostOutputInvalid",
++  {},
++) {}
++
++/**
++ * Safe error envelope. Author failures carry only their name, code, scalar fields and bounded
++ * message with account secrets replaced; no stack or cause value is serialized.
++ */
++export const HostError = Schema.Union([
++  OpenapiResponseError,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  WorkflowFailure,
++  HostRequestInvalid,
++  HostAccountsInvalid,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++  HostOperationNotFound,
++  HostOperationFailed,
++  DatabaseLimitExceeded,
++  DatabaseFieldReserved,
++  HostToolNotFound,
++  HostInputInvalid,
++  HostOutputInvalid,
++  HostToolBlocked,
++  HostToolApprovalRequired,
++  HostToolPolicyFailed,
++  ElicitationFailed,
++  HostKindMismatch,
++]);
++/** Expected host failures. */
++export type HostError = typeof HostError.Type;
++
++/** Portable response envelope; callers parse the success value for their operation. */
++export const HostResponse = Schema.Union([
++  Schema.Struct({
++    ok: Schema.Literal(true),
++    value: JsonValue,
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
++    /** The occurrences this invocation emitted, kept only because it succeeded. */
++    events: Schema.optionalKey(EmittedEvents),
++  }),
++  Schema.Struct({ ok: Schema.Literal(false), error: HostError }),
++]);
++/** Parsed response envelope. */
++export type HostResponse = typeof HostResponse.Type;
++
++/**
++ * The JSON body the host sends to a bundle's generated server entry. The entry is compiled into
++ * the retained build, so this shape is part of the protocol too.
++ */
++export const HostInvocation = Schema.Struct({
++  command: HostRequest,
++  accounts: ResolvedAccounts,
++  /** Trusted host identity; never part of the public command. */
++  caller: Schema.optionalKey(Schema.NonEmptyString),
++  approval: Schema.optionalKey(TrustedToolApproval),
++  replay: Schema.optionalKey(WorkflowReplay),
++  deadline: Schema.optionalKey(InvocationDeadline),
++  workflowRun: Schema.optionalKey(WorkflowRunId),
++});
++export type HostInvocation = typeof HostInvocation.Type;
++
++/**
++ * Who sends each message. The host must keep accepting everything a released protocol's bundles
++ * send (`bundle`), and must send a released protocol's bundles only what they accept, or gate the
++ * addition on something the bundle declared (`host`). Names a released protocol used and this one
++ * dropped, such as `tools`, keep their direction here.
++ */
++export const messageDirections = {
++  invocation: "host",
++  request: "host",
++  accounts: "host",
++  elicitationReply: "host",
++  workflowStepReply: "host",
++  cacheReply: "host",
++  response: "bundle",
++  requirements: "bundle",
++  catalog: "bundle",
++  catalogSummary: "bundle",
++  sharedCatalog: "bundle",
++  tools: "bundle",
++  toolSummaries: "bundle",
++  skills: "bundle",
++  elicitationRequest: "bundle",
++  workflowStep: "bundle",
++  workflowControl: "bundle",
++  cacheCommand: "bundle",
++  accountCheck: "bundle",
++  migrate: "bundle",
++} as const satisfies Record<string, "host" | "bundle">;
++/** A message name every protocol so far has used. */
++export type MessageName = keyof typeof messageDirections;
++
++/** Every message of the current protocol. The snapshot records them by name. */
++export const protocol18 = {
++  version: frameworkProtocol,
++  schemas: {
++    invocation: HostInvocation,
++    request: HostRequest,
++    response: HostResponse,
++    requirements: DeclaredRequirements,
++    catalog: HostedCatalog,
++    catalogSummary: HostedCatalogSummary,
++    sharedCatalog: HostedSharedCatalog,
++    skills: SkillCatalogResponse,
++    elicitationRequest: FormElicitation,
++    elicitationReply: ElicitationReply,
++    workflowStep: WorkflowRpcCommand,
++    workflowStepReply: WorkflowRpcResult,
++    workflowControl: WorkflowControlCommand,
++    cacheCommand: CacheCommand,
++    cacheReply: CacheReply,
++    accountCheck: AccountCheckResult,
++    accounts: ResolvedAccounts,
++    migrate: MigrateResult,
++  },
++} as const satisfies {
++  readonly version: number;
++  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
++};
+diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index b3e8d54..c33f03d 100644
+--- a/packages/apps/src/contracts/protocols/released.ts
++++ b/packages/apps/src/contracts/protocols/released.ts
+@@ -24,6 +24,8 @@ import { protocol16 } from "./16.ts";
+ 
+ import { protocol17 } from "./17.ts";
+ 
++import { protocol18 } from "./18.ts";
++
+ export const releasedProtocols = [
+   protocol1,
+   protocol2,
+@@ -42,4 +44,5 @@ export const releasedProtocols = [
+   protocol15,
+   protocol16,
+   protocol17,
++  protocol18,
+ ] as const;
+diff --git a/packages/apps/src/contracts/protocols/workflow-before-input.ts b/packages/apps/src/contracts/protocols/workflow-before-input.ts
+new file mode 100644
+index 0000000..3312f09
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/workflow-before-input.ts
+@@ -0,0 +1,30 @@
++/** Retained workflow step messages before durable questions were added. */
++import { Schema } from "effect";
++import { JsonValue } from "../schema.ts";
++import { WorkflowName, WorkflowStepOptions, WorkflowDuration } from "../workflows.ts";
++export const WorkflowRpcCommand = Schema.Union([
++  Schema.Struct({
++    operation: Schema.Literal("do"),
++    name: WorkflowName,
++    options: WorkflowStepOptions,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("sleep"),
++    name: WorkflowName,
++    duration: WorkflowDuration,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("until"),
++    name: WorkflowName,
++    timestamp: Schema.Finite,
++  }),
++  Schema.Struct({ operation: Schema.Literal("context") }),
++  Schema.Struct({
++    operation: Schema.Literal("invoke"),
++    kind: Schema.Literals(["query", "mutation"]),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++    stepId: Schema.NonEmptyString,
++    timeout: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
++  }),
++]);
+diff --git a/packages/apps/src/contracts/workflow-input.ts b/packages/apps/src/contracts/workflow-input.ts
+new file mode 100644
+index 0000000..a813951
+--- /dev/null
++++ b/packages/apps/src/contracts/workflow-input.ts
+@@ -0,0 +1,84 @@
++/** Durable workflow questions reuse standard forms without retaining a tool invocation. */
++import { Schema } from "effect";
++import { ElicitationResponse, FormElicitation } from "./elicitation.ts";
++
++export const WorkflowInputId = Schema.NonEmptyString.check(
++  Schema.isPattern(/^wfi_[a-f0-9]{64}$/u),
++).pipe(Schema.brand("wfi"));
++export type WorkflowInputId = typeof WorkflowInputId.Type;
++
++/** Links point to existing authenticated pages; they grant no authority. */
++export const WorkflowInputLink = Schema.Struct({
++  label: Schema.NonEmptyString.check(Schema.isMaxLength(120)),
++  href: Schema.NonEmptyString.check(
++    Schema.isMaxLength(2048),
++    Schema.makeFilter((href) => {
++      try {
++        const url = new URL(href, "https://workflow.invalid");
++        return (
++          ((href.startsWith("/") && !href.startsWith("//")) || url.protocol === "https:") &&
++          url.username === "" &&
++          url.password === ""
++        );
++      } catch {
++        return false;
++      }
++    }),
++  ),
++});
++/** Current facts beside an unchanged decision. They grant no authority and contain no secrets. */
++export const WorkflowInputEvidence = Schema.Array(
++  Schema.Struct({
++    label: Schema.NonEmptyString.check(Schema.isMaxLength(120)),
++    value: Schema.String.check(Schema.isMaxLength(500)),
++  }),
++).check(Schema.isMaxLength(12));
++export type WorkflowInputEvidence = typeof WorkflowInputEvidence.Type;
++
++export const WorkflowInputRequest = Schema.Struct({
++  form: FormElicitation,
++  evidence: Schema.optionalKey(WorkflowInputEvidence),
++  /** A human deadline, separate from an active step's execution timeout. */
++  timeoutMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 30 * 86400000 })),
++  links: Schema.optionalKey(Schema.Array(WorkflowInputLink).check(Schema.isMaxLength(8))),
++});
++/** A standard form, its human deadline and links to existing product pages. */
++export type WorkflowInputRequest = typeof WorkflowInputRequest.Type;
++
++export const WorkflowInputStatus = Schema.Literals(["pending", "answered", "expired", "withdrawn"]);
++export const WorkflowInput = Schema.Struct({
++  id: WorkflowInputId,
++  run: Schema.NonEmptyString,
++  app: Schema.NonEmptyString,
++  workflow: Schema.NonEmptyString,
++  name: Schema.NonEmptyString,
++  status: WorkflowInputStatus,
++  expiresAt: Schema.Finite,
++  /** Supplied by the product, never by authored code. */
++  reviewUrl: Schema.optionalKey(Schema.String),
++  form: FormElicitation,
++  evidence: WorkflowInputEvidence,
++  links: Schema.Array(WorkflowInputLink),
++  response: Schema.optionalKey(ElicitationResponse),
++});
++/** The retained question and its committed state, with an authenticated review link when supported. */
++export type WorkflowInput = typeof WorkflowInput.Type;
++
++export const WorkflowInputOutcome = Schema.Union([
++  Schema.Struct({ status: Schema.Literal("answered"), response: ElicitationResponse }),
++  Schema.Struct({ status: Schema.Literals(["expired", "withdrawn"]) }),
++]);
++/** A saved answer or an explicit end to the wait; neither establishes that a repair succeeded. */
++export type WorkflowInputOutcome = typeof WorkflowInputOutcome.Type;
++
++/** An execution callback is bound to one run and cannot select another run or recipient. */
++export const WorkflowInputCommand = Schema.Union([
++  Schema.Struct({
++    operation: Schema.Literal("request"),
++    stepId: Schema.NonEmptyString,
++    name: Schema.NonEmptyString.check(Schema.isMaxLength(200)),
++    request: WorkflowInputRequest,
++  }),
++  Schema.Struct({ operation: Schema.Literal("get"), id: WorkflowInputId }),
++]);
++export type WorkflowInputCommand = typeof WorkflowInputCommand.Type;
+diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contracts/workflows.ts
+index c953c73..2eef34e 100644
+--- a/packages/apps/src/contracts/workflows.ts
++++ b/packages/apps/src/contracts/workflows.ts
+@@ -1,4 +1,10 @@
+ /** Portable workflow declarations, run views and durable execution capabilities. */
++import {
++  WorkflowInputCommand,
++  type WorkflowInput,
++  type WorkflowInputOutcome,
++  type WorkflowInputRequest,
++} from "./workflow-input.ts";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { Schema, type Effect } from "effect";
+ import { RecordedMessage } from "@executor-js/utils/recorded-message";
+@@ -209,6 +215,13 @@ export interface WorkflowStep<
+     input: NoInfer<Input>,
+     options?: WorkflowStepOptions,
+   ): Promise<Output>;
++  /** Commit a question before a separate notification step. No delivery happens in the host. */
++  readonly requestInput: (name: string, request: WorkflowInputRequest) => Promise<WorkflowInput>;
++  /** Park durably, then return the saved response or explicit expiry/withdrawal. */
++  readonly waitForInput: (
++    name: string,
++    input: Pick<WorkflowInput, "id">,
++  ) => Promise<WorkflowInputOutcome>;
+   readonly sleep: (name: string, duration: WorkflowDuration) => Promise<void>;
+   readonly sleepUntil: (name: string, timestamp: number | Date) => Promise<void>;
+ }
+@@ -229,6 +242,12 @@ export interface AppWorkflow<Input = unknown, Output = unknown> {
+ }
+ /** The backend supplies checkpoints and timers; app framework code supplies callbacks. */
+ export interface WorkflowDriver {
++  /** Wait for a question wake or its deadline. Events contain no form or answer. */
++  readonly waitForInput?: (
++    name: string,
++    id: string,
++    expiresAt: number,
++  ) => Effect.Effect<void, WorkflowFailure>;
+   readonly do: (
+     name: string,
+     options: WorkflowStepOptions,
+@@ -244,6 +263,7 @@ export interface WorkflowDriver {
+ export interface WorkflowExecution {
+   readonly runId: WorkflowRunId;
+   readonly driver: WorkflowDriver;
++  readonly input?: (command: WorkflowInputCommand) => Effect.Effect<WorkflowInput, WorkflowFailure>;
+   readonly resolve: () => Effect.Effect<HostContext, WorkflowFailure>;
+   readonly invoke: (input: {
+     readonly kind: "query" | "mutation";
+@@ -277,6 +297,13 @@ export type WorkflowCommand = typeof WorkflowCommand.Type;
+ 
+ /** Private invocation RPC protocol shared by the host and isolated app bundle. */
+ export const WorkflowRpcCommand = Schema.Union([
++  Schema.Struct({ operation: Schema.Literal("input"), command: WorkflowInputCommand }),
++  Schema.Struct({
++    operation: Schema.Literal("input-wait"),
++    name: WorkflowName,
++    id: Schema.String,
++    expiresAt: Schema.Finite,
++  }),
+   Schema.Struct({
+     operation: Schema.Literal("do"),
+     name: WorkflowName,
+diff --git a/packages/apps/src/host.ts b/packages/apps/src/host.ts
+index 671942e..5723b13 100644
+--- a/packages/apps/src/host.ts
++++ b/packages/apps/src/host.ts
+@@ -142,3 +142,5 @@ export {
+   isolatedWorkflowExecution,
+   isolatedWorkflowControls,
+ } from "./implementation/workflow-rpc.ts";
++
++export { prepareElicitation } from "./implementation/elicitation.ts";
+diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/apps/src/implementation/workflow-context.ts
+index 1ce284e..15a9b71 100644
+--- a/packages/apps/src/implementation/workflow-context.ts
++++ b/packages/apps/src/implementation/workflow-context.ts
+@@ -1,4 +1,5 @@
+ /** Author-facing step methods delegate persistence to the host's durable engine. */
++import { WorkflowInputRequest, WorkflowInputOutcome } from "../contracts/workflow-input.ts";
+ import { Cause, Effect, Schema } from "effect";
+ import type { AccountScope, AppDefinition } from "../contracts/app.ts";
+ import type { AppRequirements } from "../contracts/context.ts";
+@@ -212,6 +213,44 @@ export const makeWorkflowContext = (
+         invoke(operationStep("query", name, operation, input, options)),
+       runMutation: (name, operation, input, options = {}) =>
+         invoke(operationStep("mutation", name, operation, input, options)),
++      requestInput: (name, request) =>
++        invoke(
++          Effect.gen(function* () {
++            const stepId = yield* identify("input", name);
++            const parsed = yield* Schema.decodeUnknownEffect(WorkflowInputRequest)(request).pipe(
++              Effect.mapError(() => new WorkflowFailure({ reason: "input", retryable: false })),
++            );
++            const input = execution.input;
++            if (input === undefined)
++              return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
++            // A lost reply retries the same run/step identity. The host refuses changed form content.
++            return yield* input({ operation: "request", stepId, name, request: parsed });
++          }),
++        ),
++      waitForInput: (name, question) =>
++        invoke(
++          Effect.gen(function* () {
++            const input = execution.input;
++            const wait = execution.driver.waitForInput;
++            if (input === undefined || wait === undefined)
++              return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
++            const stepId = yield* identify("input-wait", name);
++            let current = yield* input({ operation: "get", id: question.id });
++            if (current.status === "pending") {
++              yield* wait(`input:${name.slice(0, 80)}:${stepId}`, question.id, current.expiresAt);
++              current = yield* input({ operation: "get", id: question.id });
++            }
++            if (current.status === "pending")
++              return yield* new WorkflowFailure({ reason: "engine", retryable: true });
++            return yield* Schema.decodeUnknownEffect(WorkflowInputOutcome)(
++              current.status === "answered"
++                ? { status: "answered", response: current.response }
++                : { status: current.status },
++            ).pipe(
++              Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: false })),
++            );
++          }),
++        ),
+       sleep: (name, duration) =>
+         invoke(
+           Schema.decodeUnknownEffect(WorkflowDuration)(duration).pipe(
+diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/src/implementation/workflow-rpc.ts
+index e3c1bb1..156bad7 100644
+--- a/packages/apps/src/implementation/workflow-rpc.ts
++++ b/packages/apps/src/implementation/workflow-rpc.ts
+@@ -1,3 +1,4 @@
++import { WorkflowInput } from "../contracts/workflow-input.ts";
+ /** RPC adapters expose only parsed values and safe failures to isolated app code. */
+ import { Cause, Effect, Redacted, Schema } from "effect";
+ import { ResolvedAccounts } from "../contracts/host.ts";
+@@ -34,7 +35,14 @@ export const isolatedWorkflowExecution = (
+     );
+   return {
+     runId,
++    input: (command) =>
++      request({ operation: "input", command }).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
++        Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: true })),
++      ),
+     driver: {
++      waitForInput: (name, id, expiresAt) =>
++        request({ operation: "input-wait", name, id, expiresAt }).pipe(Effect.asVoid),
+       do: (name, options, work) =>
+         Effect.gen(function* () {
+           const services = yield* Effect.context<never>();
+diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
+index cf3e371..e7fda25 100644
+--- a/packages/apps/src/index.ts
++++ b/packages/apps/src/index.ts
+@@ -382,3 +382,9 @@ export {
+ } from "./implementation/schedules.ts";
+ 
+ export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";
++
++export type {
++  WorkflowInput,
++  WorkflowInputOutcome,
++  WorkflowInputRequest,
++} from "./contracts/workflow-input.ts";
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 60821c8..e34ff92 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -313,6 +313,12 @@ export interface ExecutorInputs {
+   /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
+   readonly hooks?: ResourceLifecycle;
+   readonly workflows?: WorkflowRuntime;
++  /** Authenticated product review page for a durable workflow question. */
++  readonly workflowInputUrl?: (input: {
++    readonly owner: OwnerId;
++    readonly app: AppId;
++    readonly id: import("apps/contracts").WorkflowInputId;
++  }) => string;
+   readonly cache?: ExecutorCache;
+   /** Outbound delivery and authorization for app events. Without it, subscribing is unavailable. */
+   readonly events?: import("./events.ts").EventOptions;
+diff --git a/packages/sdk/src/contracts/http.ts b/packages/sdk/src/contracts/http.ts
+index 8e1b5d5..ebc3420 100644
+--- a/packages/sdk/src/contracts/http.ts
++++ b/packages/sdk/src/contracts/http.ts
+@@ -1,4 +1,5 @@
+ /** The single HTTP contract, composed from each area and projected into Executor. */
++import { WorkflowInputsGroup } from "./workflow-inputs.ts";
+ import { HttpApi } from "effect/http-api";
+ import { AccountConnectionsGroup } from "./account-connection.ts";
+ import { OAuthClientsGroup } from "./oauth-clients.ts";
+@@ -27,6 +28,7 @@ export const ExecutorApi = HttpApi.make("executor")
+   .add(OwnersGroup)
+   .add(AppWorkflowsGroup)
+   .add(AppWorkflowRunsGroup)
++  .add(WorkflowInputsGroup)
+   .add(PublicationsGroup)
+   .add(RegistryGroup);
+ 
+diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
+index 36fe1bb..8330c58 100644
+--- a/packages/sdk/src/contracts/index.ts
++++ b/packages/sdk/src/contracts/index.ts
+@@ -30,3 +30,5 @@ export * from "./source.ts";
+ export * from "./public-files.ts";
+ export * from "./registry.ts";
+ export * from "./publications.ts";
++
++export * from "./workflow-inputs.ts";
+diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
+index ddbc3c8..462d7ae 100644
+--- a/packages/sdk/src/contracts/storage.ts
++++ b/packages/sdk/src/contracts/storage.ts
+@@ -1,5 +1,5 @@
+ import { InteractiveSession, InteractiveBinding } from "./interactive-accounts.ts";
+-import type { WorkflowRunId } from "apps/contracts";
++import type { WorkflowInputId, WorkflowRunId } from "apps/contracts";
+ import { appSlug } from "./app-slug.ts";
+ /** Persisted records. Decode database results with these schemas before use. */
+ import { Effect, Schema, Struct } from "effect";
+@@ -144,6 +144,7 @@ export interface Credentials {
+       | ApprovalRequestId
+       | WebhookId
+       | WorkflowRunId
++      | WorkflowInputId
+       | import("./app-views.ts").AppViewId
+       | import("./events.ts").EventSubscriptionId
+       | import("./events.ts").StoredEventId,
+@@ -158,6 +159,7 @@ export interface Credentials {
+       | ApprovalRequestId
+       | WebhookId
+       | WorkflowRunId
++      | WorkflowInputId
+       | import("./app-views.ts").AppViewId
+       | import("./events.ts").EventSubscriptionId
+       | import("./events.ts").StoredEventId,
+diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
+index d3429fc..e9c77c7 100644
+--- a/packages/sdk/src/contracts/workerd-host.ts
++++ b/packages/sdk/src/contracts/workerd-host.ts
+@@ -1,3 +1,4 @@
++import { WorkflowInputCommand } from "apps/contracts";
+ /** Private host capabilities and parsed app requests for the embedded workerd runtime. */
+ import { Schema } from "effect";
+ import {
+@@ -92,6 +93,11 @@ export interface WorkerdAppApi {
+ }
+ /** Background runs use finite host requests; no step callback or Promise lives in Node. */
+ export const WorkflowHostCommand = Schema.Union([
++  Schema.Struct({
++    operation: Schema.Literal("input"),
++    run: WorkflowRunId,
++    command: WorkflowInputCommand,
++  }),
+   Schema.Struct({ operation: Schema.Literal("prepare"), run: WorkflowRunId }),
+   /** The run's build, read only when the runner cold-starts the run's Worker. */
+   Schema.Struct({ operation: Schema.Literal("load"), run: WorkflowRunId }),
+diff --git a/packages/sdk/src/contracts/workflow-inputs.ts b/packages/sdk/src/contracts/workflow-inputs.ts
+new file mode 100644
+index 0000000..8e19ab6
+--- /dev/null
++++ b/packages/sdk/src/contracts/workflow-inputs.ts
+@@ -0,0 +1,78 @@
++/** App-bound workflow input operations; products supply their own recipient and access checks. */
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import {
++  WorkflowInput,
++  WorkflowInputId,
++  WorkflowInputEvidence,
++  ElicitationResponse,
++} from "apps/contracts";
++import { AppId, OwnerId } from "./shared.ts";
++import { WorkflowErrors } from "./workflows.ts";
++
++export { WorkflowInput, WorkflowInputId } from "apps/contracts";
++export const WorkflowInputTarget = Schema.Struct({
++  app: AppId,
++  id: WorkflowInputId,
++  owner: Schema.optional(OwnerId),
++});
++export const WorkflowInputPage = Schema.Struct({
++  items: Schema.Array(WorkflowInput),
++  next: Schema.optionalKey(WorkflowInputId),
++});
++export type WorkflowInputPage = typeof WorkflowInputPage.Type;
++export const ListWorkflowInputs = Schema.Struct({
++  owner: Schema.optional(OwnerId),
++  app: Schema.optional(AppId),
++  pending: Schema.optional(Schema.Boolean),
++  after: Schema.optional(WorkflowInputId),
++});
++export const AnswerWorkflowInput = Schema.Struct({
++  ...WorkflowInputTarget.fields,
++  response: ElicitationResponse,
++});
++export const UpdateWorkflowInputEvidence = Schema.Struct({
++  ...WorkflowInputTarget.fields,
++  evidence: WorkflowInputEvidence,
++});
++const path = "/v1/apps/:app/workflow-inputs/:id";
++export const WorkflowInputsGroup = HttpApiGroup.make("workflowInputs")
++  .add(
++    HttpApiEndpoint.get("list", "/v1/workflow-inputs", {
++      query: ListWorkflowInputs,
++      success: WorkflowInputPage,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.get("get", path, {
++      params: { app: AppId, id: WorkflowInputId },
++      query: { owner: Schema.optional(OwnerId) },
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("answer", `${path}/answer`, {
++      params: { app: AppId, id: WorkflowInputId },
++      payload: Schema.Struct({ owner: Schema.optional(OwnerId), response: ElicitationResponse }),
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("updateEvidence", `${path}/evidence`, {
++      params: { app: AppId, id: WorkflowInputId },
++      payload: Schema.Struct({ owner: Schema.optional(OwnerId), evidence: WorkflowInputEvidence }),
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  )
++  .add(
++    HttpApiEndpoint.post("withdraw", `${path}/withdraw`, {
++      params: { app: AppId, id: WorkflowInputId },
++      payload: Schema.Struct({ owner: Schema.optional(OwnerId) }),
++      success: WorkflowInput,
++      error: WorkflowErrors,
++    }),
++  );
+diff --git a/packages/sdk/src/contracts/workflow-runtime.ts b/packages/sdk/src/contracts/workflow-runtime.ts
+index 2399ee6..a759c56 100644
+--- a/packages/sdk/src/contracts/workflow-runtime.ts
++++ b/packages/sdk/src/contracts/workflow-runtime.ts
+@@ -34,6 +34,8 @@ export interface WorkflowRuntime {
+   readonly start: (run: WorkflowRunId) => Effect.Effect<void, WorkflowFailure>;
+   readonly status: (run: WorkflowRunId) => Effect.Effect<WorkflowBackendState, WorkflowFailure>;
+   readonly terminate: (run: WorkflowRunId) => Effect.Effect<void, WorkflowFailure>;
++  /** At-least-once wake only. The answer is read from encrypted storage, never from the event. */
++  readonly signalInput?: (run: WorkflowRunId, id: string) => Effect.Effect<void, WorkflowFailure>;
+ }
+ /** Source metadata is private to the host; no credential values enter engine parameters. */
+ const WorkflowSeedFields = Schema.Struct({
+@@ -81,6 +83,10 @@ export interface WorkflowHost {
+           readonly detail?: WorkflowRunFailure;
+         },
+   ) => Effect.Effect<void, WorkflowFailure>;
++  readonly input: (
++    run: WorkflowRunId,
++    command: import("apps/contracts").WorkflowInputCommand,
++  ) => Effect.Effect<import("apps/contracts").WorkflowInput, WorkflowFailure>;
+   readonly reconcile: Effect.Effect<void, WorkflowFailure>;
+ }
+ export type { WorkflowDriver };
+diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index ec39e0f..7cbeb86 100644
+--- a/packages/sdk/src/implementation/app-protocols.ts
++++ b/packages/sdk/src/implementation/app-protocols.ts
+@@ -60,6 +60,20 @@ export interface AppProtocol {
+ }
+ 
+ /** Protocol 18 adds source-bound MCP Apps resources and callbacks. */
++/** Protocol 19 adds durable workflow questions. */
++const protocol19: AppProtocol = {
++  version: 19,
++  workerEntry: appBridge,
++  nodeEntry: nodeAppEntry(19),
++  invocation: (input) => JSON.stringify(input),
++  request: (command) => command,
++  refuse: () => undefined,
++  response: (_command, body) => Effect.succeed(body),
++  workflow: (execution) => execution,
++  concurrentData: true,
++  sealedCredentials: true,
++};
++
+ const protocol18: AppProtocol = {
+   version: 18,
+   workerEntry: appBridge,
+@@ -464,6 +478,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+     protocol16,
+     protocol17,
+     protocol18,
++    protocol19,
+   ].map((protocol) => [protocol.version, protocol]),
+ );
+ 
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index a3bd0f6..b1baaa3 100644
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -930,6 +930,9 @@ export const makeApps = (
+             );
+             yield* assertAppRemovalAllowed(tx, app.id);
+             if (lifecycle) yield* lifecycle.appRemoving(app.id);
++            yield* query(() =>
++              tx.deleteMany("workflowInputs", { where: (b) => b("app", "=", app.id) }),
++            );
+             yield* query(() =>
+               tx.deleteMany("workflowRuns", { where: (b) => b("app", "=", app.id) }),
+             );
+diff --git a/packages/sdk/src/implementation/binding-workerd-apps.ts b/packages/sdk/src/implementation/binding-workerd-apps.ts
+index 6ac7889..03c3f7e 100644
+--- a/packages/sdk/src/implementation/binding-workerd-apps.ts
++++ b/packages/sdk/src/implementation/binding-workerd-apps.ts
+@@ -105,13 +105,17 @@ export const bindingWorkerdApps = (options: {
+         }),
+       { bufferSize: 1, strategy: "sliding" },
+     );
+-  const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
++  const backend = (
++    operation: "start" | "status" | "terminate" | "input",
++    run: WorkflowRunId,
++    id?: string,
++  ) =>
+     Effect.tryPromise({
+       try: async () => {
+         const response = await options.binding.fetch("http://apps.internal/workflow", {
+           method: "POST",
+           headers,
+-          body: JSON.stringify({ operation, run }),
++          body: JSON.stringify({ operation, run, ...(id === undefined ? {} : { id }) }),
+         });
+         if (response.status !== 200) throw new Error("Workflow request failed");
+         return response.json();
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 7ef3410..6cf02aa 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -133,6 +133,7 @@ export const createExecutor = (
+       crypto,
+       declarations,
+       options.workflows,
++      options.workflowInputUrl,
+     );
+     const webhooks = makeWebhooks(
+       options.database,
+@@ -245,6 +246,7 @@ export const createExecutor = (
+         );
+     return {
+       [WebhookSourceHost]: { tick: webhookSources.tick },
++      workflowInputs: workflows.inputs,
+       [WorkflowHost]: workflows.host,
+       [RepositoryHost]: {
+         request: (input, request) =>
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index c0dfd91..010d194 100644
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -6,7 +6,7 @@ import type { ExecutorDatabase } from "./storage.ts";
+ /** Bound query handle sharing the host connection and reactive transaction context. */
+ export type Query = ReturnType<typeof database>;
+ /** Select the latest migrated storage schema. */
+-export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
++export const database = (storage: ExecutorDatabase) => storage.orm("4.0.18");
+ /**
+  * Run a lazy native query without leaking SQL or driver details. The query's own
+  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
+index b3bd206..3ca24f3 100644
+--- a/packages/sdk/src/implementation/handlers.ts
++++ b/packages/sdk/src/implementation/handlers.ts
+@@ -144,6 +144,20 @@ export const executorHandlers = (executor: Executor) =>
+         .handle("check", ({ params }) => executor.owners.check(params))
+         .handle("remove", ({ params }) => executor.owners.remove(params)),
+     ),
++    HttpApiBuilder.group(ExecutorApi, "workflowInputs", (handlers) =>
++      handlers
++        .handle("list", ({ query }) => executor.workflowInputs.list(query))
++        .handle("get", ({ params, query }) => executor.workflowInputs.get({ ...params, ...query }))
++        .handle("answer", ({ params, payload }) =>
++          executor.workflowInputs.answer({ ...params, ...payload }),
++        )
++        .handle("updateEvidence", ({ params, payload }) =>
++          executor.workflowInputs.updateEvidence({ ...params, ...payload }),
++        )
++        .handle("withdraw", ({ params, payload }) =>
++          executor.workflowInputs.withdraw({ ...params, ...payload }),
++        ),
++    ),
+     HttpApiBuilder.group(ExecutorApi, "appWorkflows", (handlers) =>
+       handlers.handle("list", ({ params, query }) =>
+         executor.apps.workflows.list({ ...params, ...query }),
+diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/implementation/owner-moves.ts
+index 8d35aa5..47bfae0 100644
+--- a/packages/sdk/src/implementation/owner-moves.ts
++++ b/packages/sdk/src/implementation/owner-moves.ts
+@@ -81,6 +81,7 @@ const ownerTables = [
+   "schedules",
+   "scheduledRuns",
+   "workflowRuns",
++  "workflowInputs",
+   "webhooks",
+   "webhookSources",
+   "eventSubscriptions",
+diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
+index bdebb77..a5e83a1 100644
+--- a/packages/sdk/src/implementation/owners.ts
++++ b/packages/sdk/src/implementation/owners.ts
+@@ -92,6 +92,9 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
+             where: (b) => b("owner", "=", owner),
+           }),
+         );
++        yield* query(() =>
++          tx.deleteMany("workflowInputs", { where: (b) => b("owner", "=", owner) }),
++        );
+         if (runs.length > 0) {
+           yield* query(() =>
+             tx.deleteMany("workflowAccounts", {
+diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
+index 0df1eb7..bdaba13 100644
+--- a/packages/sdk/src/implementation/promise.ts
++++ b/packages/sdk/src/implementation/promise.ts
+@@ -1,3 +1,9 @@
++import {
++  WorkflowInputTarget,
++  AnswerWorkflowInput,
++  ListWorkflowInputs,
++  UpdateWorkflowInputEvidence,
++} from "../contracts/workflow-inputs.ts";
+ import { CheckOAuthSetup } from "../contracts/oauth.ts";
+ import { OAuthClientInputs } from "../contracts/oauth-clients.ts";
+ import {
+@@ -127,6 +133,14 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
+       check: (input) => run(OwnerInputs.check, input, executor.owners.check),
+       remove: (input) => run(OwnerInputs.remove, input, executor.owners.remove),
+     },
++    workflowInputs: {
++      updateEvidence: (input) =>
++        run(UpdateWorkflowInputEvidence, input, executor.workflowInputs.updateEvidence),
++      get: (input) => run(WorkflowInputTarget, input, executor.workflowInputs.get),
++      answer: (input) => run(AnswerWorkflowInput, input, executor.workflowInputs.answer),
++      withdraw: (input) => run(WorkflowInputTarget, input, executor.workflowInputs.withdraw),
++      list: (input) => run(ListWorkflowInputs, input, executor.workflowInputs.list),
++    },
+     apps: {
+       workflows: { list: (input) => run(WorkflowApp, input, executor.apps.workflows.list) },
+       workflowRuns: {
+diff --git a/packages/sdk/src/implementation/remote-app-runner.ts b/packages/sdk/src/implementation/remote-app-runner.ts
+index 8541b6e..c73d08e 100644
+--- a/packages/sdk/src/implementation/remote-app-runner.ts
++++ b/packages/sdk/src/implementation/remote-app-runner.ts
+@@ -9,6 +9,8 @@ import { Cause, Effect, Redacted, Schema } from "effect";
+ import { withRemoteSpan } from "@executor-js/telemetry";
+ import {
+   HostAccounts,
++  WorkflowInput,
++  WorkflowInputCommand,
+   WorkflowDuration,
+   WorkflowFailure,
+   WorkflowRpcResult,
+@@ -42,6 +44,8 @@ type Callback = (input: unknown) => Promise<unknown>;
+ /** One workflow run's capabilities as RPC callbacks. Each returns an encoded `WorkflowRpcResult`. */
+ export interface RemoteWorkflow {
+   readonly runId: string;
++  input?(command: unknown): Promise<unknown>;
++  waitForInput?(name: string, id: string, expiresAt: number): Promise<unknown>;
+   do(name: string, options: unknown, run: () => Promise<unknown>): Promise<unknown>;
+   sleep(name: string, duration: unknown): Promise<unknown>;
+   sleepUntil(name: string, timestamp: number): Promise<unknown>;
+@@ -114,6 +118,8 @@ const releaseCapabilities = (remote: RemoteCapabilities) => {
+       remote.workflow.sleepUntil,
+       remote.workflow.context,
+       remote.workflow.invoke,
++      remote.workflow.input,
++      remote.workflow.waitForInput,
+     ])
+       release(callback);
+ };
+@@ -154,6 +160,23 @@ export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortS
+         ? null
+         : {
+             runId: execution.runId,
++            input: (command) =>
++              run(
++                Schema.decodeUnknownEffect(WorkflowInputCommand)(command).pipe(
++                  Effect.flatMap((command) =>
++                    execution.input === undefined
++                      ? Effect.fail(engine())
++                      : execution.input(command),
++                  ),
++                  Effect.flatMap(Schema.encodeEffect(WorkflowInput)),
++                ),
++              ),
++            waitForInput: (name, id, expiresAt) =>
++              run(
++                execution.driver.waitForInput === undefined
++                  ? Effect.fail(engine())
++                  : execution.driver.waitForInput(name, id, expiresAt).pipe(Effect.as(null)),
++              ),
+             do: (name, options, body) =>
+               run(
+                 Schema.decodeUnknownEffect(WorkflowStepOptions)(options).pipe(
+@@ -207,7 +230,18 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
+         ? undefined
+         : {
+             runId: yield* Schema.decodeUnknownEffect(WorkflowRunId)(workflow.runId),
++            input: (command) =>
++              workflow.input === undefined
++                ? Effect.fail(engine())
++                : settle(() => workflow.input!(command)).pipe(
++                    Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
++                    Effect.mapError(engine),
++                  ),
+             driver: {
++              waitForInput: (name, id, expiresAt) =>
++                workflow.waitForInput === undefined
++                  ? Effect.fail(engine())
++                  : settle(() => workflow.waitForInput!(name, id, expiresAt)).pipe(Effect.asVoid),
+               do: (name, options, run) =>
+                 settle(() =>
+                   workflow.do(name, Schema.encodeSync(WorkflowStepOptions)(options), () =>
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index db1bc6f..74f1a9a 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -17,6 +17,8 @@ import {
+   version4015Tables,
+   version4016Tables,
+   version4017Tables,
++  version4018Tables,
++  workflowInputIndexes,
+   appScheduleIndex,
+   scopedRunKeyIndex,
+   version402Tables,
+@@ -68,6 +70,7 @@ const appViewIndexes = [
+ /** Every index of the current layout, for a new database. Upgrades add each in its own step. */
+ export const currentIndexes = [
+   ...appViewIndexes,
++  ...workflowInputIndexes,
+   scopedRunKeyIndex,
+   webhooksContextKey,
+   schedulesCopy,
+@@ -684,6 +687,26 @@ export const storageSchemas = [
+       }),
+     },
+   }),
++  // Additive: the previous server neither reads nor writes workflow questions.
++  schema({
++    version: "4.0.18",
++    tables: version4018Tables,
++    relations: {
++      accounts: ({ one }) => ({
++        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
++      }),
++      apps: ({ one }) => ({
++        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
++      }),
++    },
++    up: ({ auto }) =>
++      auto.pipe(
++        Effect.map((operations) => [
++          ...operations,
++          ...workflowInputIndexes.map((sql) => ({ type: "custom" as const, sql })),
++        ]),
++      ),
++  }),
+ ] as const;
+ 
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
+index bd27c1e..ef1e6cd 100644
+--- a/packages/sdk/src/implementation/storage-schema.ts
++++ b/packages/sdk/src/implementation/storage-schema.ts
+@@ -874,3 +874,26 @@ export const scopedRunKeyIndex =
+ /** One app schedule per declaration; members' copies stay unique by `executor_schedules_copy`. */
+ export const appScheduleIndex =
+   "CREATE UNIQUE INDEX IF NOT EXISTS executor_schedules_app ON executor_schedules (app, name) WHERE actor IS NULL";
++
++/** Questions and wake receipts survive process loss; form content is encrypted. */
++export const version4018Tables = {
++  ...version4017Tables,
++  workflowInputs: table("executor_workflow_inputs", {
++    id: idColumn("id", Schema.String, { type: "varchar(80)" }),
++    app: column("app", AppId, { type: "varchar(255)" }),
++    run: column("run", WorkflowRunId, { type: "varchar(255)" }),
++    owner: column("owner", OwnerId, { type: "varchar(255)" }),
++    actor: column("actor", Schema.String, { type: "varchar(255)" }),
++    status: column("status", Schema.String, { type: "varchar(32)" }),
++    expiresAt: column("expires_at", Schema.Date),
++    wakePending: column("wake_pending", Schema.Boolean),
++    answeredBy: column("answered_by", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
++    encrypted: column("encrypted", Schema.Uint8Array),
++    createdAt: column("created_at", Schema.Date),
++  }),
++};
++export const workflowInputIndexes = [
++  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_recipient ON executor_workflow_inputs (owner, actor, status, id)",
++  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_wake ON executor_workflow_inputs (wake_pending, id)",
++  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_run ON executor_workflow_inputs (run)",
++] as const;
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index decbfc0..57d682b 100644
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+     const sql = yield* SqlClient.SqlClient;
+     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
+     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
+-    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
++    const db = bindOrm(client.orm("4.0.18"), sql, reactivity);
+     const checkMigration = Effect.gen(function* () {
+       const migrator = yield* client.createMigrator;
+       const version = yield* migrator.version;
+@@ -47,7 +47,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
+               discard: true,
+             });
+-          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.17")));
++          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.18")));
+           return;
+         }
+         // Execute every registered upgrade in order. A direct diff to latest can skip
+@@ -77,7 +77,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+       Effect.mapError(() => new StorageError()),
+     );
+     return {
+-      orm: (_version: "4.0.17") => db,
++      orm: (_version: "4.0.18") => db,
+       reactivity,
+       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
+       toolSearch: makeToolSearchStore(sql),
+diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/sdk/src/implementation/worker-workflow-rpc.ts
+index e977f1c..ac8a41c 100644
+--- a/packages/sdk/src/implementation/worker-workflow-rpc.ts
++++ b/packages/sdk/src/implementation/worker-workflow-rpc.ts
+@@ -1,6 +1,7 @@
+ /** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
+ import { Cause, Effect, Redacted, Schema } from "effect";
+ import {
++  WorkflowInput,
+   WorkflowFailure,
+   WorkflowRpcCommand,
+   WorkflowRpcResult,
+@@ -39,6 +40,18 @@ export const invocationWorkflow = (
+           Effect.gen(function* () {
+             const command = yield* Schema.decodeUnknownEffect(WorkflowRpcCommand)(input);
+             switch (command.operation) {
++              case "input":
++                if (execution.input === undefined)
++                  return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
++                return yield* execution
++                  .input(command.command)
++                  .pipe(Effect.flatMap(Schema.encodeEffect(WorkflowInput)));
++              case "input-wait":
++                if (execution.driver.waitForInput === undefined)
++                  return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
++                return yield* execution.driver
++                  .waitForInput(command.name, command.id, command.expiresAt)
++                  .pipe(Effect.as(null));
+               case "do": {
+                 if (callback === undefined)
+                   return yield* new WorkflowFailure({ reason: "input", retryable: false });
+diff --git a/packages/sdk/src/implementation/workerd-apps.ts b/packages/sdk/src/implementation/workerd-apps.ts
+index 6f1b617..77d9a31 100644
+--- a/packages/sdk/src/implementation/workerd-apps.ts
++++ b/packages/sdk/src/implementation/workerd-apps.ts
+@@ -339,12 +339,18 @@ export const workerdApps = (options: {
+     // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
+     // every 5 seconds. A pooled socket can then close while a request is written to it, and
+     // the fetch fails with a transport error. Each workflow request uses its own connection.
+-    const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
++    const backend = (
++      operation: "start" | "status" | "terminate" | "input",
++      run: WorkflowRunId,
++      id?: string,
++    ) =>
+       Effect.scoped(
+         Effect.gen(function* () {
+           const request = yield* HttpClientRequest.post(new URL("/workflow", origin), {
+             headers: { ...headers, connection: "close" },
+-          }).pipe(HttpClientRequest.bodyJson({ operation, run }));
++          }).pipe(
++            HttpClientRequest.bodyJson({ operation, run, ...(id === undefined ? {} : { id }) }),
++          );
+           const response = yield* http.execute(request);
+           if (response.status !== 200) return yield* engineFailure();
+           return yield* response.json.pipe(
+diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
+index 804161c..3d917be 100644
+--- a/packages/sdk/src/implementation/workerd-client.ts
++++ b/packages/sdk/src/implementation/workerd-client.ts
+@@ -1,3 +1,4 @@
++import { WorkflowInput } from "apps/contracts";
+ /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
+ import { RpcTarget, type RpcStub } from "capnweb";
+ import { Cause, Effect, Redacted, Schema, Stream } from "effect";
+@@ -84,6 +85,10 @@ export const workerdHostHandler = (options: {
+         const executor = yield* options.executor,
+           host = executor[WorkflowHost];
+         switch (command.operation) {
++          case "input":
++            return yield* executor[WorkflowHost]
++              .input(command.run, command.command)
++              .pipe(Effect.flatMap(Schema.encodeEffect(WorkflowInput)));
+           case "prepare": {
+             const current = yield* host.get(command.run);
+             if (current.status === "complete") return { state: "complete", output: current.output };
+@@ -190,8 +195,9 @@ export interface WorkerdTransport {
+     command: EvaluatedCommand,
+   ) => Effect.Effect<unknown, RuntimeProtocolFailed>;
+   readonly backend: (
+-    operation: "start" | "status" | "terminate",
++    operation: "start" | "status" | "terminate" | "input",
+     run: WorkflowRunId,
++    id?: string,
+   ) => Effect.Effect<typeof WorkflowBackendState.Type, WorkflowFailure>;
+ }
+ 
+@@ -293,6 +299,8 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
+       workflows: {
+         start: (run: WorkflowRunId) => transport.backend("start", run).pipe(Effect.asVoid),
+         status: (run: WorkflowRunId) => transport.backend("status", run),
++        signalInput: (run: WorkflowRunId, id: string) =>
++          transport.backend("input", run, id).pipe(Effect.asVoid),
+         terminate: (run: WorkflowRunId) => transport.backend("terminate", run).pipe(Effect.asVoid),
+       } satisfies WorkflowRuntime,
+       /** Evaluated results kept in each app's supervisor, so they outlive this process. */
+diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+index 67bc6c1..55bec76 100644
+--- a/packages/sdk/src/implementation/workerd-entry.ts
++++ b/packages/sdk/src/implementation/workerd-entry.ts
+@@ -1,3 +1,4 @@
++import { WorkflowInput } from "apps/contracts";
+ /** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
+ import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
+ import { NonRetryableError } from "cloudflare:workflows";
+@@ -89,6 +90,7 @@ interface NativeStepPort {
+   ): Promise<unknown>;
+   sleep(name: string, duration: WorkflowDuration): Promise<void>;
+   sleepUntil(name: string, timestamp: number): Promise<void>;
++  waitForEvent(name: string, options: { type: string; timeout: number }): Promise<unknown>;
+ }
+ const NativeStep = Schema.declare(
+   (value): value is NativeStepPort =>
+@@ -448,7 +450,22 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
+             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
+           const execution: WorkflowExecution = {
+             runId: seed.runId,
++            input: (command) =>
++              hostRequest(this.env, { operation: "input", run: seed.runId, command }).pipe(
++                Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
++                Effect.mapError(decodeWorkflowFailure),
++              ),
+             driver: {
++              waitForInput: (name, id, expiresAt) =>
++                native(async () => {
++                  const remaining = expiresAt - Date.now();
++                  if (remaining <= 0) return;
++                  try {
++                    await nativeStep.waitForEvent(name, { type: id, timeout: remaining });
++                  } catch (error) {
++                    if (Date.now() < expiresAt) throw error;
++                  }
++                }),
+               do: (name, options, work) =>
+                 native(() =>
+                   nativeStep.do(name, options, () =>
+@@ -578,13 +595,16 @@ export default {
+     }
+     const input = Schema.decodeUnknownSync(
+       Schema.Struct({
+-        operation: Schema.Literals(["start", "status", "terminate"]),
++        operation: Schema.Literals(["start", "status", "terminate", "input"]),
++        id: Schema.optionalKey(Schema.String),
+         run: Schema.NonEmptyString,
+       }),
+     )(await request.json());
+     try {
+       const handle = await env.RUNS.get(input.run);
+       let state = await handle.status();
++      if (input.operation === "input" && input.id !== undefined)
++        await handle.sendEvent({ type: input.id, payload: null });
+       const finished = () => ["complete", "errored", "terminated"].includes(state.status);
+       if (input.operation === "terminate" && !finished()) {
+         try {
+diff --git a/packages/sdk/src/implementation/workflow-input-store.ts b/packages/sdk/src/implementation/workflow-input-store.ts
+new file mode 100644
+index 0000000..db4233d
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-input-store.ts
+@@ -0,0 +1,127 @@
++/** Persistence and encryption for durable questions; callers own authorization and transactions. */
++import { Clock, Effect, Redacted, Schema } from "effect";
++import {
++  WorkflowFailure,
++  WorkflowInput,
++  WorkflowInputId,
++  WorkflowInputRequest,
++  WorkflowInputEvidence,
++  ElicitationResponse,
++  type WorkflowRunId,
++} from "apps/contracts";
++import { AppId, OwnerId, StorageError, JsonObject } from "../contracts/shared.ts";
++import type { Credentials } from "../contracts/storage.ts";
++import { query, type Query } from "./database.ts";
++export type WorkflowInputRun = {
++  readonly id: WorkflowRunId;
++  readonly app: AppId;
++  readonly owner: OwnerId;
++  readonly actor: string | null;
++  readonly name: string;
++  readonly status: string;
++  readonly createdAt: Date;
++};
++const Payload = Schema.Struct({
++  name: Schema.String,
++  request: WorkflowInputRequest,
++  response: Schema.optionalKey(ElicitationResponse),
++  evidence: Schema.optionalKey(WorkflowInputEvidence),
++});
++const notFound = () => new WorkflowFailure({ reason: "not_found", retryable: false });
++const active = (run: WorkflowInputRun) => run.status === "running" || run.status === "queued";
++export const makeWorkflowInputStore = (options: {
++  readonly db: Query;
++  readonly credentials: Credentials;
++  readonly readRun: (
++    run: WorkflowRunId,
++  ) => Effect.Effect<WorkflowInputRun, WorkflowFailure | StorageError>;
++  readonly reviewUrl?: (input: {
++    readonly owner: OwnerId;
++    readonly app: AppId;
++    readonly id: WorkflowInputId;
++  }) => string;
++}) => {
++  const { db, credentials } = options;
++  const find = (id: WorkflowInputId) =>
++    query(() =>
++      db.findFirst("workflowInputs", {
++        where: (b) => b("id", "=", id),
++      }),
++    );
++  type Row = NonNullable<Effect.Success<ReturnType<typeof find>>>;
++  const payload = (row: Row) =>
++    credentials.decrypt(WorkflowInputId.make(row.id), Redacted.make(row.encrypted)).pipe(
++      Effect.flatMap((value) => Schema.decodeUnknownEffect(Payload)(Redacted.value(value))),
++      Effect.mapError(() => new StorageError()),
++    );
++  const seal = (id: WorkflowInputId, value: typeof Payload.Type) =>
++    Schema.encodeEffect(Schema.toCodecJson(Payload))(value).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
++      Effect.mapError(() => new StorageError()),
++      Effect.flatMap((value) => credentials.encrypt(id, Redacted.make(value))),
++    );
++  const view = (row: Row, run: WorkflowInputRun) =>
++    Effect.gen(function* () {
++      const data = yield* payload(row);
++      return WorkflowInput.make({
++        id: WorkflowInputId.make(row.id),
++        app: row.app,
++        run: row.run,
++        workflow: run.name,
++        name: data.name,
++        status: Schema.decodeUnknownSync(WorkflowInput.fields.status)(row.status),
++        expiresAt: row.expiresAt.getTime(),
++        form: data.request.form,
++        evidence: data.evidence ?? data.request.evidence ?? [],
++        links: data.request.links ?? [],
++        ...(data.response === undefined ? {} : { response: data.response }),
++        ...(options.reviewUrl === undefined
++          ? {}
++          : {
++              reviewUrl: options.reviewUrl({
++                owner: row.owner,
++                app: row.app,
++                id: WorkflowInputId.make(row.id),
++              }),
++            }),
++      });
++    });
++  /** The parent lock serializes question creation/answers with run completion and termination. */
++  const lock = (run: WorkflowRunId) =>
++    Effect.gen(function* () {
++      const before = yield* options.readRun(run);
++      yield* query(() =>
++        db.updateMany("workflowRuns", {
++          where: (b) => b("id", "=", run),
++          set: { createdAt: before.createdAt },
++        }),
++      );
++      return yield* options.readRun(run);
++    });
++  const settle = (row: Row, run: WorkflowInputRun) =>
++    Effect.gen(function* () {
++      if (row.status !== "pending") return row;
++      const now = yield* Clock.currentTimeMillis;
++      const status = !active(run)
++        ? "withdrawn"
++        : now >= row.expiresAt.getTime()
++          ? "expired"
++          : undefined;
++      if (status === undefined) return row;
++      yield* query(() =>
++        db.updateMany("workflowInputs", {
++          where: (b) => b.and(b("id", "=", row.id), b("status", "=", "pending")),
++          set: { status, wakePending: active(run) },
++        }),
++      );
++      return { ...row, status, wakePending: active(run) };
++    });
++  const bound = (run: WorkflowInputRun, id: WorkflowInputId) =>
++    Effect.gen(function* () {
++      const row = yield* find(id);
++      if (row === null || row.run !== run.id || row.app !== run.app || row.owner !== run.owner)
++        return yield* notFound();
++      return yield* settle(row, run);
++    });
++  return { find, payload, seal, view, lock, bound, settle };
++};
+diff --git a/packages/sdk/src/implementation/workflow-inputs.ts b/packages/sdk/src/implementation/workflow-inputs.ts
+new file mode 100644
+index 0000000..fd881fb
+--- /dev/null
++++ b/packages/sdk/src/implementation/workflow-inputs.ts
+@@ -0,0 +1,285 @@
++import { makeWorkflowInputStore, type WorkflowInputRun } from "./workflow-input-store.ts";
++/** Encrypted questions, one winning answer and durable wake receipts. Product access stays outside. */
++import { Clock, Effect, Schema } from "effect";
++import { prepareElicitation } from "apps/host";
++import {
++  WorkflowFailure,
++  WorkflowInputId,
++  type WorkflowInputCommand,
++  type WorkflowRunId,
++} from "apps/contracts";
++import { CurrentActor } from "../contracts/executor.ts";
++import { AppId, OwnerId, StorageError, RequestInvalid } from "../contracts/shared.ts";
++import type { Credentials } from "../contracts/storage.ts";
++import type { UpdateWorkflowInputEvidence } from "../contracts/workflow-inputs.ts";
++import type { WorkflowRuntime } from "../contracts/workflow-runtime.ts";
++import { query, transaction, type Query } from "./database.ts";
++
++type Run = WorkflowInputRun;
++const notFound = () => new WorkflowFailure({ reason: "not_found", retryable: false });
++const inputFailure = () => new WorkflowFailure({ reason: "input", retryable: false });
++const active = (run: Run) => run.status === "running" || run.status === "queued";
++
++export const makeWorkflowInputs = (options: {
++  readonly db: Query;
++  readonly credentials: Credentials;
++  readonly backend?: WorkflowRuntime;
++  readonly readRun: (run: WorkflowRunId) => Effect.Effect<Run, WorkflowFailure | StorageError>;
++  readonly authorize: (run: WorkflowRunId) => Effect.Effect<void, WorkflowFailure>;
++  readonly reviewUrl?: (input: {
++    readonly owner: OwnerId;
++    readonly app: AppId;
++    readonly id: WorkflowInputId;
++  }) => string;
++}) => {
++  const { db } = options;
++  const { find, payload, seal, view, lock, bound, settle } = makeWorkflowInputStore(options);
++  type Row = NonNullable<Effect.Success<ReturnType<typeof find>>>;
++  /** Event submission can repeat after a lost receipt. Its payload never contains an answer. */
++  const wake = (row: Row) =>
++    Effect.gen(function* () {
++      if (!row.wakePending || options.backend?.signalInput === undefined) return;
++      const run = yield* options.readRun(row.run);
++      if (active(run)) yield* options.backend.signalInput(row.run, row.id);
++      yield* query(() =>
++        db.updateMany("workflowInputs", {
++          where: (b) => b.and(b("id", "=", row.id), b("status", "=", row.status)),
++          set: { wakePending: false },
++        }),
++      );
++    });
++  const deferredWake = (row: Row) => wake(row).pipe(Effect.catch(() => Effect.void));
++
++  const command = (runId: WorkflowRunId, command: WorkflowInputCommand) =>
++    Effect.gen(function* () {
++      yield* options.authorize(runId);
++      return yield* transaction(db, () =>
++        Effect.gen(function* () {
++          const run = yield* lock(runId);
++          if (command.operation === "get") return yield* view(yield* bound(run, command.id), run);
++          if (!active(run) || run.actor === null || options.backend?.signalInput === undefined)
++            return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
++          const id = yield* Schema.decodeUnknownEffect(WorkflowInputId)(
++            `wfi_${command.stepId}`,
++          ).pipe(Effect.mapError(inputFailure));
++          const form = yield* prepareElicitation(command.request.form).pipe(
++            Effect.mapError(inputFailure),
++          );
++          const request = { ...command.request, form: form.request };
++          if (new TextEncoder().encode(JSON.stringify(request)).byteLength > 65536)
++            return yield* inputFailure();
++          const prior = yield* find(id);
++          if (prior !== null) {
++            const saved = yield* payload(prior);
++            if (
++              prior.run !== runId ||
++              saved.name !== command.name ||
++              JSON.stringify(saved.request) !== JSON.stringify(request)
++            )
++              return yield* new WorkflowFailure({ reason: "conflict", retryable: false });
++            return yield* view(yield* settle(prior, run), run);
++          }
++          const now = yield* Clock.currentTimeMillis;
++          const encrypted = yield* seal(id, { name: command.name, request });
++          const row = {
++            id,
++            app: run.app,
++            run: run.id,
++            owner: run.owner,
++            actor: run.actor,
++            status: "pending",
++            expiresAt: new Date(now + request.timeoutMs),
++            wakePending: false,
++            answeredBy: null,
++            encrypted,
++            createdAt: new Date(now),
++          };
++          yield* query(() => db.create("workflowInputs", row));
++          return yield* view(row, run);
++        }),
++      );
++    });
++  const owned = (input: {
++    readonly app: AppId;
++    readonly id: WorkflowInputId;
++    readonly owner?: OwnerId | undefined;
++  }) =>
++    Effect.gen(function* () {
++      const row = yield* find(input.id);
++      if (
++        row === null ||
++        row.app !== input.app ||
++        (input.owner !== undefined && row.owner !== input.owner) ||
++        row.actor !== (yield* CurrentActor)
++      )
++        return yield* notFound();
++      yield* options.authorize(row.run);
++      return row;
++    });
++  const get = (input: Parameters<typeof owned>[0]) =>
++    Effect.gen(function* () {
++      const row = yield* owned(input);
++      return yield* transaction(db, () =>
++        Effect.gen(function* () {
++          const run = yield* lock(row.run);
++          return yield* view(yield* bound(run, input.id), run);
++        }),
++      );
++    });
++  const answer = (input: Parameters<typeof owned>[0] & { readonly response: unknown }) =>
++    Effect.gen(function* () {
++      const row = yield* owned(input);
++      const updated = yield* transaction(db, () =>
++        Effect.gen(function* () {
++          const run = yield* lock(row.run);
++          const current = yield* bound(run, input.id);
++          if (current.status !== "pending") return current;
++          const saved = yield* payload(current);
++          const form = yield* prepareElicitation(saved.request.form).pipe(
++            Effect.mapError(inputFailure),
++          );
++          const response = yield* form.respond(input.response).pipe(Effect.mapError(inputFailure));
++          const encrypted = yield* seal(WorkflowInputId.make(current.id), { ...saved, response });
++          yield* query(() =>
++            db.updateMany("workflowInputs", {
++              where: (b) => b.and(b("id", "=", current.id), b("status", "=", "pending")),
++              set: { status: "answered", encrypted, answeredBy: row.actor, wakePending: true },
++            }),
++          );
++          return {
++            ...current,
++            status: "answered",
++            encrypted,
++            answeredBy: row.actor,
++            wakePending: true,
++          };
++        }),
++      );
++      yield* deferredWake(updated);
++      return yield* view(updated, yield* options.readRun(row.run));
++    }).pipe(
++      Effect.catchIf(
++        (error) => error instanceof WorkflowFailure && error.reason === "input",
++        () => Effect.fail(new RequestInvalid()),
++      ),
++    );
++  const updateEvidence = (input: typeof UpdateWorkflowInputEvidence.Type) =>
++    Effect.gen(function* () {
++      const row = yield* owned(input);
++      return yield* transaction(db, () =>
++        Effect.gen(function* () {
++          const run = yield* lock(row.run);
++          const current = yield* bound(run, input.id);
++          if (current.status !== "pending") return yield* view(current, run);
++          const saved = yield* payload(current);
++          const encrypted = yield* seal(input.id, { ...saved, evidence: input.evidence });
++          yield* query(() =>
++            db.updateMany("workflowInputs", {
++              where: (b) => b.and(b("id", "=", current.id), b("status", "=", "pending")),
++              set: { encrypted },
++            }),
++          );
++          return yield* view({ ...current, encrypted }, run);
++        }),
++      );
++    });
++  const withdraw = (input: Parameters<typeof owned>[0]) =>
++    Effect.gen(function* () {
++      const row = yield* owned(input);
++      const updated = yield* transaction(db, () =>
++        Effect.gen(function* () {
++          const run = yield* lock(row.run);
++          const current = yield* bound(run, input.id);
++          if (current.status !== "pending") return current;
++          yield* query(() =>
++            db.updateMany("workflowInputs", {
++              where: (b) => b.and(b("id", "=", current.id), b("status", "=", "pending")),
++              set: { status: "withdrawn", wakePending: true },
++            }),
++          );
++          return { ...current, status: "withdrawn", wakePending: true };
++        }),
++      );
++      yield* deferredWake(updated);
++      return yield* view(updated, yield* options.readRun(row.run));
++    });
++  const list = (
++    input: {
++      readonly owner?: OwnerId | undefined;
++      readonly app?: AppId | undefined;
++      readonly pending?: boolean | undefined;
++      readonly after?: WorkflowInputId | undefined;
++    } = {},
++  ) =>
++    Effect.gen(function* () {
++      const actor = yield* CurrentActor;
++      if (actor === undefined) return { items: [] };
++      const rows = yield* query(() =>
++        db.findMany("workflowInputs", {
++          where: (b) =>
++            b.and(
++              b("actor", "=", actor),
++              ...(input.owner === undefined ? [] : [b("owner", "=", input.owner)]),
++              ...(input.app === undefined ? [] : [b("app", "=", input.app)]),
++              ...(input.pending ? [b("status", "=", "pending")] : []),
++              ...(input.after === undefined ? [] : [b("id", ">", input.after)]),
++            ),
++          orderBy: ["id", "asc"],
++          limit: 101,
++        }),
++      );
++      const page = rows.slice(0, 100);
++      const items = yield* Effect.forEach(page, (row) =>
++        get({
++          app: row.app,
++          id: WorkflowInputId.make(row.id),
++          ...(input.owner === undefined ? {} : { owner: input.owner }),
++        }).pipe(
++          Effect.map((value) => ({ _tag: "Some" as const, value })),
++          Effect.catchIf(
++            (error) =>
++              error instanceof WorkflowFailure &&
++              ["not_found", "credentials"].includes(error.reason),
++            () => Effect.succeed({ _tag: "None" as const }),
++          ),
++        ),
++      );
++      const last = page.at(-1);
++      return {
++        items: items.flatMap((item) =>
++          item._tag === "Some" && (!input.pending || item.value.status === "pending")
++            ? [item.value]
++            : [],
++        ),
++        ...(rows.length > 100 && last !== undefined ? { next: WorkflowInputId.make(last.id) } : {}),
++      };
++    });
++  const close = (run: WorkflowRunId) =>
++    query(() =>
++      db.updateMany("workflowInputs", {
++        where: (b) => b.and(b("run", "=", run), b("status", "=", "pending")),
++        set: { status: "withdrawn", wakePending: false },
++      }),
++    ).pipe(Effect.asVoid);
++  const reconcile = Effect.gen(function* () {
++    let after: string | undefined;
++    while (true) {
++      const cursor = after;
++      const rows = yield* query(() =>
++        db.findMany("workflowInputs", {
++          where: (b) =>
++            b.and(
++              b("wakePending", "=", true),
++              ...(cursor === undefined ? [] : [b("id", ">", cursor)]),
++            ),
++          orderBy: ["id", "asc"],
++          limit: 100,
++        }),
++      );
++      yield* Effect.forEach(rows, deferredWake, { concurrency: 4, discard: true });
++      if (rows.length < 100) return;
++      after = rows.at(-1)?.id;
++    }
++  });
++  return { command, get, answer, updateEvidence, withdraw, list, close, reconcile };
++};
+diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
+index d1714bd..a19a641 100644
+--- a/packages/sdk/src/implementation/workflows.ts
++++ b/packages/sdk/src/implementation/workflows.ts
+@@ -1,3 +1,4 @@
++import { makeWorkflowInputs } from "./workflow-inputs.ts";
+ import { CurrentActor } from "../contracts/executor.ts";
+ /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
+ import { Cause, Clock, Effect, Redacted, Result, Schema, type Crypto } from "effect";
+@@ -117,6 +118,7 @@ export const makeWorkflowRuns = (
+   crypto: Crypto.Crypto,
+   declarations: Declarations,
+   backend?: WorkflowRuntime,
++  reviewUrl?: import("../contracts/executor.ts").ExecutorInputs["workflowInputUrl"],
+ ) => {
+   const db = database(storage);
+   const read = (run: WorkflowRunId, app?: AppId) =>
+@@ -186,6 +188,7 @@ export const makeWorkflowRuns = (
+               },
+             }),
+           );
++          yield* inputs.close(run);
+           yield* query(() =>
+             db.deleteMany("workflowAccounts", { where: (b) => b("run", "=", run) }),
+           );
+@@ -315,6 +318,17 @@ export const makeWorkflowRuns = (
+       "execution",
+       true,
+     );
++  const inputs = makeWorkflowInputs({
++    db,
++    credentials,
++    readRun: read,
++    authorize: (run) =>
++      safe(read(run).pipe(Effect.flatMap(captured), Effect.asVoid), "credentials"),
++    ...(backend === undefined ? {} : { backend }),
++    ...(reviewUrl === undefined ? {} : { reviewUrl }),
++  });
++  const input: WorkflowHost["input"] = (run, command) =>
++    safe(inputs.command(run, command), "execution");
+   const execute: WorkflowHost["execute"] = (run, driver) =>
+     Effect.gen(function* () {
+       const existing = yield* safe(read(run), "engine", true);
+@@ -343,6 +357,7 @@ export const makeWorkflowRuns = (
+               driver,
+               resolve: () => context(run),
+               invoke: (input) => invoke(run, input),
++              input: (command) => input(run, command),
+             },
+           });
+         }),
+@@ -549,6 +564,7 @@ export const makeWorkflowRuns = (
+               set: { status: "terminated" },
+             }),
+           );
++          yield* inputs.close(row.id);
+           yield* query(() =>
+             db.deleteMany("workflowAccounts", { where: (b) => b("run", "=", row.id) }),
+           );
+@@ -632,6 +648,13 @@ export const makeWorkflowRuns = (
+   }
+   return {
+     controls,
++    inputs: {
++      get: inputs.get,
++      answer: inputs.answer,
++      updateEvidence: inputs.updateEvidence,
++      withdraw: inputs.withdraw,
++      list: inputs.list,
++    },
+     definitions: (input: typeof WorkflowApp.Type) =>
+       Effect.gen(function* () {
+         const state = yield* snapshot(db, input);
+@@ -681,11 +704,13 @@ export const makeWorkflowRuns = (
+       seed,
+       context,
+       invoke,
++      input,
+       execute,
+       finish,
+       reconcile: safe(
+         Effect.gen(function* () {
+           if (backend === undefined) return;
++          yield* inputs.reconcile;
+           let cursor: WorkflowRunId | undefined;
+           while (true) {
+             const after = cursor;
+diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
+index 591f09e..550f464 100644
+--- a/playground/sdk/storage.ts
++++ b/playground/sdk/storage.ts
+@@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
+       Effect.gen(function* () {
+         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+         yield* storage.migrate;
+-        const orm = storage.orm("4.0.17");
++        const orm = storage.orm("4.0.18");
+         const createdAt = new Date("2026-01-01T00:00:00.000Z");
+         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
+           id: "dpl_example",
