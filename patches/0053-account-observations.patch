@@ -1673,6 +1673,19 @@ index 1ca4e8359..2fac47d84 100644
          ]);
          yield* serverControl("start");
        }),
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+index 9080f8702..952b15e57 100644
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+           reason:
+-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18. Declare a supported apps version.",
++            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19. Declare a supported apps version.",
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(
 diff --git a/packages/apps/protocols/19.json b/packages/apps/protocols/19.json
 new file mode 100644
 index 000000000..6426ad5d0
