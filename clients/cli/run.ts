@@ -3,6 +3,9 @@ import { join, dirname } from "node:path";
 import { rm } from "node:fs/promises";
 import { readDirectCredentials } from "../contracts/connection.ts";
 import { directConnection } from "../connection/direct.ts";
+import { readDeviceCredentials } from "../contracts/device.ts";
+import { deviceConnection } from "../connection/device.ts";
+import { deviceSocket } from "./device-socket.ts";
 import { credentialStore } from "./credential-store.ts";
 import { startGateway } from "./gateway.ts";
 import { tokenHash } from "./local-access.ts";
@@ -18,7 +21,13 @@ export async function run(home: string) {
     const store = await credentialStore(home, profile.storage);
     const raw = await store.read();
     if (raw === undefined) throw new Error("Sign in before starting the connection.");
-    const source = directConnection(readDirectCredentials(JSON.parse(raw)), store);
+    const value: unknown = JSON.parse(raw);
+    const native =
+      value !== null && typeof value === "object" && "mode" in value && value.mode === "device";
+    const source = native
+      ? deviceConnection(readDeviceCredentials(value), store, deviceSocket)
+      : directConnection(readDirectCredentials(value), store);
+    if (native) await source.reconnect().catch(() => undefined);
     const socket = ipcPath(home);
     if (process.platform !== "win32") {
       await privateDirectory(dirname(socket));

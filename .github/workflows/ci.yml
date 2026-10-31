@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  E2E_BUN_VERSION: 1.4.2
+
 jobs:
   client-connection:
     runs-on: ubuntu-latest
@@ -24,6 +27,30 @@ jobs:
       - run: bun run --cwd clients typecheck
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
+  client-native-product:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: bun install --cwd clients --frozen-lockfile
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - name: Verify native sign-in, renewal and tunnel through the real product
+        run: bun e2e/native-client.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-client-product
+          path: |
+            .generated/native-client-*/result.json
+            .generated/native-client-*/failure.txt
+          if-no-files-found: warn
   slack-health:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -36,7 +63,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify Slack health and retained accounts through the real server
@@ -63,7 +90,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -114,7 +141,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Build the isolated reporting test assets
         working-directory: .upstream
@@ -153,7 +180,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -185,7 +212,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -246,7 +273,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Prepare the pinned synthetic runtime
         working-directory: .upstream
@@ -276,7 +303,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Check the packaged app renderer
         working-directory: .upstream
@@ -442,7 +469,7 @@ jobs:
           node-version: 24.18.0
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Build the isolated account test assets
         working-directory: .upstream

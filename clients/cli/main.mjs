@@ -13,6 +13,8 @@ import { privateDirectory, readPrivate } from "./private-files.ts";
 import { control } from "./ipc.ts";
 import { run } from "./run.ts";
 import { bridgeStdio } from "./stdio.ts";
+import { login } from "./login.ts";
+import { DeviceOAuthError } from "../connection/device-oauth.ts";
 
 const args = process.argv.slice(2);
 const homeFlag = args.indexOf("--home");
@@ -24,7 +26,16 @@ const directory = home && resolve(home);
 try {
   if (!directory) throw new Error("Use --home with a private connection directory.");
   const [command, ...rest] = args;
-  if (command === "import-direct") {
+  if (command === "login") {
+    const restArgs = [...rest];
+    const storageFlag = restArgs.indexOf("--storage");
+    const storage = storageFlag >= 0 ? restArgs.splice(storageFlag, 2)[1] : "os";
+    const noBrowser = restArgs.indexOf("--no-browser");
+    if (noBrowser >= 0) restArgs.splice(noBrowser, 1);
+    if (!["os", "file"].includes(storage) || restArgs.length > 1 || restArgs[0]?.startsWith("--"))
+      throw new Error("Use login [https://server] [--storage os|file] [--no-browser].");
+    await login(directory, restArgs[0] ?? "https://app.signalbox.run", storage, noBrowser < 0);
+  } else if (command === "import-direct") {
     const file = rest[0];
     const flag = rest.indexOf("--storage");
     const storage = flag >= 0 ? rest[flag + 1] : "os";
@@ -63,12 +74,24 @@ try {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     throw new Error(
-      "Use import-direct, agent add/remove, run, stdio, status, disconnect, reconnect, sign-out or revoke.",
+      "Use login, import-direct, agent add/remove, run, stdio, status, disconnect, reconnect, sign-out or revoke.",
     );
   }
-} catch {
-  process.stderr.write(
-    "The connection could not finish. Check the command, private file permissions and credential store.\n",
-  );
-  process.exitCode = 1;
+} catch (error) {
+  if (
+    error instanceof DeviceOAuthError &&
+    ["access_denied", "expired_token"].includes(error.code)
+  ) {
+    process.stderr.write(
+      error.code === "access_denied"
+        ? "Device sign-in was denied.\n"
+        : "Device sign-in expired. Start sign-in again.\n",
+    );
+    process.exitCode = 1;
+  } else {
+    process.stderr.write(
+      "The connection could not finish. Check the command, private file permissions and credential store.\n",
+    );
+    process.exitCode = 1;
+  }
 }
