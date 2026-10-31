@@ -71,6 +71,7 @@ test("the Atlassian carry preserves its captured baseline and adds the full 3LO 
       "configuration.ts",
       "openapi.ts",
       "transport.ts",
+      "specifications.ts",
       "api-coverage.json",
       "README.md",
     ],

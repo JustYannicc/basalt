@@ -24,6 +24,7 @@ const servedPaths = [
   "package.json",
   "provider.ts",
   "queries.ts",
+  "specifications.ts",
   "transport.ts",
 ];
 export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -137,6 +138,14 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
     api.url = `${providerOrigin}/openapi/${name}.json`;
   }
   metadataFile.content = JSON.stringify(coverage);
+  const specificationGuardNegativeControl =
+    process.env.ATLASSIAN_SPEC_GUARD_NEGATIVE_CONTROL === "1";
+  if (specificationGuardNegativeControl) {
+    const index = files.find((file) => file.path === "index.ts");
+    const original = "cache: specificationCache(name, cache),";
+    assert.ok(index.content.includes(original));
+    index.content = index.content.replace(original, "cache,");
+  }
   const negativeControl = process.env.ATLASSIAN_APPROVAL_NEGATIVE_CONTROL === "1";
   if (negativeControl) {
     const index = files.find((file) => file.path === "index.ts");
@@ -159,6 +168,7 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
       apiHosts,
       openapiUrls: Object.keys(coverage).length,
       approvalNegativeControl: negativeControl,
+      specificationGuardNegativeControl,
     },
   };
 }

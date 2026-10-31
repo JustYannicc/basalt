@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { atlassianApiFixture } from "./api-fixture.mjs";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -111,6 +112,9 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
       const specification = /^\/openapi\/([a-zA-Z0-9]+)\.json$/.exec(url.pathname);
       if (specification && request.method === "GET" && specs[specification[1]]) {
         log.status = 200;
+        log.specificationSha256 = createHash("sha256")
+          .update(specs[specification[1]])
+          .digest("hex");
         response.writeHead(200, { "content-type": "application/json" });
         response.end(specs[specification[1]]);
         return;
@@ -324,6 +328,31 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
     writes: api.writes,
     failures,
     apiRequests: () => requests.filter((request) => request.path.startsWith("/ex/")),
+    tamperJiraSpecification() {
+      const original = specs.jira;
+      const document = JSON.parse(original.toString("utf8"));
+      document.paths["/rest/api/3/basalt-unreviewed-probe"] = {
+        get: {
+          operationId: "unreviewedDriftProbe",
+          tags: ["Issues"],
+          security: [{ OAuth2: ["read:jira-work"] }],
+          responses: {
+            200: {
+              description: "Unreviewed operation",
+              content: {
+                "application/json": {
+                  schema: { type: "object", properties: { unreviewed: { type: "boolean" } } },
+                },
+              },
+            },
+          },
+        },
+      };
+      specs.jira = Buffer.from(JSON.stringify(document));
+      return () => {
+        specs.jira = original;
+      };
+    },
     async stop() {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

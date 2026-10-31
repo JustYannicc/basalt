@@ -11,7 +11,7 @@ type AtlassianProofInput = {
   readonly commit: string;
 };
 
-const frozenSourceHash = "2704676e2d2ae1412f042d6152ee92846ccf35af0f35e5a387ec31d49a76ce82";
+const frozenSourceHash = "2163c3cda99bc3ad267e7042946f6340138deca8ce83c02e2213a9172c9e8347";
 
 async function run(
   command: string,
@@ -27,6 +27,9 @@ async function run(
     LANG: "en_US.UTF-8",
     NO_COLOR: "1",
     ATLASSIAN_PROTECTED_HOME: homedir(),
+    ...(process.env.ATLASSIAN_SPEC_GUARD_NEGATIVE_CONTROL === "1"
+      ? { ATLASSIAN_SPEC_GUARD_NEGATIVE_CONTROL: "1" }
+      : {}),
     ...(process.env.ATLASSIAN_APPROVAL_NEGATIVE_CONTROL === "1"
       ? { ATLASSIAN_APPROVAL_NEGATIVE_CONTROL: "1" }
       : {}),

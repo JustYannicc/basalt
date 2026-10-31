@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Effect } from "effect";
 import { atlassianPeople } from "./provider.mjs";
+import { proveSpecificationDrift } from "./drift-proof.mjs";
 import { discover, proveAtlassianWrites } from "./write-proof.mjs";
 import { proveInstalledClients } from "./native.mjs";
 
@@ -381,6 +382,19 @@ export const proveHostedAtlassian = ({
       }),
     );
 
+    const specificationDrift = yield* proveSpecificationDrift({
+      actors,
+      prefix,
+      request,
+      checked,
+      catalogApp,
+      provider,
+      client: clients[0],
+      account: accounts[0],
+      directory,
+      check,
+    });
+
     const removePath = `${prefix}/accounts/${accounts[0]}`;
     checked(
       yield* request(
@@ -470,5 +484,6 @@ export const proveHostedAtlassian = ({
       connectedActorReadAfterPeerDisconnect: true,
       nativeClients,
       writes,
+      specificationDrift,
     };
   });
