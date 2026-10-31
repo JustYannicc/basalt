@@ -180,11 +180,11 @@ index 06d81b2ef..a94a6f2aa 100644
              </>
            ) : (
              <DeleteDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
-diff --git a/apps/hosted/web/src/implementation/pages/account-observations.tsx b/apps/hosted/web/src/implementation/pages/account-observations.tsx
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 new file mode 100644
 index 000000000..4ee1a6808
 --- /dev/null
-+++ b/apps/hosted/web/src/implementation/pages/account-observations.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 @@ -0,0 +1,215 @@
 +/** Hosted account rows show usage under the policy the server enforces on every read. */
 +import { useAtomSet } from "@effect/atom-react";
@@ -401,6 +401,64 @@ index 000000000..4ee1a6808
 +    </form>
 +  );
 +}
+diff --git a/apps/hosted/web/src/implementation/pages/account-observations.tsx b/apps/hosted/web/src/implementation/pages/account-observations.tsx
+new file mode 100644
+index 000000000..e722a3847
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/account-observations.tsx
+@@ -0,0 +1,52 @@
++import { lazy, Suspense } from "react";
++import { useHydrated } from "@executor-js/ui/hooks/hydrated";
++import type {
++  HostedAccountObservations as HostedAccountObservationsClient,
++  HostedAccountPlan as HostedAccountPlanClient,
++  AccountUsageSettings as AccountUsageSettingsClient,
++} from "./account-observations-client.tsx";
++
++// The SSR guard removes the renderer from the Worker; a server-side lazy chunk still uploads.
++const loadObservations = () =>
++  import.meta.env.SSR
++    ? Promise.reject(new Error("Account observations render only in a browser"))
++    : import("./account-observations-client.tsx");
++
++const ObservationsView = lazy(() =>
++  loadObservations().then((module) => ({ default: module.HostedAccountObservations })),
++);
++const PlanView = lazy(() =>
++  loadObservations().then((module) => ({ default: module.HostedAccountPlan })),
++);
++const UsageSettingsView = lazy(() =>
++  loadObservations().then((module) => ({ default: module.AccountUsageSettings })),
++);
++
++export function HostedAccountObservations(
++  props: Parameters<typeof HostedAccountObservationsClient>[0],
++) {
++  const hydrated = useHydrated();
++  return hydrated ? (
++    <Suspense fallback={null}>
++      <ObservationsView {...props} />
++    </Suspense>
++  ) : null;
++}
++
++export function HostedAccountPlan(props: Parameters<typeof HostedAccountPlanClient>[0]) {
++  const hydrated = useHydrated();
++  return hydrated ? (
++    <Suspense fallback={null}>
++      <PlanView {...props} />
++    </Suspense>
++  ) : null;
++}
++
++export function AccountUsageSettings(props: Parameters<typeof AccountUsageSettingsClient>[0]) {
++  const hydrated = useHydrated();
++  return hydrated ? (
++    <Suspense fallback={null}>
++      <UsageSettingsView {...props} />
++    </Suspense>
++  ) : null;
++}
 diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
 index 39b330ef6..ff0955896 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts.tsx
@@ -579,11 +637,11 @@ index 284573c22..126e8d855 100644
          }),
        ),
      ),
-diff --git a/apps/local/web/src/implementation/pages/account-observations.tsx b/apps/local/web/src/implementation/pages/account-observations.tsx
+diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
 new file mode 100644
 index 000000000..b12eaeba3
 --- /dev/null
-+++ b/apps/local/web/src/implementation/pages/account-observations.tsx
++++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
 @@ -0,0 +1,61 @@
 +/** Local account rows show usage with the owner's own authority. */
 +import { useAtomSet } from "@effect/atom-react";
@@ -646,6 +704,51 @@ index 000000000..b12eaeba3
 +export function LocalAccountPlan({ account }: { readonly account: AccountSummary }) {
 +  return <AccountObservationPlan query={accountObservationsAtom(account.id)} />;
 +}
+diff --git a/apps/local/web/src/implementation/pages/account-observations.tsx b/apps/local/web/src/implementation/pages/account-observations.tsx
+new file mode 100644
+index 000000000..c4ed91ff5
+--- /dev/null
++++ b/apps/local/web/src/implementation/pages/account-observations.tsx
+@@ -0,0 +1,39 @@
++import { lazy, Suspense } from "react";
++import { useHydrated } from "@executor-js/ui/hooks/hydrated";
++import type {
++  LocalAccountObservations as LocalAccountObservationsClient,
++  LocalAccountPlan as LocalAccountPlanClient,
++} from "./account-observations-client.tsx";
++
++// The SSR guard removes the renderer from the Worker; a server-side lazy chunk still uploads.
++const loadObservations = () =>
++  import.meta.env.SSR
++    ? Promise.reject(new Error("Account observations render only in a browser"))
++    : import("./account-observations-client.tsx");
++
++const ObservationsView = lazy(() =>
++  loadObservations().then((module) => ({ default: module.LocalAccountObservations })),
++);
++const PlanView = lazy(() =>
++  loadObservations().then((module) => ({ default: module.LocalAccountPlan })),
++);
++
++export function LocalAccountObservations(
++  props: Parameters<typeof LocalAccountObservationsClient>[0],
++) {
++  const hydrated = useHydrated();
++  return hydrated ? (
++    <Suspense fallback={null}>
++      <ObservationsView {...props} />
++    </Suspense>
++  ) : null;
++}
++
++export function LocalAccountPlan(props: Parameters<typeof LocalAccountPlanClient>[0]) {
++  const hydrated = useHydrated();
++  return hydrated ? (
++    <Suspense fallback={null}>
++      <PlanView {...props} />
++    </Suspense>
++  ) : null;
++}
 diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
 index 1eaccb82b..414927133 100644
 --- a/apps/local/web/src/implementation/pages/accounts.tsx
@@ -706,10 +809,10 @@ index 656b403b7..392d568c3 100644
        choices: (slot) => requirementChoicesAtom({ app: app.id, scope, requirement: slot }),
        link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 78110c647..0df38024e 100644
+index 9fc16b08f..c1466fced 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7762,6 +7762,17 @@ export const scenarios = plan({
+@@ -7833,6 +7833,17 @@ export const scenarios = plan({
        local: na("Local has no organization sharing policy."),
      },
    },
@@ -1190,7 +1293,7 @@ index 000000000..29ade88ac
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index 744897664..13db1baa7 100644
+index 1820b9279..f1eb02873 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
 @@ -20,11 +20,8 @@ type AccountInfo = NonNullable<AccountHealth["info"]>;

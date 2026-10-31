@@ -550,7 +550,7 @@
     {
       "identity": "executor-account-observation-rows",
       "file": "0060-account-observation-rows.patch",
-      "content_sha256": "4096ee0077ca5fcad86cca70e83434113b9950960b578d4e1f5fda0203410a0c",
+      "content_sha256": "05e0202c14bbaf2440b835c1018761b790f9e5d1c47eae6abb980ea82a8ac7dd",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

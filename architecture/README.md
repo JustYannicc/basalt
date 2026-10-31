@@ -12,7 +12,7 @@ The outer MCP Apps bridge renews short-lived callback authority without reloadin
 
 Tools-only scoped API keys carry their action policy through MCP access, and their `ext_` prefix makes older hosts reject them after rollback instead of granting full access.
 
-Native Accounts rows show account observations with their reading age and refresh-failure state, retaining the last successful readings after a failed refresh. Each product authorizes inspection and refresh separately from account use; denied inspection hides observation details, and credential health remains independent.
+Native Accounts rows show account observations with their reading age and refresh-failure state, retaining the last successful readings after a failed refresh. Each product authorizes inspection and refresh separately from account use; denied inspection hides observation details, and credential health remains independent. The observation row renderer and usage-access editor load only after browser hydration, keeping their code out of the dashboard Worker.
 
 The shared workspace-service OAuth client allows the separate administration app's 18 administration scopes while keeping identity-only defaults and ordinary workspace consent requests unchanged. The build proof reads official catalog snapshots and public OIDC metadata, then checks client selection and mismatch refusal through the real self-host HTTP API with synthetic users. The source verifier includes the provider table when rebuilding the generated pool app. Live Workspace consent and API access remain acceptance work.
 
