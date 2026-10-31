@@ -8,7 +8,7 @@ import {
   Response as RuntimeResponse,
   WebSocketPair,
 } from "miniflare";
-import { syntheticTunnelModel } from "../.upstream/e2e/support/native-tunnel-model.ts";
+import { syntheticTunnelModel } from "./native-client-model.mjs";
 
 /** The real production Router with external model/pool peers and the real hosted tools service. */
 export async function startNativeClientWorker(root) {
@@ -17,6 +17,8 @@ export async function startNativeClientWorker(root) {
     refreshes = 0,
     initialToken = true,
     cancelled = 0;
+  let accessToken;
+  const modelRequests = [];
   const slow = { bytes: 0, blocked: false, total: 32 * 1024 * 1024 };
   const slowChunk = Buffer.alloc(64 * 1024, "x");
   const holds = new Set();
@@ -25,6 +27,19 @@ export async function startNativeClientWorker(root) {
   const model = createServer((request, response) => {
     assert.ok(request.headers["x-basalt-native-assertion"]);
     assert.equal(request.headers.cookie, undefined);
+    const url = new URL(request.url, "http://model.invalid");
+    modelRequests.push({ path: url.pathname, search: url.search });
+    if (url.search) {
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          path: url.pathname,
+          search: url.search,
+          parameters: Object.fromEntries(url.searchParams),
+          data: [{ id: "synthetic-model" }],
+        }),
+      );
+      return;
+    }
     if (request.url === "/v1/models") {
       response
         .writeHead(200, { "content-type": "application/json" })
@@ -114,6 +129,7 @@ export async function startNativeClientWorker(root) {
             );
             if (target.pathname === "/api/auth/native/access" && response.ok)
               display = (await response.clone().json()).display;
+            if (token && response.ok) accessToken = (await response.clone().json()).access_token;
             if (token && !refreshing && response.ok && initialToken) {
               initialToken = false;
               // A shorter external lifetime hint requests real renewal without waiting an hour.
@@ -168,6 +184,8 @@ export async function startNativeClientWorker(root) {
     refreshes: () => refreshes,
     progress: () => ({ ...slow }),
     display: () => display,
+    accessToken: () => accessToken,
+    modelRequests: () => [...modelRequests],
     nextCancellation: () => {
       const before = cancelled;
       return {

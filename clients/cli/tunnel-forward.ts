@@ -14,6 +14,7 @@ function operation(
   websocket = false,
 ) {
   const headers: Record<string, string> = {};
+  const url = new URL(incoming.url ?? "/", "http://localhost");
   for (const key of [
     "accept",
     "content-type",
@@ -37,7 +38,8 @@ function operation(
       operation: {
         service: capability,
         method: incoming.method,
-        path: incoming.url,
+        path: url.pathname,
+        ...(capability === "models" && url.search ? { search: url.search } : {}),
         transport: websocket ? "websocket" : "http",
       },
     }),
