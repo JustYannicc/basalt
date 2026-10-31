@@ -11,7 +11,12 @@ import { openNativeKey, sealNativeKey } from "./native-key.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { computerName, readIntent, setupTtl } from "./setup-links.ts";
 import { openEnvelope } from "./token.ts";
-import { nativeControlPrefix, nativeModelHeader, nativeModelPrefix } from "./native-contract.ts";
+import {
+  nativeControlPrefix,
+  nativeModelHeader,
+  nativeModelPrefix,
+  nativeSessionHeader,
+} from "./native-contract.ts";
 
 interface Dependencies {
   storage: ComputerStorage;
@@ -224,6 +229,21 @@ export class NativeComputers {
       computer.state = "active";
       await this.deps.save(registry);
       return reply(computer);
+    });
+  }
+  async session(request: Request) {
+    if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket")
+      return fail(404, "not_found", "This native endpoint does not exist.");
+    const envelope = request.headers.get(nativeSessionHeader);
+    if (!envelope || envelope.length > 16_384)
+      return fail(401, "unauthorized", "A native session assertion is required.");
+    const value = await this.assertion(envelope, nativeControlPrefix);
+    if (value.action !== "session")
+      return fail(401, "unauthorized", "A native session assertion is required.");
+    const caller = identity(value);
+    return this.deps.run(async (registry) => {
+      const computer = await this.active(registry, caller);
+      return this.streams.acquire(computer.id, computer.pool, request.signal);
     });
   }
   async model(request: Request) {

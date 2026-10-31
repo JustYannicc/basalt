@@ -1,0 +1,701 @@
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -59,6 +59,7 @@
+   aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+   scope: Schema.String,
+   cnf: Schema.optionalKey(Schema.Unknown),
++  exp: Schema.Int.check(Schema.makeFilter((value) => value > 0)),
+ });
+ const Consent = Schema.Struct({
+   resources: Schema.Array(Schema.String),
+@@ -197,7 +198,7 @@
+         const access = yield* read(ctx, claims.grant_id);
+         if (access.userId !== claims.sub || access.clientId !== claims.client_id)
+           return yield* Effect.fail(invalid());
+-        return access;
++        return { ...access, expiresAt: claims.exp * 1000 };
+       }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid()))),
+     /** Rotation's replay cache can return tokens without invoking claim contributors again. */
+     beforeRefresh: (ctx: GenericEndpointContext) =>
+diff --git a/e2e/support/native-pool.ts b/e2e/support/native-pool.ts
+--- a/e2e/support/native-pool.ts
++++ b/e2e/support/native-pool.ts
+@@ -21,6 +21,11 @@
+     let refused = false;
+     let created = 0;
+     const records = new Map<string, { user: string; computer: string; active: boolean }>();
++    const sessions = new Map<string, Set<() => void>>();
++    const close = (grant: string) => {
++      for (const end of sessions.get(grant) ?? []) end();
++      sessions.delete(grant);
++    };
+     const services = yield* Layer.build(
+       HttpRouter.serve(
+         HttpRouter.add(
+@@ -65,6 +70,7 @@
+               return HttpServerResponse.empty({ status: 401 });
+             if (value.action === "revoke") {
+               record.active = false;
++              close(value.grant);
+               return HttpServerResponse.jsonUnsafe({ revoked: true });
+             }
+             return value.action === "check" && record.active && !refused
+@@ -85,7 +91,21 @@
+       refuse: (value: boolean) =>
+         Effect.sync(() => {
+           refused = value;
++          if (value) for (const grant of sessions.keys()) close(grant);
+         }),
+       created: Effect.sync(() => created),
++      watch: (grant: string, end: () => void) => {
++        if (!records.get(grant)?.active || refused) {
++          end();
++          return () => {};
++        }
++        const listeners = sessions.get(grant) ?? new Set<() => void>();
++        listeners.add(end);
++        sessions.set(grant, listeners);
++        return () => {
++          listeners.delete(end);
++          if (!listeners.size) sessions.delete(grant);
++        };
++      },
+     };
+   });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -318,6 +318,19 @@
+       local: na("Local has no device authorization endpoint."),
+     },
+   },
++  nativeTunnel: {
++    fixtures: "actors",
++    file: "native-tunnel.spec.ts",
++    title:
++      "Native tunnel uses real grants for streamed models and cloud tools with bounded flow, expiry and revocation",
++    targets: {
++      cloud: na(
++        "The self-host fixture runs the Basalt router in workerd with external model and pool peers.",
++      ),
++      "self-host": scheduled,
++      local: na("Local has no hosted native grants."),
++    },
++  },
+   nativeGrantLifecycle: {
+     fixtures: "actors",
+     file: "native-grants.spec.ts",
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -98,6 +98,13 @@
+           )
+             return;
+           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
++          // This adapter starts the complete fork Worker at its HTTP entry. These are
++          // runtime SDKs; application source imports remain forbidden in every E2E file.
++          if (
++            label === `support${path.sep}native-tunnel.ts` &&
++            ["esbuild", "miniflare"].includes(specifier)
++          )
++            return;
+           // The only database driver: runner-applied legacy rows for declared scenarios.
+           if (label === legacyStorage && specifier === "@electric-sql/pglite") return;
+           if (
+diff --git a/e2e/support/native-tunnel.ts b/e2e/support/native-tunnel.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/native-tunnel.ts
+@@ -0,0 +1,245 @@
++import { createServer } from "node:http";
++import { expect } from "vitest";
++import { build } from "esbuild";
++import {
++  Miniflare,
++  fetch as runtimeFetch,
++  Response as RuntimeResponse,
++  Request as RuntimeRequest,
++  WebSocketPair,
++} from "miniflare";
++import { Effect, Path } from "effect";
++import { driver } from "./platform.ts";
++import { syntheticTunnelModel } from "./native-tunnel-model.ts";
++import type { nativePool } from "./native-pool.ts";
++
++type Pool = Effect.Success<ReturnType<typeof nativePool>>;
++type Socket = NonNullable<Awaited<ReturnType<Miniflare["dispatchFetch"]>>["webSocket"]>;
++type Frame = { v: number; type: string; id?: number; [key: string]: unknown };
++
++/** Compile the production entry, then address its public HTTP/WebSocket route in real workerd. */
++export const nativeTunnel = (toolsOrigin: string, pool: Pool, offset = 0) =>
++  Effect.gen(function* () {
++    const path = yield* Path.Path;
++    const root = path.resolve("..");
++    const bundle = yield* driver("bundle production tunnel worker", () =>
++      build({
++        stdin: {
++          contents: 'export { default } from "./src/router.ts";',
++          resolveDir: root,
++          sourcefile: "native-tunnel-entry.ts",
++        },
++        absWorkingDir: root,
++        bundle: true,
++        format: "esm",
++        platform: "browser",
++        write: false,
++        target: "es2023",
++        banner: { js: `const actualNow=Date.now.bind(Date); Date.now=()=>actualNow()+${offset};` },
++      }),
++    );
++    const holds = new Set<() => void>();
++    let calls = 0,
++      cancelled = 0;
++    let onCancel = () => {};
++    const model = createServer((request, response) => {
++      expect(request.headers["x-basalt-native-assertion"]).toBeTruthy();
++      expect(request.headers.cookie).toBeUndefined();
++      calls++;
++      if (request.url === "/v1/models") {
++        response
++          .writeHead(200, { "content-type": "application/json" })
++          .end(JSON.stringify({ data: [{ id: "synthetic-model" }] }));
++        return;
++      }
++      request.resume();
++      request.once("end", () => {
++        response.writeHead(200, { "content-type": "text/event-stream" });
++        response.write("data: first\n\n");
++        const complete = () => {
++          holds.delete(complete);
++          response.end("data: complete\n\n");
++        };
++        holds.add(complete);
++        response.once("close", () => {
++          holds.delete(complete);
++          if (!response.writableEnded) {
++            cancelled++;
++            onCancel();
++          }
++        });
++      });
++    });
++    yield* Effect.acquireRelease(
++      driver(
++        "start external model peer",
++        () =>
++          new Promise<void>((resolve, reject) => {
++            model.once("error", reject);
++            model.listen(0, "127.0.0.1", resolve);
++          }),
++      ),
++      () =>
++        driver(
++          "stop external model peer",
++          () =>
++            new Promise<void>((resolve) => {
++              model.closeAllConnections();
++              model.close(() => resolve());
++            }),
++        ).pipe(Effect.orDie),
++    );
++    const address = model.address();
++    if (!address || typeof address === "string")
++      return yield* Effect.die("Model peer requires TCP");
++    const modelOrigin = `http://127.0.0.1:${address.port}`;
++    const runtime = yield* Effect.acquireRelease(
++      Effect.sync(
++        () =>
++          new Miniflare({
++            workers: [
++              {
++                name: "router",
++                modules: true,
++                script: bundle.outputFiles[0]!.text,
++                compatibilityDate: "2026-08-06",
++                compatibilityFlags: ["nodejs_compat"],
++                bindings: { DASHBOARD_HOST: "router.test", POOL_APP_SIGNING_KEY: "ab".repeat(32) },
++                serviceBindings: {
++                  CATALOG_SERVICE: () => new RuntimeResponse(null, { status: 404 }),
++                  TOOLS_SERVICE: (request: RuntimeRequest) => {
++                    const target = new URL(request.url);
++                    return runtimeFetch(new URL(target.pathname + target.search, toolsOrigin), {
++                      method: request.method,
++                      headers: Object.fromEntries(request.headers),
++                      body: request.body,
++                      ...{ duplex: "half" },
++                      redirect: "manual",
++                      signal: request.signal,
++                    }).then(
++                      (response) =>
++                        new RuntimeResponse(response.body, {
++                          status: response.status,
++                          headers: Object.fromEntries(response.headers),
++                        }),
++                    );
++                  },
++                  POOL_SERVICE: "synthetic-model",
++                },
++              },
++              {
++                name: "synthetic-model",
++                modules: true,
++                script: syntheticTunnelModel,
++                bindings: { MODEL_ORIGIN: modelOrigin },
++                compatibilityDate: "2026-08-06",
++                serviceBindings: {
++                  LIFETIME: (request: RuntimeRequest) => {
++                    const url = new URL(request.url);
++                    if (url.pathname === "/native/v1/session") {
++                      const envelope = request.headers.get("x-basalt-native-session")!;
++                      const identity = JSON.parse(
++                        Buffer.from(envelope.split(".")[1]!, "base64url").toString(),
++                      ) as { grant: string };
++                      const pair = new WebSocketPair();
++                      pair[1].accept();
++                      const stop = pool.watch(identity.grant, () => pair[1].close(1000, "Revoked"));
++                      pair[1].addEventListener("close", stop);
++                      return new RuntimeResponse(null, { status: 101, webSocket: pair[0] });
++                    }
++                    return new RuntimeResponse(null, { status: 404 });
++                  },
++                },
++              },
++            ],
++          }),
++      ),
++      (runtime) => {
++        for (const release of holds) release();
++        return driver("dispose tunnel worker", () => runtime.dispose()).pipe(Effect.orDie);
++      },
++    );
++    yield* driver("start tunnel worker", () => runtime.ready);
++    return {
++      runtime,
++      calls: () => calls,
++      cancelled: () => cancelled,
++      complete: () =>
++        Effect.sync(() => {
++          for (const release of holds) release();
++          return "completed";
++        }),
++      nextCancellation: () => {
++        const before = cancelled;
++        return driver("await upstream cancellation", () =>
++          cancelled > before
++            ? Promise.resolve()
++            : new Promise<void>((resolve) => {
++                onCancel = resolve;
++              }),
++        );
++      },
++      connect: (token: string) =>
++        driver("open public tunnel", () =>
++          runtime.dispatchFetch("http://router.test/native/v1/tunnel", {
++            headers: {
++              authorization: `Bearer ${token}`,
++              upgrade: "websocket",
++              "sec-websocket-protocol": "basalt.tunnel.v1",
++            },
++          }),
++        ).pipe(
++          Effect.map((response) => ({
++            status: response.status,
++            channel: response.webSocket ? tunnelChannel(response.webSocket) : undefined,
++          })),
++        ),
++    };
++  });
++
++export function tunnelChannel(socket: Socket) {
++  const frames: Frame[] = [];
++  let notify: (() => void) | undefined;
++  let ended = false;
++  const closed = new Promise<void>((resolve) => {
++    socket.addEventListener("close", () => {
++      ended = true;
++      notify?.();
++      resolve();
++    });
++  });
++  socket.addEventListener("message", (event) => {
++    expect(typeof event.data).toBe("string");
++    frames.push(JSON.parse(String(event.data)) as Frame);
++    notify?.();
++  });
++  socket.accept();
++  const result = {
++    send: (frame: object) => socket.send(JSON.stringify({ v: 1, ...frame })),
++    next: (type: string, id?: number): Effect.Effect<Frame, import("./platform.ts").DriverFailed> =>
++      Effect.suspend(() => {
++        const failure = frames.find(
++          (frame) => frame.type === "error" && (id === undefined || frame.id === id),
++        );
++        if (type !== "error")
++          expect(failure, `Tunnel refused operation ${id ?? "session"}`).toBeUndefined();
++        const index = frames.findIndex(
++          (frame) => frame.type === type && (id === undefined || frame.id === id),
++        );
++        if (index >= 0) return Effect.succeed(frames.splice(index, 1)[0]!);
++        expect(ended, "Tunnel closed before the expected frame").toBe(false);
++        return driver(
++          "await tunnel frame",
++          () =>
++            new Promise<void>((resolve) => {
++              notify = resolve;
++            }),
++        ).pipe(Effect.flatMap(() => result.next(type, id)));
++      }),
++    queued: (type: string, id?: number) =>
++      frames.filter((frame) => frame.type === type && (id === undefined || frame.id === id)).length,
++    closed: driver("await tunnel close", () => closed),
++    close: () => socket.close(),
++  };
++  return result;
++}
+diff --git a/e2e/support/native-tunnel-model.ts b/e2e/support/native-tunnel-model.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/native-tunnel-model.ts
+@@ -0,0 +1,19 @@
++/** Synthetic model peer; network responses expose cancellation at the actual HTTP boundary. */
++export const syntheticTunnelModel = `
++export default { fetch(request, env) {
++  const url = new URL(request.url);
++  if (url.pathname === "/native/v1/session") return env.LIFETIME.fetch(request);
++  if (request.headers.get("upgrade") === "websocket") {
++    const pair = new WebSocketPair();
++    pair[1].binaryType = "arraybuffer";
++    pair[1].accept();
++    pair[1].addEventListener("message", event => {
++      if (event.data === "close-with-output") {
++        pair[1].send("retained-after-close"); pair[1].close(1000, "Done");
++      } else pair[1].send(event.data);
++    });
++    return new Response(null, { status: 101, webSocket: pair[0] });
++  }
++  return fetch(new Request(new URL(url.pathname, env.MODEL_ORIGIN), request));
++} };
++`;
+diff --git a/e2e/tests/native-tunnel.spec.ts b/e2e/tests/native-tunnel.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/native-tunnel.spec.ts
+@@ -0,0 +1,317 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Redacted, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { App } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { deployMcpApp } from "../support/mcp-app.ts";
++import { approveNative, startNativeProtocol } from "../support/native-grants.ts";
++import { nativeTunnel } from "../support/native-tunnel.ts";
++import { serverControl } from "../support/server-control.ts";
++import { Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Native tunnel", (it) => {
++  it.effect(scenarios.nativeTunnel.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          evidence = yield* Evidence;
++        const p = yield* startNativeProtocol(actors.owner);
++        const tokens = yield* approveNative(p);
++        const access = yield* body(
++          Schema.Struct({ expiresAt: Schema.Int }),
++          yield* p.access(tokens),
++        );
++        expect(access.expiresAt).toBeGreaterThan(yield* Clock.currentTimeMillis);
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const { receipt } = yield* deployMcpApp;
++        const deployed = yield* p.api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Native tunnel public proof",
++          files: [
++            {
++              path: "index.ts",
++              content: `import { defineApp, object, query, router } from "apps";\nexport default defineApp({}, { tools: router({ echo: query({ input: object({}) }, async () => ({ receipt: ${JSON.stringify(receipt)} })) }) });`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        yield* Effect.addFinalizer(() =>
++          p.api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const toolsOrigin = targetHosts(yield* Target).browser;
++        const worker = yield* nativeTunnel(toolsOrigin, p.upstream);
++        for (const token of ["ext_not-a-native-grant", "exp_not-a-native-grant", "unknown"]) {
++          expect((yield* worker.connect(token)).status).toBe(401);
++        }
++        const connected = yield* worker.connect(Redacted.value(tokens.access_token));
++        expect(connected.status).toBe(101);
++        const channel = connected.channel!;
++        yield* Effect.addFinalizer(() => Effect.sync(() => channel.close()));
++        const ready = yield* channel.next("ready");
++        expect(Number(ready.expiresAt)).toBeLessThanOrEqual(access.expiresAt);
++        let mcpSession: string | undefined;
++        const open = (
++          id: number,
++          service: "models" | "tools",
++          path: string,
++          method = "POST",
++          transport = "http",
++        ) =>
++          channel.send({
++            type: "open",
++            id,
++            operation: { service, path, method, transport },
++            headers: {
++              "content-type": "application/json",
++              accept: "application/json, text/event-stream",
++              ...(service === "tools"
++                ? {
++                    "mcp-protocol-version": "2025-06-18",
++                    ...(mcpSession ? { "mcp-session-id": mcpSession } : {}),
++                  }
++                : {}),
++            },
++          });
++        const sendBody = (id: number, value: unknown) =>
++          Effect.gen(function* () {
++            yield* channel.next("credit", id);
++            channel.send({
++              type: "data",
++              id,
++              bytes: Buffer.from(JSON.stringify(value)).toString("base64"),
++              text: false,
++            });
++            channel.send({ type: "end", id });
++          });
++        open(1, "models", "/v1/responses");
++        yield* sendBody(1, { model: "synthetic-model", stream: true });
++        expect((yield* channel.next("response", 1)).status).toBe(200);
++        expect(channel.queued("data", 1)).toBe(0);
++        channel.send({ type: "credit", id: 1, bytes: 65536 });
++        const first = yield* channel.next("data", 1);
++        expect(Buffer.from(String(first.bytes), "base64").toString()).toContain("data: first");
++        yield* evidence.json("tunnel-first-chunk.json", { arrivedBeforeCompletion: true });
++        expect(yield* worker.complete()).toBe("completed");
++        const last = yield* channel.next("data", 1);
++        expect(Buffer.from(String(last.bytes), "base64").toString()).toContain("data: complete");
++        yield* channel.next("end", 1);
++        yield* evidence.json("tunnel-stream.json", {
++          firstBeforeCompletion: true,
++          withheldCreditStoppedData: true,
++        });
++
++        open(2, "tools", "/mcp");
++        channel.send({ type: "credit", id: 2, bytes: 65536 });
++        yield* sendBody(2, {
++          jsonrpc: "2.0",
++          id: 49,
++          method: "initialize",
++          params: {
++            protocolVersion: "2025-06-18",
++            capabilities: {},
++            clientInfo: { name: "tunnel-proof", version: "1" },
++          },
++        });
++        const initialized = yield* channel.next("response", 2);
++        expect(initialized.status).toBe(200);
++        const responseHeaders = yield* Schema.decodeUnknownEffect(
++          Schema.Record(Schema.String, Schema.String),
++        )(initialized.headers);
++        mcpSession = responseHeaders["mcp-session-id"];
++        expect(mcpSession).toBeTruthy();
++        yield* channel.next("data", 2);
++        yield* channel.next("end", 2);
++        open(3, "tools", "/mcp");
++        channel.send({ type: "credit", id: 3, bytes: 65536 });
++        yield* sendBody(3, { jsonrpc: "2.0", method: "notifications/initialized" });
++        expect((yield* channel.next("response", 3)).status).toBe(202);
++        yield* channel.next("end", 3);
++
++        open(4, "tools", "/mcp");
++        channel.send({ type: "credit", id: 4, bytes: 65536 });
++        yield* sendBody(4, {
++          jsonrpc: "2.0",
++          id: 50,
++          method: "tools/call",
++          params: {
++            name: "execute",
++            arguments: { code: `return await tools[${JSON.stringify(app.slug)}].echo({})` },
++          },
++        });
++        expect((yield* channel.next("response", 4)).status).toBe(200);
++        const tool = yield* channel.next("data", 4);
++        expect(Buffer.from(String(tool.bytes), "base64").toString()).toContain(receipt);
++        yield* channel.next("end", 4);
++
++        yield* evidence.json("tunnel-tools.json", {
++          realToolReceipt: true,
++          sessionHeaderPreserved: true,
++        });
++
++        open(5, "models", "/v1/responses", "GET", "websocket");
++        channel.send({ type: "credit", id: 5, bytes: 65536 });
++        expect((yield* channel.next("response", 5)).status).toBe(101);
++        yield* channel.next("credit", 5);
++        const echo = JSON.stringify({ type: "response.create", synthetic: true });
++        channel.send({
++          type: "data",
++          id: 5,
++          bytes: Buffer.from(echo).toString("base64"),
++          text: true,
++        });
++        const echoed = yield* channel.next("data", 5);
++        expect(echoed.text).toBe(true);
++        expect(Buffer.from(String(echoed.bytes), "base64").toString()).toBe(echo);
++        const binary = Buffer.alloc(50000, 137);
++        for (let offset = 0; offset < binary.length; offset += 16000) {
++          const part = binary.subarray(offset, offset + 16000);
++          channel.send({
++            type: "data",
++            id: 5,
++            bytes: part.toString("base64"),
++            text: false,
++            more: offset + part.length < binary.length,
++          });
++        }
++        const fragments: Buffer[] = [];
++        for (;;) {
++          const part = yield* channel.next("data", 5);
++          expect(
++            part.text,
++            JSON.stringify({
++              bytes: Buffer.from(String(part.bytes), "base64").length,
++              sample: Buffer.from(String(part.bytes), "base64").subarray(0, 24).toString("hex"),
++            }),
++          ).toBe(false);
++          fragments.push(Buffer.from(String(part.bytes), "base64"));
++          if (part.more !== true) break;
++        }
++        expect(Buffer.concat(fragments).equals(binary)).toBe(true);
++        for (const text of [true, false]) {
++          channel.send({ type: "data", id: 5, bytes: "", text });
++          const empty = yield* channel.next("data", 5);
++          expect(empty.bytes).toBe("");
++          expect(empty.text).toBe(text);
++        }
++        channel.send({ type: "cancel", id: 5 });
++
++        yield* evidence.json("tunnel-websocket.json", {
++          textMessagePreserved: true,
++          fragmentedBinaryMessagePreserved: true,
++        });
++
++        open(6, "models", "/v1/responses");
++        channel.send({ type: "credit", id: 6, bytes: 65536 });
++        yield* sendBody(6, { stream: true });
++        yield* channel.next("data", 6);
++        const cancelled = worker.nextCancellation();
++        channel.send({ type: "cancel", id: 6 });
++        yield* cancelled;
++        expect(worker.cancelled()).toBeGreaterThan(0);
++
++        for (const bad of [
++          { service: "models", path: "/v0/management/api-keys", method: "POST", transport: "http" },
++          {
++            service: "tools",
++            path: "https://other.example/mcp",
++            method: "POST",
++            transport: "http",
++          },
++        ]) {
++          const attempt = yield* worker.connect(Redacted.value(tokens.access_token));
++          const rejected = attempt.channel!;
++          yield* rejected.next("ready");
++          const before = worker.calls();
++          rejected.send({ type: "open", id: 1, operation: bad, headers: {} });
++          yield* rejected.closed;
++          expect(worker.calls()).toBe(before);
++        }
++        open(7, "models", "/v1/responses", "GET", "websocket");
++        expect((yield* channel.next("response", 7)).status).toBe(101);
++        yield* channel.next("credit", 7);
++        channel.send({
++          type: "data",
++          id: 7,
++          bytes: Buffer.from("close-with-output").toString("base64"),
++          text: true,
++        });
++        channel.send({ type: "credit", id: 7, bytes: 65536 });
++        const retained = yield* channel.next("data", 7);
++        expect(Buffer.from(String(retained.bytes), "base64").toString()).toBe(
++          "retained-after-close",
++        );
++        yield* channel.next("end", 7);
++        yield* evidence.json("tunnel-close-drain.json", {
++          queuedOutputPreserved: true,
++          emptyMessagesPreserved: true,
++        });
++
++        const removed = yield* p.api.request(
++          p.anonymous,
++          "POST",
++          "/api/auth/native/revoke",
++          undefined,
++          p.headers(tokens.access_token),
++        );
++        expect(removed.status).toBe(200);
++        yield* channel.closed;
++        expect((yield* worker.connect(Redacted.value(tokens.access_token))).status).toBe(401);
++
++        for (const permission of [
++          { tools: true, models: false },
++          { tools: false, models: true },
++        ]) {
++          const scoped = yield* approveNative(p, permission.tools, permission.models);
++          const result = yield* worker.connect(Redacted.value(scoped.access_token));
++          const restricted = result.channel!;
++          yield* restricted.next("ready");
++          restricted.send({
++            type: "open",
++            id: 1,
++            operation: permission.models
++              ? { service: "tools", path: "/mcp", method: "POST", transport: "http" }
++              : { service: "models", path: "/v1/models", method: "GET", transport: "http" },
++            headers: {},
++          });
++          const denied = yield* restricted.next("error", 1);
++          expect(denied.code).toBe("refused");
++          expect(denied.outcome).toBe("not-started");
++          restricted.close();
++        }
++        yield* evidence.json("tunnel-policy.json", {
++          toolsOnlyRefusesModels: true,
++          modelsOnlyRefusesTools: true,
++        });
++
++        const expiring = yield* approveNative(p);
++        const expiry = yield* body(
++          Schema.Struct({ expiresAt: Schema.Int }),
++          yield* p.access(expiring),
++        );
++        const offset = Math.max(1, expiry.expiresAt - (yield* Clock.currentTimeMillis) - 6000);
++        yield* serverControl("clock/advance", 200, { milliseconds: offset });
++        const expiryWorker = yield* nativeTunnel(toolsOrigin, p.upstream, offset);
++        const short = yield* expiryWorker.connect(Redacted.value(expiring.access_token));
++        expect(short.status).toBe(101);
++        const deadline = yield* short.channel!.next("ready");
++        expect(Number(deadline.expiresAt)).toBeLessThanOrEqual(expiry.expiresAt);
++        yield* short.channel!.closed;
++        expect((yield* expiryWorker.connect(Redacted.value(expiring.access_token))).status).toBe(
++          401,
++        );
++        yield* evidence.json("tunnel-deadline.json", {
++          validatedExpiry: true,
++          idleSessionClosedAtDeadline: true,
++          expiredHandshakeRefused: true,
++        });
++      }),
++    ),
++  );
++});

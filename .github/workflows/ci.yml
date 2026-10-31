@@ -323,6 +323,8 @@ jobs:
           npm run architecture:validate
       - name: Architecture model and code references
         run: |
+          bun install --cwd clients --frozen-lockfile
+          bun install --cwd src/tunnel --frozen-lockfile
           npm run architecture:model
           npm run architecture:typecheck
       - run: bun install --cwd src/setup --frozen-lockfile

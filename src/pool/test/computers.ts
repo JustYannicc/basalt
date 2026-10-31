@@ -120,6 +120,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     setup: (request: Request) => computers.handle(request),
     nativeControl: (request: Request) => computers.nativeControl(request),
     nativeModel: (request: Request) => computers.nativeModel(request),
+    nativeSession: (request: Request) => computers.nativeSession(request),
     expire: () => computers.expire(), now: () => time, advance: (ms: number) => { time += ms; }, restart: () => { computers = make(); },
     registry: async () => (await storage.get<Registry>("computer-registry-v1")) ?? {},
     userName: (user: string, claims: { pool: string } = pool) => backendUserName(user, claims.pool),

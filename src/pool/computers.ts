@@ -36,6 +36,7 @@ export class Computers {
       run: (work) => this.run(work), save: (registry) => this.save(registry) });
   }
   nativeControl(request: Request) { return this.native.control(request); }
+  nativeSession(request: Request) { return this.native.session(request); }
   nativeModel(request: Request) { return this.native.model(request); }
   private now() { return this.deps.now?.() ?? Date.now(); }
   private origin() { return this.deps.origin ?? `https://${brand.host}`; }

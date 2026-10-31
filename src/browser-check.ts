@@ -6,6 +6,7 @@ const apiBases = ["/v1", "/pool/v1", "/api", "/catalog", "/.well-known", "/git",
 const apiExactPaths = [
   // MCP is served only here and at the organization path; `/mcp/*` holds consent and approval pages.
   "/mcp",
+  "/native/v1/tunnel",
   // Model paths the gateway also serves without a version prefix.
   "/messages", "/chat/completions", "/completions",
   "/openapi.json", "/oauth/client-metadata.json",

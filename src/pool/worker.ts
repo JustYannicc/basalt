@@ -12,8 +12,8 @@ import { ControlFailure, failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
-import { nativeControlPath, nativeModelHeader } from "./native-contract.ts";
-import { nativeResponse } from "./native-response.worker.ts";
+import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
+import { nativeResponse, nativeSession } from "./native-response.worker.ts";
 import {
   hasActiveHomeApiKey,
   homeApiKeyCandidates,
@@ -181,6 +181,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const pathname = new URL(request.url).pathname;
     if (pathname === accessPath) return this.computers.access(request);
     if (pathname === nativeControlPath) return this.computers.nativeControl(request);
+    if (pathname === nativeSessionPath) {
+      try { return nativeSession(await this.computers.nativeSession(request)); }
+      catch (error) { return failureResponse(error); }
+    }
     if (isControlPath(pathname)) {
       try {
         await requirePoolUse(request, {
@@ -248,7 +252,7 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
-  if (pathname === nativeControlPath) return singleton(env).fetch(request);
+  if (pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
   if (pathname !== accessPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
     return new Response(null, { status: 404 });
   }

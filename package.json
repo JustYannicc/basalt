@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "prepare:upstream": "node scripts/prepare-upstream.ts",
-    "check": "node --test src/catalog/*.test.ts src/*.test.ts src/pool/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts src/site/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts e2e/slack/*.test.mjs",
+    "check": "node --test src/catalog/*.test.ts src/*.test.ts src/pool/*.test.ts src/tunnel/*.test.ts src/setup/*.test.ts src/setup/*.test.mjs src/feedback/*.test.ts src/telemetry/*.test.ts src/site/*.test.ts scripts/*.test.ts apps/pool/*.test.ts apps/pool/ui/*.test.ts e2e/slack/*.test.mjs",
     "typecheck": "node scripts/typecheck.ts",
     "typecheck:upstream": "bun run --cwd .upstream typecheck",
     "build": "node scripts/build.ts",

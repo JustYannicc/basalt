@@ -7,13 +7,13 @@ import { isPublicModelPath } from "./pool/lifecycle.ts";
 
 const host = "app.signalbox.run";
 const exempt = [
-  "/mcp", "/org/acme/mcp", "/git/acme/tool.git/info/refs", "/v1", "/v1/models", "/messages", "/chat/completions", "/completions",
+  "/native/v1/tunnel", "/mcp", "/org/acme/mcp", "/git/acme/tool.git/info/refs", "/v1", "/v1/models", "/messages", "/chat/completions", "/completions",
   "/pool/v1", "/pool/v1/accounts", `${catalog.path}index.json`, "/.well-known/oauth-protected-resource/mcp",
   "/api/auth/oauth2/token", "/api/organizations/x", "/api/webhooks/workos", "/openapi.json",
   "/oauth/client-metadata.json", "/setup/client.mjs", `/setup/claim/${"a".repeat(64)}`,
 ];
 const checked = [
-  "/", "/login", "/mcp/authorize", "/mcp/approve/x", "/setup", "/setup/v1/links", "/pricing", "/org/acme", "/org/acme/settings", "/v10", "/mcpx",
+  "/native/v1/session", "/native/v1/tunnel/other", "/", "/login", "/mcp/authorize", "/mcp/approve/x", "/setup", "/setup/v1/links", "/pricing", "/org/acme", "/org/acme/settings", "/v10", "/mcpx",
   "/v1x", "/apix", "/messages/x", "/__telemetry/v1/analytics", "/feedback/v1/error",
 ];
 

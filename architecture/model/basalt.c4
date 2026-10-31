@@ -7,6 +7,12 @@ model {
       metadata { code "src/router.ts|src/native-model.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|APP_UI_SERVICE=basalt.toolsGateway|ASSETS=basalt.clientAssets|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
     }
 
+    nativeTunnel = module "Native tunnel" {
+      #basalt #deep
+      description "An outbound WebSocket multiplexes fixed model and MCP operations. The verified native bearer expiry and pool registry lease bound its lifetime. Receiver credit bounds buffering; interrupted operations are never replayed."
+      metadata { code "src/tunnel"; libraries "effect"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
+    }
+
     brandConfig = part "Brand configuration" {
       description "Name, logo, hosts and the brand's own links: docs, privacy, terms and the public source repository the dashboard sidebar links last, under its hosting service's name when the dashboard recognizes it. A fork points the source link at its own repository or sets it to null. The dashboard shows the built-in app's skills under the brand's name; agents still read them as written."
       metadata { code "brand.ts"; configuration "true" }
@@ -243,6 +249,12 @@ model {
   }
 
   basalt.deployment -[sync]-> appHosting "configure opaque same-site origins and wildcard routing"
+  basalt.router -[sync]-> basalt.nativeTunnel "serve the native bearer tunnel"
+  basalt.nativeTunnel -[sync]-> basalt.router "use normal native model request authorization"
+  basalt.nativeTunnel -[sync]-> basalt.modelGateway "private lifetime lease and authorized model traffic"
+  basalt.nativeTunnel -[sync]-> basalt.toolsGateway "validate native access and forward MCP through normal policy"
+  basalt.nativeTunnel -[sync]-> basalt.clientConnection "share versioned frame and flow limits"
+
   basalt.router -[sync]-> basalt.clientAssets "ASSETS: dashboard-host static files only"
   basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
   basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
