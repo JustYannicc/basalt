@@ -458,17 +458,17 @@ index ebdf942..8facdd7 100644
  ];
 diff --git a/e2e/support/workflow-input-app.ts b/e2e/support/workflow-input-app.ts
 new file mode 100644
-index 0000000..d202b25
+index 0000000..f7ca953
 --- /dev/null
 +++ b/e2e/support/workflow-input-app.ts
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,61 @@
 +/** An ordinary authored app asks, records one continuation and keeps consent separate. */
 +import { appsManifest } from "./apps-release.ts";
 +export const workflowInputFiles = [
 +  appsManifest,
 +  {
 +    path: "index.ts",
-+    content: `import { defineApp, workflow, query, mutation, object, string, number, router } from "apps";
++    content: `import { defineApp, workflow, query, mutation, object, string, number, router, workflowInputQuestions } from "apps";
 +const rows = query({ input: object({}) }, async (ctx) => ctx.sql.exec("SELECT question, answer FROM receipts ORDER BY question").toArray());
 +const save = mutation({ input: object({ question: string(), answer: string() }) }, async (ctx, input) => {
 +  ctx.sql.transaction((tx) => tx.exec("INSERT INTO receipts (question, answer) VALUES (?, ?)", input.question, input.answer));
@@ -491,6 +491,23 @@ index 0000000..d202b25
 +  }
 +  return result;
 +});
++const defaults = workflow({ input: object({ timeoutMs: number(), protected: string() }) }, async (ctx, input) => {
++  const questions = [
++    workflowInputQuestions.text("Explain the exception in your own words"),
++    workflowInputQuestions.choice("Choose a destination", ["one", "two"]),
++    workflowInputQuestions.confirm("Continue?"),
++    workflowInputQuestions.number("What amount?"),
++    workflowInputQuestions.date("Which date?"),
++    workflowInputQuestions.reconnectAccount("Reconnect, then ask to verify", { label: "Accounts", href: "/accounts" }),
++    { ...workflowInputQuestions.text("Custom question with a form fallback"), display: { kind: "mcp-app", view: { source: "custom", selection: { kind: "tool", name: "question" }, input: {}, resourceUri: "ui://questions/custom" } } },
++  ];
++  const replies = [];
++  for (let index = 0; index < questions.length; index++) {
++    const question = await ctx.step.requestInput("default " + index, { ...questions[index], timeoutMs: input.timeoutMs });
++    replies.push(await ctx.step.waitForInput("answer " + index, question));
++  }
++  return replies;
++});
 +const many = workflow({ input: object({ timeoutMs: number(), protected: string() }) }, async (ctx, input) => {
 +  let last;
 +  for (let index = 0; index < 105; index++) last = await ctx.step.requestInput("question " + index, {
@@ -499,18 +516,131 @@ index 0000000..d202b25
 +  });
 +  return ctx.step.waitForInput("wait", last);
 +});
-+export default defineApp({}, { tools: router({ rows, save, protectedAction }), workflows: { ask, many } });`,
++export default defineApp({}, { tools: router({ rows, save, protectedAction }), workflows: { ask, many, defaults } });`,
 +  },
 +  {
 +    path: "migrations/0001_receipts.sql",
 +    content: "CREATE TABLE receipts (question TEXT PRIMARY KEY, answer TEXT NOT NULL);",
 +  },
 +];
+diff --git a/e2e/support/workflow-input-fixture.ts b/e2e/support/workflow-input-fixture.ts
+new file mode 100644
+index 0000000..266cea4
+--- /dev/null
++++ b/e2e/support/workflow-input-fixture.ts
+@@ -0,0 +1,107 @@
++/** Public API fixture shared by lifecycle and input-form scenarios. */
++import { expect } from "@effect/vitest";
++import { Clock, Effect, Schema } from "effect";
++import { Api, body, type Session } from "./api.ts";
++import { Actors } from "./actors.ts";
++import { workflowInputFiles } from "./workflow-input-app.ts";
++
++export const Input = Schema.Struct({
++  id: Schema.String,
++  run: Schema.String,
++  app: Schema.String,
++  status: Schema.String,
++  reviewUrl: Schema.optionalKey(Schema.String),
++});
++export const Run = Schema.Struct({
++  id: Schema.String,
++  status: Schema.String,
++  output: Schema.optionalKey(Schema.Json),
++  error: Schema.optionalKey(Schema.String),
++});
++export const workflowInputFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const deploy = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: "Durable input fixture",
++    files: workflowInputFiles,
++  });
++  expect(deploy.status, JSON.stringify(deploy.body)).toBe(200);
++  const app = yield* body(Schema.Struct({ id: Schema.String }), deploy);
++  const path = `${prefix}/apps/${app.id}`;
++  const runs: Array<{ id: string; actor: Session }> = [];
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      for (const run of runs)
++        yield* api.request(run.actor, "POST", `${path}/workflow-runs/${run.id}/terminate`);
++      expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++    }).pipe(Effect.orDie),
++  );
++  const start = (
++    timeoutMs = 86400000,
++    protectedAction = "no",
++    actor = actors.owner,
++    workflow = "ask",
++  ) =>
++    Effect.gen(function* () {
++      const response = yield* api.request(actor, "POST", `${path}/workflow-runs`, {
++        workflow,
++        input: { timeoutMs, protected: protectedAction },
++      });
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const run = yield* body(Run, response);
++      runs.push({ id: run.id, actor });
++      return run;
++    });
++  const pending = (run: string, actor = actors.owner) =>
++    Effect.gen(function* () {
++      const deadline = (yield* Clock.currentTimeMillis) + 20000;
++      while (true) {
++        const response = yield* api.request(actor, "GET", `${prefix}/workflow-inputs?pending=true`);
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const input = (yield* body(
++          Schema.Struct({ items: Schema.Array(Input) }),
++          response,
++        )).items.find((input) => input.run === run);
++        if (input !== undefined) return input;
++        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++        yield* Effect.sleep("50 millis");
++      }
++    });
++  const wait = (run: string) =>
++    Effect.gen(function* () {
++      const deadline = (yield* Clock.currentTimeMillis) + 20000;
++      while (true) {
++        const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs/${run}`);
++        expect(response.status).toBe(200);
++        const result = yield* body(Run, response);
++        if (["complete", "errored", "terminated"].includes(result.status)) return result;
++        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++        yield* Effect.sleep("50 millis");
++      }
++    });
++  const answer = (id: string, choice: string, actor = actors.owner) =>
++    api.request(actor, "POST", `${path}/workflow-inputs/${id}`, {
++      response: { action: "accept", content: { choice } },
++    });
++  const rows = () =>
++    api.request(actors.owner, "POST", `${path}/tools/call`, {
++      tool: "rows",
++      kind: "query",
++      input: {},
++    });
++  const share = (kind: "private" | "everyone") =>
++    Effect.gen(function* () {
++      const access = yield* body(
++        Schema.Struct({ revision: Schema.String }),
++        yield* api.request(actors.owner, "GET", `${path}/access`),
++      );
++      expect(
++        (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++          revision: access.revision,
++          audience: { kind },
++        })).status,
++      ).toBe(200);
++    });
++  return { api, actors, prefix, path, start, pending, wait, answer, rows, share };
++});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 319f4ea..ae2230e 100644
+index 452c680..25380af 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8214,6 +8214,56 @@ export const scenarios = plan({
+@@ -8227,6 +8227,66 @@ export const scenarios = plan({
        cloud: na("Hosted caller identity has a separate shared-app scenario."),
      },
    },
@@ -530,6 +660,16 @@ index 319f4ea..ae2230e 100644
 +    targets: {
 +      "self-host": scheduled,
 +      cloud: na("Restart owns an isolated self-host process."),
++      local: na("Hosted routes have a separate local counterpart."),
++    },
++  },
++  workflowInputDefaults: {
++    fixtures: "actors",
++    file: "workflow-input-defaults.spec.ts",
++    title: "durable workflow input defaults validate free text and retain custom display hints",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
 +      local: na("Hosted routes have a separate local counterpart."),
 +    },
 +  },
@@ -743,123 +883,117 @@ index 0000000..193a3b1
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/workflow-input-defaults.spec.ts b/e2e/tests/workflow-input-defaults.spec.ts
+new file mode 100644
+index 0000000..084c35c
+--- /dev/null
++++ b/e2e/tests/workflow-input-defaults.spec.ts
+@@ -0,0 +1,90 @@
++/** Common forms retain their display choice and validate answers through the real workflow. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect } from "effect";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { workflowInputFixture as fixture } from "../support/workflow-input-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Workflow input defaults", (it) => {
++  it.effect(scenarios.workflowInputDefaults.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture;
++        const run = yield* f.start(86400000, "no", f.actors.owner, "defaults");
++        const cases = [
++          {
++            kind: "text",
++            response: {
++              action: "accept",
++              content: { value: "A free-form explanation with no fixed choices." },
++            },
++          },
++          { kind: "choice", response: { action: "accept", content: { value: "two" } } },
++          { kind: "confirm", response: { action: "decline" } },
++          { kind: "number", response: { action: "accept", content: { value: 42.5 } } },
++          { kind: "date", response: { action: "accept", content: { value: "2026-10-31" } } },
++          { kind: "reconnect-account", response: { action: "accept", content: {} } },
++          {
++            kind: "mcp-app",
++            response: {
++              action: "accept",
++              content: { value: "Custom display still uses the form contract." },
++            },
++          },
++        ];
++        for (const [index, item] of cases.entries()) {
++          const question = yield* f.pending(run.id);
++          const read = yield* f.api.request(
++            f.actors.owner,
++            "GET",
++            `${f.path}/workflow-inputs/${question.id}`,
++          );
++          expect(read.body).toMatchObject({ display: { kind: item.kind } });
++          if (item.kind === "mcp-app")
++            expect(read.body).toMatchObject({
++              display: {
++                view: {
++                  resourceUri: "ui://questions/custom",
++                  input: {},
++                  selection: { kind: "tool", name: "question" },
++                },
++              },
++              form: { requestedSchema: { properties: { value: { type: "string" } } } },
++            });
++          if (item.kind === "reconnect-account")
++            expect(read.body).toMatchObject({ links: [{ label: "Accounts", href: "/accounts" }] });
++          if (index === 0 || item.kind === "number" || item.kind === "date") {
++            const wrong = index === 0 ? 123 : item.kind === "number" ? "forty two" : "not-a-date";
++            expect(
++              (yield* f.api.request(
++                f.actors.owner,
++                "POST",
++                `${f.path}/workflow-inputs/${question.id}`,
++                { response: { action: "accept", content: { value: wrong } } },
++              )).status,
++            ).toBe(400);
++          }
++          expect(
++            (yield* f.api.request(
++              f.actors.owner,
++              "POST",
++              `${f.path}/workflow-inputs/${question.id}`,
++              { response: item.response },
++            )).status,
++          ).toBe(200);
++          // List can briefly include the prior run wait while the continuation advances.
++          const deadline = (yield* Clock.currentTimeMillis) + 20000;
++          while (index < cases.length - 1 && (yield* f.pending(run.id)).id === question.id) {
++            expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++            yield* Effect.sleep("50 millis");
++          }
++        }
++        expect(yield* f.wait(run.id)).toMatchObject({
++          status: "complete",
++          output: cases.map(({ response }) => ({ status: "answered", response })),
++        });
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/workflow-inputs.spec.ts b/e2e/tests/workflow-inputs.spec.ts
 new file mode 100644
-index 0000000..772d428
+index 0000000..a71f142
 --- /dev/null
 +++ b/e2e/tests/workflow-inputs.spec.ts
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,186 @@
 +/** Durable human input through the actual hosted HTTP and workflow engine. */
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
-+import { Api, body, type Session } from "../support/api.ts";
-+import { Actors } from "../support/actors.ts";
++import { body } from "../support/api.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { serverControl } from "../support/server-control.ts";
-+import { workflowInputFiles } from "../support/workflow-input-app.ts";
++import { Input, workflowInputFixture as fixture } from "../support/workflow-input-fixture.ts";
 +import { freeSeat } from "../support/seats.ts";
 +import { scenarios } from "../test-plan.ts";
-+
-+const Input = Schema.Struct({
-+  id: Schema.String,
-+  run: Schema.String,
-+  app: Schema.String,
-+  status: Schema.String,
-+  reviewUrl: Schema.optionalKey(Schema.String),
-+});
-+const Run = Schema.Struct({
-+  id: Schema.String,
-+  status: Schema.String,
-+  output: Schema.optionalKey(Schema.Json),
-+  error: Schema.optionalKey(Schema.String),
-+});
-+const fixture = Effect.gen(function* () {
-+  const api = yield* Api,
-+    actors = yield* Actors;
-+  const prefix = `/api/organizations/${actors.organization.id}`;
-+  const deploy = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+    name: "Durable input fixture",
-+    files: workflowInputFiles,
-+  });
-+  expect(deploy.status, JSON.stringify(deploy.body)).toBe(200);
-+  const app = yield* body(Schema.Struct({ id: Schema.String }), deploy);
-+  const path = `${prefix}/apps/${app.id}`;
-+  const runs: Array<{ id: string; actor: Session }> = [];
-+  yield* Effect.addFinalizer(() =>
-+    Effect.gen(function* () {
-+      for (const run of runs)
-+        yield* api.request(run.actor, "POST", `${path}/workflow-runs/${run.id}/terminate`);
-+      expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
-+    }).pipe(Effect.orDie),
-+  );
-+  const start = (
-+    timeoutMs = 86400000,
-+    protectedAction = "no",
-+    actor = actors.owner,
-+    workflow = "ask",
-+  ) =>
-+    Effect.gen(function* () {
-+      const response = yield* api.request(actor, "POST", `${path}/workflow-runs`, {
-+        workflow,
-+        input: { timeoutMs, protected: protectedAction },
-+      });
-+      expect(response.status, JSON.stringify(response.body)).toBe(200);
-+      const run = yield* body(Run, response);
-+      runs.push({ id: run.id, actor });
-+      return run;
-+    });
-+  const pending = (run: string, actor = actors.owner) =>
-+    Effect.gen(function* () {
-+      const deadline = (yield* Clock.currentTimeMillis) + 20000;
-+      while (true) {
-+        const response = yield* api.request(actor, "GET", `${prefix}/workflow-inputs?pending=true`);
-+        expect(response.status, JSON.stringify(response.body)).toBe(200);
-+        const input = (yield* body(
-+          Schema.Struct({ items: Schema.Array(Input) }),
-+          response,
-+        )).items.find((input) => input.run === run);
-+        if (input !== undefined) return input;
-+        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
-+        yield* Effect.sleep("50 millis");
-+      }
-+    });
-+  const wait = (run: string) =>
-+    Effect.gen(function* () {
-+      const deadline = (yield* Clock.currentTimeMillis) + 20000;
-+      while (true) {
-+        const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs/${run}`);
-+        expect(response.status).toBe(200);
-+        const result = yield* body(Run, response);
-+        if (["complete", "errored", "terminated"].includes(result.status)) return result;
-+        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
-+        yield* Effect.sleep("50 millis");
-+      }
-+    });
-+  const answer = (id: string, choice: string, actor = actors.owner) =>
-+    api.request(actor, "POST", `${path}/workflow-inputs/${id}`, {
-+      response: { action: "accept", content: { choice } },
-+    });
-+  const rows = () =>
-+    api.request(actors.owner, "POST", `${path}/tools/call`, {
-+      tool: "rows",
-+      kind: "query",
-+      input: {},
-+    });
-+  const share = (kind: "private" | "everyone") =>
-+    Effect.gen(function* () {
-+      const access = yield* body(
-+        Schema.Struct({ revision: Schema.String }),
-+        yield* api.request(actors.owner, "GET", `${path}/access`),
-+      );
-+      expect(
-+        (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
-+          revision: access.revision,
-+          audience: { kind },
-+        })).status,
-+      ).toBe(200);
-+    });
-+  return { api, actors, prefix, path, start, pending, wait, answer, rows, share };
-+});
 +
 +layer(HostedLive, { excludeTestServices: true })("Durable workflow input", (it) => {
 +  it.effect(scenarios.workflowInputLifecycle.title, (context) =>
@@ -1102,10 +1236,10 @@ index 1fc856f..20da163 100644
  
 diff --git a/packages/apps/protocols/21.json b/packages/apps/protocols/21.json
 new file mode 100644
-index 0000000..6b359b3
+index 0000000..a051443
 --- /dev/null
 +++ b/packages/apps/protocols/21.json
-@@ -0,0 +1,873 @@
+@@ -0,0 +1,1000 @@
 +{
 +  "protocol": 21,
 +  "previous": 20,
@@ -1196,6 +1330,133 @@ index 0000000..6b359b3
 +                                "$message": "elicitationRequest"
 +                              },
 +                              "isOptional": false
++                            },
++                            {
++                              "name": "display",
++                              "type": {
++                                "_tag": "Union",
++                                "types": [
++                                  {
++                                    "_tag": "Objects",
++                                    "propertySignatures": [
++                                      {
++                                        "name": "kind",
++                                        "type": {
++                                          "_tag": "Union",
++                                          "types": [
++                                            {
++                                              "_tag": "Literal",
++                                              "literal": "choice"
++                                            },
++                                            {
++                                              "_tag": "Literal",
++                                              "literal": "confirm"
++                                            },
++                                            {
++                                              "_tag": "Literal",
++                                              "literal": "text"
++                                            },
++                                            {
++                                              "_tag": "Literal",
++                                              "literal": "reconnect-account"
++                                            },
++                                            {
++                                              "_tag": "Literal",
++                                              "literal": "number"
++                                            },
++                                            {
++                                              "_tag": "Literal",
++                                              "literal": "date"
++                                            }
++                                          ]
++                                        },
++                                        "isOptional": false
++                                      }
++                                    ]
++                                  },
++                                  {
++                                    "_tag": "Objects",
++                                    "propertySignatures": [
++                                      {
++                                        "name": "kind",
++                                        "type": {
++                                          "_tag": "Literal",
++                                          "literal": "mcp-app"
++                                        },
++                                        "isOptional": false
++                                      },
++                                      {
++                                        "name": "view",
++                                        "type": {
++                                          "_tag": "Objects",
++                                          "propertySignatures": [
++                                            {
++                                              "name": "source",
++                                              "type": {
++                                                "_tag": "String"
++                                              },
++                                              "isOptional": false
++                                            },
++                                            {
++                                              "name": "selection",
++                                              "type": {
++                                                "_tag": "Declaration",
++                                                "representation": {
++                                                  "id": "effect/schema/Json",
++                                                  "payload": null
++                                                }
++                                              },
++                                              "isOptional": false
++                                            },
++                                            {
++                                              "name": "input",
++                                              "type": {
++                                                "_tag": "Objects",
++                                                "propertySignatures": [],
++                                                "indexSignatures": [
++                                                  {
++                                                    "parameter": {
++                                                      "_tag": "String"
++                                                    },
++                                                    "type": {
++                                                      "_tag": "Declaration",
++                                                      "representation": {
++                                                        "id": "effect/schema/Json",
++                                                        "payload": null
++                                                      }
++                                                    }
++                                                  }
++                                                ]
++                                              },
++                                              "isOptional": false
++                                            },
++                                            {
++                                              "name": "resourceUri",
++                                              "type": {
++                                                "_tag": "String",
++                                                "checks": [
++                                                  {
++                                                    "_tag": "Filter",
++                                                    "representation": {
++                                                      "id": "effect/schema/isMinLength",
++                                                      "payload": {
++                                                        "minLength": 1
++                                                      }
++                                                    }
++                                                  }
++                                                ]
++                                              },
++                                              "isOptional": false
++                                            }
++                                          ]
++                                        },
++                                        "isOptional": false
++                                      }
++                                    ]
++                                  }
++                                ]
++                              },
++                              "isOptional": true
 +                            },
 +                            {
 +                              "name": "evidence",
@@ -2878,12 +3139,13 @@ index 0000000..3312f09
 +]);
 diff --git a/packages/apps/src/contracts/workflow-input.ts b/packages/apps/src/contracts/workflow-input.ts
 new file mode 100644
-index 0000000..a813951
+index 0000000..4315479
 --- /dev/null
 +++ b/packages/apps/src/contracts/workflow-input.ts
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,97 @@
 +/** Durable workflow questions reuse standard forms without retaining a tool invocation. */
 +import { Schema } from "effect";
++import { McpAppViewObservation } from "./mcp-apps.ts";
 +import { ElicitationResponse, FormElicitation } from "./elicitation.ts";
 +
 +export const WorkflowInputId = Schema.NonEmptyString.check(
@@ -2910,6 +3172,7 @@ index 0000000..a813951
 +    }),
 +  ),
 +});
++export type WorkflowInputLink = typeof WorkflowInputLink.Type;
 +/** Current facts beside an unchanged decision. They grant no authority and contain no secrets. */
 +export const WorkflowInputEvidence = Schema.Array(
 +  Schema.Struct({
@@ -2919,8 +3182,18 @@ index 0000000..a813951
 +).check(Schema.isMaxLength(12));
 +export type WorkflowInputEvidence = typeof WorkflowInputEvidence.Type;
 +
++/** Display hints never replace the form validator or authorize resource/tool access. */
++export const WorkflowInputDisplay = Schema.Union([
++  Schema.Struct({
++    kind: Schema.Literals(["choice", "confirm", "text", "reconnect-account", "number", "date"]),
++  }),
++  Schema.Struct({ kind: Schema.Literal("mcp-app"), view: McpAppViewObservation }),
++]);
++export type WorkflowInputDisplay = typeof WorkflowInputDisplay.Type;
++
 +export const WorkflowInputRequest = Schema.Struct({
 +  form: FormElicitation,
++  display: Schema.optionalKey(WorkflowInputDisplay),
 +  evidence: Schema.optionalKey(WorkflowInputEvidence),
 +  /** A human deadline, separate from an active step's execution timeout. */
 +  timeoutMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 30 * 86400000 })),
@@ -2941,6 +3214,7 @@ index 0000000..a813951
 +  /** Supplied by the product, never by authored code. */
 +  reviewUrl: Schema.optionalKey(Schema.String),
 +  form: FormElicitation,
++  display: Schema.optionalKey(WorkflowInputDisplay),
 +  evidence: WorkflowInputEvidence,
 +  links: Schema.Array(WorkflowInputLink),
 +  response: Schema.optionalKey(ElicitationResponse),
@@ -3040,6 +3314,41 @@ index 671942e..5723b13 100644
  } from "./implementation/workflow-rpc.ts";
 +
 +export { prepareElicitation } from "./implementation/elicitation.ts";
+diff --git a/packages/apps/src/implementation/elicitation.ts b/packages/apps/src/implementation/elicitation.ts
+index b04af3e..1a61745 100644
+--- a/packages/apps/src/implementation/elicitation.ts
++++ b/packages/apps/src/implementation/elicitation.ts
+@@ -12,6 +12,12 @@ import { toPromise } from "./authoring.ts";
+ import { elicitationWaitSpan } from "./invocation-timing.ts";
+ import { jsonSchemaDecoder } from "./schema.ts";
+ 
++const calendarDate = (value: unknown) => {
++  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
++  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
++  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
++};
++
+ /** Parse a form and retain its response parser, so invalid answers can be rejected before consuming a host continuation. */
+ export const prepareElicitation = (input: unknown) =>
+   Effect.gen(function* () {
+@@ -34,6 +40,17 @@ export const prepareElicitation = (input: unknown) =>
+           yield* Schema.decodeUnknownEffect(content)(fields).pipe(
+             Effect.mapError(() => new ElicitationFailed({ reason: "invalid-response" })),
+           );
++          // Imported JSON Schema formats are annotations. A human date field must still be
++          // a real calendar date before its reply can consume a durable continuation.
++          for (const [name, field] of Object.entries(request.requestedSchema.properties))
++            if (
++              field.type === "string" &&
++              "format" in field &&
++              field.format === "date" &&
++              fields[name] !== undefined &&
++              !calendarDate(fields[name])
++            )
++              return yield* new ElicitationFailed({ reason: "invalid-response" });
+           return { ...response, content: fields };
+         }
+         return response;
 diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/apps/src/implementation/workflow-context.ts
 index 1ce284e..15a9b71 100644
 --- a/packages/apps/src/implementation/workflow-context.ts
@@ -3095,6 +3404,45 @@ index 1ce284e..15a9b71 100644
        sleep: (name, duration) =>
          invoke(
            Schema.decodeUnknownEffect(WorkflowDuration)(duration).pipe(
+diff --git a/packages/apps/src/implementation/workflow-input-questions.ts b/packages/apps/src/implementation/workflow-input-questions.ts
+new file mode 100644
+index 0000000..ceb999d
+--- /dev/null
++++ b/packages/apps/src/implementation/workflow-input-questions.ts
+@@ -0,0 +1,33 @@
++/** Common questions produce ordinary editable MCP forms with the same answer validation. */
++import type { FormElicitation } from "../contracts/elicitation.ts";
++import type { WorkflowInputDisplay, WorkflowInputLink } from "../contracts/workflow-input.ts";
++
++const question = (
++  kind: Exclude<WorkflowInputDisplay["kind"], "mcp-app">,
++  message: string,
++  requestedSchema: FormElicitation["requestedSchema"],
++) => ({
++  form: { mode: "form" as const, message, requestedSchema },
++  display: { kind },
++});
++const empty = { type: "object" as const, properties: {} };
++const field = (value: FormElicitation["requestedSchema"]["properties"][string]) => ({
++  type: "object" as const,
++  properties: { value },
++  required: ["value"],
++});
++
++/** Replies use content.value; confirm/reconnect use the standard accept/decline/cancel action. */
++export const workflowInputQuestions = {
++  text: (message: string) => question("text", message, field({ type: "string" })),
++  choice: (message: string, choices: readonly [string, ...string[]]) =>
++    question("choice", message, field({ type: "string", enum: [...choices] })),
++  confirm: (message: string) => question("confirm", message, empty),
++  number: (message: string) => question("number", message, field({ type: "number" })),
++  date: (message: string) => question("date", message, field({ type: "string", format: "date" })),
++  // Acknowledgement asks the workflow to recheck. It cannot establish that reconnection succeeded.
++  reconnectAccount: (message: string, link: WorkflowInputLink) => ({
++    ...question("reconnect-account", message, empty),
++    links: [link],
++  }),
++};
 diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/src/implementation/workflow-rpc.ts
 index e3c1bb1..156bad7 100644
 --- a/packages/apps/src/implementation/workflow-rpc.ts
@@ -3120,10 +3468,10 @@ index e3c1bb1..156bad7 100644
          Effect.gen(function* () {
            const services = yield* Effect.context<never>();
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
-index 9c3008b..b653ac9 100644
+index 9c3008b..356c629 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
-@@ -383,3 +383,9 @@ export {
+@@ -383,3 +383,11 @@ export {
  } from "./implementation/schedules.ts";
  
  export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";
@@ -3133,6 +3481,8 @@ index 9c3008b..b653ac9 100644
 +  WorkflowInputOutcome,
 +  WorkflowInputRequest,
 +} from "./contracts/workflow-input.ts";
++
++export { workflowInputQuestions } from "./implementation/workflow-input-questions.ts";
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
 index e078a0a..020b6c0 100644
 --- a/packages/sdk/src/contracts/executor.ts
@@ -3866,10 +4216,10 @@ index 67bc6c1..55bec76 100644
          try {
 diff --git a/packages/sdk/src/implementation/workflow-input-store.ts b/packages/sdk/src/implementation/workflow-input-store.ts
 new file mode 100644
-index 0000000..db4233d
+index 0000000..13a4930
 --- /dev/null
 +++ b/packages/sdk/src/implementation/workflow-input-store.ts
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,128 @@
 +/** Persistence and encryption for durable questions; callers own authorization and transactions. */
 +import { Clock, Effect, Redacted, Schema } from "effect";
 +import {
@@ -3944,6 +4294,7 @@ index 0000000..db4233d
 +        status: Schema.decodeUnknownSync(WorkflowInput.fields.status)(row.status),
 +        expiresAt: row.expiresAt.getTime(),
 +        form: data.request.form,
++        ...(data.request.display === undefined ? {} : { display: data.request.display }),
 +        evidence: data.evidence ?? data.request.evidence ?? [],
 +        links: data.request.links ?? [],
 +        ...(data.response === undefined ? {} : { response: data.response }),

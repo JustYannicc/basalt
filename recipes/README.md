@@ -1,5 +1,21 @@
 # Default check workflows
 
+Workflows can ask for explanations in free text, select a choice, confirm or decline a
+proposal, collect an amount or date, or ask someone to reconnect an account and then
+verify it. `workflowInputQuestions` from `apps` supplies those defaults. Each returns
+an ordinary editable `form` and a `display` hint; pass it with `timeoutMs` to
+`ctx.step.requestInput`. Text, choice, number and date answers use `content.value`.
+Confirm and reconnect use the standard accept, decline or cancel action. Reconnection
+still needs a fresh check of the account.
+
+A workflow can supply any supported MCP form schema directly. For a custom display,
+`display: { kind: "mcp-app", view }` retains the existing MCP Apps view observation
+with its source, selection, input and `ui://` resource URI beside the form fallback.
+The encrypted request stores this data without a separate SQL column. The later
+Approvals client must resolve it through the existing authenticated MCP Apps resource
+and callback paths. The descriptor grants no access and cannot answer the question
+for the person. This release stores and returns it; rendering follows in the UI PR.
+
 These are three ordinary apps: production checks, pool-owner checks and personal
 connection checks. Install a private copy from the catalog. Its source, tools,
 workflow history and schedule controls are the existing app features. Updates to
