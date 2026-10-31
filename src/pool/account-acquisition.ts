@@ -142,10 +142,10 @@ export class HomeAccountAcquisitions {
           }
           attempt.result = { state: "failed", message: "Sign-in cancelled." };
         }
-        await this.finish(attempt, attempts);
+        await this.finish(attempt, attempts, request.signal);
         return this.reply(null);
       }
-      if (attempt.result) { await this.finish(attempt, attempts); return this.reply(attempt.result); }
+      if (attempt.result) { await this.finish(attempt, attempts, request.signal); return this.reply(attempt.result); }
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
         const callback = new URL(value.value);
@@ -174,7 +174,7 @@ export class HomeAccountAcquisitions {
   }
 
   private async progress(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
-    if (attempt.result) return this.finish(attempt, attempts);
+    if (attempt.result) return this.finish(attempt, attempts, signal);
     if (attempt.expires <= this.now()) {
       // An unknown start is never repeated or assigned by a directory diff.
       attempt.observed = rows((await this.home.data("/credentials", { signal })).files).flatMap((row) => text(row.id) ?? []);
@@ -190,25 +190,29 @@ export class HomeAccountAcquisitions {
           ...(text(status.auth_id) ? [String(status.auth_id)] : []),
         ])];
         // A directory diff cannot establish which global account this attempt acquired.
-        attempt.observed = ids;
         if (ids.length === 0 || ids.length > 32) {
           attempt.result = { state: "failed", message: "The sign-in did not return its exact credentials. No account was linked." };
-          return this.finish(attempt, attempts);
+          return this.finish(attempt, attempts, signal);
         }
+        attempt.observed = ids;
         const reconnect = attempt.reconnect === undefined ? [] : homeReferences(attempt.reconnect);
         if (ids.some((id) => attempt.before.includes(id) && !reconnect.includes(id))) {
           attempt.result = { state: "failed", message: "This sign-in returned an existing account. Select its saved account instead." };
-          return this.finish(attempt, attempts);
+          return this.finish(attempt, attempts, signal);
         }
         const credentials = rows((await this.home.data("/credentials", { signal })).files);
         if (!ids.every((id) => credentials.some((row) => row.id === id && (text(row.provider) ?? text(row.type)) === attempt.provider))) return unavailable();
         attempt.result = { state: "connected", ref: homeReference(ids) };
       } else return unavailable();
     }
-    if (attempt.result) await this.finish(attempt, attempts);
+    if (attempt.result) await this.finish(attempt, attempts, signal);
   }
 
-  private async finish(attempt: Attempt, attempts: Record<string, Attempt>): Promise<void> {
+  private async finish(attempt: Attempt, attempts: Record<string, Attempt>, signal?: AbortSignal): Promise<void> {
+    if (!attempt.settled && attempt.result?.state === "failed" && attempt.observed === undefined) {
+      // A credential can outlive its final status. Exclude current IDs before releasing a legacy diff.
+      attempt.observed = rows((await this.home.data("/credentials", { signal })).files).flatMap((row) => text(row.id) ?? []);
+    }
     // Retain the exact outcome before releasing the legacy attribution exclusion.
     await this.storage.put(storageKey, attempts);
     if (attempt.settled) return;

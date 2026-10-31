@@ -1860,6 +1860,65 @@ test("an unresolved global sign-in prevents a legacy directory diff from claimin
   assert.ok(f.home.files.has("global-account"));
 });
 
+for (const outcome of ["lost-status", "missing-ids"] as const) {
+  for (const order of ["native-first", "legacy-first"] as const) {
+    test(`an ambiguous global ${outcome} in ${order} order cannot become a legacy pool account`, async () => {
+      const f = await fixture();
+      f.home.flow = "device";
+      let legacy: SignInStarted;
+      let native: { session: string };
+      const startGlobal = async () => {
+        const response = await f.acquire("start");
+        assert.equal(response.status, 200);
+        return await response.json() as { session: string };
+      };
+      if (order === "native-first") { native = await startGlobal(); legacy = await f.start(); }
+      else { legacy = await f.start(); native = await startGlobal(); }
+      const nativeState = [...f.home.sessions.keys()].find((key) => key !== state(legacy))!;
+      f.home.addFile("global-account");
+      if (outcome === "lost-status") f.home.sessions.delete(nativeState);
+      else f.home.sessions.set(nativeState, { provider, status: "ok" });
+      f.restart();
+      const failed = await f.acquire("status", { session: native.session });
+      assert.equal(failed.status, 200);
+      assert.equal((await failed.json() as { state: string }).state, "failed");
+      f.restart();
+      f.home.sessions.set(state(legacy), { provider, status: "ok" });
+      const result = await f.poll(legacy);
+      assert.equal(result.status, 200);
+      assert.equal((await result.json() as SignInStatus).status, "failed");
+      assert.equal(f.home.members.length, 0);
+      assert.ok(f.home.files.has("global-account"));
+    });
+  }
+
+  test(`an ambiguous global ${outcome} retains its guard while credential reconciliation fails`, async () => {
+    const f = await fixture();
+    f.home.flow = "device";
+    const legacy = await f.start();
+    const started = await f.acquire("start");
+    assert.equal(started.status, 200);
+    const native = await started.json() as { session: string };
+    const nativeState = [...f.home.sessions.keys()].find((key) => key !== state(legacy))!;
+    f.home.addFile("global-account");
+    if (outcome === "lost-status") f.home.sessions.delete(nativeState);
+    else f.home.sessions.set(nativeState, { provider, status: "ok" });
+    f.home.override = (path) => path.endsWith("/credentials") ? Response.json({}, { status: 503 }) : undefined;
+    assert.equal((await f.acquire("status", { session: native.session })).status, 503);
+    f.home.override = undefined;
+    f.restart();
+    const failed = await f.acquire("status", { session: native.session });
+    assert.equal(failed.status, 200);
+    assert.equal((await failed.json() as { state: string }).state, "failed");
+    f.home.sessions.set(state(legacy), { provider, status: "ok" });
+    const result = await f.poll(legacy);
+    assert.equal(result.status, 200);
+    assert.equal((await result.json() as SignInStatus).status, "failed");
+    assert.equal(f.home.members.length, 0);
+    assert.ok(f.home.files.has("global-account"));
+  });
+}
+
 test("the alarm retains an unattended global result across eviction without attaching any pool", async () => {
   const f = await fixture();
   const startedResponse = await f.acquire("start");
