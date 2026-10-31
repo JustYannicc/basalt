@@ -8,10 +8,12 @@ import { ComputerHome } from "./computer-home.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
-import { failureResponse } from "./json.ts";
+import { ControlFailure, failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
+import { nativeControlPath, nativeModelHeader } from "./native-contract.ts";
+import { nativeResponse } from "./native-response.worker.ts";
 import {
   hasActiveHomeApiKey,
   homeApiKeyCandidates,
@@ -178,6 +180,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
     if (pathname === accessPath) return this.computers.access(request);
+    if (pathname === nativeControlPath) return this.computers.nativeControl(request);
     if (isControlPath(pathname)) {
       try {
         await requirePoolUse(request, {
@@ -205,7 +208,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (isControlPath(pathname)) return this.control.handle(request);
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
+    let native: Awaited<ReturnType<Computers["nativeModel"]>> | undefined;
     try {
+      if (request.headers.has(nativeModelHeader)) {
+        native = await this.computers.nativeModel(request);
+        request = native.request;
+      }
       const status = await (await this.lifecycle).warm();
       if (pathname === "/__warm") return new Response(null, { status: 204 });
       const container = this.ctx.container;
@@ -214,11 +222,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       const response = await rewriteCapResponse(upstream, pathname);
       if (request.method === "POST" && modelPaths.has(pathname) && response.ok)
         this.ctx.waitUntil(this.computers.observeUsage());
-      if (response.status === 101) return response;
+      if (response.status === 101) return native === undefined ? response : nativeResponse(response, native);
       const headers = new Headers(response.headers);
       headers.set("X-Signalbox-Pool-Boot", status.boot_id);
-      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+      const forwarded = new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+      return native === undefined ? forwarded : nativeResponse(forwarded, native);
     } catch (error) {
+      native?.release();
+      if (error instanceof ControlFailure) return failureResponse(error);
       // Startup and port errors are fixed runtime messages without request data or credentials.
       console.error("Pool backend unavailable", error instanceof Error ? error.message.slice(0, 300) : "unknown error");
       return new Response(null, { status: 503, headers: { "Retry-After": "5", "Cache-Control": "no-store" } });
@@ -237,10 +248,12 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
+  if (pathname === nativeControlPath) return singleton(env).fetch(request);
   if (pathname !== accessPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {
+    if (request.headers.has(nativeModelHeader)) return singleton(env).fetch(request);
     const { supplied, values } = homeApiKeyCandidates(request);
     if (!supplied) return modelAuthResponse(401, "Missing API key");
     if (values.length === 0) return modelAuthResponse(401, "Invalid API key");

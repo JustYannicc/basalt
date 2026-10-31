@@ -10,6 +10,8 @@ import { captureProduct } from "./telemetry/product.ts";
 import { traceRequest, type TraceEnv } from "./telemetry/traces.ts";
 import { validSentryDsn } from "./telemetry/sentry.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
+import { nativeAuthenticationHeader, nativeModelRequest } from "./native-model.ts";
+import { nativeControlPath } from "./pool/native-contract.ts";
 
 // Service bindings name the same gateways as the architecture.
 export const serviceArchitecture = {
@@ -193,10 +195,13 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (pathname.startsWith("/share/v1/")) return handleShare(request, env);
   // Internal setup assertions are sent only through the private binding by the setup host.
   if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());
+  if (pathname === nativeControlPath) return env.POOL_SERVICE.fetch(request);
   if (isPoolManagementPath(pathname)) {
     return Promise.resolve(new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }));
   }
   if (isPoolPath(pathname)) {
+    if (isPublicModelPath(pathname) && request.headers.get(nativeAuthenticationHeader) === "1")
+      return nativeModelRequest(request, env);
     return env.POOL_SERVICE.fetch(request);
   }
   // Signed out, the tools service's homepage is its marketing page; sign-in sends people on.

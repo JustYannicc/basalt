@@ -12,6 +12,7 @@ import { openEnvelope, verifyPoolToken } from "./token.ts";
 import { computerName, readIntent, seal, setupInstructions, setupTtl, signIntent, unseal, type SetupIntent } from "./setup-links.ts";
 import { emitProductEvent, type ProductEventCallback } from "../setup/product-events.ts";
 import { markSetupCompleted, observePendingUsage, type UsageObservationEvent } from "./usage-observation.ts";
+import { NativeComputers } from "./native-computers.ts";
 
 interface Dependencies {
   storage: ComputerStorage; home: ComputerHome; signingKey: string; previousSigningKey?: string;
@@ -27,8 +28,15 @@ function choosePool(pools: readonly { id: string }[], value: unknown): string {
 /** Separate from subscription attribution. Computer setup and access changes share this queue. */
 export class Computers {
   private deps: Dependencies;
+  private native: NativeComputers;
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(deps: Dependencies) { this.deps = deps; }
+  constructor(deps: Dependencies) {
+    this.deps = deps;
+    this.native = new NativeComputers({ ...deps, now: () => this.now(),
+      run: (work) => this.run(work), save: (registry) => this.save(registry) });
+  }
+  nativeControl(request: Request) { return this.native.control(request); }
+  nativeModel(request: Request) { return this.native.model(request); }
   private now() { return this.deps.now?.() ?? Date.now(); }
   private origin() { return this.deps.origin ?? `https://${brand.host}`; }
   private async run<T>(work: (registry: Registry) => Promise<T>): Promise<T> {
@@ -47,7 +55,11 @@ export class Computers {
     this.queue = next.catch(() => {});
     return next;
   }
-  private save(registry: Registry) { return this.deps.storage.put(storageKey, registry); }
+  private async save(registry: Registry) {
+    const result = await this.deps.storage.put(storageKey, registry);
+    this.native.sync(registry);
+    return result;
+  }
   async expire(): Promise<void> {
     await this.run(async (registry) => {
       let changed = false;
@@ -275,6 +287,7 @@ export class Computers {
     return json({ toolsKeyId: computer.toolsKeyId ?? null });
   }
   private async switchPool(registry: Registry, computer: StoredComputer, pool: string, owner?: string): Promise<Response> {
+    if (computer.native) return fail(409, "busy", "Approve a new native sign-in to change its model pool.");
     if (computer.state !== "active" || computer.removalPending || !computer.keyId) return fail(409, "busy", "This computer cannot switch pools.");
     if (computer.pool === pool && !computer.switching?.length) return json(publicView(computer));
     computer.switching = [...new Set([...(computer.switching ?? []), pool])];

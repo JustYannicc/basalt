@@ -117,6 +117,8 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     return { ...value, intent: setup };
   }
   return { storage, server, home, events, context, action, access, intent, create,
+    nativeControl: (request: Request) => computers.nativeControl(request),
+    nativeModel: (request: Request) => computers.nativeModel(request),
     expire: () => computers.expire(), now: () => time, advance: (ms: number) => { time += ms; }, restart: () => { computers = make(); },
     registry: async () => (await storage.get<Registry>("computer-registry-v1")) ?? {},
     userName: (user: string, claims: { pool: string } = pool) => backendUserName(user, claims.pool),

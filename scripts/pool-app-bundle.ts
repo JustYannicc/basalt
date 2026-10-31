@@ -98,5 +98,6 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     join(root, "src/pool/access-contract.ts"),
     join(dirname(destination), "pool-access-contract.ts"),
   );
+  copyFileSync(join(root, "src/pool/native-contract.ts"), join(dirname(destination), "native-contract.ts"));
   return files;
 }
