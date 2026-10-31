@@ -37,7 +37,7 @@
           "sha256": "bd887e4772d191bdc7ba346d3a69eb0dfaf9dd8136e34c0fd53861f1a221a1f1",
           "retirement": {
             "mode": "manual",
-            "requires": "Replacement provides native System One routes through the full Home authority and execution path, preserves native errors and accounting, and passes stock SDK, compression, multipart, account-scoped catalog and revocation proofs."
+            "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."
           }
         }
       ]

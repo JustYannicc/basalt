@@ -613,7 +613,7 @@
     {
       "identity": "basalt-account-key-mirrors",
       "file": "0066-account-key-mirrors.patch",
-      "content_sha256": "6af61c59460df9c0f2f9a36546796f4eff9ce81a5b5f6eaff16924b7a39c488c",
+      "content_sha256": "8d6e8e8c538668bff7d4f3c4cb4df2deaf423b4884957c6f53f9c6c6111b30c1",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,
@@ -631,7 +631,7 @@
     {
       "identity": "executor-workflow-input-approvals",
       "file": "0068-workflow-input-approvals.patch",
-      "content_sha256": "5b0596e540e776718138e5a214414b046a9b6b5d79ff704735f678a7a774757e",
+      "content_sha256": "aea5d4251f1ad3d228346cfb32d206ff8f75178ec40c962c7b0477bb9491bb89",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -649,6 +649,6 @@
   ],
   "pool_carries": {
     "manifest": "containers/pool/sources.json",
-    "content_sha256": "cb097a92737c5a617ad218af739290030ed65d7db2c4c8198cf5600b13a1ad75"
+    "content_sha256": "01dc0201f75f7dce30621f8578f4fdf0b6ef53e1cf7cab0b7648823969699f9a"
   }
 }

@@ -1618,3 +1618,34 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    accountAcquisition: {
      fixtures: "actors",
      file: "account-acquisition.spec.ts",
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -34,6 +34,9 @@
+         const beforeInput = yield* legacyStorage([
+           ...retainedQueries,
+           ...beforeAccountIdentities(),
++          {
++            sql: "ALTER TABLE executor_account_acquisitions DROP COLUMN mirror_reference, DROP COLUMN mirror_ready, DROP COLUMN mirror_operation",
++          },
+           { sql: "DROP TABLE executor_workflow_inputs" },
+           { sql: "UPDATE private_executor_settings SET value = '4.0.21' WHERE key = 'version'" },
+         ]);
+@@ -48,7 +51,7 @@
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name = 'executor_workflow_inputs'",
+           },
+         ]);
+-        expect(inputVersion).toEqual([{ value: "4.0.24" }]);
++        expect(inputVersion).toEqual([{ value: "4.0.25" }]);
+         expect(inputTables).toEqual([{ table_name: "executor_workflow_inputs" }]);
+         yield* serverControl("start");
+         expect((yield* fixture.read()).status).toBe(200);
+@@ -78,7 +81,7 @@
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.24" }]);
++        expect(version).toEqual([{ value: "4.0.25" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
