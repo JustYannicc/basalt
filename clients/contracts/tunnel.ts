@@ -88,7 +88,6 @@ export const TunnelOpen = Schema.Struct({
 const Bytes = Schema.String.check(
   Schema.makeFilter(
     (value) =>
-      value.length > 0 &&
       value.length <= 4 * Math.ceil(tunnelLimits.chunkBytes / 3) &&
       /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value),
   ),

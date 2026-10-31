@@ -357,7 +357,7 @@ diff --git a/e2e/support/native-tunnel-model.ts b/e2e/support/native-tunnel-mode
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/native-tunnel-model.ts
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,19 @@
 +/** Synthetic model peer; network responses expose cancellation at the actual HTTP boundary. */
 +export const syntheticTunnelModel = `
 +export default { fetch(request, env) {
@@ -367,7 +367,11 @@ new file mode 100644
 +    const pair = new WebSocketPair();
 +    pair[1].binaryType = "arraybuffer";
 +    pair[1].accept();
-+    pair[1].addEventListener("message", event => pair[1].send(event.data));
++    pair[1].addEventListener("message", event => {
++      if (event.data === "close-with-output") {
++        pair[1].send("retained-after-close"); pair[1].close(1000, "Done");
++      } else pair[1].send(event.data);
++    });
 +    return new Response(null, { status: 101, webSocket: pair[0] });
 +  }
 +  return fetch(new Request(new URL(url.pathname, env.MODEL_ORIGIN), request));
@@ -377,7 +381,7 @@ diff --git a/e2e/tests/native-tunnel.spec.ts b/e2e/tests/native-tunnel.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/native-tunnel.spec.ts
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,317 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Redacted, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -574,6 +578,12 @@ new file mode 100644
 +          if (part.more !== true) break;
 +        }
 +        expect(Buffer.concat(fragments).equals(binary)).toBe(true);
++        for (const text of [true, false]) {
++          channel.send({ type: "data", id: 5, bytes: "", text });
++          const empty = yield* channel.next("data", 5);
++          expect(empty.bytes).toBe("");
++          expect(empty.text).toBe(text);
++        }
 +        channel.send({ type: "cancel", id: 5 });
 +
 +        yield* evidence.json("tunnel-websocket.json", {
@@ -607,6 +617,26 @@ new file mode 100644
 +          yield* rejected.closed;
 +          expect(worker.calls()).toBe(before);
 +        }
++        open(7, "models", "/v1/responses", "GET", "websocket");
++        expect((yield* channel.next("response", 7)).status).toBe(101);
++        yield* channel.next("credit", 7);
++        channel.send({
++          type: "data",
++          id: 7,
++          bytes: Buffer.from("close-with-output").toString("base64"),
++          text: true,
++        });
++        channel.send({ type: "credit", id: 7, bytes: 65536 });
++        const retained = yield* channel.next("data", 7);
++        expect(Buffer.from(String(retained.bytes), "base64").toString()).toBe(
++          "retained-after-close",
++        );
++        yield* channel.next("end", 7);
++        yield* evidence.json("tunnel-close-drain.json", {
++          queuedOutputPreserved: true,
++          emptyMessagesPreserved: true,
++        });
++
 +        const removed = yield* p.api.request(
 +          p.anonymous,
 +          "POST",

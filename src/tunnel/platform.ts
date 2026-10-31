@@ -1,5 +1,8 @@
 /** Cloudflare's upgrade extensions stay at the edge of the transport. */
-export interface TunnelSocket extends WebSocket {
+export interface TunnelSocket extends Pick<
+  WebSocket,
+  "send" | "close" | "binaryType" | "addEventListener"
+> {
   accept(): void;
 }
 type UpgradeResponse = Response & { webSocket: TunnelSocket | null };

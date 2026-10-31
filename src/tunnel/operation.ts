@@ -19,7 +19,7 @@ export class TunnelOperation {
   private abort = new AbortController();
   private input: TunnelInput | undefined;
   private socket: TunnelWebSocket | undefined;
-  private reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  private reader: ReadableStreamBYOBReader | undefined;
   private stopped = false;
   private ended = false;
   private started = false;
@@ -125,15 +125,11 @@ export class TunnelOperation {
         headers: checked,
       });
       if (response.body) {
-        this.reader = response.body.getReader();
+        this.reader = response.body.getReader({ mode: "byob" });
         for (;;) {
-          await this.output.capacity();
-          const next = await this.reader.read();
+          const capacity = await this.output.capacity();
+          const next = await this.reader.read(new Uint8Array(capacity));
           if (next.done) break;
-          if (next.value.length > tunnelLimits.windowBytes) {
-            this.error("limit");
-            return;
-          }
           let offset = 0;
           while (offset < next.value.length) {
             const size = Math.min(await this.output.capacity(), next.value.length - offset);

@@ -577,7 +577,7 @@
     {
       "identity": "basalt-native-tunnel-expiry",
       "file": "0062-native-tunnel-expiry.patch",
-      "content_sha256": "1796e2abb4f918025dded971a0e4a9e4c0bac018f812d304008e6e836d85467b",
+      "content_sha256": "cfd50643b726b8e3239ae9ddfbe7e27d63399598f4c09b2c30ccb2c52f9ade45",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

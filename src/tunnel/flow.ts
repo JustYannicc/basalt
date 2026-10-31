@@ -31,7 +31,7 @@ export class TunnelInput {
     );
   }
   push(bytes: Uint8Array) {
-    if (this.ended || this.stopped || bytes.length > this.credit)
+    if (bytes.length === 0 || this.ended || this.stopped || bytes.length > this.credit)
       throw new Error("Request credit exceeded");
     this.received += bytes.length;
     if (this.received > tunnelLimits.requestBytes) throw new Error("Request exceeds its limit");

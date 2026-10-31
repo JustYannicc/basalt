@@ -21,6 +21,8 @@ export class TunnelWebSocket {
   private incomingBytes = 0;
   private incomingText: boolean | undefined;
   private received = 0;
+  private upstreamClosed = false;
+  private ended: () => void;
   constructor(
     socket: TunnelSocket,
     id: number,
@@ -34,6 +36,7 @@ export class TunnelWebSocket {
     this.output = output;
     this.send = send;
     this.fail = fail;
+    this.ended = ended;
     socket.binaryType = "arraybuffer";
     socket.addEventListener("message", (event) => {
       try {
@@ -41,20 +44,25 @@ export class TunnelWebSocket {
         const text = typeof data === "string";
         if (!text && !(data instanceof ArrayBuffer)) throw new Error("Invalid model socket data");
         const bytes = text ? new TextEncoder().encode(data) : new Uint8Array(data as ArrayBuffer);
-        if (!bytes.length || bytes.length + this.queuedBytes > tunnelLimits.windowBytes)
+        if (Math.max(1, bytes.length) + this.queuedBytes > tunnelLimits.windowBytes)
           throw new Error("Model socket buffer exceeded");
         this.queued.push({ bytes, text });
-        this.queuedBytes += bytes.length;
+        this.queuedBytes += Math.max(1, bytes.length);
         void this.flush();
       } catch {
         fail();
       }
     });
-    socket.addEventListener("close", ended);
+    socket.addEventListener("close", () => {
+      if (this.stopped) return;
+      this.upstreamClosed = true;
+      void this.flush();
+    });
     socket.addEventListener("error", fail);
     socket.accept();
   }
   receive(bytes: Uint8Array, text: boolean, more: boolean) {
+    if (bytes.length === 0 && more) throw new Error("Empty message continuation");
     if (this.stopped || (this.incomingText !== undefined && text !== this.incomingText))
       throw new Error("Invalid model message continuation");
     this.incomingText = text;
@@ -76,7 +84,8 @@ export class TunnelWebSocket {
     this.socket.send(
       text ? new TextDecoder("utf-8", { fatal: true }).decode(message) : message.buffer,
     );
-    this.send({ v: 1, type: "credit", id: this.id, bytes: this.incomingBytes });
+    if (this.incomingBytes)
+      this.send({ v: 1, type: "credit", id: this.id, bytes: this.incomingBytes });
     this.incoming = [];
     this.incomingBytes = 0;
     this.incomingText = undefined;
@@ -97,6 +106,8 @@ export class TunnelWebSocket {
       while (this.queued.length && !this.stopped) {
         const next = this.queued[0]!;
         let offset = 0;
+        if (next.bytes.length === 0)
+          this.send({ v: 1, type: "data", id: this.id, text: next.text, bytes: "", more: false });
         while (offset < next.bytes.length) {
           const size = Math.min(await this.output.capacity(), next.bytes.length - offset);
           if (this.stopped) return;
@@ -112,12 +123,13 @@ export class TunnelWebSocket {
           offset += size;
         }
         this.queued.shift();
-        this.queuedBytes -= next.bytes.length;
+        this.queuedBytes -= Math.max(1, next.bytes.length);
       }
     } catch {
       if (!this.stopped) this.fail();
     } finally {
       this.running = false;
+      if (this.upstreamClosed && this.queued.length === 0 && !this.stopped) this.ended();
     }
   }
 }
