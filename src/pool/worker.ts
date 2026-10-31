@@ -1,3 +1,4 @@
+import { accountMirrorPath, handleAccountKeyMirror } from "./account-key-mirror.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
 import type { ProductEventCallback } from "../setup/product-events.ts";
@@ -10,7 +11,7 @@ import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
 import { failureResponse } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort } from "./lifecycle.ts";
-import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
+import { nativeControlPath, nativeSessionPath } from "./native-contract.ts";
 import { nativeSession } from "./native-response.worker.ts";
 import {
   hasActiveHomeApiKey,
@@ -57,6 +58,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
 export class PoolContainer extends DurableObject<PoolEnvironment> {
   private lifecycle: Promise<PoolLifecycle>;
   private control: PoolControl;
+  private mirrorHome: HomeClient;
   private computers: Computers;
   private prices: PriceUpkeep;
   private usage: PoolUsage;
@@ -98,6 +100,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         headers.set("X-Management-Key", env.POOL_MANAGEMENT_KEY);
         return container.getTcpPort(8327).fetch(new Request(`http://pool${path}`, { ...init, headers }));
       };
+    this.mirrorHome = new HomeClient(home);
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -203,6 +206,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return new Response(null, { status: 204 });
       } catch { return Response.json({ error: "membership_unavailable" }, { status: 503 }); }
     }
+    if (pathname === accountMirrorPath) return handleAccountKeyMirror(request, {
+      home: this.mirrorHome, signingKey: this.env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+    });
     if (pathname === accessPath) return this.computers.access(request);
     if (pathname === nativeControlPath) return this.computers.nativeControl(request);
     if (pathname === nativeSessionPath) {
@@ -259,7 +266,7 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
-  if (pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
+  if (pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
   if (pathname !== accessPath && pathname !== membershipPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
     return new Response(null, { status: 404 });
   }

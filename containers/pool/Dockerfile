@@ -10,6 +10,7 @@ ARG TARGETARCH
 ENV GOMAXPROCS=2
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 COPY --from=source-fetch /source /source
+COPY native /source/node/internal/nativeapi
 RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible' -count=1 && \
     cd /source/node && go test -p=2 -mod=readonly ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/logging -run MetadataOnly -count=1
 RUN mkdir -p /out/home /out/node && \
@@ -29,6 +30,8 @@ RUN mkdir -p /out/plugins && \
       -ldflags="-s -w -X main.pluginVersion=$(cat .build-version)" \
       -o /out/plugins/gemini-cli.so ./cmd/geminicli && \
     cp LICENSE /out/plugins/LICENSE-gemini-cli
+COPY typesafe /build/typesafe
+RUN cd /build/typesafe && CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -buildmode=c-shared -ldflags="-s -w" -o /out/plugins/typesafe.so .
 COPY plugin_probe.go /build/plugin_probe.go
 COPY native_policy_home_test.go.tmpl /build/native_policy_home_test.go.tmpl
 COPY native_policy_home_host_helper.go.tmpl /build/native_policy_home_host_helper.go
@@ -95,6 +98,7 @@ COPY --from=source-build /out/node/LICENSE /usr/share/licenses/cliproxy-node/LIC
 
 COPY --from=source-build /out/plugins/gemini-cli.so /opt/pool/plugins/gemini-cli.so
 COPY --from=source-build /out/plugins/basalt-native-policy.so /opt/pool/plugins/basalt-native-policy.so
+COPY --from=source-build /out/plugins/typesafe.so /opt/pool/plugins/typesafe.so
 COPY --from=source-build /out/plugins/LICENSE-gemini-cli /usr/share/licenses/gemini-cli/LICENSE
 # Probe shadow copies are build evidence, not runtime image contents.
 RUN --mount=from=source-build,source=/out/plugin-probe,target=/tmp/plugin-probe \

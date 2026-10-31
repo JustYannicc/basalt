@@ -102,7 +102,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^account rows show retained usage and health|^app-acquired account checks publish bounded status"
+          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^account rows show retained usage and health|^app-acquired account checks publish bounded status|^native pool account links mirror current tokens only after hosted authorization"
           --workers 1
       - name: Verify shared identities and incremental consent
         working-directory: .upstream
@@ -116,6 +116,9 @@ jobs:
           bun run e2e:cloud --test-name
           "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app"
           --workers 1
+      - name: Verify account mirror retries and generations through the SDK HTTP host
+        working-directory: .upstream
+        run: bunx vitest run --config e2e/account-mirrors.config.ts
       - name: Verify recovery through Cloud's real provisioning queue
         working-directory: .upstream
         env:
@@ -420,6 +423,7 @@ jobs:
           docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
       - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
+      - run: bun install --cwd scripts/pool-tests/sdk --frozen-lockfile
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:

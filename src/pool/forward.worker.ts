@@ -51,7 +51,7 @@ export async function forwardPoolRequest(request: Request, port: 8317 | 8327 | u
     if (!port) throw new Error("Pool container port unavailable");
     const upstream = await deps.fetch(containerRequest(request, "http://pool"), port);
     const response = await rewriteCapResponse(upstream, pathname);
-    if (request.method === "POST" && modelPaths.has(pathname) && response.ok)
+    if (request.method === "POST" && (modelPaths.has(pathname) || pathname === "/v1/systemone" || pathname === "/typesafe/v1/systemone") && response.ok)
       deps.defer(deps.computers.observeUsage());
     if (response.status === 101) {
       const forwarded = native === undefined ? response : nativeResponse(response, native);

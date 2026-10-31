@@ -611,6 +611,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-account-key-mirrors",
+      "file": "0066-account-key-mirrors.patch",
+      "content_sha256": "6af61c59460df9c0f2f9a36546796f4eff9ce81a5b5f6eaff16924b7a39c488c",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "basalt-native-pool-membership",
       "file": "0067-native-pool-membership.patch",
       "content_sha256": "8476564fa6112f415ef9fa2c2b0c3c43d47d5cbc83eef00f62ec7c6eaebb8b70",
@@ -640,6 +649,6 @@
   ],
   "pool_carries": {
     "manifest": "containers/pool/sources.json",
-    "content_sha256": "15f01fcfadf9f70068f08c307f0d787f539742f252a7d6df95b14a9bafa04ef0"
+    "content_sha256": "cb097a92737c5a617ad218af739290030ed65d7db2c4c8198cf5600b13a1ad75"
   }
 }

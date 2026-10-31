@@ -30,6 +30,15 @@
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
           }
+        },
+        {
+          "identity": "cliproxy-native-typesafe-registration",
+          "file": "0066-typesafe-native-registration.patch",
+          "sha256": "bd887e4772d191bdc7ba346d3a69eb0dfaf9dd8136e34c0fd53861f1a221a1f1",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Replacement provides native System One routes through the full Home authority and execution path, preserves native errors and accounting, and passes stock SDK, compression, multipart, account-scoped catalog and revocation proofs."
+          }
         }
       ]
     }
