@@ -30,6 +30,7 @@ const responseHeaderNames = new Set([
   "mcp-session-id",
   "mcp-protocol-version",
   "retry-after",
+  "x-should-retry",
   "x-request-id",
   "request-id",
 ]);

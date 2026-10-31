@@ -24,6 +24,7 @@ export async function remoteFixture() {
   const cancelled = deferred<void>();
   const websocketBytes = deferred<Buffer>();
   let calls = 0,
+    modelCalls = 0,
     slowBytes = 0;
   const slowTotal = 32 * 1024 * 1024;
   const server = createServer((request, response) => {
@@ -79,6 +80,16 @@ export async function remoteFixture() {
         return;
       }
       const input = await body(request);
+      modelCalls++;
+      if (input.mode === "disconnect") {
+        request.socket.destroy();
+        return;
+      }
+      if (input.mode === "unknown") {
+        response.writeHead(502, { "content-type": "application/json", "x-should-retry": "false" });
+        response.end(JSON.stringify({ error: { code: "upstream_outcome_unknown", retryable: false } }));
+        return;
+      }
       if (input.mode === "error") {
         response.writeHead(429, { "content-type": "application/json", "retry-after": "17" });
         response.end(JSON.stringify({ error: "synthetic quota refusal" }));
@@ -136,6 +147,7 @@ export async function remoteFixture() {
     cancelled,
     websocketBytes,
     calls: () => calls,
+    modelCalls: () => modelCalls,
     slowBytes: () => slowBytes,
     slowTotal,
     close: () =>

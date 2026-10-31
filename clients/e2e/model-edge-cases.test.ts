@@ -111,3 +111,19 @@ test(
     }
   },
 );
+
+for (const mode of ["unknown", "disconnect"]) test(`direct model ${mode} forbids retry without replaying the request`, async () => {
+  const before = remote.modelCalls();
+  const response = await fetch(`${runtime.origin}/v1/responses`, {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "fixture-model", mode }),
+  });
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("x-should-retry"), "false");
+  assert.equal(response.headers.get("retry-after"), null);
+  assert.equal(response.headers.get("retry-after-ms"), null);
+  const body = await response.json() as { error: { code: string; retryable: boolean } };
+  assert.equal(body.error.code, "upstream_outcome_unknown");
+  assert.equal(body.error.retryable, false);
+  assert.equal(remote.modelCalls(), before + 1);
+});

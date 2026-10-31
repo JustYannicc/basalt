@@ -66,6 +66,7 @@ export const TunnelResponseHeaders = Schema.Struct({
   "mcp-session-id": Schema.optionalKey(Header),
   "mcp-protocol-version": Schema.optionalKey(Header),
   "retry-after": Schema.optionalKey(Header),
+  "x-should-retry": Schema.optionalKey(Header),
   "x-request-id": Schema.optionalKey(Header),
   "request-id": Schema.optionalKey(Header),
 });

@@ -1,3 +1,4 @@
+import { upstreamOutcomeUnknown } from "../clients/contracts/model-error.ts";
 import {
   nativeAuthenticationHeader,
   nativeModelHeader,
@@ -66,8 +67,14 @@ export async function nativeModelRequest(request: Request, env: Environment): Pr
     ])
       headers.delete(name);
     headers.set(nativeModelHeader, assertion);
-    return env.POOL_SERVICE.fetch(new Request(request, { headers }));
+    return forwardModelRequest(new Request(request, { headers }), env);
   } catch {
     return refused(503);
   }
+}
+
+/** Once a binding send starts, a rejected promise leaves the upstream outcome unknown. */
+export async function forwardModelRequest(request: Request, env: Pick<Environment, "POOL_SERVICE">): Promise<Response> {
+  try { return await env.POOL_SERVICE.fetch(request); }
+  catch { return upstreamOutcomeUnknown(); }
 }

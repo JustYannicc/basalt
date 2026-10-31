@@ -1,3 +1,4 @@
+import { upstreamOutcomeUnknown } from "../../clients/contracts/model-error.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
@@ -39,4 +40,16 @@ export function gatewayUnavailable(
   } }, { status: 503, headers: {
     "Retry-After": "2", "Cache-Control": "no-store", "X-Request-Id": requestId,
   } });
+}
+
+export function gatewayOutcomeUnknown(
+  env: Dependencies,
+  request: Request,
+  defer: (work: Promise<unknown>) => void,
+): Response {
+  const requestId = crypto.randomUUID();
+  console.error("POOL_GATEWAY_FAILURE", { code: "upstream_outcome_unknown", status: 502, requestId });
+  defer(captureError(env, "pool_failure", new URL(request.url).pathname, undefined, requestId));
+  // Home may have billed this attempt, so it cannot be recorded as an uncharged refusal.
+  return upstreamOutcomeUnknown(requestId);
 }

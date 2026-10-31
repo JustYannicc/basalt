@@ -468,3 +468,47 @@ test("native SQL writes require the exact policy install acknowledgement", async
   assert.equal((await worker.fetch(await request())).status, 204);
   await Promise.all(background);
 });
+
+test("uncertain container model sends suppress retries while definite Home refusals pass through", async () => {
+  const values = new Map<string, unknown>();
+  const background: Promise<unknown>[] = [];
+  const paths = ["/v1/responses", "/v1/messages", "/v1/chat/completions", "/v1/systemone", "/typesafe/v1/systemone"];
+  let sends = 0, refuse = false;
+  const container = {
+    running: false, start() { this.running = true; }, destroy: async () => {}, setInactivityTimeout: async () => {},
+    getTcpPort(port: number) { return { fetch: async (request: Request) => {
+      if (port === 8318) return Response.json({ boot_id: "synthetic-boot", started_at: "2026-10-31T00:00:00Z" });
+      assert.equal(port, 8317);
+      sends++;
+      assert.equal(await request.text(), '{"state":"synthetic-unknown"}');
+      if (refuse) return Response.json({ error: "auth_unavailable" }, { status: 503, headers: { "Retry-After": "7" } });
+      throw new Error("synthetic transport loss after accepting request");
+    } }; },
+  };
+  const worker = new PoolContainer({ container, waitUntil: (work: Promise<unknown>) => { background.push(work); }, storage: {
+    get: async (name: string) => structuredClone(values.get(name)),
+    put: async (name: string, value: unknown) => { values.set(name, structuredClone(value)); },
+    getAlarm: async () => null, setAlarm: async () => {},
+  } }, {
+    POOL_DATABASE_URL: "postgres://fixture", POOL_MANAGEMENT_KEY: "fixture", POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_IMAGE_HASH: "fixture", POOL_MODEL_HISTORY_ENABLED: "false",
+  });
+  for (const path of paths) {
+    const before = sends;
+    const response = await worker.fetch(new Request(`https://pool.example${path}`, { method: "POST", body: '{"state":"synthetic-unknown"}' }));
+    assert.equal(response.status, 502, path);
+    assert.equal(response.headers.get("x-should-retry"), "false");
+    assert.equal(response.headers.get("retry-after"), null);
+    assert.equal(response.headers.get("retry-after-ms"), null);
+    const body = await response.json() as { error: { code: string; retryable: boolean } };
+    assert.equal(body.error.code, "upstream_outcome_unknown");
+    assert.equal(body.error.retryable, false);
+    assert.equal(sends, before + 1);
+  }
+  refuse = true;
+  const response = await worker.fetch(new Request("https://pool.example/v1/responses", { method: "POST", body: '{"state":"synthetic-unknown"}' }));
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("retry-after"), "7");
+  assert.equal(response.headers.get("x-should-retry"), null);
+  await Promise.all(background);
+});

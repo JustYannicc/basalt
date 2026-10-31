@@ -1,3 +1,4 @@
+import { ModelRequestNotSent } from "../contracts/model-error.ts";
 import {
   decodeTunnelBytes,
   decodeTunnelFrame,
@@ -36,7 +37,8 @@ export function openTunnel(
     ended = false,
     started = false,
     responded = false,
-    inputEnded = false;
+    inputEnded = false,
+    notStarted = false;
   let failure: Error | undefined,
     queued = 0,
     available = 0,
@@ -52,7 +54,7 @@ export function openTunnel(
   };
   const fail = () => {
     if (stopped || ended) return;
-    failure = new Error(
+    failure = notStarted ? new ModelRequestNotSent("The operation was refused before dispatch.") : new Error(
       "Tunnel interrupted; the outcome may be unknown. The operation was not replayed.",
     );
     stopped = true;
@@ -118,7 +120,10 @@ export function openTunnel(
         wakeSend?.();
         cleanup();
         socket.close();
-      } else fail();
+      } else {
+        notStarted = frame.type === "error" && frame.outcome === "not-started";
+        fail();
+      }
     } catch {
       fail();
     }

@@ -283,6 +283,7 @@ model {
   basalt.nativeTunnel -[sync]-> basalt.modelGateway "private lifetime lease and authorized model traffic"
   basalt.nativeTunnel -[sync]-> basalt.toolsGateway "validate native access and forward MCP through normal policy"
   basalt.nativeTunnel -[sync]-> basalt.clientConnection "share versioned frame and flow limits"
+  basalt.modelGateway -[sync]-> basalt.clientConnection "share the non-retryable model transport error contract"
 
   basalt.router -[sync]-> basalt.clientAssets "ASSETS: dashboard-host static files only"
   basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
