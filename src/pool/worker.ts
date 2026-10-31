@@ -189,10 +189,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     if (pathname.startsWith("/__setup/v1/")) return this.computers.handle(request);
     if (pathname === "/pool/v1/computers" || pathname === "/pool/v1/setup-context") {
+      const response = await this.computers.context(request);
       // Connect reads this when it opens; copying a setup prompt next mints a key in Home, so start
-      // a cold pool now rather than on that click. A failed warm is retried by the next Home call.
-      this.ctx.waitUntil(this.managementReady().catch(() => {}));
-      return this.computers.context(request);
+      // a cold pool now rather than on that click. Only an authorized read may start the shared
+      // container. A failed warm is retried by the next Home call.
+      if (response.ok) this.ctx.waitUntil(this.managementReady().catch(() => {}));
+      return response;
     }
     if (pathname === summaryPath) return this.usage.handle(request);
     if (pathname === modelHistoryPath || pathname === modelImportPath) return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
