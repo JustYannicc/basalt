@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { readConnectionView } from "../contracts/connection.ts";
 
 /** The SDK still sees HTTP; only its local hop uses the profile's private socket. */
 export function ipcFetch(socketPath: string, token: string) {
@@ -71,5 +72,5 @@ export async function control(socketPath: string, token: string, command: string
     signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error("The connection command was refused.");
-  return response.json() as Promise<unknown>;
+  return readConnectionView(await response.json());
 }

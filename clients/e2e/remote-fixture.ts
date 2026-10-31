@@ -66,6 +66,11 @@ export async function remoteFixture() {
         await transport.handleRequest(request, response);
         return;
       }
+      if (request.url === "/v1/responses/compact") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ compacted: true }));
+        return;
+      }
       if (request.url === "/v1/models") {
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ data: [{ id: "fixture-model", object: "model" }] }));
@@ -98,6 +103,13 @@ export async function remoteFixture() {
     const key = request.headers["sec-websocket-key"];
     if (request.headers.authorization !== "Bearer synthetic-model-key" || typeof key !== "string") {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
+    if (request.headers["openai-beta"] === "fixture-refuse") {
+      const body = JSON.stringify({ error: "synthetic handshake quota" });
+      socket.end(
+        `HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nRetry-After: 19\r\nSet-Cookie: private-fixture-cookie\r\n\r\n${body}`,
+      );
       return;
     }
     const accept = createHash("sha1")

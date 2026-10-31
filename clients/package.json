@@ -8,7 +8,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test e2e/*.test.ts"
+    "test": "node --test --test-timeout=30000 e2e/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

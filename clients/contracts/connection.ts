@@ -62,11 +62,15 @@ export interface ServiceCredentials {
   readonly models?: typeof Service.Type;
   readonly tools?: typeof ToolsService.Type;
 }
-export interface ConnectionView {
-  readonly state: "connected" | "disconnected" | "sign-in-required" | "revoked";
-  readonly mode: "direct" | "device";
-  readonly capabilities: readonly Capability[];
-}
+export const ConnectionView = Schema.Struct({
+  state: Schema.Literals(["connected", "disconnected", "sign-in-required", "revoked"]),
+  mode: Schema.Literals(["direct", "device"]),
+  capabilities: Schema.Array(Capability),
+});
+export type ConnectionView = typeof ConnectionView.Type;
+export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
+  onExcessProperty: "error",
+});
 
 /** The process owns forwarding; a credential source owns renewal and server-side revocation. */
 export interface CredentialSource {

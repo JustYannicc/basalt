@@ -12,6 +12,8 @@ import {
 import { forwardHttp, maximumRequestBytes } from "./http-forward.ts";
 import { forwardWebsocket } from "./websocket-forward.ts";
 
+const maximumActiveRequests = 32;
+
 export interface GatewayOptions {
   readonly profile: () => Promise<Profile>;
   readonly source: CredentialSource;
@@ -69,11 +71,12 @@ export async function startGateway(options: GatewayOptions) {
     const capability = remoteOperation(request.method, request.url ?? "");
     if (!capability) return answer(response, 404, { error: "This endpoint is not available." });
     const profile = await options.profile();
+    if (closed) return answer(response, 503, { error: "The connection is stopping." });
     if (!findAgent(request, profile.agents, capability))
       return answer(response, 401, { error: "An agent credential for this service is required." });
     if (Number(request.headers["content-length"] ?? 0) > maximumRequestBytes)
       return answer(response, 413, { error: "The request exceeds the local size limit." });
-    if (active.size >= 32)
+    if (active.size >= maximumActiveRequests)
       return answer(response, 503, {
         error: "The connection is busy. Retry when a request finishes.",
       });
@@ -117,8 +120,7 @@ export async function startGateway(options: GatewayOptions) {
         !localRequest(request, authority) ||
         request.url !== "/v1/responses" ||
         request.headers.upgrade?.toLowerCase() !== "websocket" ||
-        closed ||
-        active.size >= 32
+        closed
       )
         return socket.end(
           "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
@@ -127,6 +129,10 @@ export async function startGateway(options: GatewayOptions) {
       if (!findAgent(request, profile.agents, "models"))
         return socket.end(
           "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        );
+      if (closed || active.size >= maximumActiveRequests)
+        return socket.end(
+          "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
       const controller = new AbortController();
       active.add(controller);

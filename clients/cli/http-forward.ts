@@ -1,4 +1,9 @@
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -15,7 +20,7 @@ const requestHeaders = new Set([
   "anthropic-beta",
   "openai-beta",
 ]);
-const responseHeaders = new Set([
+const responseHeaderNames = new Set([
   "content-type",
   "content-encoding",
   "content-length",
@@ -27,6 +32,11 @@ const responseHeaders = new Set([
   "request-id",
 ]);
 export const maximumRequestBytes = 16 * 1024 * 1024;
+
+export function* forwardedResponseHeaders(headers: IncomingHttpHeaders) {
+  for (const [name, value] of Object.entries(headers))
+    if (responseHeaderNames.has(name) && value !== undefined) yield [name, value] as const;
+}
 
 function bodyLimit() {
   let bytes = 0;
@@ -65,8 +75,8 @@ export async function forwardHttp(
       responseArrived = true;
       remote.setTimeout(0);
       outgoing.statusCode = response.statusCode ?? 502;
-      for (const [name, value] of Object.entries(response.headers))
-        if (responseHeaders.has(name) && value !== undefined) outgoing.setHeader(name, value);
+      for (const [name, value] of forwardedResponseHeaders(response.headers))
+        outgoing.setHeader(name, value);
       outgoing.flushHeaders();
       pipeline(response, outgoing, { signal }).then(resolve, reject);
     });
