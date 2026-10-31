@@ -143,3 +143,45 @@ test("native TypeSafe SDK retains protocol, Home authority, errors, usage and ac
     try { await fixture?.close(); } finally { await upstream.provider.close(); }
   }
 });
+
+test("a native terminal error stops before another eligible credential", { timeout: 120_000 }, async (t) => {
+  const candidate = process.env.POOL_TEST_IMAGE;
+  assert.ok(candidate, "Build the candidate pool image");
+  const upstream = new TypeSafeFixture();
+  let fixture: SharingFixture | undefined;
+  let sends = 0;
+  try {
+    await upstream.provider.start();
+    fixture = new SharingFixture({ image: candidate, resourcePrefix: "basalt-typesafe-terminal", poolContainerArgs: upstream.provider.poolContainerArgs });
+    fixture.addLogRedactions(["synthetic-typesafe-a", "synthetic-typesafe-b"]);
+    await fixture.start();
+    await fixture.data("/config", "PATCH", { requests: { "proxy-url": upstream.provider.url } });
+    const client = new HomeClient((path, init) => fixture!.fetchHome(path, init));
+    const pool = new PoolHome(client, "fixture-typesafe-terminal");
+    const ids: string[] = [];
+    for (const token of ["synthetic-typesafe-a", "synthetic-typesafe-b"]) {
+      const id = randomUUID();
+      const saved: { name: string } = await fixture.data<{ name: string }>("/credentials", "POST", {
+        uuid: id, type: "typesafe", token, proxy_url: upstream.provider.url,
+      });
+      assert.equal(saved.name, `${id}.json`);
+      ids.push(id);
+    }
+    await pool.add(ids);
+    const key = await new ComputerHome(client).mint("typesafe-owner", pool.pool, "typesafe-terminal-computer");
+    upstream.disconnect = true;
+    const response = await fetch(`${fixture.node}/v1/systemone`, {
+      method: "POST", headers: { Authorization: `Bearer ${key.key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "jev-latest", state: "synthetic terminal replay probe", questions: { decision: { type: "noul", instructions: "Can it continue?" } } }),
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { detail: "TypeSafe request outcome is unknown" });
+    sends = upstream.calls.length;
+    if (sends === 2) assert.deepEqual(new Set(upstream.calls.map(call => call.key)), new Set(["Bearer synthetic-typesafe-a", "Bearer synthetic-typesafe-b"]));
+  } finally {
+    try { await fixture?.close(); } finally { await upstream.provider.close(); }
+  }
+  // Keep setup and teardown failures visible while the pinned Home-backed pipeline still replays.
+  if (sends === 2) t.todo("https://github.com/router-for-me/CLIProxyAPIHome/issues/178");
+  assert.equal(sends, 1, "A terminal response must not send the request through another credential");
+});
