@@ -3507,10 +3507,11 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
  import { expect, layer } from "@effect/vitest";
  import { Effect } from "effect";
  import { HostedLive, withHostedCase } from "../support/case.ts";
-@@ -7,12 +7,28 @@
+@@ -7,12 +7,29 @@
  import { serverControl } from "../support/server-control.ts";
  import { statusAccount } from "../support/status-account.ts";
  import { scenarios } from "../test-plan.ts";
++import { McpClient } from "../support/mcp-client.ts";
 +import { reportingUpgradeFixture } from "../support/reporting-upgrade-fixture.ts";
  layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
    it.effect(scenarios.accountStatusStorage.title, (context) =>
@@ -3536,7 +3537,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          expect((yield* fixture.check()).status).toBe(200);
          const [version, columns, records] = yield* legacyStorage([
            { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
-@@ -24,7 +40,7 @@
+@@ -24,7 +41,7 @@
              params: [fixture.account],
            },
          ]);
@@ -3545,6 +3546,15 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          expect(columns).toEqual([]);
          expect(records).toEqual([
            {
+@@ -75,7 +92,7 @@
+           ],
+         ]);
+         yield* serverControl("start");
+-      }),
++      }).pipe(Effect.provide(McpClient.layer)),
+     ),
+   );
+ });
 diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
 --- a/e2e/tests/account-observation-migration.spec.ts
 +++ b/e2e/tests/account-observation-migration.spec.ts
