@@ -1,7 +1,7 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -105,5 +105,82 @@
+@@ -105,6 +105,83 @@
    "files:write",
  ];
 
@@ -85,10 +85,12 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
  /** OAuth App scopes declared by the official GitHub REST app. */
  const githubRestScopes = [
    "repo",
-@@ -188,6 +196,20 @@
+@@ -186,6 +263,20 @@
+     defaultScopes: ["openid", "email", "profile"],
+     allowedScopes: googleAllowedScopes,
      placement: { hosts: ["*.googleapis.com"] },
-   },
-   {
++  },
++  {
 +    id: "atlassian",
 +    label: "Atlassian",
 +    server: {
@@ -101,12 +103,10 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 +    defaultScopes: atlassianScopes,
 +    allowedScopes: atlassianScopes,
 +    placement: { hosts: ["api.atlassian.com"] },
-+  },
-+  {
+   },
+   {
      id: "slack",
-     label: "Executor for Slack",
-     server: {
-@@ -312,7 +334,9 @@
+@@ -312,7 +403,9 @@
              ? "GitHub"
              : definition.id === "slack"
                ? "Slack"

@@ -159,7 +159,8 @@
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
-      "workflow_sensitive": false
+      "workflow_sensitive": false,
+      "sha256": "bcf97ed277ca32ab961b77ce974bb439221200a6e11107469f350edd1bbeb72f"
     },
     {
       "identity": "basalt-pool-access-hook",
