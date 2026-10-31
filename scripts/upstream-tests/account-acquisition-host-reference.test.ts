@@ -36,6 +36,8 @@ test("only an explicitly enabled acquisition registration exposes its opaque hos
     encryptedCredentials: new Uint8Array([1]),
     credentialGeneration: 3,
     allowedHosts: null,
+    identityId: null,
+    oauthGrantId: null,
   };
   assert.doesNotThrow(() => Schema.decodeUnknownSync(sdk.StoredAccount)(stored));
   const db = {
