@@ -155,7 +155,7 @@
     {
       "identity": "executor-atlassian",
       "file": "0017-atlassian.patch",
-      "content_sha256": "958413ecde916ceb28eafd25fdef3003ebfc65b78d53442bf580c8e96747e843",
+      "content_sha256": "3670f6b8fa8a0e7d8aedae2df110ec5a3f29c46cbd453a4fcdff27b6724209b5",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
@@ -532,10 +532,19 @@
     {
       "identity": "executor-mcp-app-callback-renewal",
       "file": "0058-mcp-app-callback-renewal.patch",
-      "content_sha256": "ca4850e7843514c80e0946e876c6e20889997288a26739fa9246e451ebfdc861",
+      "content_sha256": "1d177cedbf06c2f533d1655c15d918f86a865c6a1a446b3f520314de468d5a15",
       "kind": "upstream",
       "upstream_pull_request": null,
       "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-personal-data-reporting",
+      "file": "0054-personal-data-reporting.patch",
+      "content_sha256": "c3d7f2564262ebce56be4193806b476263773d3db214b448d3cd6f82f4536fd3",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
       "workflow_sensitive": false
     }
   ],

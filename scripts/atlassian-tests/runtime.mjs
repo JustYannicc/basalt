@@ -48,7 +48,7 @@ const program = Effect.gen(function* () {
       directory,
       clientId,
       clientSecret,
-      scopes: ["offline_access", "read:jira-work", "read:confluence-content.all", "search:confluence"],
+      scopes: ["offline_access", "read:me", "read:jira-work", "read:confluence-content.all", "search:confluence"],
     })),
     (fixture) => Effect.promise(() => fixture.stop()),
   );

@@ -1,3 +1,13 @@
+--- a/index.ts
++++ b/index.ts
+@@ -20,6 +20,7 @@
+ const accessibleResourcesUrl = `${apiOrigin}/oauth/token/accessible-resources`;
+ const scopes = [
+   "offline_access",
++  "read:me",
+   "read:jira-work",
+   "read:confluence-content.all",
+   "search:confluence",
 --- a/package.json
 +++ b/package.json
 @@ -7,7 +7,7 @@

@@ -4,10 +4,10 @@
   "directory": "playground/demo-apps/atlassian",
   "license": "MIT",
   "files": {
-    "index.ts": "d58d11d56445fbf5030b43583ddfec88316313880d352237e83cc7fdd88d49c4",
+    "index.ts": "260a64eb39cd113d397d44ad06c5395d4127d4f74665f588a7b9ce5c7852e8f0",
     "package.json": "46187a3b15d071bb1820117f4898e8bf225783c31fc1698cd508f0414795bba5"
   },
-  "snapshotSha256": "3a3a3a7f33107aa1139a15f73cb78d43fe6b0a45010c2b30657b1f2d0705e921",
+  "snapshotSha256": "5065a419d5ac6abfca39bd5dedbcbe687289afaea8095ace3b8a2e6bcd415428",
   "publicSource": {
     "snapshotSha256": "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
     "files": {
@@ -17,6 +17,6 @@
   },
   "localPatch": {
     "path": "source.patch",
-    "sha256": "1a4e2b438dac485b197882513b07c333765dea26f10087e36d5d972dcb9c216d"
+    "sha256": "d2320ce961645379886eaf4d5c03ed99e5a185ac74feab5016b61408b9db464d"
   }
 }

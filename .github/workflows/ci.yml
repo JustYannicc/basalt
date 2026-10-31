@@ -92,6 +92,45 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  personal-data-reporting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - name: Build the isolated reporting test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify reporting, retained data and registration isolation
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "^scheduled personal-data reports|^personal-data|^account status preserves|^upgrading hosted storage from before app accounts"
+          --workers 2
+      - name: Verify Cloud scheduling and organization isolation
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "^scheduled personal-data reports|^personal-data reports use each organization"
+          --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: personal-data-reporting-e2e
+          path: |
+            .upstream/.local/e2e/**/report/**
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+          if-no-files-found: warn
   pool-inventory:
     runs-on: ubuntu-latest
     timeout-minutes: 20
