@@ -160,3 +160,48 @@ test("tools-only native grants cannot enter the model gateway", async () => {
   assert.equal(response.status, 403);
   assert.equal(forwarded, false);
 });
+
+for (const native of [false, true]) test(`an uncertain ${native ? "native" : "direct"} model binding send is not retryable`, async () => {
+  let sends = 0;
+  const env: RouterEnv = {
+    POOL_APP_SIGNING_KEY: signingKey,
+    TOOLS_SERVICE: { fetch: async () => Response.json(grant) },
+    CATALOG_SERVICE: { fetch: async () => new Response(null, { status: 404 }) },
+    POOL_SERVICE: { fetch: async (request) => {
+      sends++;
+      assert.equal(await request.text(), '{"state":"synthetic-unknown"}');
+      throw new Error("synthetic transport loss after accepting request");
+    } },
+  };
+  const response = await handleRequest(new Request("https://app.signalbox.run/v1/responses", {
+    method: "POST", headers: { authorization: "Bearer synthetic", ...(native ? { [nativeAuthenticationHeader]: "1" } : {}) },
+    body: '{"state":"synthetic-unknown"}',
+  }), env);
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("x-should-retry"), "false");
+  assert.equal(response.headers.get("retry-after"), null);
+  assert.equal(response.headers.get("retry-after-ms"), null);
+  const body = await response.json() as { error: { code: string; retryable: boolean; message: string } };
+  assert.equal(body.error.code, "upstream_outcome_unknown");
+  assert.equal(body.error.retryable, false);
+  assert.match(body.error.message, /outcome is unknown/u);
+  assert.equal(sends, 1);
+});
+
+test("a definite Home refusal retains its retryable 503 through model ingress", async () => {
+  const env: RouterEnv = {
+    POOL_APP_SIGNING_KEY: signingKey,
+    TOOLS_SERVICE: { fetch: async () => Response.json(grant) },
+    CATALOG_SERVICE: { fetch: async () => new Response(null, { status: 404 }) },
+    POOL_SERVICE: { fetch: async () => Response.json({ error: "auth_unavailable" }, { status: 503, headers: { "Retry-After": "7" } }) },
+  };
+  for (const native of [false, true]) {
+    const response = await handleRequest(new Request("https://app.signalbox.run/v1/responses", {
+      method: "POST", headers: { authorization: "Bearer synthetic", ...(native ? { [nativeAuthenticationHeader]: "1" } : {}) }, body: "{}",
+    }), env);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), "7");
+    assert.equal(response.headers.get("x-should-retry"), null);
+    assert.deepEqual(await response.json(), { error: "auth_unavailable" });
+  }
+});

@@ -11,7 +11,7 @@ import { captureProduct } from "./telemetry/product.ts";
 import { traceRequest, type TraceEnv } from "./telemetry/traces.ts";
 import { validSentryDsn } from "./telemetry/sentry.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
-import { nativeAuthenticationHeader, nativeModelRequest } from "./native-model.ts";
+import { nativeAuthenticationHeader, nativeModelRequest, forwardModelRequest } from "./native-model.ts";
 import { nativeControlPath } from "./pool/native-contract.ts";
 import { nativeSessionPath } from "./pool/native-contract.ts";
 import { tunnelPath } from "../clients/contracts/tunnel.ts";
@@ -218,7 +218,7 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (isPoolPath(pathname)) {
     if (isPublicModelPath(pathname) && request.headers.get(nativeAuthenticationHeader) === "1")
       return nativeModelRequest(request, env);
-    return env.POOL_SERVICE.fetch(request);
+    return isPublicModelPath(pathname) ? forwardModelRequest(request, env) : env.POOL_SERVICE.fetch(request);
   }
   // Signed out, the tools service's homepage is its marketing page; sign-in sends people on.
   if (

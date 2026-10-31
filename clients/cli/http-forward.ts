@@ -1,3 +1,4 @@
+import { ModelRequestNotSent } from "../contracts/model-error.ts";
 import {
   request as httpRequest,
   type IncomingHttpHeaders,
@@ -30,6 +31,7 @@ const responseHeaderNames = new Set([
   "mcp-session-id",
   "mcp-protocol-version",
   "retry-after",
+  "x-should-retry",
   "x-request-id",
   "request-id",
 ]);
@@ -79,6 +81,12 @@ export async function forwardHttp(
   const transport = target.protocol === "https:" ? httpsRequest : httpRequest;
   await new Promise<void>((resolve, reject) => {
     let responseArrived = false;
+    const fail = (error: unknown) => {
+      // DNS lookup and connection refusal establish that no HTTP request reached the service.
+      const notSent = error instanceof Error && "code" in error
+        && ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"].includes(String(error.code));
+      reject(notSent ? new ModelRequestNotSent("The connection failed before dispatch.") : error);
+    };
     const remote = transport(target, { method: incoming.method, headers, signal }, (response) => {
       responseArrived = true;
       remote.setTimeout(0);
@@ -91,9 +99,9 @@ export async function forwardHttp(
     remote.setTimeout(30_000, () =>
       remote.destroy(new Error("The remote service did not answer.")),
     );
-    remote.once("error", reject);
+    remote.once("error", fail);
     pipeline(incoming, bodyLimit(), remote, { signal }).catch((error: unknown) => {
-      if (!responseArrived) reject(error);
+      if (!responseArrived) fail(error);
     });
   });
 }

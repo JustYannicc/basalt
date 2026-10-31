@@ -5,7 +5,7 @@ import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
 import { nativeModelHeader } from "./native-contract.ts";
 import { nativeResponse } from "./native-response.worker.ts";
-import { gatewayUnavailable, type RefusalIdentity } from "./gateway-failure.ts";
+import { gatewayUnavailable, gatewayOutcomeUnknown, type RefusalIdentity } from "./gateway-failure.ts";
 import { ModelMembershipUnavailable, modelMembership } from "./model-membership.ts";
 import type { NativeMemberships } from "./membership.ts";
 import type { NativeStreams } from "./native-streams.ts";
@@ -29,6 +29,7 @@ export async function forwardPoolRequest(request: Request, port: 8317 | 8327 | u
   let identity: RefusalIdentity | undefined;
   let modelLease: ReturnType<NativeStreams["acquire"]> | undefined;
   const started = performance.now();
+  let dispatched = false;
   try {
     if (request.headers.has(nativeModelHeader)) {
       native = await deps.computers.nativeModel(request);
@@ -49,6 +50,7 @@ export async function forwardPoolRequest(request: Request, port: 8317 | 8327 | u
     if (modelLease) deps.protection.admit(status);
     request.signal.throwIfAborted();
     if (!port) throw new Error("Pool container port unavailable");
+    dispatched = true;
     const upstream = await deps.fetch(containerRequest(request, "http://pool"), port);
     const response = await rewriteCapResponse(upstream, pathname);
     if (request.method === "POST" && (modelPaths.has(pathname) || pathname === "/v1/systemone" || pathname === "/typesafe/v1/systemone") && response.ok)
@@ -65,6 +67,8 @@ export async function forwardPoolRequest(request: Request, port: 8317 | 8327 | u
   } catch (error) {
     native?.release();
     modelLease?.release();
+    if (dispatched && isPublicModelPath(pathname))
+      return gatewayOutcomeUnknown(deps.env, request, (work) => deps.defer(work));
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
     if (error instanceof ControlFailure) return failureResponse(error);
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))

@@ -28,7 +28,8 @@ export async function nativeFixture() {
     refreshes = 0,
     writes = 0,
     cancels = 0,
-    polls = 0;
+    polls = 0,
+    modelSends = 0;
   let expiresIn = 3600,
     loseRefresh = false,
     dropTool = false;
@@ -39,6 +40,9 @@ export async function nativeFixture() {
   let accessReads = 0;
   let healthReads = 0;
   let denyAccess = false;
+  let readyFailure: "close" | "timeout" | undefined;
+  let operationOpens = 0;
+  let modelFailure: "unknown" | "not-started" | "disconnect" | undefined;
   const holds = new Set<() => void>();
   let accessGate: ReturnType<typeof gate> | undefined;
   let refreshGate: ReturnType<typeof gate> | undefined;
@@ -246,6 +250,13 @@ export async function nativeFixture() {
             true,
           );
         } else {
+          modelSends++;
+          if (modelFailure === "disconnect") { peer.terminate(); return; }
+          if (modelFailure === "unknown") {
+            response(502, { "content-type": "application/json", "x-should-retry": "false" });
+            data(Buffer.from('{"error":{"code":"upstream_outcome_unknown","retryable":false}}'), false, false, true);
+            return;
+          }
           response(200, { "content-type": "text/event-stream" });
           data(Buffer.from("data: first\n\n"));
           const complete = () => {
@@ -259,7 +270,12 @@ export async function nativeFixture() {
         const frame = JSON.parse(raw.toString());
         assert.equal(frame.id, 1);
         if (frame.type === "open") {
+          operationOpens++;
           operation = frame.operation;
+          if (operation!.service === "models" && modelFailure === "not-started") {
+            send({ type: "error", id: 1, code: "unavailable", outcome: "not-started" });
+            return;
+          }
           assert.equal(frame.headers.authorization, undefined);
           assert.equal(frame.headers.cookie, undefined);
           if (refuseRequest) {
@@ -298,7 +314,8 @@ export async function nativeFixture() {
         }
       });
       peer.on("error", () => undefined);
-      send({ type: "ready", expiresAt: Date.now() + 600000, limits });
+      if (readyFailure === "close") peer.terminate();
+      else if (readyFailure !== "timeout") send({ type: "ready", expiresAt: Date.now() + 600000, limits });
     });
   });
   server.listen(0, "127.0.0.1");
@@ -347,6 +364,8 @@ export async function nativeFixture() {
     loseRefresh: () => {
       loseRefresh = true;
     },
+    failBeforeReady: (value: "close" | "timeout" | undefined) => { readyFailure = value; },
+    failModel: (value: "unknown" | "not-started" | "disconnect" | undefined) => { modelFailure = value; },
     dropTool: (value: boolean) => {
       dropTool = value;
     },
@@ -356,7 +375,7 @@ export async function nativeFixture() {
     interrupt: () => {
       for (const socket of sockets.clients) socket.terminate();
     },
-    counts: () => ({ refreshes, writes, cancels, polls, accessReads, healthReads }),
+    counts: () => ({ refreshes, writes, cancels, polls, accessReads, healthReads, modelSends, operationOpens }),
     close: async () => {
       for (const socket of sockets.clients) socket.terminate();
       sockets.close();

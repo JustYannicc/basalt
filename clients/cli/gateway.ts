@@ -1,3 +1,4 @@
+import { upstreamOutcomeUnknown, ModelRequestNotSent } from "../contracts/model-error.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmod, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -93,25 +94,32 @@ export async function startGateway(options: GatewayOptions) {
     response.once("close", cancel);
     request.once("aborted", () => controller.abort());
     active.add(controller);
+    let dispatched = false;
     try {
       await transition;
       const transport = await options.source.transport(controller.signal);
       if (transport.mode === "device") {
         if (!transport.capabilities.includes(capability))
           return answer(response, 403, { error: "This connection has no access to this service." });
+        dispatched = true;
         await forwardTunnelHttp(request, response, transport, capability, controller.signal);
       } else {
         const service = transport.credentials[capability];
         if (!service)
           return answer(response, 403, { error: "This connection has no access to this service." });
+        dispatched = true;
         await forwardHttp(request, response, service, capability, controller.signal);
       }
-    } catch {
-      if (!response.headersSent && !response.destroyed)
-        answer(response, 502, {
-          error: "The request was interrupted. Its outcome may be unknown; it was not replayed.",
-        });
-      else response.destroy();
+    } catch (error) {
+      if (response.headersSent || response.destroyed) response.destroy();
+      else if (capability === "models" && dispatched && !(error instanceof ModelRequestNotSent)) {
+        const failure = upstreamOutcomeUnknown();
+        failure.headers.forEach((value, name) => response.setHeader(name, value));
+        response.writeHead(failure.status);
+        response.end(await failure.text());
+      } else answer(response, capability === "models" ? 503 : 502, {
+        error: capability === "models" ? "Model access is unavailable." : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
+      });
     } finally {
       active.delete(controller);
       response.off("close", cancel);
