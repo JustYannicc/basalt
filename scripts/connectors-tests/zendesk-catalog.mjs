@@ -92,7 +92,7 @@ export async function loadZendeskCatalogSource({ root, catalogOrigin, directory,
   assert.equal(sha256(snapshotBytes), snapshotProvenance.snapshotSha256, "Zendesk snapshot provenance hash changed");
   assert.equal(source.package, snapshotProvenance.package);
   assert.deepEqual(source.files.map(({ path }) => path).sort(), snapshot.files.map(({ path }) => path).sort());
-  for (const path of ["README.md", "index.ts", "package.json"]) {
+  for (const path of ["README.md", "icon.ts", "index.ts", "openapi.ts", "package.json"]) {
     const servedFile = source.files.find((file) => file.path === path);
     assert.ok(servedFile, `Catalog Worker omitted ${path}`);
     assert.equal(

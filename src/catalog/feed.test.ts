@@ -8,6 +8,7 @@ import { gitlabSource } from "./gitlab.ts";
 import sourceSnapshot from "./zendesk/source.json" with { type: "json" };
 import sourceProvenance from "./zendesk/provenance.json" with { type: "json" };
 import { zendeskAddition } from "./zendesk/source.ts";
+import { zendeskIcons } from "./zendesk/logo.ts";
 
 const official: Feed = {
   version: 1,
@@ -97,7 +98,7 @@ test("notices from the official feed are dropped", () => {
   assert.equal(feed.apps[0]!.connectionNotices, undefined);
 });
 
-test("GitLab serves the site-aware source while Miro serves board-only OAuth", async () => {
+test("GitLab serves the site-aware source while Miro serves its full REST source", async () => {
   const apps: Feed = { version: 1, apps: ["gitlab", "miro"].map(id => ({ ...official.apps[0]!, id,
     package: `@executor.sh/${id}`, auth: [{ method: "token", kind: "secrets" }, { method: "oauth", kind: "oauth2" }] })) };
   const response = await handleCatalog(new Request("https://app.signalbox.run/catalog/index.json"), async () => Response.json(apps));
@@ -172,6 +173,8 @@ test("Zendesk source is served locally and catalog requests cannot choose its te
   assert.ok(entry);
   assert.equal(entry.package, "zendesk");
   assert.deepEqual(entry.auth, [{ method: "oauth", kind: "oauth2" }]);
+  assert.deepEqual(entry.icons, zendeskIcons);
+  assert.match(entry.icons[0]!.src, /^data:image\/png;base64,/);
   assert.equal(entry.connectionNotices, undefined);
   assert.doesNotMatch(JSON.stringify(entry), /untrusted-tenant/);
 

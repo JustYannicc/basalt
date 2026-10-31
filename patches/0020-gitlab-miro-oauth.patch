@@ -1,7 +1,7 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -150,6 +150,29 @@
+@@ -150,6 +150,41 @@
   */
  export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
    {
@@ -24,7 +24,19 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 +      tokenUrl: "https://api.miro.com/v1/oauth/token",
 +    },
 +    tokenEndpointAuthMethod: "client_secret_post",
-+    defaultScopes: ["boards:read", "boards:write"],
++    defaultScopes: [
++      "boards:read",
++      "boards:write",
++      "identity:read",
++      "identity:write",
++      "microphone:listen",
++      "screen:record",
++      "team:read",
++      "team:write",
++      "webcam:record",
++      "auditlogs:read",
++      "sessions:delete",
++    ],
 +    placement: { hosts: ["api.miro.com"] },
 +  },
 +  {

@@ -13,6 +13,7 @@ import { Target } from "../../.upstream/e2e/support/platform.ts";
 import { Actors } from "../../.upstream/e2e/support/actors.ts";
 import { SessionClients } from "../../.upstream/e2e/support/api.ts";
 import { localNpmRegistry } from "../../.upstream/e2e/support/npm-registry.ts";
+import { loadSpecifications } from "./specifications.mjs";
 import { startAtlassianProvider } from "./provider.mjs";
 import { loadAtlassianCatalogSource, atlassianOAuthFixtureDefinition } from "./catalog.mjs";
 import { proveHostedAtlassian } from "./hosted-proof.mjs";
@@ -27,7 +28,9 @@ function callbackReceiver() {
   return new Promise((resolve, reject) => {
     const server = createHttpServer((request, response) => {
       if (request.method !== "GET" || !request.url?.startsWith("/api/oauth/callback?")) {
-        response.writeHead(404); response.end(); return;
+        response.writeHead(404);
+        response.end();
+        return;
       }
       response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
       response.end("Synthetic OAuth callback received");
@@ -38,26 +41,44 @@ function callbackReceiver() {
 }
 
 const program = Effect.gen(function* () {
-  if (!root || !upstream || !directory || !browserExecutable || !/^[a-f0-9]{64}$/.test(expectedSourceHash ?? ""))
-    return yield* Effect.die(new Error("Pinned runtime and expected frozen snapshot hash are required"));
+  if (
+    !root ||
+    !upstream ||
+    !directory ||
+    !browserExecutable ||
+    !/^[a-f0-9]{64}$/.test(expectedSourceHash ?? "")
+  )
+    return yield* Effect.die(
+      new Error("Pinned runtime and expected frozen snapshot hash are required"),
+    );
   yield* Effect.promise(() => mkdir(directory, { recursive: true, mode: 0o700 }));
   yield* Effect.promise(() => chmod(directory, 0o700));
 
+  const { specs, scopes } = yield* Effect.promise(() => loadSpecifications(root, directory));
   const provider = yield* Effect.acquireRelease(
-    Effect.promise(() => startAtlassianProvider({
-      directory,
-      clientId,
-      clientSecret,
-      scopes: ["offline_access", "read:me", "read:jira-work", "read:confluence-content.all", "search:confluence"],
-    })),
+    Effect.promise(() =>
+      startAtlassianProvider({
+        directory,
+        clientId,
+        clientSecret,
+        scopes,
+        specs,
+      }),
+    ),
     (fixture) => Effect.promise(() => fixture.stop()),
   );
-  const catalogApp = yield* Effect.promise(() => loadAtlassianCatalogSource(root, expectedSourceHash, provider.origin));
-  const oauth = yield* Effect.promise(() => atlassianOAuthFixtureDefinition(upstream, provider.origin));
-  const callbackServer = yield* Effect.acquireRelease(Effect.promise(callbackReceiver), (server) => Effect.promise(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  }));
+  const catalogApp = yield* Effect.promise(() =>
+    loadAtlassianCatalogSource(root, expectedSourceHash, provider.origin),
+  );
+  const oauth = yield* Effect.promise(() =>
+    atlassianOAuthFixtureDefinition(upstream, provider.origin, scopes),
+  );
+  const callbackServer = yield* Effect.acquireRelease(Effect.promise(callbackReceiver), (server) =>
+    Effect.promise(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }),
+  );
   const callback = `http://127.0.0.1:${callbackServer.address().port}/api/oauth/callback`;
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true, executablePath: browserExecutable })),
@@ -66,19 +87,26 @@ const program = Effect.gen(function* () {
 
   const base = yield* startEnvironment({ target: "self-host", headless: true });
   const registry = yield* localNpmRegistry;
-  const target = yield* startScenario(base.target, "Atlassian hosted OAuth and MCP isolation proof", undefined, {
-    EXECUTOR_NPM_REGISTRY: registry.url,
-    EXECUTOR_OAUTH_CALLBACK_URL: callback,
-    EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([oauth.definition]),
-    EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: "",
-    EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: "",
-    EXECUTOR_OAUTH_ATLASSIAN_LOCAL_PROOF_CLIENT_ID: clientId,
-    EXECUTOR_OAUTH_ATLASSIAN_LOCAL_PROOF_CLIENT_SECRET: clientSecret,
-  });
-  const services = yield* Layer.build(Actors.layer.pipe(
-    Layer.provideMerge(SessionClients.layer),
-    Layer.provideMerge(Layer.succeed(Target, target)),
-  ));
+  const target = yield* startScenario(
+    base.target,
+    "Atlassian hosted OAuth and MCP isolation proof",
+    undefined,
+    {
+      EXECUTOR_NPM_REGISTRY: registry.url,
+      EXECUTOR_OAUTH_CALLBACK_URL: callback,
+      EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([oauth.definition]),
+      EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: "",
+      EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: "",
+      EXECUTOR_OAUTH_ATLASSIAN_LOCAL_PROOF_CLIENT_ID: clientId,
+      EXECUTOR_OAUTH_ATLASSIAN_LOCAL_PROOF_CLIENT_SECRET: clientSecret,
+    },
+  );
+  const services = yield* Layer.build(
+    Actors.layer.pipe(
+      Layer.provideMerge(SessionClients.layer),
+      Layer.provideMerge(Layer.succeed(Target, target)),
+    ),
+  );
   const actors = Context.get(services, Actors);
   const sessionsApi = Context.get(services, SessionClients);
   const proof = yield* proveHostedAtlassian({
@@ -112,10 +140,12 @@ const program = Effect.gen(function* () {
 await mkdir(directory, { recursive: true, mode: 0o700 });
 await chmod(directory, 0o700);
 try {
-  const result = await Effect.runPromise(program.pipe(
-    Effect.scoped,
-    Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
-  ));
+  const result = await Effect.runPromise(
+    program.pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
+    ),
+  );
   console.log(JSON.stringify(result));
 } catch (error) {
   await writeFile(join(directory, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });

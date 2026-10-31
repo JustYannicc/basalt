@@ -40,7 +40,7 @@ export function proveZendeskPeerPlacement({
       "peer probe template host",
     );
     peerIndex.content = `import { NetworkRefused } from "apps";\n${peerIndex.content}`;
-    peerIndex.content = replaceOnce(peerIndex.content, "export default defineApp(requirements, {", `
+    peerIndex.content = replaceOnce(peerIndex.content, "export default defineApp({ ...requirements, icons }, async ({ user, cache, fetch, signal }) => {", `
 const peerPlacement = query({ input: object({}) }, async ({ user, fetch, signal }: Context) => {
   try {
     const response = await fetch(${JSON.stringify(`${siteB.origin}/api/v2/users/me.json`)}, {
@@ -54,10 +54,10 @@ const peerPlacement = query({ input: object({}) }, async ({ user, fetch, signal 
   }
   throw new Error("The peer request unexpectedly left the credential host boundary.");
 });
-export default defineApp(requirements, {`, "specific pre-egress refusal probe");
+export default defineApp({ ...requirements, icons }, async ({ user, cache, fetch, signal }) => {`, "specific pre-egress refusal probe");
     peerIndex.content = replaceOnce(peerIndex.content,
-      "tools: router({ currentUser, listTickets, getTicket, createTicket })",
-      "tools: router({ currentUser, listTickets, getTicket, createTicket, peerPlacement })",
+      "      createTicket,\n      api,\n    }),",
+      "      createTicket,\n      api,\n      peerPlacement,\n    }),",
       "peer placement tool export");
     const peerApp = checked(yield* request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: "Zendesk peer placement negative proof",

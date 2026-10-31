@@ -8,7 +8,8 @@ export function atlassianAddition(): Addition {
       id: "atlassian",
       package: source.package,
       name: "Atlassian",
-      description: "Search Confluence and read Jira issues with your own Atlassian account.",
+      description:
+        "Jira, service management and Confluence reads and writes with your own Atlassian account.",
       auth: [{ method: "oauth", kind: "oauth2" }],
       icons: [],
       source: "apps/atlassian.json",

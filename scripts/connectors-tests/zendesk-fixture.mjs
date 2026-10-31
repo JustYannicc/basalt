@@ -2,7 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 
-export const zendeskScopes = Object.freeze(["tickets:read", "tickets:write", "users:read"]);
+export const zendeskScopes = Object.freeze(["read", "write", "impersonate"]);
 export const marketplaceHeaderNames = Object.freeze([
   "X-Zendesk-Marketplace-Name",
   "X-Zendesk-Marketplace-Organization-Id",
@@ -249,7 +249,7 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
             safeFailure(site, endpoint, "marketplace_headers_missing");
             return json(response, 400, { error: "missing_integration_headers" });
           }
-          if (endpoint === "/api/v2/users/me.json" && request.method === "GET")
+          if (["/api/v2/users/me.json", "/api/v2/users/me"].includes(endpoint) && request.method === "GET")
             return json(response, 200, { user: { id: id === "site-a" ? 9101 : 9202, name: `Zendesk fixture ${id}` } });
           if (endpoint === "/api/v2/tickets.json" && request.method === "GET") {
             const ticket = {
@@ -271,7 +271,7 @@ export async function startZendeskFixtures({ marketplaceHeaders = {} } = {}) {
             };
             return json(response, 200, { ticket });
           }
-          if (endpoint === "/api/v2/tickets.json" && request.method === "POST") {
+          if (["/api/v2/tickets.json", "/api/v2/tickets"].includes(endpoint) && request.method === "POST") {
             return json(response, 201, { ticket: {
               id: id === "site-a" ? 7101 : 7202,
               subject: "Synthetic ticket",

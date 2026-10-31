@@ -193,8 +193,8 @@ const program = Effect.gen(function* () {
     },
     issuerSite: { subdomainOf: "localhost" },
     tokenEndpointAuthMethod: "client_secret_post",
-    defaultScopes: ["tickets:read", "tickets:write", "users:read"],
-    allowedScopes: ["tickets:read", "tickets:write", "users:read"],
+    defaultScopes: ["read", "write", "impersonate"],
+    allowedScopes: ["read", "write", "impersonate"],
     placement: { hosts: [zendeskTemplate.host] },
   };
   step("scenario-preparation");

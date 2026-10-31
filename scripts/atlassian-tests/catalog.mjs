@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -10,211 +12,197 @@ const capture = Object.freeze({
   directory: "playground/demo-apps/atlassian",
   packageName: "atlassian",
   publicSnapshotSha256: "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
-  servedSnapshotSha256: "5065a419d5ac6abfca39bd5dedbcbe687289afaea8095ace3b8a2e6bcd415428",
-  patchSha256: "d2320ce961645379886eaf4d5c03ed99e5a185ac74feab5016b61408b9db464d",
-  publicSdkVersion: "0.0.1-beta.103",
   servedSdkVersion: "0.0.1-beta.104-basalt.1",
 });
-const capturedPaths = ["index.ts", "package.json"];
-
-const scopes = [
-  "offline_access",
-  "read:me",
-  "read:jira-work",
-  "read:confluence-content.all",
-  "search:confluence",
+const publicPaths = ["index.ts", "package.json"];
+const servedPaths = [
+  "README.md",
+  "api-coverage.json",
+  "configuration.ts",
+  "index.ts",
+  "openapi.ts",
+  "package.json",
+  "provider.ts",
+  "queries.ts",
+  "specifications.ts",
+  "transport.ts",
 ];
+export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
-const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-
-function assertSourceShape(source, label) {
-  assert.deepEqual(Object.keys(source).sort(), ["files", "package"], `${label} has an unexpected shape`);
-  assert.equal(source.package, capture.packageName, `${label} package name changed`);
-  assert.ok(Array.isArray(source.files), `${label} files must be an array`);
-  assert.deepEqual(source.files.map((file) => file.path).sort(), capturedPaths, `${label} file set changed`);
+function assertSource(source, paths, hashes) {
+  assert.deepEqual(Object.keys(source).sort(), ["files", "package"]);
+  assert.equal(source.package, capture.packageName);
+  assert.deepEqual(source.files.map((file) => file.path).sort(), paths);
+  assert.deepEqual(Object.keys(hashes).sort(), paths);
   for (const file of source.files) {
-    assert.deepEqual(Object.keys(file).sort(), ["content", "path"], `${label} file entry has an unexpected shape`);
-    assert.equal(typeof file.content, "string", `${label} ${file.path} must contain text`);
+    assert.deepEqual(Object.keys(file).sort(), ["content", "path"]);
+    assert.equal(typeof file.content, "string");
+    assert.equal(sha256(file.content), hashes[file.path], `Captured ${file.path} hash differs`);
   }
 }
 
-function assertFileHashes(source, hashes, label) {
-  assert.deepEqual(Object.keys(hashes).sort(), capturedPaths, `${label} file hash set changed`);
-  for (const file of source.files)
-    assert.equal(sha256(file.content), hashes[file.path], `${label} ${file.path} differs from its immutable capture`);
+/** Replay the full carry from its immutable public baseline before endpoint overrides. */
+async function verifyPatch(published, source, patch) {
+  const scratch = await mkdtemp(join(tmpdir(), "atlassian-patch-proof-"));
+  try {
+    execFileSync("git", ["init", "--quiet"], { cwd: scratch, stdio: "pipe" });
+    for (const file of published.files) await writeFile(join(scratch, file.path), file.content);
+    const patchPath = join(scratch, "source.patch");
+    await writeFile(patchPath, patch);
+    execFileSync("git", ["apply", patchPath], {
+      cwd: scratch,
+      stdio: "pipe",
+    });
+    for (const file of source.files)
+      assert.equal(
+        await readFile(join(scratch, file.path), "utf8"),
+        file.content,
+        `Patch does not reproduce ${file.path}`,
+      );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 }
 
-/** Load the app JSON from the same local feed handler clients use. */
+/** Load the real catalog feed. Override only vendor endpoints and the provider host. */
 export async function loadAtlassianCatalogSource(root, expectedHash, providerOrigin) {
-  const capturePath = join(root, "src/catalog/atlassian");
+  const directory = join(root, "src/catalog/atlassian");
   const [rawSource, rawPublished, rawPatch, provenanceText] = await Promise.all([
-    readFile(join(capturePath, "source.json")),
-    readFile(join(capturePath, "source.published.json")),
-    readFile(join(capturePath, "source.patch")),
-    readFile(join(capturePath, "provenance.json"), "utf8"),
+    readFile(join(directory, "source.json")),
+    readFile(join(directory, "source.published.json")),
+    readFile(join(directory, "source.patch")),
+    readFile(join(directory, "provenance.json"), "utf8"),
   ]);
+  assert.match(expectedHash, /^[a-f0-9]{64}$/);
   const sourceHash = sha256(rawSource);
-  const publicHash = sha256(rawPublished);
-  const patchHash = sha256(rawPatch);
-  assert.equal(expectedHash, capture.servedSnapshotSha256,
-    "Expected Atlassian snapshot hash must match the immutable served capture");
-  assert.equal(sourceHash, expectedHash, "Atlassian catalog source does not match the expected frozen snapshot hash");
-  assert.equal(publicHash, capture.publicSnapshotSha256, "Published Atlassian baseline hash changed");
-  assert.equal(patchHash, capture.patchSha256, "Atlassian manifest patch hash changed");
-
-  const sourceSnapshot = JSON.parse(rawSource.toString("utf8"));
-  const publishedSnapshot = JSON.parse(rawPublished.toString("utf8"));
+  assert.equal(
+    sourceHash,
+    expectedHash,
+    "Atlassian source differs from the externally frozen hash",
+  );
+  assert.equal(sha256(rawPublished), capture.publicSnapshotSha256);
+  const snapshot = JSON.parse(rawSource);
+  const published = JSON.parse(rawPublished);
   const provenance = JSON.parse(provenanceText);
-  assertSourceShape(sourceSnapshot, "Served Atlassian source");
-  assertSourceShape(publishedSnapshot, "Published Atlassian source");
-
-  assert.deepEqual(Object.keys(provenance).sort(), [
-    "directory", "files", "license", "localPatch", "publicSource", "repository", "revision", "snapshotSha256",
-  ], "Atlassian provenance has an unexpected shape");
-  assert.deepEqual(Object.keys(provenance.publicSource).sort(), ["files", "snapshotSha256"]);
-  assert.deepEqual(Object.keys(provenance.localPatch).sort(), ["path", "sha256"]);
-  assert.equal(provenance.repository, capture.repository);
-  assert.equal(provenance.revision, capture.revision);
-  assert.equal(provenance.directory, capture.directory);
+  for (const key of ["repository", "revision", "directory"])
+    assert.equal(provenance[key], capture[key]);
   assert.equal(provenance.license, "MIT");
   assert.equal(provenance.snapshotSha256, sourceHash);
-  assert.equal(provenance.publicSource.snapshotSha256, publicHash);
+  assert.equal(provenance.publicSource.snapshotSha256, capture.publicSnapshotSha256);
   assert.equal(provenance.localPatch.path, "source.patch");
-  assert.equal(provenance.localPatch.sha256, patchHash);
-  assertFileHashes(sourceSnapshot, provenance.files, "Served Atlassian source");
-  assertFileHashes(publishedSnapshot, provenance.publicSource.files, "Published Atlassian source");
-
-  const sourceFiles = new Map(sourceSnapshot.files.map((file) => [file.path, file.content]));
-  const publishedFiles = new Map(publishedSnapshot.files.map((file) => [file.path, file.content]));
-  assert.equal(sourceFiles.get("index.ts"), publishedFiles.get("index.ts").replace(
-    '  "offline_access",', '  "offline_access",\n  "read:me",',
-  ), "Served Atlassian app adds only identity consent to the published source");
-  const publishedPackage = publishedFiles.get("package.json");
-  const servedPackage = sourceFiles.get("package.json");
-  const publicPin = `"apps": "${capture.publicSdkVersion}"`;
-  assert.equal((publishedPackage.match(new RegExp(publicPin, "g")) ?? []).length, 1,
-    "Published Atlassian manifest must contain exactly one public SDK pin");
-  assert.equal(servedPackage, publishedPackage.replace(publicPin, `"apps": "${capture.servedSdkVersion}"`),
-    "Served Atlassian source may differ from the published baseline only by its SDK pin");
-
-  const publishedManifest = JSON.parse(publishedPackage);
-  const servedManifest = JSON.parse(servedPackage);
-  assert.equal(publishedManifest.name, capture.packageName);
-  assert.equal(servedManifest.name, capture.packageName);
-  assert.equal(publishedManifest.dependencies?.apps, capture.publicSdkVersion);
-  assert.equal(servedManifest.dependencies?.apps, capture.servedSdkVersion);
-  assert.equal(rawPatch.toString("utf8"), [
-    "--- a/index.ts",
-    "+++ b/index.ts",
-    "@@ -20,6 +20,7 @@",
-    ' const accessibleResourcesUrl = `${apiOrigin}/oauth/token/accessible-resources`;',
-    " const scopes = [",
-    '   "offline_access",',
-    '+  "read:me",',
-    '   "read:jira-work",',
-    '   "read:confluence-content.all",',
-    '   "search:confluence",',
-    "--- a/package.json",
-    "+++ b/package.json",
-    "@@ -7,7 +7,7 @@",
-    '     ".": "./index.ts"',
-    "   },",
-    '   "dependencies": {',
-    `-    "apps": "${capture.publicSdkVersion}"`,
-    `+    "apps": "${capture.servedSdkVersion}"`,
-    "   },",
-    '   "executor": {',
-    '     "title": "Atlassian"',
-    "",
-  ].join("\n"), "Atlassian source patch must add only identity consent and the SDK pin");
-
+  assert.equal(provenance.localPatch.sha256, sha256(rawPatch));
+  assertSource(snapshot, servedPaths, provenance.files);
+  assertSource(published, publicPaths, provenance.publicSource.files);
+  await verifyPatch(published, snapshot, rawPatch);
   const { handleCatalog } = await import(pathToFileURL(join(root, "src/catalog/worker.ts")).href);
   const origin = "http://catalog-proof.invalid";
-  const fetcher = async () => new Response(JSON.stringify({ version: 1, apps: [] }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-  const index = await handleCatalog(new Request(`${origin}/catalog/index.json`), fetcher);
-  assert.equal(index.status, 200, "Local catalog feed is unavailable");
-  const feed = await index.json();
+  const fetcher = async () => Response.json({ version: 1, apps: [] });
+  const feed = await (
+    await handleCatalog(new Request(`${origin}/catalog/index.json`), fetcher)
+  ).json();
   const entry = feed.apps.find((app) => app.id === "atlassian");
-  assert.ok(entry, "Local catalog does not contain app id atlassian");
-  assert.equal(entry.package, capture.packageName);
+  assert.equal(entry?.package, capture.packageName);
   assert.equal(entry.source, "apps/atlassian.json");
-
   const response = await handleCatalog(new Request(`${origin}/catalog/${entry.source}`), fetcher);
-  assert.equal(response.status, 200, "Atlassian source is not served by the local catalog");
-  const source = await response.json();
-  assert.deepEqual(source, sourceSnapshot, "Feed source differs from the reviewed catalog snapshot");
-  assert.equal(source.package, capture.packageName);
-  assert.deepEqual(source.files.map((file) => file.path).sort(), capturedPaths);
-  const manifest = JSON.parse(source.files.find((file) => file.path === "package.json").content);
-  assert.equal(manifest.name, source.package, "Catalog package name differs from its manifest");
-  assert.equal(manifest.dependencies?.apps, capture.servedSdkVersion, "Basalt served app SDK pin changed");
-
-  const indexFile = source.files.find((file) => file.path === "index.ts");
-  const files = source.files.map((file) => ({ ...file }));
-  const sourceIndex = files.find((file) => file.path === "index.ts");
-  const apiUrlCount = (sourceIndex.content.match(/https:\/\/api\.atlassian\.com/g) ?? []).length;
-  const authUrlCount = (sourceIndex.content.match(/https:\/\/auth\.atlassian\.com/g) ?? []).length;
-  assert.ok(apiUrlCount > 0 && authUrlCount > 0, "Catalog app no longer declares the reviewed Atlassian endpoints");
-
-  let rewritten = sourceIndex.content
-    .replaceAll("https://api.atlassian.com", providerOrigin)
-    .replaceAll("https://auth.atlassian.com", providerOrigin);
-  const hostBlock = /(\bhosts\s*:\s*\[)([\s\S]*?)(\])/m.exec(rewritten);
-  assert.ok(hostBlock, "Catalog app no longer declares its API host placement");
-  let hostCount = 0;
-  const host = new URL(providerOrigin).host;
-  const hostValues = hostBlock[2].replace(/(["'])api\.atlassian\.com\1/g, (_match, quote) => {
-    hostCount++;
-    return `${quote}${host}${quote}`;
-  });
-  assert.ok(hostCount > 0, "Catalog app API host placement was not eligible for a loopback override");
-  rewritten = rewritten.slice(0, hostBlock.index) + hostBlock[1] + hostValues + hostBlock[3]
-    + rewritten.slice(hostBlock.index + hostBlock[0].length);
-  assert.ok(!rewritten.includes("https://api.atlassian.com"));
-  assert.ok(!rewritten.includes("https://auth.atlassian.com"));
-  assert.ok(rewritten.includes('audience: "api.atlassian.com"'), "OAuth audience must remain the reviewed Atlassian value");
-  for (const scope of scopes) assert.ok(rewritten.includes(`"${scope}"`), `App source omitted OAuth scope ${scope}`);
-  sourceIndex.content = rewritten;
-  assert.equal(files.find((file) => file.path === "package.json").content,
-    source.files.find((file) => file.path === "package.json").content,
-    "Endpoint override must not change the catalog package manifest");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), snapshot, "Feed differs from captured source");
+  const files = structuredClone(snapshot.files);
+  const manifest = JSON.parse(files.find((file) => file.path === "package.json").content);
+  assert.equal(manifest.name, capture.packageName);
+  assert.equal(manifest.dependencies.apps, capture.servedSdkVersion);
+  let apiUrls = 0,
+    authUrls = 0,
+    apiHosts = 0;
+  for (const file of files.filter((file) => file.path.endsWith(".ts"))) {
+    apiUrls += (file.content.match(/https:\/\/api\.atlassian\.com/g) ?? []).length;
+    authUrls += (file.content.match(/https:\/\/auth\.atlassian\.com/g) ?? []).length;
+    file.content = file.content
+      .replaceAll("https://api.atlassian.com", providerOrigin)
+      .replaceAll("https://auth.atlassian.com", providerOrigin);
+  }
+  const provider = files.find((file) => file.path === "provider.ts");
+  provider.content = provider.content.replace(
+    /(hosts:\s*\[)"api\.atlassian\.com"(\])/,
+    (_match, before, after) => {
+      apiHosts++;
+      return `${before}${JSON.stringify(new URL(providerOrigin).host)}${after}`;
+    },
+  );
+  assert.ok(apiUrls > 0 && authUrls > 0 && apiHosts === 1);
+  assert.ok(provider.content.includes('audience: "api.atlassian.com"'));
+  const metadataFile = files.find((file) => file.path === "api-coverage.json");
+  const coverage = JSON.parse(metadataFile.content);
+  for (const [name, api] of Object.entries(coverage)) {
+    assert.equal(api.url, provenance.capabilities.apis[name].url);
+    assert.equal(api.sha256, provenance.capabilities.apis[name].sha256);
+    api.url = `${providerOrigin}/openapi/${name}.json`;
+  }
+  metadataFile.content = JSON.stringify(coverage);
+  const specificationGuardNegativeControl =
+    process.env.ATLASSIAN_SPEC_GUARD_NEGATIVE_CONTROL === "1";
+  if (specificationGuardNegativeControl) {
+    const index = files.find((file) => file.path === "index.ts");
+    const original = "cache: specificationCache(name, cache),";
+    assert.ok(index.content.includes(original));
+    index.content = index.content.replace(original, "cache,");
+  }
+  const negativeControl = process.env.ATLASSIAN_APPROVAL_NEGATIVE_CONTROL === "1";
+  if (negativeControl) {
+    const index = files.find((file) => file.path === "index.ts");
+    const original = 'import { always } from "apps/operations/approval";';
+    assert.ok(index.content.includes(original));
+    index.content = index.content.replace(
+      original,
+      'import { never as always } from "apps/operations/approval";',
+    );
+  }
   return {
     entry,
-    packageName: source.package,
+    packageName: snapshot.package,
     files,
     sourceHash,
     provenance,
-    overrides: { authUrls: authUrlCount, apiUrls: apiUrlCount, apiHosts: hostCount },
+    overrides: {
+      apiUrls,
+      authUrls,
+      apiHosts,
+      openapiUrls: Object.keys(coverage).length,
+      approvalNegativeControl: negativeControl,
+      specificationGuardNegativeControl,
+    },
   };
 }
 
-/** Clone the reviewed hosted Atlassian client and change only its ID and loopback endpoints. */
-export async function atlassianOAuthFixtureDefinition(upstream, providerOrigin) {
-  const source = await import(pathToFileURL(join(upstream,
-    "apps/hosted/server/src/implementation/first-party-oauth.ts")).href);
-  const reviewed = source.firstPartyOAuthClientDefinitions.find((definition) => definition.id === "atlassian");
-  assert.ok(reviewed, "Pinned hosted OAuth source does not contain its Atlassian client");
+/** Clone the supported hosted client without changing its requested scopes. */
+export async function atlassianOAuthFixtureDefinition(upstream, providerOrigin, scopes) {
+  const source = await import(
+    pathToFileURL(join(upstream, "apps/hosted/server/src/implementation/first-party-oauth.ts")).href
+  );
+  const reviewed = source.firstPartyOAuthClientDefinitions.find(
+    (definition) => definition.id === "atlassian",
+  );
+  assert.ok(reviewed);
   assert.deepEqual(new Set(reviewed.defaultScopes), new Set(scopes));
   assert.deepEqual(new Set(reviewed.allowedScopes), new Set(scopes));
   assert.equal(reviewed.server.tokenRequestFormat, "json");
-  assert.deepEqual(reviewed.server.authorizationParams, { audience: "api.atlassian.com", prompt: "consent" });
+  assert.deepEqual(reviewed.server.authorizationParams, {
+    audience: "api.atlassian.com",
+    prompt: "consent",
+  });
   assert.deepEqual(reviewed.personalDataReporting, {
     identityUrl: "https://api.atlassian.com/me",
     reportUrl: "https://api.atlassian.com/app/report-accounts/",
     accountIdField: "account_id",
   });
-  const fixture = structuredClone(reviewed);
-  fixture.id = "atlassian-local-proof";
-  fixture.server.authorizationUrl = `${providerOrigin}/authorize`;
-  fixture.server.tokenUrl = `${providerOrigin}/oauth/token`;
-  fixture.personalDataReporting = {
-    ...fixture.personalDataReporting,
+  const definition = structuredClone(reviewed);
+  definition.id = "atlassian-local-proof";
+  definition.server.authorizationUrl = `${providerOrigin}/authorize`;
+  definition.server.tokenUrl = `${providerOrigin}/oauth/token`;
+  definition.personalDataReporting = {
+    ...definition.personalDataReporting,
     identityUrl: `${providerOrigin}/me`,
     reportUrl: `${providerOrigin}/app/report-accounts/`,
   };
-  fixture.placement = { ...fixture.placement, hosts: [new URL(providerOrigin).host] };
-  return { definition: fixture, scopes };
+  definition.placement = { ...definition.placement, hosts: [new URL(providerOrigin).host] };
+  return { definition, scopes };
 }

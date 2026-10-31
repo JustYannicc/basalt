@@ -90,13 +90,47 @@ export function proveZendeskMcp({
       const current = tool(search.structuredContent?.items, "currentUser");
       const tickets = tool(search.structuredContent?.items, "listTickets");
       const create = tool(search.structuredContent?.items, "createTicket");
-      const described = yield* Effect.promise(() => client.callTool({ name: "describe", arguments: { paths: [current.path, tickets.path, create.path] } }));
+      const supportUserSearch = yield* Effect.promise(() => client.callTool({ name: "search", arguments: {
+        query: `${flow.app.slug}.api.users.showCurrentUser`,
+        namespace: flow.app.slug, limit: 1,
+      } }));
+      assert.equal(supportUserSearch.isError, false, "Native MCP search failed for imported current-user read");
+      const supportUser = supportUserSearch.structuredContent?.items?.find((entry) =>
+        entry.path.endsWith(".api.users.showCurrentUser"),
+      );
+      const supportCreateSearch = yield* Effect.promise(() => client.callTool({ name: "search", arguments: {
+        query: `${flow.app.slug}.api.tickets.createTicket`,
+        namespace: flow.app.slug, limit: 1,
+      } }));
+      assert.equal(supportCreateSearch.isError, false, "Native MCP search failed for imported ticket creation");
+      const supportCreate = supportCreateSearch.structuredContent?.items?.find((entry) =>
+        entry.path !== create.path && entry.path.endsWith(".api.tickets.createTicket"),
+      );
+      assert.ok(supportUser, "Imported Support API must expose its current-user read");
+      assert.ok(supportCreate, "Imported Support API must expose ticket creation as a mutation");
+      const described = yield* Effect.promise(() => client.callTool({ name: "describe", arguments: {
+        paths: [current.path, tickets.path, create.path, supportUser.path, supportCreate.path],
+      } }));
       assert.equal(described.isError, false, `Native MCP describe failed for ${flow.site.id}`);
       const beforeCurrentUser = fixtures.observations().length;
       const currentResult = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: { path: current.path, input: {} } } }));
       const currentOutcome = singleCallOutcome(currentResult, current.path);
       if (!currentOutcome.ok) record("native-mcp-failure", { site: flow.site.id, mode: flow.mode, path: current.path, error: currentOutcome.error });
       assert.equal(singleCallValue(currentResult, current.path)?.name, `Zendesk fixture ${flow.site.id}`);
+      const supportUserBefore = fixtures.observations().length;
+      const supportUserResult = yield* Effect.promise(() => client.callTool({ name: "call", arguments: {
+        calls: { path: supportUser.path, input: {} },
+      } }));
+      assert.equal(supportUserResult.isError, false,
+        `Imported Support API current-user read failed for ${flow.site.id}`);
+      assert.match(textOf(supportUserResult), new RegExp(`Zendesk fixture ${flow.site.id}`));
+      const supportRead = fixtures.observations().slice(supportUserBefore).find((event) =>
+        event.phase === "api" && event.endpoint === "/api/v2/users/me",
+      );
+      assert.equal(supportRead?.site, flow.site.id,
+        `Imported Support API read must use ${flow.site.id}'s saved site`);
+      assert.equal(supportRead?.credentialSiteMatches, true,
+        `Imported Support API read must use ${flow.site.id}'s credential`);
       if (flow.mode === "hosted") {
         const apiEvents = fixtures.observations().slice(beforeCurrentUser).filter((event) => event.phase === "api");
         assert.ok(apiEvents.some((event) =>
@@ -122,7 +156,7 @@ export function proveZendeskMcp({
         ownAccountRead: true,
       });
 
-      const approvalDescriptor = JSON.stringify(create) + " " + textOf(described);
+      const approvalDescriptor = JSON.stringify(create) + " " + JSON.stringify(supportCreate) + " " + textOf(described);
       assert.match(approvalDescriptor, /approval|human approval/i,
         "Zendesk createTicket must remain marked for approval in its native descriptor");
       const ticketWritesBefore = fixtures.observations().filter((event) =>
@@ -142,6 +176,29 @@ export function proveZendeskMcp({
         event.phase === "api" && event.method === "POST" && event.endpoint === "/api/v2/tickets.json",
       ).length, ticketWritesBefore, "An unapproved createTicket must not reach the external API");
       record("ticket-create-approval-preserved", { site: flow.site.id, host: flow.site.host, providerWriteCount: 0 });
+
+      const supportWritesBefore = fixtures.observations().filter((event) =>
+        event.phase === "api" && event.method === "POST" && event.endpoint === "/api/v2/tickets",
+      ).length;
+      const supportWrite = yield* Effect.promise(() => client.callTool({ name: "call", arguments: { calls: {
+        path: supportCreate.path,
+        input: { body: { ticket: { subject: "Synthetic OpenAPI approval check", comment: {
+          body: "This imported write must wait for approval",
+        } } } },
+      } } }));
+      assert.notEqual(supportWrite.isError, true,
+        "The imported Support API approval request must be a successful MCP response");
+      assert.equal(supportWrite.structuredContent?.status, "approval-required",
+        "Imported Zendesk ticket writes must stop for approval");
+      assert.equal(typeof supportWrite.structuredContent.requestId, "string");
+      assert.equal(fixtures.observations().filter((event) =>
+        event.phase === "api" && event.method === "POST" && event.endpoint === "/api/v2/tickets",
+      ).length, supportWritesBefore, "An unapproved imported ticket write must not reach the provider");
+      record("openapi-ticket-create-approval-preserved", {
+        site: flow.site.id,
+        host: flow.site.host,
+        providerWriteCount: 0,
+      });
     }
 
     yield* proveZendeskPeerPlacement({
