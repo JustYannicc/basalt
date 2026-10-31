@@ -47,7 +47,7 @@ export class SyntheticOAuthProvider {
     const cert = spawnSync("openssl", [
       "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", this.certificate,
       "-days", "2", "-subj", "/CN=Basalt synthetic provider", "-addext",
-      "subjectAltName=DNS:api.anthropic.com,DNS:platform.claude.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:auth.openai.com",
+      "subjectAltName=DNS:api.anthropic.com,DNS:platform.claude.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:auth.openai.com,DNS:cloudcode-pa.googleapis.com",
       "-addext", "basicConstraints=critical,CA:TRUE",
     ], { encoding: "utf8", timeout: 15_000 });
     assert.equal(cert.status, 0, cert.error?.message ?? cert.stderr);
@@ -59,7 +59,7 @@ export class SyntheticOAuthProvider {
     this.proxy.on("connect", (request, socket, head) => {
       const authority = request.url ?? "";
       if (!new Set([
-        "api.anthropic.com:443", "platform.claude.com:443", "chatgpt.com:443", "api.openai.com:443", "auth.openai.com:443",
+        "api.anthropic.com:443", "platform.claude.com:443", "chatgpt.com:443", "api.openai.com:443", "auth.openai.com:443", "cloudcode-pa.googleapis.com:443",
       ]).has(authority.toLowerCase())) {
         socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
@@ -115,6 +115,15 @@ export class SyntheticOAuthProvider {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const [event, value] of events) response.write(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`);
       response.end();
+      return;
+    }
+    if (authority.startsWith("cloudcode-pa.googleapis.com") && pathname === "/v1internal:streamGenerateContent") {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.end(`data: ${JSON.stringify({ response: {
+        candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP", index: 0 }],
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        modelVersion: "gemini-2.5-pro", responseId: "fixture-gemini-response",
+      } })}\n\n`);
       return;
     }
     if (authority.startsWith("chatgpt.com") && pathname.endsWith("/responses")) {

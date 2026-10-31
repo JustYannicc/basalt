@@ -37,6 +37,8 @@ test("large historical cleanup serves through failed batches and resumes after S
       from pg_attribute where attrelid='usage'::regclass and attnum>0 and not attisdropped and attname<>'id' and attgenerated='';
       execute format('insert into usage (%s) select %s from usage u cross join generate_series(1,20000) where u.id=%s',columns,selected,${source});
     end $$;`);
+    // Stale bulk-load statistics can choose a full-range sort before LIMIT under the RLS delay.
+    fixture.diagnostics.sql("analyze usage");
     console.log("PASS: historical usage rows seeded");
     fixture.diagnostics.sql(`create function fixture_privacy_visible(row_id bigint) returns boolean language plpgsql volatile as $$ begin
       if current_setting('application_name')='home-privacy-maintenance' then perform pg_sleep(0.002); end if;

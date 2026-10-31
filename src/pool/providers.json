@@ -38,5 +38,10 @@
     "id": "meta",
     "name": "Meta",
     "site": "meta.ai"
+  },
+  {
+    "id": "gemini-cli",
+    "name": "Gemini CLI",
+    "site": "gemini.google.com"
   }
 ]

@@ -73,6 +73,20 @@ def prepare(root: pathlib.Path, destination: pathlib.Path) -> None:
         (folder / ".build-commit").write_text(release["commit"])
         archive.unlink()
 
+    for name, plugin in sources.get("plugins", {}).items():
+        if name != "gemini-cli":
+            raise ValueError("unreviewed pool plugin")
+        folder = destination / name
+        folder.mkdir(parents=True, exist_ok=False)
+        archive = destination / f"{name}.tar.gz"
+        url = f"https://codeload.github.com/{plugin['repository']}/tar.gz/{plugin['commit']}"
+        with urllib.request.urlopen(url, timeout=120) as incoming, archive.open("wb") as out:
+            shutil.copyfileobj(incoming, out)
+        verified_file(archive, plugin["sha256"])
+        extract_source(archive, folder)
+        (folder / ".build-version").write_text(plugin["tag"].removeprefix("v"))
+        archive.unlink()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -114,6 +114,13 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "server:\n"
         "  port: 8317\n"
         "  commercial-mode: true\n"
+        "plugins:\n"
+        "  enabled: true\n"
+        "  dir: /opt/pool/plugins\n"
+        "  configs:\n"
+        "    gemini-cli:\n"
+        "      enabled: true\n"
+        "      load-in-home: true\n"
         "observability:\n"
         "  logs:\n"
         "    request-log: false\n"
@@ -182,7 +189,8 @@ def child_environment(
         "HOME": str(home_dir),
         "PATH": PATH_VALUE,
         "PYTHONUNBUFFERED": "1",
-        "TMPDIR": str(ROOT / "tmp"),
+        # Native plugin shadow libraries need an executable mount. Auth/config paths stay in HOME.
+        "TMPDIR": "/tmp",
         "TZ": "Etc/UTC",
         "CLIPROXY_DIAGNOSTICS_METADATA_ONLY": "1",
     }
@@ -209,6 +217,11 @@ def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
             },
         },
         "management": {"allow-remote": allow_remote},
+        "plugins": {
+            "enabled": True,
+            "dir": "/opt/pool/plugins",
+            "configs": {"gemini-cli": {"enabled": True, "load-in-home": True}},
+        },
     }
 
 

@@ -586,6 +586,6 @@
   ],
   "pool_carries": {
     "manifest": "containers/pool/sources.json",
-    "content_sha256": "e7f8463a03bd7b49e80f67de122cfca3bc07e1f61d0ac087de02f07d4e2674fd"
+    "content_sha256": "15f01fcfadf9f70068f08c307f0d787f539742f252a7d6df95b14a9bafa04ef0"
   }
 }

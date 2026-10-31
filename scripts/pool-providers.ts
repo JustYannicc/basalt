@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { pluginOAuthProviderIds } from "./pool-plugin-providers.ts";
 
 /** `site` is the provider's public web address, used only to show its logo. */
 export type PoolProvider = { id: string; name: string; site?: string };
@@ -311,7 +312,7 @@ async function main(): Promise<void> {
   if (args.length > 0 && !check) throw new Error("Usage: node scripts/pool-providers.ts [--check]");
 
   const pinned = await fetchPinnedOAuthSource();
-  const ids = extractOAuthProviderIds(pinned.source);
+  const ids = [...new Set([...extractOAuthProviderIds(pinned.source), ...pluginOAuthProviderIds(fileURLToPath(new URL("../", import.meta.url)))])];
   const existing = await readExistingProviders();
   const generated = buildProviderTable(ids, existing);
   const rendered = renderProviderTable(generated);

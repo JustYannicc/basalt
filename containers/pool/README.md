@@ -6,7 +6,7 @@ Cloudflare's faster <code>durable_object</code> scheduling and snapshot policy i
 
 Deployments and crashes can still restart the container. Startup waits up to 180 seconds for Home and the node to become healthy; unsuccessful requests return <code>503</code> with <code>Retry-After: 5</code>, and the next alarm retries recovery. The timeout is a bound on one startup attempt, not a measured recovery time or availability guarantee. Live acceptance must record the first streamed response after at least one hour without client traffic, verify the boot identity stayed unchanged, and separately measure elapsed time from an observed deploy/crash restart until <code>/v1</code> answers again. Those production measurements remain pending deployment.
 
-The upstream artifact pins and SHA-256 values live in releases.json. The build downloads the unmodified Home and node Linux no-plugin release assets, verifies each digest, and copies their executables and licenses into the runtime image.
+The upstream release pins live in `releases.json`; `sources.json` binds their source archives, privacy carries and the official Gemini CLI plugin to exact SHA-256 values. The runtime builds Home, the node and the plugin together with CGO on pinned Go Bookworm and runs on pinned Python slim Bookworm. Alpine cannot load this Go shared library because of its musl TLS limitation. The build checks both pinned SDKs and the unprivileged runtime user before producing the image. `legacy-runtime` retains verified release binaries for the privacy-upgrade regression.
 
 ## Build context
 

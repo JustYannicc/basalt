@@ -33,5 +33,16 @@
         }
       ]
     }
+  },
+  "plugins": {
+    "gemini-cli": {
+      "repository": "router-for-me/cpa-plugin-gemini-cli",
+      "tag": "v1.0.0",
+      "commit": "fc71896865b1d5d77dd9a80b93c847ed69c10c83",
+      "sha256": "0bd5c5d0da1a82c9131be5b5122144d0240326426bedbaa92d89224fa20cf264",
+      "auth_providers": [
+        "gemini-cli"
+      ]
+    }
   }
 }
