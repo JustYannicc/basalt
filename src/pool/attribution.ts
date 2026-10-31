@@ -6,6 +6,7 @@ import providers from "./providers.json" with { type: "json" };
 import { QuotaCollection } from "./quota-collection.ts";
 import { AccountActions } from "./account-actions.ts";
 import { enableNewCodexWebSockets } from "./codex-websockets.ts";
+import { HomeAccountAcquisitions } from "./account-acquisition.ts";
 
 export const attributionStorageKey = "pool-control-v1";
 // Home's device waiters use 16 minutes; callback exchanges use 5 minutes.
@@ -48,6 +49,7 @@ interface AttributionState {
   /** Only ids whose membership write is in flight. Home groups own completed assignments. */
   assigned: string[];
   uploads?: Record<string, PendingUpload>;
+  accountAcquisitions?: string[];
 }
 interface LockSignal { released: Promise<void>; resolve: () => void }
 
@@ -70,15 +72,41 @@ export class PoolControl implements ControlAttribution {
   private blocked: Promise<void> | undefined;
   private added: (ids: string[]) => void = () => {};
   private queue: Promise<unknown> = Promise.resolve();
+  private acquisitions: HomeAccountAcquisitions;
   constructor(storage: ControlStorage, deps: HomeDependencies) {
     this.storage = storage;
     this.removals = new PoolAccountRemovals(storage);
     this.deps = deps;
     this.client = new HomeClient(deps.home, () => this.now());
+    this.acquisitions = new HomeAccountAcquisitions(storage, this.client, deps.signingKey, {
+      begin: async () => {
+        const marker = await this.uploadStarted();
+        this.state.accountAcquisitions = [...(this.state.accountAcquisitions ?? []), marker];
+        this.changed();
+        await this.save();
+        return marker;
+      },
+      settle: async (marker, ids) => {
+        // A native account stays globally saved. An older legacy sign-in must never claim it.
+        for (const lock of Object.values(this.state.locks)) {
+          lock.snapshot = [...new Set([...lock.snapshot, ...ids])];
+          this.changed();
+        }
+        await this.uploadFinished(marker);
+        this.state.accountAcquisitions = (this.state.accountAcquisitions ?? []).filter((id) => id !== marker);
+        this.changed();
+        await this.save();
+      },
+    }, deps.previousSigningKey, () => this.now());
     this.collection = new QuotaCollection(storage, this.client, { now: () => this.now() });
     this.actions = new AccountActions(this.client, storage, this.collection, () => this.now());
   }
   private now(): number { return this.deps.now?.().getTime() ?? Date.now(); }
+  async acquire(request: Request): Promise<Response> {
+    const result = await this.run(() => this.acquisitions.handle(request));
+    await this.acquisitions.keepAlive();
+    return result.value;
+  }
   private changed(alarm = false): void { this.dirty = true; this.alarmDirty ||= alarm; }
   private async run<T>(work: () => Promise<T>): Promise<{ value: T; added: string[] }> {
     const result = this.queue.then(async () => {
@@ -202,7 +230,9 @@ export class PoolControl implements ControlAttribution {
       this.armedAlarm = undefined;
       this.alarmDirty = true;
       await this.expireLocked(this.client);
+      await this.acquisitions.tick();
     });
+    await this.acquisitions.keepAlive();
     this.collectQuota(result.added);
   }
   async expireLocked(client: HomeClient): Promise<void> {
@@ -299,7 +329,11 @@ export class PoolControl implements ControlAttribution {
     const snapshot = rows((await home.data("/credentials")).files)
       .filter((row) => (text(row.provider) ?? text(row.type)) === provider)
       .map((row) => text(row.id)).filter((id): id is string => id !== null);
-    const lock: ProviderLock = { pool, state: null, snapshot, flow: "starting", expires: now + signInTtlMs, lastPoll: now };
+    const lock: ProviderLock = {
+      pool, state: null, snapshot, flow: "starting", expires: now + signInTtlMs, lastPoll: now,
+      ...((this.state.accountAcquisitions?.length ?? 0) > 0
+        ? { unconfirmedUploads: [...this.state.accountAcquisitions!] } : {}),
+    };
     this.state.locks[provider] = lock;
     this.changed(true);
     return lock;

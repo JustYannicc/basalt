@@ -1,4 +1,5 @@
 import { object, text } from "./json.ts";
+import { homeReferences } from "./home-references.ts";
 import { openEnvelope } from "./token.ts";
 import {
   membershipPrefix, membershipRefreshMs, membershipTtlMs,
@@ -108,7 +109,7 @@ export class NativeMemberships {
     if (!before) return;
     const snapshot = await this.deps.read(pool, before.organization);
     const accounts = [...new Set(snapshot.accounts.flatMap((account) =>
-      account.homeReference === null ? [] : [account.homeReference]))].sort();
+      account.homeReference === null ? [] : homeReferences(account.homeReference)))].sort();
     const valid = snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
     // Each pass reads actual state, including a write that arrived after a previous matching read.
     if (valid) await this.deps.reconcile(pool, accounts);

@@ -34,6 +34,7 @@ import { NativeMemberships } from "./membership.ts";
 import { membershipPath, policyPrefix } from "./membership-contract.ts";
 import { readNativeMembership } from "./membership-read.ts";
 import { HomeMembership } from "./home-membership.ts";
+import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
 import { signEnvelope } from "./token.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
@@ -199,6 +200,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
         await this.memberships.reserve(request);
@@ -267,7 +269,7 @@ export async function handlePoolWorkerRequest(
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
   if (pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
-  if (pathname !== accessPath && pathname !== membershipPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
+  if (pathname !== accountAcquisitionPath && pathname !== accessPath && pathname !== membershipPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {

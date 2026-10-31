@@ -645,6 +645,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-provider-account-composition",
+      "file": "0070-provider-account-composition.patch",
+      "content_sha256": "dffae9896c4d4ad47fae83c4f7034cf66fb2c38893854523910185bd0a8cbfed",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

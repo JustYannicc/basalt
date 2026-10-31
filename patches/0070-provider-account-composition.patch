@@ -1,0 +1,1026 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index 1ff5355..2e62c6a 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -6,6 +6,7 @@ import { makeRegistryStorage } from "@executor-js/app-registry";
+ import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
++import { poolAccountAcquisition } from "@executor-js/hosted-server/pool-account-acquisition";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+ import {
+   createExecutor,
+@@ -76,10 +77,13 @@ export const cloudExecutor = Effect.fn(function* (
+   // Resolve during initialization so Alchemy binds every value into the Worker environment.
+   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
+   const origin = yield* cloudOrigin.pipe(Effect.orDie);
+-  const accessLifecycle = poolAccessLifecycle(
+-    yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
+-    (yield* cloudHosts.pipe(Effect.orDie)).browser,
++  const poolSigningKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;
++  const acquisition = yield* poolAccountAcquisition(poolSigningKey, poolOrigin).pipe(
++    Effect.provide(BrowserCrypto.layer),
++    Effect.orDie,
+   );
++  const accessLifecycle = poolAccessLifecycle(poolSigningKey, poolOrigin);
+   // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
+   // origin keeps delivering, so existing subscriptions keep the URL they stored.
+   const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
+@@ -142,6 +146,7 @@ export const cloudExecutor = Effect.fn(function* (
+           publishing,
+         },
+         hooks: lifecycle.hooks,
++        acquisition,
+         oauth: {
+           httpClient: egress.client,
+           // Read from settings: App UI, MCP and workflow runs build this outside the API request.
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 6cd51ea..a734385 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -40,6 +40,7 @@
+     "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts",
+     "./catalog-app-defaults": "./src/implementation/catalog-app-defaults.ts",
+     "./catalog-app-upgrades": "./src/implementation/catalog-app-upgrades.ts",
++    "./pool-account-acquisition": "./src/implementation/pool-account-acquisition.ts",
+     "./account-key-mirror": "./src/implementation/account-key-mirror.ts"
+   },
+   "dependencies": {
+diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
+index 61745d5..75ae612 100644
+--- a/apps/hosted/server/src/contracts/accounts.ts
++++ b/apps/hosted/server/src/contracts/accounts.ts
+@@ -83,6 +83,18 @@ export const AccountLinkedToApp = UserFacingError.define({
+ export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
+ 
+ const params = { organization: OrganizationReference };
++export const AccountLinkRequired = UserFacingError.define({
++  tag: "AccountLinkRequired",
++  status: 409,
++  fields: { app: AppId, requirement: Schema.NonEmptyString },
++  title: "Save this account before linking it",
++  description: "This pool needs a saved account before it can prepare and authorize model access.",
++  recovery: {
++    action: "Create the account, then link its saved ID to this pool.",
++    instructions:
++      "Use appAccounts.appCreate for the requirement, retain the returned account ID, then call appAccounts.appLink. If linking fails, retry appLink with that ID. Do not create a second account or complete this older connection request.",
++  },
++});
+ const app = { ...params, app: AppId };
+ const connection = { ...params, connection: AccountConnectionId };
+ // Reading a connection also verifies ownership of its optional target app.
+@@ -98,6 +110,7 @@ const connectionErrors = [
+   OrganizationForbidden,
+ ] as const;
+ const completionErrors = [
++  AccountLinkRequired,
+   InteractiveRetirementBusy,
+   InteractiveRetirementFailed,
+   ...connectionErrors,
+diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+index 701dcf3..6318355 100644
+--- a/apps/hosted/server/src/contracts/app-accounts.ts
++++ b/apps/hosted/server/src/contracts/app-accounts.ts
+@@ -1,4 +1,4 @@
+-import { AccountProvisioned } from "@executor-js/sdk/core";
++import { AccountAcquisitionUnavailable, AccountProvisioned } from "@executor-js/sdk/core";
+ import {
+   InteractiveRetirementBusy,
+   InteractiveRetirementFailed,
+@@ -24,6 +24,11 @@ import {
+   AccountRequirement,
+   AccountScope,
+   AccountSelectionInvalid,
++  AccountFieldsInput,
++  AccountFieldsInvalid,
++  AuthMethodName,
++  AuthMethodInvalid,
++  CredentialsError,
+   AppId,
+   AppNotFound,
+   ProviderNotFound,
+@@ -144,11 +149,26 @@ export const AppAccountRequirement = Schema.Struct({
+ });
+ export type AppAccountRequirement = typeof AppAccountRequirement.Type;
+ 
++/** Saves an account independently. Call appLink afterward to authorize its use by the app. */
++export const CreateRequirementAccount = Schema.Struct({
++  /** Retain one UUID across an uncertain response. A retry never changes fields or sharing. */
++  creation: Schema.String.check(
++    Schema.isPattern(
++      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/u,
++    ),
++  ),
++  method: AuthMethodName,
++  fields: AccountFieldsInput,
++  label: Schema.optional(Schema.String),
++  destination: Schema.optional(ConnectionDestination),
++});
++
+ const app = { organization: OrganizationReference, app: AppId };
+ const requirement = { ...app, requirement: Schema.NonEmptyString };
+ const link = { ...requirement, account: AccountId };
+ const prefix = "/api/organizations/:organization/apps/:app/accounts";
+ const errors = [
++  AccountAcquisitionUnavailable,
+   AccountProvisioned,
+   InteractiveRetirementBusy,
+   InteractiveRetirementFailed,
+@@ -184,6 +204,24 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+   const path = `${prefix}/${scope}` as const;
+   const forEveryone = scope === "app";
+   return [
++    HttpApiEndpoint.post(`${scope}Create`, `${path}/:requirement`, {
++      params: requirement,
++      payload: CreateRequirementAccount,
++      success: Account,
++      error: [
++        ...errors,
++        ProviderNotFound,
++        AuthMethodInvalid,
++        AccountFieldsInvalid,
++        CredentialsError,
++        AccountSiteInvalid,
++      ],
++    })
++      .annotate(RequiredAction, "manage")
++      .annotate(
++        OpenApi.Description,
++        "Save a new secrets-method account for a fixed-site provider without linking it. Retain one creation UUID across retries; repeating it returns the same saved account without replacing its fields. Then call appLink or userLink with its exact ID. Connection is complete only after that link succeeds. Per-account sites use the normal connection flow.",
++      ),
+     HttpApiEndpoint.get(`${scope}List`, path, {
+       params: app,
+       success: Schema.Array(AppAccountLink),
+@@ -256,14 +294,16 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+  * caller's own accounts. A plain requirement keeps one link, and linking another replaces it;
+  * many() keeps every one. Connection status and form steps stay under `accounts.connection`.
+  */
+-const [appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
+-const [userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
++const [appCreate, appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
++const [userCreate, userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
+ export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
++  .add(appCreate)
+   .add(appList)
+   .add(appGet)
+   .add(appLink)
+   .add(appUnlink)
+   .add(appConnect)
++  .add(userCreate)
+   .add(userList)
+   .add(userGet)
+   .add(userLink)
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index 9a2de46..131575d 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -66,6 +66,7 @@ import { recordUsage } from "../contracts/product-analytics.ts";
+ import { currentOwner, ownedConnection } from "./access.ts";
+ import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+ import { AccountLinkedToApp } from "../contracts/accounts.ts";
++import { requireSeparateNativeAccountLink } from "./pool-account-connection.ts";
+ import { RequirementMismatch } from "../contracts/app-accounts.ts";
+ 
+ /** The apps the caller can use and linked this account to, or that link it for everyone. */
+@@ -320,9 +321,9 @@ export const submitConnection = (
+ ) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+-    const intent = yield* checkConnection(
+-      yield* ownedConnection(executor, owner, input.connection),
+-    );
++    const connection = yield* ownedConnection(executor, owner, input.connection);
++    const intent = yield* checkConnection(connection);
++    yield* requireSeparateNativeAccountLink(connection, input.method);
+     return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
+       accountDestination(intent.destination),
+       Effect.tapError(() =>
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index ac7099b..dc80b64 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -39,6 +39,7 @@ import type { ConnectionDestination } from "../contracts/resource-access.ts";
+ import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
+ import { canDeleteAccount, replacingAccounts } from "./interactive-retirement.ts";
+ import { connectAccount, connectionUrl } from "./accounts.ts";
++import { createRequirementAccount } from "./requirement-account-creation.ts";
+ import { accountOAuthRedirectUri } from "./auth.ts";
+ import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
+ import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
+@@ -347,6 +348,12 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+   Effect.gen(function* () {
+     const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
+     return handlers
++      .handle("appCreate", ({ params, payload }) =>
++        createRequirementAccount("app", params, payload),
++      )
++      .handle("userCreate", ({ params, payload }) =>
++        createRequirementAccount("user", params, payload),
++      )
+       .handle("appList", ({ params }) =>
+         Effect.gen(function* () {
+           const owner = yield* currentOwner;
+diff --git a/apps/hosted/server/src/implementation/native-pool-account-mirror.ts b/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
+index 57891bf..2823bb5 100644
+--- a/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
++++ b/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
+@@ -49,7 +49,6 @@ export const prepareNativePoolAccountMirror = (
+     Effect.catchTags({
+       SqlError: () => new StorageError(),
+       SchemaError: () => new StorageError(),
+-      AccountAcquisitionUnavailable: () => new StorageError(),
+     }),
+   );
+ 
+diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+new file mode 100644
+index 0000000..c9d0e53
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+@@ -0,0 +1,107 @@
++import {
++  accountAcquisitionDriver,
++  AccountAcquisitionUnavailable,
++  identifyProvider,
++  type AccountAcquisitionContext,
++  type AccountAcquisitionRegistration,
++} from "@executor-js/sdk/core";
++import { providerDeclaration } from "apps/host";
++import { InteractiveStart, InteractiveStatus } from "apps/contracts";
++import { Crypto, Effect, Option, Redacted, Schema } from "effect";
++import { providers } from "./pool-provider-definitions.ts";
++import { providerCapabilities } from "./pool-provider-capabilities.ts";
++import {
++  accountAcquisitionPath,
++  accountAcquisitionPrefix,
++} from "./pool-account-acquisition-contract.ts";
++import { signEnvelope } from "./pool-token.ts";
++import { homeAccountKeyMirror } from "./account-key-mirror.ts";
++
++/** Registration is host-owned; an app can request a canonical method, never a driver or URL. */
++export const poolAccountAcquisition = (
++  key: Option.Option<Redacted.Redacted<string>>,
++  origin: string,
++) =>
++  Effect.gen(function* () {
++    if (Option.isNone(key)) return { registrations: [] };
++    const secret = key.value;
++    const crypto = yield* Crypto.Crypto;
++    const registrations: AccountAcquisitionRegistration[] = [];
++    for (const capability of providerCapabilities) {
++      if (capability.connection === "unavailable") continue;
++      const definition = yield* providerDeclaration(providers[capability.lab]);
++      const identified = yield* identifyProvider(definition, crypto);
++      const send = async (
++        context: AccountAcquisitionContext,
++        action: string,
++        input: Record<string, unknown> = {},
++      ) => {
++        const at = Date.now();
++        const envelope = await signEnvelope(Redacted.value(secret), accountAcquisitionPrefix, {
++          owner: context.owner,
++          operation: context.operation,
++          action,
++          provider: capability.backend,
++          at,
++          expiresAt: Math.min(context.deadline, at + 30_000),
++          ...input,
++        });
++        const response = await context.fetch(new URL(accountAcquisitionPath, origin), {
++          method: "POST",
++          signal: context.signal,
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify({ envelope }),
++        });
++        if (!response.ok) {
++          await response.body?.cancel();
++          throw new Error("Account acquisition backend unavailable");
++        }
++        return await response.json();
++      };
++      const oauth = capability.connection === "home-oauth";
++      const mirror = homeAccountKeyMirror({
++        origin,
++        signingKey: secret,
++        credential: { type: "typesafe" },
++        fields: { token: "token" },
++      });
++      const driver = accountAcquisitionDriver({
++        id: "basalt-home",
++        revision: oauth ? "oauth-v1" : "key-mirror-v1",
++        start: async (context, reconnect) => {
++          if (!oauth) throw new Error("This account uses its saved API-key connection");
++          return Schema.decodeUnknownSync(InteractiveStart)(
++            await send(
++              context,
++              "start",
++              reconnect === undefined ? {} : { reconnect: Redacted.value(reconnect.reference) },
++            ),
++          );
++        },
++        status: async (context, input) =>
++          Schema.decodeUnknownSync(InteractiveStatus)(await send(context, "status", input)),
++        submit: async (context, input) =>
++          Schema.decodeUnknownSync(InteractiveStatus)(await send(context, "submit", input)),
++        cancel: async (context, input) => {
++          if (oauth) await send(context, "cancel", input);
++        },
++        remove: async (context) => {
++          if (oauth)
++            await send(context, "remove", { reference: Redacted.value(context.reference) });
++          else await mirror.remove(context);
++        },
++        ...(oauth ? {} : { mirror: mirror.mirror }),
++      });
++      // The previous label-sensitive identity can still name an account deployed by an older app.
++      for (const provider of new Set([identified.identity, identified.legacy]))
++        registrations.push({
++          provider,
++          method: capability.method,
++          current: true,
++          exposeHostReference: true,
++          driver,
++          fetch: globalThis.fetch,
++        });
++    }
++    return { registrations };
++  }).pipe(Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "registration" })));
+diff --git a/apps/hosted/server/src/implementation/pool-account-connection.ts b/apps/hosted/server/src/implementation/pool-account-connection.ts
+new file mode 100644
+index 0000000..6e6eacf
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-account-connection.ts
+@@ -0,0 +1,26 @@
++import { StorageError, type AccountConnection } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { AccountLinkRequired } from "../contracts/accounts.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++/** Native token creation must not reach the SDK's older create-and-link transaction. */
++export const requireSeparateNativeAccountLink = (connection: AccountConnection, method: string) =>
++  Effect.gen(function* () {
++    if (connection.reconnectAccount !== null) return;
++    const auth = connection.provider.definition.auth;
++    if (!Object.hasOwn(auth, method) || auth[method]?.type !== "secrets") return;
++    const sql = yield* policyDatabase;
++    const native = yield* sql`select 1 from organization o
++      cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++      join executor_apps a on a.id = entry.value ->> 'app' and a.owner = 'organization:' || o.id
++      join executor_deployments d on d.id = a.active_deployment
++      where 'organization:' || o.id = ${connection.owner}
++        and entry.value ->> 'app' = ${connection.target.app}
++        and entry.value ->> 'membership' = 'executor-links-v1'
++        and d.requirements::jsonb -> 'accounts' -> ${connection.target.requirement} ->> 'scope' = 'app' limit 1`;
++    if (native.length)
++      return yield* new AccountLinkRequired({
++        app: connection.target.app,
++        requirement: connection.target.requirement,
++      });
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/requirement-account-creation.ts b/apps/hosted/server/src/implementation/requirement-account-creation.ts
+new file mode 100644
+index 0000000..a55b6e3
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/requirement-account-creation.ts
+@@ -0,0 +1,72 @@
++import {
++  AccountId,
++  AccountFieldsInvalid,
++  AccountProvisioned,
++  AccountSiteInvalid,
++  AuthMethodInvalid,
++  type AccountScope,
++  type AppId,
++} from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { RequirementMismatch, type CreateRequirementAccount } from "../contracts/app-accounts.ts";
++import { currentOwner } from "./access.ts";
++import { checkDestination } from "./connection-policy.ts";
++import { requireAppAccess, requireAccountAccess } from "./resource-policy.ts";
++import { accountDestination } from "./resource-lifecycle.ts";
++
++/** Creation commits before a native pool's appLink performs any backend mirroring. */
++export const createRequirementAccount = (
++  scope: AccountScope,
++  input: { readonly app: AppId; readonly requirement: string },
++  payload: typeof CreateRequirementAccount.Type,
++) =>
++  Effect.gen(function* () {
++    const owner = yield* currentOwner;
++    yield* requireAppAccess(input.app, scope === "app" ? "manage" : "use");
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const app = yield* executor.apps.get({ owner, app: input.app });
++    const requirement = Object.hasOwn(app.requirements.accounts, input.requirement)
++      ? app.requirements.accounts[input.requirement]
++      : undefined;
++    if (requirement === undefined || requirement.scope !== scope)
++      return yield* new RequirementMismatch({ ...input, scope, reason: "requirement" });
++    const method = Object.hasOwn(requirement.definition.auth, payload.method)
++      ? requirement.definition.auth[payload.method]
++      : undefined;
++    if (method?.type !== "secrets")
++      return yield* new AuthMethodInvalid({
++        provider: requirement.provider,
++        method: payload.method,
++      });
++    if (method.provisioned === true)
++      return yield* new AccountProvisioned({ provider: requirement.provider });
++    // Per-site providers need the existing connection flow's URL policy and saved site binding.
++    if (requirement.definition.site !== undefined)
++      return yield* new AccountSiteInvalid({ ...input, reason: "required" });
++    const destination = payload.destination ?? { kind: "personal" as const };
++    yield* checkDestination(destination);
++    const id = AccountId.make(`acc_${payload.creation.toLowerCase()}`);
++    const existing = yield* executor.accounts
++      .get({ owner, account: id })
++      .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
++    if (existing !== undefined) {
++      yield* requireAccountAccess(id, "manage");
++      if (existing.provider !== requirement.provider || existing.method !== payload.method)
++        return yield* new AccountFieldsInvalid({
++          provider: requirement.provider,
++          method: payload.method,
++        });
++      return existing;
++    }
++    return yield* executor.managedAccounts
++      .add({
++        id,
++        owner,
++        provider: requirement.provider,
++        method: payload.method,
++        fields: payload.fields,
++        ...(payload.label === undefined ? {} : { label: payload.label }),
++      })
++      .pipe(accountDestination(destination));
++  });
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index cd2ac93..d4343a4 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -15,6 +15,7 @@ export type HostedError =
+ const errorMessage = Match.type<HostedError>().pipe(
+   Match.tagsExhaustive({
+     AccountProvisioned: ({ message }) => message,
++    AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",
+     AccountAcquisitionUnavailable: () =>
+       "This account connection is temporarily unavailable. Retry after the host restores it.",
+     AccessConflict: ({ reason }) =>
+diff --git a/e2e/support/account-acquisition-fixture.ts b/e2e/support/account-acquisition-fixture.ts
+index 5ba4bfb..2ca0ca1 100644
+--- a/e2e/support/account-acquisition-fixture.ts
++++ b/e2e/support/account-acquisition-fixture.ts
+@@ -35,12 +35,12 @@ export const acquisitionFixture = (hooks: { check?: boolean | "void"; observe?:
+           yield* api.request(account.actor, "DELETE", `${prefix}/accounts/${account.id}`);
+       }).pipe(Effect.orDie),
+     );
+-    const deploy = (name: string) =>
++    const deploy = (name: string, scope: "user" | "app" = "user") =>
+       Effect.gen(function* () {
+         const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name,
+           files: [
+-            { path: "index.ts", content: acquisitionAppSource(backend.origin) },
++            { path: "index.ts", content: acquisitionAppSource(backend.origin, scope) },
+             appsManifest,
+           ],
+         });
+diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
+index fbad80e..fff14ce 100644
+--- a/e2e/support/acquisition-product.ts
++++ b/e2e/support/acquisition-product.ts
+@@ -92,13 +92,13 @@ Runtime.runMain(
+   });
+ 
+ /** The management app and every consumer declare the same canonical provider. */
+-export const acquisitionAppSource = (origin: string) => `
++export const acquisitionAppSource = (origin: string, scope: "user" | "app" = "user") => `
+ import { defineApp, defineProvider, interactive, secrets, object, string, query, router } from "apps";
+ const account = defineProvider({ name: "Reusable synthetic account", hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
+   paste: interactive({ label: "Sign in", acquisition: "host" }),
+   manual: secrets({ label: "Manual", fields: object({ token: string() }) }),
+ } });
+-const requirements = { user: { accounts: { identity: account.many() } } };
++const requirements = { ${scope}: { accounts: { identity: account.many() } } };
+ export default defineApp(requirements, { tools: router({ ids: query({ input: object({}) }, async (ctx) =>
+-  ctx.user.accounts.identity.map((account) => ({ id: account.id, method: account.method, fields: account.fields }))) }) });
++  ctx.${scope}.accounts.identity.map((account) => ({ id: account.id, method: account.method, fields: account.fields }))) }) });
+ `;
+diff --git a/e2e/support/provider-account-backend.ts b/e2e/support/provider-account-backend.ts
+new file mode 100644
+index 0000000..59c6221
+--- /dev/null
++++ b/e2e/support/provider-account-backend.ts
+@@ -0,0 +1,86 @@
++/** External synthetic custodian can lose its reply after accepting the assigned credential. */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++const Mirror = Schema.Struct({
++  reference: Schema.String,
++  action: Schema.Literals(["upsert", "remove"]),
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++  credential: Schema.optionalKey(Schema.Struct({ type: Schema.String, token: Schema.String })),
++});
++
++export const providerAccountBackend = Effect.gen(function* () {
++  const calls = yield* Ref.make<readonly { reference: string; type: string; token: string }[]>([]);
++  const references = yield* Ref.make<ReadonlySet<string>>(new Set());
++  const failNext = yield* Ref.make(false);
++  const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "POST",
++      "/pool/v1/account-mirrors",
++      Effect.gen(function* () {
++        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ envelope: Schema.String }),
++        );
++        const [prefix, payload, signature, extra] = envelope.split(".");
++        if (
++          prefix !== "sbam1" ||
++          payload === undefined ||
++          signature === undefined ||
++          extra !== undefined
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest();
++        const actual = Buffer.from(signature, "base64url");
++        if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected))
++          return HttpServerResponse.empty({ status: 401 });
++        const value = yield* Schema.decodeUnknownEffect(Mirror)(
++          JSON.parse(Buffer.from(payload, "base64url").toString()),
++        ).pipe(Effect.orDie);
++        if (
++          value.at > Date.now() ||
++          value.expiresAt <= Date.now() ||
++          value.expiresAt > value.at + 30_000
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        if (value.action === "remove") {
++          yield* Ref.update(
++            references,
++            (items) => new Set([...items].filter((id) => id !== value.reference)),
++          );
++        } else {
++          if (value.credential === undefined) return HttpServerResponse.empty({ status: 400 });
++          const credential = value.credential;
++          yield* Ref.update(calls, (items) => [
++            ...items,
++            { reference: value.reference, ...credential },
++          ]);
++          yield* Ref.update(references, (items) => new Set([...items, value.reference]));
++          if (yield* Ref.getAndSet(failNext, false))
++            return HttpServerResponse.empty({ status: 503 });
++        }
++        return HttpServerResponse.empty({ status: 204 });
++      }),
++    ),
++    HttpRouter.add("POST", "/pool/v1/membership", Effect.succeed(HttpServerResponse.empty())),
++    HttpRouter.add("POST", "/pool/v1/access", Effect.succeed(HttpServerResponse.empty())),
++  );
++  const context = yield* Layer.build(
++    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++    ),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++  if (!("port" in server.address)) return yield* Effect.die("Expected TCP custodian fixture");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    calls: Ref.get(calls),
++    references: Ref.get(references),
++    failAfterAccept: Ref.set(failNext, true),
++  };
++});
+diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
+new file mode 100644
+index 0000000..33859c2
+--- /dev/null
++++ b/e2e/support/provider-account-product.ts
+@@ -0,0 +1,60 @@
++/** Supply the production provider registrations to the complete self-host product. */
++import { Effect, FileSystem, Path } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { Target } from "./platform.ts";
++import { serverControl } from "./server-control.ts";
++
++export const providerAccountProduct = (origin: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target,
++      fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const entry = path.join(target.directory, "provider-account-product.ts");
++    yield* fs.writeFileString(
++      entry,
++      `
++import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
++import * as Runtime from "@effect/platform-bun/BunRuntime";
++import { main } from "@executor-js/hosted-self-host/server";
++import { poolAccountAcquisition } from "@executor-js/hosted-server/pool-account-acquisition";
++import { AccountAcquisitionConfiguration } from "@executor-js/sdk/core";
++import { Effect, Option, Redacted } from "effect";
++Runtime.runMain(Effect.gen(function* () {
++  const acquisition = yield* poolAccountAcquisition(Option.some(Redacted.make("ab".repeat(32))), ${JSON.stringify(origin)});
++  return yield* main.pipe(Effect.provideService(AccountAcquisitionConfiguration, acquisition));
++}).pipe(Effect.provide(NodeCrypto.layer)));
++`,
++    );
++    const links = path.join(target.directory, "node_modules", "@executor-js");
++    yield* fs.makeDirectory(links, { recursive: true });
++    const product = path.join(links, "hosted-self-host");
++    if (!(yield* fs.exists(product)))
++      yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
++    const config = path.join(target.directory, "provider-account-product.json");
++    yield* fs.writeFileString(
++      config,
++      JSON.stringify({
++        extends: path.resolve("tsconfig.json"),
++        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++        files: [entry],
++        include: [],
++        exclude: [],
++      }),
++    );
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const checked = yield* processes.exitCode(
++      ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++        stdout: "inherit",
++        stderr: "inherit",
++      }),
++    );
++    if (checked !== 0)
++      return yield* Effect.die("Provider registration product failed its public API typecheck");
++    yield* serverControl("stop");
++    yield* serverControl("environment", 200, {
++      EXECUTOR_E2E_PRODUCT_ENTRY: entry,
++      POOL_APP_SIGNING_KEY: "ab".repeat(32),
++      BASALT_POOL_ORIGIN: origin,
++    });
++    yield* serverControl("start");
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index edf0bea..15cc647 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8034,6 +8034,29 @@ export const scenarios = plan({
+       ),
+     },
+   },
++  nativeAccountCreateBeforeLink: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "native-account-create-before-link.spec.ts",
++    title:
++      "native token creation keeps one saved account through mirror failure and a two-pool link retry",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted native pool authorization and account creation."),
++      cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
++    },
++  },
++  accountCreateBeforeLink: {
++    fixtures: "actors",
++    file: "account-create-before-link.spec.ts",
++    title:
++      "saved token accounts retry creation before authorized app links and survive another consumer's removal",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted account creation and resource authorization."),
++      cloud: na("Uses a process-owned complete product fixture and loopback app archive."),
++    },
++  },
+   accountAcquisitionStartPrivacy: {
+     fixtures: "actors",
+     file: "account-acquisition-cleanup.spec.ts",
+diff --git a/e2e/tests/account-create-before-link.spec.ts b/e2e/tests/account-create-before-link.spec.ts
+new file mode 100644
+index 0000000..0f289a2
+--- /dev/null
++++ b/e2e/tests/account-create-before-link.spec.ts
+@@ -0,0 +1,81 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { body } from "../support/api.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
++import { linkAccount, unlinkAccount } from "../support/app-accounts.ts";
++import { Resource } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(RuntimeLive, { excludeTestServices: true })("Saved accounts before linking", (it) => {
++  it.effect(scenarios.accountCreateBeforeLink.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const first = yield* f.deploy("First token consumer", "app");
++        const second = yield* f.deploy("Second token consumer", "app");
++        const path = `${first.path}/accounts/app/identity`;
++        const payload = {
++          creation: crypto.randomUUID(),
++          method: "manual",
++          fields: { token: "synthetic-original-token" },
++        };
++        expect((yield* f.api.request(f.actors.member, "POST", path, payload)).status).toBe(403);
++        const created = yield* f.api.request(f.actors.owner, "POST", path, payload);
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const account = (yield* body(Resource, created)).id;
++        f.trackAccount(f.actors.owner, account);
++        expect(JSON.stringify(created.body)).not.toContain(payload.fields.token);
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${first.path}/accounts/app`)).body,
++        ).toEqual([]);
++
++        // A lost response can retry the same creation without replacing its saved credentials.
++        const repeated = yield* f.api.request(f.actors.owner, "POST", path, {
++          ...payload,
++          fields: { token: "synthetic-retry-must-not-replace" },
++        });
++        expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
++        expect((yield* body(Resource, repeated)).id).toBe(account);
++        yield* linkAccount(f.actors.owner, first.path, "identity", account, "app");
++        yield* linkAccount(f.actors.owner, second.path, "identity", account, "app");
++        yield* unlinkAccount(f.actors.owner, first.path, "identity", account, "app");
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${second.path}/accounts/app`)).body,
++        ).toMatchObject([{ requirement: "identity", account: { id: account } }]);
++        expect((yield* f.api.request(f.actors.owner, "DELETE", first.path)).status).toBe(200);
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${f.prefix}/accounts/${account}`)).status,
++        ).toBe(200);
++
++        const personalPayload = { ...payload, creation: crypto.randomUUID() };
++        const personal = yield* f.api.request(
++          f.actors.member,
++          "POST",
++          `${f.manager.path}/accounts/user/identity`,
++          personalPayload,
++        );
++        expect(personal.status, JSON.stringify(personal.body)).toBe(200);
++        const personalAccount = (yield* body(Resource, personal)).id;
++        f.trackAccount(f.actors.member, personalAccount);
++        expect(
++          (yield* f.api.request(f.actors.member, "GET", `${f.manager.path}/accounts/user`)).body,
++        ).toEqual([]);
++        expect(
++          (yield* f.api.request(
++            f.actors.owner,
++            "POST",
++            `${f.manager.path}/accounts/user/identity`,
++            personalPayload,
++          )).status,
++        ).toBe(403);
++        yield* linkAccount(f.actors.member, f.manager.path, "identity", personalAccount);
++        expect(
++          (yield* f.api.request(f.actors.member, "GET", `${f.manager.path}/accounts/user`)).body,
++        ).toMatchObject([{ requirement: "identity", account: { id: personalAccount } }]);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/native-account-create-before-link.spec.ts b/e2e/tests/native-account-create-before-link.spec.ts
+new file mode 100644
+index 0000000..92739a6
+--- /dev/null
++++ b/e2e/tests/native-account-create-before-link.spec.ts
+@@ -0,0 +1,162 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { providerAccountBackend } from "../support/provider-account-backend.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const jev = defineProvider({ name: "Jev", hosts: ["api.typesafe.ai"], auth: {
++  apiKey: secrets({ label: "TypeSafe API key", fields: object({ token: string({ minLength: 1 }) }) }) } });
++export default defineApp({ app: { accounts: { jev: jev.many() } } }, { tools: router({
++  present: query({ input: object({}) }, async (ctx) => ctx.app.accounts.jev.map(a => ({ id: a.id, method: a.method, fields: Object.keys(a.fields) })))
++}) });`;
++const Revision = Schema.Struct({ revision: Schema.String });
++
++layer(RuntimeLive, { excludeTestServices: true })("Native token creation before linking", (it) => {
++  it.effect(scenarios.nativeAccountCreateBeforeLink.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* providerAccountBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const deploy = (name: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: [{ path: "index.ts", content: source }, appsManifest],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = yield* body(Resource, response);
++            apps.push(app.id);
++            const path = `${prefix}/apps/${app.id}`;
++            const access = yield* body(
++              Revision,
++              yield* api.request(actors.owner, "GET", `${path}/access`),
++            );
++            expect(
++              (yield* api.request(actors.owner, "PATCH", `${path}/access`, {
++                revision: access.revision,
++                audience: { kind: "everyone" },
++              })).status,
++            ).toBe(200);
++            return { id: app.id, path };
++          });
++        const first = yield* deploy("First native token pool"),
++          second = yield* deploy("Second native token pool");
++        // Native activation has no public UI yet. Only this scenario's organization is opted in.
++        yield* legacyStorage([
++          {
++            sql: "update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2",
++            params: [
++              JSON.stringify({
++                first: { app: first.id, membership: "executor-links-v1" },
++                second: { app: second.id, membership: "executor-links-v1" },
++              }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* providerAccountProduct(backend.origin);
++        const requirement = `${first.path}/accounts/app/jev`;
++        const pending = yield* api.request(actors.owner, "POST", `${requirement}/connections`, {});
++        expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++        const connection = yield* body(Resource, pending);
++        const oldSubmit = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          {
++            method: "apiKey",
++            fields: { token: "synthetic-old-submit-must-not-save" },
++          },
++        );
++        expect(oldSubmit.status, JSON.stringify(oldSubmit.body)).toBe(409);
++        expect(JSON.stringify(oldSubmit.body)).toContain("AccountLinkRequired");
++        expect(yield* backend.calls).toHaveLength(0);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${first.path}/accounts/app`)).body,
++        ).toEqual([]);
++
++        const payload = {
++          creation: crypto.randomUUID(),
++          method: "apiKey",
++          fields: { token: "synthetic-new-native-token" },
++        };
++        expect((yield* api.request(actors.member, "POST", requirement, payload)).status).toBe(403);
++        const created = yield* api.request(actors.owner, "POST", requirement, payload);
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const account = (yield* body(Resource, created)).id;
++        accounts.push(account);
++        expect(JSON.stringify(created.body)).not.toContain(payload.fields.token);
++        expect(yield* backend.calls).toHaveLength(0);
++        const link = (path: string) =>
++          api.request(actors.owner, "PUT", `${path}/accounts/app/jev/${account}`);
++        yield* backend.failAfterAccept;
++        const failed = yield* link(first.path);
++        expect(failed.status, JSON.stringify(failed.body)).toBe(503);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
++        ).toBe(200);
++        for (const app of [first, second])
++          expect(
++            (yield* api.request(actors.owner, "GET", `${app.path}/accounts/app`)).body,
++          ).toEqual([]);
++        const firstAttempt = yield* backend.calls;
++        expect(firstAttempt).toHaveLength(1);
++        expect(firstAttempt[0]).toMatchObject({ type: "typesafe", token: payload.fields.token });
++        expect(yield* backend.references).toContain(firstAttempt[0]!.reference);
++
++        const retriedCreate = yield* api.request(actors.owner, "POST", requirement, {
++          ...payload,
++          fields: { token: "synthetic-retry-must-not-replace" },
++        });
++        expect(retriedCreate.status, JSON.stringify(retriedCreate.body)).toBe(200);
++        expect((yield* body(Resource, retriedCreate)).id).toBe(account);
++        expect((yield* link(first.path)).status).toBe(200);
++        expect(yield* backend.calls).toEqual([firstAttempt[0], firstAttempt[0]]);
++        expect((yield* link(second.path)).status).toBe(200);
++        expect(yield* backend.calls).toHaveLength(2);
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${first.path}/accounts/app/jev/${account}`))
++            .status,
++        ).toBe(200);
++        expect((yield* api.request(actors.owner, "DELETE", first.path)).status).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${second.path}/accounts/app`)).body,
++        ).toMatchObject([{ requirement: "jev", account: { id: account } }]);
++        const used = yield* api.request(actors.owner, "POST", `${second.path}/tools/call`, {
++          tool: "present",
++          kind: "query",
++          input: {},
++        });
++        expect(used.status, JSON.stringify(used.body)).toBe(200);
++        expect(used.body).toEqual([{ id: account, method: "apiKey", fields: ["token"] }]);
++        expect(yield* backend.references).toContain(firstAttempt[0]!.reference);
++      }),
++    ),
++  );
++});
+diff --git a/packages/apps/src/host.ts b/packages/apps/src/host.ts
+index 5723b13..8188c03 100644
+--- a/packages/apps/src/host.ts
++++ b/packages/apps/src/host.ts
+@@ -21,6 +21,7 @@ import {
+ 
+ export type { HostContext, ResolvedAccountsInput } from "./contracts/host.ts";
+ export { isolatedCacheSession } from "./implementation/cache-session.ts";
++export { providerDeclaration } from "./implementation/host.ts";
+ 
+ /** Parse host-owned accounts, approval and caller identity. Never take the caller from public request input. */
+ export const hostContext = (
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index 77ffb06..5c431a6 100644
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -177,7 +177,7 @@ function declaredPlacements(request: readonly Placement[] | undefined) {
+     : { request: normalizePlacements(request) };
+ }
+ 
+-function providerDeclaration(provider: Provider<AuthMethods>) {
++export function providerDeclaration(provider: Provider<AuthMethods>) {
+   return declarationSafe(
+     () =>
+       Effect.gen(function* () {
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index 58ad02c..1c8f7e7 100644
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -202,6 +202,8 @@ export type AccountFieldsInvalid = typeof AccountFieldsInvalid.Type;
+  */
+ export const ManagedAccountInputs = {
+   add: Schema.Struct({
++    /** Trusted products may assign a durable creation ID before attempting the write. */
++    id: Schema.optional(AccountId),
+     owner: OwnerId,
+     provider: ProviderId,
+     method: AuthMethodName,
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index bfe9a7c..8dabc8c 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -29,6 +29,7 @@ export {
+   type ResolvedAppRuntime,
+ } from "./implementation/runtime.ts";
+ export { executorDatabase } from "./implementation/storage-migrations.ts";
++export { identifyProvider } from "./implementation/provider.ts";
+ export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
+ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
+ export {
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+index d1cbf0a..727b9b1 100644
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -147,9 +147,11 @@ export const makeAccounts = (
+         input.fields,
+       );
+       const identity = {
+-        id: AccountId.make(
+-          `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+-        ),
++        id:
++          input.id ??
++          AccountId.make(
++            `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
++          ),
+         owner: input.owner,
+         provider: provider.id,
+         method: input.method,
