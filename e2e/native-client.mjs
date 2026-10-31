@@ -19,6 +19,7 @@ import { appsManifest } from "../.upstream/e2e/support/apps-release.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
 import { startNativeClientWorker } from "./native-client-worker.mjs";
 import { nativeClientCli } from "./native-client-cli.mjs";
+import { nativeSlowReader } from "./native-client-reader.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -153,19 +154,25 @@ const program = Effect.gen(function* () {
         tail += new TextDecoder().decode(next.value);
       }
       assert.match(tail, /data: complete/u);
+      let backpressure;
       const client = new Client({ name: "native-client-proof", version: "1" });
       try {
         await client.connect(
           new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), { requestInit: { headers } }),
         );
-        const tools = await client.callTool({
-          name: "execute",
-          arguments: { code: `return await tools[${JSON.stringify(app.slug)}].echo({})` },
-        });
-        assert.ok(
-          JSON.stringify(tools).includes(receipt),
-          "A real deployed tool returns its unique receipt through the native CLI.",
-        );
+        const call = () =>
+          client.callTool({
+            name: "execute",
+            arguments: { code: `return await tools[${JSON.stringify(app.slug)}].echo({})` },
+          });
+        const verifyTool = async () => {
+          assert.ok(
+            JSON.stringify(await call()).includes(receipt),
+            "A real deployed tool returns its unique receipt through the native CLI.",
+          );
+        };
+        await verifyTool();
+        backpressure = await nativeSlowReader(origin, headers, worker, verifyTool);
       } finally {
         await client.close();
       }
@@ -231,6 +238,7 @@ const program = Effect.gen(function* () {
         cancellationReachedExternalModel: true,
         revocationInterruptedStream: true,
         socketFinalOutputRetained: true,
+        tunneledBackpressure: backpressure,
         syntheticModelAndPrivatePoolPeers: true,
         shortenedExternalLifetimeHint: true,
         credentialStorage: storage,

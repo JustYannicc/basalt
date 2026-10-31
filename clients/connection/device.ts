@@ -31,35 +31,45 @@ export function deviceConnection(
           ...(access.policy.toolsOrganization ? ["tools" as const] : []),
         ]
       : [];
+  const renew = async (current: DeviceCredentials, signal: AbortSignal, generation: number) => {
+    // Persist intent first: a lost refresh response must not be repeated after restart.
+    await store.write(JSON.stringify({ ...current, refreshPending: true }));
+    saved = { ...current, refreshPending: true };
+    const tokens = await tokenRequest(
+      current.origin,
+      {
+        grant_type: "refresh_token",
+        resource: `${current.origin}/native`,
+        client_id: current.clientId,
+        refresh_token: current.refreshToken,
+      },
+      signal,
+    );
+    const next = { ...current, ...tokens, refreshPending: false };
+    if (generation !== epoch) throw new Error("Connection state changed.");
+    await store.write(JSON.stringify(next));
+    saved = next;
+  };
   const validate = async (signal: AbortSignal) => {
+    signal.throwIfAborted();
     const current = saved;
     if (state !== "connected") throw new Error("The connection is not connected.");
-    if (!current || current.refreshPending) {
+    if (!current || (current.refreshPending && !pending)) {
       state = "sign-in-required";
       throw new Error("Sign in again before using this device.");
     }
     const generation = epoch;
-    let next = current;
     try {
-      if (current.expiresAt <= Date.now() + 30_000) {
-        // Persist intent first: a lost refresh response must not be repeated after restart.
-        await store.write(JSON.stringify({ ...current, refreshPending: true }));
-        saved = { ...current, refreshPending: true };
-        const tokens = await tokenRequest(
-          current.origin,
-          {
-            grant_type: "refresh_token",
-            resource: `${current.origin}/native`,
-            client_id: current.clientId,
-            refresh_token: current.refreshToken,
-          },
-          signal,
-        );
-        next = { ...current, ...tokens, refreshPending: false };
-        if (generation !== epoch) throw new Error("Connection state changed.");
-        await store.write(JSON.stringify(next));
-        saved = next;
+      if (!pending && current.expiresAt <= Date.now() + 30_000) {
+        pending = renew(current, signal, generation).finally(() => {
+          pending = undefined;
+        });
       }
+      await pending;
+      signal.throwIfAborted();
+      const next = saved;
+      if (generation !== epoch || state !== "connected" || !next)
+        throw new Error("Connection state changed.");
       const response = await authRequest(
         next.origin,
         "/api/auth/native/access",
@@ -82,19 +92,14 @@ export function deviceConnection(
       if (generation !== epoch) throw new Error("Connection state changed.");
       access = checked;
     } catch (error) {
-      if (saved?.refreshPending) state = "sign-in-required";
-      else if (state === "connected") state = "disconnected";
-      access = undefined;
+      if (state === "connected" && saved?.refreshPending) state = "sign-in-required";
+      else if (state === "connected" && !signal.aborted) state = "disconnected";
+      if (!signal.aborted || state !== "connected") access = undefined;
       throw error;
     }
   };
   const authorize = async (signal: AbortSignal) => {
-    if (!pending) {
-      pending = validate(signal).finally(() => {
-        pending = undefined;
-      });
-    }
-    await pending;
+    await validate(signal);
     signal.throwIfAborted();
     if (state !== "connected" || !saved || !access)
       throw new Error("The connection is unavailable.");
@@ -127,6 +132,7 @@ export function deviceConnection(
       await pending?.catch(() => undefined);
     },
     reconnect: async () => {
+      await pending?.catch(() => undefined);
       const raw = await store.read();
       saved = raw === undefined ? undefined : readDeviceCredentials(JSON.parse(raw));
       state = "connected";

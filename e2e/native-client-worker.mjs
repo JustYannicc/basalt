@@ -17,6 +17,8 @@ export async function startNativeClientWorker(root) {
     refreshes = 0,
     initialToken = true,
     cancelled = 0;
+  const slow = { bytes: 0, blocked: false, total: 32 * 1024 * 1024 };
+  const slowChunk = Buffer.alloc(64 * 1024, "x");
   const holds = new Set();
   let nextCancellation;
   const model = createServer((request, response) => {
@@ -28,10 +30,27 @@ export async function startNativeClientWorker(root) {
         .end(JSON.stringify({ data: [{ id: "synthetic-model" }] }));
       return;
     }
-    request.resume();
-    request.once("end", () => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.once("end", async () => {
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write("data: first\n\n");
+      if (JSON.parse(Buffer.concat(chunks).toString() || "{}").mode === "slow") {
+        try {
+          while (slow.bytes < slow.total && !response.destroyed) {
+            slow.bytes += slowChunk.length;
+            if (!response.write(slowChunk)) {
+              slow.blocked = true;
+              await once(response, "drain", { signal: AbortSignal.timeout(30000) });
+              slow.blocked = false;
+            }
+          }
+          response.end();
+        } catch {
+          response.destroy();
+        }
+        return;
+      }
       const finish = () => {
         holds.delete(finish);
         response.end("data: complete\n\n");
@@ -144,6 +163,7 @@ export async function startNativeClientWorker(root) {
       for (const finish of holds) finish();
     },
     refreshes: () => refreshes,
+    progress: () => ({ ...slow }),
     nextCancellation: () => {
       const before = cancelled;
       return {

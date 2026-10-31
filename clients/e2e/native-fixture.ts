@@ -34,6 +34,7 @@ export async function nativeFixture() {
     foreignApproval = false;
   let refuseRequest = false;
   const holds = new Set<() => void>();
+  let accessGate: ReturnType<typeof gate> | undefined;
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(chunk);
@@ -96,6 +97,14 @@ export async function nativeFixture() {
       });
     }
     if (request.url === "/api/auth/native/access") {
+      const held = accessGate;
+      accessGate = undefined;
+      if (held) {
+        response.once("close", held.cancel);
+        held.arrive();
+        await held.released;
+        if (response.destroyed) return;
+      }
       if (revoked || request.headers.authorization !== `Bearer ${access}`) return json(401, {});
       return json(200, {
         id: "native:fixture",
@@ -271,6 +280,10 @@ export async function nativeFixture() {
   origin = `http://127.0.0.1:${address.port}`;
   return {
     origin,
+    holdAccess: () => {
+      accessGate = gate();
+      return accessGate;
+    },
     approve: () => {
       approved = true;
     },
@@ -306,4 +319,18 @@ export async function nativeFixture() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+}
+
+function gate() {
+  let arrive!: () => void, cancel!: () => void, release!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  const cancelled = new Promise<void>((resolve) => {
+    cancel = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { arrive, cancel, release, arrived, cancelled, released };
 }
