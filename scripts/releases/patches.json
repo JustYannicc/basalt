@@ -485,6 +485,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "executor-mcp-apps",
+      "file": "0051-mcp-apps.patch",
+      "content_sha256": "cc78ee76c8ce66ff44bd2ab6eaea767f5d17c8ac7a07adaf23a147459756a9c0",
+      "kind": "upstream",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-workflow-diagrams",
       "file": "0052-workflow-diagrams.patch",
       "content_sha256": "230ddb5dbd65dd7674258e698a8cad8fe00a12c99de3ed814222c38aa2af0b8c",

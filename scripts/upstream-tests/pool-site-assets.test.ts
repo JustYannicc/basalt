@@ -3,12 +3,14 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { hashDirectory } from "alchemy/Command/Memo";
 import { Effect } from "effect";
+import { appAssets } from "../../.upstream/packages/mcp/src/implementation/app-assets.ts";
+import { appAssetPaths } from "../../.upstream/packages/mcp/src/implementation/app-asset-paths.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const cloud = join(upstream, "apps/hosted/cloud");
@@ -29,6 +31,7 @@ test("site build copies the current pool seed into the hashed public asset path"
   const fixtureCloud = join(fixtureRoot, "apps/hosted/cloud");
   const script = join(fixtureCloud, "scripts/build-site.ts");
   const pool = join(fixtureCloud, ".generated/pool-app");
+  const mcp = join(fixtureCloud, ".generated/mcp-apps");
   const output = join(fixtureCloud, ".generated/site");
   const sources = [
     [join(cloud, "scripts/build-site.ts"), script],
@@ -56,7 +59,7 @@ test("site build copies the current pool seed into the hashed public asset path"
   const dashboard = join(fixtureCloud, "web/dist/client");
   const docs = join(fixtureRoot, "apps/docs/dist");
   await Promise.all(
-    [marketing, dashboard, docs, pool, output].map((directory) =>
+    [marketing, dashboard, docs, pool, mcp, output].map((directory) =>
       mkdir(directory, { recursive: true }),
     ),
   );
@@ -66,6 +69,14 @@ test("site build copies the current pool seed into the hashed public asset path"
     writeFile(join(docs, "index.html"), "docs"),
   ]);
 
+  // CI checks this fixture before the production build generates its static directory.
+  for (const asset of ["renderer", "sandbox"] as const) {
+    const bytes = appAssets[asset];
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    assert.equal(basename(appAssetPaths[asset]), `${asset}-${hash}.js`);
+    await writeFile(join(mcp, basename(appAssetPaths[asset])), bytes);
+  }
+
   const stale = join(output, "stale-before-build.txt");
   await writeFile(stale, "stale");
   const first = seed("first pool source");
@@ -74,6 +85,8 @@ test("site build copies the current pool seed into the hashed public asset path"
 
   const firstAsset = join(output, "_basalt", first.name);
   assert.equal(await readFile(firstAsset, "utf8"), first.bytes);
+  for (const asset of ["renderer", "sandbox"] as const)
+    assert.equal(await readFile(join(output, appAssetPaths[asset]), "utf8"), appAssets[asset]);
   await assert.rejects(lstat(stale), { code: "ENOENT" });
   const firstHash = await siteOutputHash(output);
 
