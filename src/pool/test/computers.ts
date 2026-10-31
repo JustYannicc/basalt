@@ -117,6 +117,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     return { ...value, intent: setup };
   }
   return { storage, server, home, events, context, action, access, intent, create,
+    setup: (request: Request) => computers.handle(request),
     nativeControl: (request: Request) => computers.nativeControl(request),
     nativeModel: (request: Request) => computers.nativeModel(request),
     expire: () => computers.expire(), now: () => time, advance: (ms: number) => { time += ms; }, restart: () => { computers = make(); },
