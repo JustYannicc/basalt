@@ -11,19 +11,27 @@ const entry: FeedEntry = {
   description:
     "Zendesk Support API v2 reads and writes for the connected user; every mutation requires approval.",
   auth: [{ method: "oauth", kind: "oauth2" }],
-  icons: zendeskIcons,
+  icons: [...zendeskIcons],
   source: "apps/zendesk.json",
 };
 
 export function zendeskAddition(metadata?: ZendeskMarketplaceMetadata): Addition {
-  const headers = metadata === undefined ? {} : {
-    "X-Zendesk-Marketplace-Name": brand.name,
-    "X-Zendesk-Marketplace-Organization-Id": metadata.organizationId,
-    "X-Zendesk-Marketplace-App-Id": metadata.appId,
-  };
-  const files = snapshot.files.map(file => file.path === "configuration.ts"
-    ? { ...file, content: `export const integrationHeaders: Readonly<Record<string, string>> = ${JSON.stringify(headers)};\n` }
-    : file);
+  const headers =
+    metadata === undefined
+      ? {}
+      : {
+          "X-Zendesk-Marketplace-Name": brand.name,
+          "X-Zendesk-Marketplace-Organization-Id": metadata.organizationId,
+          "X-Zendesk-Marketplace-App-Id": metadata.appId,
+        };
+  const files = snapshot.files.map((file) =>
+    file.path === "configuration.ts"
+      ? {
+          ...file,
+          content: `export const integrationHeaders: Readonly<Record<string, string>> = ${JSON.stringify(headers)};\n`,
+        }
+      : file,
+  );
   return {
     entry,
     source: { ...snapshot, files },
