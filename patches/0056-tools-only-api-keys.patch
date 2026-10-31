@@ -113,15 +113,15 @@ diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/serv
 diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
 --- a/apps/hosted/server/src/contracts/mcp.ts
 +++ b/apps/hosted/server/src/contracts/mcp.ts
-@@ -8,6 +8,7 @@
- } from "@executor-js/mcp-auth/connections";
+@@ -9,6 +9,7 @@
  import type { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/agents";
  import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
+ import type { AppSandboxAddress } from "@executor-js/mcp";
 +import { AuthorizationPolicy } from "@executor-js/authorization";
  import { Context, Schema } from "effect";
  import type { Effect } from "effect";
  import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
-@@ -19,6 +20,7 @@
+@@ -20,6 +21,7 @@
    clientId: Schema.NonEmptyString,
    access: OrganizationAccess,
    grant: Grant,
@@ -293,7 +293,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
  import { GroupDatabase } from "../contracts/groups.ts";
  import { CurrentUserId } from "../contracts/auth.ts";
  import {
-@@ -192,7 +191,7 @@
+@@ -203,7 +202,7 @@
          if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
          const backend = yield* hostedMcpBackend.pipe(
            Effect.provideService(CurrentOrganization, fresh.access),
@@ -302,7 +302,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
            Effect.provideService(CurrentUserId, fresh.userId),
            Effect.provideService(CurrentMcpGrant, fresh.grant.id),
          );
-@@ -313,10 +312,7 @@
+@@ -324,10 +323,7 @@
            !fold.result.value.access.canUse
              ? Effect.succeed(undefined)
              : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
@@ -314,7 +314,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
                  Effect.provideService(CurrentUserId, access.userId),
                  Effect.provideContext(services),
                  Effect.option,
-@@ -389,7 +385,7 @@
+@@ -417,7 +413,7 @@
            // there again.
            if (
              (yield* ConcurrentStatements) === undefined ||
@@ -359,22 +359,10 @@ diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/se
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3068,7 +3068,8 @@
-   catalogOAuthClients: {
-     fixtures: "actors",
-     file: "catalog-oauth-clients.spec.ts",
--    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
-+    title:
-+      "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
-     targets: {
-       "self-host": scheduled,
-       cloud: na("Restarts a runner-owned product with optional client credentials."),
-@@ -6746,6 +6747,37 @@
-       "self-host": scheduled,
-       cloud: scheduled,
+@@ -6793,6 +6793,37 @@
        local: na("Local pairs a device instead of signing a user in."),
-+    },
-+  },
+     },
+   },
 +  toolsOnlyAccountLinks: {
 +    fixtures: "actors",
 +    file: "tools-only-account-links.spec.ts",
@@ -404,9 +392,11 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      "self-host": scheduled,
 +      cloud: scheduled,
 +      local: na("Local uses its instance key."),
-     },
-   },
++    },
++  },
    namedApiKeys: {
+     fixtures: "actors",
+     file: "named-api-keys.spec.ts",
 diff --git a/e2e/tests/tools-only-account-links.spec.ts b/e2e/tests/tools-only-account-links.spec.ts
 new file mode 100644
 --- /dev/null
