@@ -1,23 +1,91 @@
 diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/hosted/server/src/implementation/first-party-oauth.ts
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
-@@ -105,6 +105,15 @@
+@@ -105,5 +105,82 @@
    "files:write",
  ];
 
-+/** Read-only Jira and Confluence access, renewed through Atlassian's rotating refresh tokens. */
++/** Personal Jira, service management and Confluence access through rotating refresh tokens. */
 +const atlassianScopes = [
 +  "offline_access",
 +  "read:me",
-+  "read:jira-work",
++  "delete:attachment:confluence",
++  "delete:comment:confluence",
++  "delete:custom-content:confluence",
++  "delete:database:confluence",
++  "delete:embed:confluence",
++  "delete:folder:confluence",
++  "delete:page:confluence",
++  "delete:whiteboard:confluence",
++  "manage:confluence-configuration",
++  "manage:jira-configuration",
++  "manage:jira-project",
++  "manage:jira-webhook",
++  "manage:servicedesk-customer",
++  "read:attachment:confluence",
++  "read:audit-log:confluence",
++  "read:comment:confluence",
++  "read:configuration:confluence",
 +  "read:confluence-content.all",
++  "read:confluence-content.permission",
++  "read:confluence-content.summary",
++  "read:confluence-groups",
++  "read:confluence-props",
++  "read:confluence-space.summary",
++  "read:confluence-user",
++  "read:content-details:confluence",
++  "read:content.metadata:confluence",
++  "read:custom-content:confluence",
++  "read:database:confluence",
++  "read:embed:confluence",
++  "read:folder:confluence",
++  "read:hierarchical-content:confluence",
++  "read:jira-user",
++  "read:jira-work",
++  "read:label:confluence",
++  "read:page:confluence",
++  "read:request.attachment:jira-service-management",
++  "read:request.comment:jira-service-management",
++  "read:requesttype:jira-service-management",
++  "read:servicedesk-request",
++  "read:space.permission:confluence",
++  "read:space:confluence",
++  "read:task:confluence",
++  "read:user.property:confluence",
++  "read:user:confluence",
++  "read:user:jira",
++  "read:watcher:confluence",
++  "read:whiteboard:confluence",
++  "readonly:content.attachment:confluence",
 +  "search:confluence",
++  "write:attachment:confluence",
++  "write:audit-log:confluence",
++  "write:comment:confluence",
++  "write:configuration:confluence",
++  "write:confluence-content",
++  "write:confluence-file",
++  "write:confluence-groups",
++  "write:confluence-props",
++  "write:confluence-space",
++  "write:custom-content:confluence",
++  "write:database:confluence",
++  "write:embed:confluence",
++  "write:folder:confluence",
++  "write:jira-work",
++  "write:page:confluence",
++  "write:requesttype:jira-service-management",
++  "write:servicedesk-request",
++  "write:space.permission:confluence",
++  "write:space:confluence",
++  "write:task:confluence",
++  "write:user.property:confluence",
++  "write:whiteboard:confluence",
 +];
 +
  /** OAuth App scopes declared by the official GitHub REST app. */
  const githubRestScopes = [
    "repo",
-@@ -188,6 +197,25 @@
+@@ -188,6 +196,20 @@
      placement: { hosts: ["*.googleapis.com"] },
    },
    {
@@ -33,17 +101,12 @@ diff --git a/apps/hosted/server/src/implementation/first-party-oauth.ts b/apps/h
 +    defaultScopes: atlassianScopes,
 +    allowedScopes: atlassianScopes,
 +    placement: { hosts: ["api.atlassian.com"] },
-+    personalDataReporting: {
-+      identityUrl: "https://api.atlassian.com/me",
-+      reportUrl: "https://api.atlassian.com/app/report-accounts/",
-+      accountIdField: "account_id",
-+    },
 +  },
 +  {
      id: "slack",
      label: "Executor for Slack",
      server: {
-@@ -312,7 +340,9 @@
+@@ -312,7 +334,9 @@
              ? "GitHub"
              : definition.id === "slack"
                ? "Slack"

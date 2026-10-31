@@ -1,3 +1,4 @@
+import { atlassianApiFixture } from "./api-fixture.mjs";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { writeFile } from "node:fs/promises";
@@ -57,7 +58,9 @@ function jiraIssue(person, requestedFields) {
     status: { name: "To Do" },
   };
   const selectedFields = Array.isArray(requestedFields)
-    ? Object.fromEntries(requestedFields.filter((name) => name in fields).map((name) => [name, fields[name]]))
+    ? Object.fromEntries(
+        requestedFields.filter((name) => name in fields).map((name) => [name, fields[name]]),
+      )
     : fields;
   return {
     id: person.key === "first" ? "100101" : "100202",
@@ -91,12 +94,12 @@ function confluenceSearchResult(person) {
 }
 
 /** Loopback-only Atlassian 3LO and API fixture. It never proxies to Atlassian. */
-export async function startAtlassianProvider({ directory, clientId, clientSecret, scopes }) {
+export async function startAtlassianProvider({ directory, clientId, clientSecret, scopes, specs }) {
+  const api = atlassianApiFixture();
   const codes = new Map();
   const tokens = new Map();
   const requests = [];
   const failures = [];
-  const reportingRequests = [];
   let nextCode = 0;
   let nextToken = 0;
 
@@ -105,24 +108,45 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
     const log = { method: request.method, path: url.pathname, status: 500, person: null };
     requests.push(log);
     try {
+      const specification = /^\/openapi\/([a-zA-Z]+)\.json$/.exec(url.pathname);
+      if (specification && request.method === "GET" && specs[specification[1]]) {
+        log.status = 200;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(specs[specification[1]]);
+        return;
+      }
       if (url.pathname === "/authorize" && request.method === "GET") {
-        const valid = url.searchParams.get("response_type") === "code"
-          && url.searchParams.get("client_id") === clientId
-          && url.searchParams.has("redirect_uri")
-          && url.searchParams.has("state")
-          && url.searchParams.get("audience") === "api.atlassian.com"
-          && url.searchParams.get("prompt") === "consent"
-          && new Set((url.searchParams.get("scope") ?? "").split(" ")).size === scopes.length;
+        const valid =
+          url.searchParams.get("response_type") === "code" &&
+          url.searchParams.get("client_id") === clientId &&
+          url.searchParams.has("redirect_uri") &&
+          url.searchParams.has("state") &&
+          url.searchParams.get("audience") === "api.atlassian.com" &&
+          url.searchParams.get("prompt") === "consent" &&
+          new Set((url.searchParams.get("scope") ?? "").split(" ")).size === scopes.length &&
+          scopes.every((scope) => (url.searchParams.get("scope") ?? "").split(" ").includes(scope));
         if (!valid) {
           log.status = 400;
           return json(response, 400, { error: "invalid authorization request" });
         }
         const fields = ["client_id", "redirect_uri", "state", "scope"];
-        const hidden = fields.map((name) => `<input type="hidden" name="${name}" value="${escapeHtml(url.searchParams.get(name) ?? "")}">`).join("");
-        const choices = atlassianPeople.map((person) => `<form method="post" action="/authorize/choose">${hidden}<button name="person" value="${person.key}">${person.email}</button></form>`).join("");
+        const hidden = fields
+          .map(
+            (name) =>
+              `<input type="hidden" name="${name}" value="${escapeHtml(url.searchParams.get(name) ?? "")}">`,
+          )
+          .join("");
+        const choices = atlassianPeople
+          .map(
+            (person) =>
+              `<form method="post" action="/authorize/choose">${hidden}<button name="person" value="${person.key}">${person.email}</button></form>`,
+          )
+          .join("");
         log.status = 200;
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        response.end(`<!doctype html><html><body><h1>Choose a synthetic Atlassian account</h1>${choices}</body></html>`);
+        response.end(
+          `<!doctype html><html><body><h1>Choose a synthetic Atlassian account</h1>${choices}</body></html>`,
+        );
         return;
       }
 
@@ -130,7 +154,12 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         const form = new URLSearchParams(await body(request));
         const person = atlassianPeople.find((item) => item.key === form.get("person"));
         const redirect = new URL(form.get("redirect_uri") ?? "");
-        if (!person || form.get("client_id") !== clientId || !form.get("state") || redirect.protocol !== "http:") {
+        if (
+          !person ||
+          form.get("client_id") !== clientId ||
+          !form.get("state") ||
+          redirect.protocol !== "http:"
+        ) {
           log.status = 400;
           return json(response, 400, { error: "invalid account choice" });
         }
@@ -156,7 +185,8 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
           log.status = 401;
           return json(response, 401, { error: "invalid client" });
         }
-        const person = grant.grant_type === "authorization_code" ? codes.get(grant.code) : undefined;
+        const person =
+          grant.grant_type === "authorization_code" ? codes.get(grant.code) : undefined;
         if (!person) {
           log.status = 400;
           return json(response, 400, { error: "invalid grant" });
@@ -185,12 +215,14 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         }
         log.person = person.key;
         log.status = 200;
-        return json(response, 200, [{
-          id: person.cloudId,
-          url: `https://${person.key}.atlassian.test`,
-          name: person.siteName,
-          scopes,
-        }]);
+        return json(response, 200, [
+          {
+            id: person.cloudId,
+            url: `https://${person.key}.atlassian.test`,
+            name: person.siteName,
+            scopes,
+          },
+        ]);
       }
 
       if (!person) {
@@ -198,33 +230,12 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         return json(response, 401, { error: "unauthorized" });
       }
 
-      if (url.pathname === "/me" && request.method === "GET") {
-        log.person = person.key;
-        log.status = 200;
-        return json(response, 200, {
-          account_id: `synthetic:${person.key}`,
-          name: person.siteName,
-          email: person.email,
-        });
-      }
-      if (url.pathname === "/app/report-accounts/" && request.method === "POST") {
-        const report = JSON.parse(await body(request));
-        if (!Array.isArray(report.accounts) || report.accounts.length < 1 || report.accounts.length > 90)
-          throw new Error("Invalid reporting batch");
-        for (const account of report.accounts) {
-          if (!atlassianPeople.some((candidate) => account.accountId === `synthetic:${candidate.key}`)
-            || !Number.isFinite(Date.parse(account.updatedAt)))
-            throw new Error("Invalid reported identity or retrieval timestamp");
-        }
-        reportingRequests.push(report.accounts);
-        log.person = person.key;
-        log.status = 204;
-        response.writeHead(204, { "cycle-period": "7" });
-        response.end();
-        return;
-      }
+      if (await api.handle({ request, url, response, person, log, body, json })) return;
 
-      const confluence = /^\/ex\/confluence\/([^/]+)\/wiki\/rest\/api\/(content\/search|content\/([^/]+))$/.exec(url.pathname);
+      const confluence =
+        /^\/ex\/confluence\/([^/]+)\/wiki\/rest\/api\/(content\/search|content\/([^/]+))$/.exec(
+          url.pathname,
+        );
       if (confluence && request.method === "GET") {
         if (decodeURIComponent(confluence[1]) !== person.cloudId) {
           log.status = 403;
@@ -252,7 +263,9 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         return json(response, 200, confluencePage(person));
       }
 
-      const jira = /^\/ex\/jira\/([^/]+)\/rest\/api\/3\/(issue\/([^/]+)|search\/jql)$/.exec(url.pathname);
+      const jira = /^\/ex\/jira\/([^/]+)\/rest\/api\/3\/(issue\/([^/]+)|search\/jql)$/.exec(
+        url.pathname,
+      );
       if (jira && ["GET", "POST"].includes(request.method ?? "")) {
         if (decodeURIComponent(jira[1]) !== person.cloudId) {
           log.status = 403;
@@ -274,15 +287,25 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         const query = JSON.parse(await body(request));
         if (!(query.jql ?? "").includes(person.jiraMarker)) {
           log.status = 400;
-          return json(response, 400, { errorMessages: ["JQL must name the caller's synthetic issue"] });
+          return json(response, 400, {
+            errorMessages: ["JQL must name the caller's synthetic issue"],
+          });
         }
-        return json(response, 200, { issues: [jiraIssue(person, query.fields)], total: 1, isLast: true });
+        return json(response, 200, {
+          issues: [jiraIssue(person, query.fields)],
+          total: 1,
+          isLast: true,
+        });
       }
 
       log.status = 404;
       return json(response, 404, { error: "unsupported synthetic Atlassian endpoint" });
     } catch {
-      failures.push({ method: request.method, path: url.pathname, reason: "fixture request failed" });
+      failures.push({
+        method: request.method,
+        path: url.pathname,
+        reason: "fixture request failed",
+      });
       log.status = 500;
       return json(response, 500, { error: "synthetic Atlassian fixture failed" });
     }
@@ -291,23 +314,32 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Atlassian fixture did not bind a loopback port");
+  if (!address || typeof address === "string")
+    throw new Error("Atlassian fixture did not bind a loopback port");
   const origin = `http://127.0.0.1:${address.port}`;
 
   return {
     origin,
     requests,
+    writes: api.writes,
     failures,
-    reportingRequests,
     apiRequests: () => requests.filter((request) => request.path.startsWith("/ex/")),
     async stop() {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
-      await writeFile(join(directory, "provider.json"), JSON.stringify({ requests, failures }), { mode: 0o600 });
+      await writeFile(
+        join(directory, "provider.json"),
+        JSON.stringify({ requests, failures, writes: api.writes }),
+        { mode: 0o600 },
+      );
     },
   };
 }
 
 function escapeHtml(value) {
-  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }

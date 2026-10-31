@@ -1,13 +1,289 @@
+diff --git a/index.ts b/index.ts
 --- a/index.ts
 +++ b/index.ts
-@@ -20,6 +20,7 @@
- const accessibleResourcesUrl = `${apiOrigin}/oauth/token/accessible-resources`;
- const scopes = [
-   "offline_access",
-+  "read:me",
-   "read:jira-work",
-   "read:confluence-content.all",
-   "search:confluence",
+@@ -1,235 +1,50 @@
++import { defineApp, router, withApprovals } from "apps";
++import { always } from "apps/operations/approval";
++import { liveOpenapiRouter } from "apps/openapi";
++import { requirements } from "./provider.js";
+ import {
+-  array,
+-  bearer,
+-  boolean,
+-  decodeJson,
+-  defineApp,
+-  defineProvider,
+-  json,
+-  number,
+-  object,
+-  oauth2,
+-  query,
+-  router,
+-  string,
+-  type QueryContext,
+-} from "apps";
+-import { never } from "apps/operations/approval";
++  listSites,
++  searchConfluence,
++  readConfluencePage,
++  getJiraIssue,
++  searchJiraIssues,
++} from "./queries.js";
++import { optionsFor, type ApiName } from "./openapi.js";
++import { fetchFor } from "./transport.js";
+
+-const apiOrigin = "https://api.atlassian.com";
+-const accessibleResourcesUrl = `${apiOrigin}/oauth/token/accessible-resources`;
+-const scopes = [
+-  "offline_access",
+-  "read:jira-work",
+-  "read:confluence-content.all",
+-  "search:confluence",
+-];
+-
+-const atlassian = defineProvider({
+-  name: "Atlassian",
+-  hosts: ["api.atlassian.com"],
+-  auth: {
+-    oauth: oauth2({
+-      authorizationUrl: "https://auth.atlassian.com/authorize",
+-      tokenUrl: "https://auth.atlassian.com/oauth/token",
+-      tokenEndpointAuthMethod: "client_secret_post",
+-      tokenRequestFormat: "json",
+-      authorizationParams: { audience: "api.atlassian.com", prompt: "consent" },
+-      scopes,
+-      request: ({ access_token }) => bearer(access_token),
++export default defineApp(requirements, async ({ user, cache, fetch, signal }) => {
++  const account = user?.accounts.atlassian;
++  const api = (name: ApiName) =>
++    account === undefined
++      ? router({})
++      : router(
++          withApprovals(
++            liveOpenapiRouter({
++              ...optionsFor(name),
++              cache,
++              fetch: fetchFor(name, fetch),
++              signal,
++              account,
++            }),
++            (tool) => (tool.kind === "mutation" ? always() : undefined),
++          ),
++          {
++            title: optionsFor(name).title,
++            description:
++              "Personal Atlassian Cloud access. Site permissions and product plans apply. Every write requires approval.",
++          },
++        );
++  return {
++    tools: router({
++      listSites,
++      searchConfluence,
++      readConfluencePage,
++      getJiraIssue,
++      searchJiraIssues,
++      jira: api("jira"),
++      serviceManagement: api("serviceManagement"),
++      confluence: api("confluence"),
++      confluenceV2: api("confluenceV2"),
+     }),
+-  },
+-  async health({ account, fetch, signal }) {
+-    const response = await fetch(accessibleResourcesUrl, {
+-      signal,
+-      headers: { ...account.headers(), accept: "application/json" },
+-    });
+-    const sites = await decodeJson(response, array(object({ id: string(), name: string() })));
+-    if (sites.length === 0) throw new Error("No Atlassian sites are accessible to this account.");
+-  },
++  };
+ });
+-
+-const requirements = { user: { accounts: { atlassian } } };
+-type Context = QueryContext<typeof requirements>;
+-
+-const apiFetch = (
+-  context: Context,
+-  url: string,
+-  options: { readonly method?: "GET" | "POST"; readonly body?: unknown } = {},
+-) => {
+-  const body = options.body === undefined ? undefined : JSON.stringify(options.body);
+-  return context.fetch(url, {
+-    ...(options.method === undefined ? {} : { method: options.method }),
+-    ...(body === undefined ? {} : { body }),
+-    signal: context.signal,
+-    headers: {
+-      ...context.user.accounts.atlassian.headers(),
+-      accept: "application/json",
+-      ...(body === undefined ? {} : { "content-type": "application/json" }),
+-    },
+-  });
+-};
+-
+-const boundedNumber = (value: number | undefined, fallback: number, maximum: number) =>
+-  Math.max(1, Math.min(maximum, Math.trunc(value ?? fallback)));
+-
+-const Sites = array(
+-  object({
+-    id: string(),
+-    name: string(),
+-    url: string(),
+-    scopes: array(string()).optional(),
+-  }),
+-);
+-
+-const listSites = query(
+-  {
+-    description: "List Atlassian Cloud sites accessible to the connected account.",
+-    approval: never(),
+-    input: object({}),
+-  },
+-  async (context: Context) => {
+-    const response = await apiFetch(context, accessibleResourcesUrl);
+-    return decodeJson(response, Sites);
+-  },
+-);
+-
+-const ConfluenceSearch = object({
+-  results: array(
+-    object({
+-      id: string(),
+-      title: string(),
+-      type: string().optional(),
+-      status: string().optional(),
+-      excerpt: string().optional(),
+-      space: object({ key: string().optional(), name: string().optional() }).optional(),
+-      _links: object({ webui: string().optional() }).optional(),
+-    }),
+-  ),
+-  size: number().optional(),
+-});
+-
+-const searchConfluence = query(
+-  {
+-    description: "Search Confluence pages with a CQL query on one accessible site.",
+-    approval: never(),
+-    input: object({
+-      cloudId: string({ minLength: 1 }),
+-      cql: string({ minLength: 1 }),
+-      limit: number().optional(),
+-    }),
+-  },
+-  async (context: Context, { cloudId, cql, limit }) => {
+-    const params = new URLSearchParams({
+-      cql,
+-      limit: String(boundedNumber(limit, 25, 100)),
+-      expand: "space",
+-    });
+-    const base = `${apiOrigin}/ex/confluence/${encodeURIComponent(cloudId)}/wiki/rest/api`;
+-    const response = await apiFetch(context, `${base}/content/search?${params}`);
+-    return decodeJson(response, ConfluenceSearch);
+-  },
+-);
+-
+-const ConfluencePage = object({
+-  id: string(),
+-  title: string(),
+-  type: string().optional(),
+-  status: string().optional(),
+-  space: object({ key: string().optional(), name: string().optional() }).optional(),
+-  body: object({
+-    storage: object({ value: string(), representation: string().optional() }).optional(),
+-  }).optional(),
+-  _links: object({ webui: string().optional() }).optional(),
+-});
+-
+-const readConfluencePage = query(
+-  {
+-    description: "Read a Confluence page and its storage-format body.",
+-    approval: never(),
+-    input: object({ cloudId: string({ minLength: 1 }), pageId: string({ minLength: 1 }) }),
+-  },
+-  async (context: Context, { cloudId, pageId }) => {
+-    const base = `${apiOrigin}/ex/confluence/${encodeURIComponent(cloudId)}/wiki/rest/api`;
+-    const params = new URLSearchParams({ expand: "body.storage,space,version" });
+-    const response = await apiFetch(
+-      context,
+-      `${base}/content/${encodeURIComponent(pageId)}?${params}`,
+-    );
+-    return decodeJson(response, ConfluencePage);
+-  },
+-);
+-
+-const JiraIssue = object({
+-  id: string(),
+-  key: string(),
+-  self: string().optional(),
+-  fields: object({
+-    summary: string(),
+-    description: json().optional(),
+-    status: object({ name: string() }).optional(),
+-    issuetype: object({ name: string() }).optional(),
+-    project: object({ key: string(), name: string().optional() }).optional(),
+-    updated: string().optional(),
+-  }),
+-});
+-
+-const getJiraIssue = query(
+-  {
+-    description: "Read a Jira issue by key from one accessible site.",
+-    approval: never(),
+-    input: object({ cloudId: string({ minLength: 1 }), issueKey: string({ minLength: 1 }) }),
+-  },
+-  async (context: Context, { cloudId, issueKey }) => {
+-    const base = `${apiOrigin}/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
+-    const params = new URLSearchParams({
+-      fields: "summary,description,status,issuetype,project,updated",
+-    });
+-    const response = await apiFetch(
+-      context,
+-      `${base}/issue/${encodeURIComponent(issueKey)}?${params}`,
+-    );
+-    return decodeJson(response, JiraIssue);
+-  },
+-);
+-
+-const JiraSearch = object({
+-  issues: array(JiraIssue),
+-  total: number().optional(),
+-  isLast: boolean().optional(),
+-  nextPageToken: string().optional(),
+-});
+-
+-const searchJiraIssues = query(
+-  {
+-    description: "Search Jira issues with JQL on one accessible site.",
+-    approval: never(),
+-    input: object({
+-      cloudId: string({ minLength: 1 }),
+-      jql: string({ minLength: 1 }),
+-      maxResults: number().optional(),
+-    }),
+-  },
+-  async (context: Context, { cloudId, jql, maxResults }) => {
+-    const base = `${apiOrigin}/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
+-    const response = await apiFetch(context, `${base}/search/jql`, {
+-      method: "POST",
+-      body: {
+-        jql,
+-        maxResults: boundedNumber(maxResults, 25, 100),
+-        fields: ["summary", "status", "issuetype", "project", "updated"],
+-      },
+-    });
+-    return decodeJson(response, JiraSearch);
+-  },
+-);
+-
+-export default defineApp(requirements, {
+-  tools: router({
+-    listSites,
+-    searchConfluence,
+-    readConfluencePage,
+-    getJiraIssue,
+-    searchJiraIssues,
+-  }),
+-});
+diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json
 @@ -7,7 +7,7 @@
@@ -19,3 +295,1086 @@
    },
    "executor": {
      "title": "Atlassian"
+diff --git a/provider.ts b/provider.ts
+new file mode 100644
+--- /dev/null
++++ b/provider.ts
+@@ -0,0 +1,58 @@
++import {
++  array,
++  bearer,
++  decodeJson,
++  defineProvider,
++  object,
++  oauth2,
++  string,
++  type QueryContext,
++} from "apps";
++import { apiOrigin, scopes } from "./configuration.js";
++export { apiOrigin };
++
++export const accessibleResourcesUrl = `${apiOrigin}/oauth/token/accessible-resources`;
++const atlassian = defineProvider({
++  name: "Atlassian",
++  hosts: ["api.atlassian.com"],
++  auth: {
++    oauth: oauth2({
++      authorizationUrl: "https://auth.atlassian.com/authorize",
++      tokenUrl: "https://auth.atlassian.com/oauth/token",
++      tokenEndpointAuthMethod: "client_secret_post",
++      tokenRequestFormat: "json",
++      authorizationParams: { audience: "api.atlassian.com", prompt: "consent" },
++      scopes,
++      request: ({ access_token }) => bearer(access_token),
++    }),
++  },
++  async health({ account, fetch, signal }) {
++    const response = await fetch(accessibleResourcesUrl, {
++      signal,
++      headers: { ...account.headers(), accept: "application/json" },
++    });
++    const sites = await decodeJson(response, array(object({ id: string(), name: string() })));
++    if (sites.length === 0) throw new Error("No Atlassian sites are accessible to this account.");
++  },
++});
++
++export const requirements = { user: { accounts: { atlassian } } };
++export type Context = QueryContext<typeof requirements>;
++
++export const apiFetch = (
++  context: Context,
++  url: string,
++  options: { readonly method?: "GET" | "POST"; readonly body?: unknown } = {},
++) => {
++  const body = options.body === undefined ? undefined : JSON.stringify(options.body);
++  return context.fetch(url, {
++    ...(options.method === undefined ? {} : { method: options.method }),
++    ...(body === undefined ? {} : { body }),
++    signal: context.signal,
++    headers: {
++      ...context.user.accounts.atlassian.headers(),
++      accept: "application/json",
++      ...(body === undefined ? {} : { "content-type": "application/json" }),
++    },
++  });
++};
+diff --git a/queries.ts b/queries.ts
+new file mode 100644
+--- /dev/null
++++ b/queries.ts
+@@ -0,0 +1,159 @@
++import { array, boolean, decodeJson, json, number, object, query, string } from "apps";
++import { never } from "apps/operations/approval";
++import { apiFetch, apiOrigin, accessibleResourcesUrl, type Context } from "./provider.js";
++
++const boundedNumber = (value: number | undefined, fallback: number, maximum: number) =>
++  Math.max(1, Math.min(maximum, Math.trunc(value ?? fallback)));
++
++const Sites = array(
++  object({
++    id: string(),
++    name: string(),
++    url: string(),
++    scopes: array(string()).optional(),
++  }),
++);
++
++const listSites = query(
++  {
++    description: "List Atlassian Cloud sites accessible to the connected account.",
++    approval: never(),
++    input: object({}),
++  },
++  async (context: Context) => {
++    const response = await apiFetch(context, accessibleResourcesUrl);
++    return decodeJson(response, Sites);
++  },
++);
++
++const ConfluenceSearch = object({
++  results: array(
++    object({
++      id: string(),
++      title: string(),
++      type: string().optional(),
++      status: string().optional(),
++      excerpt: string().optional(),
++      space: object({ key: string().optional(), name: string().optional() }).optional(),
++      _links: object({ webui: string().optional() }).optional(),
++    }),
++  ),
++  size: number().optional(),
++});
++
++const searchConfluence = query(
++  {
++    description: "Search Confluence pages with a CQL query on one accessible site.",
++    approval: never(),
++    input: object({
++      cloudId: string({ minLength: 1 }),
++      cql: string({ minLength: 1 }),
++      limit: number().optional(),
++    }),
++  },
++  async (context: Context, { cloudId, cql, limit }) => {
++    const params = new URLSearchParams({
++      cql,
++      limit: String(boundedNumber(limit, 25, 100)),
++      expand: "space",
++    });
++    const base = `${apiOrigin}/ex/confluence/${encodeURIComponent(cloudId)}/wiki/rest/api`;
++    const response = await apiFetch(context, `${base}/content/search?${params}`);
++    return decodeJson(response, ConfluenceSearch);
++  },
++);
++
++const ConfluencePage = object({
++  id: string(),
++  title: string(),
++  type: string().optional(),
++  status: string().optional(),
++  space: object({ key: string().optional(), name: string().optional() }).optional(),
++  body: object({
++    storage: object({ value: string(), representation: string().optional() }).optional(),
++  }).optional(),
++  _links: object({ webui: string().optional() }).optional(),
++});
++
++const readConfluencePage = query(
++  {
++    description: "Read a Confluence page and its storage-format body.",
++    approval: never(),
++    input: object({ cloudId: string({ minLength: 1 }), pageId: string({ minLength: 1 }) }),
++  },
++  async (context: Context, { cloudId, pageId }) => {
++    const base = `${apiOrigin}/ex/confluence/${encodeURIComponent(cloudId)}/wiki/rest/api`;
++    const params = new URLSearchParams({ expand: "body.storage,space,version" });
++    const response = await apiFetch(
++      context,
++      `${base}/content/${encodeURIComponent(pageId)}?${params}`,
++    );
++    return decodeJson(response, ConfluencePage);
++  },
++);
++
++const JiraIssue = object({
++  id: string(),
++  key: string(),
++  self: string().optional(),
++  fields: object({
++    summary: string(),
++    description: json().optional(),
++    status: object({ name: string() }).optional(),
++    issuetype: object({ name: string() }).optional(),
++    project: object({ key: string(), name: string().optional() }).optional(),
++    updated: string().optional(),
++  }),
++});
++
++const getJiraIssue = query(
++  {
++    description: "Read a Jira issue by key from one accessible site.",
++    approval: never(),
++    input: object({ cloudId: string({ minLength: 1 }), issueKey: string({ minLength: 1 }) }),
++  },
++  async (context: Context, { cloudId, issueKey }) => {
++    const base = `${apiOrigin}/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
++    const params = new URLSearchParams({
++      fields: "summary,description,status,issuetype,project,updated",
++    });
++    const response = await apiFetch(
++      context,
++      `${base}/issue/${encodeURIComponent(issueKey)}?${params}`,
++    );
++    return decodeJson(response, JiraIssue);
++  },
++);
++
++const JiraSearch = object({
++  issues: array(JiraIssue),
++  total: number().optional(),
++  isLast: boolean().optional(),
++  nextPageToken: string().optional(),
++});
++
++const searchJiraIssues = query(
++  {
++    description: "Search Jira issues with JQL on one accessible site.",
++    approval: never(),
++    input: object({
++      cloudId: string({ minLength: 1 }),
++      jql: string({ minLength: 1 }),
++      maxResults: number().optional(),
++    }),
++  },
++  async (context: Context, { cloudId, jql, maxResults }) => {
++    const base = `${apiOrigin}/ex/jira/${encodeURIComponent(cloudId)}/rest/api/3`;
++    const response = await apiFetch(context, `${base}/search/jql`, {
++      method: "POST",
++      body: {
++        jql,
++        maxResults: boundedNumber(maxResults, 25, 100),
++        fields: ["summary", "status", "issuetype", "project", "updated"],
++      },
++    });
++    return decodeJson(response, JiraSearch);
++  },
++);
++
++export { listSites, searchConfluence, readConfluencePage, getJiraIssue, searchJiraIssues };
+diff --git a/configuration.ts b/configuration.ts
+new file mode 100644
+--- /dev/null
++++ b/configuration.ts
+@@ -0,0 +1,76 @@
++export const apiOrigin = "https://api.atlassian.com";
++export const scopes = [
++  "offline_access",
++  "read:me",
++  "delete:attachment:confluence",
++  "delete:comment:confluence",
++  "delete:custom-content:confluence",
++  "delete:database:confluence",
++  "delete:embed:confluence",
++  "delete:folder:confluence",
++  "delete:page:confluence",
++  "delete:whiteboard:confluence",
++  "manage:confluence-configuration",
++  "manage:jira-configuration",
++  "manage:jira-project",
++  "manage:jira-webhook",
++  "manage:servicedesk-customer",
++  "read:attachment:confluence",
++  "read:audit-log:confluence",
++  "read:comment:confluence",
++  "read:configuration:confluence",
++  "read:confluence-content.all",
++  "read:confluence-content.permission",
++  "read:confluence-content.summary",
++  "read:confluence-groups",
++  "read:confluence-props",
++  "read:confluence-space.summary",
++  "read:confluence-user",
++  "read:content-details:confluence",
++  "read:content.metadata:confluence",
++  "read:custom-content:confluence",
++  "read:database:confluence",
++  "read:embed:confluence",
++  "read:folder:confluence",
++  "read:hierarchical-content:confluence",
++  "read:jira-user",
++  "read:jira-work",
++  "read:label:confluence",
++  "read:page:confluence",
++  "read:request.attachment:jira-service-management",
++  "read:request.comment:jira-service-management",
++  "read:requesttype:jira-service-management",
++  "read:servicedesk-request",
++  "read:space.permission:confluence",
++  "read:space:confluence",
++  "read:task:confluence",
++  "read:user.property:confluence",
++  "read:user:confluence",
++  "read:user:jira",
++  "read:watcher:confluence",
++  "read:whiteboard:confluence",
++  "readonly:content.attachment:confluence",
++  "search:confluence",
++  "write:attachment:confluence",
++  "write:audit-log:confluence",
++  "write:comment:confluence",
++  "write:configuration:confluence",
++  "write:confluence-content",
++  "write:confluence-file",
++  "write:confluence-groups",
++  "write:confluence-props",
++  "write:confluence-space",
++  "write:custom-content:confluence",
++  "write:database:confluence",
++  "write:embed:confluence",
++  "write:folder:confluence",
++  "write:jira-work",
++  "write:page:confluence",
++  "write:requesttype:jira-service-management",
++  "write:servicedesk-request",
++  "write:space.permission:confluence",
++  "write:space:confluence",
++  "write:task:confluence",
++  "write:user.property:confluence",
++  "write:whiteboard:confluence",
++];
+diff --git a/openapi.ts b/openapi.ts
+new file mode 100644
+--- /dev/null
++++ b/openapi.ts
+@@ -0,0 +1,25 @@
++import type { OpenapiToolNamesOptions } from "apps/openapi";
++import coverage from "./api-coverage.json" with { type: "json" };
++import { apiOrigin } from "./configuration.js";
++
++export type ApiName = keyof typeof coverage;
++const pointer = (value: string) => value.replaceAll("~", "~0").replaceAll("/", "~1");
++
++export function optionsFor(name: ApiName) {
++  const api = coverage[name];
++  return {
++    title: api.title,
++    source: { url: api.url },
++    allowedOrigin: apiOrigin,
++    baseUrl: apiOrigin,
++    pathPrefix: api.pathPrefix,
++    securitySchemes: { [api.scheme]: { type: "http", scheme: "bearer" } },
++    methods: { oauth: [{ scheme: api.scheme, field: "access_token", part: "value", prefix: "" }] },
++    oauth: [],
++    kinds: Object.fromEntries(api.queries.map((id) => [id, "query" as const])),
++    patches: api.excluded.map((operation) => ({
++      op: "remove" as const,
++      path: `/paths/${pointer(operation.path)}/${operation.method}`,
++    })),
++  } satisfies OpenapiToolNamesOptions & { title: string };
++}
+diff --git a/transport.ts b/transport.ts
+new file mode 100644
+--- /dev/null
++++ b/transport.ts
+@@ -0,0 +1,38 @@
++import coverage from "./api-coverage.json" with { type: "json" };
++import { apiOrigin } from "./configuration.js";
++import type { ApiName } from "./openapi.js";
++
++type AppFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
++const templatePattern = (value: string) =>
++  new RegExp(
++    "^" +
++      value
++        .split(/(\{[^}]+\})/)
++        .map((part) =>
++          part.startsWith("{") ? "[^/]+" : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
++        )
++        .join("") +
++      "$",
++  );
++
++/** Add only the fixed headers the vendor requires for these exact API operations. */
++export function fetchFor(name: ApiName, fetch: AppFetch): AppFetch {
++  const api = coverage[name];
++  const rules = api.requiredHeaders.map((rule) => ({
++    ...rule,
++    pattern: templatePattern(api.pathPrefix + rule.path),
++  }));
++  return (input, init = {}) => {
++    const request = input instanceof Request ? input : undefined;
++    const url = new URL(request?.url ?? input.toString());
++    const method = (init.method ?? request?.method ?? "GET").toUpperCase();
++    const rule =
++      url.origin === apiOrigin
++        ? rules.find((rule) => rule.method === method && rule.pattern.test(url.pathname))
++        : undefined;
++    if (rule === undefined) return fetch(input, init);
++    const headers = new Headers(init.headers ?? request?.headers);
++    for (const [name, value] of Object.entries(rule.headers)) headers.set(name, value);
++    return fetch(input, { ...init, headers, redirect: "manual" });
++  };
++}
+diff --git a/api-coverage.json b/api-coverage.json
+new file mode 100644
+--- /dev/null
++++ b/api-coverage.json
+@@ -0,0 +1,673 @@
++{
++  "jira": {
++    "url": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
++    "sha256": "30d96390297b247d3e734110a689c9314209021b00badacea12fdf2a34f97ad4",
++    "checkedAt": "2026-10-31",
++    "scheme": "OAuth2",
++    "pathPrefix": "/ex/jira/{cloudId}",
++    "title": "Jira Platform",
++    "declaredOperations": 630,
++    "retainedOperations": 595,
++    "scopes": [
++      "manage:jira-configuration",
++      "manage:jira-project",
++      "manage:jira-webhook",
++      "read:jira-user",
++      "read:jira-work",
++      "write:jira-work"
++    ],
++    "queries": [
++      "getCustomFieldsConfigurations",
++      "getBulkChangelogs",
++      "getCommentsByIds",
++      "analyseExpression",
++      "evaluateJiraExpression",
++      "evaluateJSISJiraExpression",
++      "getCustomFieldContextsForProjectsAndIssueTypes",
++      "getBulkPinStatus",
++      "getIsWatchingIssueBulk",
++      "getChangeLogsByIds",
++      "getAutoCompletePost",
++      "matchIssues",
++      "parseJqlQueries",
++      "sanitiseJqlQueries",
++      "getBulkPermissions",
++      "getPermittedProjects",
++      "validatePolicyApplication",
++      "searchForIssuesUsingJqlPost",
++      "countIssues",
++      "searchAndReconsileIssuesUsingJqlPost",
++      "validateCreateWorkflows",
++      "validateUpdateWorkflows",
++      "getRequiredWorkflowSchemeMappings",
++      "getWorklogsForIds"
++    ],
++    "excluded": [
++      {
++        "path": "/rest/api/3/app/field/value",
++        "method": "post",
++        "operationId": "updateMultipleCustomFieldValues",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/app/field/{fieldIdOrKey}/value",
++        "method": "put",
++        "operationId": "updateCustomFieldValue",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/jql/function/computation",
++        "method": "get",
++        "operationId": "getPrecomputations",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/jql/function/computation",
++        "method": "post",
++        "operationId": "updatePrecomputations",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/jql/function/computation/search",
++        "method": "post",
++        "operationId": "getPrecomputationsByID",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/mypreferences/locale",
++        "method": "put",
++        "operationId": "setLocale",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/api/3/redact",
++        "method": "post",
++        "operationId": "redact",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/api/3/redact/status/{jobId}",
++        "method": "get",
++        "operationId": "getRedactionStatus",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/api/3/uiModifications",
++        "method": "get",
++        "operationId": "getUiModifications",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/uiModifications",
++        "method": "post",
++        "operationId": "createUiModification",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/uiModifications/{uiModificationId}",
++        "method": "delete",
++        "operationId": "deleteUiModification",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/uiModifications/{uiModificationId}",
++        "method": "put",
++        "operationId": "updateUiModification",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/user/email",
++        "method": "get",
++        "operationId": "getUserEmail",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/api/3/user/email/bulk",
++        "method": "get",
++        "operationId": "getUserEmailBulk",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/api/3/workflow/rule/config",
++        "method": "get",
++        "operationId": "getWorkflowTransitionRuleConfigurations",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/workflow/rule/config",
++        "method": "put",
++        "operationId": "updateWorkflowTransitionRuleConfigurations",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/api/3/workflow/rule/config/delete",
++        "method": "put",
++        "operationId": "deleteWorkflowTransitionRuleConfigurations",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/addons/{addonKey}/properties",
++        "method": "get",
++        "operationId": "AddonPropertiesResource.getAddonProperties_get",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/addons/{addonKey}/properties/{propertyKey}",
++        "method": "delete",
++        "operationId": "AddonPropertiesResource.deleteAddonProperty_delete",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/addons/{addonKey}/properties/{propertyKey}",
++        "method": "get",
++        "operationId": "AddonPropertiesResource.getAddonProperty_get",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/addons/{addonKey}/properties/{propertyKey}",
++        "method": "put",
++        "operationId": "AddonPropertiesResource.putAddonProperty_put",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/app/module/dynamic",
++        "method": "delete",
++        "operationId": "DynamicModulesResource.removeModules_delete",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/app/module/dynamic",
++        "method": "get",
++        "operationId": "DynamicModulesResource.getModules_get",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/app/module/dynamic",
++        "method": "post",
++        "operationId": "DynamicModulesResource.registerModules_post",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/migration/field",
++        "method": "put",
++        "operationId": "AppIssueFieldValueUpdateResource.updateIssueFields_put",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/migration/properties/{entityType}",
++        "method": "put",
++        "operationId": "MigrationResource.updateEntityPropertiesValue_put",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/migration/workflow/rule/search",
++        "method": "post",
++        "operationId": "MigrationResource.workflowRuleSearch_post",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/migration/{connectKey}/{jiraIssueFieldsKey}/task",
++        "method": "get",
++        "operationId": "ConnectToForgeMigrationFetchTaskResource.fetchMigrationTask_get",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/migration/{connectKey}/{jiraIssueFieldsKey}/task",
++        "method": "post",
++        "operationId": "ConnectToForgeMigrationTaskSubmissionResource.submitTask_post",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/atlassian-connect/1/service-registry",
++        "method": "get",
++        "operationId": "ServiceRegistryResource.services_get",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/forge/1/app/properties",
++        "method": "get",
++        "operationId": "getForgeAppPropertyKeys",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/forge/1/app/properties/{propertyKey}",
++        "method": "delete",
++        "operationId": "deleteForgeAppProperty",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/forge/1/app/properties/{propertyKey}",
++        "method": "get",
++        "operationId": "getForgeAppProperty",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/forge/1/app/properties/{propertyKey}",
++        "method": "put",
++        "operationId": "putForgeAppProperty",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/rest/internal/api/latest/worklog/bulk",
++        "method": "post",
++        "operationId": "getWorklogsByIssueIdAndWorklogId",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      }
++    ],
++    "requiredHeaders": [
++      {
++        "path": "/rest/api/3/issue/{issueIdOrKey}/attachments",
++        "method": "POST",
++        "operationId": "addAttachment",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      },
++      {
++        "path": "/rest/api/3/issuetype/{id}/avatar2",
++        "method": "POST",
++        "operationId": "createIssueTypeAvatar",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      },
++      {
++        "path": "/rest/api/3/project/{projectIdOrKey}/avatar2",
++        "method": "POST",
++        "operationId": "createProjectAvatar",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      },
++      {
++        "path": "/rest/api/3/universal_avatar/type/{type}/owner/{entityId}",
++        "method": "POST",
++        "operationId": "storeAvatar",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      }
++    ]
++  },
++  "serviceManagement": {
++    "url": "https://developer.atlassian.com/cloud/jira/service-desk/swagger.v3.json",
++    "sha256": "511d6e039a28c094e7a369dc3f17b7dbd6d067ba6e2071d6c2b86d939f8d0e17",
++    "checkedAt": "2026-10-31",
++    "scheme": "OAuth2",
++    "pathPrefix": "/ex/jira/{cloudId}",
++    "title": "Jira Service Management",
++    "declaredOperations": 75,
++    "retainedOperations": 73,
++    "scopes": [
++      "manage:jira-project",
++      "manage:servicedesk-customer",
++      "read:jira-work",
++      "read:request.attachment:jira-service-management",
++      "read:request.comment:jira-service-management",
++      "read:requesttype:jira-service-management",
++      "read:servicedesk-request",
++      "read:user:jira",
++      "write:requesttype:jira-service-management",
++      "write:servicedesk-request"
++    ],
++    "queries": ["validateCustomerRequest", "checkRequestTypePermissions"],
++    "excluded": [
++      {
++        "path": "/rest/servicedeskapi/customer/skip-permission-check",
++        "method": "post",
++        "operationId": "createCustomer",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/customer/skip-permission-check",
++        "method": "post",
++        "operationId": "addCustomers",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      }
++    ],
++    "requiredHeaders": [
++      {
++        "path": "/rest/servicedeskapi/request/{issueIdOrKey}/comment/{commentId}/attachment",
++        "method": "GET",
++        "operationId": "getCommentAttachments",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/request/{requestIdOrKey}/feedback",
++        "method": "DELETE",
++        "operationId": "deleteFeedback",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/request/{requestIdOrKey}/feedback",
++        "method": "GET",
++        "operationId": "getFeedback",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/request/{requestIdOrKey}/feedback",
++        "method": "POST",
++        "operationId": "postFeedback",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/requesttype",
++        "method": "GET",
++        "operationId": "getAllRequestTypes",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/attachTemporaryFile",
++        "method": "POST",
++        "operationId": "attachTemporaryFile",
++        "headers": {
++          "X-Atlassian-Token": "no-check",
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/customer",
++        "method": "DELETE",
++        "operationId": "removeCustomers",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/customer",
++        "method": "GET",
++        "operationId": "getCustomers",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/customer/invite",
++        "method": "POST",
++        "operationId": "inviteCustomer",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype",
++        "method": "POST",
++        "operationId": "createRequestType",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype/permissions/check",
++        "method": "POST",
++        "operationId": "checkRequestTypePermissions",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype/{requestTypeId}",
++        "method": "DELETE",
++        "operationId": "deleteRequestType",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype/{requestTypeId}/property",
++        "method": "GET",
++        "operationId": "getPropertiesKeys",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype/{requestTypeId}/property/{propertyKey}",
++        "method": "DELETE",
++        "operationId": "deleteProperty",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype/{requestTypeId}/property/{propertyKey}",
++        "method": "GET",
++        "operationId": "getProperty",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      },
++      {
++        "path": "/rest/servicedeskapi/servicedesk/{serviceDeskId}/requesttype/{requestTypeId}/property/{propertyKey}",
++        "method": "PUT",
++        "operationId": "setProperty",
++        "headers": {
++          "X-ExperimentalApi": "opt-in"
++        }
++      }
++    ]
++  },
++  "confluence": {
++    "url": "https://developer.atlassian.com/cloud/confluence/swagger.v3.json",
++    "sha256": "f80279e4beace901a20174044ff3dc1cf047ea9486c3dd6eff57e33e4161bf12",
++    "checkedAt": "2026-10-31",
++    "scheme": "oAuthDefinitions",
++    "pathPrefix": "/ex/confluence/{cloudId}",
++    "title": "Confluence REST API v1",
++    "declaredOperations": 130,
++    "retainedOperations": 125,
++    "scopes": [
++      "manage:confluence-configuration",
++      "read:audit-log:confluence",
++      "read:confluence-content.all",
++      "read:confluence-content.permission",
++      "read:confluence-content.summary",
++      "read:confluence-groups",
++      "read:confluence-space.summary",
++      "read:confluence-user",
++      "read:content-details:confluence",
++      "read:content.metadata:confluence",
++      "read:space.permission:confluence",
++      "read:user.property:confluence",
++      "read:user:confluence",
++      "read:watcher:confluence",
++      "readonly:content.attachment:confluence",
++      "search:confluence",
++      "write:audit-log:confluence",
++      "write:confluence-content",
++      "write:confluence-file",
++      "write:confluence-groups",
++      "write:confluence-props",
++      "write:confluence-space",
++      "write:space.permission:confluence",
++      "write:user.property:confluence"
++    ],
++    "queries": ["checkContentPermission"],
++    "excluded": [
++      {
++        "path": "/wiki/rest/api/user/email",
++        "method": "get",
++        "operationId": "getPrivacyUnsafeUserEmail",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/wiki/rest/api/user/email/bulk",
++        "method": "get",
++        "operationId": "getPrivacyUnsafeUserEmailBulk",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/wiki/rest/atlassian-connect/1/app/module/dynamic",
++        "method": "get",
++        "operationId": "getModules",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/wiki/rest/atlassian-connect/1/app/module/dynamic",
++        "method": "post",
++        "operationId": "registerModules",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/wiki/rest/atlassian-connect/1/app/module/dynamic",
++        "method": "delete",
++        "operationId": "removeModules",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      }
++    ],
++    "requiredHeaders": [
++      {
++        "path": "/wiki/rest/api/content/{id}/child/attachment",
++        "method": "PUT",
++        "operationId": "createOrUpdateAttachments",
++        "headers": {
++          "X-Atlassian-Token": "nocheck"
++        }
++      },
++      {
++        "path": "/wiki/rest/api/content/{id}/child/attachment",
++        "method": "POST",
++        "operationId": "createAttachment",
++        "headers": {
++          "X-Atlassian-Token": "nocheck"
++        }
++      },
++      {
++        "path": "/wiki/rest/api/content/{id}/child/attachment/{attachmentId}/data",
++        "method": "POST",
++        "operationId": "updateAttachmentData",
++        "headers": {
++          "X-Atlassian-Token": "nocheck"
++        }
++      },
++      {
++        "path": "/wiki/rest/api/user/watch/content/{contentId}",
++        "method": "POST",
++        "operationId": "addContentWatcher",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      },
++      {
++        "path": "/wiki/rest/api/user/watch/label/{labelName}",
++        "method": "POST",
++        "operationId": "addLabelWatcher",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      },
++      {
++        "path": "/wiki/rest/api/user/watch/space/{spaceKey}",
++        "method": "POST",
++        "operationId": "addSpaceWatcher",
++        "headers": {
++          "X-Atlassian-Token": "no-check"
++        }
++      }
++    ]
++  },
++  "confluenceV2": {
++    "url": "https://dac-static.atlassian.com/cloud/confluence/openapi-v2.v3.json",
++    "sha256": "40535e2a2c01547d53d824d68299098c9073e5bf7ed98a71634706759becfa31",
++    "checkedAt": "2026-10-31",
++    "scheme": "oAuthDefinitions",
++    "pathPrefix": "/ex/confluence/{cloudId}/wiki/api/v2",
++    "title": "Confluence REST API v2",
++    "declaredOperations": 252,
++    "retainedOperations": 245,
++    "scopes": [
++      "delete:attachment:confluence",
++      "delete:comment:confluence",
++      "delete:custom-content:confluence",
++      "delete:database:confluence",
++      "delete:embed:confluence",
++      "delete:folder:confluence",
++      "delete:page:confluence",
++      "delete:whiteboard:confluence",
++      "read:attachment:confluence",
++      "read:comment:confluence",
++      "read:configuration:confluence",
++      "read:content.metadata:confluence",
++      "read:custom-content:confluence",
++      "read:database:confluence",
++      "read:embed:confluence",
++      "read:folder:confluence",
++      "read:hierarchical-content:confluence",
++      "read:label:confluence",
++      "read:page:confluence",
++      "read:space.permission:confluence",
++      "read:space:confluence",
++      "read:task:confluence",
++      "read:user:confluence",
++      "read:whiteboard:confluence",
++      "write:attachment:confluence",
++      "write:comment:confluence",
++      "write:configuration:confluence",
++      "write:custom-content:confluence",
++      "write:database:confluence",
++      "write:embed:confluence",
++      "write:folder:confluence",
++      "write:page:confluence",
++      "write:space.permission:confluence",
++      "write:space:confluence",
++      "write:task:confluence",
++      "write:whiteboard:confluence"
++    ],
++    "queries": ["convertContentIdsToContentTypes", "createBulkUserLookup", "checkAccessByEmail"],
++    "excluded": [
++      {
++        "path": "/admin-key",
++        "method": "get",
++        "operationId": "getAdminKey",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/admin-key",
++        "method": "post",
++        "operationId": "enableAdminKey",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/admin-key",
++        "method": "delete",
++        "operationId": "disableAdminKey",
++        "reason": "The official operation has no OAuth 2.0 authorization alternative."
++      },
++      {
++        "path": "/app/properties",
++        "method": "get",
++        "operationId": "getForgeAppProperties",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/app/properties/{propertyKey}",
++        "method": "get",
++        "operationId": "getForgeAppProperty",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/app/properties/{propertyKey}",
++        "method": "put",
++        "operationId": "putForgeAppProperty",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      },
++      {
++        "path": "/app/properties/{propertyKey}",
++        "method": "delete",
++        "operationId": "deleteForgeAppProperty",
++        "reason": "Connect/Forge app ownership or asApp authentication is required."
++      }
++    ],
++    "requiredHeaders": []
++  }
++}
+diff --git a/README.md b/README.md
+new file mode 100644
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,19 @@
++# Atlassian Cloud
++
++Personal OAuth 2.0 access to Jira Platform, Jira Service Management and Confluence REST v1/v2.
++All API writes require approval. Existing site, Jira and Confluence read shortcuts remain available.
++Every imported operation requires a cloudId from listSites and sends credentials only to api.atlassian.com.
++Connect/Forge-owned operations, Basic-only endpoints and Beta-only scopes are excluded.
++JSM experimental methods send X-ExperimentalApi: opt-in. Attachment, avatar and watcher requests
++include the exact X-Atlassian-Token header their API operation documents. Read-only POST operations are queries.
++
++The source-derived request has 73 scopes, including read:me and offline_access. Classic scopes
++are used where documented; Confluence v2 and other granular-only operations need additional scopes.
++This exceeds Atlassian's recommendation of fewer than 50. The saved hosted registration's classic
++scope counts do not establish that its granular scopes are configured. Keep sharing off until the
++hosted registration, same-account reconsent and live provider acceptance are verified. Custom OAuth
++clients remain available. Atlassian site permissions, product roles and plan limits still apply.
++
++api-coverage.json records the checked public OpenAPI URLs, hashes, exclusions and scope mapping.
++The helper reads the official documents at runtime; compile against their recorded hashes before
++adopting an updated document. This source does not claim live provider authorization or API success.
