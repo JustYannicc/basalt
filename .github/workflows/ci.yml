@@ -34,8 +34,14 @@ jobs:
         include:
           - os: windows-latest
             platform: win
+            artifacts: |
+              clients/desktop/.artifacts/*.exe
+              clients/desktop/.artifacts/*.zip
           - os: ubuntu-latest
             platform: linux
+            artifacts: |
+              clients/desktop/.artifacts/*.AppImage
+              clients/desktop/.artifacts/*.deb
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -55,12 +61,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: client-desktop-${{ matrix.platform }}
-          path: |
-            clients/desktop/.artifacts/*.dmg
-            clients/desktop/.artifacts/*.zip
-            clients/desktop/.artifacts/*.exe
-            clients/desktop/.artifacts/*.AppImage
-            clients/desktop/.artifacts/*.deb
+          path: ${{ matrix.artifacts }}
           if-no-files-found: error
   client-native-product:
     runs-on: ubuntu-latest
