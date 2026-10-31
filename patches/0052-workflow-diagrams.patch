@@ -2293,10 +2293,10 @@ index 0000000..9d04388
 +}
 diff --git a/packages/workflow-graph/src/implementation/derive.ts b/packages/workflow-graph/src/implementation/derive.ts
 new file mode 100644
-index 0000000..68bba7d
+index 0000000..7a59fee
 --- /dev/null
 +++ b/packages/workflow-graph/src/implementation/derive.ts
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,330 @@
 +import type * as t from "@babel/types";
 +import type { AppGraph, Starter, WorkflowGraph, WorkflowNode } from "../contracts/graph.ts";
 +import {
@@ -2318,6 +2318,7 @@ index 0000000..68bba7d
 +  type At,
 +  type Binding,
 +  type Budget,
++  type FunctionNode,
 +  type Module,
 +  type SourceFile,
 +} from "./source.ts";
@@ -2335,10 +2336,18 @@ index 0000000..68bba7d
 +
 +/** Units of work one derivation may spend: plenty for real apps, quick to run out on hostile source. */
 +const WORK_BUDGET = 200_000;
++/**
++ * Parsing is the one step the work budget can't interrupt, so how much source is parsed is capped
++ * instead. Workflow code is small; a file past the cap, usually generated, is skipped.
++ */
++const MAX_FILE_LENGTH = 512 * 1024;
++const MAX_TOTAL_LENGTH = 2 * 1024 * 1024;
++const MAX_FILES = 2_000;
 +
 +export function deriveAppGraph(files: ReadonlyArray<SourceFile>): AppGraph {
-+  const budget: Budget = { left: WORK_BUDGET, exhausted: false };
++  const budget: Budget = { left: WORK_BUDGET, exhausted: false, skipped: new Set() };
 +  const modules = new Map<string, Module>();
++  let parsed = 0;
 +  for (const file of files) {
 +    const content = file.content;
 +    if (
@@ -2348,6 +2357,15 @@ index 0000000..68bba7d
 +      file.path.endsWith(".d.ts")
 +    )
 +      continue;
++    if (
++      content.length > MAX_FILE_LENGTH ||
++      parsed + content.length > MAX_TOTAL_LENGTH ||
++      modules.size >= MAX_FILES
++    ) {
++      budget.skipped.add(file.path);
++      continue;
++    }
++    parsed += content.length;
 +    const module = readModule({ path: file.path, content }, budget);
 +    if (module) modules.set(module.path, module);
 +  }
@@ -2535,16 +2553,26 @@ index 0000000..68bba7d
 +    const owner = unwrap(current.object);
 +    return owner.type === "Identifier" && owner.name === context;
 +  };
-+  reachable(fn.body, budget, (node) => {
-+    if (node.type !== "CallExpression") return;
-+    const callee = unwrap(node.callee);
-+    if (callee.type !== "MemberExpression" || memberName(callee) !== "start") return;
-+    if (!isWorkflows(callee.object)) return;
-+    const options = node.arguments[0];
-+    const name =
-+      options && stringProperty({ module: at.module, node: options, env }, "workflow", modules);
-+    if (name !== undefined) names.add(name);
-+  });
++  // A callback whose own parameter takes the context's or `workflows`' name is about another object.
++  const keeps = (inner: FunctionNode) =>
++    !inner.params.some((param) =>
++      patternNames(param).some((name) => name === context || name === workflows),
++    );
++  reachable(
++    fn.body,
++    budget,
++    (node) => {
++      if (node.type !== "CallExpression") return;
++      const callee = unwrap(node.callee);
++      if (callee.type !== "MemberExpression" || memberName(callee) !== "start") return;
++      if (!isWorkflows(callee.object)) return;
++      const options = node.arguments[0];
++      const name =
++        options && stringProperty({ module: at.module, node: options, env }, "workflow", modules);
++      if (name !== undefined) names.add(name);
++    },
++    keeps,
++  );
 +  return names;
 +}
 +
@@ -3027,10 +3055,10 @@ index 0000000..c10df58
 +}
 diff --git a/packages/workflow-graph/src/implementation/source.ts b/packages/workflow-graph/src/implementation/source.ts
 new file mode 100644
-index 0000000..2da2890
+index 0000000..576c758
 --- /dev/null
 +++ b/packages/workflow-graph/src/implementation/source.ts
-@@ -0,0 +1,577 @@
+@@ -0,0 +1,634 @@
 +import { parse } from "@babel/parser";
 +import type * as t from "@babel/types";
 +
@@ -3047,10 +3075,14 @@ index 0000000..2da2890
 +  readonly content?: string;
 +}
 +
-+/** Work left for one derivation; once spent, everything still unknown stays unknown. */
++/**
++ * Work left for one derivation; once spent, everything still unknown stays unknown. `skipped` holds
++ * source files too large to read; reaching one means part of the app wasn't read.
++ */
 +export interface Budget {
 +  left: number;
 +  exhausted: boolean;
++  readonly skipped: Set<string>;
 +}
 +
 +/** Spends one unit of work; `false` once the derivation has used its budget. */
@@ -3068,7 +3100,12 @@ index 0000000..2da2890
 + * resolves where it was written rather than where it is read. `null` when its value isn't known
 + * statically, such as a parameter, a `let` or something the code later changes.
 + */
-+export type Binding = { readonly node: t.Node; readonly env: Environment | undefined } | null;
++export type Binding = {
++  readonly node: t.Node;
++  readonly env: Environment | undefined;
++  /** Set once the code writes to the name or a property of it, in any scope that shares it. */
++  written?: boolean;
++} | null;
 +
 +/** Bindings in scope where a node is read. They shadow module bindings. */
 +export type Environment = ReadonlyMap<string, Binding>;
@@ -3227,16 +3264,20 @@ index 0000000..2da2890
 +export function forgetWritten(env: Map<string, Binding>, node: t.Node) {
 +  const current = unwrap(node);
 +  if (current.type === "AssignmentExpression") {
-+    const root = rootName(current.left);
-+    if (root !== undefined && env.has(root)) env.set(root, null);
++    forget(env, rootName(current.left));
 +    forgetWritten(env, current.right);
 +  }
-+  if (current.type === "UpdateExpression") {
-+    const root = rootName(current.argument);
-+    if (root !== undefined && env.has(root)) env.set(root, null);
-+  }
++  if (current.type === "UpdateExpression") forget(env, rootName(current.argument));
 +  if (current.type === "SequenceExpression")
 +    for (const expression of current.expressions) forgetWritten(env, expression);
++}
++
++/** The binding is shared by every scope that copied it, so marking it reaches all of them. */
++function forget(env: Map<string, Binding>, name: string | undefined) {
++  if (name === undefined) return;
++  const binding = env.get(name);
++  if (binding) binding.written = true;
++  else if (env.has(name)) env.set(name, null);
 +}
 +
 +/** The variable an assignment target writes into: `x` for `x`, `x.y` and `x[i].z`. */
@@ -3287,9 +3328,17 @@ index 0000000..2da2890
 +  return parts.join("/");
 +}
 +
-+export function moduleAt(modules: Map<string, Module>, path: string): Module | undefined {
++function candidates(path: string): string[] {
 +  const bare = path.replace(CODE, "");
-+  for (const candidate of [path, `${bare}.ts`, `${bare}.tsx`, `${bare}.js`, `${bare}/index.ts`]) {
++  return [path, `${bare}.ts`, `${bare}.tsx`, `${bare}.js`, `${bare}/index.ts`];
++}
++
++function wasSkipped(budget: Budget, path: string): boolean {
++  return candidates(path).some((candidate) => budget.skipped.has(candidate));
++}
++
++export function moduleAt(modules: Map<string, Module>, path: string): Module | undefined {
++  for (const candidate of candidates(path)) {
 +    const module = modules.get(candidate);
 +    if (module) return module;
 +  }
@@ -3320,12 +3369,13 @@ index 0000000..2da2890
 +function resolveWith(at: At, modules: Map<string, Module>, seen: Set<string>, depth: number): At {
 +  const node = unwrap(at.node);
 +  const here: At = { module: at.module, node, env: at.env };
++  if (depth > MAX_RESOLVE_DEPTH) at.module.budget.exhausted = true;
 +  if (depth > MAX_RESOLVE_DEPTH || !spend(at.module.budget)) return here;
 +  if (node.type === "Identifier") {
 +    if (at.env?.has(node.name)) {
 +      const bound = at.env.get(node.name);
 +      const key = `${at.module.path}:${bound?.node.start ?? -1}:${node.name}`;
-+      if (!bound || seen.has(key)) return here;
++      if (!bound || bound.written || seen.has(key)) return here;
 +      seen.add(key);
 +      // The value resolves in the scope it was declared in, not the one it is read in.
 +      return resolveWith(
@@ -3364,12 +3414,14 @@ index 0000000..2da2890
 +  seen.add(key);
 +  if (module.locals.has(name)) {
 +    const local = module.locals.get(name);
-+    return local
++    return local && !local.written
 +      ? resolveWith({ module, node: local.node, env: local.env }, modules, seen, depth + 1)
 +      : undefined;
 +  }
 +  const imported = module.imports.get(name);
 +  const target = imported && moduleAt(modules, imported.from);
++  if (imported && !target && wasSkipped(module.budget, imported.from))
++    module.budget.exhausted = true;
 +  if (!imported || !target) return undefined;
 +  if (imported.name === "*") return { module: target, node: target.program };
 +  if (imported.name === "default")
@@ -3428,7 +3480,12 @@ index 0000000..2da2890
 +  seen: Set<string>,
 +  depth: number,
 +): At | undefined | typeof UNKNOWN {
-+  if (at.node.type !== "ObjectExpression" || depth > MAX_RESOLVE_DEPTH) return undefined;
++  if (at.node.type !== "ObjectExpression") return undefined;
++  // Too deep to finish reading: what the object holds isn't known, and the graph is partial.
++  if (depth > MAX_RESOLVE_DEPTH) {
++    at.module.budget.exhausted = true;
++    return UNKNOWN;
++  }
 +  let found: At | undefined | typeof UNKNOWN;
 +  for (const entry of at.node.properties) {
 +    if (!spend(at.module.budget)) return UNKNOWN;
@@ -3490,6 +3547,7 @@ index 0000000..2da2890
 +function entriesWith(at: At, modules: Map<string, Module>, depth: number): Entries {
 +  const entries = new Map<string, At>();
 +  let unknown = false;
++  if (depth > MAX_RESOLVE_DEPTH) at.module.budget.exhausted = true;
 +  if (at.node.type !== "ObjectExpression" || depth > MAX_RESOLVE_DEPTH)
 +    return { entries, unknown: true };
 +  for (const entry of at.node.properties) {
@@ -3545,20 +3603,27 @@ index 0000000..2da2890
 +}
 +
 +/**
-+ * Every node below `root` that runs when it does. A block stops at a `return` or `throw`, since
-+ * nothing after it runs. A function inside is entered only when it is called right there, as an
-+ * immediately invoked function, or passed straight to a call, as a callback is; one that is only
-+ * declared or stored may never run.
++ * Every node below `root` that runs when it does. A block stops after a statement every path of
++ * which returns or throws, since nothing after it runs. A function inside is entered only when it
++ * is called right there, as an immediately invoked function, or passed straight to a call, as a
++ * callback is, and `enter` allows it; one that is only declared or stored may never run.
 + */
-+export function reachable(root: t.Node, budget: Budget, visit: (node: t.Node) => void) {
++export function reachable(
++  root: t.Node,
++  budget: Budget,
++  visit: (node: t.Node) => void,
++  enter: (fn: FunctionNode) => boolean = () => true,
++) {
 +  const walk = (node: t.Node, entered: boolean) => {
 +    if (!spend(budget)) return;
-+    if (!entered && isFunction(node)) return;
++    // A class's methods run only when something calls them, which this doesn't follow.
++    if (!entered && (isFunction(node) || node.type === "ClassBody")) return;
++    if (isFunction(node) && node !== root && !enter(node)) return;
 +    visit(node);
 +    if (node.type === "BlockStatement") {
 +      for (const statement of node.body) {
 +        walk(statement, false);
-+        if (statement.type === "ReturnStatement" || statement.type === "ThrowStatement") return;
++        if (exits(statement)) return;
 +      }
 +      return;
 +    }
@@ -3569,6 +3634,26 @@ index 0000000..2da2890
 +    for (const child of children(node)) walk(child, called?.has(unwrap(child)) ?? false);
 +  };
 +  walk(root, true);
++}
++
++/** Whether every path through a statement returns or throws. */
++function exits(statement: t.Node): boolean {
++  switch (statement.type) {
++    case "ReturnStatement":
++    case "ThrowStatement":
++      return true;
++    case "BlockStatement":
++      return statement.body.some(exits);
++    case "IfStatement":
++      return exits(statement.consequent) && !!statement.alternate && exits(statement.alternate);
++    case "TryStatement":
++      return (
++        (!!statement.finalizer && exits(statement.finalizer)) ||
++        (exits(statement.block) && (!statement.handler || exits(statement.handler.body)))
++      );
++    default:
++      return false;
++  }
 +}
 +
 +export function children(node: t.Node): t.Node[] {
@@ -3610,10 +3695,10 @@ index 0000000..2da2890
 +}
 diff --git a/packages/workflow-graph/src/implementation/steps.ts b/packages/workflow-graph/src/implementation/steps.ts
 new file mode 100644
-index 0000000..1f7ea03
+index 0000000..1816f08
 --- /dev/null
 +++ b/packages/workflow-graph/src/implementation/steps.ts
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,274 @@
 +import type * as t from "@babel/types";
 +import type { Label, Reference, StepKind, StepNode } from "../contracts/graph.ts";
 +import {
@@ -3668,7 +3753,13 @@ index 0000000..1f7ea03
 +    const fn = call.arguments.at(-1);
 +    if (fn) {
 +      const target = resolve({ module, node: fn, env }, context.modules);
-+      if (isFunction(target.node)) uses.push(...usesIn(target.node, context.budget));
++      // A `fetch` the app declares itself, at any level above the step, is not the network.
++      const ownFetch =
++        env.has("fetch") ||
++        target.env?.has("fetch") === true ||
++        target.module.locals.has("fetch") ||
++        target.module.imports.has("fetch");
++      if (isFunction(target.node)) uses.push(...usesIn(target.node, context.budget, !ownFetch));
 +    }
 +  }
 +  if (kind === "query" || kind === "mutation") {
@@ -3757,7 +3848,7 @@ index 0000000..1f7ea03
 + * Code that never runs is skipped. A callback that declares its own `step`, accounts holder or
 + * `fetch` anywhere inside reports nothing through that name, rather than guess which one is meant.
 + */
-+function usesIn(fn: FunctionNode, budget: Budget): Reference[] {
++function usesIn(fn: FunctionNode, budget: Budget, networkFetch: boolean): Reference[] {
 +  const uses: Reference[] = [];
 +  const param = fn.params[0];
 +  const redeclared = declaredInside(fn, budget);
@@ -3774,7 +3865,7 @@ index 0000000..1f7ea03
 +      if (key === "user" || key === "app") holders.set(entry.value.name, key);
 +      if (key === "accounts") accounts.set(entry.value.name, undefined);
 +    }
-+  const globalFetch = !redeclared.has("fetch");
++  const globalFetch = networkFetch && !redeclared.has("fetch");
 +  const isStep = (node: t.Node) => {
 +    const current = unwrap(node);
 +    return step !== undefined && current.type === "Identifier" && current.name === step;
@@ -3815,7 +3906,7 @@ index 0000000..1f7ea03
 +  return uses;
 +}
 +
-+/** Every name a function's body declares, at any depth, including nested parameters. */
++/** Every name a function's body declares or reassigns, at any depth, including nested parameters. */
 +function declaredInside(fn: FunctionNode, budget: Budget): Set<string> {
 +  const names = new Set<string>();
 +  const visit = (node: t.Node) => {
@@ -3828,6 +3919,9 @@ index 0000000..1f7ea03
 +      for (const param of node.params) for (const name of patternNames(param)) names.add(name);
 +    if (node.type === "CatchClause" && node.param)
 +      for (const name of patternNames(node.param)) names.add(name);
++    // A name written to inside is no longer what it was handed in as.
++    if (node.type === "AssignmentExpression" && node.left.type === "Identifier")
++      names.add(node.left.name);
 +    for (const child of children(node)) visit(child);
 +  };
 +  visit(fn.body);
@@ -3881,10 +3975,10 @@ index 0000000..1f7ea03
 +}
 diff --git a/packages/workflow-graph/src/implementation/walker.ts b/packages/workflow-graph/src/implementation/walker.ts
 new file mode 100644
-index 0000000..335f3db
+index 0000000..0465942
 --- /dev/null
 +++ b/packages/workflow-graph/src/implementation/walker.ts
-@@ -0,0 +1,734 @@
+@@ -0,0 +1,751 @@
 +import type * as t from "@babel/types";
 +import type { Arm, EndNode, Label, WorkflowNode } from "../contracts/graph.ts";
 +import {
@@ -4055,16 +4149,18 @@ index 0000000..335f3db
 +    return this.sequence(list, scope);
 +  }
 +
-+  private sequence(list: ReadonlyArray<t.Statement>, scope: Scope): Block {
++  /** The statements of `list` from `from` on; passing the start keeps folding from copying the rest. */
++  private sequence(list: ReadonlyArray<t.Statement>, scope: Scope, from = 0): Block {
 +    const nodes: WorkflowNode[] = [];
 +    let flags = EMPTY;
-+    for (const [index, statement] of list.entries()) {
-+      if (!this.working()) break;
++    for (let index = from; index < list.length; index++) {
++      const statement = list[index];
++      if (!statement || !this.working()) break;
 +      // A branch that leaves without a node, such as a helper's early `return`, takes only the
 +      // other branch on to the rest of the block, so the rest is drawn inside that branch.
 +      const block =
 +        statement.type === "IfStatement"
-+          ? this.ifStatement(statement, scope, list.slice(index + 1))
++          ? this.ifStatement(statement, scope, { list, from: index + 1 })
 +          : this.statement(statement, scope);
 +      nodes.push(...block.nodes);
 +      flags = merge(flags, block);
@@ -4085,8 +4181,9 @@ index 0000000..335f3db
 +      case "ExpressionStatement":
 +        return this.flow(this.expression(node.expression, scope));
 +      case "VariableDeclaration": {
-+        const nodes = node.declarations.flatMap((declarator) =>
-+          declarator.init ? this.expression(declarator.init, scope) : [],
++        const nodes = this.inOrder(
++          node.declarations.flatMap((declarator) => (declarator.init ? [declarator.init] : [])),
++          scope,
 +        );
 +        for (const declarator of node.declarations) this.alias(declarator, scope);
 +        declareIn(scope.env, node, scope.env);
@@ -4119,7 +4216,7 @@ index 0000000..335f3db
 +      case "LabeledStatement":
 +        return this.statement(node.body, scope);
 +      case "IfStatement":
-+        return this.ifStatement(node, scope, []);
++        return this.ifStatement(node, scope, undefined);
 +      case "SwitchStatement":
 +        return this.switchStatement(node, scope);
 +      case "ForOfStatement":
@@ -4170,7 +4267,7 @@ index 0000000..335f3db
 +  private ifStatement(
 +    node: t.IfStatement,
 +    scope: Scope,
-+    rest: ReadonlyArray<t.Statement>,
++    rest: { readonly list: ReadonlyArray<t.Statement>; readonly from: number } | undefined,
 +  ): Block & { readonly folded?: boolean } {
 +    const test = this.expression(node.test, scope);
 +    const yes = this.statement(node.consequent, this.child(scope));
@@ -4178,9 +4275,11 @@ index 0000000..335f3db
 +    const leavesQuietly = (arm: Block) =>
 +      arm.ends && !terminal(arm.nodes) && (arm.returns || arm.breaks) && !arm.caught;
 +    const fold =
-+      rest.length > 0 && ((leavesQuietly(yes) && !no.ends) || (leavesQuietly(no) && !yes.ends));
-+    if (fold) {
-+      const after = this.sequence(rest, scope);
++      rest !== undefined &&
++      rest.from < rest.list.length &&
++      ((leavesQuietly(yes) && !no.ends) || (leavesQuietly(no) && !yes.ends));
++    if (fold && rest) {
++      const after = this.sequence(rest.list, scope, rest.from);
 +      const yesBody = yes.ends ? yes.nodes : [...yes.nodes, ...after.nodes];
 +      const noBody = no.ends ? no.nodes : [...no.nodes, ...after.nodes];
 +      return {
@@ -4302,9 +4401,8 @@ index 0000000..335f3db
 +    const test = this.expression(node.test, inner);
 +    const body = this.statement(node.body, inner);
 +    const once = node.type === "DoWhileStatement";
-+    const pass = once
-+      ? [...body.nodes, ...(body.ends && !body.jumps ? [] : test)]
-+      : [...test, ...body.nodes];
++    // A `do … while` checks its condition only after a pass that reaches the end of its body.
++    const pass = once ? [...body.nodes, ...(body.ends ? [] : test)] : [...test, ...body.nodes];
 +    return this.loop(
 +      node,
 +      scope,
@@ -4413,7 +4511,7 @@ index 0000000..335f3db
 +    if (current.type === "AwaitExpression") return this.expression(current.argument, scope);
 +    if (current.type === "AssignmentExpression" || current.type === "UpdateExpression") {
 +      const target = current.type === "AssignmentExpression" ? current.left : current.argument;
-+      const nodes = children(current).flatMap((child) => this.expression(child, scope));
++      const nodes = this.inOrder(children(current), scope);
 +      // A written name is no longer what it was declared as, and no longer a receiver.
 +      forgetWritten(scope.env, current);
 +      if (unwrap(target).type === "Identifier") this.bind(scope, patternNames(unwrap(target)));
@@ -4453,8 +4551,18 @@ index 0000000..335f3db
 +        ]),
 +      ];
 +    }
-+    if (isFunction(current)) return [];
-+    return children(current).flatMap((child) => this.expression(child, scope));
++    if (isFunction(current) || current.type === "ClassExpression") return [];
++    return this.inOrder(children(current), scope);
++  }
++
++  /** Expressions evaluated one after another; nothing after one that always throws is reached. */
++  private inOrder(list: ReadonlyArray<t.Node>, scope: Scope): WorkflowNode[] {
++    const nodes: WorkflowNode[] = [];
++    for (const node of list) {
++      nodes.push(...this.expression(node, scope));
++      if (terminal(nodes)) break;
++    }
++    return nodes;
 +  }
 +
 +  private isContext(node: t.Node, scope: Scope): boolean {
@@ -4474,9 +4582,12 @@ index 0000000..335f3db
 +    if (callee.type !== "MemberExpression") return undefined;
 +    const kind = stepKind(callee);
 +    if (!kind || !this.isStepReceiver(callee.object, scope)) return undefined;
-+    const before = call.arguments
-+      .slice(1)
-+      .flatMap((arg) => (isFunction(arg) ? [] : this.expression(arg, scope)));
++    const before = this.inOrder(
++      call.arguments.slice(1).filter((arg) => !isFunction(arg)),
++      scope,
++    );
++    // An argument that always throws means the step itself is never reached.
++    if (terminal(before)) return before;
 +    const described = describeStep(
 +      call,
 +      kind,
