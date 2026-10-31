@@ -55,7 +55,8 @@ export class ConnectionSupervisor {
         settled = true;
         clearTimeout(timer);
         child.stderr?.off("data", data);
-        error ? reject(error) : resolve();
+        if (error) reject(error);
+        else resolve();
       };
       const data = (chunk: Buffer) => {
         received = (received + chunk.toString()).slice(-2048);
