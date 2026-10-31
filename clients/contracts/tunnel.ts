@@ -2,6 +2,37 @@ import { Schema } from "effect";
 
 export const tunnelPath = "/native/v1/tunnel";
 export const tunnelProtocol = "basalt.tunnel.v1";
+export const maximumModelSearchLength = 2048;
+
+/** Search is data on an allowed model path, never a second URL or routing instruction. */
+export function normalizeModelSearch(value: string): string {
+  if (
+    value.length > maximumModelSearchLength ||
+    !value.startsWith("?") ||
+    /[#\\\u0000-\u0020\u007f]/u.test(value)
+  )
+    throw new Error("Invalid model search.");
+  // URLSearchParams tolerates broken percent encoding; reject it before that lossy parse.
+  decodeURIComponent(value.slice(1).replaceAll("+", " "));
+  const parameters = new URLSearchParams(value.slice(1));
+  if (!parameters.size) throw new Error("Empty model search.");
+  for (const [name, item] of parameters)
+    if (!/^[a-zA-Z0-9_.~-]+$/u.test(name) || /[#\\\u0000-\u001f\u007f]/u.test(item))
+      throw new Error("Invalid model search parameter.");
+  const normalized = `?${parameters.toString()}`;
+  if (normalized.length > maximumModelSearchLength) throw new Error("Model search is too large.");
+  return normalized;
+}
+const ModelSearch = Schema.String.check(
+  Schema.makeFilter((value) => {
+    try {
+      normalizeModelSearch(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }),
+);
 export const tunnelLimits = {
   frameBytes: 32_768,
   chunkBytes: 16_384,
@@ -49,6 +80,7 @@ const Operation = Schema.Union([
     service: Schema.Literal("models"),
     method: Schema.Literal("GET"),
     path: Schema.Literal("/v1/models"),
+    search: Schema.optionalKey(ModelSearch),
     transport: Schema.Literal("http"),
   }),
   Schema.Struct({
@@ -63,12 +95,14 @@ const Operation = Schema.Union([
       "/v1/completions",
       "/v1/embeddings",
     ]),
+    search: Schema.optionalKey(ModelSearch),
     transport: Schema.Literal("http"),
   }),
   Schema.Struct({
     service: Schema.Literal("models"),
     method: Schema.Literal("GET"),
     path: Schema.Literal("/v1/responses"),
+    search: Schema.optionalKey(ModelSearch),
     transport: Schema.Literal("websocket"),
   }),
   Schema.Struct({

@@ -125,7 +125,7 @@ export async function startGateway(options: GatewayOptions) {
     const forward = async () => {
       if (
         !localRequest(request, authority) ||
-        request.url !== "/v1/responses" ||
+        remoteOperation(request.method, request.url ?? "", true) !== "models" ||
         request.headers.upgrade?.toLowerCase() !== "websocket" ||
         closed
       )

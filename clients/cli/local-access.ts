@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Agent, Capability } from "../contracts/connection.ts";
+import { normalizeModelSearch } from "../contracts/tunnel.ts";
 
 export const tokenHash = (value: string) => createHash("sha256").update(value).digest("hex");
 export function tokenMatches(value: string | undefined, hash: string): boolean {
@@ -58,10 +59,27 @@ export function findAgent(
 }
 
 /** The local gateway exposes inference and MCP, never a general-purpose HTTP forwarder. */
-export function remoteOperation(method: string | undefined, path: string): Capability | undefined {
-  if (path === "/mcp" && ["POST", "GET", "DELETE"].includes(method ?? "")) return "tools";
+export function remoteOperation(
+  method: string | undefined,
+  path: string,
+  websocket = false,
+): Capability | undefined {
+  if (!websocket && path === "/mcp" && ["POST", "GET", "DELETE"].includes(method ?? ""))
+    return "tools";
   const url = URL.parse(path, "http://localhost");
-  if (!url || url.search || url.hash) return undefined;
+  if (!url || url.hash) return undefined;
+  if (url.search) {
+    if (path.slice(0, path.indexOf("?")) !== url.pathname) return undefined;
+    try {
+      normalizeModelSearch(url.search);
+    } catch {
+      return undefined;
+    }
+  }
+  if (websocket)
+    return method === "GET" && (url.search ? url.pathname : path) === "/v1/responses"
+      ? "models"
+      : undefined;
   if (method === "GET" && url.pathname === "/v1/models") return "models";
   if (
     method === "POST" &&

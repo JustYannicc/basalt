@@ -9,7 +9,7 @@ model {
 
     nativeTunnel = module "Native tunnel" {
       #basalt #deep
-      description "An outbound WebSocket multiplexes fixed model and MCP operations. The verified native bearer expiry and pool registry lease bound its lifetime. Receiver credit bounds buffering; interrupted operations are never replayed."
+      description "An outbound WebSocket multiplexes fixed model and MCP operations. Model operations may carry a separate search of at most 2048 characters; the server validates, parses and re-serializes it onto the literal allowed path. MCP operations accept no search. Existing calls without search keep their behavior. The verified native bearer expiry and pool registry lease bound its lifetime. Receiver credit bounds buffering; interrupted operations are never replayed."
       metadata { code "src/tunnel"; libraries "effect"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
     }
 

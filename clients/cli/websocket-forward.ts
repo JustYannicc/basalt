@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ServiceCredentials } from "../contracts/connection.ts";
 import { forwardedResponseHeaders } from "./http-forward.ts";
+import { normalizeModelSearch } from "../contracts/tunnel.ts";
 
 export async function forwardWebsocket(
   incoming: IncomingMessage,
@@ -12,7 +13,8 @@ export async function forwardWebsocket(
   service: NonNullable<ServiceCredentials["models"]>,
   signal: AbortSignal,
 ): Promise<void> {
-  const target = new URL("/v1/responses", service.origin);
+  const target = new URL(incoming.url ?? "/v1/responses", service.origin);
+  if (target.search) target.search = normalizeModelSearch(target.search);
   const headers: Record<string, string> = {
     authorization: `Bearer ${service.token}`,
     connection: "Upgrade",

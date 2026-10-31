@@ -4,6 +4,7 @@ import {
   decodeTunnelBytes,
   encodeTunnelBytes,
   tunnelLimits,
+  normalizeModelSearch,
   type TunnelData,
   type TunnelOpen,
   type TunnelServerFrame,
@@ -77,7 +78,10 @@ export class TunnelOperation {
       headers.set("authorization", request.headers.get("authorization")!);
       headers.set("accept-encoding", "identity");
       if (this.open.operation.transport === "websocket") headers.set("upgrade", "websocket");
-      const target = new Request(new URL(this.open.operation.path, request.url), {
+      const url = new URL(this.open.operation.path, request.url);
+      if (this.open.operation.service === "models" && this.open.operation.search !== undefined)
+        url.search = normalizeModelSearch(this.open.operation.search);
+      const target = new Request(url, {
         method: this.open.operation.method,
         headers,
         signal: this.abort.signal,

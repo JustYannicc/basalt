@@ -8,6 +8,7 @@ import { request as httpsRequest } from "node:https";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Capability, ServiceCredentials } from "../contracts/connection.ts";
+import { normalizeModelSearch } from "../contracts/tunnel.ts";
 
 const requestHeaders = new Set([
   "accept",
@@ -63,6 +64,7 @@ export async function forwardHttp(
     capability === "tools" && "path" in service ? service.path : (incoming.url ?? "/"),
     service.origin,
   );
+  if (capability === "models" && target.search) target.search = normalizeModelSearch(target.search);
   const headers: Record<string, string | string[]> = {};
   for (const [name, value] of Object.entries(incoming.headers))
     if (requestHeaders.has(name) && value !== undefined) headers[name] = value;
