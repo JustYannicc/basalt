@@ -152,7 +152,7 @@ test("native pool use is required before control, setup and usage can reach Home
   const values = new Map<string, unknown>([["pool-directory-v1", {
     pools: { [JSON.stringify(claims.pool)]: entry }, refusals: {}, people: {}, refusalsVersion: 2,
   }]]);
-  const worker = new PoolContainer({ container: {}, storage: {
+  const worker = new PoolContainer({ container: {}, waitUntil: () => {}, storage: {
     get: async (key: string) => structuredClone(values.get(key)),
     put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
   } }, {
@@ -174,6 +174,60 @@ test("native pool use is required before control, setup and usage can reach Home
   assert.equal(allowed.status, 200, await allowed.clone().text());
   const value = await allowed.json() as { pools: unknown };
   assert.deepEqual(value.pools, [{ id: claims.pool, name: "Pool", mine: false }]);
+});
+
+test("opening Connect starts a stopped pool without waiting for it, and only for an authorized read", async () => {
+  const signingKey = "ab".repeat(32);
+  const claims = { pool: "fake-pool", owner: "fake-owner", organization: "fake-org" };
+  const entry = { ...claims, name: "Pool", users: ["fake-member"], managers: ["fake-owner"],
+    authorization: "executor-app-v1", ownerSource: "audience", pending: [], at: Date.now() };
+  const values = new Map<string, unknown>([["pool-directory-v1", {
+    pools: { [JSON.stringify(claims.pool)]: entry }, refusals: {}, people: {}, refusalsVersion: 2,
+  }]]);
+  let starts = 0;
+  let destroys = 0;
+  let ready = false;
+  let started!: () => void;
+  const startedOnce = new Promise<void>((resolve) => { started = resolve; });
+  const container = {
+    running: false,
+    destroy: async () => { destroys++; container.running = false; },
+    start: () => { starts++; container.running = true; started(); },
+    setInactivityTimeout: async () => {},
+    getTcpPort: () => ({ fetch: async () => ready
+      ? Response.json({ boot_id: "fake-boot", started_at: "2026-01-01T00:00:00Z" })
+      : new Response(null, { status: 503 }) }),
+  };
+  const background: Promise<unknown>[] = [];
+  const worker = new PoolContainer({ container, waitUntil: (work: Promise<unknown>) => { background.push(work); }, storage: {
+    get: async (key: string) => structuredClone(values.get(key)),
+    put: async (key: string, value: unknown) => { values.set(key, structuredClone(value)); },
+    getAlarm: async () => null, setAlarm: async () => {},
+  } }, {
+    POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
+    POOL_MANAGEMENT_KEY: "fake-management-key", POOL_APP_SIGNING_KEY: signingKey, POOL_IMAGE_HASH: "fake-image",
+  });
+  const token = await signPoolToken(signingKey, claims);
+  const read = (headers: Record<string, string>) =>
+    worker.fetch(new Request("https://pool.example/pool/v1/setup-context", { headers }));
+  // Rejected reads never touch the shared container.
+  for (const headers of [{} as Record<string, string>, { Authorization: "Bearer not-a-token", "x-signalbox-caller": "fake-member" },
+    { Authorization: `Bearer ${token}`, "x-signalbox-caller": "fake-stranger" }]) {
+    const rejected = await read(headers);
+    assert.ok(rejected.status === 401 || rejected.status === 403, String(rejected.status));
+  }
+  assert.equal(background.length, 0);
+  assert.equal(starts, 0);
+  assert.equal(destroys, 0);
+  const response = await read({ Authorization: `Bearer ${token}`, "x-signalbox-caller": "fake-member" });
+  // The page gets its context while the pool is still booting.
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(background.length, 1);
+  await startedOnce;
+  ready = true;
+  await Promise.all(background);
+  assert.equal(starts, 1);
+  assert.equal(destroys, 0);
 });
 
 test("management calls share readiness for 30 seconds and rewarm when the container stops", async (t) => {
