@@ -207,7 +207,8 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false,
-      "upstream_issue": 2374
+      "upstream_issue": 2374,
+      "sha256": "7f726db36d21e137e356c455026685435a0c7115569a86d27ffd4466e8b05524"
     },
     {
       "identity": "executor-slack-user-oauth",

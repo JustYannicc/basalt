@@ -3,7 +3,7 @@ index 79db403..63d9c57 100644
 --- a/apps/hosted/server/src/implementation/first-party-oauth.ts
 +++ b/apps/hosted/server/src/implementation/first-party-oauth.ts
 @@ -114,6 +114,24 @@ const atlassianScopes = [
-   "search:confluence",
+   "write:whiteboard:confluence",
  ];
  
 +/** Optional hosted client, usable only on a single-label Zendesk account site. */
