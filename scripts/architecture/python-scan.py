@@ -206,6 +206,11 @@ for node, scope in calls:
             destination = argument(node, "url")
         for value in values(destination, scope):
             urls.append({"file": scope.file, "line": node.lineno, "value": value, "sink": True})
+    elif (name == "socket.socket" and len(node.args) <= 2
+          and all(kw.arg in {"family", "type"} for kw in node.keywords)
+          and symbol(argument(node, "family"), scope) == "socket.AF_UNIX"):
+        # A newly created Unix-domain socket cannot address an outside host.
+        pass
     elif name and name.startswith(NETWORK):
         report(scope.file, node, "Unsupported Python network call: " + name)
     elif name and name.startswith(("http.client.", "socket.", "urllib.robotparser.")):

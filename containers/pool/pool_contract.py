@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import pathlib
+import socket
 import tempfile
 import urllib.error
 import urllib.request
@@ -17,6 +19,7 @@ READY_BIND = ("0.0.0.0", 8318)
 NODE_NAME = "basalt-pool"
 ROOT = pathlib.Path("/dev/shm/cliproxy-pool")
 PATH_VALUE = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+NATIVE_POLICY_SOCKET = ROOT / "native-policy.sock"
 
 
 class StartupError(RuntimeError):
@@ -121,6 +124,9 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "    gemini-cli:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
+        "    basalt-native-policy:\n"
+        "      enabled: true\n"
+        "      load-in-home: true\n"
         "observability:\n"
         "  logs:\n"
         "    request-log: false\n"
@@ -166,6 +172,43 @@ def request_json(
         return 0, {}
 
 
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path: pathlib.Path, timeout: float) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self._socket_path = socket_path
+
+    def connect(self) -> None:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(self.timeout)
+        connection.connect(str(self._socket_path))
+        self.sock = connection
+
+
+def native_policy_request(
+    route: str,
+    payload: dict[str, Any],
+    timeout: float = 0.25,
+) -> tuple[int, dict[str, Any]]:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    if len(body) > 1 << 20:
+        return 0, {}
+    connection = _UnixHTTPConnection(NATIVE_POLICY_SOCKET, timeout)
+    try:
+        connection.request(
+            "POST",
+            route,
+            body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        data = response.read(16 << 10)
+        return response.status, json.loads(data) if data else {}
+    except (OSError, ValueError, http.client.HTTPException):
+        return 0, {}
+    finally:
+        connection.close()
+
+
 def management_ready(management_key: str) -> bool:
     status, _ = request_json(
         f"{HOME_URL}/v8/management/config",
@@ -197,6 +240,11 @@ def child_environment(
     pathlib.Path(env["HOME"]).mkdir(mode=0o700, parents=True, exist_ok=True)
     if kind == "home":
         env["MANAGEMENT_PASSWORD"] = management_key
+        env["POOL_NATIVE_POLICY_SOCKET"] = str(NATIVE_POLICY_SOCKET)
+        for name in ("POOL_APP_SIGNING_KEY", "POOL_APP_SIGNING_KEY_PREVIOUS"):
+            value = os.environ.get(name, "").strip()
+            if value:
+                env[name] = value
     else:
         env["HOME_JWT"] = home_jwt
     return env
@@ -220,7 +268,10 @@ def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
         "plugins": {
             "enabled": True,
             "dir": "/opt/pool/plugins",
-            "configs": {"gemini-cli": {"enabled": True, "load-in-home": True}},
+            "configs": {
+                "gemini-cli": {"enabled": True, "load-in-home": True},
+                "basalt-native-policy": {"enabled": True, "load-in-home": True},
+            },
         },
     }
 

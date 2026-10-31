@@ -38,6 +38,7 @@ export class Computers {
   nativeControl(request: Request) { return this.native.control(request); }
   nativeSession(request: Request) { return this.native.session(request); }
   nativeModel(request: Request) { return this.native.model(request); }
+  abortPool(pool: string) { this.native.abortPool(pool); }
   private now() { return this.deps.now?.() ?? Date.now(); }
   private origin() { return this.deps.origin ?? `https://${brand.host}`; }
   private async run<T>(work: (registry: Registry) => Promise<T>): Promise<T> {

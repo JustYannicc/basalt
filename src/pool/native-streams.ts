@@ -8,6 +8,22 @@ export class NativeStreams {
     abort: AbortController;
     close?: () => void;
   }>();
+  get active() { return this.leases.size; }
+  abortAll() {
+    for (const lease of this.leases) {
+      lease.abort.abort();
+      lease.close?.();
+    }
+    this.leases.clear();
+  }
+  abortPool(pool: string) {
+    for (const lease of this.leases) {
+      if (lease.pool !== pool) continue;
+      lease.abort.abort();
+      lease.close?.();
+      this.leases.delete(lease);
+    }
+  }
   sync(registry: Registry) {
     for (const lease of this.leases) {
       const row = registry[lease.computer];

@@ -7,6 +7,12 @@ export const poolLifecycle = {
 export interface PoolStatus {
   boot_id: string;
   started_at: string;
+  policyLeaseUntil?: number;
+}
+
+/** A warm runtime lost readiness. The caller can retry after its protection recovers. */
+export class PoolRuntimeUnhealthy extends Error {
+  constructor() { super("The pool runtime is temporarily unhealthy"); }
 }
 
 export interface RuntimeDriver {
@@ -28,6 +34,7 @@ const unversionedModelPaths = new Set(["/messages", "/chat/completions", "/compl
 /** One controller owns startup, secret rotation, and the next recovery alarm. */
 export class PoolLifecycle {
   private warming?: Promise<PoolStatus>;
+  private served = false;
 
   private driver: RuntimeDriver;
   private storage: RuntimeStorage;
@@ -55,10 +62,14 @@ export class PoolLifecycle {
   private async ensureWarm(): Promise<PoolStatus> {
     try {
       const previousRevision = await this.storage.get<string>("revision");
+      this.served = this.driver.running() && previousRevision === this.revision
+        && (this.served || await this.storage.get<string>("ready-revision") === this.revision);
       if (this.driver.running() && previousRevision !== this.revision) await this.driver.stop();
       if (!this.driver.running()) {
         // Record the target before launch so retries can keep a running boot.
         await this.storage.put("revision", this.revision);
+        await this.storage.put("ready-revision", "");
+        this.served = false;
         this.driver.start();
       }
       await this.driver.keepAlive(poolLifecycle.idleTimeoutMs);
@@ -67,9 +78,12 @@ export class PoolLifecycle {
         try {
           const status = await this.driver.status();
           if (!status.boot_id || !status.started_at) throw new Error("Missing pool runtime identity");
+          this.served = true;
+          await this.storage.put("ready-revision", this.revision);
           return status;
         } catch {
           if (!this.driver.running()) throw new Error("The pool exited during startup");
+          if (this.served) throw new PoolRuntimeUnhealthy();
           await this.clock.sleep(1_000);
         }
       }

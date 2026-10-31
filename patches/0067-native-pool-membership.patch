@@ -1,0 +1,450 @@
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 8006e2531bbd45ec73ba70bc05c7efd12c6434fc..00f7c0d26d1d1d90181e160f7364ae6b3ff10d41 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -40,6 +40,10 @@ import {
+   removalStallBindings,
+ } from "./infrastructure/organization-removal-stalls.ts";
+ import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
++import {
++  poolMembershipReadPath,
++  readNativePoolMembership,
++} from "@executor-js/hosted-server/pool-membership";
+ import { Billing } from "./contracts/billing.ts";
+ import { BillingMeter } from "./contracts/billing-meter.ts";
+ import { billingBindings } from "./infrastructure/billing.ts";
+@@ -588,6 +592,9 @@ export default Api.make(
+       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
+     );
+     const routes = Layer.mergeAll(
++      HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
+       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
+       HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 4b5e84185bca77e224fa4aac0fe1ddc02a264ebf..e648766727403a5affe9be703d8695e8e2a06775 100644
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -31,6 +31,7 @@
+     "./access-lifecycle": "./src/contracts/access-lifecycle.ts",
+     "./host-managed-accounts": "./src/contracts/host-managed-accounts.ts",
+     "./pool-access-hook": "./src/implementation/pool-access-hook.ts",
++    "./pool-membership": "./src/implementation/pool-membership.ts",
+     "./pool-access-provenance": "./src/implementation/pool-access-provenance.ts",
+     "./pool-defaults": "./src/implementation/pool-defaults.ts",
+     "./pool-app-upgrades": "./src/implementation/pool-app-upgrades.ts",
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+index cb8c9159c6353288fac608a416d3255f096d62cc..5802a9d2c66a9eae589908587d6751a565b57cf5 100644
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -1,5 +1,7 @@
+ import { protectProvisionedLinks } from "./provisioned-links.ts";
+ import { InteractiveRemovalDone } from "@executor-js/sdk/core";
++import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
++import { SqlClient as Sql } from "effect/sql";
+ import { canDeleteAccountWithSql } from "./interactive-retirement.ts";
+ /**
+  * The accounts linked to an app's requirements and the accounts every operation runs with. A
+@@ -262,6 +264,13 @@ export interface LinkKey {
+   readonly subject: string | null;
+ }
+ const scopeOf = (subject: string | null): AccountScope => (subject === null ? "app" : "user");
++const linksChanged = (sql: SqlClient.SqlClient, app: AppId) =>
++  Effect.gen(function* () {
++    const lifecycle = yield* AccessLifecycle;
++    yield* (lifecycle.appAccountLinksChanged?.({ apps: [app] }) ?? Effect.void).pipe(
++      Effect.provideService(Sql.SqlClient, sql),
++    );
++  });
+ const sameSubject = (sql: SqlClient.SqlClient, subject: string | null) =>
+   subject === null ? sql`subject is null` : sql`subject = ${subject}`;
+ 
+@@ -365,6 +374,7 @@ export const removeLink = (sql: SqlClient.SqlClient, webhooks: WebhookSources, i
+         and account = ${input.account} and ${sameSubject(sql, input.subject)}
+       returning account`;
+     if (deleted.length === 0) return false;
++    yield* linksChanged(sql, input.app);
+     yield* syncSource(sql, webhooks, {
+       app: input.app,
+       account: input.account,
+@@ -463,6 +473,7 @@ const writeLink = (
+         ${input.linkedBy}, clock_timestamp())
+       on conflict do nothing returning account`;
+     if (inserted.length === 0) return replaced.length > 0;
++    yield* linksChanged(sql, input.app);
+     yield* syncSource(sql, webhooks, {
+       app: input.app,
+       account: input.account,
+diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
+index c880e1386469e28a93a989616ac87499ef3773c4..91a5658000ced787602892f86480f0e3148de6d8 100644
+--- a/apps/hosted/server/src/implementation/pool-access-hook.ts
++++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
+@@ -9,6 +9,7 @@ import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
+ import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
+ import { applicationAudiences } from "./application-audience.ts";
+ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
++import { invalidatePoolMemberships } from "./pool-membership-hook.ts";
+ export { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ 
+ const Pool = Schema.Struct({
+@@ -124,12 +125,14 @@ export const poolAccessLifecycle = (
+     withOrganizationAccessLock(
+       organization,
+       Effect.gen(function* () {
++        yield* invalidatePoolMemberships(key, origin, { organization });
+         if (Option.isNone(key)) return yield* send({ action: "audience", pools: [] });
+         const found = yield* pools(organization, apps, removing, changing);
+         if (found.length > 0) yield* send({ action: "audience", pools: found });
+       }),
+     ).pipe(Effect.catch(() => new StorageError()));
+   return {
++    appAccountLinksChanged: (input) => invalidatePoolMemberships(key, origin, input),
+     appAccessChanged: ({ organization, apps }) => audience(organization, apps),
+     memberRemoving: ({ organization, member }) => audience(organization, undefined, member),
+     memberRoleChanging: ({ organization, member, role }) =>
+diff --git a/apps/hosted/server/src/implementation/pool-membership-hook.ts b/apps/hosted/server/src/implementation/pool-membership-hook.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff2ab01110ca8e3e9ae897dafda4d3486966e22a
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-membership-hook.ts
+@@ -0,0 +1,51 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Clock, Effect, Option, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { withOrganizationAccessLock } from "./organization-access-lock.ts";
++import { signEnvelope } from "./pool-token.ts";
++
++const Pool = Schema.Struct({ pool: AppId, organization: Schema.String });
++export const poolMembershipPath = "/pool/v1/membership";
++export const poolMembershipPrefix = "sbm1";
++
++/** Mark use unavailable before the native write commits. The receiver pulls committed links. */
++export const invalidatePoolMemberships = (
++  key: Option.Option<Redacted.Redacted<string>>,
++  origin: string,
++  input: { readonly organization?: string; readonly apps?: readonly AppId[] },
++) =>
++  Effect.gen(function* () {
++    if (input.apps?.length === 0) return;
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select app.id as pool, o.id as organization from organization o
++      cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++      join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++      where entry.value ->> 'membership' = 'executor-links-v1'
++        ${input.organization === undefined ? sql`` : sql`and o.id = ${input.organization}`}
++        ${input.apps === undefined ? sql`` : sql`and ${sql.in("app.id", input.apps)}`}
++      order by o.id, app.id`;
++    const pools = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++    if (pools.length === 0) return;
++    if (Option.isNone(key)) return yield* new StorageError();
++    const secret = Redacted.value(key.value);
++    for (const pool of pools)
++      yield* withOrganizationAccessLock(
++        pool.organization,
++        Effect.gen(function* () {
++          const at = yield* Clock.currentTimeMillis;
++          const envelope = yield* Effect.tryPromise(() =>
++            signEnvelope(secret, poolMembershipPrefix, { ...pool, at, expiresAt: at + 30_000 }),
++          );
++          const client = yield* HttpClient.HttpClient;
++          const response = yield* client.post(new URL(poolMembershipPath, origin).href, {
++            body: HttpBody.jsonUnsafe({ envelope }),
++          });
++          if (response.status < 200 || response.status >= 300) return yield* new StorageError();
++        }),
++      );
++  }).pipe(
++    Effect.timeout("10 seconds"),
++    Effect.provide(FetchHttpClient.layer),
++    Effect.catch(() => new StorageError()),
++  );
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..84b15278fe81d53b064b728bf6107efa441492f8
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -0,0 +1,171 @@
++import {
++  AccountAcquisitionHost,
++  AccountId,
++  AppId,
++  OwnerId,
++  ProviderId,
++  StorageError,
++  StorageHost,
++  type Executor,
++} from "@executor-js/sdk/core";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { withOrganizationAccessLock } from "./organization-access-lock.ts";
++import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
++import { openEnvelope } from "./pool-token.ts";
++
++const NativePoolAccountFields = {
++  account: AccountId,
++  requirement: Schema.String,
++  provider: ProviderId,
++  method: Schema.String,
++  generation: Schema.Int,
++  driver: Schema.NullOr(Schema.String),
++  driverRevision: Schema.NullOr(Schema.String),
++  bindingRevision: Schema.NullOr(Schema.String),
++};
++export const NativePoolAccount = Schema.Struct({
++  ...NativePoolAccountFields,
++  /** Opaque reference exposed only to the signed private pool reader. */
++  homeReference: Schema.NullOr(Schema.NonEmptyString),
++});
++const NativePoolAccountRow = Schema.Struct({
++  ...NativePoolAccountFields,
++  owner: OwnerId,
++  requirementScope: Schema.NullOr(Schema.String),
++  requirementProvider: Schema.NullOr(ProviderId),
++});
++
++const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type) =>
++  Effect.gen(function* () {
++    if (row.driver !== "basalt-home" || row.driverRevision === null || row.bindingRevision === null)
++      return null;
++    const source = yield* executor[AccountAcquisitionHost]
++      .source({ account: row.account, owner: row.owner })
++      .pipe(
++        Effect.catchTags({
++          AccountAcquisitionUnavailable: () => Effect.succeed(undefined),
++          AccountNotFound: () => Effect.succeed(undefined),
++        }),
++      );
++    if (
++      source === undefined ||
++      source.hostReference === undefined ||
++      source.source.id !== "basalt-home" ||
++      source.source.version !== row.driverRevision
++    )
++      return null;
++    const matches = (binding: typeof source.binding) =>
++      binding.account === row.account &&
++      binding.owner === row.owner &&
++      binding.provider === row.provider &&
++      binding.method === row.method &&
++      binding.generation === row.generation &&
++      binding.driver === "basalt-home" &&
++      binding.driverRevision === row.driverRevision &&
++      binding.revision === row.bindingRevision &&
++      binding.removal === null;
++    if (!matches(source.binding)) return null;
++    const current = yield* source.current.pipe(
++      Effect.catchTags({
++        AccountAcquisitionUnavailable: () => Effect.succeed(undefined),
++        AccountNotFound: () => Effect.succeed(undefined),
++      }),
++    );
++    return current !== undefined && matches(current) ? Redacted.value(source.hostReference) : null;
++  });
++
++/** Host-only identity read. It returns no credentials, labels, personal identity or inferred bindings. */
++export const nativePoolMembership = (organization: string, pool: AppId, executor: Executor) =>
++  withOrganizationAccessLock(
++    organization,
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      const found = yield* sql`select app.id from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        join executor_apps app on app.id = entry.value ->> 'app'
++          and app.owner = 'organization:' || o.id
++        where o.id = ${organization} and app.id = ${pool}
++          and entry.value ->> 'membership' = 'executor-links-v1'`;
++      if (found.length === 0) return { pool, organization, native: false, accounts: [] };
++      const rows = yield* sql`select a.id as account, a.owner, l.requirement, a.provider, a.method,
++          a.credential_generation as generation,
++          (select driver from executor_account_acquisitions where account = a.id) as driver,
++          (select driver_revision from executor_account_acquisitions where account = a.id) as "driverRevision",
++          (select revision from executor_account_acquisitions where account = a.id) as "bindingRevision",
++          (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
++            from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
++          (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
++            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider"
++        from ${usableAppLinks(sql, [pool])}
++          and not exists (select 1 from executor_account_acquisitions retiring
++            where retiring.account = a.id and retiring.removal is not null)
++          and not exists (select 1 from executor_account_acquisitions stale
++            where stale.account = a.id and (stale.owner <> a.owner or stale.provider <> a.provider
++              or stale.method <> a.method or stale.generation <> a.credential_generation))
++        order by l.requirement, l.created_at, a.id`;
++      const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
++      const accounts = yield* Effect.forEach(linked, (row) =>
++        Effect.gen(function* () {
++          if (row.requirementScope !== "app" || row.requirementProvider !== row.provider)
++            return undefined;
++          const reference = yield* homeReference(executor, row);
++          return {
++            account: row.account,
++            requirement: row.requirement,
++            provider: row.provider,
++            method: row.method,
++            generation: row.generation,
++            driver: row.driver,
++            driverRevision: row.driverRevision,
++            bindingRevision: row.bindingRevision,
++            homeReference: reference,
++          };
++        }),
++      );
++      return {
++        pool,
++        organization,
++        native: true,
++        accounts: accounts.filter((row) => row !== undefined),
++      };
++    }),
++  ).pipe(
++    // Binding rechecks write through the ORM, so its tracked boundary must own the SQL lock.
++    executor[StorageHost].transaction,
++    Effect.catch(() => new StorageError()),
++  );
++
++export const poolMembershipReadPath = "/api/internal/pool-membership";
++const Read = Schema.Struct({
++  pool: AppId,
++  organization: Schema.NonEmptyString,
++  at: Schema.Finite,
++  expiresAt: Schema.Finite,
++});
++
++/** Only the signed host-to-host request reaches the private account identity read. */
++export const readNativePoolMembership = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++  const body = yield* HttpServerRequest.schemaBodyJson(
++    Schema.Struct({ envelope: Schema.NonEmptyString }),
++  );
++  const raw = yield* Effect.tryPromise(() =>
++    openEnvelope(Redacted.value(key.value), "sbq1", body.envelope),
++  );
++  const value = yield* Schema.decodeUnknownEffect(Read)(raw);
++  const now = yield* Clock.currentTimeMillis;
++  if (value.at > now || value.expiresAt <= now || value.expiresAt > now + 30_000)
++    return HttpServerResponse.empty({ status: 401 });
++  const sql = yield* policyDatabase;
++  const executor = yield* Effect.flatten(HostedExecutor);
++  const membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
++    Effect.provideService(SqlClient.SqlClient, sql),
++  );
++  return yield* HttpServerResponse.json(membership, {
++    headers: { "cache-control": "no-store" },
++  });
++}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+index 445fb3db3d1ecdc82eed9ef75d737a6bcd5c4ba4..aa8560c9182f77606e6f69cf8c5fbd7ab76dc720 100644
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -672,10 +672,20 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+           // unlink and app removal all take links before sources, so leaving this to the account
+           // row's cascade would take them in the opposite order and deadlock with removing an app
+           // that links the account. Deleting the SDK account removes its access policy and grants.
++          const linked = yield* sql<{ app: AppId }>`select distinct app
++            from hosted_app_account_links where account = ${account.id} order by app`;
++          if (linked.length > 0)
++            yield* (
++              accessLifecycle.appAccountLinksChanged?.({ apps: linked.map((row) => row.app) }) ??
++              Effect.void
++            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+           yield* sql`delete from hosted_app_account_links where account = ${account.id}`;
+         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+       appRemoving: (app) =>
+         Effect.gen(function* () {
++          yield* (accessLifecycle.appAccountLinksChanged?.({ apps: [app] }) ?? Effect.void).pipe(
++            Effect.provideService(SqlClient.SqlClient, sql),
++          );
+           yield* (accessLifecycle.appRemoving?.(app) ?? Effect.void).pipe(
+             Effect.provideService(SqlClient.SqlClient, sql),
+           );
+@@ -732,7 +742,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+             if (!usable.has(input.account.id)) return yield* new AccountConnectionRefused(target);
+           }
+           const sources = yield* webhooks;
+-          yield* asOwner(
++          const linked = yield* asOwner(
+             input.account.owner,
+             addLink(sql, sources, {
+               app: input.app,
+@@ -746,6 +756,12 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+               Schema.is(AccountProvisioned)(error) ? error : new StorageError(),
+             ),
+           );
++          // Reconnect may replace a driver's binding without changing this app link. Reserve
++          // membership before that new credential generation can commit to pool use.
++          if (!linked)
++            yield* (
++              accessLifecycle.appAccountLinksChanged?.({ apps: [input.app] }) ?? Effect.void
++            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+         }).pipe(
+           Effect.catchTags({
+             SqlError: () => new StorageError(),
+diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
+index ccca1671c771ae233f215a684bfb60e690c5fd5a..79bc4924080a30f93c1f348fba152b4d05275f84 100644
+--- a/packages/sdk/src/contracts/account-acquisition-driver.ts
++++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
+@@ -88,6 +88,8 @@ export interface AccountAcquisitionRegistration {
+   readonly method: string;
+   /** Retain earlier revisions for pending attempts and saved bindings, without offering new connects. */
+   readonly current: boolean;
++  /** Let trusted product hosts read this driver's opaque stored reference through its source. */
++  readonly exposeHostReference?: boolean;
+   readonly driver: AccountAcquisitionDriver;
+   readonly fetch: typeof globalThis.fetch;
+ }
+@@ -105,6 +107,8 @@ export const AccountAcquisitionConfiguration = Context.Reference<AccountAcquisit
+ export interface AccountAcquisitionSource {
+   readonly binding: AccountAcquisitionBinding;
+   readonly source: { readonly kind: "driver"; readonly id: string; readonly version: string };
++  /** Opaque Home credential reference for trusted host integrations; never app or client data. */
++  readonly hostReference?: Redacted.Redacted<string>;
+   readonly current: Effect.Effect<
+     AccountAcquisitionBinding,
+     StorageError | AccountNotFound | AccountAcquisitionUnavailable
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 020b6c0d38fea967bddda0f68968c66c6577b717..e3d663d1d1b957e2eea625e0e1cadc7e3eccfa16 100644
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -90,6 +90,10 @@ export interface AccountConnectionCompletion {
+  * a later database failure cannot undo an acknowledgement that already reached another service.
+  */
+ export interface HostAccessLifecycle {
++  /** App account links changed in this transaction. Refuse external use before acknowledging. */
++  readonly appAccountLinksChanged?: (input: {
++    readonly apps: readonly AppId[];
++  }) => Effect.Effect<void, StorageError, import("effect/sql/SqlClient").SqlClient>;
+   readonly appAccessChanged?: (input: {
+     readonly organization: string;
+     /** Omitted when group membership or organization membership affects every app. */
+diff --git a/packages/sdk/src/implementation/account-acquisition-runtime.ts b/packages/sdk/src/implementation/account-acquisition-runtime.ts
+index 65c966767836f25dc99c3e636d0ad0ce37595bdc..4caabe846f95c60993cbf1fca2630b035069c3be 100644
+--- a/packages/sdk/src/implementation/account-acquisition-runtime.ts
++++ b/packages/sdk/src/implementation/account-acquisition-runtime.ts
+@@ -91,6 +91,13 @@ export const makeAcquisitionRuntime = (
+         const { driver } = registration;
+         const check = driver.check;
+         const observeAccount = driver.observeAccount;
++        // Product hosts opt in per registered driver. App and client APIs never receive this source.
++        const hostReference =
++          registration.exposeHostReference === true &&
++          resolved.binding.driver === driver.id &&
++          resolved.binding.driverRevision === driver.revision
++            ? resolved.reference
++            : undefined;
+         return {
+           binding: resolved.binding,
+           source: {
+@@ -98,6 +105,7 @@ export const makeAcquisitionRuntime = (
+             id: driver.id,
+             version: driver.revision,
+           },
++          ...(hostReference === undefined ? {} : { hostReference }),
+           current: requireAcquisitionBinding(db, resolved.binding),
+           ...(check === undefined
+             ? {}

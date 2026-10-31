@@ -65,22 +65,39 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
     return response;
   }
   const reader = response.body.getReader();
+  let ended = false;
+  let detach = () => {};
+  const finish = () => { ended = true; detach(); lease.release(); };
   return new Response(
     new ReadableStream({
+      start(controller) {
+        const close = () => {
+          if (ended) return;
+          finish();
+          void reader.cancel().catch(() => {});
+          controller.error(new Error("Connection ended"));
+        };
+        lease.signal.addEventListener("abort", close, { once: true });
+        detach = () => lease.signal.removeEventListener("abort", close);
+        lease.onClose(close);
+        if (lease.signal.aborted) close();
+      },
       async pull(controller) {
         try {
           const value = await reader.read();
+          if (ended) return;
           if (value.done) {
-            lease.release();
+            finish();
             controller.close();
           } else controller.enqueue(value.value);
         } catch (error) {
-          lease.release();
+          if (ended) return;
+          finish();
           controller.error(error);
         }
       },
       async cancel(reason) {
-        lease.release();
+        finish();
         await reader.cancel(reason);
       },
     }),

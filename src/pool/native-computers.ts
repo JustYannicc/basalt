@@ -48,6 +48,7 @@ const keyIdentity = (computer: StoredComputer) =>
 
 /** Native devices share the existing computer registry, key lifecycle and access-removal queue. */
 export class NativeComputers {
+  abortPool(pool: string) { this.streams.abortPool(pool); }
   private streams = new NativeStreams();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
@@ -280,6 +281,9 @@ export class NativeComputers {
       url.searchParams.delete("auth_token");
       return {
         ...lease,
+        pool: computer.pool,
+        person: computer.user,
+        keyId: computer.keyId,
         request: new Request(url, {
           method: request.method,
           headers,
