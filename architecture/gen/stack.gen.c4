@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "0e347d6e127b72e0c6bd9c0a86834aca198bbedb3475edefb46bc3108c1d1704" }
+    metadata { bindings "e9cbce932bf323f0da5d3ddf9a17f3a8db44e07234da899c2cfcad15c11734e0" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -204,6 +204,11 @@ deployment {
       worker resource-c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35 "Invocation Telemetry" {
         app = instanceOf basalt.toolsGateway {
           metadata { resource "resource-c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35" }
+        }
+      }
+      worker resource-d92577bc04dcbfc19bc5ab94831a48ffecf33dae2e12c68719fd3ae1859cc113 "OAuth Wire" {
+        app = instanceOf basalt.toolsGateway {
+          metadata { resource "resource-d92577bc04dcbfc19bc5ab94831a48ffecf33dae2e12c68719fd3ae1859cc113" }
         }
       }
       worker resource-e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395 "Dashboard" {
@@ -421,6 +426,11 @@ views {
   deployment view worker_resource_c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35 {
     title "Basalt/Deployment/Tools gateway/Invocation Telemetry"
     include deployed.group-b4510e9c00e2f70d.resource-c95833937dc0b27a9d72dd2a8eed8e0b672d107b6dd4ec31bab7d0bf46597b35.**
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_d92577bc04dcbfc19bc5ab94831a48ffecf33dae2e12c68719fd3ae1859cc113 {
+    title "Basalt/Deployment/Tools gateway/OAuth Wire"
+    include deployed.group-b4510e9c00e2f70d.resource-d92577bc04dcbfc19bc5ab94831a48ffecf33dae2e12c68719fd3ae1859cc113.**
     autoLayout TopBottom
   }
   deployment view worker_resource_e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395 {

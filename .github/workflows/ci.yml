@@ -77,6 +77,18 @@ jobs:
           bun run e2e:self-host --test-name
           "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^account rows show retained usage and health|^app-acquired account checks publish bounded status"
           --workers 1
+      - name: Verify shared identities and incremental consent
+        working-directory: .upstream
+        run: >-
+          bun run e2e:local --test-name
+          "^Verified account rows retain|^An existing identity batches|^Existing Google declarations gain|^One consent connects|^Incremental consent retains|^Wrong identities denial|^Refresh and changed targets|^Additive identity storage|^Verified subjects group|^Covering grants share|^Separate grants never"
+          --workers 1
+      - name: Verify the private OAuth transport and hosted placement
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app"
+          --workers 1
       - name: Verify recovery through Cloud's real provisioning queue
         working-directory: .upstream
         env:
