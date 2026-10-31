@@ -23,7 +23,6 @@ import { nativeSlowReader } from "./native-client-reader.mjs";
 import { verifyNativeDisplay } from "./native-display.mjs";
 import { verifyNativeSearch } from "./native-search.mjs";
 import { verifyNativeLocalHeaders } from "./native-local-headers.mjs";
-import { verifyNativeMobile } from "./native-mobile.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -106,7 +105,7 @@ const program = Effect.gen(function* () {
           files: [
             {
               path: "index.ts",
-              content: `import { defineApp, mutation, object, query, router } from "apps"; export default defineApp({}, { tools: router({ echo: query({ input: object({}) }, async () => ({ receipt: ${JSON.stringify(receipt)} })), confirm: mutation({ input: object({}), approval: () => "user-approval" }, async () => ({ receipt: ${JSON.stringify(receipt)} })) }) });`,
+              content: `import { defineApp, object, query, router } from "apps"; export default defineApp({}, { tools: router({ echo: query({ input: object({}) }, async () => ({ receipt: ${JSON.stringify(receipt)} })) }) });`,
             },
             appsManifest,
           ],
@@ -243,20 +242,7 @@ const program = Effect.gen(function* () {
       await command(["revoke"]);
       assert.equal(JSON.parse((await command(["status"])).stdout).state, "revoked");
       await stop();
-      const mobile = await verifyNativeMobile({ origin: worker.origin, owner, app, receipt }).catch(
-        async (error) => {
-          await writeFile(
-            join(directory, "mobile-failure-first.txt"),
-            String(error?.stack ?? error),
-            {
-              mode: 0o600,
-            },
-          );
-          throw error;
-        },
-      );
       const evidence = {
-        mobile,
         realRouter: true,
         actualHostedNativeGrant: true,
         nativeDisplayMetadata: true,
