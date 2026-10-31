@@ -10,8 +10,8 @@ const capture = Object.freeze({
   directory: "playground/demo-apps/atlassian",
   packageName: "atlassian",
   publicSnapshotSha256: "9d8def81dd017c76e171de51fdb43d10c629f87d0937597ed40010ae4316c67e",
-  servedSnapshotSha256: "3a3a3a7f33107aa1139a15f73cb78d43fe6b0a45010c2b30657b1f2d0705e921",
-  patchSha256: "1a4e2b438dac485b197882513b07c333765dea26f10087e36d5d972dcb9c216d",
+  servedSnapshotSha256: "5065a419d5ac6abfca39bd5dedbcbe687289afaea8095ace3b8a2e6bcd415428",
+  patchSha256: "d2320ce961645379886eaf4d5c03ed99e5a185ac74feab5016b61408b9db464d",
   publicSdkVersion: "0.0.1-beta.103",
   servedSdkVersion: "0.0.1-beta.104-basalt.1",
 });
@@ -19,6 +19,7 @@ const capturedPaths = ["index.ts", "package.json"];
 
 const scopes = [
   "offline_access",
+  "read:me",
   "read:jira-work",
   "read:confluence-content.all",
   "search:confluence",
@@ -85,8 +86,9 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
 
   const sourceFiles = new Map(sourceSnapshot.files.map((file) => [file.path, file.content]));
   const publishedFiles = new Map(publishedSnapshot.files.map((file) => [file.path, file.content]));
-  assert.equal(sourceFiles.get("index.ts"), publishedFiles.get("index.ts"),
-    "Served Atlassian app source must match the published baseline byte for byte");
+  assert.equal(sourceFiles.get("index.ts"), publishedFiles.get("index.ts").replace(
+    '  "offline_access",', '  "offline_access",\n  "read:me",',
+  ), "Served Atlassian app adds only identity consent to the published source");
   const publishedPackage = publishedFiles.get("package.json");
   const servedPackage = sourceFiles.get("package.json");
   const publicPin = `"apps": "${capture.publicSdkVersion}"`;
@@ -102,6 +104,16 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
   assert.equal(publishedManifest.dependencies?.apps, capture.publicSdkVersion);
   assert.equal(servedManifest.dependencies?.apps, capture.servedSdkVersion);
   assert.equal(rawPatch.toString("utf8"), [
+    "--- a/index.ts",
+    "+++ b/index.ts",
+    "@@ -20,6 +20,7 @@",
+    ' const accessibleResourcesUrl = `${apiOrigin}/oauth/token/accessible-resources`;',
+    " const scopes = [",
+    '   "offline_access",',
+    '+  "read:me",',
+    '   "read:jira-work",',
+    '   "read:confluence-content.all",',
+    '   "search:confluence",',
     "--- a/package.json",
     "+++ b/package.json",
     "@@ -7,7 +7,7 @@",
@@ -114,7 +126,7 @@ export async function loadAtlassianCatalogSource(root, expectedHash, providerOri
     '   "executor": {',
     '     "title": "Atlassian"',
     "",
-  ].join("\n"), "Atlassian source patch must be the standard manifest-only SDK pin diff");
+  ].join("\n"), "Atlassian source patch must add only identity consent and the SDK pin");
 
   const { handleCatalog } = await import(pathToFileURL(join(root, "src/catalog/worker.ts")).href);
   const origin = "http://catalog-proof.invalid";
@@ -189,10 +201,20 @@ export async function atlassianOAuthFixtureDefinition(upstream, providerOrigin) 
   assert.deepEqual(new Set(reviewed.allowedScopes), new Set(scopes));
   assert.equal(reviewed.server.tokenRequestFormat, "json");
   assert.deepEqual(reviewed.server.authorizationParams, { audience: "api.atlassian.com", prompt: "consent" });
+  assert.deepEqual(reviewed.personalDataReporting, {
+    identityUrl: "https://api.atlassian.com/me",
+    reportUrl: "https://api.atlassian.com/app/report-accounts/",
+    accountIdField: "account_id",
+  });
   const fixture = structuredClone(reviewed);
   fixture.id = "atlassian-local-proof";
   fixture.server.authorizationUrl = `${providerOrigin}/authorize`;
   fixture.server.tokenUrl = `${providerOrigin}/oauth/token`;
+  fixture.personalDataReporting = {
+    ...fixture.personalDataReporting,
+    identityUrl: `${providerOrigin}/me`,
+    reportUrl: `${providerOrigin}/app/report-accounts/`,
+  };
   fixture.placement = { ...fixture.placement, hosts: [new URL(providerOrigin).host] };
   return { definition: fixture, scopes };
 }

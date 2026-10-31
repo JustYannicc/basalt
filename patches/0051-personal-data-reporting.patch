@@ -1,0 +1,3540 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -27,6 +27,7 @@
+   "billing-reconcile",
+   "agent-grant-expiry",
+   "pool-migration-inventory",
++  "personal-data-reporting",
+ ]);
+ export type BackgroundJob = typeof BackgroundJob.Type;
+ 
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -14,7 +14,11 @@
+ } from "@executor-js/hosted-server/app-ui";
+ import { cloudAppUiBase } from "./contracts/app-ui.ts";
+ import { cloudAppDomains } from "./infrastructure/app-domains.ts";
+-import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
++import {
++  AppRepositoryRecovery,
++  PersonalDataReportingHost,
++  WorkflowHost,
++} from "@executor-js/sdk/core";
+ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
+ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
+@@ -90,6 +94,7 @@
+ } from "./infrastructure/background-jobs.ts";
+ import { cloudEgress } from "./infrastructure/executor.ts";
+ import { withBatchExecution } from "./infrastructure/batch-execution.ts";
++import { cloudEmulators } from "./infrastructure/emulators.ts";
+ import { cloudProduct } from "./infrastructure/product.ts";
+ import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
+ import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
+@@ -401,6 +406,13 @@
+       Effect.scoped,
+       Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+     );
++    const personalDataReporting = Effect.flatten(HostedExecutor).pipe(
++      Effect.flatMap((sdk) => sdk[PersonalDataReportingHost].run),
++      Effect.provide(executor),
++      reportErrors,
++      Effect.scoped,
++      Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
++    );
+     const jobs = yield* cloudBackgroundJobs;
+     yield* jobs.schedule(
+       "* * * * *",
+@@ -419,6 +431,23 @@
+     );
+     yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
+     yield* jobs.schedule("13 * * * *", "pool-migration-inventory");
++    // Keep the production poll off the hour. Subject-level cycle times spread actual requests further.
++    const testReportingCron = yield* Config.String(
++      "EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON",
++    ).pipe(Config.option);
++    if (Option.isSome(testReportingCron)) {
++      const environment = yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""));
++      if (environment !== "test-local" || Option.isNone(yield* cloudEmulators.pipe(Effect.orDie)))
++        return yield* Effect.die(
++          new Error(
++            "EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON is only available to emulated local tests",
++          ),
++        );
++    }
++    yield* jobs.schedule(
++      Option.getOrElse(testReportingCron, () => "7,22,37,52 * * * *"),
++      "personal-data-reporting",
++    );
+     const backgroundJobs = {
+       "organization-removal": organizationRemovals,
+       provisioning: dispatch,
+@@ -432,6 +461,7 @@
+       "billing-reconcile": billingReconcile,
+       "agent-grant-expiry": agentGrantExpiry,
+       "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
++      "personal-data-reporting": personalDataReporting,
+     } satisfies Record<BackgroundJob, unknown>;
+ 
+     const egress = yield* cloudEgress;
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -9,6 +9,7 @@
+   createExecutor,
+   toEffectRuntime,
+   makeExecutorStorage,
++  PersonalDataReportingHost,
+   WorkflowHost,
+   RepositoryHost,
+   makeDeclarationCache,
+@@ -182,6 +183,12 @@
+           Effect.repeat(Schedule.spaced("5 seconds")),
+         ),
+       );
++      yield* Effect.forkScoped(
++        executor[PersonalDataReportingHost].run.pipe(
++          Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
++          Effect.repeat(Schedule.spaced("15 minutes")),
++        ),
++      );
+       const initialize = yield* organizationDefaults(
+         executor,
+         origin,
+diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
+--- a/apps/local/server/src/implementation/server.ts
++++ b/apps/local/server/src/implementation/server.ts
+@@ -29,6 +29,7 @@
+ /** Local host composition. The SDK owns operations; this package owns local resources and access. */
+ import {
+   WorkflowHost,
++  PersonalDataReportingHost,
+   RepositoryHost,
+   type Executor,
+   AccountNotFound,
+@@ -241,6 +242,12 @@
+           Effect.repeat(Schedule.spaced("5 seconds")),
+         ),
+       );
++      yield* Effect.forkScoped(
++        executor[PersonalDataReportingHost].run.pipe(
++          Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
++          Effect.repeat(Schedule.spaced("15 minutes")),
++        ),
++      );
+       const scheduleConcurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
+         Config.withDefault(defaultScheduleWorkerOptions.concurrency),
+       );
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -103,7 +103,7 @@
+     runner: 3,
+ 
+     pattern:
+-      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
++      "Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -29,6 +29,7 @@
+ import {
+   OperatorOAuthFixture,
+   operatorOAuthFile,
++  syntheticReportingClient,
+   v1FirstPartyClients,
+   v1FirstPartyCredentials,
+ } from "./operator-oauth.ts";
+@@ -43,6 +44,7 @@
+  */
+ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
+   const origin = `http://127.0.0.1:${fixture.port}`;
++  const reportingOrigin = `http://127.0.0.1:${fixture.reportingPort}`;
+   return {
+     EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
+       {
+@@ -57,10 +59,30 @@
+         defaultScopes: ["mail.read"],
+         placement: { hosts: [`127.0.0.1:${fixture.port}`] },
+       },
++      {
++        id: syntheticReportingClient.id,
++        label: "Executor for Synthetic Cloud Reporting",
++        server: {
++          issuer: reportingOrigin,
++          authorizationUrl: `${reportingOrigin}/authorize`,
++          tokenUrl: `${reportingOrigin}/token`,
++        },
++        tokenEndpointAuthMethod: "client_secret_basic",
++        defaultScopes: ["mail.read", "offline_access", "read:me"],
++        allowedScopes: ["mail.read", "offline_access", "read:me"],
++        placement: { hosts: [`127.0.0.1:${fixture.reportingPort}`] },
++        personalDataReporting: {
++          identityUrl: `${reportingOrigin}/me`,
++          reportUrl: `${reportingOrigin}/report-accounts`,
++          accountIdField: "accountId",
++        },
++      },
+       ...v1FirstPartyClients(`http://127.0.0.1:${fixture.v1Port}`),
+     ]),
+     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
+     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
++    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_ID: syntheticReportingClient.clientId,
++    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_SECRET: syntheticReportingClient.clientSecret,
+     // v1's client IDs: the same as v2's for the clients v1's connections move to, and another for
+     // the test client, so a v1 grant of it is a client the import must not move it to.
+     V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({
+@@ -187,6 +209,7 @@
+       clientId: "first-party-client",
+       clientSecret: randomBytes(16).toString("hex"),
+       v1Port: yield* freePort,
++      reportingPort: yield* freePort,
+     });
+     const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
+     yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
+@@ -282,6 +305,7 @@
+       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
+       CLOUD_DEV_EXTERNAL_DATABASE: "true",
+       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
++      EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
+       // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
+       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
+       V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
+diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
+--- a/e2e/support/managed-server.ts
++++ b/e2e/support/managed-server.ts
+@@ -70,6 +70,10 @@
+   EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: Schema.optionalKey(Schema.String),
+   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: Schema.optionalKey(Schema.String),
+   EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: Schema.optionalKey(Schema.String),
++  EXECUTOR_OAUTH_SYNTHETIC_REPORTING_ONE_CLIENT_ID: Schema.optionalKey(Schema.String),
++  EXECUTOR_OAUTH_SYNTHETIC_REPORTING_ONE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
++  EXECUTOR_OAUTH_SYNTHETIC_REPORTING_TWO_CLIENT_ID: Schema.optionalKey(Schema.String),
++  EXECUTOR_OAUTH_SYNTHETIC_REPORTING_TWO_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+   EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: Schema.optionalKey(Schema.String),
+   EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: Schema.optionalKey(Schema.String),
+   EXECUTOR_OAUTH_NOTION_CLIENT_ID: Schema.optionalKey(Schema.String),
+diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
+--- a/e2e/support/oauth-setup-issuer.ts
++++ b/e2e/support/oauth-setup-issuer.ts
+@@ -10,7 +10,7 @@
+   sign,
+ } from "node:crypto";
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+-import { Context, Deferred, Effect, Layer, Schema } from "effect";
++import { Context, Deferred, Effect, Layer, Option, Schema } from "effect";
+ import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { tokenRequestParameters } from "./client-credentials-issuer.ts";
+ 
+@@ -37,6 +37,10 @@
+   id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+   method: Schema.String,
+ });
++const ReportingRequest = Schema.Struct({
++  accounts: Schema.Array(Schema.Struct({ accountId: Schema.String, updatedAt: Schema.String })),
++});
++type ReportingRequest = typeof ReportingRequest.Type;
+ 
+ /**
+  * The port the next issuer listens on. Zero, the default, lets the system assign one; a Cloud
+@@ -209,6 +213,23 @@
+    * service does. An unissued token is refused with 401.
+    */
+   let resourceTokens: "any" | "issued" = "any";
++  let reportingAccountId = "synthetic-reporting-account";
++  let reportingIdentityProfile: { readonly name: string; readonly email: string } | undefined;
++  let reportingSubjectsByGrant = false;
++  const reportingSubjects = new Map<string, string>();
++  let reportingAction: "none" | "updated" | "closed" = "none";
++  let reportingActionsByRegistration:
++    | Readonly<Record<string, "none" | "updated" | "closed">>
++    | undefined;
++  let reportingIdentityFailureOn: number | undefined;
++  let reportingIdentityRequests = 0;
++  let reportingFailure: { readonly status: 429 | 503; readonly retryAfter: string } | undefined;
++  const reportingRequests: Array<{
++    readonly registration: string;
++    readonly accounts: ReportingRequest["accounts"];
++    readonly refreshed: boolean;
++    readonly reporterSubject: string;
++  }> = [];
+   /**
+    * The `scope` member of token responses; undefined omits it. A grant is given the scope its
+    * authorization request asked for, or `defaults` when it asked for none, as services that
+@@ -566,7 +587,14 @@
+                   ).toString("base64url");
+         const accessToken = refreshing
+           ? `synthetic-refreshed-token-${refreshes}`
+-          : "synthetic-access-token";
++          : reportingSubjectsByGrant
++            ? `synthetic-access-token-${tokenExchanges}`
++            : "synthetic-access-token";
++        const reportingSubject =
++          refreshing && presentedRefresh !== null
++            ? (reportingSubjects.get(presentedRefresh) ?? reportingAccountId)
++            : reportingAccountId;
++        reportingSubjects.set(accessToken, reportingSubject);
+         if (refreshing) refreshedAccessTokens.add(accessToken);
+         issuedAccessTokens.add(accessToken);
+         // Every sign-in issues the same first token; a new sign-in makes it valid again.
+@@ -576,6 +604,7 @@
+             ? `synthetic-refresh-${randomUUID()}`
+             : undefined;
+         if (refreshToken !== undefined) {
++          reportingSubjects.set(refreshToken, reportingSubject);
+           refreshGrants.set(refreshToken, clientId);
+           refreshOrigins.set(refreshToken, refreshing ? "refresh" : "sign-in");
+         }
+@@ -649,6 +678,65 @@
+           });
+         }),
+       ),
++    ),
++    HttpRouter.add(
++      "GET",
++      "/me",
++      Effect.gen(function* () {
++        reportingIdentityRequests++;
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        if (!acceptedToken(request.headers.authorization))
++          return HttpServerResponse.empty({ status: 401 });
++        if (reportingIdentityFailureOn === reportingIdentityRequests)
++          return HttpServerResponse.text("Synthetic identity retry", {
++            status: 503,
++            headers: { "retry-after": "0" },
++          });
++        const token = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
++        return yield* HttpServerResponse.json({
++          accountId: reportingSubjectsByGrant
++            ? (reportingSubjects.get(token) ?? reportingAccountId)
++            : reportingAccountId,
++          ...reportingIdentityProfile,
++        });
++      }),
++    ),
++    HttpRouter.add(
++      "POST",
++      "/report-accounts",
++      Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const registration =
++          new URL(request.url, "http://issuer").searchParams.get("registration") ?? "default";
++        const authorization = request.headers.authorization;
++        const token = authorization?.replace(/^Bearer /, "") ?? "";
++        if (!acceptedToken(authorization)) return HttpServerResponse.empty({ status: 401 });
++        const body = yield* request.json.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(ReportingRequest)),
++          Effect.option,
++        );
++        if (Option.isNone(body)) return HttpServerResponse.empty({ status: 400 });
++        reportingRequests.push({
++          registration,
++          accounts: body.value.accounts,
++          refreshed: refreshedAccessTokens.has(token),
++          reporterSubject: reportingSubjects.get(token) ?? reportingAccountId,
++        });
++        if (reportingFailure !== undefined)
++          return HttpServerResponse.empty({
++            status: reportingFailure.status,
++            headers: { "retry-after": reportingFailure.retryAfter },
++          });
++        const action = reportingActionsByRegistration?.[registration] ?? reportingAction;
++        if (action === "none")
++          return HttpServerResponse.empty({ status: 204, headers: { "cycle-period": "7" } });
++        return yield* HttpServerResponse.json(
++          {
++            accounts: body.value.accounts.map(({ accountId }) => ({ accountId, status: action })),
++          },
++          { headers: { "cycle-period": "7" } },
++        );
++      }),
+     ),
+     HttpRouter.add(
+       "GET",
+@@ -1029,12 +1117,42 @@
+       readonly scopeGrant?: typeof scopeGrant | null;
+       /** Which access tokens the resource accepts. */
+       readonly resourceTokens?: typeof resourceTokens;
++      /** The identity and response served by the synthetic personal-data reporting API. */
++      readonly reportingAccountId?: string;
++      /** Extra personal fields make accidental identity-response logging observable. */
++      readonly reportingIdentityProfile?: {
++        readonly name: string;
++        readonly email: string;
++      } | null;
++      /** Keep each grant bound to the subject present at its authorization. */
++      readonly reportingSubjectsByGrant?: boolean;
++      readonly reportingAction?: typeof reportingAction;
++      /** Let one OAuth registration receive an action without affecting another's report state. */
++      readonly reportingActionsByRegistration?: Readonly<
++        Record<string, typeof reportingAction>
++      > | null;
++      /** Fail this one-based `/me` request with a retryable 503. */
++      readonly reportingIdentityFailureOn?: number | null;
++      /** Fail report requests at the external HTTP boundary. */
++      readonly reportingFailure?: typeof reportingFailure | null;
+     }) =>
+       Effect.sync(() => {
+         if (input.requireUserAgent !== undefined) requireUserAgent = input.requireUserAgent;
+         if (input.scopeGrant !== undefined)
+           scopeGrant = input.scopeGrant === null ? undefined : input.scopeGrant;
+         if (input.resourceTokens !== undefined) resourceTokens = input.resourceTokens;
++        if (input.reportingAccountId !== undefined) reportingAccountId = input.reportingAccountId;
++        if (input.reportingIdentityProfile !== undefined)
++          reportingIdentityProfile = input.reportingIdentityProfile ?? undefined;
++        if (input.reportingSubjectsByGrant !== undefined)
++          reportingSubjectsByGrant = input.reportingSubjectsByGrant;
++        if (input.reportingAction !== undefined) reportingAction = input.reportingAction;
++        if (input.reportingActionsByRegistration !== undefined)
++          reportingActionsByRegistration = input.reportingActionsByRegistration ?? undefined;
++        if (input.reportingIdentityFailureOn !== undefined)
++          reportingIdentityFailureOn = input.reportingIdentityFailureOn ?? undefined;
++        if (input.reportingFailure !== undefined)
++          reportingFailure = input.reportingFailure ?? undefined;
+         if (input.tokenRequestFormat !== undefined) tokenRequestFormat = input.tokenRequestFormat;
+         if (input.mcpStatus !== undefined)
+           mcpStatus = input.mcpStatus === null ? undefined : input.mcpStatus;
+@@ -1168,6 +1286,8 @@
+       revokedRefreshTokens: [...revokedRefreshTokens],
+       resourceRequests: { ...resourceRequests },
+       resourceAuthorizations: [...resourceAuthorizations],
++      reportingIdentityRequests,
++      reportingRequests: [...reportingRequests],
+     })),
+   };
+ });
+diff --git a/e2e/support/operator-oauth.ts b/e2e/support/operator-oauth.ts
+--- a/e2e/support/operator-oauth.ts
++++ b/e2e/support/operator-oauth.ts
+@@ -12,9 +12,16 @@
+   clientId: Schema.String,
+   clientSecret: Schema.String,
+   v1Port: Schema.Number,
++  reportingPort: Schema.Number,
+ });
+ /** Where a managed Cloud run records its operator OAuth fixture, under the run directory. */
+ export const operatorOAuthFile = "operator-oauth.json";
++/** Credentials for the isolated Cloud personal-data reporting scenario. */
++export const syntheticReportingClient = {
++  id: "synthetic-cloud-reporting",
++  clientId: "synthetic-reporting-client",
++  clientSecret: "synthetic-reporting-secret",
++} as const;
+ 
+ /** The synthetic credentials of each client in `v1FirstPartyClients`, by ID. */
+ export const v1FirstPartyCredentials = {
+diff --git a/e2e/support/personal-data-reporting-clients.ts b/e2e/support/personal-data-reporting-clients.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/personal-data-reporting-clients.ts
+@@ -0,0 +1,130 @@
++/** E2E fixture for two operator OAuth registrations reporting the same external subject. */
++import { expect } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Telemetry } from "./evidence.ts";
++import { oauthSetupIssuer } from "./oauth-setup-issuer.ts";
++
++export const reportingClientScopes = ["mail.read", "offline_access", "read:me"] as const;
++export const reportingRegistrations = ["one", "two"] as const;
++
++const endpoint = (origin: string, path: string, registration: string) =>
++  `${origin}/${path}?registration=${registration}`;
++
++export const reportingClientDefinition = (
++  origin: string,
++  registration: (typeof reportingRegistrations)[number],
++) => ({
++  id: `synthetic-reporting-${registration}`,
++  label: `Executor for Synthetic Reporting ${registration}`,
++  server: {
++    issuer: origin,
++    authorizationUrl: endpoint(origin, "authorize", registration),
++    tokenUrl: endpoint(origin, "token", registration),
++  },
++  tokenEndpointAuthMethod: "client_secret_basic",
++  defaultScopes: reportingClientScopes,
++  allowedScopes: reportingClientScopes,
++  placement: { hosts: [new URL(origin).host] },
++  personalDataReporting: {
++    identityUrl: endpoint(origin, "me", registration),
++    reportUrl: endpoint(origin, "report-accounts", registration),
++    accountIdField: "accountId",
++  },
++});
++
++export const reportingClientAppSource = (
++  origin: string,
++  registration: (typeof reportingRegistrations)[number],
++) => {
++  const host = JSON.stringify(new URL(origin).host);
++  const provider = (registration: (typeof reportingRegistrations)[number]) => `
++const ${registration} = defineProvider({
++  name: "Synthetic Reporting ${registration}",
++  hosts: [${host}],
++  auth: { oauth: oauth2({
++    issuer: ${JSON.stringify(origin)},
++    authorizationUrl: ${JSON.stringify(endpoint(origin, "authorize", registration))},
++    tokenUrl: ${JSON.stringify(endpoint(origin, "token", registration))},
++    scopes: ${JSON.stringify(reportingClientScopes)},
++  }) },
++  async health() { return {}; },
++});`;
++  const probe = (registration: (typeof reportingRegistrations)[number]) => `
++    probe: query(
++      { input: object({}) },
++      async ({ user: { accounts }, fetch, signal }) => {
++        const response = await fetch(${JSON.stringify(`${origin}/resource`)}, {
++          headers: accounts.${registration}.headers(),
++          signal,
++        });
++        return { status: response.status };
++      },
++    ),`;
++  return `import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
++${provider(registration)}
++
++export default defineApp({ user: { accounts: { ${registration} } } }, {
++  tools: router({${probe(registration)}
++  }),
++});`;
++};
++
++export const ReportingClientRedirect = Schema.Struct({
++  authorizationUrl: Schema.String,
++  redirectUri: Schema.String,
++});
++export const ReportingClientProbe = Schema.Struct({ status: Schema.Number });
++export const ReportingClientHealth = Schema.Struct({
++  info: Schema.NullOr(Schema.Unknown),
++  personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
++});
++export const ReportingClientAccountDetail = Schema.Struct({ health: ReportingClientHealth });
++
++const ReportingMetrics = Schema.Struct({
++  reportingRequests: Schema.Array(
++    Schema.Struct({
++      registration: Schema.String,
++      reporterSubject: Schema.String,
++      refreshed: Schema.Boolean,
++      accounts: Schema.Array(Schema.Struct({ accountId: Schema.String, updatedAt: Schema.String })),
++    }),
++  ),
++});
++
++export const reportingClientConsent = (http: HttpClient.HttpClient, authorizationUrl: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const response = yield* HttpClient.withScope(http).get(authorizationUrl);
++      expect(response.status).toBe(302);
++      const callbackUrl = response.headers.location;
++      if (callbackUrl === undefined)
++        return yield* Effect.die("The issuer did not return a callback");
++      return callbackUrl;
++    }),
++  ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++
++export const waitForReportingClientRequests = (
++  issuer: Effect.Success<typeof oauthSetupIssuer>,
++  count: number,
++) =>
++  Effect.gen(function* () {
++    const metrics = yield* issuer.metrics;
++    if (metrics.reportingRequests.length < count)
++      return yield* Effect.fail(new Error("Both OAuth registrations have not reported yet"));
++    return yield* Schema.decodeUnknownEffect(ReportingMetrics)(metrics);
++  }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }));
++
++export const waitForReportingClientRun = (since: number) =>
++  Effect.gen(function* () {
++    const telemetry = yield* Telemetry;
++    const found = yield* telemetry.search("sdk.personalDataReporting.run", {});
++    const run = found.data.find(
++      ({ span }) =>
++        Date.parse(span.startTime) >= since &&
++        span.tags["executor.personal_data_reporting.report_count"] !== undefined,
++    );
++    if (run === undefined)
++      return yield* Effect.fail(new Error("The reporting run span has not arrived"));
++    return run.traceId;
++  }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }));
+diff --git a/e2e/support/personal-data-reporting.ts b/e2e/support/personal-data-reporting.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/personal-data-reporting.ts
+@@ -0,0 +1,230 @@
++/** Reporting fixtures control only the external issuer and the runner-owned product. */
++import { expect } from "@effect/vitest";
++import { Clock, Effect, FileSystem, Schedule, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "./actors.ts";
++import { Api, body, type Session } from "./api.ts";
++import { appsManifest } from "./apps-release.ts";
++import { connectionsPath } from "./app-accounts.ts";
++import { Resource } from "./contracts.ts";
++import { Telemetry } from "./evidence.ts";
++import { oauthSetupIssuer, oauthSetupIssuerOn } from "./oauth-setup-issuer.ts";
++import { serverControl } from "./server-control.ts";
++import { Target } from "./platform.ts";
++import {
++  OperatorOAuthFixture,
++  operatorOAuthFile,
++  syntheticReportingClient,
++} from "./operator-oauth.ts";
++
++const scopes = ["mail.read", "offline_access", "read:me"];
++const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
++
++/** A completed delivered span, rather than a delay, closes each scheduled run's observation. */
++export const completedReportingRun = (since: number) =>
++  Effect.flatMap(Telemetry, (telemetry) =>
++    telemetry.search("sdk.personalDataReporting.run", {}),
++  ).pipe(
++    Effect.filterOrFail(
++      (result) =>
++        result.data.some(
++          ({ span }) =>
++            Date.parse(span.startTime) >= since &&
++            span.tags["executor.personal_data_reporting.report_count"] !== undefined,
++        ),
++      () => new Error("The completed reporting run has not reached the collector"),
++    ),
++    Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }),
++  );
++
++export const reportingCase = Effect.gen(function* () {
++  const api = yield* Api;
++  const actors = yield* Actors;
++  const http = yield* HttpClient.HttpClient;
++  const target = yield* Target;
++  const cloud = target.metadata.target === "cloud";
++  const operator = cloud
++    ? yield* (yield* FileSystem.FileSystem)
++        .readFileString(`${target.directory}/${operatorOAuthFile}`)
++        .pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(OperatorOAuthFixture))),
++        )
++    : undefined;
++  const issuer =
++    operator === undefined
++      ? yield* oauthSetupIssuer
++      : yield* oauthSetupIssuerOn(operator.reportingPort);
++  const origin = issuer.origin;
++  const clientId = cloud ? syntheticReportingClient.clientId : "first-party-client";
++  const clientSecret = cloud ? syntheticReportingClient.clientSecret : "first-party-secret";
++  yield* issuer.configure({
++    registration: false,
++    refreshTokens: true,
++    scopes,
++    resourceTokens: "issued",
++    reportingAccountId: "reporting-cycle-subject",
++    reportingSubjectsByGrant: true,
++    reportingAction: "none",
++  });
++  if (!cloud) {
++    yield* serverControl("stop");
++    yield* serverControl("environment", 200, {
++      EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true",
++      EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
++        {
++          id: "synthetic-mail",
++          label: "Executor for Synthetic Reporting",
++          server: {
++            issuer: origin,
++            authorizationUrl: `${origin}/authorize`,
++            tokenUrl: `${origin}/token`,
++          },
++          tokenEndpointAuthMethod: "client_secret_basic",
++          defaultScopes: scopes,
++          allowedScopes: scopes,
++          placement: { hosts: [new URL(origin).host] },
++          personalDataReporting: {
++            identityUrl: `${origin}/me`,
++            reportUrl: `${origin}/report-accounts`,
++            accountIdField: "accountId",
++          },
++        },
++      ]),
++      EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "first-party-client",
++      EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "first-party-secret",
++    });
++    yield* serverControl("start");
++  }
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const files = [
++    {
++      path: "index.ts",
++      content: `import { defineApp, defineProvider, oauth2 } from "apps";
++const service = defineProvider({ name: "Synthetic Reporting", hosts: [${JSON.stringify(new URL(origin).host)}],
++  auth: { oauth: oauth2({ issuer: ${JSON.stringify(origin)}, authorizationUrl: ${JSON.stringify(`${origin}/authorize`)}, tokenUrl: ${JSON.stringify(`${origin}/token`)}, scopes: ${JSON.stringify(scopes)} }) },
++  async health({ account, fetch, signal }) {
++    const response = await fetch(${JSON.stringify(`${origin}/me`)}, { headers: account.headers(), signal });
++    const profile = await response.json();
++    return { accountInfo: { externalId: profile.accountId, displayName: "Synthetic reporting identity" } };
++  },
++});
++export default defineApp({ user: { accounts: { service } } }, {});`,
++    },
++    appsManifest,
++  ];
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: "Reporting cadence",
++    files,
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const app = yield* body(Resource, deployed);
++  const appPath = `${prefix}/apps/${app.id}`;
++  const access = yield* body(
++    Schema.Struct({ revision: Schema.String }),
++    yield* api.request(actors.owner, "GET", `${appPath}/access`),
++  );
++  expect(
++    (yield* api.request(actors.owner, "PATCH", `${appPath}/access`, {
++      revision: access.revision,
++      audience: { kind: "everyone" },
++    })).status,
++  ).toBe(200);
++  const savedAccounts = new Map<string, { session: Session; prefix: string }>();
++  const apps = [{ session: actors.owner, path: appPath }];
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      for (const app of apps) yield* api.request(app.session, "DELETE", app.path);
++      for (const [account, context] of savedAccounts)
++        yield* api.request(context.session, "DELETE", `${context.prefix}/accounts/${account}`);
++    }).pipe(Effect.orDie),
++  );
++  const connect = (
++    account?: string,
++    session: Session = actors.owner,
++    target = { prefix, appPath },
++  ) =>
++    Effect.gen(function* () {
++      const { prefix, appPath } = target;
++      const connection = yield* body(
++        Resource,
++        yield* api.request(
++          session,
++          "POST",
++          connectionsPath(appPath, "user", "service"),
++          account === undefined ? {} : { account },
++        ),
++      );
++      const started = yield* body(
++        Redirect,
++        yield* api.request(session, "POST", `${prefix}/connections/${connection.id}/oauth/start`, {
++          method: "oauth",
++          label: "Reporting",
++        }),
++      );
++      yield* issuer.allowClient({
++        clientId,
++        clientSecret,
++        redirect: started.redirectUri,
++      });
++      const callbackUrl = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* HttpClient.withScope(http).get(started.authorizationUrl);
++          expect(response.status).toBe(302);
++          if (response.headers.location === undefined) return yield* Effect.die("Missing callback");
++          return response.headers.location;
++        }),
++      ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++      const response = yield* api.request(
++        session,
++        "POST",
++        `${prefix}/connections/${connection.id}/oauth/complete`,
++        { callbackUrl },
++      );
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const result = yield* body(Resource, response);
++      savedAccounts.set(result.id, { session, prefix });
++      return result.id;
++    });
++  const connectInOrganization = (organization: string, session: Session) =>
++    Effect.gen(function* () {
++      const prefix = `/api/organizations/${organization}`;
++      const response = yield* api.request(session, "POST", `${prefix}/apps/deploy`, {
++        name: "Tenant reporting",
++        files,
++      });
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const app = yield* body(Resource, response);
++      const appPath = `${prefix}/apps/${app.id}`;
++      apps.push({ session, path: appPath });
++      return yield* connect(undefined, session, { prefix, appPath });
++    });
++  const account = yield* connect();
++  const run = Effect.gen(function* () {
++    const since = yield* Clock.currentTimeMillis;
++    if (cloud)
++      yield* Effect.scoped(
++        Effect.gen(function* () {
++          const response = yield* http.get(
++            `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++          );
++          expect(response.status).toBeLessThan(400);
++          yield* response.text;
++        }),
++      );
++    else yield* serverControl("restart");
++    yield* completedReportingRun(since);
++    return yield* issuer.metrics;
++  });
++  return {
++    issuer,
++    account,
++    connect,
++    connectInOrganization,
++    run,
++    api,
++    owner: actors.owner,
++    peer: actors.admin,
++    prefix,
++    accountPath: `${prefix}/accounts/${account}`,
++  };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2594,6 +2594,77 @@
+       local: na("The shared SDK and account view are exercised through hosted APIs."),
+     },
+   },
++  personalDataReporting: {
++    fixtures: "actors",
++    file: "personal-data-reporting.spec.ts",
++    title:
++      "scheduled personal-data reports refresh identity, retry safely and remove closed accounts",
++    targets: {
++      "self-host": scheduled,
++      cloud: managedCloud,
++      local: scheduled,
++    },
++  },
++  personalDataClientIsolation: {
++    fixtures: "actors",
++    file: "personal-data-reporting-clients.spec.ts",
++    title: "personal-data report state stays separate across operator OAuth registrations",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The proof uses two E2E operator OAuth clients on one issuer."),
++      local: scheduled,
++    },
++  },
++  personalDataReconnectCadence: {
++    fixtures: "actors",
++    file: "personal-data-reporting-cadence.spec.ts",
++    title: "personal-data reconnect keeps the subject's report cycle",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Self-host exercises persisted SDK cadence through the public OAuth API."),
++      local: na("Uses hosted account APIs."),
++    },
++  },
++  personalDataBatching: {
++    fixtures: "actors",
++    file: "personal-data-reporting-cadence.spec.ts",
++    title: "personal-data reports split 91 subjects and retain progress through restart",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Self-host exercises shared SDK batching and persisted cadence."),
++      local: na("Uses hosted account APIs."),
++    },
++  },
++  personalDataOwnerIsolation: {
++    fixtures: "actors",
++    file: "personal-data-reporting-cadence.spec.ts",
++    title: "personal-data reports use each organization's own grant and refuse peer account reads",
++    targets: {
++      "self-host": na("Self-host permits only one organization."),
++      cloud: managedCloud,
++      local: na("Uses hosted account APIs."),
++    },
++  },
++  personalDataOldestIdentity: {
++    fixtures: "actors",
++    file: "personal-data-reporting-cadence.spec.ts",
++    title: "personal-data reports retain the oldest saved identity retrieval time",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Self-host exercises shared SDK health and report state."),
++      local: na("Uses hosted account APIs."),
++    },
++  },
++  personalDataRetryCadence: {
++    fixtures: "actors",
++    file: "personal-data-reporting-cadence.spec.ts",
++    title: "personal-data failures honor persisted retry time without repeating in one run",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Self-host exercises shared SDK retry state through the external issuer."),
++      local: na("Uses hosted account APIs."),
++    },
++  },
+   mcpAccountHealth: {
+     fixtures: "actors",
+     file: "mcp-account-health.spec.ts",
+@@ -3046,7 +3117,8 @@
+   catalogOAuthClients: {
+     fixtures: "actors",
+     file: "catalog-oauth-clients.spec.ts",
+-    title: "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
++    title:
++      "Reviewed catalog OAuth clients preserve personal choices and refuse mismatched providers",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Restarts a runner-owned product with optional client credentials."),
+@@ -7585,7 +7657,7 @@
+     legacyStorage: true,
+     file: "account-status-storage.spec.ts",
+     title:
+-      "account status preserves the previous storage version and retained identity across restarts",
++      "account status preserves selected sites and retained identity through a reporting upgrade and restarts",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Uses isolated PGlite metadata."),
+diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
+--- a/e2e/tests/app-accounts-upgrade.spec.ts
++++ b/e2e/tests/app-accounts-upgrade.spec.ts
+@@ -281,7 +281,7 @@
+       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
+       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
+     });
+-    expect(version).toEqual([{ value: "4.0.15" }]);
++    expect(version).toEqual([{ value: "4.0.17" }]);
+     expect(step).toEqual([{ name: "app_account_links" }]);
+     // The member's user link as it was, and the app link without a subject.
+     expect(linksAfter).toEqual([
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -628,7 +628,7 @@
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.15" }]);
++        expect(version).toEqual([{ value: "4.0.17" }]);
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+         );
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -132,7 +132,7 @@
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.15" }]);
++  expect(version).toEqual([{ value: "4.0.17" }]);
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.15" }]);
++        expect(version).toEqual([{ value: "4.0.17" }]);
+         expect(credentials).toEqual([
+           { client: ids.a },
+           { client: ids.a },
+diff --git a/e2e/tests/personal-data-reporting-cadence.spec.ts b/e2e/tests/personal-data-reporting-cadence.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/personal-data-reporting-cadence.spec.ts
+@@ -0,0 +1,124 @@
++/** Cadence and retry rules are observed through real OAuth, health and scheduled HTTP traffic. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { reportingCase } from "../support/personal-data-reporting.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Reporting cadence", (it) => {
++  it.effect(scenarios.personalDataReconnectCadence.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* reportingCase;
++        expect((yield* fixture.run).reportingRequests).toHaveLength(1);
++        expect(yield* fixture.connect(fixture.account)).toBe(fixture.account);
++        expect((yield* fixture.run).reportingRequests).toHaveLength(1);
++      }),
++    ),
++  );
++  it.effect(scenarios.personalDataOldestIdentity.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* reportingCase;
++        const checked = yield* fixture.api.request(
++          fixture.owner,
++          "POST",
++          `${fixture.accountPath}/health`,
++        );
++        expect(checked.status, JSON.stringify(checked.body)).toBe(200);
++        const health = yield* body(Schema.Struct({ infoCheckedAt: Schema.String }), checked);
++        const metrics = yield* fixture.run;
++        expect(metrics.reportingRequests).toHaveLength(1);
++        const updatedAt = metrics.reportingRequests[0]?.accounts[0]?.updatedAt;
++        expect(updatedAt).toBeDefined();
++        expect(Date.parse(updatedAt ?? "")).toBeLessThanOrEqual(Date.parse(health.infoCheckedAt));
++      }),
++    ),
++  );
++  it.effect(scenarios.personalDataRetryCadence.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* reportingCase;
++        yield* fixture.issuer.configure({ reportingFailure: { status: 429, retryAfter: "0" } });
++        expect((yield* fixture.run).reportingRequests).toHaveLength(1);
++        yield* fixture.issuer.configure({ reportingFailure: { status: 429, retryAfter: "3600" } });
++        expect((yield* fixture.run).reportingRequests).toHaveLength(2);
++        expect((yield* fixture.run).reportingRequests).toHaveLength(2);
++      }),
++    ),
++  );
++  it.effect(scenarios.personalDataBatching.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* reportingCase;
++        const subjects = ["reporting-cycle-subject"];
++        for (let index = 1; index <= 90; index++) {
++          const subject = `reporting-batch-subject-${index}`;
++          subjects.push(subject);
++          yield* fixture.issuer.configure({ reportingAccountId: subject });
++          yield* fixture.connect();
++        }
++        const reported = (yield* fixture.run).reportingRequests;
++        expect(reported).toHaveLength(2);
++        expect(reported.every((request) => request.accounts.length <= 90)).toBe(true);
++        expect(
++          reported
++            .flatMap((request) => request.accounts.map((account) => account.accountId))
++            .toSorted(),
++        ).toEqual(subjects.toSorted());
++        expect((yield* fixture.run).reportingRequests).toHaveLength(2);
++      }),
++    ),
++  );
++  it.effect(scenarios.personalDataOwnerIsolation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* reportingCase;
++        yield* fixture.issuer.configure({ reportingAccountId: "reporting-peer-subject" });
++        const otherOrganization = yield* body(
++          Schema.Struct({ id: Schema.String }),
++          yield* fixture.api.request(fixture.peer, "POST", "/api/auth/organization/create", {
++            name: "Reporting boundary",
++            slug: "reporting-boundary",
++            keepCurrentActiveOrganization: true,
++          }),
++        );
++        const peerAccount = yield* fixture.connectInOrganization(
++          otherOrganization.id,
++          fixture.peer,
++        );
++        const reported = (yield* fixture.run).reportingRequests;
++        expect(reported).toHaveLength(2);
++        for (const request of reported) {
++          expect(request.accounts).toHaveLength(1);
++          expect(request.reporterSubject).toBe(request.accounts[0]?.accountId);
++        }
++        expect(
++          reported
++            .flatMap((request) => request.accounts.map((entry) => entry.accountId))
++            .toSorted(),
++        ).toEqual(["reporting-cycle-subject", "reporting-peer-subject"]);
++        expect(
++          (yield* fixture.api.request(
++            fixture.peer,
++            "GET",
++            `/api/organizations/${otherOrganization.id}/accounts/${peerAccount}`,
++          )).status,
++        ).toBe(200);
++        expect(
++          (yield* fixture.api.request(
++            fixture.owner,
++            "GET",
++            `/api/organizations/${otherOrganization.id}/accounts/${peerAccount}`,
++          )).status,
++        ).not.toBe(200);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/personal-data-reporting-clients.spec.ts b/e2e/tests/personal-data-reporting-clients.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/personal-data-reporting-clients.spec.ts
+@@ -0,0 +1,214 @@
++/** Two operator OAuth registrations keep their personal-data reporting state separate. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect } from "effect";
++import { HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Telemetry } from "../support/evidence.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import {
++  ReportingClientAccountDetail,
++  ReportingClientProbe,
++  ReportingClientRedirect,
++  reportingClientAppSource,
++  reportingClientConsent,
++  reportingClientDefinition,
++  reportingClientScopes,
++  reportingRegistrations,
++  waitForReportingClientRequests,
++  waitForReportingClientRun,
++} from "../support/personal-data-reporting-clients.ts";
++import { Target } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })(
++  "Personal-data reporting client isolation",
++  (it) => {
++    it.effect(scenarios.personalDataClientIsolation.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const target = yield* Target;
++          expect(target.metadata.target).not.toBe("cloud");
++          const api = yield* Api;
++          const actors = yield* Actors;
++          const http = yield* HttpClient.HttpClient;
++          const issuer = yield* oauthSetupIssuer;
++          const origin = issuer.origin;
++          const suffix = randomUUID().replaceAll("-", "");
++          const accountId = `e2e-reporting-client-${suffix}`;
++          const identityProfile = {
++            name: `Reporting privacy marker ${suffix}`,
++            email: `reporting-${suffix}@example.test`,
++          };
++          const clients = {
++            one: {
++              id: "synthetic-reporting-one",
++              clientId: `synthetic-client-one-${suffix}`,
++              clientSecret: `synthetic-secret-one-${suffix}`,
++            },
++            two: {
++              id: "synthetic-reporting-two",
++              clientId: `synthetic-client-two-${suffix}`,
++              clientSecret: `synthetic-secret-two-${suffix}`,
++            },
++          };
++
++          yield* issuer.configure({
++            registration: false,
++            refreshTokens: true,
++            scopes: reportingClientScopes,
++            resourceTokens: "issued",
++            reportingAccountId: accountId,
++            reportingIdentityProfile: identityProfile,
++            reportingSubjectsByGrant: true,
++            reportingAction: "none",
++            reportingActionsByRegistration: { one: "closed", two: "none" },
++          });
++          yield* serverControl("stop");
++          yield* serverControl("environment", 200, {
++            EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true",
++            EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify(
++              reportingRegistrations.map((registration) =>
++                reportingClientDefinition(origin, registration),
++              ),
++            ),
++            EXECUTOR_OAUTH_SYNTHETIC_REPORTING_ONE_CLIENT_ID: clients.one.clientId,
++            EXECUTOR_OAUTH_SYNTHETIC_REPORTING_ONE_CLIENT_SECRET: clients.one.clientSecret,
++            EXECUTOR_OAUTH_SYNTHETIC_REPORTING_TWO_CLIENT_ID: clients.two.clientId,
++            EXECUTOR_OAUTH_SYNTHETIC_REPORTING_TWO_CLIENT_SECRET: clients.two.clientSecret,
++          });
++          yield* serverControl("start");
++
++          const prefix = `/api/organizations/${actors.organization.id}`;
++          const appPaths = new Map<(typeof reportingRegistrations)[number], string>();
++          const savedAccounts: string[] = [];
++          yield* Effect.addFinalizer(() =>
++            Effect.gen(function* () {
++              for (const appPath of appPaths.values())
++                yield* api.request(actors.owner, "DELETE", appPath);
++              for (const account of savedAccounts)
++                yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++            }).pipe(Effect.orDie),
++          );
++          for (const registration of reportingRegistrations) {
++            const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name: `Personal-data reporting ${registration}`,
++              files: [
++                { path: "index.ts", content: reportingClientAppSource(origin, registration) },
++                appsManifest,
++              ],
++            });
++            expect(deployed.status).toBe(200);
++            const app = yield* body(Resource, deployed);
++            appPaths.set(registration, `${prefix}/apps/${app.id}`);
++          }
++
++          const connect = (registration: (typeof reportingRegistrations)[number]) =>
++            Effect.gen(function* () {
++              const client = clients[registration];
++              const appPath = appPaths.get(registration)!;
++              const connection = yield* body(
++                Resource,
++                yield* api.request(
++                  actors.owner,
++                  "POST",
++                  connectionsPath(appPath, "user", registration),
++                  {},
++                ),
++              );
++              const started = yield* body(
++                ReportingClientRedirect,
++                yield* api.request(
++                  actors.owner,
++                  "POST",
++                  `${prefix}/connections/${connection.id}/oauth/start`,
++                  { method: "oauth", label: `Reporting ${registration}` },
++                ),
++              );
++              const authorization = new URL(started.authorizationUrl);
++              expect(authorization.searchParams.get("client_id")).toBe(client.clientId);
++              expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(
++                expect.arrayContaining(["offline_access", "read:me"]),
++              );
++              yield* issuer.allowClient({
++                clientId: client.clientId,
++                clientSecret: client.clientSecret,
++                redirect: started.redirectUri,
++              });
++              const completed = yield* api.request(
++                actors.owner,
++                "POST",
++                `${prefix}/connections/${connection.id}/oauth/complete`,
++                { callbackUrl: yield* reportingClientConsent(http, started.authorizationUrl) },
++              );
++              expect(completed.status).toBe(200);
++              const account = (yield* body(Resource, completed)).id;
++              savedAccounts.push(account);
++              return account;
++            });
++
++          const accountOne = yield* connect("one");
++          const accountTwo = yield* connect("two");
++          const probe = (registration: (typeof reportingRegistrations)[number]) =>
++            api.request(actors.owner, "POST", `${appPaths.get(registration)!}/tools/call`, {
++              tool: "probe",
++              kind: "query",
++              input: {},
++            });
++          expect((yield* body(ReportingClientProbe, yield* probe("one"))).status).toBe(200);
++          expect((yield* body(ReportingClientProbe, yield* probe("two"))).status).toBe(200);
++
++          const since = yield* Clock.currentTimeMillis;
++          yield* serverControl("restart");
++          const metrics = yield* waitForReportingClientRequests(issuer, 2);
++          const traceId = yield* waitForReportingClientRun(since);
++          expect(metrics.reportingRequests).toHaveLength(2);
++          const reports = metrics.reportingRequests.toSorted((a, b) =>
++            a.registration.localeCompare(b.registration),
++          );
++          expect(reports.map((report) => report.registration)).toEqual(["one", "two"]);
++          for (const report of reports) {
++            expect(report.reporterSubject).toBe(accountId);
++            expect(report.accounts).toMatchObject([{ accountId, updatedAt: expect.any(String) }]);
++          }
++
++          const closed = yield* body(
++            ReportingClientAccountDetail,
++            yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accountOne}`),
++          );
++          expect(closed.health.personalDataStatus).toBe("account_closed");
++          expect(closed.health.info).toBeNull();
++          const surviving = yield* body(
++            ReportingClientAccountDetail,
++            yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accountTwo}`),
++          );
++          expect(surviving.health.personalDataStatus).not.toBe("account_closed");
++          expect((yield* probe("one")).status).not.toBe(200);
++          expect((yield* body(ReportingClientProbe, yield* probe("two"))).status).toBe(200);
++
++          const telemetry = yield* Telemetry;
++          const [trace, logs] = yield* Effect.all([
++            telemetry.query(traceId),
++            Effect.forEach([accountId, identityProfile.name, identityProfile.email], (value) =>
++              telemetry.logs(traceId, value),
++            ),
++          ]);
++          const serialized = JSON.stringify({ trace, logs });
++          expect(serialized).not.toContain(accountId);
++          expect(serialized).not.toContain(identityProfile.name);
++          expect(serialized).not.toContain(identityProfile.email);
++          expect(serialized).not.toContain(clients.one.clientSecret);
++          expect(serialized).not.toContain(clients.two.clientSecret);
++          expect(serialized).not.toMatch(/Bearer\s+synthetic-(?:access|refreshed|refresh)-/u);
++        }),
++      ),
++    );
++  },
++);
+diff --git a/e2e/tests/personal-data-reporting.spec.ts b/e2e/tests/personal-data-reporting.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/personal-data-reporting.spec.ts
+@@ -0,0 +1,367 @@
++/** Scheduled reporting uses the stored owner's OAuth grant and clears a closed subject. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, FileSystem, Schedule, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors, password } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import {
++  OperatorOAuthFixture,
++  operatorOAuthFile,
++  syntheticReportingClient,
++} from "../support/operator-oauth.ts";
++import { oauthSetupIssuer, oauthSetupIssuerOn } from "../support/oauth-setup-issuer.ts";
++import { Target } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { completedReportingRun } from "../support/personal-data-reporting.ts";
++import { scenarios } from "../test-plan.ts";
++
++const reportingScopes = ["mail.read", "offline_access", "read:me"] as const;
++const cloudReportingCron = "* * * * *";
++const accountId = "e2e-reporting-user";
++const updatedAccountId = "e2e-reporting-user-updated";
++const closedNotice =
++  "This account was closed by its service. Saved credentials and identity were removed.";
++
++const App = Schema.Struct({ id: Schema.String });
++const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
++const Health = Schema.Struct({
++  info: Schema.NullOr(Schema.Unknown),
++  personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
++});
++const Detail = Schema.Struct({ health: Health });
++const Probe = Schema.Struct({ status: Schema.Number });
++const ReportingMetrics = Schema.Struct({
++  refreshes: Schema.Number,
++  reportingIdentityRequests: Schema.Number,
++  reportingRequests: Schema.Array(
++    Schema.Struct({
++      accounts: Schema.Array(Schema.Struct({ accountId: Schema.String, updatedAt: Schema.String })),
++      refreshed: Schema.Boolean,
++    }),
++  ),
++  resourceRequests: Schema.Struct({ GET: Schema.Number, POST: Schema.Number }),
++});
++
++const clientDefinition = (id: string, origin: string) => ({
++  id,
++  label: "Executor for Synthetic Reporting",
++  server: {
++    issuer: origin,
++    authorizationUrl: `${origin}/authorize`,
++    tokenUrl: `${origin}/token`,
++  },
++  tokenEndpointAuthMethod: "client_secret_basic",
++  defaultScopes: reportingScopes,
++  allowedScopes: reportingScopes,
++  placement: { hosts: [new URL(origin).host] },
++  personalDataReporting: {
++    identityUrl: `${origin}/me`,
++    reportUrl: `${origin}/report-accounts`,
++    accountIdField: "accountId",
++  },
++});
++
++const appSource = (
++  origin: string,
++) => `import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
++const service = defineProvider({
++  name: "Synthetic Reporting",
++  hosts: [${JSON.stringify(new URL(origin).host)}],
++  auth: { oauth: oauth2({
++    issuer: ${JSON.stringify(origin)},
++    authorizationUrl: ${JSON.stringify(`${origin}/authorize`)},
++    tokenUrl: ${JSON.stringify(`${origin}/token`)},
++    scopes: ${JSON.stringify(reportingScopes)},
++  }) },
++  async health() { return {}; },
++});
++export default defineApp({ user: { accounts: { service } } }, {
++  tools: router({ probe: query({ input: object({}) }, async ({ user: { accounts }, fetch, signal }) => {
++    const response = await fetch(${JSON.stringify(`${origin}/resource`)}, {
++      headers: accounts.service.headers(), signal,
++    });
++    return { status: response.status };
++  }) }),
++});`;
++
++/** Follow only the authorization server's redirect; the callback itself is completed through the API. */
++const consent = (http: HttpClient.HttpClient, authorizationUrl: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const response = yield* HttpClient.withScope(http).get(authorizationUrl);
++      expect(response.status).toBe(302);
++      const callbackUrl = response.headers.location;
++      if (callbackUrl === undefined)
++        return yield* Effect.die("The issuer did not return a callback");
++      return callbackUrl;
++    }),
++  ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++
++const waitForReporting = (
++  issuer: Effect.Success<typeof oauthSetupIssuer>,
++  count: number,
++  identities: number,
++) =>
++  Effect.gen(function* () {
++    const metrics = yield* issuer.metrics;
++    if (metrics.reportingRequests.length < count || metrics.reportingIdentityRequests < identities)
++      return yield* Effect.fail(
++        new Error(
++          `The scheduled reporting request has not finished (${JSON.stringify({ reports: metrics.reportingRequests.length, identities: metrics.reportingIdentityRequests, refreshes: metrics.refreshes })})`,
++        ),
++      );
++    return yield* Schema.decodeUnknownEffect(ReportingMetrics)(metrics);
++  }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 150 }));
++
++/** Run one scheduled job against Cloud's normal cron trigger. */
++const fireCloudReportingCron = Effect.gen(function* () {
++  const target = yield* Target;
++  const http = yield* HttpClient.HttpClient;
++  yield* Effect.scoped(
++    Effect.gen(function* () {
++      const response = yield* http.get(
++        `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent(cloudReportingCron)}`,
++      );
++      expect(response.status).toBeLessThan(400);
++      yield* response.text;
++    }),
++  );
++});
++
++layer(HostedLive, { excludeTestServices: true })("Personal-data reporting", (it) => {
++  it.effect(scenarios.personalDataReporting.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const browser = yield* Browser;
++        const target = yield* Target;
++        const fs = yield* FileSystem.FileSystem;
++        const cloud = target.metadata.target === "cloud";
++        let origin: string;
++        let clientId: string;
++        let clientSecret: string;
++        let clientIdName: string;
++        let clientSecretName: string;
++        let definitionId: string;
++        let issuer: Effect.Success<typeof oauthSetupIssuer>;
++
++        if (cloud) {
++          const operator = yield* fs
++            .readFileString(`${target.directory}/${operatorOAuthFile}`)
++            .pipe(
++              Effect.flatMap(
++                Schema.decodeUnknownEffect(Schema.fromJsonString(OperatorOAuthFixture)),
++              ),
++            );
++          issuer = yield* oauthSetupIssuerOn(operator.reportingPort);
++          origin = `http://127.0.0.1:${operator.reportingPort}`;
++          clientId = syntheticReportingClient.clientId;
++          clientSecret = syntheticReportingClient.clientSecret;
++          definitionId = syntheticReportingClient.id;
++          clientIdName = "EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_ID";
++          clientSecretName = "EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_SECRET";
++        } else {
++          issuer = yield* oauthSetupIssuer;
++          origin = issuer.origin;
++          clientId = "first-party-client";
++          clientSecret = "first-party-secret";
++          definitionId = "synthetic-mail";
++          clientIdName = "EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID";
++          clientSecretName = "EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET";
++          yield* serverControl("stop");
++          yield* serverControl("environment", 200, {
++            EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true",
++            EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
++              clientDefinition(definitionId, origin),
++            ]),
++            [clientIdName]: clientId,
++            [clientSecretName]: clientSecret,
++          });
++        }
++
++        yield* issuer.configure({
++          registration: false,
++          refreshTokens: true,
++          expiresIn: 1,
++          scopes: reportingScopes,
++          resourceTokens: "issued",
++          reportingAccountId: accountId,
++          reportingAction: cloud ? "closed" : "updated",
++          reportingIdentityFailureOn: cloud ? null : 2,
++        });
++        if (!cloud) yield* serverControl("start");
++
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Personal data reporting",
++          files: [{ path: "index.ts", content: appSource(origin) }, appsManifest],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(App, deployed);
++        const appPath = `${prefix}/apps/${app.id}`;
++        let savedAccount: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", appPath);
++            if (savedAccount !== undefined)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${savedAccount}`);
++          }).pipe(Effect.orDie),
++        );
++
++        const connection = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {}),
++        );
++        const started = yield* body(
++          Redirect,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/oauth/start`,
++            { method: "oauth", label: "Reporting" },
++          ),
++        );
++        const requested =
++          new URL(started.authorizationUrl).searchParams.get("scope")?.split(" ") ?? [];
++        expect(requested).toEqual(expect.arrayContaining(["offline_access", "read:me"]));
++        yield* issuer.allowClient({
++          clientId,
++          clientSecret,
++          redirect: started.redirectUri,
++        });
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/oauth/complete`,
++          { callbackUrl: yield* consent(yield* HttpClient.HttpClient, started.authorizationUrl) },
++        );
++        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++        savedAccount = (yield* body(Resource, completed)).id;
++
++        const probe = () =>
++          api.request(actors.owner, "POST", `${appPath}/tools/call`, {
++            tool: "probe",
++            kind: "query",
++            input: {},
++          });
++        const connected = yield* body(Probe, yield* probe());
++        expect(connected.status).toBe(200);
++        const initialResources = (yield* issuer.metrics).resourceRequests.GET;
++
++        if (cloud) {
++          yield* fireCloudReportingCron;
++          const metrics = yield* waitForReporting(issuer, 1, 1);
++          expect(metrics.reportingRequests[0]?.accounts).toMatchObject([
++            { accountId, updatedAt: expect.any(String) },
++          ]);
++          expect(metrics.reportingRequests[0]?.refreshed).toBe(true);
++          expect(metrics.refreshes).toBeGreaterThan(0);
++        } else {
++          const firstRunStarted = yield* Clock.currentTimeMillis;
++          yield* serverControl("restart");
++          yield* completedReportingRun(firstRunStarted);
++          yield* waitForReporting(issuer, 1, 2);
++          // A failed identity refresh remains pending for a later run, even with Retry-After: 0.
++          const resumedRunStarted = yield* Clock.currentTimeMillis;
++          yield* serverControl("restart");
++          yield* completedReportingRun(resumedRunStarted);
++          const first = yield* waitForReporting(issuer, 1, 3);
++          const firstUpdatedAt = first.reportingRequests[0]?.accounts[0]?.updatedAt;
++          expect(firstUpdatedAt).toBeDefined();
++          expect(first.reportingRequests[0]?.refreshed).toBe(true);
++          // The restart resumes the persisted refresh without repeating the successful report.
++          expect(first.reportingIdentityRequests).toBe(3);
++          expect(first.reportingRequests).toHaveLength(1);
++
++          yield* issuer.configure({
++            reportingAccountId: updatedAccountId,
++            reportingSubjectsByGrant: false,
++            reportingAction: "updated",
++            reportingIdentityFailureOn: null,
++          });
++          yield* serverControl("stop");
++          yield* serverControl("clock/advance", 200, { milliseconds: 8 * 86_400_000 });
++          const beforeSecondReport = new Date(
++            (yield* Clock.currentTimeMillis) + 8 * 86_400_000,
++          ).toISOString();
++          yield* serverControl("start");
++          yield* completedReportingRun(Date.parse(beforeSecondReport));
++          const second = yield* waitForReporting(issuer, 2, 4);
++          const secondUpdatedAt = second.reportingRequests[1]?.accounts[0]?.updatedAt;
++          expect(second.reportingRequests[1]?.accounts).toMatchObject([
++            { accountId, updatedAt: expect.any(String) },
++          ]);
++          expect(second.reportingRequests[1]?.refreshed).toBe(true);
++          expect(Date.parse(secondUpdatedAt ?? "")).toBeGreaterThan(
++            Date.parse(firstUpdatedAt ?? ""),
++          );
++          // The due report keeps the last retrieval time; it does not claim the data was fetched today.
++          expect(Date.parse(secondUpdatedAt ?? "")).toBeLessThan(Date.parse(beforeSecondReport));
++
++          yield* issuer.configure({ reportingAction: "closed" });
++          yield* serverControl("stop");
++          yield* serverControl("clock/advance", 200, { milliseconds: 8 * 86_400_000 });
++          const beforeThirdReport = new Date(
++            (yield* Clock.currentTimeMillis) + 16 * 86_400_000,
++          ).toISOString();
++          yield* serverControl("start");
++          yield* completedReportingRun(Date.parse(beforeThirdReport));
++          const third = yield* waitForReporting(issuer, 3, 4);
++          const thirdUpdatedAt = third.reportingRequests[2]?.accounts[0]?.updatedAt;
++          expect(third.reportingRequests[2]?.accounts).toMatchObject([
++            { accountId: updatedAccountId, updatedAt: expect.any(String) },
++          ]);
++          expect(Date.parse(thirdUpdatedAt ?? "")).toBeGreaterThan(Date.parse(beforeSecondReport));
++          expect(Date.parse(thirdUpdatedAt ?? "")).toBeLessThan(Date.parse(beforeThirdReport));
++          expect(
++            third.reportingRequests
++              .slice(2)
++              .flatMap((request) => request.accounts.map((account) => account.accountId)),
++          ).toEqual([updatedAccountId]);
++
++          // Advancing beyond the reporting cycles expires the owner's browser session.
++          const signedIn = yield* api.request(actors.owner, "POST", "/api/auth/sign-in/email", {
++            email: "owner@example.test",
++            password,
++          });
++          expect(signedIn.status).toBe(200);
++        }
++
++        const closed = yield* body(
++          Detail,
++          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${savedAccount}`),
++        );
++        expect(closed.health.personalDataStatus).toBe("account_closed");
++        expect(closed.health.info).toBeNull();
++        const afterClose = yield* probe();
++        expect((yield* issuer.metrics).resourceRequests.GET).toBe(initialResources);
++        expect(afterClose.status).not.toBe(200);
++
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open the accounts list", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/accounts`)
++            .then(() => page.getByRole("button", { name: "Manage Closed account" }).waitFor()),
++        );
++        yield* browser.use("Open the closed account's health", (page) =>
++          page
++            .getByRole("button", { name: "Manage Closed account" })
++            .click()
++            .then(() => page.getByRole("menuitem", { name: "Check health" }).click()),
++        );
++        const notice = yield* browser.use("Read the owner-facing closure notice", (page) => {
++          const notice = page.getByRole("status").filter({ hasText: closedNotice });
++          return notice.waitFor().then(() => notice.innerText());
++        });
++        expect(notice).toContain(closedNotice);
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -82,6 +82,8 @@
+   account: AccountId,
+   info: Schema.NullOr(AccountInfo),
+   infoCheckedAt: Schema.NullOr(Schema.Date),
++  /** A host removed this account's credentials after its service reported the account closed. */
++  personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
+   apps: Schema.Array(AccountAppHealth),
+ });
+ export type AccountHealth = typeof AccountHealth.Type;
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -289,6 +289,13 @@
+   readonly durable?: import("./declarations.ts").DurableDeclarations;
+   /** Overrides of `defaultToolListingPolicy`. */
+   readonly toolListings?: Partial<import("./declarations.ts").ToolListingPolicy>;
++}
++
++/** Host-only scheduled reporting of personal-data accounts for configured OAuth registrations. */
++export const PersonalDataReportingHost = Symbol("executor.PersonalDataReportingHost");
++export interface PersonalDataReportingHost {
++  /** Process bounded due work; interrupted leases become available after their stored expiry. */
++  readonly run: Effect.Effect<void, StorageError>;
+ }
+ 
+ /** Caller-owned database, blobs, Git and execution; constructors do not migrate or close them. */
+@@ -479,6 +486,7 @@
+   readonly [RepositoryHost]: RepositoryHost;
+   readonly [StorageHost]: StorageHost;
+   readonly [InteractiveHost]: import("./interactive-accounts.ts").InteractiveHost;
++  readonly [PersonalDataReportingHost]: PersonalDataReportingHost;
+   readonly [PrefetchHost]: PrefetchHost;
+   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
+   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
+@@ -507,6 +515,7 @@
+     | typeof RepositoryHost
+     | typeof InteractiveHost
+     | typeof StorageHost
++    | typeof PersonalDataReportingHost
+     | typeof PrefetchHost
+     | typeof SavedOAuthClientsHost
+     | typeof OwnerMovesHost
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -394,6 +394,20 @@
+ export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
+ 
+ /**
++ * A host-owned account reporting protocol for one OAuth registration. Endpoints and the subject
++ * ID field are reviewed configuration; no app-authored provider can redirect reporting traffic.
++ */
++export const PersonalDataReporting = Schema.Struct({
++  /** Read the identity of one saved subject using that subject's own grant. */
++  identityUrl: HttpUrl,
++  /** Report stored subject IDs through the registration's 3LO bearer token. */
++  reportUrl: HttpUrl,
++  /** Top-level field in the identity response containing the provider's stable subject ID. */
++  accountIdField: Schema.NonEmptyString,
++});
++export type PersonalDataReporting = typeof PersonalDataReporting.Type;
++
++/**
+  * An OAuth client the instance's operator provides, such as one-click Google sign-in. It is offered
+  * for a provider method only when the method's authorization and token endpoints are exactly the
+  * client's and the scopes it asks for are among `allowedScopes`; scopes the method only discovered
+@@ -418,6 +432,8 @@
+   /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
+   allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
+   placement: ManagedPlacement,
++  /** Optional host-owned scheduled reporting for personal data held under this registration. */
++  personalDataReporting: Schema.optionalKey(PersonalDataReporting),
+   /**
+    * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
+    * grants keep renewing, so an operator can stop offering a client without stranding them.
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -73,6 +73,7 @@
+   readonly infoCheckedAt: Date | null;
+   readonly message: string | null;
+ };
++type ReportState = { readonly status: string };
+ 
+ /** The slot whose provider check covers this account in the app's active version. */
+ const checkedSlot = (
+@@ -151,6 +152,7 @@
+     apps: readonly App[],
+     rows: readonly CheckRow[],
+     acquired?: InteractiveBinding,
++    report?: ReportState,
+   ) =>
+     Effect.gen(function* () {
+       const latest = rows
+@@ -166,6 +168,7 @@
+           : acquired?.accountInfo === undefined
+             ? null
+             : new Date(acquired.acquiredAt),
++        ...(report?.status === "closed" ? { personalDataStatus: "account_closed" as const } : {}),
+         apps: yield* Effect.forEach(apps, (app) =>
+           Effect.gen(function* () {
+             const row = rows.find((item) => item.app === app.id);
+@@ -202,11 +205,15 @@
+       const rows = yield* query(() =>
+         db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
+       );
++      const report = yield* query(() =>
++        db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
++      );
+       return yield* project(
+         account,
+         apps,
+         rows,
+         yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
++        report === null ? undefined : { status: report.status },
+       );
+     });
+ 
+@@ -233,6 +240,10 @@
+         accounts: ids,
+         ...(input.owner === undefined ? {} : { owner: input.owner }),
+       });
++      const reportRows = yield* query(() =>
++        db.findMany("accountReports", { where: (b) => b("id", "in", ids) }),
++      );
++      const reports = new Map(reportRows.map((row) => [row.id, row.status]));
+       const linked = [...new Set(input.links.map((link) => link.app))];
+       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
+       return yield* Effect.forEach(accounts, (account) =>
+@@ -243,6 +254,7 @@
+           ),
+           rows.filter((row) => row.account === account.id),
+           acquired.get(account.id),
++          reports.has(account.id) ? { status: reports.get(account.id)! } : undefined,
+         ),
+       );
+     }).pipe(Effect.withSpan("sdk.accounts.listHealth"));
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -269,6 +269,10 @@
+             yield* query(() =>
+               tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
+             );
++            // Closed-account notices are kept until the owner explicitly removes the account.
++            yield* query(() =>
++              tx.deleteMany("accountReports", { where: (b) => b("id", "=", input.account) }),
++            );
+             yield* query(() =>
+               tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
+             );
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -24,7 +24,12 @@
+ import { makeWorkflowRuns } from "./workflows.ts";
+ /** Compose native operations once for in-process and HTTP callers. */
+ import { Crypto, Effect } from "effect";
+-import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
++import {
++  PersonalDataReportingHost,
++  type Executor,
++  type ExecutorOptions,
++  type RemoteExecutorOptions,
++} from "../contracts/executor.ts";
+ import {
+   AppCodeId,
+   AppId,
+@@ -55,6 +60,7 @@
+ import { makeListings } from "./listings.ts";
+ import { makeToolSearch } from "./tool-search.ts";
+ import { makeEvents } from "./events.ts";
++import { makePersonalDataReporting } from "./personal-data-reporting.ts";
+ import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
+ import { defaultUrlPolicy } from "@executor-js/utils/url-policy";
+ 
+@@ -114,6 +120,15 @@
+       options.hooks,
+       options.background,
+     );
++    const personalDataReporting = makePersonalDataReporting({
++      db,
++      credentials,
++      crypto,
++      oauth,
++      clients: options.oauth?.firstPartyClients ?? [],
++      httpClient: options.oauth?.httpClient,
++      urlPolicy: options.oauth?.urlPolicy,
++    });
+     const declarations = makeDeclarations({
+       cache,
+       durable: options.cache?.durable,
+@@ -271,6 +286,7 @@
+         read: options.database.reactivity.read,
+         write: options.database.reactivity.write,
+       },
++      [PersonalDataReportingHost]: personalDataReporting,
+       [PrefetchHost]: { invocation: tools.prefetchInvocation },
+       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
+         ...(options.oauth?.savedClientCallbacks ?? []),
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -6,7 +6,7 @@
+ /** Bound query handle sharing the host connection and reactive transaction context. */
+ export type Query = ReturnType<typeof database>;
+ /** Select the latest migrated storage schema. */
+-export const database = (storage: ExecutorDatabase) => storage.orm("4.0.16");
++export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
+ /**
+  * Run a lazy native query without leaking SQL or driver details. The query's own
+  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -2932,6 +2932,48 @@
+       // A refusal is the storage failure callers that do not distinguish it have always seen.
+       Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
+     );
++  /** Resolve an owner-scoped first-party grant for a trusted background task with no user actor. */
++  const resolveOwnedFirstParty = (
++    account: StoredAccount,
++    provider: ProviderDefinition,
++    owner: OwnerId,
++    firstParty: FirstPartyOAuthClientId,
++  ) =>
++    Effect.gen(function* () {
++      if (account.owner !== owner || !firstPartyClients.has(firstParty))
++        return yield* new StorageError();
++      const verifyOwner = () =>
++        query(() =>
++          db.findFirst("accounts", {
++            where: (b) => b.and(b("id", "=", account.id), b("owner", "=", owner)),
++          }),
++        ).pipe(
++          Effect.flatMap((row) =>
++            row === null
++              ? Effect.fail(new StorageError())
++              : Schema.decodeUnknownEffect(StoredAccount)(row).pipe(
++                  Effect.mapError(() => new StorageError()),
++                ),
++          ),
++          Effect.flatMap((current) =>
++            current.credentialGeneration === account.credentialGeneration
++              ? Effect.void
++              : Effect.fail(new StorageError()),
++          ),
++        );
++      yield* verifyOwner();
++      const credential = yield* resolveAuthorized(
++        account,
++        provider,
++        undefined,
++        { contested: false },
++        undefined,
++        verifyOwner(),
++      );
++      yield* verifyOwner();
++      if (credential.firstParty !== firstParty) return yield* new StorageError();
++      return credential;
++    });
+   /**
+    * Running the app's code needs the current actor to use the app; removing what the app
+    * registered, or checking an account, does not. To run it, the actor's app access, its use of
+@@ -3375,6 +3417,7 @@
+     },
+     findOAuth,
+     resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
++    resolveOwnedFirstParty,
+     resolveSelected,
+     renewRejected,
+     usable,
+diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/implementation/owner-moves.ts
+--- a/packages/sdk/src/implementation/owner-moves.ts
++++ b/packages/sdk/src/implementation/owner-moves.ts
+@@ -76,6 +76,7 @@
+ const ownerTables = [
+   "apps",
+   "accounts",
++  "accountReports",
+   "deployments",
+   "profiles",
+   "schedules",
+diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
+--- a/packages/sdk/src/implementation/owners.ts
++++ b/packages/sdk/src/implementation/owners.ts
+@@ -159,6 +159,9 @@
+         }
+         if (accountIds.length > 0) {
+           yield* query(() =>
++            tx.deleteMany("accountReports", { where: (b) => b("id", "in", accountIds) }),
++          );
++          yield* query(() =>
+             tx.deleteMany("accountChecks", { where: (b) => b("account", "in", accountIds) }),
+           );
+           yield* query(() =>
+diff --git a/packages/sdk/src/implementation/personal-data-reporting-close.ts b/packages/sdk/src/implementation/personal-data-reporting-close.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/personal-data-reporting-close.ts
+@@ -0,0 +1,144 @@
++/** Erase a closed registration's subject copies in one transaction, then revoke their grants. */
++import { Effect, Option, Schema } from "effect";
++import { OwnerId, StorageError, type AccountId } from "../contracts/shared.ts";
++import { StoredAccount, StoredConnectionState } from "../contracts/storage.ts";
++import type { makeOAuth } from "./oauth.ts";
++import { query, transaction, type Query } from "./database.ts";
++import type { ReportRow } from "./personal-data-reporting-state.ts";
++
++const closedMessage =
++  "The service closed this account. Stored credentials and identity were removed.";
++
++export const makeCloseReportedSubject = (input: {
++  readonly db: Query;
++  readonly oauth: Pick<ReturnType<typeof makeOAuth>, "revokeRemoved">;
++}) => {
++  const closeSubject = (clientFingerprint: string, fingerprint: string, lease: string, now: Date) =>
++    Effect.gen(function* () {
++      const rows = (yield* query(() =>
++        input.db.findMany("accountReports", {
++          where: (b) =>
++            b.and(
++              b("clientFingerprint", "=", clientFingerprint),
++              b("externalIdFingerprint", "=", fingerprint),
++              b("lease", "=", lease),
++            ),
++        }),
++      )) as ReportRow[];
++      const removed: { account: AccountId; provider: string; encrypted: Uint8Array }[] = [];
++      yield* transaction(input.db, (tx) =>
++        Effect.gen(function* () {
++          for (const row of rows) {
++            const accountRow = yield* query(() =>
++              tx.findFirst("accounts", {
++                where: (b) => b.and(b("id", "=", row.id), b("owner", "=", OwnerId.make(row.owner))),
++              }),
++            );
++            if (accountRow === null) continue;
++            const account = yield* Schema.decodeUnknownEffect(StoredAccount)(accountRow).pipe(
++              Effect.mapError(() => new StorageError()),
++            );
++            const grant = yield* query(() =>
++              tx.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
++            );
++            const generation = account.credentialGeneration + 1;
++            const connections = yield* query(() =>
++              tx.findMany("accountConnections", {
++                select: ["id", "state"],
++                where: (b) => b("reconnectAccount", "=", account.id),
++              }),
++            );
++            const pendingConnections = connections.flatMap((connection) => {
++              const state = Schema.decodeUnknownOption(StoredConnectionState)(connection.state);
++              return Option.isSome(state) && state.value.status === "pending"
++                ? [connection.id]
++                : [];
++            });
++            if (pendingConnections.length > 0)
++              yield* query(() =>
++                tx.updateMany("accountConnections", {
++                  where: (b) => b("id", "in", pendingConnections),
++                  set: { state: { status: "cancelled" }, oauthAttempt: null },
++                }),
++              );
++            yield* query(() =>
++              tx.updateMany("accounts", {
++                where: (b) => b("id", "=", account.id),
++                set: {
++                  label: "Closed account",
++                  description: null,
++                  encryptedCredentials: new Uint8Array(),
++                  credentialGeneration: generation,
++                },
++              }),
++            );
++            yield* query(() =>
++              tx.deleteMany("oauthGrants", { where: (b) => b("id", "=", account.id) }),
++            );
++            yield* query(() =>
++              tx.updateMany("accountChecks", {
++                where: (b) => b("account", "=", account.id),
++                set: {
++                  credentialGeneration: generation,
++                  status: "credentials_rejected",
++                  checkedAt: now,
++                  info: null,
++                  infoCheckedAt: null,
++                  message: closedMessage,
++                },
++              }),
++            );
++            yield* query(() =>
++              tx.updateMany("accountReports", {
++                where: (b) =>
++                  b.and(b("id", "=", account.id), b("clientFingerprint", "=", clientFingerprint)),
++                set: {
++                  credentialGeneration: generation,
++                  status: "closed",
++                  encryptedExternalId: null,
++                  externalIdFingerprint: null,
++                  retrievedAt: null,
++                  reportedAt: now,
++                  nextReportAt: null,
++                  retryAt: null,
++                  retries: 0,
++                  lease: null,
++                  leaseUntil: null,
++                },
++              }),
++            );
++            if (grant !== null)
++              removed.push({
++                account: account.id,
++                provider: account.provider,
++                encrypted: grant.encrypted,
++              });
++          }
++          yield* query(() =>
++            tx.updateMany("accountReports", {
++              where: (b) =>
++                b.and(
++                  b("clientFingerprint", "=", clientFingerprint),
++                  b("externalIdFingerprint", "=", fingerprint),
++                ),
++              set: {
++                status: "closed",
++                encryptedExternalId: null,
++                externalIdFingerprint: null,
++                retrievedAt: null,
++                reportedAt: now,
++                nextReportAt: null,
++                retryAt: null,
++                retries: 0,
++                lease: null,
++                leaseUntil: null,
++              },
++            }),
++          );
++        }),
++      );
++      yield* Effect.forEach(removed, input.oauth.revokeRemoved, { concurrency: 1, discard: true });
++    });
++
++  return closeSubject;
++};
+diff --git a/packages/sdk/src/implementation/personal-data-reporting-http.ts b/packages/sdk/src/implementation/personal-data-reporting-http.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/personal-data-reporting-http.ts
+@@ -0,0 +1,205 @@
++/** Bounded HTTP operations for the host-owned account reporting protocol. */
++import { Effect, Option, Result, Schema, Stream } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
++import * as Headers from "effect/http/Headers";
++import { parseDestination, type UrlPolicy } from "@executor-js/utils/url-policy";
++import type { PersonalDataReporting } from "../contracts/oauth.ts";
++
++const maxBodyBytes = 64 * 1024;
++const accountIdPattern = /^[A-Za-z0-9:-]{1,128}$/u;
++
++export interface ReportAccount {
++  readonly accountId: string;
++  readonly updatedAt: Date;
++}
++
++export type AccountAction = { readonly accountId: string; readonly status: "closed" | "updated" };
++
++export type HttpFailure = {
++  readonly kind: "failed";
++  readonly status: number | null;
++  readonly retryAfterSeconds: number | undefined;
++};
++
++export type IdentityResult = { readonly kind: "ok"; readonly accountId: string } | HttpFailure;
++
++export type ReportResult =
++  | { readonly kind: "no_action"; readonly cycleDays: number }
++  | {
++      readonly kind: "actions";
++      readonly cycleDays: number;
++      readonly actions: readonly AccountAction[];
++    }
++  | HttpFailure;
++
++const responseText = (response: HttpClientResponse.HttpClientResponse) =>
++  Effect.gen(function* () {
++    let size = 0;
++    const chunks: Uint8Array[] = [];
++    let overflow = false;
++    const read = yield* response.stream.pipe(
++      Stream.takeWhile((chunk) => {
++        size += chunk.byteLength;
++        if (size > maxBodyBytes) {
++          overflow = true;
++          return false;
++        }
++        chunks.push(chunk);
++        return true;
++      }),
++      Stream.runDrain,
++      Effect.result,
++    );
++    if (Result.isFailure(read)) return undefined;
++    if (overflow) return undefined;
++    const bytes = new Uint8Array(size);
++    let offset = 0;
++    for (const chunk of chunks) {
++      bytes.set(chunk, offset);
++      offset += chunk.byteLength;
++    }
++    return new TextDecoder().decode(bytes);
++  });
++
++const header = (headers: Headers.Headers, name: string) =>
++  Option.getOrUndefined(Headers.get(headers, name));
++
++const retryAfter = (headers: Headers.Headers) => {
++  const value = header(headers, "retry-after");
++  if (value === undefined || !/^\d+(?:\.\d+)?$/u.test(value)) return undefined;
++  const seconds = Number(value);
++  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined;
++};
++
++const failed = (status: number | null, headers?: Headers.Headers): HttpFailure => ({
++  kind: "failed",
++  status,
++  retryAfterSeconds: headers === undefined ? undefined : retryAfter(headers),
++});
++
++const Identity = Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown));
++const Action = Schema.Struct({
++  accountId: Schema.String.check(Schema.isPattern(accountIdPattern)),
++  status: Schema.Literals(["closed", "updated"]),
++});
++const ReportResponse = Schema.fromJsonString(
++  Schema.Struct({
++    accounts: Schema.Array(Action).check(Schema.isMaxLength(90)),
++  }),
++);
++
++const identityId = (text: string | undefined, field: string) =>
++  Effect.gen(function* () {
++    if (text === undefined) return undefined;
++    const decoded = yield* Schema.decodeUnknownEffect(Identity)(text).pipe(Effect.option);
++    if (Option.isNone(decoded)) return undefined;
++    const id = decoded.value[field];
++    return typeof id === "string" && id !== "unknown" && accountIdPattern.test(id) ? id : undefined;
++  });
++
++const cycleDays = (headers: Headers.Headers): number | undefined => {
++  const value = header(headers, "cycle-period");
++  if (value === undefined) return 7;
++  const days = Number(value);
++  return Number.isFinite(days) && days > 0 && days <= 100_000_000 ? days : undefined;
++};
++
++const actions = (text: string | undefined, requested: ReadonlySet<string>) =>
++  Effect.gen(function* () {
++    if (text === undefined) return undefined;
++    const decoded = yield* Schema.decodeUnknownEffect(ReportResponse)(text, {
++      onExcessProperty: "error",
++    }).pipe(Effect.option);
++    if (Option.isNone(decoded)) return undefined;
++    const seen = new Set<string>();
++    for (const action of decoded.value.accounts) {
++      if (!requested.has(action.accountId) || seen.has(action.accountId)) return undefined;
++      seen.add(action.accountId);
++    }
++    return decoded.value.accounts;
++  });
++
++const send = (
++  client: HttpClient.HttpClient,
++  policy: UrlPolicy,
++  url: string,
++  token: string,
++  body?: unknown,
++) =>
++  Effect.gen(function* () {
++    const destination = parseDestination(url, policy);
++    if (destination === undefined) return undefined;
++    const request =
++      body === undefined
++        ? HttpClientRequest.get(destination.href).pipe(
++            HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
++            HttpClientRequest.setHeader("accept", "application/json"),
++          )
++        : HttpClientRequest.post(destination.href).pipe(
++            HttpClientRequest.setHeader("authorization", `Bearer ${token}`),
++            HttpClientRequest.setHeader("accept", "application/json"),
++            HttpClientRequest.bodyText(JSON.stringify(body), "application/json"),
++          );
++    const result = yield* HttpClient.withScope(client)
++      .execute(request)
++      .pipe(
++        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
++        Effect.result,
++      );
++    if (Result.isFailure(result)) return undefined;
++    return result.success;
++  });
++
++export const fetchIdentity = (
++  client: HttpClient.HttpClient,
++  policy: UrlPolicy,
++  config: PersonalDataReporting,
++  token: string,
++): Effect.Effect<IdentityResult> =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const response = yield* send(client, policy, config.identityUrl, token);
++      if (response === undefined) return failed(null);
++      if (response.status !== 200) return failed(response.status, response.headers);
++      const id = yield* identityId(yield* responseText(response), config.accountIdField);
++      return id === undefined
++        ? failed(response.status, response.headers)
++        : { kind: "ok", accountId: id };
++    }),
++  );
++
++export const reportAccounts = (
++  client: HttpClient.HttpClient,
++  policy: UrlPolicy,
++  config: PersonalDataReporting,
++  token: string,
++  accounts: readonly ReportAccount[],
++): Effect.Effect<ReportResult> =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      if (accounts.length === 0 || accounts.length > 90) return failed(null);
++      const requested = new Set(accounts.map((account) => account.accountId));
++      if (
++        requested.size !== accounts.length ||
++        accounts.some(
++          (account) => !accountIdPattern.test(account.accountId) || account.accountId === "unknown",
++        )
++      )
++        return failed(null);
++      const response = yield* send(client, policy, config.reportUrl, token, {
++        accounts: accounts.map((account) => ({
++          accountId: account.accountId,
++          updatedAt: account.updatedAt.toISOString(),
++        })),
++      });
++      if (response === undefined) return failed(null);
++      const cycle = cycleDays(response.headers);
++      if (response.status === 204 && cycle !== undefined)
++        return { kind: "no_action", cycleDays: cycle };
++      if (response.status === 200 && cycle !== undefined) {
++        const parsed = yield* actions(yield* responseText(response), requested);
++        if (parsed !== undefined) return { kind: "actions", cycleDays: cycle, actions: parsed };
++      }
++      return failed(response.status, response.headers);
++    }),
++  );
+diff --git a/packages/sdk/src/implementation/personal-data-reporting-state.ts b/packages/sdk/src/implementation/personal-data-reporting-state.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/personal-data-reporting-state.ts
+@@ -0,0 +1,236 @@
++/** Persisted subject leases, retry deadlines and successful reporting cadence. */
++import { Effect, type Crypto } from "effect";
++import { StorageError, type AccountId, type OwnerId as OwnerIdType } from "../contracts/shared.ts";
++import { query, type Query } from "./database.ts";
++
++const leaseMillis = 5 * 60_000;
++
++export type ReportRow = {
++  readonly id: AccountId;
++  readonly owner: OwnerIdType;
++  readonly clientFingerprint: string;
++  readonly credentialGeneration: number;
++  readonly status: "active" | "refresh_pending" | "closed";
++  readonly encryptedExternalId: Uint8Array | null;
++  readonly externalIdFingerprint: string | null;
++  readonly retrievedAt: Date | null;
++  readonly reportedAt: Date | null;
++  readonly cycleDays: number;
++  readonly nextReportAt: Date | null;
++  readonly retryAt: Date | null;
++  readonly retries: number;
++  readonly lease: string | null;
++  readonly leaseUntil: Date | null;
++};
++
++export const delayForCycle = (cycleDays: number, fingerprint: string, now: Date) => {
++  // Stable positive jitter spreads a registration's subjects over the cycle without reporting early.
++  const jitterHours = Number.parseInt(fingerprint.slice(0, 8), 16) % 6;
++  return new Date(now.getTime() + cycleDays * 86_400_000 + jitterHours * 3_600_000);
++};
++
++export const makeReportState = (input: { readonly db: Query; readonly crypto: Crypto.Crypto }) => {
++  const backoff = (
++    row: ReportRow,
++    retryAfterSeconds: number | undefined,
++    status: number | null,
++    now: Date,
++  ) => {
++    const seconds =
++      retryAfterSeconds ??
++      (status === 403 || status === 400
++        ? 24 * 60 * 60
++        : Math.min(24 * 60 * 60, 5 * 60 * 2 ** Math.min(row.retries, 8)));
++    return new Date(now.getTime() + Math.ceil(seconds * 1000));
++  };
++
++  const updateBySubject = (
++    clientFingerprint: string,
++    fingerprints: readonly string[],
++    set: Partial<Omit<ReportRow, "id" | "owner">>,
++    lease?: string,
++  ) =>
++    query(() =>
++      input.db.updateMany("accountReports", {
++        where: (b) =>
++          b.and(
++            b("clientFingerprint", "=", clientFingerprint),
++            b("externalIdFingerprint", "in", fingerprints),
++            lease === undefined ? true : b("lease", "=", lease),
++          ),
++        set,
++      }),
++    );
++
++  const releaseFailedSubject = (
++    rows: readonly ReportRow[],
++    lease: string,
++    now: Date,
++    status: number | null,
++    retryAfterSeconds?: number,
++  ) => {
++    const retryAt = backoff(rows[0]!, retryAfterSeconds, status, now);
++    const fingerprints = [...new Set(rows.flatMap((row) => row.externalIdFingerprint ?? []))];
++    return Effect.forEach(
++      fingerprints,
++      (fingerprint) =>
++        updateBySubject(
++          rows[0]!.clientFingerprint,
++          [fingerprint],
++          {
++            retryAt,
++            retries: rows[0]!.retries + 1,
++            lease: null,
++            leaseUntil: null,
++          },
++          lease,
++        ),
++      { concurrency: 1, discard: true },
++    ).pipe(Effect.asVoid);
++  };
++
++  const releaseFailedAccount = (
++    row: ReportRow,
++    lease: string,
++    now: Date,
++    status: number | null,
++    retryAfterSeconds?: number,
++  ) =>
++    query(() =>
++      input.db.updateMany("accountReports", {
++        where: (b) => b.and(b("id", "=", row.id), b("lease", "=", lease)),
++        set: {
++          retryAt: backoff(row, retryAfterSeconds, status, now),
++          retries: row.retries + 1,
++          lease: null,
++          leaseUntil: null,
++        },
++      }),
++    );
++
++  const claimAccount = (row: ReportRow, now: Date) =>
++    Effect.gen(function* () {
++      const token = yield* input.crypto.randomUUIDv4.pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      const leaseUntil = new Date(now.getTime() + leaseMillis);
++      yield* query(() =>
++        input.db.updateMany("accountReports", {
++          where: (b) =>
++            b.and(
++              b("id", "=", row.id),
++              b("status", "=", "refresh_pending"),
++              b.or(b("lease", "is", null), b("leaseUntil", "<=", now)),
++              b.or(b("retryAt", "is", null), b("retryAt", "<=", now)),
++            ),
++          set: { lease: token, leaseUntil },
++        }),
++      );
++      const claimed = yield* query(() =>
++        input.db.findFirst("accountReports", {
++          where: (b) => b.and(b("id", "=", row.id), b("lease", "=", token)),
++        }),
++      );
++      return claimed === null ? undefined : { row: claimed as ReportRow, token };
++    });
++
++  const claimSubjects = (clientFingerprint: string, fingerprints: readonly string[], now: Date) =>
++    Effect.gen(function* () {
++      const token = yield* input.crypto.randomUUIDv4.pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      const leaseUntil = new Date(now.getTime() + leaseMillis);
++      const claimable: string[] = [];
++      for (const fingerprint of fingerprints) {
++        const rows = (yield* query(() =>
++          input.db.findMany("accountReports", {
++            where: (b) =>
++              b.and(
++                b("clientFingerprint", "=", clientFingerprint),
++                b("externalIdFingerprint", "=", fingerprint),
++                b("status", "=", "active"),
++              ),
++          }),
++        )) as ReportRow[];
++        if (
++          rows.length === 0 ||
++          rows.some((row) => row.lease !== null && row.leaseUntil !== null && row.leaseUntil > now)
++        )
++          continue;
++        yield* query(() =>
++          input.db.updateMany("accountReports", {
++            where: (b) =>
++              b.and(
++                b("clientFingerprint", "=", clientFingerprint),
++                b("externalIdFingerprint", "=", fingerprint),
++                b("status", "=", "active"),
++                b.or(b("lease", "is", null), b("leaseUntil", "<=", now)),
++              ),
++            set: { lease: token, leaseUntil },
++          }),
++        );
++        const claimed = (yield* query(() =>
++          input.db.findMany("accountReports", {
++            where: (b) =>
++              b.and(
++                b("clientFingerprint", "=", clientFingerprint),
++                b("externalIdFingerprint", "=", fingerprint),
++                b("status", "=", "active"),
++              ),
++          }),
++        )) as ReportRow[];
++        if (claimed.length > 0 && claimed.every((row) => row.lease === token))
++          claimable.push(fingerprint);
++        else
++          yield* query(() =>
++            input.db.updateMany("accountReports", {
++              where: (b) =>
++                b.and(
++                  b("clientFingerprint", "=", clientFingerprint),
++                  b("externalIdFingerprint", "=", fingerprint),
++                  b("lease", "=", token),
++                ),
++              set: { lease: null, leaseUntil: null },
++            }),
++          );
++      }
++      return { token, leaseUntil, fingerprints: claimable };
++    });
++
++  const updateReported = (
++    clientFingerprint: string,
++    fingerprints: readonly string[],
++    lease: string,
++    cycleDays: number,
++    now: Date,
++  ) =>
++    Effect.forEach(
++      fingerprints,
++      (fingerprint) =>
++        updateBySubject(
++          clientFingerprint,
++          [fingerprint],
++          {
++            status: "active",
++            reportedAt: now,
++            cycleDays,
++            nextReportAt: delayForCycle(cycleDays, fingerprint, now),
++            retryAt: null,
++            retries: 0,
++            lease: null,
++            leaseUntil: null,
++          },
++          lease,
++        ),
++      { concurrency: 1, discard: true },
++    ).pipe(Effect.asVoid);
++
++  return {
++    updateBySubject,
++    releaseFailedSubject,
++    releaseFailedAccount,
++    claimAccount,
++    claimSubjects,
++    updateReported,
++  };
++};
+diff --git a/packages/sdk/src/implementation/personal-data-reporting.ts b/packages/sdk/src/implementation/personal-data-reporting.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/personal-data-reporting.ts
+@@ -0,0 +1,745 @@
++/** Host-owned polling and cleanup for OAuth personal-data reporting registrations. */
++import { Clock, Effect, Option, Redacted, Result, Schema } from "effect";
++import { Hex } from "effect/encoding";
++import { HttpClient } from "effect/http";
++import type { UrlPolicy } from "@executor-js/utils/url-policy";
++import { FirstPartyOAuthClient, allowedScopes } from "../contracts/oauth.ts";
++import type { PersonalDataReportingHost } from "../contracts/executor.ts";
++import {
++  OwnerId,
++  StorageError,
++  type AccountId,
++  type OwnerId as OwnerIdType,
++} from "../contracts/shared.ts";
++import { Provider, type ProviderDefinition } from "../contracts/provider.ts";
++import { StoredAccount, type Credentials } from "../contracts/storage.ts";
++import type { makeOAuth } from "./oauth.ts";
++import { makeReportState, delayForCycle, type ReportRow } from "./personal-data-reporting-state.ts";
++import { makeCloseReportedSubject } from "./personal-data-reporting-close.ts";
++import { query, type Query } from "./database.ts";
++import {
++  fetchIdentity,
++  reportAccounts,
++  type AccountAction,
++} from "./personal-data-reporting-http.ts";
++
++const batchSize = 90;
++const batchesPerRun = 20;
++const ExternalId = Schema.Struct({ externalId: Schema.String });
++
++type AccountContext = {
++  readonly account: StoredAccount;
++  readonly provider: Provider;
++  readonly method: Extract<ProviderDefinition["auth"][string], { readonly type: "oauth2" }>;
++};
++type RunAttempts = {
++  readonly refreshes: Set<AccountId>;
++  readonly reports: Set<AccountId>;
++};
++type OAuth = Pick<ReturnType<typeof makeOAuth>, "resolveOwnedFirstParty" | "revokeRemoved">;
++type ReportingClient = typeof FirstPartyOAuthClient.Type & {
++  readonly personalDataReporting: NonNullable<
++    (typeof FirstPartyOAuthClient.Type)["personalDataReporting"]
++  >;
++};
++
++const canonicalUrl = (value: string | undefined) => {
++  if (value === undefined) return undefined;
++  try {
++    return new URL(value).href;
++  } catch {
++    return undefined;
++  }
++};
++
++const clientFingerprint = (client: ReportingClient, crypto: import("effect").Crypto.Crypto) => {
++  const authority =
++    canonicalUrl(client.server.issuer) ??
++    `${canonicalUrl(client.server.authorizationUrl) ?? ""}\0${canonicalUrl(client.server.tokenUrl) ?? ""}`;
++  return crypto
++    .digest("SHA-256", new TextEncoder().encode(`${authority}\0${client.clientId}`))
++    .pipe(
++      Effect.map(Hex.encode),
++      Effect.mapError(() => new StorageError()),
++    );
++};
++
++const subjectFingerprint = (credentials: Credentials, externalId: string) =>
++  credentials
++    .fingerprint("OAuth personal-data reporting subject", Redacted.make(externalId))
++    .pipe(Effect.mapError(() => new StorageError()));
++
++const usableMethod = (
++  definition: ProviderDefinition,
++  methodName: string,
++  client: ReportingClient,
++) => {
++  const method = definition.auth[methodName];
++  if (
++    method?.type !== "oauth2" ||
++    method.grant === "client_credentials" ||
++    canonicalUrl(method.authorizationUrl) !== canonicalUrl(client.server.authorizationUrl) ||
++    canonicalUrl(method.tokenUrl) !== canonicalUrl(client.server.tokenUrl) ||
++    !(method.scopes ?? []).every((scope) => allowedScopes(client).includes(scope))
++  )
++    return undefined;
++  return method;
++};
++
++const accountToken = (fields: Redacted.Redacted<unknown>) => {
++  const value = Redacted.value(fields);
++  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
++  const token = (value as Record<string, unknown>).access_token;
++  return typeof token === "string" && token !== "" ? token : undefined;
++};
++
++export const makePersonalDataReporting = (input: {
++  readonly db: Query;
++  readonly credentials: Credentials;
++  readonly crypto: import("effect").Crypto.Crypto;
++  readonly oauth: OAuth;
++  readonly clients: ReadonlyArray<typeof FirstPartyOAuthClient.Type>;
++  readonly httpClient: HttpClient.HttpClient | undefined;
++  readonly urlPolicy: UrlPolicy | undefined;
++}): PersonalDataReportingHost => {
++  const clients = input.clients.filter(
++    (client): client is ReportingClient => client.personalDataReporting !== undefined,
++  );
++  let allFingerprints: string[] = [];
++  const clientsByFingerprint = new Map<string, ReportingClient>();
++  const {
++    updateBySubject,
++    releaseFailedSubject,
++    releaseFailedAccount,
++    claimAccount,
++    claimSubjects,
++    updateReported,
++  } = makeReportState(input);
++  const closeSubject = makeCloseReportedSubject(input);
++
++  const findContext = (id: AccountId, owner: OwnerIdType, client: ReportingClient) =>
++    Effect.gen(function* () {
++      const row = yield* query(() =>
++        input.db.findFirst("accounts", {
++          where: (b) => b.and(b("id", "=", id), b("owner", "=", OwnerId.make(owner))),
++        }),
++      );
++      if (row === null) return undefined;
++      const account = yield* Schema.decodeUnknownEffect(StoredAccount)(row).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      const providerRow = yield* query(() =>
++        input.db.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
++      );
++      if (providerRow === null) return undefined;
++      const provider = yield* Schema.decodeUnknownEffect(Provider)(providerRow).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      const method = usableMethod(provider.definition, account.method, client);
++      return method === undefined
++        ? undefined
++        : ({ account, provider, method } satisfies AccountContext);
++    });
++
++  const resolveToken = (context: AccountContext, client: ReportingClient) =>
++    Effect.gen(function* () {
++      const result = yield* input.oauth
++        .resolveOwnedFirstParty(
++          context.account,
++          context.provider.definition,
++          context.account.owner,
++          client.id,
++        )
++        .pipe(Effect.result);
++      if (Result.isFailure(result)) {
++        yield* Effect.annotateCurrentSpan(
++          "executor.personal_data_reporting.oauth_resolution_failed",
++          true,
++        );
++        return undefined;
++      }
++      if (result.success.firstParty !== client.id) {
++        yield* Effect.annotateCurrentSpan(
++          "executor.personal_data_reporting.first_party_mismatch",
++          true,
++        );
++        return undefined;
++      }
++      const token = accountToken(result.success.fields);
++      if (token === undefined) {
++        yield* Effect.annotateCurrentSpan(
++          "executor.personal_data_reporting.access_token_missing",
++          true,
++        );
++        return undefined;
++      }
++      return { token, generation: result.success.generation };
++    });
++
++  const resetState = (
++    account: StoredAccount,
++    owner: OwnerIdType,
++    fingerprint: string,
++    now: Date,
++  ) => ({
++    id: account.id,
++    owner,
++    clientFingerprint: fingerprint,
++    credentialGeneration: account.credentialGeneration,
++    status: "refresh_pending" as const,
++    encryptedExternalId: null,
++    externalIdFingerprint: null,
++    retrievedAt: null,
++    reportedAt: null,
++    cycleDays: 7,
++    nextReportAt: now,
++    retryAt: null,
++    retries: 0,
++    lease: null,
++    leaseUntil: null,
++  });
++
++  /** Add new connections and invalidate state after a reconnect changed its credential generation. */
++  const synchronize = () =>
++    Effect.gen(function* () {
++      if (clients.length === 0) return;
++      const clientFingerprints = new Map<string, string>();
++      for (const client of clients)
++        clientFingerprints.set(client.id, yield* clientFingerprint(client, input.crypto));
++      const providerRows = yield* query(() => input.db.findMany("providers"));
++      const providers = yield* Schema.decodeUnknownEffect(Schema.Array(Provider))(
++        providerRows,
++      ).pipe(Effect.mapError(() => new StorageError()));
++      const providerMethods = new Map<
++        string,
++        { readonly provider: Provider; readonly clients: ReportingClient[] }
++      >();
++      for (const provider of providers) {
++        for (const client of clients) {
++          for (const method of Object.keys(provider.definition.auth)) {
++            if (usableMethod(provider.definition, method, client) === undefined) continue;
++            const key = `${provider.id}:${method}`;
++            const match = providerMethods.get(key);
++            if (match === undefined) providerMethods.set(key, { provider, clients: [client] });
++            else match.clients.push(client);
++          }
++        }
++      }
++      yield* Effect.annotateCurrentSpan(
++        "executor.personal_data_reporting.provider_method_count",
++        providerMethods.size,
++      );
++      if (providerMethods.size === 0) return;
++      const providerIds = [
++        ...new Set([...providerMethods.values()].map(({ provider }) => provider.id)),
++      ];
++      const accountRows = yield* query(() =>
++        input.db.findMany("accounts", { where: (b) => b("provider", "in", providerIds) }),
++      );
++      const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(StoredAccount))(
++        accountRows,
++      ).pipe(Effect.mapError(() => new StorageError()));
++      const eligibleAccountCount = accounts.filter((account) =>
++        providerMethods.has(`${account.provider}:${account.method}`),
++      ).length;
++      yield* Effect.annotateCurrentSpan({
++        "executor.personal_data_reporting.account_count": accounts.length,
++        "executor.personal_data_reporting.eligible_account_count": eligibleAccountCount,
++      });
++      const accountIds = accounts.map((account) => account.id);
++      if (accountIds.length === 0) return;
++      const oldRows = yield* query(() =>
++        input.db.findMany("accountReports", { where: (b) => b("id", "in", accountIds) }),
++      );
++      const existingReports = oldRows as ReportRow[];
++      const old = new Map(existingReports.map((row) => [row.id, row]));
++      yield* Effect.annotateCurrentSpan({
++        "executor.personal_data_reporting.existing_report_count": existingReports.length,
++        "executor.personal_data_reporting.existing_report_refresh_pending_count":
++          existingReports.filter((row) => row.status === "refresh_pending").length,
++        "executor.personal_data_reporting.existing_report_active_count": existingReports.filter(
++          (row) => row.status === "active",
++        ).length,
++        "executor.personal_data_reporting.existing_report_closed_count": existingReports.filter(
++          (row) => row.status === "closed",
++        ).length,
++      });
++      const now = new Date(yield* Clock.currentTimeMillis);
++      let synchronizedAccountCount = 0;
++      let skippedUnchangedAccountCount = 0;
++      for (const account of accounts) {
++        const matches = providerMethods.get(`${account.provider}:${account.method}`);
++        if (matches === undefined) continue;
++        const previous = old.get(account.id);
++        const existingClient =
++          previous === undefined
++            ? undefined
++            : matches.clients.find(
++                (client) => clientFingerprints.get(client.id) === previous.clientFingerprint,
++              );
++        if (
++          previous !== undefined &&
++          existingClient !== undefined &&
++          previous.owner === account.owner &&
++          previous.credentialGeneration === account.credentialGeneration
++        ) {
++          skippedUnchangedAccountCount++;
++          continue;
++        }
++        const provider = matches.provider;
++        let selectedClient: ReportingClient | undefined;
++        let resolved: { readonly token: string; readonly generation: number } | undefined;
++        const candidates = existingClient === undefined ? matches.clients : [existingClient];
++        for (const candidate of candidates) {
++          const candidateContext = {
++            account,
++            provider,
++            method: usableMethod(provider.definition, account.method, candidate)!,
++          } satisfies AccountContext;
++          resolved = yield* resolveToken(candidateContext, candidate);
++          if (resolved !== undefined) {
++            selectedClient = candidate;
++            break;
++          }
++        }
++        if (resolved === undefined || selectedClient === undefined) continue;
++        const fingerprint = clientFingerprints.get(selectedClient.id);
++        if (fingerprint === undefined) continue;
++        const fresh = resetState(account, account.owner, fingerprint, now);
++        // A new grant does not restart the reporting cycle for the same registration and subject.
++        // Keep its fingerprint until /me establishes whether the subject actually changed.
++        const reset =
++          previous?.owner === account.owner && previous.clientFingerprint === fingerprint
++            ? {
++                ...fresh,
++                externalIdFingerprint: previous.externalIdFingerprint,
++                reportedAt: previous.reportedAt,
++                cycleDays: previous.cycleDays,
++                nextReportAt: previous.nextReportAt ?? now,
++              }
++            : fresh;
++        yield* query(() =>
++          input.db.upsert("accountReports", {
++            where: (b) => b("id", "=", account.id),
++            create: { ...reset, owner: OwnerId.make(reset.owner) },
++            update: reset,
++          }),
++        );
++        synchronizedAccountCount++;
++      }
++      yield* Effect.annotateCurrentSpan(
++        "executor.personal_data_reporting.synchronized_account_count",
++        synchronizedAccountCount,
++      );
++      yield* Effect.annotateCurrentSpan(
++        "executor.personal_data_reporting.skipped_unchanged_account_count",
++        skippedUnchangedAccountCount,
++      );
++    });
++
++  const parseExternalId = (row: ReportRow) =>
++    Effect.gen(function* () {
++      if (row.encryptedExternalId === null) return undefined;
++      const decrypted = yield* input.credentials
++        .decrypt(row.id, Redacted.make(row.encryptedExternalId))
++        .pipe(Effect.mapError(() => new StorageError()));
++      const decoded = Schema.decodeUnknownOption(ExternalId)(Redacted.value(decrypted));
++      return Option.isSome(decoded) ? decoded.value.externalId : undefined;
++    });
++
++  const resolveContextToken = (row: ReportRow, client: ReportingClient) =>
++    Effect.gen(function* () {
++      const context = yield* findContext(row.id, row.owner, client);
++      if (context === undefined) return undefined;
++      if (context.account.credentialGeneration !== row.credentialGeneration) return undefined;
++      const resolved = yield* resolveToken(context, client);
++      return resolved === undefined || resolved.generation !== row.credentialGeneration
++        ? undefined
++        : { context, token: resolved.token };
++    });
++
++  const refreshOne = (row: ReportRow, lease: string, client: ReportingClient, now: Date) =>
++    Effect.gen(function* () {
++      const resolved = yield* resolveContextToken(row, client);
++      if (resolved === undefined) {
++        yield* releaseFailedAccount(row, lease, now, null);
++        return false;
++      }
++      const config = client.personalDataReporting;
++      const http = input.httpClient;
++      const policy = input.urlPolicy;
++      if (http === undefined || policy === undefined) {
++        yield* releaseFailedAccount(row, lease, now, null);
++        return false;
++      }
++      const identity = yield* fetchIdentity(http, policy, config, resolved.token);
++      const completedAt = new Date(yield* Clock.currentTimeMillis);
++      if (identity.kind !== "ok") {
++        yield* releaseFailedAccount(
++          row,
++          lease,
++          completedAt,
++          identity.status,
++          identity.retryAfterSeconds,
++        );
++        return false;
++      }
++      const encrypted = yield* input.credentials
++        .encrypt(row.id, Redacted.make({ externalId: identity.accountId }))
++        .pipe(Effect.mapError(() => new StorageError()));
++      const fingerprint = yield* subjectFingerprint(input.credentials, identity.accountId);
++      const peers = yield* query(() =>
++        input.db.findMany("accountReports", {
++          where: (b) =>
++            b.and(
++              b("clientFingerprint", "=", row.clientFingerprint),
++              b("externalIdFingerprint", "=", fingerprint),
++              b("status", "!=", "closed"),
++            ),
++        }),
++      );
++      const peerRows = peers as ReportRow[];
++      const nextReportAt = peerRows.reduce<Date | null>(
++        (latest, peer) =>
++          peer.nextReportAt !== null &&
++          (latest === null || peer.nextReportAt.getTime() > latest.getTime())
++            ? peer.nextReportAt
++            : latest,
++        row.externalIdFingerprint === fingerprint ? row.nextReportAt : null,
++      );
++      const reportedAt = peerRows.reduce<Date | null>(
++        (latest, peer) =>
++          peer.reportedAt !== null &&
++          (latest === null || peer.reportedAt.getTime() > latest.getTime())
++            ? peer.reportedAt
++            : latest,
++        row.externalIdFingerprint === fingerprint ? row.reportedAt : null,
++      );
++      yield* query(() =>
++        input.db.updateMany("accountReports", {
++          where: (b) => b.and(b("id", "=", row.id), b("lease", "=", lease)),
++          set: {
++            status: "active",
++            encryptedExternalId: encrypted,
++            externalIdFingerprint: fingerprint,
++            retrievedAt: completedAt,
++            reportedAt,
++            nextReportAt: nextReportAt ?? now,
++            retryAt: null,
++            retries: 0,
++            lease: null,
++            leaseUntil: null,
++          },
++        }),
++      );
++      return true;
++    });
++
++  const processRefreshes = (attempts: RunAttempts) =>
++    Effect.gen(function* () {
++      const now = new Date(yield* Clock.currentTimeMillis);
++      const rows = (yield* query(() =>
++        input.db.findMany("accountReports", {
++          where: (b) =>
++            b.and(
++              b("status", "=", "refresh_pending"),
++              b.or(b("retryAt", "is", null), b("retryAt", "<=", now)),
++              b.or(b("lease", "is", null), b("leaseUntil", "<=", now)),
++              b("clientFingerprint", "in", allFingerprints),
++              attempts.refreshes.size === 0 ? true : b("id", "not in", [...attempts.refreshes]),
++            ),
++          orderBy: ["nextReportAt", "asc"],
++          limit: batchSize,
++        }),
++      )) as ReportRow[];
++      let processed = 0;
++      for (const row of rows) {
++        const client = clientsByFingerprint.get(row.clientFingerprint);
++        if (client === undefined) continue;
++        const claimed = yield* claimAccount(row, now);
++        if (claimed === undefined) continue;
++        attempts.refreshes.add(row.id);
++        processed += 1;
++        yield* refreshOne(claimed.row, claimed.token, client, now).pipe(
++          Effect.ensuring(
++            query(() =>
++              input.db.updateMany("accountReports", {
++                where: (b) => b.and(b("id", "=", row.id), b("lease", "=", claimed.token)),
++                set: { lease: null, leaseUntil: null },
++              }),
++            ).pipe(
++              Effect.asVoid,
++              Effect.catch(() => Effect.void),
++            ),
++          ),
++        );
++      }
++      return processed;
++    });
++
++  const refreshSubject = (
++    client: ReportingClient,
++    clientFp: string,
++    fingerprint: string,
++    lease: string,
++    cycle: number,
++    now: Date,
++  ) =>
++    Effect.gen(function* () {
++      const rows = (yield* query(() =>
++        input.db.findMany("accountReports", {
++          where: (b) =>
++            b.and(
++              b("clientFingerprint", "=", clientFp),
++              b("externalIdFingerprint", "=", fingerprint),
++              b("lease", "=", lease),
++            ),
++        }),
++      )) as ReportRow[];
++      const deadline = delayForCycle(cycle, fingerprint, now);
++      // Invalidate every copy before reading the subject again; a failed lookup cannot report stale data.
++      yield* updateBySubject(
++        clientFp,
++        [fingerprint],
++        {
++          status: "refresh_pending",
++          encryptedExternalId: null,
++          externalIdFingerprint: fingerprint,
++          retrievedAt: null,
++          reportedAt: now,
++          cycleDays: cycle,
++          nextReportAt: deadline,
++          retryAt: now,
++          retries: 0,
++          lease: null,
++          leaseUntil: null,
++        },
++        lease,
++      );
++      for (const row of rows) {
++        const pending = {
++          ...row,
++          status: "refresh_pending" as const,
++          externalIdFingerprint: fingerprint,
++          encryptedExternalId: null,
++          retrievedAt: null,
++          nextReportAt: deadline,
++          retryAt: now,
++          lease: null,
++          leaseUntil: null,
++        };
++        const claimed = yield* claimAccount(pending, now);
++        if (claimed !== undefined) yield* refreshOne(claimed.row, claimed.token, client, now);
++      }
++    });
++
++  const processActions = (
++    client: ReportingClient,
++    clientFp: string,
++    lease: string,
++    cycleDays: number,
++    requested: ReadonlyMap<string, string>,
++    actions: readonly AccountAction[],
++    now: Date,
++  ) =>
++    Effect.gen(function* () {
++      const acted = new Set(actions.map((action) => action.accountId));
++      for (const [accountId, fingerprint] of requested) {
++        if (!acted.has(accountId)) {
++          yield* updateReported(clientFp, [fingerprint], lease, cycleDays, now);
++          continue;
++        }
++        const action = actions.find((item) => item.accountId === accountId)!;
++        if (action.status === "closed") yield* closeSubject(clientFp, fingerprint, lease, now);
++        else yield* refreshSubject(client, clientFp, fingerprint, lease, cycleDays, now);
++      }
++    });
++
++  const processOneReportBatch = (attempts: RunAttempts) =>
++    Effect.gen(function* () {
++      if (clients.length === 0 || input.httpClient === undefined || input.urlPolicy === undefined)
++        return 0;
++      const now = new Date(yield* Clock.currentTimeMillis);
++      const due = (yield* query(() =>
++        input.db.findMany("accountReports", {
++          where: (b) =>
++            b.and(
++              b("status", "=", "active"),
++              b("clientFingerprint", "in", allFingerprints),
++              b("nextReportAt", "<=", now),
++              b.or(b("retryAt", "is", null), b("retryAt", "<=", now)),
++              b.or(b("lease", "is", null), b("leaseUntil", "<=", now)),
++              attempts.reports.size === 0 ? true : b("id", "not in", [...attempts.reports]),
++            ),
++          orderBy: ["nextReportAt", "asc"],
++          limit: batchSize,
++        }),
++      )) as ReportRow[];
++      if (due.length === 0) return 0;
++      const first = due[0]!;
++      const client = clientsByFingerprint.get(first.clientFingerprint);
++      if (client === undefined) return 0;
++      const selected = due.filter(
++        (row) => row.owner === first.owner && row.clientFingerprint === first.clientFingerprint,
++      );
++      for (const row of selected) attempts.reports.add(row.id);
++      const invalid = selected.filter((row) => row.externalIdFingerprint === null);
++      for (const row of invalid)
++        yield* query(() =>
++          input.db.updateMany("accountReports", {
++            where: (b) => b.and(b("id", "=", row.id), b("status", "=", "active")),
++            set: {
++              status: "refresh_pending",
++              encryptedExternalId: null,
++              externalIdFingerprint: null,
++              retrievedAt: null,
++              retryAt: now,
++            },
++          }),
++        );
++      const fingerprints = [...new Set(selected.flatMap((row) => row.externalIdFingerprint ?? []))];
++      const claimed = yield* claimSubjects(first.clientFingerprint, fingerprints, now);
++      const claimedSet = new Set(claimed.fingerprints);
++      const rows = selected.filter(
++        (row) => row.externalIdFingerprint !== null && claimedSet.has(row.externalIdFingerprint),
++      );
++      if (rows.length === 0) return invalid.length;
++      const requestIds = new Map<string, string>();
++      const bodyAccounts: { accountId: string; updatedAt: Date }[] = [];
++      const peersByFingerprint = new Map<string, ReportRow[]>();
++      for (const fingerprint of claimed.fingerprints) {
++        const peers = (yield* query(() =>
++          input.db.findMany("accountReports", {
++            where: (b) =>
++              b.and(
++                b("clientFingerprint", "=", first.clientFingerprint),
++                b("externalIdFingerprint", "=", fingerprint),
++                b("status", "=", "active"),
++                b("lease", "=", claimed.token),
++              ),
++          }),
++        )) as ReportRow[];
++        peersByFingerprint.set(fingerprint, peers);
++        for (const peer of peers) attempts.reports.add(peer.id);
++      }
++      for (const row of rows) {
++        const fingerprint = row.externalIdFingerprint!;
++        const peers = peersByFingerprint.get(fingerprint) ?? [];
++        const ids = yield* Effect.forEach(peers, parseExternalId, { concurrency: 1 });
++        const externalId = ids.find((id) => id !== undefined);
++        const retainedChecks = yield* query(() =>
++          input.db.findMany("accountChecks", {
++            where: (b) =>
++              b.and(
++                b(
++                  "account",
++                  "in",
++                  peers.map((peer) => peer.id),
++                ),
++                b("info", "is not", null),
++                b("infoCheckedAt", "is not", null),
++              ),
++          }),
++        );
++        const oldest = [
++          ...peers.map((peer) => peer.retrievedAt),
++          ...retainedChecks.map((check) => check.infoCheckedAt),
++        ]
++          .filter((at): at is Date => at !== null)
++          .toSorted((a, b) => a.getTime() - b.getTime())[0];
++        if (externalId === undefined || oldest === undefined) continue;
++        if (requestIds.has(externalId)) continue;
++        requestIds.set(externalId, fingerprint);
++        bodyAccounts.push({ accountId: externalId, updatedAt: oldest });
++      }
++      if (bodyAccounts.length === 0) {
++        yield* updateBySubject(
++          first.clientFingerprint,
++          claimed.fingerprints,
++          {
++            status: "refresh_pending",
++            encryptedExternalId: null,
++            externalIdFingerprint: null,
++            retrievedAt: null,
++            retryAt: now,
++            lease: null,
++            leaseUntil: null,
++          },
++          claimed.token,
++        );
++        return rows.length;
++      }
++      let reporter: string | undefined;
++      for (const row of rows) {
++        const resolved = yield* resolveContextToken(row, client);
++        if (resolved !== undefined && row.owner === first.owner) {
++          reporter = resolved.token;
++          break;
++        }
++      }
++      if (reporter === undefined) {
++        yield* releaseFailedSubject(rows, claimed.token, now, null);
++        return rows.length;
++      }
++      const result = yield* reportAccounts(
++        input.httpClient,
++        input.urlPolicy,
++        client.personalDataReporting,
++        reporter,
++        bodyAccounts,
++      );
++      const completedAt = new Date(yield* Clock.currentTimeMillis);
++      if (result.kind === "failed") {
++        yield* releaseFailedSubject(
++          rows,
++          claimed.token,
++          completedAt,
++          result.status,
++          result.retryAfterSeconds,
++        );
++        return rows.length;
++      }
++      yield* processActions(
++        client,
++        first.clientFingerprint,
++        claimed.token,
++        result.cycleDays,
++        requestIds,
++        result.kind === "actions" ? result.actions : [],
++        completedAt,
++      );
++      return rows.length;
++    });
++
++  const run = Effect.gen(function* () {
++    yield* Effect.annotateCurrentSpan({
++      "executor.personal_data_reporting.client_count": clients.length,
++      "executor.personal_data_reporting.http_client_available": input.httpClient !== undefined,
++      "executor.personal_data_reporting.url_policy_available": input.urlPolicy !== undefined,
++    });
++    if (clients.length === 0 || input.httpClient === undefined || input.urlPolicy === undefined)
++      return;
++    for (const client of clients) {
++      const fingerprint = yield* clientFingerprint(client, input.crypto);
++      clientsByFingerprint.set(fingerprint, client);
++    }
++    allFingerprints = [...clientsByFingerprint.keys()];
++    yield* synchronize();
++    let refreshCount = 0;
++    let reportCount = 0;
++    const attempts: RunAttempts = { refreshes: new Set(), reports: new Set() };
++    for (let batch = 0; batch < batchesPerRun; batch++) {
++      const refreshed = yield* processRefreshes(attempts);
++      const reported = yield* processOneReportBatch(attempts);
++      refreshCount += refreshed;
++      reportCount += reported;
++      if (refreshed === 0 && reported === 0) break;
++    }
++    yield* Effect.annotateCurrentSpan({
++      "executor.personal_data_reporting.refresh_count": refreshCount,
++      "executor.personal_data_reporting.report_count": reportCount,
++    });
++  }).pipe(Effect.withSpan("sdk.personalDataReporting.run"));
++
++  return { run };
++};
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -16,6 +16,7 @@
+   version4014Tables,
+   version4015Tables,
+   version4016Tables,
++  version4017Tables,
+   appScheduleIndex,
+   scopedRunKeyIndex,
+   version402Tables,
+@@ -27,6 +28,7 @@
+   version4Tables,
+   storedOAuthClientIndexes,
+   storedOAuthClientIssuerIndexes,
++  accountReportIndexes,
+ } from "./storage-schema.ts";
+ 
+ /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
+@@ -76,6 +78,7 @@
+   ...storedOAuthClientIndexes,
+   ...boundedReadIndexes,
+   ...storedOAuthClientIssuerIndexes,
++  ...accountReportIndexes,
+ ] as const;
+ 
+ /** Versions built by {@link indexOnlyVersion}. */
+@@ -658,6 +661,26 @@
+       }),
+     },
+   }),
++  // Additive: closed-account notices survive account removal, with the subject ID cleared.
++  schema({
++    version: "4.0.17",
++    tables: version4017Tables,
++    relations: {
++      accounts: ({ one }) => ({
++        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
++      }),
++      apps: ({ one }) => ({
++        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
++      }),
++    },
++    up: ({ auto }) =>
++      auto.pipe(
++        Effect.map((operations) => [
++          ...operations,
++          ...accountReportIndexes.map((sql) => ({ type: "custom" as const, sql })),
++        ]),
++      ),
++  }),
+ ] as const;
+ 
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
+--- a/packages/sdk/src/implementation/storage-schema.ts
++++ b/packages/sdk/src/implementation/storage-schema.ts
+@@ -852,6 +852,46 @@
+ /** Tables of the 4.0.16 layout. Existing accounts have no selected site. */
+ export const version4016Tables = { ...version4015Tables, accounts: sitedAccounts };
+ 
++/** Per-registration personal-data reporting state; the subject ID is encrypted at rest. */
++const accountReports = table("executor_account_reports", {
++  /** This row follows one saved account connection, but deliberately survives upstream closure. */
++  id: idColumn("id", AccountId, { type: "varchar(255)" }),
++  /** The owning organization or self-host user. Network batches never cross this boundary. */
++  owner: column("owner", OwnerId, { type: "varchar(255)" }),
++  /** Fingerprint of the OAuth registration, not an access or client secret. */
++  clientFingerprint: column("client_fingerprint", Schema.String, { type: "varchar(64)" }),
++  /** A reconnect invalidates every identity and schedule saved for the former grant. */
++  credentialGeneration: column("credential_generation", Schema.Int),
++  status: column("status", Schema.Literals(["active", "refresh_pending", "closed"])),
++  encryptedExternalId: column("encrypted_external_id", Schema.NullOr(Schema.Uint8Array)),
++  /** Keyed digest coordinates duplicate subject copies without exposing the provider ID. */
++  externalIdFingerprint: column("external_id_fingerprint", Schema.NullOr(Schema.String), {
++    type: "varchar(64)",
++  }),
++  retrievedAt: column("retrieved_at", Schema.NullOr(Schema.Date)),
++  reportedAt: column("reported_at", Schema.NullOr(Schema.Date)),
++  cycleDays: column("cycle_days", Schema.Number).default(7),
++  nextReportAt: column("next_report_at", Schema.NullOr(Schema.Date)),
++  retryAt: column("retry_at", Schema.NullOr(Schema.Date)),
++  retries: column("retries", Schema.Int).default(0),
++  lease: column("lease", Schema.NullOr(Schema.String)),
++  leaseUntil: column("lease_until", Schema.NullOr(Schema.Date)),
++});
++
++/** Tables of the 4.0.17 layout, adding reporting state without changing the account row. */
++export const version4017Tables = {
++  ...version4016Tables,
++  accountReports,
++};
++
++/** Reporting state is read by owner, registration and due time. */
++export const accountReportIndexes = [
++  "CREATE INDEX IF NOT EXISTS executor_account_reports_due ON executor_account_reports (owner, client_fingerprint, next_report_at) WHERE status <> 'closed'",
++  "CREATE INDEX IF NOT EXISTS executor_account_reports_retry ON executor_account_reports (retry_at) WHERE status <> 'closed' AND retry_at IS NOT NULL",
++  "CREATE INDEX IF NOT EXISTS executor_account_reports_subject ON executor_account_reports (client_fingerprint, external_id_fingerprint) WHERE external_id_fingerprint IS NOT NULL",
++  "CREATE INDEX IF NOT EXISTS executor_account_reports_registration ON executor_account_reports (client_fingerprint, owner, id)",
++] as const;
++
+ /**
+  * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
+  * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -21,7 +21,7 @@
+     const sql = yield* SqlClient.SqlClient;
+     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
+     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
+-    const db = bindOrm(client.orm("4.0.16"), sql, reactivity);
++    const db = bindOrm(client.orm("4.0.17"), sql, reactivity);
+     const checkMigration = Effect.gen(function* () {
+       const migrator = yield* client.createMigrator;
+       const version = yield* migrator.version;
+@@ -76,7 +76,7 @@
+       Effect.mapError(() => new StorageError()),
+     );
+     return {
+-      orm: (_version: "4.0.16") => db,
++      orm: (_version: "4.0.17") => db,
+       reactivity,
+       // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
+       toolSearch: makeToolSearchStore(sql),
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -199,6 +199,11 @@
+   });
+   return (
+     <div className="flex flex-col gap-4">
++      {health?.personalDataStatus === "account_closed" && (
++        <p className="text-[13px] text-muted-foreground" role="status" data-account-status="closed">
++          This account was closed by its service. Saved credentials and identity were removed.
++        </p>
++      )}
+       {health?.info && (
+         <p className="text-[13px] text-muted-foreground">
+           <AccountIdentity info={health.info} />
+diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
+--- a/playground/sdk/storage.ts
++++ b/playground/sdk/storage.ts
+@@ -10,7 +10,7 @@
+       Effect.gen(function* () {
+         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+         yield* storage.migrate;
+-        const orm = storage.orm("4.0.16");
++        const orm = storage.orm("4.0.17");
+         const createdAt = new Date("2026-01-01T00:00:00.000Z");
+         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
+           id: "dpl_example",
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -47,7 +47,7 @@
+ ];
+ 
+ /**
+- * Undo SDK 4.0.15 and 4.0.14 and label the database 4.0.13, as an upgrade from the version before
++ * Undo the SDK additions after 4.0.13 and label the fixture database 4.0.13, as the version before
+  * app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
+  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
+  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
+@@ -55,6 +55,8 @@
+  * ledger row and table.
+  */
+ export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
++  { sql: "DROP TABLE executor_account_reports" },
++  { sql: "ALTER TABLE executor_accounts DROP COLUMN site" },
+   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
+   { sql: "DROP INDEX executor_schedules_app" },
+   { sql: "DROP INDEX executor_workflow_runs_scope_key" },
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -1,4 +1,4 @@
+-/** Display status reuses health JSON without advancing the schema or losing checked identity. */
++/** Reporting upgrades preserve selected sites, credentials and checked account status. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -14,6 +14,19 @@
+       Effect.gen(function* () {
+         const fixture = yield* statusAccount(accountStatusSource);
+         expect((yield* fixture.check()).status).toBe(200);
++        // Rebuild only the previous reporting-free layout; its selected site and health stay saved.
++        const site = "https://retained-account.example.test";
++        yield* legacyStorage([
++          { sql: "DROP TABLE executor_account_reports" },
++          {
++            sql: "UPDATE executor_accounts SET site = $1 WHERE id = $2",
++            params: [site, fixture.account],
++          },
++          { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
++        ]);
++        yield* serverControl("start");
++        expect((yield* fixture.read()).body).toMatchObject({ account: { site } });
++        expect((yield* fixture.check()).status).toBe(200);
+         const [version, columns, records] = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+           {
+@@ -24,7 +37,7 @@
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.16" }]);
++        expect(version).toEqual([{ value: "4.0.17" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage-migration-diagnostics.spec.ts
+--- a/e2e/tests/storage-migration-diagnostics.spec.ts
++++ b/e2e/tests/storage-migration-diagnostics.spec.ts
+@@ -19,7 +19,7 @@
+         ]);
+         yield* Effect.addFinalizer(() =>
+           legacyStorage([
+-            { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
++            { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
+           ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
+         );
+         yield* serverControl("start", 500);

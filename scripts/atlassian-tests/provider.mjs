@@ -96,6 +96,7 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
   const tokens = new Map();
   const requests = [];
   const failures = [];
+  const reportingRequests = [];
   let nextCode = 0;
   let nextToken = 0;
 
@@ -197,6 +198,32 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
         return json(response, 401, { error: "unauthorized" });
       }
 
+      if (url.pathname === "/me" && request.method === "GET") {
+        log.person = person.key;
+        log.status = 200;
+        return json(response, 200, {
+          account_id: `synthetic:${person.key}`,
+          name: person.siteName,
+          email: person.email,
+        });
+      }
+      if (url.pathname === "/app/report-accounts/" && request.method === "POST") {
+        const report = JSON.parse(await body(request));
+        if (!Array.isArray(report.accounts) || report.accounts.length < 1 || report.accounts.length > 90)
+          throw new Error("Invalid reporting batch");
+        for (const account of report.accounts) {
+          if (!atlassianPeople.some((candidate) => account.accountId === `synthetic:${candidate.key}`)
+            || !Number.isFinite(Date.parse(account.updatedAt)))
+            throw new Error("Invalid reported identity or retrieval timestamp");
+        }
+        reportingRequests.push(report.accounts);
+        log.person = person.key;
+        log.status = 204;
+        response.writeHead(204, { "cycle-period": "7" });
+        response.end();
+        return;
+      }
+
       const confluence = /^\/ex\/confluence\/([^/]+)\/wiki\/rest\/api\/(content\/search|content\/([^/]+))$/.exec(url.pathname);
       if (confluence && request.method === "GET") {
         if (decodeURIComponent(confluence[1]) !== person.cloudId) {
@@ -271,6 +298,7 @@ export async function startAtlassianProvider({ directory, clientId, clientSecret
     origin,
     requests,
     failures,
+    reportingRequests,
     apiRequests: () => requests.filter((request) => request.path.startsWith("/ex/")),
     async stop() {
       server.closeAllConnections();

@@ -39,7 +39,7 @@ test("the app source is served locally without contacting the official publisher
 });
 
 
-test("the private Atlassian carry changes only the captured public framework pin", () => {
+test("the private Atlassian carry adds identity consent and the captured framework pin", () => {
   const capture = (name: string) => readFileSync(new URL(`./atlassian/${name}`, import.meta.url));
   const digest = (value: Buffer | string) => createHash("sha256").update(value).digest("hex");
   const publicBytes = capture("source.published.json");
@@ -80,5 +80,7 @@ test("the private Atlassian carry changes only the captured public framework pin
   assert.equal(servedManifest.private, true);
   assert.equal(servedManifest.type, "module");
   assert.deepEqual(servedManifest, { ...originalManifest, dependencies: { ...originalManifest.dependencies, apps: "0.0.1-beta.104-basalt.1" } });
-  assert.equal(served.files[0].content, publicSource.files[0].content);
+  assert.equal(served.files[0].content, publicSource.files[0].content.replace(
+    '  "offline_access",', '  "offline_access",\n  "read:me",',
+  ));
 });
