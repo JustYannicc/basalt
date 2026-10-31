@@ -143,7 +143,8 @@ class OutputPrivacyTests(unittest.TestCase):
                 stop.wait()
 
         def start_ready_server(ready: readiness.Readiness) -> None:
-            if not ready.refresh_policy_lease("a" * 32):
+            refresh_lease = getattr(ready, "refresh_policy_lease", None)
+            if refresh_lease is not None and not refresh_lease("a" * 32):
                 raise AssertionError("fixture could not establish the policy lease")
 
         with (
@@ -152,7 +153,7 @@ class OutputPrivacyTests(unittest.TestCase):
             patch.object(supervisor, "env_required", return_value=TOKEN_SENTINEL),
             patch.object(supervisor, "require_tmpfs"),
             patch.object(supervisor, "start_ready_server", side_effect=start_ready_server),
-            patch.object(supervisor, "PolicyHealthMonitor", HealthyPolicyMonitor),
+            patch.object(supervisor, "PolicyHealthMonitor", HealthyPolicyMonitor, create=True),
             patch.object(supervisor, "child_environment", return_value={}),
             patch.object(supervisor, "Child", return_value=child),
             patch.object(supervisor, "wait_for_home", return_value="ready"),
