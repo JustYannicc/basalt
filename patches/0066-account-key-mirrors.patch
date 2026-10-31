@@ -1618,20 +1618,24 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    accountAcquisition: {
      fixtures: "actors",
      file: "account-acquisition.spec.ts",
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,6 +1,9 @@
+-/** Remove the additive identity layout before a fixture labels retained data as an older schema. */
++/** Remove later additive columns before a fixture labels retained data as pre-identity storage. */
+ export const beforeAccountIdentities = () =>
+   [
++    {
++      sql: "ALTER TABLE executor_account_acquisitions DROP COLUMN mirror_reference, DROP COLUMN mirror_ready, DROP COLUMN mirror_operation",
++    },
+     { sql: "ALTER TABLE executor_accounts DROP COLUMN identity_id, DROP COLUMN oauth_grant_id" },
+     { sql: "DROP TABLE executor_account_identities" },
+     {
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
-@@ -34,6 +34,9 @@
-         const beforeInput = yield* legacyStorage([
-           ...retainedQueries,
-           ...beforeAccountIdentities(),
-+          {
-+            sql: "ALTER TABLE executor_account_acquisitions DROP COLUMN mirror_reference, DROP COLUMN mirror_ready, DROP COLUMN mirror_operation",
-+          },
-           { sql: "DROP TABLE executor_workflow_inputs" },
-           { sql: "UPDATE private_executor_settings SET value = '4.0.21' WHERE key = 'version'" },
-         ]);
-@@ -48,7 +51,7 @@
+@@ -48,7 +48,7 @@
              sql: "SELECT table_name FROM information_schema.tables WHERE table_name = 'executor_workflow_inputs'",
            },
          ]);
@@ -1640,7 +1644,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          expect(inputTables).toEqual([{ table_name: "executor_workflow_inputs" }]);
          yield* serverControl("start");
          expect((yield* fixture.read()).status).toBe(200);
-@@ -78,7 +81,7 @@
+@@ -78,7 +78,7 @@
              params: [fixture.account],
            },
          ]);
@@ -1649,3 +1653,51 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          expect(columns).toEqual([]);
          expect(records).toEqual([
            {
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -42,7 +42,7 @@
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.24" }]]);
++        expect(storage).toEqual([[{ value: "4.0.25" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -132,7 +132,7 @@
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.24" }]);
++  expect(version).toEqual([{ value: "4.0.25" }]);
+ 
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
+diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+--- a/e2e/tests/oauth-client-issuer-migration.spec.ts
++++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
+@@ -361,7 +361,7 @@
+           },
+         ]);
+         yield* serverControl("start");
+-        expect(version).toEqual([{ value: "4.0.24" }]);
++        expect(version).toEqual([{ value: "4.0.25" }]);
+ 
+         expect(credentials).toEqual([
+           { client: ids.a },
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -630,7 +630,7 @@
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.24" }]);
++        expect(version).toEqual([{ value: "4.0.25" }]);
+ 
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
