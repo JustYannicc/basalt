@@ -96,6 +96,7 @@ jobs:
           path: |
             .generated/native-client-*/result.json
             .generated/native-client-*/failure.txt
+            .generated/native-client-*/mobile-failure-first.txt
           if-no-files-found: warn
   slack-health:
     runs-on: ubuntu-latest

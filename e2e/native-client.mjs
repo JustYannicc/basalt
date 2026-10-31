@@ -243,7 +243,18 @@ const program = Effect.gen(function* () {
       await command(["revoke"]);
       assert.equal(JSON.parse((await command(["status"])).stdout).state, "revoked");
       await stop();
-      const mobile = await verifyNativeMobile({ origin: worker.origin, owner, app, receipt });
+      const mobile = await verifyNativeMobile({ origin: worker.origin, owner, app, receipt }).catch(
+        async (error) => {
+          await writeFile(
+            join(directory, "mobile-failure-first.txt"),
+            String(error?.stack ?? error),
+            {
+              mode: 0o600,
+            },
+          );
+          throw error;
+        },
+      );
       const evidence = {
         mobile,
         realRouter: true,
