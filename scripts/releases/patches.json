@@ -505,7 +505,7 @@
     {
       "identity": "executor-account-observations",
       "file": "0053-account-observations.patch",
-      "content_sha256": "baba24cb58ae917b7b55b173994fb51dfac4ea34c3855492089abdb4ae93b057",
+      "content_sha256": "9e98e4479c0f5dcd9df78c6996b177f7cffe6645e1bec4f6cae29e7e4037abb4",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

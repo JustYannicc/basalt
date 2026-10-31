@@ -428,15 +428,17 @@ index ba83cb8fd..85a8acfab 100644
  
  /**
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index 15cc0293c..75eb3740e 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
-@@ -1,3 +1,4 @@
+@@ -52,6 +52,7 @@
+   organizationOwner,
+   publishingScope,
+ } from "../contracts/organization.ts";
 +import { visibleObservationHealth } from "./account-observation-policy.ts";
- import type { AuthContext } from "@better-auth/core";
- import type { Principal } from "../contracts/auth.ts";
- import { requestAuthentication, requestTombstones } from "./batch-authentication.ts";
-@@ -246,9 +247,12 @@ export const inventory = (owner: OwnerId) =>
+ 
+ /** Read current membership once after native session verification; never retain roles between requests. */
+ export const lookupMembership = (
+@@ -246,9 +247,12 @@
      ];
      // Checks are reported for the apps the caller linked each account to.
      const health = new Map(
