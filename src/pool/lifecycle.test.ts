@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isPublicModelPath, PoolLifecycle, poolLifecycle, poolPort, type RuntimeDriver, type RuntimeStorage } from "./lifecycle.ts";
+import { isPublicModelPath, PoolLifecycle, PoolRuntimeUnhealthy, poolLifecycle, poolPort, type RuntimeDriver, type RuntimeStorage } from "./lifecycle.ts";
 
 function fixture() {
   let time = 0;
   let running = false;
-  let revision: string | undefined;
+  const values = new Map<string, string>();
   let alarm: number | null = null;
   let starts = 0;
   let stops = 0;
@@ -18,8 +18,8 @@ function fixture() {
     status: async () => ({ boot_id: `boot-${starts}`, started_at: new Date(time).toISOString() }),
   };
   const storage: RuntimeStorage = {
-    get: async <T>() => revision as T | undefined,
-    put: async (_key, value) => { revision = value; },
+    get: async <T>(key: string) => values.get(key) as T | undefined,
+    put: async (key, value) => { values.set(key, value); },
     getAlarm: async () => alarm,
     setAlarm: async (next) => { alarm = next; },
   };
@@ -159,4 +159,34 @@ test("public model gate excludes internal management while preserving its DO lis
     assert.equal(isPublicModelPath(path), false, path);
   }
   assert.equal(poolPort("/v8/management/config"), 8327);
+});
+
+for (const evicted of [false, true]) {
+  test(`a warm unhealthy runtime refuses immediately and recovers, eviction=${evicted}`, async () => {
+    const f = fixture();
+    const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+    await runtime.warm();
+    const healthy = f.driver.status;
+    f.driver.status = async () => { throw new Error("plugin disabled"); };
+    const current = evicted ? new PoolLifecycle(f.driver, f.storage, "release-a", f.clock) : runtime;
+    await assert.rejects(current.warm(), PoolRuntimeUnhealthy);
+    assert.equal(f.clock.now(), 0, "a warm refusal must not enter the cold startup retry loop");
+    f.driver.status = healthy;
+    assert.equal((await current.warm()).boot_id, "boot-1");
+  });
+}
+
+test("a stopped runtime gets a new cold startup budget after serving traffic", async () => {
+  const f = fixture();
+  const runtime = new PoolLifecycle(f.driver, f.storage, "release-a", f.clock);
+  await runtime.warm();
+  await f.driver.stop();
+  const healthy = f.driver.status;
+  let probes = 0;
+  f.driver.status = async () => {
+    if (++probes < 3) throw new Error("new boot starting");
+    return healthy();
+  };
+  assert.equal((await runtime.warm()).boot_id, "boot-2");
+  assert.equal(f.clock.now(), 2_000);
 });

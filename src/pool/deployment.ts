@@ -6,6 +6,7 @@ import { poolDatabaseInfrastructure } from "./database.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 import { inventoryCron } from "./inventory.ts";
+import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 
 // Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
 // https://developers.cloudflare.com/containers/concepts/placement/
@@ -41,6 +42,7 @@ export const poolWorker = Effect.gen(function* () {
       POOL_DATABASE_URL: database.directUrl,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
+      TOOLS_SERVICE: yield* Api,
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
       POOL_MODEL_HISTORY_ENABLED: String(yield* Config.Boolean("POOL_MODEL_HISTORY_ENABLED").pipe(Config.withDefault(false))),
       ...(yield* telemetryBindings),

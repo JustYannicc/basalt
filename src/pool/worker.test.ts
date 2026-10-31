@@ -382,3 +382,89 @@ test("successful provider connection captures product events through the Durable
   for (const resolve of release) resolve(new Response(null, { status: 200 }));
   await Promise.all(pending);
 });
+
+test("an unhealthy warm runtime returns a retryable 503 before another model dispatch and recovers", async () => {
+  const values = new Map<string, unknown>();
+  const background: Promise<unknown>[] = [];
+  const errors: unknown[][] = [];
+  let healthy = true, modelCalls = 0, readinessCalls = 0, alarm: number | null = null;
+  const container = {
+    running: false,
+    start() { this.running = true; }, destroy: async () => {}, setInactivityTimeout: async () => {},
+    getTcpPort(port: number) { return { fetch: async () => {
+      if (port === 8318) {
+        readinessCalls += 1;
+        return healthy ? Response.json({ boot_id: "fixture", started_at: "2026-10-31T12:00:00Z" })
+          : new Response(null, { status: 503 });
+      }
+      assert.equal(port, 8317);
+      modelCalls += 1;
+      return Response.json({ data: [] });
+    } }; },
+  };
+  const worker = new PoolContainer({ container, waitUntil: (work: Promise<unknown>) => { background.push(work); }, storage: {
+    get: async (name: string) => structuredClone(values.get(name)),
+    put: async (name: string, value: unknown) => { values.set(name, structuredClone(value)); },
+    getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; },
+  } }, {
+    POOL_DATABASE_URL: "postgres://fixture", POOL_MANAGEMENT_KEY: "fixture", POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_IMAGE_HASH: "fixture", POOL_MODEL_HISTORY_ENABLED: "false",
+  });
+  const request = () => new Request("https://pool.example/v1/models", { headers: { Authorization: "Bearer synthetic-private-key" } });
+  assert.equal((await worker.fetch(request())).status, 200);
+  healthy = false;
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    const response = await worker.fetch(request());
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("Retry-After"), "2");
+    assert.ok(response.headers.get("X-Request-Id"));
+    const body = await response.json() as { error: { code: string; retryable: boolean } };
+    assert.equal(body.error.code, "pool_protection_unavailable");
+    assert.equal(body.error.retryable, true);
+    assert.equal(readinessCalls, 2, "warm failure does not enter the cold retry loop");
+    assert.equal(modelCalls, 1, "unhealthy readiness prevents model dispatch");
+    assert.match(JSON.stringify(errors), /POOL_GATEWAY_FAILURE/);
+    assert.ok(!JSON.stringify(errors).includes("synthetic-private-key"));
+    healthy = true;
+    assert.equal((await worker.fetch(request())).status, 200);
+    assert.equal(modelCalls, 2);
+    await Promise.all(background);
+  } finally { console.error = originalError; }
+});
+
+test("native SQL writes require the exact policy install acknowledgement", async () => {
+  const key = "ab".repeat(32), values = new Map<string, unknown>(), background: Promise<unknown>[] = [];
+  let acknowledgement: unknown = { installed: true, revision: 999 }, alarm: number | null = null;
+  const container = {
+    running: false, start() { this.running = true; }, destroy: async () => {}, setInactivityTimeout: async () => {},
+    getTcpPort(port: number) { return { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      assert.equal(port, 8318);
+      assert.equal(new URL(request.url).pathname, "/native-policy");
+      const body = await request.json() as { projection: string };
+      const projection = JSON.parse(atob(body.projection.split(".")[1]!.replaceAll("-", "+").replaceAll("_", "/"))) as Record<string, unknown>;
+      assert.deepEqual(Object.keys(projection).sort(), ["accounts", "dirty", "expiresAt", "organization", "pool", "revision"]);
+      return Response.json(acknowledgement);
+    } }; },
+  };
+  const worker = new PoolContainer({ container, waitUntil: (work: Promise<unknown>) => { background.push(work); }, storage: {
+    get: async (name: string) => structuredClone(values.get(name)),
+    put: async (name: string, value: unknown) => { values.set(name, structuredClone(value)); },
+    getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; },
+  } }, {
+    POOL_DATABASE_URL: "postgres://fixture", POOL_MANAGEMENT_KEY: "fixture", POOL_APP_SIGNING_KEY: key,
+    POOL_IMAGE_HASH: "fixture", TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 503 }) },
+  });
+  const request = async () => {
+    const now = Date.now();
+    return new Request("https://pool/pool/v1/membership", { method: "POST", body: JSON.stringify({
+      envelope: await signEnvelope(key, "sbm1", { pool: "a", organization: "org", at: now, expiresAt: now + 30_000 }),
+    }) });
+  };
+  assert.equal((await worker.fetch(await request())).status, 503);
+  acknowledgement = { installed: true, revision: 2 };
+  assert.equal((await worker.fetch(await request())).status, 204);
+  await Promise.all(background);
+});

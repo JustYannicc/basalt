@@ -165,6 +165,7 @@ export async function captureError(
   code: string,
   page: string,
   accountId?: string,
+  requestId?: string,
 ): Promise<void> {
   const safeCode = errorCode(code);
   if (!safeCode) return;
@@ -176,7 +177,11 @@ export async function captureError(
     level: "error",
     message: safeCode,
     fingerprint: ["basalt", safeCode],
-    tags: { error_code: safeCode, page_template: pageTemplate(page) },
+    tags: {
+      error_code: safeCode, page_template: pageTemplate(page),
+      ...(typeof requestId === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(requestId)
+        ? { request_id: requestId } : {}),
+    },
     ...(isAccountId(accountId) ? { user: { id: accountId } } : {}),
   };
   await postEnvelope(env, envelope(id, "event", payload));

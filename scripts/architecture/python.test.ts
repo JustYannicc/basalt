@@ -113,11 +113,11 @@ test("build-stage and runtime Python are scanned while tests retain separate own
 
 test("the actual build downloader and pool wrapper require a release service", () => {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const files = Object.fromEntries(["Dockerfile", "releases.json", "fetch_releases.py", "supervisor.py", "child_signals.py", "runtime_signals.py", "pool_contract.py", "readiness.py", "healthcheck.py", "__init__.py"].map(file =>
+  const files = Object.fromEntries(["Dockerfile", "releases.json", "fetch_releases.py", "supervisor.py", "child_signals.py", "runtime_signals.py", "pool_contract.py", "readiness.py", "healthcheck.py", "policy_monitor.py", "__init__.py"].map(file =>
     [`containers/pool/${file}`, readFileSync(join(root, "containers/pool", file), "utf8")]));
   const copy = fixture(files);
-  expect(pythonDependencies(copy, [module("pool", "containers/pool")], []).errors.join("\n")).toContain("Unmodelled outside host: github.com");
-  const result = pythonDependencies(copy, [module("pool", "containers/pool")], [{ id: "releases", hosts: ["github.com"], sdks: [] }]);
+  expect(pythonDependencies(copy, [module("pool", "containers/pool", ["socket", "http.client"])], []).errors.join("\n")).toContain("Unmodelled outside host: github.com");
+  const result = pythonDependencies(copy, [module("pool", "containers/pool", ["socket", "http.client"])], [{ id: "releases", hosts: ["github.com"], sdks: [] }]);
   expect(result.errors).toEqual([]);
   expect(result.dependencies).toContainEqual(expect.objectContaining({ source: "pool", target: "releases" }));
 });
@@ -134,6 +134,13 @@ test.each([
   "import http\nhttp.client.HTTPSConnection(unknown_host)",
 ])("unsupported Python networking and execution constructs are explicit", text => {
   expect(scan(text).errors.length).toBeGreaterThan(0);
+});
+
+test("only a newly created Unix-domain socket has no outside host", () => {
+  expect(scan("import socket\ns = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\ns.connect(path)", [], ["socket"]).errors).toEqual([]);
+  expect(scan("from socket import socket as make, AF_UNIX\nmake(family=AF_UNIX)", [], ["socket"]).errors).toEqual([]);
+  for (const call of ["socket.socket()", "socket.socket(socket.AF_INET)", "socket.socket(family=unknown)", "socket.socket(socket.AF_UNIX, fileno=fd)"])
+    expect(scan(`import socket\n${call}`, [], ["socket"]).errors.join("\n")).toContain("Unsupported Python network call");
 });
 
 test("invalid Python is a reported parse failure, and unowned Python is rejected", () => {
