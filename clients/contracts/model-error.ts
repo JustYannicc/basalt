@@ -9,5 +9,5 @@ export function upstreamOutcomeUnknown(requestId = crypto.randomUUID()): Respons
   } });
 }
 
-/** The peer explicitly refused the operation before dispatch. */
+/** The request is proven not to have been sent upstream. */
 export class ModelRequestNotSent extends Error {}
