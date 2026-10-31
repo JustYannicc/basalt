@@ -613,7 +613,7 @@
     {
       "identity": "basalt-native-pool-membership",
       "file": "0067-native-pool-membership.patch",
-      "content_sha256": "03e2d183d5b5cc4104c30100b09f1d6ba1b74ef63b43112de202b50bcdc6eb12",
+      "content_sha256": "8476564fa6112f415ef9fa2c2b0c3c43d47d5cbc83eef00f62ec7c6eaebb8b70",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

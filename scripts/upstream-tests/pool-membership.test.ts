@@ -177,6 +177,7 @@ test("the signed native reader returns only current app links and verified Home 
   const bindings = new Map(accountIds.map((account) => [account, binding(account, "binding-r1")]));
   const changed = binding("acc_changed", "binding-r2");
   const executor = {
+    [sdk.StorageHost]: { transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect },
     [sdk.AccountAcquisitionHost]: {
       source: ({ account }: { account: string }) => {
         const saved = bindings.get(account);
