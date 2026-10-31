@@ -63,10 +63,22 @@ export interface ServiceCredentials {
   readonly models?: typeof Service.Type;
   readonly tools?: typeof ToolsService.Type;
 }
+const PoolDisplay = Schema.Struct({ id: Schema.NonEmptyString, name: Schema.String });
+export const ConnectionDisplay = Schema.Struct({
+  account: Schema.Struct({
+    name: Schema.String,
+    email: Schema.NonEmptyString,
+    emailVerified: Schema.Boolean,
+  }),
+  pool: PoolDisplay,
+  pools: Schema.Array(PoolDisplay),
+});
 export const ConnectionView = Schema.Struct({
   state: Schema.Literals(["connected", "disconnected", "sign-in-required", "revoked"]),
   mode: Schema.Literals(["direct", "device"]),
   capabilities: Schema.Array(Capability),
+  display: Schema.optionalKey(ConnectionDisplay),
+  origin: Schema.optionalKey(Origin),
 });
 export type ConnectionView = typeof ConnectionView.Type;
 export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {

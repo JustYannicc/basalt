@@ -21,3 +21,5 @@ public/share/main.js
 public/share/index.html
 public/native-device/main.js
 public/native-device/index.html
+clients/desktop/.dist/
+clients/desktop/.artifacts/

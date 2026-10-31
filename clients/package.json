@@ -11,6 +11,7 @@
     "test": "node --test --test-timeout=30000 e2e/*.test.ts"
   },
   "dependencies": {
+    "computer-setup": "file:../src/setup",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@napi-rs/keyring": "2.1.0",
     "effect": "4.0.1",

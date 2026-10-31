@@ -138,8 +138,8 @@ model {
 
     setupInstaller = module "Config installer" {
       #basalt #v1 #deep
-      description "Node.js installer consumes one-time credentials and parses and writes marked model-client config. It backs up files before writing and supports undo while preserving later unrelated edits. Bundled as a downloadable router asset."
-      metadata { code "src/setup/client.mjs|src/setup/config.mjs|src/setup/files.mjs"; libraries "smol-toml" }
+      description "Node.js installer consumes one-time credentials and parses and writes marked model-client config. It backs up files before writing and supports undo while preserving later unrelated edits. Its shared file engine previews paths and fields without credentials, supports keeping each agent's current settings and checks that reviewed files have not changed. Bundled as a downloadable router asset."
+      metadata { code "src/setup/client.mjs|src/setup/config.mjs|src/setup/files.mjs|src/setup/files.d.mts"; libraries "smol-toml" }
     }
 
     clientConnection = module "Client connection" {
@@ -147,9 +147,19 @@ model {
       description "One headless process forwards inference and cloud tools over authenticated loopback HTTP and private stdio IPC. Native sign-in uses verifier-bound browser approval and the outbound device tunnel. Rotated grants reach the credential store before use; an uncertain refresh requires sign-in. Explicit direct keys remain available. Local agents have separate service permissions, bounded streams and cancellation. Interrupted operations are never replayed."
       metadata {
         code "clients/cli|clients/connection|clients/contracts"
-        libraries "@modelcontextprotocol/sdk|@napi-rs/keyring|effect|proper-lockfile|ws|node:http|node:https|node:net"
+        libraries "@modelcontextprotocol/sdk|@napi-rs/keyring|computer-setup|effect|proper-lockfile|ws|node:http|node:https|node:net"
         endpointHosts "127.0.0.1|localhost"
         bindings "globalThis=basalt.router"
+      }
+    }
+
+    clientDesktop = module "Desktop client" {
+      #basalt #deep
+      description "Electron window and tray supervise the same headless connection process. Browser approval stores remote credentials in the OS store. Selected agents receive separate local credentials only after a reviewed configuration change. Closing the window keeps the connection running; quitting stops only the process this app started."
+      metadata {
+        code "clients/desktop"
+        libraries "electron|esbuild|react|react-dom"
+        endpointHosts "127.0.0.1|localhost"
       }
     }
 
@@ -355,6 +365,11 @@ model {
   basalt.clientConnection -[sync]-> basalt.router "native approval, renewal and outbound tunnel or explicit direct requests"
   basalt.router -[sync]-> basalt.clientConnection "stream reply or MCP messages"
   basalt.clientConnection -[sync]-> localClient "stream reply or MCP messages"
+  basalt.clientConnection -[sync]-> basalt.setupInstaller "preview and apply selected agents through the shared backup engine"
+  basalt.clientConnection -[sync]-> basalt.brandConfig "read local setup markers"
+  basalt.clientDesktop -[sync]-> basalt.clientConnection "supervise the owned process and use its typed controls"
+  basalt.clientDesktop -[sync]-> basalt.brandConfig "read product name and default server"
+  localClient -[sync]-> basalt.clientDesktop "sign in and review local agent configuration"
   basalt.setupInstaller -[sync]-> localClient "write backed-up marked client config; restart instructions"
 
   poolOwner -[sync]-> appHosting "open private app screen in dashboard App tab"

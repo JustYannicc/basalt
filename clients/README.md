@@ -50,3 +50,16 @@ The stdio bridge reaches the same connection process over private IPC. Its stdou
 `status` shows redacted connection state. `disconnect` interrupts active requests; `reconnect` reads the saved credentials again. `sign-out` interrupts local work and removes the saved remote credentials. Direct keys are revoked on their issuing server. Restarting preserves the local port and agent settings; a second process for the same profile refuses to start.
 
 Interrupted model streams end. Interrupted tool calls can have an unknown outcome and are never replayed automatically.
+
+## Agent configuration
+
+With the connection running, preview the Claude Code and Codex settings it would update:
+
+```sh
+node clients/cli/main.mjs setup --claude connect --codex connect
+node clients/cli/main.mjs setup --claude connect --codex connect --yes
+```
+
+The first command changes nothing. `--yes` applies the review with separate local credentials for each agent. Unspecified agents keep their current settings. `--claude undo` or `--codex undo`, with `--yes`, restores that agent's previous settings and removes its local credential. Undo works with the connection stopped. Later unrelated edits and Codex's `auth.json` stay in place. Custom `CLAUDE_CONFIG_DIR` and `CODEX_HOME` directories must match when applying and undoing.
+
+The desktop window uses this same configuration engine and headless process. Sign in through the system browser, review the selected agents, then apply their settings. Closing the window keeps the connection running; Quit stops the process the app started. The desktop packages are development builds until signing and platform acceptance are complete.

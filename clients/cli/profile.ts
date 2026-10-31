@@ -24,6 +24,22 @@ export async function loadProfile(home: string): Promise<Profile> {
   return readProfile(JSON.parse(value));
 }
 
+export async function runtimeOrigin(home: string) {
+  const raw = await readPrivate(join(home, "runtime.json"));
+  const value: unknown = raw === undefined ? undefined : JSON.parse(raw);
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("origin" in value) ||
+    typeof value.origin !== "string"
+  )
+    throw new Error("Start the local connection before configuring agents.");
+  const url = new URL(value.origin);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.pathname !== "/")
+    throw new Error("The local connection address is invalid.");
+  return url.origin;
+}
+
 export async function importDirect(home: string, inputFile: string, storage: "os" | "file") {
   return withStoppedConnection(home, () =>
     withProfile(home, () => importDirectStopped(home, inputFile, storage)),
