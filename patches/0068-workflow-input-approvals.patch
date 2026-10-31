@@ -2484,6 +2484,47 @@ index 193a3b1..8935b05 100644
 +    ),
 +  );
  });
+diff --git a/e2e/tests/pool-setup-atomic.spec.ts b/e2e/tests/pool-setup-atomic.spec.ts
+index 5a148cb..3a8720a 100644
+--- a/e2e/tests/pool-setup-atomic.spec.ts
++++ b/e2e/tests/pool-setup-atomic.spec.ts
+@@ -32,6 +32,14 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup publication", (it)
+         // Any product request dispatches queued jobs. Keep this unrelated team's setup from
+         // racing cleanup, which cannot defer jobs that have already started.
+         yield* deferJobs(actors.organization.id);
++        // The fixture owner already has a team. Complete that team's onboarding state so
++        // this publication proof does not depend on the external v1 membership service.
++        yield* rows(
++          `insert into cloud_organization_setup (user_id, organization_id, applied)
++            select "userId", "organizationId", true from member
++            where "organizationId" = $1 and role = 'owner'`,
++          [actors.organization.id],
++        );
+         // Only this team's pool metadata write waits. All calls still use the ordinary product.
+         yield* rows(`create function ${fn}() returns trigger language plpgsql as $$ begin
+       if new.slug = '${slug}' and coalesce(new.metadata::jsonb -> 'basaltPools', '{}'::jsonb) <> '{}'::jsonb then
+@@ -53,14 +61,13 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup publication", (it)
+         });
+         const pid = held[0]?.pid;
+         expect(typeof pid).toBe("number");
+-        const team = yield* body(
+-          Schema.Struct({ id: Schema.String }),
+-          yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
+-            name: "Atomic pool evidence",
+-            slug,
+-            keepCurrentActiveOrganization: true,
+-          }),
+-        );
++        const created = yield* api.request(actors.owner, "POST", "/api/auth/organization/create", {
++          name: "Atomic pool evidence",
++          slug,
++          keepCurrentActiveOrganization: true,
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const team = yield* body(Schema.Struct({ id: Schema.String }), created);
+         yield* Effect.addFinalizer(() =>
+           Effect.gen(function* () {
+             yield* database.release;
 diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
 new file mode 100644
 index 0000000..f874f1b
