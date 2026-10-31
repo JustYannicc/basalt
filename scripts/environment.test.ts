@@ -24,6 +24,7 @@ test("missing credentials fail with a name and never a value", () => {
 test("deploy maps login secrets and pins EU production without hosted emulators", () => {
   const source = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
   source.POOL_APP_SIGNING_KEY = "ab".repeat(32);
+  source.POOL_MODEL_HISTORY_ENABLED = "false";
   const env = deployEnvironment(source);
   assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
@@ -35,6 +36,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.PLANETSCALE_ADOPT_DATABASE, "true");
   assert.equal(env.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(env.EXECUTOR_APP_PUBLISHING, "off");
+  assert.equal(env.POOL_MODEL_HISTORY_ENABLED, "true");
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
   assert.match(env.EXECUTOR_BUILD_VERSION!, /^[a-f0-9]{40}$/);
@@ -129,6 +131,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     POOL_MANAGEMENT_KEY: "production-pool-key-must-not-pass-through",
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     POOL_APP_SIGNING_KEY_PREVIOUS: "cd".repeat(32),
+    POOL_MODEL_HISTORY_ENABLED: "true",
     OAUTH_PROXY_SECRET: "production-proxy-secret-must-not-pass-through",
     PREVIEW_CLAUDE_AUTH_JSON: "private-claude-login",
     PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: "private-codex-subscription",
@@ -156,6 +159,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.TEST_STAGE_PASSWORD_SIGN_IN, "true");
   assert.equal(first.deploy.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(first.deploy.EXECUTOR_APP_PUBLISHING, "off");
+  assert.equal(first.deploy.POOL_MODEL_HISTORY_ENABLED, undefined);
   assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");
   assert.equal(first.deploy.PREVIEW_SMOKE_EMAIL, undefined);
   assert.equal(first.deploy.PREVIEW_SMOKE_PASSWORD, undefined);

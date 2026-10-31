@@ -176,6 +176,7 @@ export function deployEnvironment(source = process.env): NodeJS.ProcessEnv {
     EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
     // An operator setting: the catalog stays readable, but nobody publishes from this deployment.
     EXECUTOR_APP_PUBLISHING: "off",
+    POOL_MODEL_HISTORY_ENABLED: "true",
     ALCHEMY_STAGE: deployment.stage,
     CLOUD_SOURCE_NAMESPACE: deployment.sourceNamespace,
     BETTER_AUTH_URL: `https://${brand.host}`,
