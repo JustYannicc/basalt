@@ -33,7 +33,7 @@ async function importBody(request: Request): Promise<Record<string, unknown>> {
   const bytes = new Uint8Array(size);
   let offset = 0;
   for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
-  return historyObject(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+  return historyObject(JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)));
 }
 
 export async function handleUsageImport(request: Request, access: HistoryAccess): Promise<Response> {
