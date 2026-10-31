@@ -125,7 +125,10 @@ test(
       const { origin } = JSON.parse(await readFile(join(profile, "runtime.json"), "utf8"));
       for (const token of [claudeToken, codexToken]) {
         const models = await fetch(`${origin}/v1/models`, {
-          headers: { authorization: `Bearer ${token}` },
+          headers:
+            token === codexToken
+              ? { "x-api-key": token, authorization: "Bearer synthetic.provider.login" }
+              : { authorization: `Bearer ${token}` },
         });
         assert.equal(models.status, 200);
         await models.body?.cancel();

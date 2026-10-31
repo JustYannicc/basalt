@@ -30,8 +30,10 @@ export async function remoteFixture() {
     void (async () => {
       const tools = request.url === "/mcp";
       if (
-        request.headers.authorization !==
-        (tools ? "Bearer ext_synthetic-tools-key" : "Bearer synthetic-model-key")
+        tools
+          ? request.headers.authorization !== "Bearer ext_synthetic-tools-key"
+          : request.headers.authorization !== "Bearer synthetic-model-key" &&
+            request.headers["x-api-key"] !== "synthetic-model-key"
       ) {
         response.writeHead(401).end();
         return;

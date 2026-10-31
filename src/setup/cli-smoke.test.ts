@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { installedModelPeer } from "../../clients/e2e/installed-model-peer.ts";
 import { parse } from "smol-toml";
 import { handleRequest } from "../router.ts";
 import { brand } from "../../brand.ts";
@@ -78,7 +79,7 @@ function anthropic(model: string, tool?: string): Response {
     { type: "message_stop" },
   ]);
 }
-function responses(model: string, tool?: string, namespace?: string): Response {
+function responses(model: string, tool?: string, namespace?: string, warmup = false): Response {
   const item = tool
     ? {
         type: "function_call",
@@ -102,9 +103,18 @@ function responses(model: string, tool?: string, namespace?: string): Response {
     created_at: Math.floor(Date.now() / 1000),
     model,
     status: "completed",
-    output: [item],
+    output: warmup ? [] : [item],
     usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
   };
+  if (warmup)
+    return stream([
+      {
+        type: "response.created",
+        sequence_number: 0,
+        response: { ...response, status: "in_progress" },
+      },
+      { type: "response.completed", sequence_number: 1, response },
+    ]);
   const events: Json[] = [
     { type: "response.created", response: { ...response, status: "in_progress", output: [] } },
     {
@@ -151,6 +161,7 @@ async function peer(jwt: string) {
         path,
         method: request.method,
         model: body.model,
+        generate: body.generate,
         tools,
         bearer: request.headers.get("authorization") === `Bearer ${modelKey}`,
         syntheticChatgptBearer: request.headers.get("authorization") === `Bearer ${jwt}`,
@@ -190,6 +201,9 @@ async function peer(jwt: string) {
             created_at: "2026-01-01T00:00:00Z",
           })),
         });
+      // Codex warms its WebSocket with generate:false before sending the actual turn.
+      if (path === "/v1/responses" && body.generate === false)
+        return responses(body.model, undefined, undefined, true);
       const firstTurn = ++turns === 1;
       if (turns > 4) {
         failures.push("Local peer exceeded four model turns");
@@ -315,6 +329,9 @@ async function peer(jwt: string) {
       res.end();
     }
   });
+  const modelSockets = installedModelPeer(server, modelKey, jwt, pool.fetch, (message) =>
+    failures.push(message),
+  );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   return {
@@ -325,6 +342,7 @@ async function peer(jwt: string) {
       return searches;
     },
     async close() {
+      modelSockets.close();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await Promise.all(pending);

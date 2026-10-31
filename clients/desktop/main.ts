@@ -11,12 +11,21 @@ import {
   Tray,
 } from "electron";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { brand } from "../../brand.ts";
 import { desktopController } from "./controller.ts";
 import { readDesktopRequest } from "./contracts.ts";
 
 const directory = join(app.getAppPath(), ".dist");
+function directoryOption(flag: string, fallback: string) {
+  const index = process.argv.indexOf(flag);
+  if (index < 0) return fallback;
+  const path = process.argv[index + 1];
+  if (!path || path.startsWith("--")) throw new Error(`Choose a directory for ${flag}.`);
+  return resolve(path);
+}
+app.setPath("userData", directoryOption("--user-data-dir", app.getPath("userData")));
+const configHome = directoryOption("--config-home", homedir());
 let window: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
@@ -48,7 +57,7 @@ else {
       web.setPermissionCheckHandler(() => false);
       controller = desktopController({
         home: join(app.getPath("userData"), "connection"),
-        configHome: homedir(),
+        configHome,
         env: process.env,
         executable: process.execPath,
         connectionEntry: app.isPackaged

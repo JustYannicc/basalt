@@ -5,6 +5,7 @@ import { pipeline } from "node:stream/promises";
 import type { ServiceCredentials } from "../contracts/connection.ts";
 import { forwardedResponseHeaders } from "./http-forward.ts";
 import { normalizeModelSearch } from "../contracts/tunnel.ts";
+import { modelHeaders } from "./model-headers.ts";
 
 export async function forwardWebsocket(
   incoming: IncomingMessage,
@@ -16,7 +17,7 @@ export async function forwardWebsocket(
   const target = new URL(incoming.url ?? "/v1/responses", service.origin);
   if (target.search) target.search = normalizeModelSearch(target.search);
   const headers: Record<string, string> = {
-    authorization: `Bearer ${service.token}`,
+    ...modelHeaders(incoming, service.token),
     connection: "Upgrade",
     upgrade: "websocket",
   };

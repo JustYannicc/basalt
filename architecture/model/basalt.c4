@@ -144,6 +144,7 @@ model {
 
     clientConnection = module "Client connection" {
       #basalt #deep
+      summary "Model callers authenticate with their local bearer or X-Api-Key. Direct model forwarding replaces the local key while retaining a separate provider login; native requests use only the device grant. Tools and operator controls retain their bearer-only authority."
       description "One headless process forwards inference and cloud tools over authenticated loopback HTTP and private stdio IPC. Native sign-in uses verifier-bound browser approval and the outbound device tunnel. Rotated grants reach the credential store before use; an uncertain refresh requires sign-in. Explicit direct keys remain available. Local agents have separate service permissions, bounded streams and cancellation. Interrupted operations are never replayed."
       metadata {
         code "clients/cli|clients/connection|clients/contracts"
@@ -369,6 +370,7 @@ model {
   basalt.clientConnection -[sync]-> basalt.brandConfig "read local setup markers"
   basalt.clientDesktop -[sync]-> basalt.clientConnection "supervise the owned process and use its typed controls"
   basalt.clientDesktop -[sync]-> basalt.brandConfig "read product name and default server"
+  basalt.clientDesktop -[sync]-> basalt.router "select the native browser approval origin"
   localClient -[sync]-> basalt.clientDesktop "sign in and review local agent configuration"
   basalt.setupInstaller -[sync]-> localClient "write backed-up marked client config; restart instructions"
 

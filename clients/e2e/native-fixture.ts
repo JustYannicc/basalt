@@ -3,9 +3,11 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { WebSocketServer } from "ws";
+import type { ConnectionView } from "../contracts/connection.ts";
 
 /** External protocol peer. It owns no client implementation or credential source. */
 export async function nativeFixture() {
+  let display: ConnectionView["display"];
   const sockets = new WebSocketServer({ noServer: true });
   const limits = {
     frameBytes: 32768,
@@ -127,6 +129,7 @@ export async function nativeFixture() {
           toolsOrganization: "personal-tools",
         },
         expiresAt: Date.now() + 3600000,
+        ...(display ? { display } : {}),
       });
     }
     if (request.url === "/api/auth/native/revoke") {
@@ -299,6 +302,13 @@ export async function nativeFixture() {
     },
     approve: () => {
       approved = true;
+    },
+    beginApproval: () => {
+      approved = false;
+      denial = false;
+    },
+    display: (value: ConnectionView["display"]) => {
+      display = value;
     },
     deny: () => {
       denial = true;

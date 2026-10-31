@@ -22,6 +22,7 @@ import { nativeClientCli } from "./native-client-cli.mjs";
 import { nativeSlowReader } from "./native-client-reader.mjs";
 import { verifyNativeDisplay } from "./native-display.mjs";
 import { verifyNativeSearch } from "./native-search.mjs";
+import { verifyNativeLocalHeaders } from "./native-local-headers.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -149,6 +150,7 @@ const program = Effect.gen(function* () {
         setDisplay: (enabled) => Effect.runPromise(pool.display(enabled)),
       });
       const modelSearch = await verifyNativeSearch({ worker, origin, headers, WebSocket });
+      const localModelHeaders = await verifyNativeLocalHeaders({ origin, token, WebSocket });
       const response = await fetch(`${origin}/v1/responses`, {
         method: "POST",
         headers,
@@ -251,6 +253,7 @@ const program = Effect.gen(function* () {
         revocationInterruptedStream: true,
         socketFinalOutputRetained: true,
         modelSearch,
+        localModelHeaders,
         tunneledBackpressure: backpressure,
         syntheticModelAndPrivatePoolPeers: true,
         shortenedExternalLifetimeHint: true,

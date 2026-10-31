@@ -15,7 +15,7 @@ declare global {
     signalboxClient: DesktopApi;
   }
 }
-const names = { claude: "Claude Code", codex: "Codex" } as const;
+import { AgentSetup } from "./AgentSetup.tsx";
 
 function App() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot>();
@@ -280,122 +280,25 @@ function App() {
           </div>
         )}
         {!starting && !signing && (connected || hasSetup) && (
-          <section className="section" aria-labelledby="agents-title">
-            <div className="heading">
-              <h2 id="agents-title">Connect your agents</h2>
-              <p className="secondary">
-                Choose which settings to update. Unchecking a configured agent restores its previous
-                settings.
-              </p>
-            </div>
-            <div>
-              {(["codex", "claude"] as const).map((client) => (
-                <div className="agent" key={client}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={selection[client] !== "undo"}
-                      disabled={disabled || (!connected && !configured[client])}
-                      onChange={(event) =>
-                        changeSelection(client, event.target.checked ? "connect" : "undo")
-                      }
-                    />
-                    {names[client]}
-                  </label>
-                  {configured[client] && selection[client] !== "undo" ? (
-                    <select
-                      aria-label={`${names[client]} settings`}
-                      value={selection[client]}
-                      disabled={disabled}
-                      onChange={(event) =>
-                        changeSelection(client, event.target.value === "keep" ? "keep" : "connect")
-                      }
-                    >
-                      <option value="keep">Keep current settings</option>
-                      <option value="connect" disabled={!connected}>
-                        Use this connection
-                      </option>
-                    </select>
-                  ) : (
-                    <span className="secondary">
-                      {configured[client]
-                        ? "Restore previous"
-                        : selection[client] === "connect"
-                          ? "Use this connection"
-                          : "Not configured"}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div className="actions">
-              <button
-                disabled={
-                  disabled ||
-                  !(
-                    Object.values(selection).includes("connect") ||
-                    (["claude", "codex"] as const).some(
-                      (client) => configured[client] && selection[client] === "undo",
-                    )
-                  )
-                }
-                onClick={() => review(false)}
-              >
-                Review changes
-              </button>
-              {hasSetup && (
-                <button className="plain" disabled={disabled} onClick={() => review(true)}>
-                  Undo agent setup
-                </button>
-              )}
-            </div>
-            {reviewing && (
-              <section className="notice review" aria-label="Review agent setup">
-                <h2>Review changes</h2>
-                <p>
-                  Only these managed settings will change. Backups are kept. Later unrelated edits
-                  stay yours.
-                </p>
-                {preview && (
-                  <ul>
-                    {preview.files.map((file) => (
-                      <li key={file.path}>
-                        <strong>
-                          {file.action === "keep"
-                            ? "Keep"
-                            : file.action === "restore"
-                              ? "Restore"
-                              : "Update"}
-                        </strong>
-                        <code>{file.path}</code>
-                        {file.fields.length > 0 && <small>{file.fields.join(", ")}</small>}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-                {snapshot.error && <p role="alert">{snapshot.error}</p>}
-                <div className="actions">
-                  <button
-                    className="primary"
-                    disabled={busy || !preview}
-                    onClick={() => {
-                      if (preview) void perform({ action: "setup-apply", id: preview.id });
-                    }}
-                  >
-                    Apply changes
-                  </button>
-                  <button
-                    disabled={busy}
-                    onClick={() => {
-                      void perform({ action: "cancel-preview" });
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </section>
-            )}
-          </section>
+          <AgentSetup
+            selection={selection}
+            configured={configured}
+            disabled={disabled}
+            connected={connected}
+            hasSetup={hasSetup}
+            reviewing={reviewing}
+            preview={preview}
+            busy={busy}
+            error={snapshot.error}
+            onSelection={changeSelection}
+            onReview={review}
+            onApply={(id) => {
+              void perform({ action: "setup-apply", id });
+            }}
+            onCancel={() => {
+              void perform({ action: "cancel-preview" });
+            }}
+          />
         )}
         {(notice || (snapshot?.error && !reviewing)) && (
           <p className="notice" role={snapshot?.error ? "alert" : "status"}>

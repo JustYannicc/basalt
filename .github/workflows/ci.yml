@@ -28,10 +28,18 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-desktop:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,6 +52,18 @@ jobs:
       - run: bun install --cwd clients/desktop --frozen-lockfile
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
+      - name: Package the unsigned development client
+        run: bun run --cwd clients/desktop package:${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-${{ matrix.platform }}
+          path: |
+            clients/desktop/.artifacts/*.dmg
+            clients/desktop/.artifacts/*.zip
+            clients/desktop/.artifacts/*.exe
+            clients/desktop/.artifacts/*.AppImage
+            clients/desktop/.artifacts/*.deb
+          if-no-files-found: error
   client-native-product:
     runs-on: ubuntu-latest
     timeout-minutes: 15

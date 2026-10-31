@@ -20,7 +20,7 @@ export function localRequest(request: IncomingMessage, authority: string): boole
   const origin = request.headers.origin;
   const originUrl = origin === undefined ? undefined : URL.parse(origin);
   const path = request.url;
-  const singular = ["host", "authorization", "origin"];
+  const singular = ["host", "authorization", "origin", "x-api-key"];
   for (const name of singular) {
     let count = 0;
     for (let i = 0; i < request.rawHeaders.length; i += 2)
@@ -52,7 +52,13 @@ export function findAgent(
   agents: readonly Agent[],
   capability: Capability,
 ) {
-  const token = bearerToken(request);
+  const apiKey = request.headers["x-api-key"];
+  const token =
+    capability === "models" && apiKey !== undefined
+      ? typeof apiKey === "string" && /^[a-zA-Z0-9_-]{32,128}$/u.test(apiKey)
+        ? apiKey
+        : undefined
+      : bearerToken(request);
   return agents.find(
     (agent) => tokenMatches(token, agent.tokenHash) && agent.capabilities.includes(capability),
   );
