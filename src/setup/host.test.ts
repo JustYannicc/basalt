@@ -29,7 +29,7 @@ function fixture(options: { tools?: Override; pool?: Override; onProductEvent?: 
       const response = await options.tools?.(call);
       if (response) return response;
       if (path === "/api/auth/get-session") return json({ user: { id: "user-1", emailVerified: true } });
-      if (path === "/api/auth/api-key/create") return json({ id: "tools-key-1", key: "exp_fake-tools-secret" });
+      if (path === "/api/auth/api-key/create") return json({ id: "tools-key-1", key: "ext_fake-tools-secret" });
       if (path === "/api/auth/organization/list") return json([{ id: "organization-1", metadata: JSON.stringify({ basaltPools: { "user-1": { app: "pool-1" } } }) }]);
       if (/^\/api\/organizations\/[^/]+\/apps\/[^/]+\/access$/.test(path)) return json({ creator: "user-1", audience: { kind: "private" } });
       if (path === "/api/auth/api-key/delete") return json({ success: true });
@@ -56,10 +56,10 @@ function fixture(options: { tools?: Override; pool?: Override; onProductEvent?: 
       if (path.endsWith("/revoke")) return json({ toolsKeyId: "tools-key-1" });
       if (path.endsWith("/revoked")) return json({ success: true });
       if (path.endsWith("/claim")) {
-        if (claimed) return json({ error: "raw internal failure exp_fake-tools-secret" }, 410);
+        if (claimed) return json({ error: "raw internal failure ext_fake-tools-secret" }, 410);
         claimed = true;
-        return input.format === "json" ? json({ version: 1, credentials: { toolsToken: "exp_fake-tools-secret" }, instructions: "Install" })
-          : new Response("Install with exp_fake-tools-secret");
+        return input.format === "json" ? json({ version: 1, credentials: { toolsToken: "ext_fake-tools-secret" }, instructions: "Install" })
+          : new Response("Install with ext_fake-tools-secret");
       }
       throw Error(`Unexpected pool path: ${path}`);
     } },
@@ -147,7 +147,7 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.equal(response.status, 200);
   secured(response);
   const wire = await response.text();
-  assert.ok(!wire.includes("exp_fake-tools-secret"));
+  assert.ok(!wire.includes("ext_fake-tools-secret"));
   assert.ok(!wire.includes("tools-key-1"));
   const result = JSON.parse(wire);
   assert.equal(result.computerId, computer.id);
@@ -175,10 +175,10 @@ test("native browser identity and signed pool intent precede token mint; the pas
   assert.equal(new URL(create.request.url).origin, origin);
   assert.equal(create.request.headers.get("origin"), origin);
   assert.equal(create.request.headers.get("cookie"), "executor-hosted.session_token=fake-cookie");
-  assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "organization-1" } });
+  assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "organization-1", scope: "tools" } });
   assert.equal(f.calls[3]!.input.user, "user-1");
   assert.equal(f.calls[3]!.input.intent, "signed-selection");
-  assert.equal(f.calls[3]!.input.toolsToken, "exp_fake-tools-secret");
+  assert.equal(f.calls[3]!.input.toolsToken, "ext_fake-tools-secret");
   // The person's own pool travels only inside the signed assertion.
   assert.deepEqual(f.calls[3]!.input.own, { pool: "pool-1", organization: "organization-1" });
 });
@@ -213,7 +213,7 @@ test("a computer on a shared pool gets a tools token pinned to the person's own 
   const response = await f.create();
   assert.equal(response.status, 200);
   const create = f.calls.find((call) => call.path === "/api/auth/api-key/create")!;
-  assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "own-organization" } });
+  assert.deepEqual(create.input, { name: "Laptop", metadata: { organization: "own-organization", scope: "tools" } });
   assert.equal(f.calls.find((call) => call.path === "/__setup/v1/links")!.input.intent, "signed-selection");
 
   // Without an own pool there is no own organization to pin tools to, so nothing is minted.
@@ -231,7 +231,7 @@ test("a deleted own pool still lets the person mint on a shared pool, pinned to 
     ? json([{ id: "own-organization", metadata: { basaltPools: { "user-1": { app: "deleted-pool" } } } }])
     : path.endsWith("/apps/deleted-pool/access") ? json({ _tag: "OrganizationForbidden" }, 403) : undefined });
   assert.equal((await deleted.create()).status, 200);
-  assert.deepEqual(deleted.calls.find((call) => call.path === "/api/auth/api-key/create")!.input.metadata, { organization: "own-organization" });
+  assert.deepEqual(deleted.calls.find((call) => call.path === "/api/auth/api-key/create")!.input.metadata, { organization: "own-organization", scope: "tools" });
   assert.equal(deleted.calls.find((call) => call.path.endsWith("/links"))!.input.own, undefined);
   const flaky = fixture({ pool: shared, tools: ({ path }) => path.endsWith("/access") ? new Response("busy", { status: 503 }) : undefined });
   const failed = await flaky.create();
@@ -393,12 +393,12 @@ test("claims need no session, negotiate JSON or markdown and consume exactly onc
     assert.equal(response.status, 200);
     secured(response);
     assert.match(response.headers.get("content-type")!, format === "json" ? /application\/json/ : /text\/markdown/);
-    assert.match(await response.text(), /exp_fake-tools-secret/);
+    assert.match(await response.text(), /ext_fake-tools-secret/);
     assert.equal(f.calls.length, 1);
     assert.equal(f.calls[0]!.input.format, format);
     const replay = await f.request("/setup/claim/opaque-link-token");
     assert.equal(replay.status, 410);
-    assert.ok(!(await replay.text()).includes("exp_fake-tools-secret"));
+    assert.ok(!(await replay.text()).includes("ext_fake-tools-secret"));
   }
   const f = fixture();
   assert.equal((await f.request("/setup/claim/opaque?format=html")).status, 400);
@@ -540,4 +540,16 @@ test("the old /setup page sends people to their own organization's Connect page"
   // A signed-in person whose session can't be used yet goes to the dashboard, never round a login loop.
   const unverified = fixture({ tools: ({ path }) => path === "/api/auth/get-session" ? json({ user: { id: "user-1", emailVerified: false } }) : undefined });
   assert.equal((await page(unverified)).headers.get("location"), "/");
+});
+
+
+test("a host that ignores tools-only scope cannot publish a broad setup token", async () => {
+  const f = fixture({ tools: ({ path }) => path === "/api/auth/api-key/create"
+    ? json({ id: "legacy-key", key: "exp_legacy-broad-secret" }) : undefined });
+  const response = await f.create();
+  assert.equal(response.status, 502);
+  assert.ok(!f.calls.some((call) => call.path === "/__setup/v1/links"));
+  assert.equal(f.calls.at(-1)!.path, "/api/auth/api-key/delete");
+  assert.deepEqual(f.calls.at(-1)!.input, { keyId: "legacy-key" });
+  assert.doesNotMatch(await response.text(), /exp_legacy-broad-secret/);
 });

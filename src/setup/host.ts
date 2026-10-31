@@ -123,12 +123,12 @@ async function createLink(request: Request, env: SetupEnv, payload: Record<strin
   if (payload.tools === false) return linkResponse(request, await body(await pool(request, env, "links", { ...payload, tools: undefined, ...own?.pool && { own } })));
   const organization = own?.organization;
   if (!organization) throw new SetupError(409, "Your own pool is still being set up. Try again in a minute.");
-  const created = await native(request, env, "api-key/create", { name: payload.name, metadata: { organization } });
+  const created = await native(request, env, "api-key/create", { name: payload.name, metadata: { organization, scope: "tools" } });
   if (!created.ok) throw new SetupError(502, "Could not create the tools token. Try again.");
   const key = await body(created);
   if (!text(key.id, 512)) throw new SetupError(502, "Could not create the tools token. Try again.");
   try {
-    if (!text(key.key)) throw new SetupError(502, "Could not create the tools token. Try again.");
+    if (!text(key.key) || !key.key.startsWith("ext_")) throw new SetupError(502, "Could not create the tools token. Try again.");
     const result = await body(await pool(request, env, "links", { ...payload, tools: undefined, ...own?.pool && { own }, toolsToken: key.key, toolsKeyId: key.id }));
     return linkResponse(request, result);
   } catch (error) {
