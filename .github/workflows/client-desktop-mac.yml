@@ -1,0 +1,33 @@
+name: Desktop macOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --cwd clients --frozen-lockfile
+      - run: bun install --cwd clients/desktop --frozen-lockfile
+      - run: bun run --cwd clients/desktop typecheck
+      - run: bun run --cwd clients/desktop build
+      - name: Package the unsigned development client
+        run: bun run --cwd clients/desktop package:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-desktop-mac
+          path: |
+            clients/desktop/.artifacts/*.dmg
+            clients/desktop/.artifacts/*.zip
+          if-no-files-found: error
