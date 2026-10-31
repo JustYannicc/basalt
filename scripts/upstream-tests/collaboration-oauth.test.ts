@@ -44,7 +44,19 @@ test("collaboration clients match catalog authorization servers and restrict tok
   const miro = configured.find(client => client.id === "miro")!;
   assert.equal(miro.server.authorizationUrl, "https://miro.com/oauth/authorize");
   assert.equal(miro.server.tokenUrl, "https://api.miro.com/v1/oauth/token");
-  assert.deepEqual(miro.defaultScopes, ["boards:read", "boards:write"]);
+  assert.deepEqual(miro.defaultScopes, [
+    "boards:read",
+    "boards:write",
+    "identity:read",
+    "identity:write",
+    "microphone:listen",
+    "screen:record",
+    "team:read",
+    "team:write",
+    "webcam:record",
+    "auditlogs:read",
+    "sessions:delete",
+  ]);
   assert.deepEqual(miro.placement.hosts, ["api.miro.com"]);
 });
 
