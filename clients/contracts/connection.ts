@@ -8,9 +8,13 @@ const Token = Schema.NonEmptyString.check(
 );
 export const Origin = Schema.String.check(
   Schema.makeFilter((value) => {
-    const url = URL.parse(value);
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return false;
+    }
     return (
-      url !== null &&
       url.origin === value &&
       (url.protocol === "https:" ||
         (url.protocol === "http:" &&

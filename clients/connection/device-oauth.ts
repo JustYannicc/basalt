@@ -68,19 +68,29 @@ export async function tokenRequest(
 }
 
 /** RFC 8628 pacing is protocol behavior, not a retry of a service operation. */
+export interface ProofKeyCrypto {
+  randomBytes(): Uint8Array;
+  sha256(bytes: Uint8Array): Promise<Uint8Array>;
+}
+const webCrypto: ProofKeyCrypto = {
+  randomBytes: () => crypto.getRandomValues(new Uint8Array(32)),
+  sha256: async (bytes) =>
+    new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes))),
+};
 export async function signInDevice(
   originInput: string,
   options: {
     signal: AbortSignal;
     show: (url: string, code: string) => Promise<void>;
+    crypto?: ProofKeyCrypto;
   },
 ): Promise<DeviceCredentials> {
   const origin = Schema.decodeUnknownSync(Origin)(originInput);
-  const verifierBytes = crypto.getRandomValues(new Uint8Array(32));
+  const cryptography = options.crypto ?? webCrypto;
+  const verifierBytes = cryptography.randomBytes();
+  if (verifierBytes.length !== 32) throw new Error("Invalid proof key entropy.");
   const verifier = base64url(verifierBytes);
-  const challenge = base64url(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))),
-  );
+  const challenge = base64url(await cryptography.sha256(new TextEncoder().encode(verifier)));
   const registration = await authRequest(
     origin,
     "/api/auth/oauth2/register",
