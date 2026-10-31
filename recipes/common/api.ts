@@ -1,3 +1,4 @@
+import { decodeJson, json } from "apps";
 import type { WorkflowStepContext, MutationContext } from "apps";
 import { configuration } from "./configuration.ts";
 import { requirements, origin } from "./installation.ts";
@@ -63,7 +64,7 @@ export async function api(
     }
     throw new ReadUnavailable(response.status, reason);
   }
-  return response.json();
+  return decodeJson(response, json());
 }
 export function tool(
   context: Context,
@@ -75,16 +76,4 @@ export function tool(
     kind,
     input: selected.input,
   });
-}
-export function accountLink(context: Context, id: string) {
-  return new URL(
-    `/org/${encodeURIComponent(organization(context))}/accounts?account=${encodeURIComponent(id)}`,
-    origin,
-  ).href;
-}
-export function appLink(context: Context, app: string) {
-  return new URL(
-    `/org/${encodeURIComponent(organization(context))}/apps/${encodeURIComponent(app)}`,
-    origin,
-  ).href;
 }

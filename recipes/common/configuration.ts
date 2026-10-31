@@ -23,7 +23,11 @@ export const configuration = {
       repository: string;
     },
     availability: null as null | { publicUrl: string },
-    workflowApps: [] as string[],
+    /** The expected workflow names and maximum age of a successful scan, including schedule slack. */
+    workflowApps: [] as Array<{
+      app: string;
+      workflows: Array<{ name: string; maximumAgeMinutes: number }>;
+    }>,
     /** Supply these reads only after verifying a permitted connector's actual metric contract. */
     runtime: null as null | { app: string; tool: string; input: Record<string, unknown> },
     httpErrors: null as null | { app: string; tool: string; input: Record<string, unknown> },

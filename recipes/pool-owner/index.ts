@@ -10,7 +10,7 @@ import {
   type MutationContext,
   type WorkflowContext,
 } from "apps";
-import { requirements, origin } from "../common/installation.ts";
+import { requirements } from "../common/installation.ts";
 import { configuration } from "../common/configuration.ts";
 import { observe } from "../common/human.ts";
 import { readQuota } from "../common/reads.ts";
@@ -29,10 +29,7 @@ const checkMyPool = workflow(
     );
     if (!pool || !configuration.organization)
       return { status: "unconfigured", code: "choose-owned-pool-and-provider" };
-    const link = new URL(
-      `/org/${encodeURIComponent(configuration.organization)}/apps/${encodeURIComponent(pool.app)}?view=app`,
-      origin,
-    ).href;
+    const link = `/org/${encodeURIComponent(configuration.organization)}/apps/${encodeURIComponent(pool.app)}?view=app`;
     return observe(
       ctx,
       `pool:${input.target}`,

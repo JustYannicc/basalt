@@ -219,3 +219,42 @@ test("event spikes use event volume and retain a fifteen-minute recovery window"
   state = remember(state, errorSpikeObservation(now + 20 * 60000, 0, null, state));
   assert.equal(state.open, false);
 });
+
+test("a different failed release replaces the question and decline without waiting for recovery", () => {
+  const failure = {
+    cursor: "release:1:1:failure",
+    decision: "release:1:1",
+    at: now,
+    sourceAt: now,
+    verdict: "action" as const,
+    code: "production-release-failed",
+    failures: 0,
+    successes: 0,
+    since: now,
+  };
+  let state = remember(emptyCheckpoint(), failure);
+  state = {
+    ...state,
+    declined: true,
+    notified: "sent",
+    receipt: "opaque-receipt",
+    ownerRun: "run-a",
+    question: { id: "question-a", app: "copy", reviewUrl: "/approvals", run: "run-a" },
+  };
+  const same = remember(state, { ...failure, cursor: "release:1:1:updated", at: now + 1 });
+  assert.equal(same.episode, 1);
+  assert.equal(same.declined, true);
+  const replacement = remember(same, {
+    ...failure,
+    cursor: "release:2:1:failure",
+    decision: "release:2:1",
+    sourceAt: now + 2,
+    at: now + 2,
+  });
+  assert.equal(replacement.episode, 2);
+  assert.equal(replacement.declined, false);
+  assert.equal(replacement.notified, "none");
+  assert.equal(replacement.question, undefined);
+  assert.equal(replacement.ownerRun, undefined);
+  assert.equal(replacement.receipt, undefined);
+});

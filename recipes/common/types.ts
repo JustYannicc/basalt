@@ -15,6 +15,7 @@ export interface Observation {
   sourceAt?: number;
   evidenceUrl?: string;
   attemptedSha?: string;
+  decision?: string;
 }
 export interface Checkpoint {
   revision: number;
@@ -22,7 +23,8 @@ export interface Checkpoint {
   episode: number;
   open: boolean;
   declined: boolean;
-  notified: "none" | "claimed" | "sent" | "uncertain" | "refused";
+  notified: "none" | "claimed" | "submitted" | "sent" | "uncertain" | "refused";
+  deliveryAt?: number;
   receipt?: string;
   question?: { id: string; app: string; reviewUrl: string; run: string };
   mutedUntil: number;
@@ -56,7 +58,9 @@ export function remember(previous: Checkpoint, observation: Observation): Checkp
   )
     return previous;
   const recovered = observation.verdict === "healthy" || observation.verdict === "withdraw";
-  const opening = observation.verdict === "action" && !previous.open;
+  const replaced =
+    observation.decision !== undefined && observation.decision !== previous.observation.decision;
+  const opening = observation.verdict === "action" && (!previous.open || replaced);
   const {
     receipt: _receipt,
     question: _question,

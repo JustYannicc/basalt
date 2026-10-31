@@ -10,7 +10,7 @@ import {
   type MutationContext,
   type WorkflowContext,
 } from "apps";
-import { requirements, origin } from "../common/installation.ts";
+import { requirements } from "../common/installation.ts";
 import { configuration } from "../common/configuration.ts";
 import { observe } from "../common/human.ts";
 import { readConnection, connectionTargets } from "../common/reads.ts";
@@ -26,10 +26,7 @@ const checkMyConnections = workflow(
   async (ctx: WorkflowContext<typeof requirements>, input) => {
     const organization = configuration.organization;
     if (!organization) return { status: "unconfigured", code: "organization-required" };
-    const link = new URL(
-      `/org/${encodeURIComponent(organization)}/accounts?account=${encodeURIComponent(input.target)}`,
-      origin,
-    ).href;
+    const link = `/org/${encodeURIComponent(organization)}/accounts?account=${encodeURIComponent(input.target)}`;
     return observe(
       ctx,
       `account:${input.target}`,

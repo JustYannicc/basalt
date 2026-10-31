@@ -1,3 +1,3 @@
 CREATE TABLE checkpoints (key TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL);
-CREATE TABLE controls (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT, configuration_revision TEXT NOT NULL DEFAULT '', delivery_enabled INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE controls (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT, configuration_revision TEXT NOT NULL DEFAULT '', delivery_enabled INTEGER NOT NULL DEFAULT 0, configured_at INTEGER NOT NULL DEFAULT 0);
 INSERT INTO controls (id) VALUES (1);

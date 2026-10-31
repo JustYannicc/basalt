@@ -51,6 +51,9 @@ and reports `delivery-uncertain`; do not retry it or switch channels blindly.
 Reconcile it using the provider's receipt/history. `retryRefusedDelivery` works
 only after an identified refusal before execution, never after an ambiguous send.
 Saving an answer is shown separately from a verified healthy resource.
+The send callback commits its submission claim before calling the connector. If
+that callback replays after a lost receipt, it cannot acquire another submission.
+An interrupted attempt stays uncertain even if it stopped before sending.
 
 Production metric readers are deliberately explicit. The GitHub release reader
 expects the documented `workflow_runs` response from the selected production
@@ -60,6 +63,12 @@ projections from an existing permitted connector query. Their checks in
 missing query or denominator returns unknown/unconfigured; HTTP 401 and Worker
 invocation success are not readiness evidence. Do not enable those schedules
 until their actual connector contract is verified.
+
+For workflow health, list each watched recipe app, its expected workflow names
+and the maximum successful-scan age in minutes. Include schedule slack. The
+check reads current delivery checkpoints while a question waits, and detects
+missed successful scans separately from legitimate human waits. A missing or
+unconfigured watch stays unknown.
 
 An approved budget and complete authorized service-wide capacity inventory are
 not supplied here. Those workflows report unconfigured. Forecast shortage still

@@ -51,6 +51,7 @@ export async function readRelease(step: Step): Promise<Observation> {
       : undefined;
     return {
       cursor: `release:${id}:${attempt}:${text(run.conclusion) ?? "unknown"}`,
+      decision: `release:${id}:${attempt}`,
       at: now,
       sourceAt: at,
       ...(sha && /^[a-f0-9]{40,64}$/.test(sha) ? { attemptedSha: sha } : {}),
@@ -197,70 +198,4 @@ export async function readErrorSpike(step: Step, previous: Checkpoint) {
     return unknown(now, "error-counts-unavailable");
   }
 }
-export async function readWorkflowHealth(step: Step) {
-  const now = Date.now();
-  if (!configuration.operator.workflowApps.length)
-    return unknown(now, "workflow-watch-unconfigured");
-  let failure = false,
-    seen = false;
-  for (const app of configuration.operator.workflowApps) {
-    let cursor = "",
-      count = 0;
-    const latest = new Map<string, { at: number; failed: boolean }>();
-    do {
-      let response;
-      try {
-        response = record(
-          await api(
-            step,
-            "GET",
-            `apps/${encodeURIComponent(app)}/workflow-runs?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
-          ),
-        );
-      } catch {
-        return unknown(now, "workflow-history-unavailable");
-      }
-      for (const value of list(response?.items)) {
-        const run = record(value),
-          workflow = text(run?.workflow),
-          at = instant(run?.createdAt);
-        if (
-          !workflow ||
-          at === undefined ||
-          !["complete", "errored"].includes(text(run?.status) ?? "")
-        )
-          continue;
-        const prior = latest.get(workflow);
-        if (!prior || at > prior.at)
-          latest.set(workflow, {
-            at,
-            failed:
-              run?.status === "errored" ||
-              ["delivery-uncertain", "delivery-refused"].includes(
-                text(record(run?.output)?.status) ?? "",
-              ),
-          });
-      }
-      count += list(response?.items).length;
-      cursor = text(response?.next) ?? "";
-      if (cursor && count >= 1000) return unknown(now, "workflow-history-incomplete");
-    } while (cursor);
-    for (const run of latest.values()) {
-      seen = true;
-      failure ||= run.failed;
-    }
-  }
-  return {
-    cursor: `workflow-health:${now}`,
-    at: now,
-    code: !seen
-      ? "no-completed-scans"
-      : failure
-        ? "workflow-check-failed"
-        : "workflow-check-healthy",
-    verdict: !seen ? "unknown" : failure ? "action" : "healthy",
-    failures: 0,
-    successes: 0,
-    since: now,
-  } satisfies Observation;
-}
+export { readWorkflowHealth } from "./workflow-health.ts";

@@ -5,8 +5,13 @@ type Reader = QueryContext<typeof requirements> | MutationContext<typeof require
 type Writer = MutationContext<typeof requirements>;
 export function controls(ctx: Reader) {
   const row = ctx.sql
-    .exec<{ owner: string | null; configuration_revision: string; delivery_enabled: number }>(
-      "SELECT owner, configuration_revision, delivery_enabled FROM controls WHERE id = 1",
+    .exec<{
+      owner: string | null;
+      configuration_revision: string;
+      delivery_enabled: number;
+      configured_at: number;
+    }>(
+      "SELECT owner, configuration_revision, delivery_enabled, configured_at FROM controls WHERE id = 1",
     )
     .one();
   if (row.owner === null || row.owner !== ctx.user.id)

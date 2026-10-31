@@ -31,10 +31,11 @@ export const configure = mutation(
       if (current.owner !== null && current.owner !== ctx.user.id)
         throw new Error("Use your own private copy.");
       tx.exec(
-        "UPDATE controls SET owner = ?, configuration_revision = ?, delivery_enabled = ? WHERE id = 1",
+        "UPDATE controls SET owner = ?, configuration_revision = ?, delivery_enabled = ?, configured_at = ? WHERE id = 1",
         ctx.user.id,
         revision,
         input.deliveryEnabled ? 1 : 0,
+        Date.now(),
       );
       return { deliveryEnabled: input.deliveryEnabled, revision };
     });

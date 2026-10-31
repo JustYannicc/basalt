@@ -13,6 +13,7 @@ import { requirements } from "./installation.ts";
 import { remember, type Checkpoint, type Observation } from "./types.ts";
 import { controls, read, write } from "./state.ts";
 import { controlTools } from "./controls.ts";
+import { claimNudge, beginDelivery, deliveryResult, deliveryHealth } from "./delivery-storage.ts";
 export { settings } from "./controls.ts";
 type Writer = MutationContext<typeof requirements>;
 const keyInput = object({ key: string() });
@@ -43,6 +44,7 @@ export const saveObservation = mutation(
       sourceAt: number().optional(),
       evidenceUrl: string().optional(),
       attemptedSha: string().optional(),
+      decision: string().optional(),
     }),
   },
   async (ctx: Writer, input) => {
@@ -70,9 +72,11 @@ export const saveObservation = mutation(
         ...(input.sourceAt === undefined ? {} : { sourceAt: input.sourceAt }),
         ...(input.evidenceUrl === undefined ? {} : { evidenceUrl: input.evidenceUrl }),
         ...(input.attemptedSha === undefined ? {} : { attemptedSha: input.attemptedSha }),
+        ...(input.decision === undefined ? {} : { decision: input.decision }),
       };
       const next = remember(before, observation);
-      if (before.open && !next.open) withdrawn = before.question;
+      if (before.open && (!next.open || next.episode !== before.episode))
+        withdrawn = before.question;
       return next;
     });
     return { state, withdrawn: withdrawn ?? null };
@@ -141,66 +145,6 @@ export const attachQuestion = mutation(
     return attached;
   },
 );
-export const claimNudge = mutation(
-  {
-    approval: undefined,
-    input: object({ key: string(), episode: number(), question: string(), now: number() }),
-  },
-  async (ctx: Writer, input) => {
-    const revision = await configurationRevision();
-    let claimed = false;
-    write(ctx, input.key, (current, tx) => {
-      const controls = tx
-        .exec<{ delivery_enabled: number; configuration_revision: string }>(
-          "SELECT delivery_enabled, configuration_revision FROM controls WHERE id = 1",
-        )
-        .one();
-      if (controls.delivery_enabled !== 1 || controls.configuration_revision !== revision)
-        return current;
-      if (
-        !current.open ||
-        current.episode !== input.episode ||
-        current.question?.id !== input.question ||
-        current.notified !== "none" ||
-        current.declined ||
-        current.mutedUntil > input.now ||
-        current.observation.verdict !== "action"
-      )
-        return current;
-      claimed = true;
-      return { ...current, revision: current.revision + 1, notified: "claimed" };
-    });
-    return claimed;
-  },
-);
-export const deliveryResult = mutation(
-  {
-    approval: undefined,
-    input: object({
-      key: string(),
-      episode: number(),
-      status: string(),
-      receipt: string().optional(),
-    }),
-  },
-  async (ctx: Writer, input) => {
-    if (
-      !["sent", "uncertain", "refused"].includes(input.status) ||
-      (input.receipt?.length ?? 0) > 200
-    )
-      throw new Error("Invalid delivery receipt.");
-    return write(ctx, input.key, (current) =>
-      current.episode !== input.episode || current.notified !== "claimed"
-        ? current
-        : {
-            ...current,
-            revision: current.revision + 1,
-            notified: input.status as Checkpoint["notified"],
-            ...(input.receipt === undefined ? {} : { receipt: input.receipt }),
-          },
-    );
-  },
-);
 export const disposition = mutation(
   {
     approval: undefined,
@@ -232,5 +176,7 @@ export const storageTools = {
   attachQuestion,
   claimNudge,
   deliveryResult,
+  beginDelivery,
+  deliveryHealth,
   disposition,
 };

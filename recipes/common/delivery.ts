@@ -4,7 +4,7 @@ import { configuration } from "./configuration.ts";
 import { api, ReadUnavailable, record, text, tool } from "./api.ts";
 import { requirements } from "./installation.ts";
 import { quietAt } from "./conditions.ts";
-import { claimNudge, deliveryResult } from "./storage.ts";
+import { claimNudge, deliveryResult } from "./delivery-storage.ts";
 import type { Checkpoint, Observation } from "./types.ts";
 type Flow = WorkflowContext<typeof requirements>;
 type Step = WorkflowStepContext<typeof requirements>;
@@ -87,6 +87,16 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
         return { status: "refused" };
       const channel = configuration.channel;
       if (channel === null) return { status: "refused" };
+      const acquired = await tool(
+        step,
+        {
+          app: question.app,
+          tool: "beginDelivery",
+          input: { key, episode: previous.episode, question: question.id },
+        },
+        "mutation",
+      );
+      if (acquired !== true) return { status: "uncertain" };
       const result = await tool(
         step,
         {

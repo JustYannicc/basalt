@@ -11,7 +11,7 @@ import {
   type WorkflowContext,
   type WorkflowStepContext,
 } from "apps";
-import { requirements, origin } from "../common/installation.ts";
+import { requirements } from "../common/installation.ts";
 import { configuration } from "../common/configuration.ts";
 import { observe } from "../common/human.ts";
 import {
@@ -27,8 +27,7 @@ import { startTick } from "../common/triggers.ts";
 import { storageTools } from "../common/storage.ts";
 
 const input = object({ target: string(), tick: number() });
-const page = () =>
-  new URL(`/org/${encodeURIComponent(configuration.organization)}/apps`, origin).href;
+const page = () => `/org/${encodeURIComponent(configuration.organization)}/apps`;
 function check(
   description: string,
   read: (
