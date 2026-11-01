@@ -80,7 +80,7 @@ export function App({ api }: { api: PoolApi }) {
           {productName} <span className="font-normal text-muted-foreground">/ Pool</span>
         </span>
         <div className="flex items-center gap-2">
-          {view?.isOwner && shareHref && (
+          {shareHref && (
             <a href={shareHref} target="_blank" rel="noopener" className={buttonClass("outline", "sm")}>
               Share <ExternalIcon />
             </a>

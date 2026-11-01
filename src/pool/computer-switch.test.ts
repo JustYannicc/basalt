@@ -29,7 +29,7 @@ test("non-owner context is pool-scoped while browser setup lists every personal 
   assert.deepEqual(await validation.json(), { pool: pool.pool, owner, organization: pool.organization, name: pool.name });
   const ownerContext = await f.context(owner);
   const ownerView = await ownerContext.json() as { intent: string; shareHref: string };
-  assert.equal(ownerView.shareHref, `https://setup.example/share#intent=${ownerView.intent}`);
+  assert.equal(ownerView.shareHref, `https://setup.example/org/${pool.organization}/apps/${pool.pool}?view=settings`);
 });
 
 test("an unknown pool learned from context has an empty display name", async () => {

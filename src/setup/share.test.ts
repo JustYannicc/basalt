@@ -1,245 +1,91 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { openEnvelope } from "../pool/token.ts";
+import { setupTtl, signIntent } from "../pool/setup-links.ts";
 import type { SetupEnv } from "./session.ts";
 import { handleShare } from "./share.ts";
 
 const origin = "https://share.example";
 const secret = "ab".repeat(32);
-const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
-type Call = { path: string; method: string; request: Request; input: Record<string, unknown> };
-type Override = (call: Call) => Response | undefined | Promise<Response | undefined>;
+const claims = { pool: "pool-1", owner: "owner-1", organization: "organization-1", user: "manager-1" };
 const accessPath = "/api/organizations/organization-1/apps/pool-1/access";
+const json = (value: unknown, status = 200) => Response.json(value, { status });
 
-function fixture(options: { tools?: Override; pool?: Override; audience?: string } = {}) {
-  const calls: Call[] = [];
-  let audience = options.audience ?? "private";
+function fixture(options: { canManage?: boolean; user?: string; status?: number } = {}) {
+  const calls: Request[] = [];
   const env: SetupEnv = {
     POOL_APP_SIGNING_KEY: secret,
     TOOLS_SERVICE: { fetch: async (request) => {
-      const url = new URL(request.url);
-      const input = request.method === "GET" ? {} : await request.json() as Record<string, unknown>;
-      const call = { path: url.pathname, method: request.method, request, input };
-      calls.push(call);
-      const response = await options.tools?.(call);
-      if (response) return response;
-      if (url.pathname === "/api/auth/get-session") return json({ user: { id: "owner-1", emailVerified: true } });
-      if (url.pathname === "/api/auth/organization/list-members") return json({ members: [
-        { id: "member-owner", userId: "owner-1", role: "owner", user: { id: "owner-1", name: "Owner", email: "owner@example.test", image: "x" } },
-        { id: "member-2", userId: "user-2", role: "member", user: { id: "user-2", name: "", email: "two@example.test" } },
-      ], total: 2 });
-      if (url.pathname === "/api/auth/organization/list-invitations") return json([
-        { id: "invite-1", email: "three@example.test", status: "pending", role: "member", expiresAt: "2026-11-01T00:00:00.000Z", inviterId: "owner-1" },
-        { id: "invite-0", email: "old@example.test", status: "accepted" },
-      ]);
-      if (url.pathname === accessPath && request.method === "GET") return json({ audience: { kind: audience }, revision: `rev-${audience}` });
-      if (url.pathname === accessPath && request.method === "PATCH") { audience = (input.audience as { kind: string }).kind; return json({}); }
-      if (url.pathname === "/api/auth/organization/invite-member") return json({ id: "invite-2", email: input.email, role: input.role, expiresAt: "2026-11-01T00:00:00.000Z" });
-      if (url.pathname === "/api/auth/organization/cancel-invitation") return json({});
-      if (url.pathname === "/api/auth/organization/remove-member") return json({ member: {} });
-      throw Error(`Unexpected native path: ${url.pathname}`);
-    } },
-    POOL_SERVICE: { fetch: async (request) => {
+      calls.push(request);
       const path = new URL(request.url).pathname;
-      const input = await openEnvelope(secret, "sbs1", (await request.json() as { envelope: string }).envelope) as Record<string, unknown>;
-      const call = { path, method: request.method, request, input };
-      calls.push(call);
-      const response = await options.pool?.(call);
-      if (response) return response;
-      if (path === "/__setup/v1/validate") return json({ pool: "pool-1", organization: "organization-1", owner: "owner-1", name: "Owner's pool" });
-      throw Error(`Unexpected pool path: ${path}`);
+      if (path === "/api/auth/get-session") return json({ user: { id: options.user ?? claims.user, emailVerified: true } });
+      assert.equal(path, accessPath);
+      return json({ canManage: options.canManage ?? true, canUse: false }, options.status ?? 200);
     } },
+    POOL_SERVICE: { fetch: async () => { throw Error("The old sharing adapter must never call the pool"); } },
   };
   const request = (path: string, init: RequestInit = {}) => {
-    const headers = new Headers({ cookie: "executor-hosted.session_token=fake-cookie", origin });
+    const headers = new Headers({ cookie: "executor-hosted.session_token=synthetic", origin });
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     return handleShare(new Request(`${origin}${path}`, { ...init, headers }), env);
   };
-  const write = (path: string, body: unknown, method = "POST", headers = {}) =>
-    request(path, { method, headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
-  return { calls, request, write, audience: () => audience };
+  const intent = (key = secret, expiresAt = Date.now() + setupTtl) => signIntent(key, { ...claims, expiresAt });
+  const destination = async () => `/share/v1/destination?intent=${encodeURIComponent(await intent())}`;
+  return { calls, request, intent, destination };
 }
 
-test("the owner reads people and pending invitations, and nothing else about the organization", async () => {
+test("old invitations, membership removal and cap routes are retired without any service call", async () => {
   const f = fixture();
-  const response = await f.request("/share/v1/pool?intent=signed");
+  for (const [method, path] of [
+    ["POST", "/share/v1/invitations"],
+    ["DELETE", "/share/v1/invitations/invite-1"],
+    ["DELETE", "/share/v1/members/member-1"],
+    ["PUT", "/share/v1/members/member-1/cap"],
+    ["GET", "/share/v1/pool?intent=old"],
+    ["GET", "/share/v1/usage?intent=old"],
+  ]) {
+    const response = await f.request(path!, { method, ...(method === "GET" ? {} : { body: "{}" }) });
+    assert.equal(response.status, 410);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+  assert.deepEqual(f.calls, []);
+});
+
+test("an old bookmark opens native settings for a current manager without granting pool use", async () => {
+  const f = fixture();
+  const response = await f.request(await f.destination());
   assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { href: "/org/organization-1/apps/pool-1?view=settings" });
   assert.equal(response.headers.get("cache-control"), "no-store");
-  assert.deepEqual(await response.json(), {
-    pool: { id: "pool-1", name: "Owner's pool" },
-    audience: "private",
-    members: [
-      { id: "member-owner", name: "Owner", email: "owner@example.test", owner: true, you: true },
-      { id: "member-2", name: "", email: "two@example.test", owner: false, you: false },
-    ],
-    invitations: [{ id: "invite-1", email: "three@example.test", expiresAt: "2026-11-01T00:00:00.000Z", link: `${origin}/invite?invitation=invite-1` }],
-  });
-  const validate = f.calls.find((call) => call.path === "/__setup/v1/validate")!;
-  assert.equal(validate.input.user, "owner-1");
-  assert.equal(validate.input.intent, "signed");
-  const members = f.calls.find((call) => call.path === "/api/auth/organization/list-members")!;
-  assert.equal(new URL(members.request.url).searchParams.get("organizationId"), "organization-1");
-  assert.equal(members.request.headers.get("cookie"), "executor-hosted.session_token=fake-cookie");
+  assert.deepEqual(f.calls.map((request) => [request.method, new URL(request.url).pathname]), [
+    ["GET", "/api/auth/get-session"], ["GET", accessPath],
+  ]);
+  assert.equal(f.calls[1]!.headers.get("cookie"), "executor-hosted.session_token=synthetic");
 });
 
-test("only the pool's owner can open sharing; members get a clear refusal and no organization reads", async () => {
-  const f = fixture({ pool: ({ path }) => path.endsWith("/validate") ? json({ pool: "pool-1", organization: "organization-1", owner: "someone-else" }) : undefined });
-  const response = await f.request("/share/v1/pool?intent=signed");
-  assert.equal(response.status, 403);
-  assert.equal((await response.json()).error, "Only the pool's owner can share it.");
-  assert.deepEqual(f.calls.map((call) => call.path), ["/api/auth/get-session", "/__setup/v1/validate"]);
-  const invite = await f.write("/share/v1/invitations", { intent: "signed", email: "a@example.test" });
-  assert.equal(invite.status, 403);
-  assert.equal(f.calls.some((call) => call.path.includes("invite-member") || call.path === accessPath), false);
+test("fresh native management authority controls the destination", async () => {
+  const f = fixture({ canManage: false });
+  assert.equal((await f.request(await f.destination())).status, 403);
+  const unavailable = fixture({ status: 503 });
+  assert.equal((await unavailable.request(await unavailable.destination())).status, 502);
+  const expiredSession = fixture({ status: 401 });
+  assert.equal((await expiredSession.request(await expiredSession.destination())).status, 401);
 });
 
-test("inviting shares a private pool with its organization first, then invites as member only", async () => {
+test("forged, expired and another person's bookmark never reaches app access", async () => {
   const f = fixture();
-  const response = await f.write("/share/v1/invitations", { intent: "signed", email: " New@Example.test " });
-  assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).invitation, {
-    id: "invite-2", email: "new@example.test", expiresAt: "2026-11-01T00:00:00.000Z", link: `${origin}/invite?invitation=invite-2`,
-  });
-  const order = f.calls.map((call) => `${call.method} ${call.path}`).filter((step) => step.includes("access") || step.includes("invite-member"));
-  assert.deepEqual(order, [`GET ${accessPath}`, `PATCH ${accessPath}`, "POST /api/auth/organization/invite-member"]);
-  const patch = f.calls.find((call) => call.method === "PATCH")!;
-  assert.deepEqual(patch.input, { audience: { kind: "everyone" }, revision: "rev-private" });
-  assert.equal(patch.request.headers.get("origin"), origin);
-  const invite = f.calls.find((call) => call.path.endsWith("/invite-member"))!;
-  assert.deepEqual(invite.input, { email: "new@example.test", role: "member", organizationId: "organization-1", resend: true });
-  assert.equal(f.audience(), "everyone");
-});
-
-test("a chosen role is never accepted; group and everyone sharing are left as they are", async () => {
-  const roleAttempt = fixture();
-  for (const role of ["admin", "owner", "member"]) {
-    const response = await roleAttempt.write("/share/v1/invitations", { intent: "signed", email: "a@example.test", role });
-    assert.equal(response.status, 400);
+  for (const token of ["old", await f.intent("cd".repeat(32)), await f.intent(secret, Date.now() - 1)]) {
+    const response = await f.request(`/share/v1/destination?intent=${encodeURIComponent(token)}`);
+    assert.equal(response.status, 401);
   }
-  assert.equal(roleAttempt.calls.length, 0);
-  for (const audience of ["groups", "everyone"]) {
-    const f = fixture({ audience });
-    assert.equal((await f.write("/share/v1/invitations", { intent: "signed", email: "a@example.test" })).status, 200);
-    assert.equal(f.calls.some((call) => call.method === "PATCH"), false);
-    assert.equal(f.audience(), audience);
-  }
+  assert.equal(f.calls.some((request) => new URL(request.url).pathname === accessPath), false);
+  const other = fixture({ user: "someone-else" });
+  assert.equal((await other.request(await other.destination())).status, 401);
+  assert.equal(other.calls.length, 1);
 });
 
-test("a sharing conflict is read again once; a failed share sends no invitation", async () => {
-  let patches = 0;
-  const retried = fixture({ tools: ({ method, path }) => method === "PATCH" && path === accessPath && ++patches === 1 ? json({ _tag: "AccessConflict" }, 409) : undefined });
-  assert.equal((await retried.write("/share/v1/invitations", { intent: "signed", email: "a@example.test" })).status, 200);
-  assert.equal(patches, 2);
-  const failing = fixture({ tools: ({ method, path }) => method === "PATCH" && path === accessPath
-    ? json({ message: "Couldn't update the pool's computers. Try again." }, 503) : undefined });
-  const response = await failing.write("/share/v1/invitations", { intent: "signed", email: "a@example.test" });
-  assert.equal(response.status, 502);
-  assert.equal(failing.calls.some((call) => call.path.endsWith("/invite-member")), false);
-  const invalid = fixture();
-  assert.equal((await invalid.write("/share/v1/invitations", { intent: "signed", email: "not an email" })).status, 400);
-  assert.equal(invalid.calls.some((call) => call.path.endsWith("/invite-member")), false);
-});
-
-test("removing a member goes through native removal; its refusal reaches the owner and can be retried", async () => {
+test("bookmark resolution requires GET and a browser session", async () => {
   const f = fixture();
-  const response = await f.write("/share/v1/members/member-2", { intent: "signed" }, "DELETE");
-  assert.equal(response.status, 200);
-  const removal = f.calls.find((call) => call.path.endsWith("/remove-member"))!;
-  assert.deepEqual(removal.input, { memberIdOrEmail: "member-2", organizationId: "organization-1" });
-
-  const owner = fixture();
-  const self = await owner.write("/share/v1/members/member-owner", { intent: "signed" }, "DELETE");
-  assert.equal(self.status, 409);
-  assert.equal(owner.calls.some((call) => call.path.endsWith("/remove-member")), false);
-  const gone = await owner.write("/share/v1/members/member-9", { intent: "signed" }, "DELETE");
-  assert.equal(gone.status, 404);
-
-  let attempts = 0;
-  const flaky = fixture({ tools: ({ path }) => path.endsWith("/remove-member") && ++attempts === 1
-    ? json({ message: "Couldn't stop their computers on this pool. Try again." }, 400) : undefined });
-  const first = await flaky.write("/share/v1/members/member-2", { intent: "signed" }, "DELETE");
-  assert.equal(first.status, 409);
-  assert.equal((await first.json()).error, "Couldn't stop their computers on this pool. Try again.");
-  assert.equal((await flaky.write("/share/v1/members/member-2", { intent: "signed" }, "DELETE")).status, 200);
-});
-
-test("an expired sharing session says to reopen Share, not setup", async () => {
-  const f = fixture({ pool: ({ path }) => path.endsWith("/validate") ? json({ error: "unauthorized", message: "Open setup again from your pool. This setup session has expired." }, 401) : undefined });
-  const response = await f.request("/share/v1/pool?intent=old");
-  assert.equal(response.status, 401);
-  assert.equal((await response.json()).error, "This sharing session expired. Open Share again from your pool.");
-});
-
-test("cancelling an invitation; writes need this origin and JSON; bearer requests are refused", async () => {
-  const f = fixture();
-  assert.equal((await f.write("/share/v1/invitations/invite-1", { intent: "signed" }, "DELETE")).status, 200);
-  assert.deepEqual(f.calls.find((call) => call.path.endsWith("/cancel-invitation"))!.input, { invitationId: "invite-1" });
-  const strict = fixture();
-  assert.equal((await strict.write("/share/v1/invitations", { intent: "signed", email: "a@example.test" }, "POST", { Origin: "https://elsewhere.example" })).status, 403);
-  assert.equal((await strict.request("/share/v1/invitations", { method: "POST", body: "{}", headers: { "Content-Type": "text/plain" } })).status, 415);
-  assert.equal((await strict.request("/share/v1/pool?intent=signed", { headers: { authorization: "Bearer x" } })).status, 403);
-  assert.equal((await strict.request("/share/v1/pool", { method: "POST" })).status, 405);
-  assert.equal((await strict.request("/share/v1/elsewhere")).status, 404);
-  assert.equal(strict.calls.length, 0);
-});
-
-const cap = { weekly: 5, used: 1, remaining: 4, resetAt: "2026-10-26T00:00:00Z" };
-const amount = { requests: 1, tokens: { input: 10, cacheRead: 2, cacheWrite: 0, output: 3, total: 15 }, cost: 0.02, unpriced: 0 };
-const model = { provider: "claude", model: "fixture-model", ...amount };
-function usagePool({ path }: Call) {
-  if (path.endsWith("/usage")) return json({ scope: "pool", from: "2026-09-25T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", members: [
-    { member: "owner-1", ...amount, cap, models: [], days: [] },
-    { member: "user-2", ...amount, cap, models: [model], days: [] },
-    { member: "foreign-user", ...amount, cap, models: [], days: [] },
-  ] });
-  if (path.endsWith("/cap")) return json(null);
-}
-
-test("usage maps tools-service users to member ids, drops foreign rows and suppresses the owner's cap", async () => {
-  const f = fixture({ pool: usagePool });
-  const response = await f.request("/share/v1/usage?intent=signed");
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  const value = await response.json();
-  assert.deepEqual(value, { from: "2026-09-25T00:00:00.000Z", to: "2026-10-25T00:00:00.000Z", members: {
-    "member-owner": { usage: amount, models: [], days: [], cap: null }, "member-2": { usage: amount, models: [model], days: [], cap },
-  } });
-  for (const id of ["owner-1", "user-2", "foreign-user"]) assert.equal(JSON.stringify(value).includes(id), false);
-  const call = f.calls.find((call) => call.path.endsWith("/usage"))!;
-  assert.equal(call.input.user, "owner-1"); assert.equal(call.input.intent, "signed");
-  assert.deepEqual(call.input.members, ["owner-1", "user-2"]);
-});
-
-test("a non-owner browser session cannot read usage or set a cap", async () => {
-  const f = fixture({ tools: ({ path }) => path === "/api/auth/get-session" ? json({ user: { id: "user-2", emailVerified: true } }) : undefined });
-  assert.equal((await f.request("/share/v1/usage?intent=signed")).status, 403);
-  assert.equal((await f.write("/share/v1/members/member-2/cap", { intent: "signed", weekly: 5 }, "PUT")).status, 403);
-  assert.deepEqual(f.calls.map((call) => call.path), ["/api/auth/get-session", "/__setup/v1/validate", "/api/auth/get-session", "/__setup/v1/validate"]);
-});
-
-test("owner sets and clears a member cap using only its page id; owner and unknown targets are refused", async () => {
-  const f = fixture({ pool: usagePool });
-  for (const weekly of [5, null]) {
-    const response = await f.write("/share/v1/members/member-2/cap", { intent: "signed", weekly }, "PUT");
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { success: true });
-    const call = f.calls.filter((call) => call.path.endsWith("/cap")).at(-1)!;
-    assert.equal(call.input.member, "user-2"); assert.equal(call.input.weekly, weekly);
-    assert.equal(call.input.user, "owner-1"); assert.equal(call.input.intent, "signed");
-  }
-  for (const [id, status] of [["member-owner", 409], ["missing", 404], ["user-2", 404]] as const) {
-    assert.equal((await f.write(`/share/v1/members/${id}/cap`, { intent: "signed", weekly: 5 }, "PUT")).status, status);
-  }
-  assert.equal(f.calls.filter((call) => call.path.endsWith("/cap")).length, 2);
-});
-
-test("cap writes reject extra keys, invalid amounts and cross-origin requests before reaching the pool", async () => {
-  const f = fixture({ pool: usagePool }), path = "/share/v1/members/member-2/cap";
-  for (const extra of [{ user: "owner-1" }, { member: "user-2" }, { pool: "other-pool" }, { role: "owner" }]) {
-    assert.equal((await f.write(path, { intent: "signed", weekly: 5, ...extra }, "PUT")).status, 400);
-  }
-  assert.equal((await f.write(path, { intent: "signed", weekly: 5 }, "PUT", { origin: "https://other.example.test" })).status, 403);
-  assert.equal(f.calls.length, 0);
-  for (const weekly of [0, -1, 100_001, "5", {}]) assert.equal((await f.write(path, { intent: "signed", weekly }, "PUT")).status, 400);
-  assert.equal(f.calls.some((call) => call.path.endsWith("/cap")), false);
+  assert.equal((await f.request(await f.destination(), { method: "POST", body: "{}" })).status, 405);
+  assert.equal((await f.request(await f.destination(), { headers: { authorization: "Bearer synthetic" } })).status, 403);
+  assert.deepEqual(f.calls, []);
 });

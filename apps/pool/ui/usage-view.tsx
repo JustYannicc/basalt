@@ -101,7 +101,7 @@ export function Usage({
               {summary.members.length === 1 ? "person" : "people"} used it.{" "}
               {shareHref && (
                 <a href={shareHref} target="_blank" rel="noopener" className="inline-flex items-center gap-1 text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground">
-                  See each person and set caps <ExternalIcon />
+                  Manage pool access <ExternalIcon />
                 </a>
               )}
             </p>

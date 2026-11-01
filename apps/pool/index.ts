@@ -68,13 +68,13 @@ export interface ComputerContext {
   readonly computers: Computer[];
   readonly pools?: PoolChoice[];
   readonly undoPrompt: string;
-  /** The owner's link to invite people and remove them. */
+  /** Native app settings for a caller who can manage this pool. */
   readonly shareHref?: string;
 }
 
 export const computerContext = query(
   {
-    description: "Your computers in every pool you use, the pools you can pick for each, and short-lived links: `href` carries a signed setup intent (computers are set up and listed on the Connect page), and for the pool's owner `shareHref` invites people to this pool or removes them.",
+    description: "Your computers in every pool you use, the pools you can pick for each, and a short-lived setup `href`. If you can manage this pool, `shareHref` opens native app Settings for sharing, per-person usage and caps.",
     input: object({}),
   },
   async (ctx: Context) => control<ComputerContext>(ctx, "/setup-context"),

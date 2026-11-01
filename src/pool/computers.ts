@@ -90,6 +90,7 @@ export class Computers {
         const directory = await PoolDirectory.load(this.deps.storage, this.now());
         const value = { ...claims, user, expiresAt: this.now() + setupTtl };
         this.check(directory, registry, value);
+        const canManage = directory.permissions(claims.pool, user)?.canManage ?? claims.owner === user;
         const owner = claims.owner === user;
         if (owner) await directory.learn(claims, user);
         const intent = await signIntent(this.deps.signingKey, value);
@@ -97,7 +98,7 @@ export class Computers {
         const pools = directory.choices(user, value.expiresAt - setupTtl, claims)
           .filter((pool) => owner || pool.id === claims.pool);
         return json({ intent, href: `${this.origin()}/setup#intent=${encodeURIComponent(intent)}`, computers, pools,
-          ...(claims.owner === user ? { shareHref: `${this.origin()}/share#intent=${intent}` } : {}),
+          ...(canManage ? { shareHref: `${this.origin()}/org/${encodeURIComponent(claims.organization)}/apps/${encodeURIComponent(claims.pool)}?view=settings` } : {}),
           undoPrompt: `Undo ${brand.name} setup on this computer. Download ${this.origin()}/setup/client.mjs to a private temporary file, run it with Node.js 18 or newer and --undo, then delete it. Restore the backups and preserve later unrelated edits. Revocation is separate in your pool.` });
       });
     } catch (error) { return failureResponse(error); }
@@ -171,6 +172,7 @@ export class Computers {
       if (action === "observed") return await this.observe(payload.tokenHash);
       const user = text(payload.user);
       if (!user) return fail(401, "unauthorized", "Sign in before setting up a computer.");
+      if (action === "managed-usage" || action === "managed-cap") return await this.managedUsage(action, payload, user);
       const intent = await readIntent(this.deps.signingKey, payload.intent, user, this.now(), this.deps.previousSigningKey);
       if (action === "usage" || action === "cap") return await this.ownerUsage(action, intent, user, payload);
       return await this.run(async (registry) => {
@@ -224,7 +226,27 @@ export class Computers {
       });
     } catch (error) { return failureResponse(error); }
   }
-  /** The share host checked the owner's browser session; the signed intent must agree. Home I/O runs outside the queue. */
+  /** The host holds the native access lock through these exact, signed management operations. */
+  private async managedUsage(action: "managed-usage" | "managed-cap", payload: Record<string, unknown>, user: string): Promise<Response> {
+    const usage = this.deps.usage;
+    if (!usage) return fail(404, "not_found", "This pool endpoint does not exist.");
+    const pool = text(payload.pool), owner = text(payload.owner), organization = text(payload.organization);
+    if (!pool || !owner || !organization) return fail(400, "invalid_query", "A recorded pool is required.");
+    if (action === "managed-cap") {
+      if (!isMemberId(payload.member) || payload.member === owner
+        || (payload.weekly !== null && !isWeeklyCap(payload.weekly)))
+        return fail(400, "invalid_query", "Choose a current pool user and a valid weekly cap.");
+      await usage.setCap(pool, owner, payload.member, payload.weekly);
+      return json({ success: true });
+    }
+    const members = payload.members;
+    if (!Array.isArray(members) || members.length > 100 || !members.every(isMemberId))
+      return fail(400, "invalid_query", "Choose at most 100 pool users.");
+    const result = await usage.summary(pool, owner, user, usageDays, members, true);
+    return json({ from: result.from, to: result.to, readAt: result.readAt,
+      members: result.members?.filter((row) => members.includes(row.member)) ?? [] });
+  }
+  /** Old setup intents remain valid while already-open clients finish their usage requests. */
   private async ownerUsage(action: "usage" | "cap", intent: SetupIntent, user: string, payload: Record<string, unknown>): Promise<Response> {
     const usage = this.deps.usage;
     if (!usage) return fail(404, "not_found", "This setup endpoint does not exist.");
