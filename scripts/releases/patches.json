@@ -672,6 +672,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-contributed-account-links",
+      "file": "0073-contributed-account-links.patch",
+      "content_sha256": "38cffb99911cef9f5a9e0e9f42c5504ce248f4ffb1677e4c7930036c1db3e210",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": true
     }
   ],
   "pool_carries": {
