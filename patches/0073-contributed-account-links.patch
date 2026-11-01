@@ -1754,10 +1754,10 @@ index d549987b976e28ad1faced28b696ef5832ef3a2a..f891efd5a88e96f672f0bb9fe0c0b627
        ...summaries.find((summary) => summary.id === link.account.id),
 diff --git a/e2e/support/contributed-app.ts b/e2e/support/contributed-app.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b5cca514a7b1420ee4442a6b59efd33635d9074
+index 0000000000000000000000000000000000000000..95151da67af38ef8c2cf03891f9a79a0f7415e70
 --- /dev/null
 +++ b/e2e/support/contributed-app.ts
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,119 @@
 +/** Shared app and public API reads used by contributed-account scenarios. */
 +import { expect } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
@@ -1827,7 +1827,11 @@ index 0000000000000000000000000000000000000000..6b5cca514a7b1420ee4442a6b59efd33
 +      );
 +    });
 +  const waitForLinks = (expected: readonly string[]) =>
-+    readLinks().pipe(
++    // Cloud wakes queued cleanup on API writes or cron. This read-only query's POST
++    // drives the real retry without waiting for the minute boundary.
++    fixture.call(actors.owner, "accounts").pipe(
++      Effect.tap(ok),
++      Effect.andThen(readLinks()),
 +      Effect.flatMap((links) => {
 +        const ids = links.map((link) => link.account.id).sort();
 +        return JSON.stringify(ids) === JSON.stringify([...expected].sort())
@@ -2318,18 +2322,20 @@ index 0000000000000000000000000000000000000000..52b8423218d68f1870d9ca5a46d798bf
 +});
 diff --git a/e2e/tests/contributed-app-departures.spec.ts b/e2e/tests/contributed-app-departures.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..725d7fa61272177d4b5a5b1aa67a67cbfe6e2293
+index 0000000000000000000000000000000000000000..26b3d27638e63822a6b489f137bd0382ba362254
 --- /dev/null
 +++ b/e2e/tests/contributed-app-departures.spec.ts
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,213 @@
 +/** Departure snapshots detach contributions without deleting their reusable accounts. */
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Schema } from "effect";
++import { Effect, Schedule, Schema } from "effect";
 +import { body } from "../support/api.ts";
 +import { ok } from "../support/app-links.ts";
 +import { withHostedHttpCase } from "../support/case.ts";
-+import { RuntimeLive } from "../support/platform.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
 +import { contributedApp } from "../support/contributed-app.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
 +import { legacyStorage } from "../support/legacy-storage.ts";
 +import { serverControl } from "../support/server-control.ts";
 +import { scenarios } from "../test-plan.ts";
@@ -2361,13 +2367,71 @@ index 0000000000000000000000000000000000000000..725d7fa61272177d4b5a5b1aa67a67cb
 +          Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }),
 +          yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
 +        );
++        const target = yield* Target;
++        const evidence = yield* Evidence;
++        const locks =
++          target.metadata.target === "cloud" && target.metadata.mode === "managed"
++            ? yield* cloudLocks
++            : undefined;
++        const departure = (status: "queued" | "succeeded") =>
++          locks === undefined
++            ? Effect.succeed([])
++            : locks
++                .run({
++                  sql: "SELECT id, status, attempts FROM hosted_contributed_departure_jobs WHERE organization_id = $1 AND user_id = $2",
++                  params: [actors.organization.id, f.ids.admin],
++                })
++                .pipe(
++                  Effect.flatMap(
++                    Schema.decodeUnknownEffect(
++                      Schema.Array(
++                        Schema.Struct({
++                          id: Schema.String,
++                          status: Schema.String,
++                          attempts: Schema.Number,
++                        }),
++                      ),
++                    ),
++                  ),
++                  Effect.repeat({
++                    schedule: Schedule.spaced("100 millis"),
++                    while: (jobs) =>
++                      jobs.length !== 1 ||
++                      jobs[0]?.status !== status ||
++                      (jobs[0]?.attempts ?? 0) < 1,
++                  }),
++                  Effect.timeout("15 seconds"),
++                );
++        // Force the contention seen when a connection's background hook still holds the app.
++        if (locks !== undefined)
++          yield* locks.hold({
++            sql: "SELECT id FROM executor_apps WHERE id = $1 FOR NO KEY UPDATE",
++            params: [f.app.id],
++          });
 +        yield* ok(
 +          yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
 +            organizationId: actors.organization.id,
 +            memberIdOrEmail: admin.user.email,
 +          }),
 +        );
++        if (locks !== undefined) {
++          const queued = yield* evidence.step(
++            "Lock contention persists a queued departure retry",
++            departure("queued"),
++          );
++          expect(queued[0]?.attempts).toBeGreaterThanOrEqual(1);
++          yield* evidence.json("queued-departure.json", queued);
++          yield* locks.release;
++        }
 +        yield* f.waitForLinks([ordinary]);
++        if (locks !== undefined) {
++          const completed = yield* evidence.step(
++            "The released departure retry reaches persisted success",
++            departure("succeeded"),
++          );
++          expect(completed[0]?.attempts).toBeGreaterThanOrEqual(2);
++          yield* evidence.json("completed-departure.json", completed);
++        }
 +        expect((yield* f.call(actors.owner, "accounts")).body).toMatchObject({ shared: [] });
 +        yield* f.rejoin(actors.admin);
 +        for (const account of [personal, shared]) {
