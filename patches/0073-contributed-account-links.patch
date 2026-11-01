@@ -2558,7 +2558,7 @@ index 0000000000000000000000000000000000000000..aaeb815ac80ff1de084405fac4c4fc8b
 +  );
 +});
 diff --git a/e2e/tests/native-pool-account-mirrors.spec.ts b/e2e/tests/native-pool-account-mirrors.spec.ts
-index 7a171e2ea64087e83abce38fff56a41898fa377d..3598b380a1dabcc74149f5e45177f5bcab9016f5 100644
+index 7a171e2ea64087e83abce38fff56a41898fa377d..6d12cc578175aa6848405c9e3529563086ab3dda 100644
 --- a/e2e/tests/native-pool-account-mirrors.spec.ts
 +++ b/e2e/tests/native-pool-account-mirrors.spec.ts
 @@ -24,10 +24,10 @@ const Links = Schema.Array(Schema.Struct({ account: Resource }));
@@ -2630,7 +2630,7 @@ index 7a171e2ea64087e83abce38fff56a41898fa377d..3598b380a1dabcc74149f5e45177f5bc
                actors.organization.id,
              ],
            },
-@@ -166,11 +170,51 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
+@@ -166,11 +170,79 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
            yield* api.request(actors.owner, "GET", `${pool.path}/accounts/app`),
          );
          expect(after.map((row) => row.account.id)).toEqual([shared]);
@@ -2680,6 +2680,34 @@ index 7a171e2ea64087e83abce38fff56a41898fa377d..3598b380a1dabcc74149f5e45177f5bc
 +        expect(
 +          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${personal}`)).status,
 +        ).toBe(200);
++
++        const beforeUpload = (yield* backend.calls).length;
++        const upload = {
++          creation: "981ba8fc-f089-4d15-9f93-13c8b78d02be",
++          method: "apiKey",
++          fields: { token: "synthetic-member-created-key" },
++        };
++        const created = yield* api.request(
++          actors.member,
++          "POST",
++          requirementPath(contributed.path, "app", "jev"),
++          upload,
++        );
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const uploaded = (yield* body(Resource, created)).id;
++        accounts.push({ id: uploaded, actor: actors.member });
++        expect(JSON.stringify(created.body)).not.toContain(upload.fields.token);
++        expect(yield* backend.calls).toHaveLength(beforeUpload);
++        expect((yield* link(actors.member, uploaded, contributed)).status).toBe(200);
++        expect((yield* link(actors.member, uploaded, contributed)).status).toBe(200);
++        expect(yield* backend.calls).toHaveLength(beforeUpload + 1);
++        expect((yield* backend.calls).at(-1)).toMatchObject({
++          account: uploaded,
++          fields: upload.fields,
++        });
++        const uploadedUse = yield* use(contributed);
++        expect(uploadedUse.status, JSON.stringify(uploadedUse.body)).toBe(200);
++        expect(uploadedUse.body).toEqual([{ id: uploaded, method: "apiKey", fields: ["token"] }]);
        }),
      ),
    );
