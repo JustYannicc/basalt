@@ -61,7 +61,7 @@ model {
         metadata { code ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts|.upstream/apps/hosted/server/src/implementation/contributed-account-departure.ts" }
       }
       contributionDepartures = store "Contribution departure queue" {
-        description "Member removal snapshots exact native links in the membership transaction. Independent expiring claims recover interrupted cleanup without an old server acknowledging the new queue. A retained link timestamp prevents stale cleanup from removing a newer contribution. Jobs detach links and never delete saved credentials."
+        description "Member removal snapshots exact native links in the membership transaction. In Cloud, API or auth writes and the minute cron wake cleanup. GET, HEAD and OPTIONS do not; a read-only app query sent as POST does. Failed attempts back off, starting at two seconds. After transient lock contention, physical unlink can lag about 62 seconds with no backlog or intervening writes, while native pool use is vetoed before removal commits. Repeated failures retain links until recovery. Independent expiring claims recover interrupted cleanup without an old server acknowledging the new queue. A retained link timestamp prevents stale cleanup from removing a newer contribution. Jobs detach links and never delete saved credentials."
         metadata { code ".upstream/apps/hosted/server/src/implementation/contributed-departure-queue.ts|.upstream/apps/hosted/server/src/implementation/contributed-departure-schema.ts" }
       }
     }
