@@ -87,9 +87,12 @@ test("signed native management operations do not mint keys or require model use"
   const f = fixture({
     summary: async (target, recordedOwner, caller, days, members) => {
       assert.deepEqual([target, recordedOwner, caller, days, members], [pool.pool, owner, "admin", 30, [member]]);
-      return { from: "2026-01-01", to: "2026-01-31", readAt: null, members: [
-        { member, requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 }, cost: 0, unpriced: 0, models: [], days: [], cap: null },
-      ], accounts: [{ account: "private-reference" }] } as never;
+      const slice = { requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 }, cost: 0, unpriced: 0 };
+      return { scope: "pool", from: "2026-01-01", to: "2026-01-31", readAt: null,
+        total: slice, models: [], days: [], cap: null,
+        members: [{ ...slice, member, models: [], days: [], cap: null }],
+        accounts: [{ ...slice, account: "private-reference" }],
+      };
     },
     setCap: async (target, recordedOwner, person, weekly) => {
       assert.deepEqual([target, recordedOwner, person, weekly], [pool.pool, owner, member, 5]);
