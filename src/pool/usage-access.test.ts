@@ -81,3 +81,45 @@ test("audience is pool-specific and includes directory members without computers
   assert.deepEqual(await f.computers.audience("missing-pool"), []);
   assert.deepEqual(await f.registry(), {});
 });
+
+
+test("signed native management operations do not mint keys or require model use", async () => {
+  const f = fixture({
+    summary: async (target, recordedOwner, caller, days, members) => {
+      assert.deepEqual([target, recordedOwner, caller, days, members], [pool.pool, owner, "admin", 30, [member]]);
+      return { from: "2026-01-01", to: "2026-01-31", readAt: null, members: [
+        { member, requests: 0, tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 }, cost: 0, unpriced: 0, models: [], days: [], cap: null },
+      ], accounts: [{ account: "private-reference" }] } as never;
+    },
+    setCap: async (target, recordedOwner, person, weekly) => {
+      assert.deepEqual([target, recordedOwner, person, weekly], [pool.pool, owner, member, 5]);
+    },
+  });
+  const before = structuredClone(f.storage.values);
+  const data = { pool: pool.pool, owner, organization: pool.organization, members: [member] };
+  const response = await f.action("managed-usage", "admin", undefined, data);
+  assert.equal(response.status, 200);
+  const view = await response.json();
+  assert.equal(view.members[0].member, member);
+  assert.equal("accounts" in view, false);
+  assert.equal((await f.action("managed-cap", "admin", undefined, { ...data, member, weekly: 5 })).status, 200);
+  assert.deepEqual(f.storage.values, before);
+  assert.deepEqual(f.server.calls, []);
+});
+
+test("native management assertions reject forgery, wrong actions and invalid caps", async () => {
+  let calls = 0;
+  const f = fixture({ summary: async () => { calls++; throw Error("invalid assertion reached usage"); }, setCap: async () => { calls++; } });
+  const data = { pool: pool.pool, owner, organization: pool.organization, members: [member], member, weekly: 5 };
+  for (const [action, extra] of [
+    ["managed-cap", { member: owner }], ["managed-cap", { weekly: 0.001 }],
+    ["managed-usage", { members: Array(101).fill(member) }],
+    ["managed-usage", { organization: "" }],
+  ] as const) assert.equal((await f.action(action, "admin", undefined, { ...data, ...extra })).status, 400);
+  for (const action of ["managed-usage", "managed-cap"]) {
+    const envelope = await signEnvelope("ef".repeat(32), "sbs1", { ...data, action, user: "admin", expiresAt: f.now() + 10_000 });
+    assert.equal((await f.setup(new Request(`https://pool.example/__setup/v1/${action}`, { method: "POST", body: JSON.stringify({ envelope }) }))).status, 401);
+  }
+  assert.equal(calls, 0);
+  assert.deepEqual(f.server.calls, []);
+});
