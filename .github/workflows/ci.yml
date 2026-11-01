@@ -409,18 +409,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
-      - run: bun install --cwd scripts/architecture --frozen-lockfile
+      - run: npm run prepare:upstream
       - name: Architecture format and validation
         run: |
           npm run architecture:format
           npm run architecture:validate
       - name: Architecture model and code references
         run: |
-          bun install --cwd clients --frozen-lockfile
-          bun install --cwd src/tunnel --frozen-lockfile
           npm run architecture:model
           npm run architecture:typecheck
-      - run: bun install --cwd src/setup --frozen-lockfile
       - run: npm run check
       - name: Check the pool acceptance runner
         run: node --test scripts/pool-acceptance/*.test.ts
@@ -446,7 +443,6 @@ jobs:
               raise SystemExit("Expected exactly three privacy assertion failures against the previous image source")
           print("All three previous-image output leaks reproduced; no setup errors")
           PY
-      - run: npm run prepare:upstream
       - name: Check carried host protocol records
         working-directory: .upstream
         run: bun run apps:protocols
@@ -473,7 +469,6 @@ jobs:
           docker build --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
-      - run: bun install --cwd scripts/startup-profiler --frozen-lockfile
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
         env:

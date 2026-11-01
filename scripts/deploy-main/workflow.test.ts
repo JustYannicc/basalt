@@ -84,7 +84,7 @@ test("Deploy looks for a newer passing commit first, then skips whichever commit
   assert.match(steps[3]!, /^name: [^\n]+\n        id: live\n        run: node scripts\/deploy-safety\/release\.ts already-live --candidate "\$\{NEWER:-\$RELEASE_CANDIDATE_SHA\}"\n        env:\n          NEWER: \$\{\{ steps\.newer\.outputs\.newer \}\}$/);
   // Every check, the report and through it the deploy and the unresolved refusal wait on both.
   const gated = steps.slice(4, steps.findIndex((step) => /\n\s+id: report\n/.test(step)) + 1);
-  assert.equal(gated.length, 13);
+  assert.equal(gated.length, 12);
   for (const step of gated)
     assert.match(step, /^(?:(?:name|id): [^\n]+\n        )*if: steps\.live\.outputs\.already_live == 'false' && steps\.newer\.outputs\.newer == ''\n/, step);
   const after = steps.slice(4 + gated.length);

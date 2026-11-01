@@ -125,8 +125,6 @@ jobs:
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run check:build
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
-        run: bun install --cwd scripts/architecture --frozen-lockfile
-      - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run architecture:model
       - if: steps.live.outputs.already_live == 'false' && steps.newer.outputs.newer == ''
         run: npm run typecheck
