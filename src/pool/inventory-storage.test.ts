@@ -41,3 +41,11 @@ test("private report parts reconstruct the exact hashed snapshot and never grant
   assert.equal(end.sha256, createHash("sha256").update(json).digest("hex"));
   assert.equal(end.migrationGo, false);
 });
+
+test("models-only computer inventory keeps its model key without inventing a tools key", () => {
+  const report = poolStorageSnapshot(new Map<string, unknown>([
+    ["computer-registry-v1", { one: { id: "models-only", user: "person", pool: "app", state: "active", keyId: 7, userId: 9 } }],
+  ]));
+  assert.deepEqual(report.computers, [{ id: "models-only", user: "person", pool: "app", state: "active", keyId: 7,
+    userId: 9, toolsKeyId: null, switching: [], switchingTo: null }]);
+});

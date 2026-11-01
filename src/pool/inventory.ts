@@ -2,6 +2,7 @@ import type pg from "pg";
 import { poolDatabase } from "./database-settings.ts";
 import { privacyReceipt } from "./privacy-receipt.ts";
 import { inventoryFailure, inventoryRecord } from "./inventory-record.ts";
+import { poolGroupPrefix } from "./pool-group.ts";
 
 export const inventoryCron = "13 * * * *";
 const rowLimit = 1_000;
@@ -13,7 +14,8 @@ const projections = {
     FROM auth ORDER BY uuid LIMIT 1001`,
   keys: `SELECT id, user_id, channels, deleted_at IS NOT NULL AS deleted
     FROM api_key ORDER BY id LIMIT 1001`,
-  channels: `SELECT id, disabled, deleted_at IS NOT NULL AS deleted
+  channels: `SELECT id, disabled, deleted_at IS NOT NULL AS deleted,
+    CASE WHEN left(channel_name, length($1)) = $1 THEN substring(channel_name FROM length($1) + 1) END AS pool
     FROM channel_group ORDER BY id LIMIT 1001`,
   memberships: `SELECT id, channel_group_id, auth_id, deleted_at IS NOT NULL AS deleted
     FROM channel_group_detail ORDER BY id LIMIT 1001`,
@@ -52,7 +54,7 @@ export async function poolInventorySnapshot(client: Pick<pg.Client, "query">) {
     const receipt = await privacyReceipt(client);
     const sections: Record<string, Record<string, unknown>[]> = {};
     for (const [section, query] of Object.entries(projections)) {
-      const result = await client.query<Record<string, unknown>>(query);
+      const result = await client.query<Record<string, unknown>>(query, section === "channels" ? [poolGroupPrefix] : []);
       if (result.rows.length > rowLimit) throw new Error("Inventory limit exceeded");
       validate(section, result.rows);
       sections[section] = result.rows;
@@ -83,7 +85,7 @@ export async function reportPoolInventory(database: { readonly connectionString:
     await client.connect();
     const report = await poolInventorySnapshot(client);
     // These records stay in private Workers observability, outside product telemetry.
-    inventoryRecord("pool-v1", report, ["home-credentials", "home-keys", "home-channels", "schema12-receipt"]);
+    inventoryRecord("pool-v1", report, ["home-credentials", "home-keys", "home-channels", "home-memberships", "schema12-receipt"]);
   } catch {
     inventoryFailure("pool-v1");
   } finally {

@@ -654,6 +654,15 @@
       "upstream_pull_request": null,
       "database_sensitive": true,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-retired-pool-tokens",
+      "file": "0071-retired-pool-tokens.patch",
+      "content_sha256": "a5493db5330e79b1064df954a23f0de06514d01f13813a400b488907b18ba4d5",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

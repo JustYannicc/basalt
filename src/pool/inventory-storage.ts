@@ -33,7 +33,7 @@ export function poolStorageSnapshot(stored: ReadonlyMap<string, unknown>) {
     const value = object(raw);
     return { id: id(value.id), user: id(value.user), pool: id(value.pool),
       state: id(value.state), keyId: numericId(value.keyId), userId: numericId(value.userId),
-      toolsKeyId: id(value.toolsKeyId), switching: ids(value.switching ?? []), switchingTo: optionalId(value.switchingTo) };
+      toolsKeyId: optionalId(value.toolsKeyId), switching: ids(value.switching ?? []), switchingTo: optionalId(value.switchingTo) };
   });
   const pools = directory === undefined ? null : entries(object(directory).pools).map(([, raw]) => {
     const value = object(raw);
