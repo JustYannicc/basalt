@@ -1,45 +1,58 @@
 diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
-index 4bf0364..54489d4 100644
+index 4bf0364..c52759e 100644
 --- a/apps/hosted/cloud/src/implementation/access-hooks.ts
 +++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
-@@ -1,6 +1,5 @@
+@@ -1,4 +1,4 @@
 -/** Better Auth's Promise boundary for host access notifications and member-only sharing. */
 +/** Better Auth's Promise boundary for host access notifications. */
  import type { BetterAuthPlugin } from "better-auth";
--import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
+ import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
  import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
- import type { OrganizationOptions } from "better-auth/plugins/organization";
- import { Schema } from "effect";
-@@ -17,13 +16,6 @@ export interface CloudAccessHooks {
+@@ -17,10 +17,15 @@ export interface CloudAccessHooks {
    readonly userDeleting: (user: string) => Promise<void>;
  }
  
 -const requireMember = (role: string) => {
 -  if (role !== "member")
--    throw new APIError("FORBIDDEN", {
++const requireAssignableRole = (role: string) => {
++  // Native updates normalize role strings before this hook, including duplicate compound roles.
++  const requested = tryGetCurrentAuthEndpointContext()?.body?.role;
++  if (
++    (role !== "admin" && role !== "member") ||
++    (requested !== undefined && requested !== "admin" && requested !== "member")
++  )
+     throw new APIError("FORBIDDEN", {
 -      message: "People can only join as members. Choose the member role and try again.",
--    });
--};
--
- const beforeRemoval = async (
-   access: CloudAccessHooks | undefined,
-   organization: string,
-@@ -53,14 +45,7 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
-           message: "Organization metadata cannot be updated through authentication requests.",
++      message: "Choose either the admin or member role.",
+     });
+ };
+ 
+@@ -54,13 +59,21 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
          });
      },
--    beforeCreateInvitation: async ({ invitation }) => {
+     beforeCreateInvitation: async ({ invitation }) => {
 -      requireMember(invitation.role);
--    },
--    beforeAcceptInvitation: async ({ invitation }) => {
++      requireAssignableRole(invitation.role);
+     },
+     beforeAcceptInvitation: async ({ invitation }) => {
 -      requireMember(invitation.role);
--    },
++      requireAssignableRole(invitation.role);
++    },
++    beforeAddMember: async ({ member, user }) => {
++      // Organization creation assigns its sole owner through this same hook.
++      const creator =
++        tryGetCurrentAuthEndpointContext()?.path === "/organization/create" &&
++        member.role === "owner" &&
++        member.userId === user.id;
++      if (!creator) requireAssignableRole(member.role);
+     },
      beforeUpdateMemberRole: async ({ newRole, member, organization }) => {
 -      requireMember(newRole);
++      requireAssignableRole(newRole);
        try {
          await access?.memberRoleChanging?.(organization.id, member.id, newRole);
        } catch {
-@@ -69,14 +54,6 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+@@ -69,14 +82,6 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
          });
        }
      },
@@ -681,7 +694,7 @@ index 0000000..330e8ae
 +  };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 48c71b3..ef12a2a 100644
+index 48c71b3..fa499b8 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -8032,6 +8032,27 @@ export const scenarios = plan({
@@ -712,11 +725,28 @@ index 48c71b3..ef12a2a 100644
    nativePoolAccountMirrors: {
      fixtures: "actors",
      legacyStorage: true,
+@@ -8730,6 +8751,16 @@ export const scenarios = plan({
+       local: na("This scenario uses hosted account and webhook management routes."),
+     },
+   },
++  invitationRolePrivateAccounts: {
++    fixtures: "actors",
++    file: "invitation-roles.spec.ts",
++    title: "organization admins who manage an app cannot use another person's private account",
++    targets: {
++      local: na("Hosted organization roles and account grants."),
++      "self-host": scheduled,
++      cloud: scheduled,
++    },
++  },
+   invitationRoles: {
+     fixtures: "actors",
+     file: "invitation-roles.spec.ts",
 diff --git a/e2e/tests/invitation-roles.spec.ts b/e2e/tests/invitation-roles.spec.ts
-index 135e773..5dd663c 100644
+index 135e773..f9eafca 100644
 --- a/e2e/tests/invitation-roles.spec.ts
 +++ b/e2e/tests/invitation-roles.spec.ts
-@@ -3,14 +3,15 @@ import { expect, layer } from "@effect/vitest";
+@@ -3,14 +3,61 @@ import { expect, layer } from "@effect/vitest";
  import { Effect, Schema } from "effect";
  import { Api, body } from "../support/api.ts";
  import { Actors } from "../support/actors.ts";
@@ -725,10 +755,56 @@ index 135e773..5dd663c 100644
 +import { RuntimeLive } from "../support/platform.ts";
  import { freeSeat } from "../support/seats.ts";
  import { scenarios } from "../test-plan.ts";
++import { appLinksFixture, keyProvider, ok, refused } from "../support/app-links.ts";
  
  const Invitation = Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String });
 -layer(HostedLive, { excludeTestServices: true })("Invitation roles", (it) => {
 +layer(RuntimeLive, { excludeTestServices: true })("Invitation roles", (it) => {
++  it.effect(scenarios.invitationRolePrivateAccounts.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* appLinksFixture([
++          {
++            path: "index.ts",
++            content: `
++import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const service = ${keyProvider("Private role fixture")};
++export default defineApp({ app: { accounts: { shared: service.many() } }, user: { accounts: { own: service.many() } } }, {
++  tools: router({ accounts: query({ input: object({}) }, async (ctx) => ctx.user.accounts.own.map(a => a.id)) })
++});`,
++          },
++        ]);
++        const { api, actors, prefix } = f;
++        const account = yield* f.connect(actors.member, "user", "own", "Member private key");
++        const access = yield* api.request(actors.admin, "GET", `${f.path}/access`);
++        yield* ok(access);
++        expect(access.body).toMatchObject({ canManage: true, canUse: true });
++        yield* refused(
++          yield* f.link(actors.admin, "shared", account),
++          403,
++          "OrganizationForbidden",
++        );
++        yield* refused(
++          yield* api.request(actors.admin, "GET", `${prefix}/accounts/${account}`),
++          403,
++          "OrganizationForbidden",
++        );
++        yield* refused(
++          yield* api.request(actors.admin, "POST", `${prefix}/accounts/${account}/health`),
++          403,
++          "OrganizationForbidden",
++        );
++        yield* ok(yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}`));
++        const own = yield* f.call(actors.member, "accounts");
++        yield* ok(own);
++        expect(own.body).toEqual([account]);
++        const other = yield* f.call(actors.admin, "accounts");
++        yield* ok(other);
++        expect(other.body).toEqual([]);
++      }),
++    ),
++  );
    it.effect(scenarios.invitationRoles.title, (context) =>
 -    withHostedCase(
 +    withHostedHttpCase(
