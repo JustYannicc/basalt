@@ -55,7 +55,7 @@ index 4bf0364..54489d4 100644
        beforeRemoval(access, organization.id, member.id),
      afterAddMember: async ({ organization }) => {
 diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
-index 8a0acbf..dad212c 100644
+index 8a0acbf..d3e875f 100644
 --- a/apps/hosted/cloud/src/infrastructure/product-services.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
 @@ -6,6 +6,7 @@ import {
@@ -70,22 +70,25 @@ index 8a0acbf..dad212c 100644
        Effect.provide(RuntimeContext.phantom),
      );
    const poolKey = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-+  const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;
-   const accessLifecycle = poolAccessLifecycle(
-     poolKey,
+-  const accessLifecycle = poolAccessLifecycle(
+-    poolKey,
 -    (yield* cloudHosts.pipe(Effect.orDie)).browser,
-+    poolOrigin,
-   );
+-  );
++  const poolOrigin = (yield* cloudHosts.pipe(Effect.orDie)).browser;
++  const accessLifecycle = poolAccessLifecycle(poolKey, poolOrigin);
    const wire = yield* cloudOAuthWire;
    const services = Layer.mergeAll(
      wire,
      Layer.succeed(AccessLifecycle, accessLifecycle),
-+    Layer.succeed(PoolUsageBackend, Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined),
++    Layer.succeed(
++      PoolUsageBackend,
++      Option.isSome(poolKey) ? { key: poolKey.value, origin: poolOrigin } : undefined,
++    ),
      Layer.succeed(HostManagedAccountRecords, poolAccessRecords),
      Layer.succeed(HostManagedAccountRecovery, poolAccountRecovery(Option.isSome(poolKey))),
      Layer.succeed(
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index a734385..3d59a45 100644
+index 040c2a5..ee9bc3c 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -37,6 +37,7 @@
@@ -118,10 +121,10 @@ index c7f41f6..dce0256 100644
      HostedMcpConnections,
 diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
 new file mode 100644
-index 0000000..2579589
+index 0000000..2983247
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/pool-usage.ts
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,113 @@
 +import { AppId, StorageError } from "@executor-js/sdk/core";
 +import { ApiError } from "@executor-js/utils/api-error";
 +import { Context, Schema } from "effect";
@@ -129,7 +132,11 @@ index 0000000..2579589
 +import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 +import { Principal } from "./auth.ts";
 +import { RequiredAction } from "./authorization.ts";
-+import { OrganizationForbidden, OrganizationReference, RequireOrganization } from "./organization.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
 +
 +const nonnegative = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 +export const WeeklyPoolCap = Schema.Finite.check(
@@ -149,7 +156,11 @@ index 0000000..2579589
 +    total: nonnegative,
 +  }),
 +});
-+const ModelUsage = Schema.Struct({ ...Usage.fields, provider: Schema.String, model: Schema.String });
++const ModelUsage = Schema.Struct({
++  ...Usage.fields,
++  provider: Schema.String,
++  model: Schema.String,
++});
 +const Cap = Schema.Struct({
 +  weekly: WeeklyPoolCap,
 +  used: nonnegative,
@@ -160,7 +171,9 @@ index 0000000..2579589
 +  ...Usage.fields,
 +  member: Principal.fields.userId,
 +  models: Schema.Array(ModelUsage),
-+  days: Schema.Array(Schema.Struct({ ...Usage.fields, day: Schema.String, models: Schema.Array(ModelUsage) })),
++  days: Schema.Array(
++    Schema.Struct({ ...Usage.fields, day: Schema.String, models: Schema.Array(ModelUsage) }),
++  ),
 +  cap: Schema.NullOr(Cap),
 +});
 +/** This host boundary deliberately excludes serving-account references and credentials. */
@@ -175,12 +188,14 @@ index 0000000..2579589
 +  pool: AppId,
 +  native: Schema.Boolean,
 +  next: Schema.NullOr(Schema.NonEmptyString),
-+  members: Schema.Array(Schema.Struct({
-+    ...PoolMemberUsage.fields,
-+    name: Schema.String,
-+    email: Schema.String,
-+    owner: Schema.Boolean,
-+  })),
++  members: Schema.Array(
++    Schema.Struct({
++      ...PoolMemberUsage.fields,
++      name: Schema.String,
++      email: Schema.String,
++      owner: Schema.Boolean,
++    }),
++  ),
 +});
 +export type PoolUsagePage = typeof PoolUsagePage.Type;
 +
@@ -196,25 +211,32 @@ index 0000000..2579589
 +});
 +
 +/** Hosts supply their pool origin; a local product can instead use its configured backend. */
-+export const PoolUsageBackend = Context.Reference<{
-+  readonly origin: string;
-+  readonly key: Redacted.Redacted<string>;
-+} | undefined>("hosted/PoolUsageBackend", { defaultValue: () => undefined });
++export const PoolUsageBackend = Context.Reference<
++  | {
++      readonly origin: string;
++      readonly key: Redacted.Redacted<string>;
++    }
++  | undefined
++>("hosted/PoolUsageBackend", { defaultValue: () => undefined });
 +
 +const params = { organization: OrganizationReference, app: AppId };
 +export const HostedPoolUsage = HttpApiGroup.make("poolUsage")
-+  .add(HttpApiEndpoint.get("get", "/api/organizations/:organization/apps/:app/pool-usage", {
-+    params,
-+    query: { after: Schema.optional(Schema.NonEmptyString) },
-+    success: Schema.NullOr(PoolUsagePage),
-+    error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
-+  }).annotate(RequiredAction, "read"))
-+  .add(HttpApiEndpoint.put("setCap", "/api/organizations/:organization/apps/:app/pool-caps/:member", {
-+    params: { ...params, member: Principal.fields.userId },
-+    payload: Schema.Struct({ weekly: Schema.NullOr(WeeklyPoolCap) }),
-+    success: Schema.Struct({ success: Schema.Literal(true) }),
-+    error: [OrganizationForbidden, StorageError, PoolUsageUnavailable, PoolCapConflict],
-+  }).annotate(RequiredAction, "manage"))
++  .add(
++    HttpApiEndpoint.get("get", "/api/organizations/:organization/apps/:app/pool-usage", {
++      params,
++      query: { after: Schema.optional(Schema.NonEmptyString) },
++      success: Schema.NullOr(PoolUsagePage),
++      error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
++    }).annotate(RequiredAction, "read"),
++  )
++  .add(
++    HttpApiEndpoint.put("setCap", "/api/organizations/:organization/apps/:app/pool-caps/:member", {
++      params: { ...params, member: Principal.fields.userId },
++      payload: Schema.Struct({ weekly: Schema.NullOr(WeeklyPoolCap) }),
++      success: Schema.Struct({ success: Schema.Literal(true) }),
++      error: [OrganizationForbidden, StorageError, PoolUsageUnavailable, PoolCapConflict],
++    }).annotate(RequiredAction, "manage"),
++  )
 +  .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
 index ee68d40..33c538d 100644
@@ -238,10 +260,10 @@ index ee68d40..33c538d 100644
    hostedWebhookHandlers,
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
 new file mode 100644
-index 0000000..82ee385
+index 0000000..0763291
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,198 @@
 +import { AppId, StorageError } from "@executor-js/sdk/core";
 +import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
 +import { FetchHttpClient, HttpBody, HttpClient, HttpClientResponse } from "effect/http";
@@ -263,7 +285,11 @@ index 0000000..82ee385
 +  owner: Principal.fields.userId,
 +  authorization: Schema.NullOr(Schema.String),
 +});
-+const Person = Schema.Struct({ user: Principal.fields.userId, name: Schema.String, email: Schema.String });
++const Person = Schema.Struct({
++  user: Principal.fields.userId,
++  name: Schema.String,
++  email: Schema.String,
++});
 +const pageSize = 100;
 +
 +const backend = Effect.gen(function* () {
@@ -275,13 +301,21 @@ index 0000000..82ee385
 +  return { key: key.value, origin: origin.value };
 +}).pipe(Effect.catch(() => new PoolUsageUnavailable()));
 +
-+const send = <A>(action: "managed-usage" | "managed-cap", payload: Record<string, unknown>, responseSchema: Schema.ConstraintDecoder<A, never>) =>
++const send = <A>(
++  action: "managed-usage" | "managed-cap",
++  payload: Record<string, unknown>,
++  responseSchema: Schema.ConstraintDecoder<A, never>,
++) =>
 +  Effect.gen(function* () {
 +    const { key, origin } = yield* backend;
 +    const now = yield* Clock.currentTimeMillis;
-+    const envelope = yield* Effect.tryPromise(() => signEnvelope(Redacted.value(key), "sbs1", {
-+      ...payload, action, expiresAt: now + 30_000,
-+    }));
++    const envelope = yield* Effect.tryPromise(() =>
++      signEnvelope(Redacted.value(key), "sbs1", {
++        ...payload,
++        action,
++        expiresAt: now + 30_000,
++      }),
++    );
 +    const client = yield* HttpClient.HttpClient;
 +    const response = yield* client.post(new URL(`/__setup/v1/${action}`, origin).href, {
 +      body: HttpBody.jsonUnsafe({ envelope }),
@@ -295,82 +329,228 @@ index 0000000..82ee385
 +  );
 +
 +/** The native policy and external cap write share the organization access lock. */
-+const withPool = <A, E, R>(app: AppId, work: (pool: {
-+  pool: AppId; organization: string; owner: string; user: string; native: boolean; users: string[];
-+}) => Effect.Effect<A, E, R>) =>
++const withPool = <A, E, R>(
++  app: AppId,
++  work: (pool: {
++    pool: AppId;
++    organization: string;
++    owner: string;
++    user: string;
++    native: boolean;
++    users: string[];
++  }) => Effect.Effect<A, E, R>,
++) =>
 +  Effect.gen(function* () {
 +    const sql = yield* policyDatabase;
-+    return yield* sql.withTransaction(Effect.gen(function* () {
-+      const actor = yield* lockCurrentActor;
-+      yield* requireAppAccessAs(actor, app, "manage");
-+      const rows = yield* sql`select entry.key as owner, entry.value ->> 'authorization' as authorization
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const actor = yield* lockCurrentActor;
++        yield* requireAppAccessAs(actor, app, "manage");
++        const rows =
++          yield* sql`select entry.key as owner, entry.value ->> 'authorization' as authorization
 +        from organization o
 +        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
 +        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
 +        where o.id = ${actor.organization} and app.id = ${app}`;
-+      if (rows.length === 0) return null;
-+      const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
-+      if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
-+      const saved = found[0];
-+      const native = saved.authorization === "executor-app-v1";
-+      const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
-+      const users = [...new Set([...(native ? [] : [saved.owner]), ...(audience?.users ?? [])])].sort();
-+      return yield* work({ pool: app, organization: actor.organization, owner: saved.owner, user: actor.user, native, users });
-+    }));
++        if (rows.length === 0) return null;
++        const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++        if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
++        const saved = found[0];
++        const native = saved.authorization === "executor-app-v1";
++        const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
++        const users = [
++          ...new Set([...(native ? [] : [saved.owner]), ...(audience?.users ?? [])]),
++        ].sort();
++        return yield* work({
++          pool: app,
++          organization: actor.organization,
++          owner: saved.owner,
++          user: actor.user,
++          native,
++          users,
++        });
++      }),
++    );
 +  });
 +
-+export const poolUsage = (app: AppId, after?: string) => withPool(app, (pool) =>
-+  Effect.gen(function* () {
-+    const sql = yield* policyDatabase;
-+    const people = pool.users.filter((id) => after === undefined || id > after).slice(0, pageSize + 1);
-+    const page = people.slice(0, pageSize);
-+    const rows = page.length === 0 ? [] : yield* sql`select m."userId" as "user", u.name, u.email
++export const poolUsage = (app: AppId, after?: string) =>
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      const sql = yield* policyDatabase;
++      const people = pool.users
++        .filter((id) => after === undefined || id > after)
++        .slice(0, pageSize + 1);
++      const page = people.slice(0, pageSize);
++      const rows =
++        page.length === 0
++          ? []
++          : yield* sql`select m."userId" as "user", u.name, u.email
 +      from member m join "user" u on u.id = m."userId"
 +      where m."organizationId" = ${pool.organization} and ${sql.in("m.userId", page)}`;
-+    const names = yield* Schema.decodeUnknownEffect(Schema.Array(Person))(rows);
-+    const usage = yield* send("managed-usage", {
-+      pool: pool.pool, organization: pool.organization, owner: pool.owner, user: pool.user, members: page,
-+    }, PoolUsageSummary);
-+    if (usage.members.length !== page.length || !page.every((id) => usage.members.some((row) => row.member === id)))
-+      return yield* new PoolUsageUnavailable();
-+    return yield* Schema.decodeUnknownEffect(PoolUsagePage)({
-+      ...usage,
-+      pool: pool.pool,
-+      native: pool.native,
-+      next: people.length > pageSize ? page.at(-1) ?? null : null,
-+      members: page.flatMap((id) => {
-+        const member = usage.members.find((row) => row.member === id);
-+        if (member === undefined) return [];
-+        const person = names.find((row) => row.user === id);
-+        return [{ ...member, name: person?.name ?? "", email: person?.email ?? "", owner: id === pool.owner }];
-+      }),
-+    });
-+  }),
-+).pipe(Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new PoolUsageUnavailable() }));
++      const names = yield* Schema.decodeUnknownEffect(Schema.Array(Person))(rows);
++      const usage = yield* send(
++        "managed-usage",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          owner: pool.owner,
++          user: pool.user,
++          members: page,
++        },
++        PoolUsageSummary,
++      );
++      if (
++        usage.members.length !== page.length ||
++        !page.every((id) => usage.members.some((row) => row.member === id))
++      )
++        return yield* new PoolUsageUnavailable();
++      return yield* Schema.decodeUnknownEffect(PoolUsagePage)({
++        ...usage,
++        pool: pool.pool,
++        native: pool.native,
++        next: people.length > pageSize ? (page.at(-1) ?? null) : null,
++        members: page.flatMap((id) => {
++          const member = usage.members.find((row) => row.member === id);
++          if (member === undefined) return [];
++          const person = names.find((row) => row.user === id);
++          return [
++            {
++              ...member,
++              name: person?.name ?? "",
++              email: person?.email ?? "",
++              owner: id === pool.owner,
++            },
++          ];
++        }),
++      });
++    }),
++  ).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
 +
 +export const setPoolCap = (app: AppId, member: string, weekly: number | null) =>
-+  withPool(app, (pool) => Effect.gen(function* () {
-+    if (member === pool.owner || !pool.users.includes(member)) return yield* new PoolCapConflict();
-+    yield* send("managed-cap", {
-+      pool: pool.pool, organization: pool.organization, owner: pool.owner, user: pool.user, member, weekly,
-+    }, Schema.Struct({ success: Schema.Literal(true) }));
-+    return { success: true as const };
-+  })).pipe(
-+    Effect.flatMap((result) => result === null ? new PoolCapConflict() : Effect.succeed(result)),
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      if (member === pool.owner || !pool.users.includes(member))
++        return yield* new PoolCapConflict();
++      yield* send(
++        "managed-cap",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          owner: pool.owner,
++          user: pool.user,
++          member,
++          weekly,
++        },
++        Schema.Struct({ success: Schema.Literal(true) }),
++      );
++      return { success: true as const };
++    }),
++  ).pipe(
++    Effect.flatMap((result) => (result === null ? new PoolCapConflict() : Effect.succeed(result))),
 +    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
 +  );
 +
 +export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
 +  handlers
 +    .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
-+    .handle("setCap", ({ params, payload }) => setPoolCap(params.app, params.member, payload.weekly)),
++    .handle("setCap", ({ params, payload }) =>
++      setPoolCap(params.app, params.member, payload.weekly),
++    ),
 +);
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index d4343a4..369f6c0 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -15,6 +15,8 @@ export type HostedError =
+ const errorMessage = Match.type<HostedError>().pipe(
+   Match.tagsExhaustive({
+     AccountProvisioned: ({ message }) => message,
++    PoolUsageUnavailable: ({ message }) => message,
++    PoolCapConflict: ({ message }) => message,
+     AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",
+     AccountAcquisitionUnavailable: () =>
+       "This account connection is temporarily unavailable. Retry after the host restores it.",
+diff --git a/apps/hosted/web/src/implementation/components/organization-members.tsx b/apps/hosted/web/src/implementation/components/organization-members.tsx
+index 643417d..534197f 100644
+--- a/apps/hosted/web/src/implementation/components/organization-members.tsx
++++ b/apps/hosted/web/src/implementation/components/organization-members.tsx
+@@ -146,7 +146,7 @@ export function OrganizationMembers({
+         .filter((row) => matches(`${row.name} ${row.email}`))
+         .sort((a, b) => a.name.localeCompare(b.name) * (descending ? -1 : 1))
+     : [];
+-  const sendInvite = async (email: string, role: "member", resent: boolean) => {
++  const sendInvite = async (email: string, role: "admin" | "member", resent: boolean) => {
+     setError(null);
+     setSent(null);
+     const result = await invite({ email, role });
+@@ -230,7 +230,11 @@ export function OrganizationMembers({
+                       onSubmit={async (event) => {
+                         event.preventDefault();
+                         const form = new FormData(event.currentTarget);
+-                        await sendInvite(String(form.get("email")).trim(), "member", false);
++                        await sendInvite(
++                          String(form.get("email")).trim(),
++                          form.get("role") === "admin" ? "admin" : "member",
++                          false,
++                        );
+                       }}
+                     >
+                       <label>
+@@ -252,6 +256,7 @@ export function OrganizationMembers({
+                           </SelectTrigger>
+                           <SelectContent>
+                             <SelectItem value="member">Member</SelectItem>
++                            <SelectItem value="admin">Admin</SelectItem>
+                           </SelectContent>
+                         </Select>
+                       </label>
+@@ -372,7 +377,7 @@ export function OrganizationMembers({
+                               value={member.role}
+                               disabled={changingRole.waiting}
+                               onValueChange={async (role) => {
+-                                if (role !== "member") return;
++                                if (role !== "admin" && role !== "member") return;
+                                 setError(null);
+                                 const result = await changeRole({ memberId: member.id, role });
+                                 if (Exit.isFailure(result))
+@@ -380,12 +385,11 @@ export function OrganizationMembers({
+                               }}
+                             >
+                               <SelectTrigger aria-label={`Role for ${member.user.email}`}>
+-                                <SelectValue>
+-                                  {member.role === "admin" ? "Admin" : "Member"}
+-                                </SelectValue>
++                                <SelectValue />
+                               </SelectTrigger>
+                               <SelectContent>
+                                 <SelectItem value="member">Member</SelectItem>
++                                <SelectItem value="admin">Admin</SelectItem>
+                               </SelectContent>
+                             </Select>
+                           ) : member ? (
+@@ -428,7 +432,10 @@ export function OrganizationMembers({
+                                     setError(null);
+                                     setSent(null);
+                                     setInvitationOpen(true);
+-                                  } else if (invitation.role === "member")
++                                  } else if (
++                                    invitation.role === "admin" ||
++                                    invitation.role === "member"
++                                  )
+                                     await sendInvite(invitation.email, invitation.role, true);
+                                 }}
+                               >
 diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
 new file mode 100644
-index 0000000..0f6515b
+index 0000000..330e8ae
 --- /dev/null
 +++ b/e2e/support/pool-usage-backend.ts
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,129 @@
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
 +import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -391,73 +571,133 @@ index 0000000..0f6515b
 +
 +/** Only the external pool boundary is synthetic; the hosted product owns every access decision. */
 +export const poolUsageBackend = Effect.gen(function* () {
-+  const calls = yield* Ref.make<readonly typeof Assertion.Type[]>([]);
++  const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
 +  const caps = new Map<string, number>();
 +  let unavailable = false;
 +  let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
 +  const handler = Effect.gen(function* () {
 +    const request = yield* HttpServerRequest.HttpServerRequest;
-+    const { envelope } = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))));
++    const { envelope } = yield* request.json.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
 +    const [prefix, encoded, signature, extra] = envelope.split(".");
-+    if (prefix !== "sbs1" || encoded === undefined || signature === undefined || extra !== undefined)
++    if (
++      prefix !== "sbs1" ||
++      encoded === undefined ||
++      signature === undefined ||
++      extra !== undefined
++    )
 +      return HttpServerResponse.empty({ status: 401 });
 +    const actual = Buffer.from(signature, "base64url");
-+    const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex")).update(`${prefix}.${encoded}`).digest();
-+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return HttpServerResponse.empty({ status: 401 });
-+    const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Assertion))(Buffer.from(encoded, "base64url").toString());
++    const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++      .update(`${prefix}.${encoded}`)
++      .digest();
++    if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++      return HttpServerResponse.empty({ status: 401 });
++    const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Assertion))(
++      Buffer.from(encoded, "base64url").toString(),
++    );
 +    const now = yield* Clock.currentTimeMillis;
-+    if (value.expiresAt <= now || value.expiresAt > now + 30_000 || !request.url.endsWith(`/${value.action}`))
++    if (
++      value.expiresAt <= now ||
++      value.expiresAt > now + 30_000 ||
++      !request.url.endsWith(`/${value.action}`)
++    )
 +      return HttpServerResponse.empty({ status: 401 });
 +    yield* Ref.update(calls, (items) => [...items, value]);
 +    if (unavailable) return HttpServerResponse.empty({ status: 503 });
 +    if (value.action === "managed-cap") {
 +      const held = gate;
-+      if (held !== undefined) { yield* Deferred.succeed(held.started, undefined); yield* Deferred.await(held.release); }
++      if (held !== undefined) {
++        yield* Deferred.succeed(held.started, undefined);
++        yield* Deferred.await(held.release);
++      }
 +      const id = `${value.pool}:${value.member}`;
 +      if (value.weekly === null) caps.delete(id);
 +      else if (value.weekly !== undefined) caps.set(id, value.weekly);
 +      return HttpServerResponse.jsonUnsafe({ success: true });
 +    }
-+    const usage = { requests: 1, cost: 0.5, unpriced: 0, tokens: { input: 75, cacheRead: 10, cacheWrite: 5, output: 10, total: 100 } };
++    const usage = {
++      requests: 1,
++      cost: 0.5,
++      unpriced: 0,
++      tokens: { input: 75, cacheRead: 10, cacheWrite: 5, output: 10, total: 100 },
++    };
 +    const model = { ...usage, provider: "codex", model: "synthetic-model" };
 +    return HttpServerResponse.jsonUnsafe({
-+      from: "2026-10-01T00:00:00Z", to: "2026-10-31T00:00:00Z", readAt: "2026-10-31T00:00:00Z",
++      from: "2026-10-01T00:00:00Z",
++      to: "2026-10-31T00:00:00Z",
++      readAt: "2026-10-31T00:00:00Z",
 +      members: (value.members ?? []).map((member) => {
 +        const weekly = caps.get(`${value.pool}:${member}`);
-+        return { member, ...usage, models: [model], days: [{ ...usage, day: "2026-10-30", models: [model] }],
-+          cap: weekly === undefined ? null : { weekly, used: 0.5, remaining: weekly - 0.5, resetAt: "2026-11-02T00:00:00Z" } };
++        return {
++          member,
++          ...usage,
++          models: [model],
++          days: [{ ...usage, day: "2026-10-30", models: [model] }],
++          cap:
++            weekly === undefined
++              ? null
++              : { weekly, used: 0.5, remaining: weekly - 0.5, resetAt: "2026-11-02T00:00:00Z" },
++        };
 +      }),
-+      accounts: [{ account: "synthetic-private-account-reference" }], credential: "synthetic-private-credential",
++      accounts: [{ account: "synthetic-private-account-reference" }],
++      credential: "synthetic-private-credential",
 +    });
 +  });
-+  const services = yield* Layer.build(HttpRouter.serve(Layer.mergeAll(
-+    HttpRouter.add("POST", "/__setup/v1/managed-usage", handler),
-+    HttpRouter.add("POST", "/__setup/v1/managed-cap", handler),
-+  ), { disableLogger: true, disableListenLog: true }).pipe(
-+    Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
-+  ));
++  const services = yield* Layer.build(
++    HttpRouter.serve(
++      Layer.mergeAll(
++        HttpRouter.add("POST", "/__setup/v1/managed-usage", handler),
++        HttpRouter.add("POST", "/__setup/v1/managed-cap", handler),
++      ),
++      { disableLogger: true, disableListenLog: true },
++    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
++  );
 +  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
 +  if (!("port" in server.address)) return yield* Effect.die("Pool fixture requires TCP");
 +  return {
 +    origin: `http://127.0.0.1:${server.address.port}`,
 +    calls: Ref.get(calls),
-+    unavailable: (value: boolean) => Effect.sync(() => { unavailable = value; }),
++    unavailable: (value: boolean) =>
++      Effect.sync(() => {
++        unavailable = value;
++      }),
 +    hold: Effect.gen(function* () {
 +      const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
 +      gate = held;
 +      yield* Effect.addFinalizer(() => Deferred.succeed(held.release, undefined));
-+      return { started: Deferred.await(held.started), release: Deferred.succeed(held.release, undefined).pipe(Effect.tap(() => Effect.sync(() => { gate = undefined; }))) };
++      return {
++        started: Deferred.await(held.started),
++        release: Deferred.succeed(held.release, undefined).pipe(
++          Effect.tap(() =>
++            Effect.sync(() => {
++              gate = undefined;
++            }),
++          ),
++        ),
++      };
 +    }),
 +  };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 15cc647..2aa8297 100644
+index 48c71b3..ef12a2a 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8010,6 +8010,17 @@ export const scenarios = plan({
+@@ -8032,6 +8032,27 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
++  poolSharingUi: {
++    fixtures: "actors",
++    file: "pool-sharing-ui.spec.ts",
++    title: "native sharing keeps existing audience, group and organization role controls",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a runner-owned synthetic organization for the native UI screenshot pass."),
++      local: na("Uses hosted organization audiences and roles."),
++    },
++  },
 +  poolSharing: {
 +    fixtures: "actors",
 +    legacyStorage: true,
@@ -495,12 +735,196 @@ index 135e773..5dd663c 100644
        context,
        Effect.gen(function* () {
          const api = yield* Api,
+diff --git a/e2e/tests/pool-sharing-ui.spec.ts b/e2e/tests/pool-sharing-ui.spec.ts
+new file mode 100644
+index 0000000..2381cf7
+--- /dev/null
++++ b/e2e/tests/pool-sharing-ui.spec.ts
+@@ -0,0 +1,178 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Resource = Schema.Struct({ id: Schema.String, revision: Schema.String });
++const source = `import {defineApp,query,object,router} from "apps";
++export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
++
++layer(HostedLive, { excludeTestServices: true })("Native sharing controls", (it) => {
++  it.effect(scenarios.poolSharingUi.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const group = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
++            name: "Pool readers",
++            description: "Synthetic sharing proof",
++            memberIds: [],
++          }),
++        );
++        const app = yield* body(
++          App,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: "Native sharing proof",
++            files: [{ path: "index.ts", content: source }, appsManifest],
++          }),
++        );
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            expect(
++              (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
++            ).toBe(200);
++            expect(
++              (yield* api.request(actors.owner, "DELETE", `${prefix}/groups/${group.id}`, {
++                revision: group.revision,
++              })).status,
++            ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        yield* browser.login(actors.owner);
++        const offered: string[][] = [];
++        for (const width of [1280, 390]) {
++          yield* browser.use("Set native settings viewport", (page) =>
++            page.setViewportSize({ width, height: 900 }),
++          );
++          yield* browser.use("Open existing app Settings", (page) =>
++            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=settings`),
++          );
++          yield* browser.use("Open existing audience choices", (page) =>
++            page.getByRole("combobox", { name: "Who can use this app?" }).click(),
++          );
++          expect(
++            yield* browser.use("Keep every native audience choice", (page) =>
++              page.getByRole("option").allTextContents(),
++            ),
++          ).toEqual(["Only me", "Selected groups", "Everyone in the organization"]);
++          yield* browser.use("Choose existing Groups mode", (page) =>
++            page.getByRole("option", { name: "Selected groups", exact: true }).click(),
++          );
++          yield* browser.use("Show native group selection", (page) =>
++            page.getByRole("checkbox", { name: "Pool readers", exact: true }).waitFor(),
++          );
++          yield* browser.checkpoint(`Existing app audience and groups at ${width}px`);
++          yield* browser.use("Open existing Groups screen", (page) =>
++            page.goto(`/org/${actors.organization.slug}/groups`),
++          );
++          yield* browser.use("Wait for saved group", (page) =>
++            page.getByText("Pool readers", { exact: true }).waitFor(),
++          );
++          yield* browser.checkpoint(`Existing Groups screen at ${width}px`);
++          yield* browser.use("Open existing Members screen", (page) =>
++            page.goto(`/org/${actors.organization.slug}/organization`),
++          );
++          yield* browser.use("Wait for native member controls", (page) =>
++            page.getByRole("table", { name: "Members", exact: true }).waitFor(),
++          );
++          yield* browser.use("Open existing member role choices", (page) =>
++            page
++              .getByRole("combobox", { name: "Role for member@example.test", exact: true })
++              .click(),
++          );
++          yield* browser.use("Wait for member role menu", (page) =>
++            page.getByRole("option", { name: "Member", exact: true }).waitFor(),
++          );
++          yield* browser.use("Finish native role-menu animation", (page) =>
++            page
++              .getByRole("listbox")
++              .evaluate((element) =>
++                Promise.all(
++                  element.getAnimations({ subtree: true }).map((animation) => animation.finished),
++                ),
++              ),
++          );
++          yield* browser.checkpoint(`Existing member role choices at ${width}px`);
++          offered.push(
++            yield* browser.use("Read member role choices", (page) =>
++              page.getByRole("option").allTextContents(),
++            ),
++          );
++          yield* browser.use("Close member choices", (page) => page.keyboard.press("Escape"));
++          yield* browser.use("Open existing invitation dialog", (page) =>
++            page.getByRole("button", { name: "Add member", exact: true }).click(),
++          );
++          yield* browser.use("Open existing invitation roles", (page) =>
++            page.getByRole("combobox", { name: "Invitation role", exact: true }).click(),
++          );
++          yield* browser.use("Wait for invitation role menu", (page) =>
++            page.getByRole("option", { name: "Member", exact: true }).waitFor(),
++          );
++          yield* browser.use("Finish native invitation-menu animation", (page) =>
++            page
++              .getByRole("listbox")
++              .evaluate((element) =>
++                Promise.all(
++                  element.getAnimations({ subtree: true }).map((animation) => animation.finished),
++                ),
++              ),
++          );
++          yield* browser.checkpoint(`Existing invitation role choices at ${width}px`);
++          offered.push(
++            yield* browser.use("Read invitation role choices", (page) =>
++              page.getByRole("option").allTextContents(),
++            ),
++          );
++          yield* browser.use("Close invitation roles", (page) => page.keyboard.press("Escape"));
++          yield* browser.use("Close invitation", (page) =>
++            page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click(),
++          );
++          expect(
++            yield* browser.use("Native controls fit the viewport", (page) =>
++              page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
++            ),
++          ).toBe(true);
++        }
++        for (const options of offered) expect(options).toEqual(["Member", "Admin"]);
++        yield* browser.use("Open member role control", (page) =>
++          page.getByRole("combobox", { name: "Role for member@example.test", exact: true }).click(),
++        );
++        yield* browser.use("Promote with the existing role control", (page) =>
++          page.getByRole("option", { name: "Admin", exact: true }).click(),
++        );
++        yield* browser.use("Wait for confirmed native role", (page) =>
++          page
++            .getByRole("combobox", { name: "Role for member@example.test", exact: true })
++            .filter({ hasText: "Admin" })
++            .waitFor(),
++        );
++        const members = yield* body(
++          Schema.Struct({
++            members: Schema.Array(
++              Schema.Struct({ role: Schema.String, user: Schema.Struct({ email: Schema.String }) }),
++            ),
++          }),
++          yield* api.request(
++            actors.owner,
++            "GET",
++            `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
++          ),
++        );
++        expect(
++          members.members.find((person) => person.user.email === "member@example.test")?.role,
++        ).toBe("admin");
++        yield* browser.checkpoint("Native member promotion confirmed");
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/pool-sharing.spec.ts b/e2e/tests/pool-sharing.spec.ts
 new file mode 100644
-index 0000000..8f4e2ee
+index 0000000..521017c
 --- /dev/null
 +++ b/e2e/tests/pool-sharing.spec.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,269 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -514,113 +938,259 @@ index 0000000..8f4e2ee
 +import { serverControl } from "../support/server-control.ts";
 +import { scenarios } from "../test-plan.ts";
 +
-+const Access = Schema.Struct({ revision: Schema.String, audience: Schema.Unknown, canManage: Schema.Boolean, canUse: Schema.Boolean });
++const Access = Schema.Struct({
++  revision: Schema.String,
++  audience: Schema.Unknown,
++  canManage: Schema.Boolean,
++  canUse: Schema.Boolean,
++});
 +const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
-+const Members = Schema.Struct({ members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String, role: Schema.String })) });
++const Members = Schema.Struct({
++  members: Schema.Array(
++    Schema.Struct({ id: Schema.String, userId: Schema.String, role: Schema.String }),
++  ),
++});
 +const Page = Schema.Struct({
-+  pool: Schema.String, native: Schema.Boolean, next: Schema.NullOr(Schema.String),
-+  members: Schema.Array(Schema.Struct({ member: Schema.String, name: Schema.String, cap: Schema.NullOr(Schema.Struct({ weekly: Schema.Number })), models: Schema.Array(Schema.Unknown), days: Schema.Array(Schema.Unknown) })),
++  pool: Schema.String,
++  native: Schema.Boolean,
++  next: Schema.NullOr(Schema.String),
++  members: Schema.Array(
++    Schema.Struct({
++      member: Schema.String,
++      name: Schema.String,
++      cap: Schema.NullOr(Schema.Struct({ weekly: Schema.Number })),
++      models: Schema.Array(Schema.Unknown),
++      days: Schema.Array(Schema.Unknown),
++    }),
++  ),
 +});
 +const source = `import {defineApp,query,object,router} from "apps";
 +export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
 +
 +layer(RuntimeLive, { excludeTestServices: true })("Native pool sharing", (it) => {
-+  it.effect(scenarios.poolSharing.title, (context) => withHostedHttpCase(context, Effect.gen(function* () {
-+    const api = yield* Api, actors = yield* Actors, backend = yield* poolUsageBackend;
-+    const prefix = `/api/organizations/${actors.organization.id}`;
-+    const read = <A>(schema: Schema.ConstraintDecoder<A, never>, ...args: Parameters<typeof api.request>) => api.request(...args).pipe(Effect.flatMap((response) => body(schema, response)));
-+    const ids = yield* Effect.forEach([actors.owner, actors.admin, actors.member], (actor) => read(Schema.Struct({ userId: Schema.String }), actor, "GET", "/api/viewer"));
-+    const [owner, admin, member] = ids.map((id) => id.userId);
-+    if (owner === undefined || admin === undefined || member === undefined) return yield* Effect.die("Missing actors");
-+    const members = yield* read(Members, actors.owner, "GET", `/api/auth/organization/list-members?organizationId=${actors.organization.id}`);
-+    const memberRow = members.members.find((row) => row.userId === member), adminRow = members.members.find((row) => row.userId === admin);
-+    if (memberRow === undefined || adminRow === undefined) return yield* Effect.die("Missing memberships");
-+    const deploy = (actor: Session, name: string) => read(App, actor, "POST", `${prefix}/apps/deploy`, { name, files: [{ path: "index.ts", content: source }, appsManifest] });
-+    const first = yield* deploy(actors.owner, "First private pool"), second = yield* deploy(actors.admin, "Other private pool"), ordinary = yield* deploy(actors.owner, "Ordinary app");
-+    const path = (app: string) => `${prefix}/apps/${app}`;
-+    const access = (app: string, actor = actors.owner) => read(Access, actor, "GET", `${path(app)}/access`);
-+    const share = (app: string, audience: unknown) => Effect.gen(function* () {
-+      const current = yield* access(app);
-+      expect((yield* api.request(actors.owner, "PATCH", `${path(app)}/access`, { revision: current.revision, audience })).status).toBe(200);
-+    });
-+    const page = (app: string, actor = actors.owner, after?: string) => read(Page, actor, "GET", `${path(app)}/pool-usage${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`);
-+    const cap = (app: string, person: string, weekly: number | null, actor = actors.admin) => api.request(actor, "PUT", `${path(app)}/pool-caps/${person}`, { weekly });
-+    const initialFirst = yield* access(first.id), initialSecond = yield* access(second.id);
-+    yield* serverControl("stop");
-+    yield* legacyStorage([{ sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`, params: [JSON.stringify({
-+      [owner]: { app: first.id, version: "retained-version", authorization: "executor-app-v1" },
-+      [admin]: { app: second.id, version: "retained-version" },
-+    }), actors.organization.id] }]);
-+    yield* serverControl("environment", 200, { POOL_APP_SIGNING_KEY: "ab".repeat(32), BASALT_POOL_ORIGIN: backend.origin });
-+    yield* serverControl("start");
-+    yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++  it.effect(scenarios.poolSharing.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* poolUsageBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const read = <A>(
++          schema: Schema.ConstraintDecoder<A, never>,
++          ...args: Parameters<typeof api.request>
++        ) => api.request(...args).pipe(Effect.flatMap((response) => body(schema, response)));
++        const ids = yield* Effect.forEach([actors.owner, actors.admin, actors.member], (actor) =>
++          read(Schema.Struct({ userId: Schema.String }), actor, "GET", "/api/viewer"),
++        );
++        const [owner, admin, member] = ids.map((id) => id.userId);
++        if (owner === undefined || admin === undefined || member === undefined)
++          return yield* Effect.die("Missing actors");
++        const members = yield* read(
++          Members,
++          actors.owner,
++          "GET",
++          `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
++        );
++        const memberRow = members.members.find((row) => row.userId === member),
++          adminRow = members.members.find((row) => row.userId === admin);
++        if (memberRow === undefined || adminRow === undefined)
++          return yield* Effect.die("Missing memberships");
++        const deploy = (actor: Session, name: string) =>
++          read(App, actor, "POST", `${prefix}/apps/deploy`, {
++            name,
++            files: [{ path: "index.ts", content: source }, appsManifest],
++          });
++        const first = yield* deploy(actors.owner, "First private pool"),
++          second = yield* deploy(actors.admin, "Other private pool"),
++          ordinary = yield* deploy(actors.owner, "Ordinary app");
++        const path = (app: string) => `${prefix}/apps/${app}`;
++        const access = (app: string, actor = actors.owner) =>
++          read(Access, actor, "GET", `${path(app)}/access`);
++        const share = (app: string, audience: unknown) =>
++          Effect.gen(function* () {
++            const current = yield* access(app);
++            expect(
++              (yield* api.request(actors.owner, "PATCH", `${path(app)}/access`, {
++                revision: current.revision,
++                audience,
++              })).status,
++            ).toBe(200);
++          });
++        const page = (app: string, actor = actors.owner, after?: string) =>
++          read(
++            Page,
++            actor,
++            "GET",
++            `${path(app)}/pool-usage${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`,
++          );
++        const cap = (app: string, person: string, weekly: number | null, actor = actors.admin) =>
++          api.request(actor, "PUT", `${path(app)}/pool-caps/${person}`, { weekly });
++        const initialFirst = yield* access(first.id),
++          initialSecond = yield* access(second.id);
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
++            params: [
++              JSON.stringify({
++                [owner]: {
++                  app: first.id,
++                  version: "retained-version",
++                  authorization: "executor-app-v1",
++                },
++                [admin]: { app: second.id, version: "retained-version" },
++              }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: backend.origin,
++        });
++        yield* serverControl("start");
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
 +
-+    expect((yield* access(first.id)).audience).toEqual(initialFirst.audience);
-+    expect((yield* access(second.id)).audience).toEqual(initialSecond.audience);
-+    expect((yield* access(first.id, actors.admin))).toMatchObject({ canManage: true, canUse: false });
-+    expect((yield* api.request(actors.admin, "POST", `${path(first.id)}/tools/call`, { tool: "identity", kind: "query", input: {} })).status).toBe(403);
-+    expect((yield* page(first.id, actors.admin)).members.map((row) => row.member)).toEqual([owner]);
-+    expect((yield* page(second.id)).native).toBe(false);
-+    expect((yield* api.request(actors.owner, "GET", `${path(ordinary.id)}/pool-usage`)).body).toBeNull();
-+    expect((yield* api.request(actors.member, "GET", `${path(first.id)}/pool-usage`)).status).toBe(403);
-+    expect((yield* cap(first.id, owner, 10)).status).toBe(409);
++        expect((yield* access(first.id)).audience).toEqual(initialFirst.audience);
++        expect((yield* access(second.id)).audience).toEqual(initialSecond.audience);
++        expect(yield* access(first.id, actors.admin)).toMatchObject({
++          canManage: true,
++          canUse: false,
++        });
++        expect(
++          (yield* api.request(actors.admin, "POST", `${path(first.id)}/tools/call`, {
++            tool: "identity",
++            kind: "query",
++            input: {},
++          })).status,
++        ).toBe(403);
++        expect((yield* page(first.id, actors.admin)).members.map((row) => row.member)).toEqual([
++          owner,
++        ]);
++        expect((yield* page(second.id)).native).toBe(false);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${path(ordinary.id)}/pool-usage`)).body,
++        ).toBeNull();
++        expect(
++          (yield* api.request(actors.member, "GET", `${path(first.id)}/pool-usage`)).status,
++        ).toBe(403);
++        expect((yield* cap(first.id, owner, 10)).status).toBe(409);
 +
-+    const group = yield* read(Group, actors.owner, "POST", `${prefix}/groups`, { name: "First pool users", description: "", memberIds: [memberRow.id] });
-+    yield* share(first.id, { kind: "groups", groups: [group.id] });
-+    yield* share(second.id, { kind: "everyone" });
-+    expect((yield* page(first.id)).members.map((row) => row.member)).toEqual([member]);
-+    for (let retry = 0; retry < 2; retry++) expect((yield* cap(first.id, member, 10)).status).toBe(200);
-+    const saved = yield* api.request(actors.admin, "GET", `${path(first.id)}/pool-usage`);
-+    expect((yield* body(Page, saved)).members[0]).toMatchObject({ member, cap: { weekly: 10 } });
-+    expect(JSON.stringify(saved.body)).not.toContain("synthetic-private");
-+    expect((yield* page(first.id)).members[0]?.models).toHaveLength(1);
-+    expect((yield* page(first.id)).members[0]?.days).toHaveLength(1);
-+    expect((yield* page(second.id)).members.find((row) => row.member === member)?.cap).toBeNull();
-+    expect((yield* cap(first.id, member, null)).status).toBe(200);
-+    expect((yield* page(first.id)).members[0]?.cap).toBeNull();
-+    expect((yield* cap(first.id, member, 15, actors.member)).status).toBe(403);
-+    expect((yield* cap(first.id, admin, 15)).status).toBe(409);
++        const group = yield* read(Group, actors.owner, "POST", `${prefix}/groups`, {
++          name: "First pool users",
++          description: "",
++          memberIds: [memberRow.id],
++        });
++        yield* share(first.id, { kind: "groups", groups: [group.id] });
++        yield* share(second.id, { kind: "everyone" });
++        expect((yield* page(first.id)).members.map((row) => row.member)).toEqual([member]);
++        for (let retry = 0; retry < 2; retry++)
++          expect((yield* cap(first.id, member, 10)).status).toBe(200);
++        const saved = yield* api.request(actors.admin, "GET", `${path(first.id)}/pool-usage`);
++        expect((yield* body(Page, saved)).members[0]).toMatchObject({
++          member,
++          cap: { weekly: 10 },
++        });
++        expect(JSON.stringify(saved.body)).not.toContain("synthetic-private");
++        expect((yield* page(first.id)).members[0]?.models).toHaveLength(1);
++        expect((yield* page(first.id)).members[0]?.days).toHaveLength(1);
++        expect(
++          (yield* page(second.id)).members.find((row) => row.member === member)?.cap,
++        ).toBeNull();
++        expect((yield* cap(first.id, member, null)).status).toBe(200);
++        expect((yield* page(first.id)).members[0]?.cap).toBeNull();
++        expect((yield* cap(first.id, member, 15, actors.member)).status).toBe(403);
++        expect((yield* cap(first.id, admin, 15)).status).toBe(409);
 +
-+    expect((yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", { organizationId: actors.organization.id, memberId: adminRow.id, role: "member" })).status).toBe(200);
-+    const callsBefore = (yield* backend.calls).length;
-+    expect((yield* cap(first.id, member, 20)).status).toBe(403);
-+    expect((yield* api.request(actors.admin, "GET", `${path(first.id)}/pool-usage`)).status).toBe(403);
-+    expect((yield* backend.calls).length).toBe(callsBefore);
-+    expect((yield* api.request(actors.admin, "GET", `${path(first.id)}/access`)).status).toBe(403);
-+    expect((yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", { organizationId: actors.organization.id, memberId: adminRow.id, role: "admin" })).status).toBe(200);
-+    expect((yield* cap(first.id, member, 20)).status).toBe(200);
-+    const currentGroup = yield* read(Group, actors.owner, "GET", `${prefix}/groups/${group.id}`);
-+    expect((yield* api.request(actors.owner, "PATCH", `${prefix}/groups/${group.id}`, { revision: currentGroup.revision, name: "First pool users", description: "", memberIds: [] })).status).toBe(200);
-+    expect((yield* cap(first.id, member, 20)).status).toBe(409);
-+    const stillMember = yield* read(Members, actors.owner, "GET", `/api/auth/organization/list-members?organizationId=${actors.organization.id}`);
-+    expect(stillMember.members.find((row) => row.userId === member)?.id).toBe(memberRow.id);
-+    expect((yield* access(second.id, actors.member)).canUse).toBe(true);
-+    expect((yield* page(second.id)).native).toBe(false);
-+    yield* share(first.id, { kind: "everyone" });
-+    yield* backend.unavailable(true);
-+    expect((yield* api.request(actors.admin, "GET", `${path(first.id)}/pool-usage`)).status).toBe(503);
-+    yield* backend.unavailable(false);
-+    expect((yield* page(first.id, actors.admin)).native).toBe(true);
-+    yield* serverControl("stop");
-+    yield* legacyStorage([
-+      { sql: `insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
++            organizationId: actors.organization.id,
++            memberId: adminRow.id,
++            role: "member",
++          })).status,
++        ).toBe(200);
++        const callsBefore = (yield* backend.calls).length;
++        expect((yield* cap(first.id, member, 20)).status).toBe(403);
++        expect(
++          (yield* api.request(actors.admin, "GET", `${path(first.id)}/pool-usage`)).status,
++        ).toBe(403);
++        expect((yield* backend.calls).length).toBe(callsBefore);
++        expect((yield* api.request(actors.admin, "GET", `${path(first.id)}/access`)).status).toBe(
++          403,
++        );
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
++            organizationId: actors.organization.id,
++            memberId: adminRow.id,
++            role: "admin",
++          })).status,
++        ).toBe(200);
++        expect((yield* cap(first.id, member, 20)).status).toBe(200);
++        const currentGroup = yield* read(
++          Group,
++          actors.owner,
++          "GET",
++          `${prefix}/groups/${group.id}`,
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${prefix}/groups/${group.id}`, {
++            revision: currentGroup.revision,
++            name: "First pool users",
++            description: "",
++            memberIds: [],
++          })).status,
++        ).toBe(200);
++        expect((yield* cap(first.id, member, 20)).status).toBe(409);
++        const stillMember = yield* read(
++          Members,
++          actors.owner,
++          "GET",
++          `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
++        );
++        expect(stillMember.members.find((row) => row.userId === member)?.id).toBe(memberRow.id);
++        expect((yield* access(second.id, actors.member)).canUse).toBe(true);
++        expect((yield* page(second.id)).native).toBe(false);
++        yield* share(first.id, { kind: "everyone" });
++        yield* backend.unavailable(true);
++        expect(
++          (yield* api.request(actors.admin, "GET", `${path(first.id)}/pool-usage`)).status,
++        ).toBe(503);
++        yield* backend.unavailable(false);
++        expect((yield* page(first.id, actors.admin)).native).toBe(true);
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
 +        select 'pool-page-' || lpad(n::text, 3, '0'), 'Pool person ' || n, 'pool-person-' || n || '@example.test', true, now(), now()
-+        from generate_series(1, 101) n` },
-+      { sql: `insert into member (id, "organizationId", "userId", role, "createdAt")
++        from generate_series(1, 101) n`,
++          },
++          {
++            sql: `insert into member (id, "organizationId", "userId", role, "createdAt")
 +        select 'pool-page-member-' || n, $1, 'pool-page-' || lpad(n::text, 3, '0'), 'member', now()
-+        from generate_series(1, 101) n`, params: [actors.organization.id] },
-+    ]);
-+    yield* serverControl("start");
-+    const firstPage = yield* page(first.id, actors.admin);
-+    expect(firstPage.members).toHaveLength(100);
-+    expect(firstPage.next).not.toBeNull();
-+    const secondPage = yield* page(first.id, actors.admin, firstPage.next!);
-+    expect(secondPage.next).toBeNull();
-+    expect(secondPage.members).toHaveLength(4);
-+    expect(new Set([...firstPage.members, ...secondPage.members].map((row) => row.member)).size).toBe(104);
-+    const last = secondPage.members.find((row) => row.member !== owner);
-+    if (last === undefined) return yield* Effect.die("Missing second-page user");
-+    expect((yield* cap(first.id, last.member, 7)).status).toBe(200);
-+    expect((yield* page(first.id, actors.admin, firstPage.next!)).members.find((row) => row.member === last.member)?.cap?.weekly).toBe(7);
-+  })));
++        from generate_series(1, 101) n`,
++            params: [actors.organization.id],
++          },
++        ]);
++        yield* serverControl("start");
++        const firstPage = yield* page(first.id, actors.admin);
++        expect(firstPage.members).toHaveLength(100);
++        expect(firstPage.next).not.toBeNull();
++        const secondPage = yield* page(first.id, actors.admin, firstPage.next!);
++        expect(secondPage.next).toBeNull();
++        expect(secondPage.members).toHaveLength(4);
++        expect(
++          new Set([...firstPage.members, ...secondPage.members].map((row) => row.member)).size,
++        ).toBe(104);
++        const last = secondPage.members.find((row) => row.member !== owner);
++        if (last === undefined) return yield* Effect.die("Missing second-page user");
++        expect((yield* cap(first.id, last.member, 7)).status).toBe(200);
++        expect(
++          (yield* page(first.id, actors.admin, firstPage.next!)).members.find(
++            (row) => row.member === last.member,
++          )?.cap?.weekly,
++        ).toBe(7);
++      }),
++    ),
++  );
 +});
