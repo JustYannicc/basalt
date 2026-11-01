@@ -185,6 +185,46 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  contributed-accounts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated self-host test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify contributed account authority and recovery
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^independent departure cleanup|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          --workers 1
+      - name: Verify contributed accounts through Cloud
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contributed-accounts-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   personal-data-reporting:
     runs-on: ubuntu-latest
     timeout-minutes: 20

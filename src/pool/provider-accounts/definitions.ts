@@ -64,5 +64,5 @@ export type ProviderLab = keyof typeof providers;
 
 // The legacy Subscription requirement remains separate until an exact-ID adoption is approved.
 export const nativePoolAccounts = Object.fromEntries(
-  Object.entries(providers).map(([lab, provider]) => [lab, provider.many()]),
+  Object.entries(providers).map(([lab, provider]) => [lab, provider.many().contributed()]),
 );

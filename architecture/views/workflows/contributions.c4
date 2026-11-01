@@ -1,0 +1,27 @@
+views {
+  dynamic view v1_contribute_accounts {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/Contribute accounts and recover departure cleanup"
+    description """
+      Source implementation; existing-pool activation remains separately gated.
+      Each account stays saved when its contribution is detached. A departed member's exact link
+      snapshots survive process restarts, while a newer link and other pools remain untouched.
+    """
+
+    include poolMember, localClient, basalt.router, basalt.toolsGateway.contributionApi, basalt.toolsGateway.contributedLinks, basalt.toolsGateway.contributionDepartures, basalt.modelGateway
+    poolMember -> localClient "add a usable account in the app's Accounts tab"
+    localClient -> basalt.router "native app account connection or link request"
+    basalt.router -> basalt.toolsGateway.contributionApi "authenticated app account request"
+    basalt.toolsGateway.contributionApi -> basalt.toolsGateway.contributedLinks "check active opt-in, app use and account use; retain native contributor"
+    basalt.toolsGateway.contributionApi <- basalt.toolsGateway.contributedLinks "committed native link and caller-filtered identity"
+    basalt.router <- basalt.toolsGateway.contributionApi "contribution result"
+    localClient <- basalt.router "show contributor and permitted removal controls"
+    basalt.toolsGateway.contributionApi -> basalt.toolsGateway.contributionDepartures "on member removal: commit immutable native link snapshots"
+    basalt.toolsGateway.contributionDepartures -> basalt.toolsGateway.contributedLinks "claim after commit or recover an expired claim"
+    basalt.toolsGateway.contributedLinks -> basalt.router "invalidate affected native pool membership before detach"
+    basalt.router -> basalt.modelGateway "signed current membership change"
+    basalt.router <- basalt.modelGateway "membership invalidation accepted"
+    basalt.toolsGateway.contributedLinks <- basalt.router "detach exact retained link; keep credential and other pool links"
+  }
+}

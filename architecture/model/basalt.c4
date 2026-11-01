@@ -52,6 +52,18 @@ model {
         description "Runs inside the existing private MCP Worker. Retains views, reads resources and maps callbacks through ordinary MCP Apps rules. Each private call binds the current caller and policy to the normal MCP authorization backend; no authority is cached across requests."
         metadata { code ".upstream/apps/hosted/cloud/src/infrastructure/workflow-display-server.ts|.upstream/apps/hosted/cloud/src/mcp-server.ts" }
       }
+      contributionApi = door "Account and membership API" {
+        description "Native account requests and membership changes enter the same hosted authorization and database transaction boundaries."
+        metadata { code ".upstream/apps/hosted/server/src/implementation/app-accounts.ts|.upstream/apps/hosted/server/src/implementation/organization.ts|.upstream/apps/hosted/server/src/implementation/organization-auth.ts" }
+      }
+      contributedLinks = part "Contributed account links" {
+        description "App authors opt in each many-account requirement. Linking requires current app use and account use. Native links record their contributor; that person or an app editor may detach them. Management alone grants no private-account use. Detach preserves saved credentials and other app links. Identity details follow holder and management access."
+        metadata { code ".upstream/apps/hosted/server/src/implementation/contributed-account-policy.ts|.upstream/apps/hosted/server/src/implementation/contributed-account-departure.ts" }
+      }
+      contributionDepartures = store "Contribution departure queue" {
+        description "Member removal snapshots exact native links in the membership transaction. Independent expiring claims recover interrupted cleanup without an old server acknowledging the new queue. A retained link timestamp prevents stale cleanup from removing a newer contribution. Jobs detach links and never delete saved credentials."
+        metadata { code ".upstream/apps/hosted/server/src/implementation/contributed-departure-queue.ts|.upstream/apps/hosted/server/src/implementation/contributed-departure-schema.ts" }
+      }
     }
 
     site = module "Public site" {
@@ -413,6 +425,14 @@ model {
   basalt.toolsGateway -[sync]-> basalt.publicIdentity "sign in"
   basalt.toolsGateway -[tool]-> basalt.publicConnectors "connectors"
   basalt.toolsGateway -[sync]-> basalt.publicVault "secret custody"
+  basalt.router -[sync]-> basalt.toolsGateway.contributionApi "native account and membership requests"
+  basalt.toolsGateway.contributionApi -[sync]-> basalt.toolsGateway.contributedLinks "authorize and change native contributed links"
+  basalt.toolsGateway.contributedLinks -[sync]-> basalt.toolsGateway.contributionApi "committed link and caller-filtered identity"
+  basalt.toolsGateway.contributionApi -[sync]-> basalt.router "native account and membership result"
+  basalt.toolsGateway.contributionApi -[sync]-> basalt.toolsGateway.contributionDepartures "snapshot contributed links before member removal commits"
+  basalt.toolsGateway.contributionDepartures -[async]-> basalt.toolsGateway.contributedLinks "claim and retry exact departed links"
+  basalt.toolsGateway.contributedLinks -[sync]-> basalt.router "invalidate native pool membership before detach commits"
+  basalt.router -[sync]-> basalt.toolsGateway.contributedLinks "pool membership invalidation accepted"
   basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
 
   basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: validate native device grant before model ingress"
