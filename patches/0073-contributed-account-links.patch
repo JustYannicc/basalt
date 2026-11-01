@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-index f675e86..91118d4 100644
+index f675e866d8fdb5d71ec0b01123195eaaccbd06a3..91118d4ddd7e6a3586e4007832e09176cbd0fcc4 100644
 --- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 +++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 @@ -17,6 +17,7 @@ import { previewLifetime } from "./test-stage-expiry.ts";
@@ -11,7 +11,7 @@ index f675e86..91118d4 100644
    "repository-recovery",
    "schedule-wake",
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 3b1c542..4b39662 100644
+index 3b1c5421c5ca6adeeca2418a22cbcae9773ce07d..ce5e4aab74627d3a82d7f4fd60cfec9cf41d4fc7 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,3 +1,4 @@
@@ -19,12 +19,15 @@ index 3b1c542..4b39662 100644
  import { cloudWorkflowInputDisplays } from "./infrastructure/workflow-display.ts";
  import { appSandboxAddress } from "@executor-js/mcp";
  import { McpAppSandbox } from "@executor-js/hosted-server";
-@@ -311,7 +312,16 @@ export default Api.make(
+@@ -311,7 +312,19 @@ export default Api.make(
      // Jobs are queued by triggers on users, teams and members. Only auth and dashboard API
      // writes change those rows, so only their requests start the jobs at once. MCP, telemetry
      // and the other routes skip the extra connection and query. Cron recovers any lost dispatch.
 -    const startJobs = dispatchWith(installTeam).pipe(lifetime.background);
-+    const contributedDepartures = drainContributedDepartures.pipe(
++    const contributedDepartures = Effect.gen(function* () {
++      const sql = yield* Effect.flatten(GroupDatabase);
++      yield* drainContributedDepartures.pipe(Effect.provideService(SqlClient.SqlClient, sql));
++    }).pipe(
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
@@ -37,7 +40,7 @@ index 3b1c542..4b39662 100644
      const cleanup = yield* EventCleanup;
      // The event scope closes through waitUntil after a complete response is sent, so it waits
      // for the jobs and exports their telemetry. A streamed body closes that scope at EOF instead;
-@@ -426,6 +436,7 @@ export default Api.make(
+@@ -426,6 +439,7 @@ export default Api.make(
        "* * * * *",
        "organization-removal",
        "provisioning",
@@ -45,7 +48,7 @@ index 3b1c542..4b39662 100644
        "data-steps",
        "repository-recovery",
        "schedule-wake",
-@@ -459,6 +470,7 @@ export default Api.make(
+@@ -459,6 +473,7 @@ export default Api.make(
      const backgroundJobs = {
        "organization-removal": organizationRemovals,
        provisioning: dispatch,
@@ -54,7 +57,7 @@ index 3b1c542..4b39662 100644
        "repository-recovery": repositoryRecovery,
        "schedule-wake": schedules.wake,
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
-index ba7c68b..e82a249 100644
+index ba7c68bb927b140a278bd4b624485c7fdbee6c13..e82a249511ff98a4f3cfcfdebd6590c4aa53897a 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
 @@ -1,3 +1,4 @@
@@ -77,7 +80,7 @@ index ba7c68b..e82a249 100644
      const clientMetadata = yield* clientMetadataSetting({
        origin: auth.origin,
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 040c2a5..313daa8 100644
+index ee9bc3c0eeb63c728fe05d0420d2f50206e48bcc..4ad89fd0468dac4b42b36e423ecd89f8ee343b56 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -4,6 +4,7 @@
@@ -89,7 +92,7 @@ index 040c2a5..313daa8 100644
      "./api-keys": "./src/contracts/api-keys.ts",
      "./auth": "./src/contracts/auth.ts",
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
-index 6318355..ebfd0ac 100644
+index 63183554122b04e7e4bbc71654e755811c9bc74c..ebfd0ac4b95e298709673cfac80fc316d8ff217e 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
 @@ -46,6 +46,13 @@ import {
@@ -179,7 +182,7 @@ index 6318355..ebfd0ac 100644
        ),
 diff --git a/apps/hosted/server/src/implementation/account-identity-schema.ts b/apps/hosted/server/src/implementation/account-identity-schema.ts
 new file mode 100644
-index 0000000..121d2ef
+index 0000000000000000000000000000000000000000..121d2ef6d539befa6d61c1620cd14f67d48bf050
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-identity-schema.ts
 @@ -0,0 +1,10 @@
@@ -195,7 +198,7 @@ index 0000000..121d2ef
 +});
 diff --git a/apps/hosted/server/src/implementation/account-identity.ts b/apps/hosted/server/src/implementation/account-identity.ts
 new file mode 100644
-index 0000000..aef0bae
+index 0000000000000000000000000000000000000000..aef0bae261cc789392078c9f3b4944332363c5da
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-identity.ts
 @@ -0,0 +1,217 @@
@@ -417,7 +420,7 @@ index 0000000..aef0bae
 +    });
 +  });
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index 131575d..3a3b99d 100644
+index 131575d0ca294ba4b3a9fc923750c88b7eb628a6..3a3b99d7909210b6517dec7ac780950cc13437b4 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -14,6 +14,11 @@ import {
@@ -489,7 +492,7 @@ index 131575d..3a3b99d 100644
      const required = Object.hasOwn(app.requirements.accounts, input.requirement)
        ? app.requirements.accounts[input.requirement]
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index dc80b64..c367a7e 100644
+index dc80b645780b0a1b245469439ffd80b396505a19..c367a7e4c77cb3b403aeeb146d498bdc4d946996 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -3,6 +3,12 @@ import {
@@ -723,7 +726,7 @@ index dc80b64..c367a7e 100644
        .handle("userList", ({ params }) =>
          Effect.gen(function* () {
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index 5802a9d..fe7656a 100644
+index 5802a9d2c66a9eae589908587d6751a565b57cf5..fe7656afa75edc7f0b25293fd18101f27dc0aca3 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -3,6 +3,7 @@ import { InteractiveRemovalDone } from "@executor-js/sdk/core";
@@ -802,7 +805,7 @@ index 5802a9d..fe7656a 100644
        rows,
      )).map((row) => row.app);
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
-index 570ed6f..c83811d 100644
+index 570ed6fa628042adcd9fdd132130932e09cd4622..c83811d7e19a318d16d42cafe2fdb49405bedf00 100644
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -1,4 +1,5 @@
@@ -828,7 +831,7 @@ index 570ed6f..c83811d 100644
        return { app: current.app.name, problems, fix: fix.href };
      });
 diff --git a/apps/hosted/server/src/implementation/connection-policy.ts b/apps/hosted/server/src/implementation/connection-policy.ts
-index 6ca4b04..87ab1f9 100644
+index 6ca4b04301bfb1c3884e1fe8691def3077472391..87ab1f9f0bd4ef1b38c6b39cd46b844cd7521bc3 100644
 --- a/apps/hosted/server/src/implementation/connection-policy.ts
 +++ b/apps/hosted/server/src/implementation/connection-policy.ts
 @@ -1,3 +1,4 @@
@@ -855,7 +858,7 @@ index 6ca4b04..87ab1f9 100644
    }).pipe(
 diff --git a/apps/hosted/server/src/implementation/contributed-account-departure.ts b/apps/hosted/server/src/implementation/contributed-account-departure.ts
 new file mode 100644
-index 0000000..92e9b47
+index 0000000000000000000000000000000000000000..92e9b474c612025da9375620efe402ab8fcf020b
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/contributed-account-departure.ts
 @@ -0,0 +1,44 @@
@@ -905,7 +908,7 @@ index 0000000..92e9b47
 +  }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/contributed-account-policy.ts b/apps/hosted/server/src/implementation/contributed-account-policy.ts
 new file mode 100644
-index 0000000..99f65f7
+index 0000000000000000000000000000000000000000..99f65f7701ece263001041e67ef604735ded7632
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/contributed-account-policy.ts
 @@ -0,0 +1,116 @@
@@ -1027,7 +1030,7 @@ index 0000000..99f65f7
 +      );
 diff --git a/apps/hosted/server/src/implementation/contributed-departure-queue.ts b/apps/hosted/server/src/implementation/contributed-departure-queue.ts
 new file mode 100644
-index 0000000..8df3865
+index 0000000000000000000000000000000000000000..8df3865a62abfeff52507497312d18b3d9395556
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/contributed-departure-queue.ts
 @@ -0,0 +1,72 @@
@@ -1105,7 +1108,7 @@ index 0000000..8df3865
 +}).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/contributed-departure-schema.ts b/apps/hosted/server/src/implementation/contributed-departure-schema.ts
 new file mode 100644
-index 0000000..1ca43f6
+index 0000000000000000000000000000000000000000..1ca43f6d7cf594d399bae8cfd4ab3e3cf8d61272
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/contributed-departure-schema.ts
 @@ -0,0 +1,128 @@
@@ -1238,7 +1241,7 @@ index 0000000..1ca43f6
 +    deferrable initially deferred for each row execute function hosted_contributed_access_departure()`;
 +});
 diff --git a/apps/hosted/server/src/implementation/interactive-retirement.ts b/apps/hosted/server/src/implementation/interactive-retirement.ts
-index 7db2259..2b65d2c 100644
+index 7db2259675d8afc096704efb727b6995c935b369..2b65d2cf043ab564b83b7f3a4ed67cbee377648b 100644
 --- a/apps/hosted/server/src/implementation/interactive-retirement.ts
 +++ b/apps/hosted/server/src/implementation/interactive-retirement.ts
 @@ -32,7 +32,9 @@ export const replacingAccounts = <A, E, R>(
@@ -1253,7 +1256,7 @@ index 7db2259..2b65d2c 100644
          Effect.gen(function* () {
            const rows = yield* sql`select l.account from hosted_app_account_links l
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
-index 85a8acf..f8b6b35 100644
+index 85a8acfab5db80678cb604908555aeae4e13b8e3..f8b6b3514c5fababae4123591be1a6145aeba655 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
 @@ -14,6 +14,8 @@ import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
@@ -1275,7 +1278,7 @@ index 85a8acf..f8b6b35 100644
  
  /**
 diff --git a/apps/hosted/server/src/implementation/native-pool-account-mirror.ts b/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
-index 2823bb5..6929430 100644
+index 2823bb54e0d28bb1087fc270d2c26cdb0e7aedf2..6929430b204a730b302d9ce09d8390984b82bc89 100644
 --- a/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
 +++ b/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
 @@ -21,7 +21,7 @@ export const prepareNativePoolAccountMirror = (
@@ -1288,7 +1291,7 @@ index 2823bb5..6929430 100644
          Effect.gen(function* () {
            const rows = yield* sql`select a.owner, a.credential_generation as generation
 diff --git a/apps/hosted/server/src/implementation/organization-auth.ts b/apps/hosted/server/src/implementation/organization-auth.ts
-index 1c8248c..f741512 100644
+index 1c8248c9e12f7a81a16675516f51174df1f831a1..f741512db49a98e69ef102d774bcd2e607b7da67 100644
 --- a/apps/hosted/server/src/implementation/organization-auth.ts
 +++ b/apps/hosted/server/src/implementation/organization-auth.ts
 @@ -118,6 +118,7 @@ export const explicitOrganizationAuth = {
@@ -1300,7 +1303,7 @@ index 1c8248c..f741512 100644
              case "/organization/accept-invitation": {
                const invitation = Schema.decodeUnknownOption(Invitation)(context.body);
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index 6dd82c2..aa93ed8 100644
+index 6dd82c2b7680f0b42920f008e43e470c68000817..aa93ed8c691c2bd282149904999bb2fe5013081f 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
 @@ -53,6 +53,7 @@ import {
@@ -1342,7 +1345,7 @@ index 6dd82c2..aa93ed8 100644
      };
    });
 diff --git a/apps/hosted/server/src/implementation/requirement-account-creation.ts b/apps/hosted/server/src/implementation/requirement-account-creation.ts
-index a55b6e3..2de771f 100644
+index a55b6e33ba5452810f6333872cce37b6a4406290..2de771f0e4e789c435bf01e705de21838f5e7ec8 100644
 --- a/apps/hosted/server/src/implementation/requirement-account-creation.ts
 +++ b/apps/hosted/server/src/implementation/requirement-account-creation.ts
 @@ -12,7 +12,8 @@ import { HostedExecutor } from "../contracts/executor.ts";
@@ -1365,7 +1368,7 @@ index a55b6e3..2de771f 100644
      const app = yield* executor.apps.get({ owner, app: input.app });
      const requirement = Object.hasOwn(app.requirements.accounts, input.requirement)
 diff --git a/apps/hosted/server/src/implementation/resource-access.ts b/apps/hosted/server/src/implementation/resource-access.ts
-index f70dd93..8a524f4 100644
+index f70dd9350988fc33d0023455ca361d730ba9ceb0..8a524f43a1c20872a2653fd73b7e928720328cea 100644
 --- a/apps/hosted/server/src/implementation/resource-access.ts
 +++ b/apps/hosted/server/src/implementation/resource-access.ts
 @@ -1,5 +1,6 @@
@@ -1389,7 +1392,7 @@ index f70dd93..8a524f4 100644
  /** The compare-and-swap revision protects settings and all group grants as one update. */
  export const shareApp = (
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 2625283..e9f4ca1 100644
+index 26252836ff154691d57e5e1cfd9d42c5f6c9973a..e9f4ca1d14a36baf2cd7573553a117e066571608 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
 @@ -2,6 +2,7 @@ import { CurrentOrganization } from "../contracts/organization.ts";
@@ -1428,7 +1431,7 @@ index 2625283..e9f4ca1 100644
                : sql`exists(${appUse(sql, { id: input.app, organization, actor: user })})`;
            const rows = yield* sql`select coalesce(c.target ->> 'scope', 'user') as scope,
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
-index a7a5fb0..921e74c 100644
+index a7a5fb06254b435c1c99368ee1520026f62865ea..921e74c6c4d7764bdae2f968bdacd418b5a0ba89 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
 +++ b/apps/hosted/server/src/implementation/resource-policy.ts
 @@ -213,7 +213,13 @@ export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[])
@@ -1446,7 +1449,7 @@ index a7a5fb0..921e74c 100644
            where owner_member."organizationId" = p.organization_id
              and owner_member."userId" = p.personal_user_id))`;
 diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
-index ca9b702..84a00f5 100644
+index ca9b702a158a13b9a5a02404ab0428a32a28ae7d..84a00f5966a4cce23b1e0fabe747d0bfcfb686b4 100644
 --- a/apps/hosted/web/src/contracts/app-accounts.ts
 +++ b/apps/hosted/web/src/contracts/app-accounts.ts
 @@ -89,7 +89,7 @@ const userChoices = Atom.family((key: RequirementKey) =>
@@ -1459,7 +1462,7 @@ index ca9b702..84a00f5 100644
  export const requirementChoicesAtom = (key: ConstructorParameters<typeof RequirementKey>[0]) =>
    choices(
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 5c4e7be..62e839f 100644
+index 5c4e7be5e8edf568e3161521a6ca5a865c00ff87..62e839fc214044c28f020245db00607c4cb2b5b6 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -3,6 +3,7 @@ export { methodsOf } from "./app-account-methods.ts";
@@ -1574,7 +1577,7 @@ index 5c4e7be..62e839f 100644
          yourAccounts={scopeAccounts("user", userLinks, canUse && deployed, notDeployed)}
        />
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index d549987..f891efd 100644
+index d549987b976e28ad1faced28b696ef5832ef3a2a..f891efd5a88e96f672f0bb9fe0c0b627f5a7da86 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 @@ -130,8 +130,9 @@ const listedAppReads = Atom.family((organization: OrganizationReference) =>
@@ -1600,7 +1603,7 @@ index d549987..f891efd 100644
        ...summaries.find((summary) => summary.id === link.account.id),
 diff --git a/e2e/support/contributed-app.ts b/e2e/support/contributed-app.ts
 new file mode 100644
-index 0000000..6b5cca5
+index 0000000000000000000000000000000000000000..6b5cca514a7b1420ee4442a6b59efd33635d9074
 --- /dev/null
 +++ b/e2e/support/contributed-app.ts
 @@ -0,0 +1,115 @@
@@ -1720,7 +1723,7 @@ index 0000000..6b5cca5
 +  return { ...fixture, readLinks, role, waitForLinks, rejoin, member: member.user };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 48c71b3..7baef16 100644
+index fa499b806b24f56d25393032add5ac5471201a8d..4502a87118ee6edb80c6d897e61abee4db503df4 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -110,6 +110,73 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
@@ -1798,7 +1801,7 @@ index 48c71b3..7baef16 100644
      legacyStorage: true,
      file: "storage-migration-diagnostics.spec.ts",
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index 12d2d12..9548aae 100644
+index 12d2d12b26636392a732db9a57727951700320b7..9548aae84c3518779f941393434d627d99dad5ea 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -1812,7 +1815,7 @@ index 12d2d12..9548aae 100644
          expect(
 diff --git a/e2e/tests/contributed-app-access.spec.ts b/e2e/tests/contributed-app-access.spec.ts
 new file mode 100644
-index 0000000..7fb0ff6
+index 0000000000000000000000000000000000000000..7fb0ff6d213556ccc07e587fff46974065c1bf68
 --- /dev/null
 +++ b/e2e/tests/contributed-app-access.spec.ts
 @@ -0,0 +1,96 @@
@@ -1914,18 +1917,20 @@ index 0000000..7fb0ff6
 +});
 diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
 new file mode 100644
-index 0000000..3fbe446
+index 0000000000000000000000000000000000000000..52b8423218d68f1870d9ca5a46d798bf4fee4eee
 --- /dev/null
 +++ b/e2e/tests/contributed-app-accounts.spec.ts
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,180 @@
 +/** The Accounts tab offers member actions only on contributed requirements and their own links. */
 +import { expect, layer } from "@effect/vitest";
-+import { Effect } from "effect";
++import { Effect, Schema } from "effect";
 +import type { Page } from "playwright";
 +import { ok } from "../support/app-links.ts";
 +import { Browser } from "../support/browser.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { contributedApp } from "../support/contributed-app.ts";
++import { Resource } from "../support/contracts.ts";
++import { nameConnectedAccount } from "../support/name-account.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +const ordinaryNote = "Only people who can edit this app can change these accounts.";
@@ -1994,6 +1999,78 @@ index 0000000..3fbe446
 +        yield* browser.checkpoint(
 +          "Contributed and ordinary requirements have different member actions",
 +        );
++        expect(
++          yield* browser.use("Other contributors' upstream identity stays private", (page) => {
++            const row = requirementSection(page, "contributed")
++              .getByRole("listitem")
++              .filter({ hasText: "Another member's account" });
++            return Promise.all([row.innerText(), row.locator("[data-account-identity]").count()]);
++          }),
++        ).toEqual([expect.not.stringContaining("upstream@example.test"), 0]);
++        yield* browser.use("Connect another account as a contributor", (page) =>
++          requirementSection(page, "contributed")
++            .getByRole("button", { name: "Connect new account", exact: true })
++            .click(),
++        );
++        yield* browser.use("Enter credentials in the native connection dialog", (page) =>
++          page.getByRole("dialog").getByLabel("Token", { exact: true }).fill("synthetic-ui-key"),
++        );
++        const validated = yield* browser.use("Validate the contributor's credentials", (page) =>
++          Promise.all([
++            page.waitForResponse(
++              (response) =>
++                response.request().method() === "POST" &&
++                new URL(response.url()).pathname.endsWith("/credential-checks"),
++            ),
++            page
++              .getByRole("dialog")
++              .getByRole("button", { name: "Validate Key", exact: true })
++              .click(),
++          ]).then(([response]) => response.status()),
++        );
++        expect(validated).toBe(200);
++        const submitted = yield* browser.use("Save the contributor's new account", (page) =>
++          Promise.all([
++            page.waitForResponse(
++              (response) =>
++                response.request().method() === "POST" &&
++                /\/connections\/[^/]+\/submit$/.test(new URL(response.url()).pathname),
++            ),
++            page.getByRole("dialog").getByRole("button", { name: "Continue", exact: true }).click(),
++          ]).then(([response]) =>
++            response.json().then((value: unknown) => ({ status: response.status(), body: value })),
++          ),
++        );
++        expect(submitted.status).toBe(200);
++        const created = yield* Schema.decodeUnknownEffect(Resource)(submitted.body);
++        yield* f.saved(actors.member, created.id);
++        yield* browser.use("Name the new contribution", (page) =>
++          nameConnectedAccount(page, "Connected from the Accounts tab"),
++        );
++        yield* browser.use("The new contribution appears linked", (page) =>
++          requirementSection(page, "contributed")
++            .getByRole("checkbox", {
++              name: "Connected from the Accounts tab",
++              checked: true,
++              disabled: false,
++              exact: true,
++            })
++            .waitFor(),
++        );
++        const connected = (yield* f.readLinks()).find((link) => link.account.id === created.id);
++        expect(connected).toMatchObject({ linkedBy: { id: ids.member }, canRemove: true });
++        yield* browser.use("Inspect contributions at phone width", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        expect(
++          yield* browser.use("Contribution controls fit the phone viewport", (page) =>
++            page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("Member contributions at phone width");
++        yield* browser.use("Return to desktop width", (page) =>
++          page.setViewportSize({ width: 1440, height: 960 }),
++        );
 +        yield* browser.use("Open my contribution's menu", (page) =>
 +          page.getByRole("button", { name: "Manage My service account", exact: true }).click(),
 +        );
@@ -2026,7 +2103,7 @@ index 0000000..3fbe446
 +});
 diff --git a/e2e/tests/contributed-app-departures.spec.ts b/e2e/tests/contributed-app-departures.spec.ts
 new file mode 100644
-index 0000000..725d7fa
+index 0000000000000000000000000000000000000000..725d7fa61272177d4b5a5b1aa67a67cbfe6e2293
 --- /dev/null
 +++ b/e2e/tests/contributed-app-departures.spec.ts
 @@ -0,0 +1,153 @@
@@ -2185,7 +2262,7 @@ index 0000000..725d7fa
 +});
 diff --git a/e2e/tests/contributed-app-requirements.spec.ts b/e2e/tests/contributed-app-requirements.spec.ts
 new file mode 100644
-index 0000000..aaeb815
+index 0000000000000000000000000000000000000000..aaeb815ac80ff1de084405fac4c4fc8b14bbd3a8
 --- /dev/null
 +++ b/e2e/tests/contributed-app-requirements.spec.ts
 @@ -0,0 +1,291 @@
@@ -2480,9 +2557,135 @@ index 0000000..aaeb815
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/native-pool-account-mirrors.spec.ts b/e2e/tests/native-pool-account-mirrors.spec.ts
+index 7a171e2ea64087e83abce38fff56a41898fa377d..3598b380a1dabcc74149f5e45177f5bcab9016f5 100644
+--- a/e2e/tests/native-pool-account-mirrors.spec.ts
++++ b/e2e/tests/native-pool-account-mirrors.spec.ts
+@@ -24,10 +24,10 @@ const Links = Schema.Array(Schema.Struct({ account: Resource }));
+ const declaration = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
+ const jev = defineProvider({ name: "Jev", hosts: ["api.typesafe.ai"], auth: {
+   apiKey: secrets({ label: "TypeSafe API key", fields: object({ token: string({ minLength: 1 }) }) }) } });`;
+-const source = (scope: "app" | "user") =>
++const source = (scope: "app" | "user", contributed = false) =>
+   declaration +
+   `
+-export default defineApp({ ${scope}: { accounts: { jev: jev.many() } } }, { tools: router({
++export default defineApp({ ${scope}: { accounts: { jev: jev.many()${contributed ? ".contributed()" : ""} } } }, { tools: router({
+   present: query({ input: object({}) }, async (ctx) => ctx.${scope}.accounts.jev.map(a => ({ id: a.id, method: a.method, fields: Object.keys(a.fields) })))
+ }) });`;
+ 
+@@ -51,11 +51,11 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
+               yield* api.request(account.actor, "DELETE", `${prefix}/accounts/${account.id}`);
+           }).pipe(Effect.orDie),
+         );
+-        const deploy = (scope: "app" | "user") =>
++        const deploy = (scope: "app" | "user", contributed = false) =>
+           Effect.gen(function* () {
+             const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-              name: `Mirror ${scope} fixture`,
+-              files: [{ path: "index.ts", content: source(scope) }, appsManifest],
++              name: `Mirror ${scope}${contributed ? " contributed" : ""} fixture`,
++              files: [{ path: "index.ts", content: source(scope, contributed) }, appsManifest],
+             });
+             expect(response.status, JSON.stringify(response.body)).toBe(200);
+             const app = yield* body(Deployed, response);
+@@ -74,7 +74,8 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
+             return { ...app, path };
+           });
+         const manager = yield* deploy("user"),
+-          pool = yield* deploy("app");
++          pool = yield* deploy("app"),
++          contributed = yield* deploy("app", true);
+         const connect = (actor: Session, token: string, shared: boolean) =>
+           Effect.gen(function* () {
+             const response = yield* api.request(
+@@ -100,13 +101,13 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
+         const personal = yield* connect(actors.member, "synthetic-hosted-private-key", false);
+         const heldAccount = yield* connect(actors.owner, "synthetic-hosted-held-key", true);
+         yield* accountMirrorProduct(pool.requirements.accounts.jev!.provider, backend.origin);
+-        const link = (actor: Session, id: string) =>
+-          api.request(actor, "PUT", `${requirementPath(pool.path, "app", "jev")}/${id}`);
+-        const unlink = (id: string) =>
+-          api.request(actors.owner, "DELETE", `${requirementPath(pool.path, "app", "jev")}/${id}`);
++        const link = (actor: Session, id: string, app = pool) =>
++          api.request(actor, "PUT", `${requirementPath(app.path, "app", "jev")}/${id}`);
++        const unlink = (actor: Session, id: string, app = pool) =>
++          api.request(actor, "DELETE", `${requirementPath(app.path, "app", "jev")}/${id}`);
+         expect((yield* link(actors.owner, shared)).status).toBe(200);
+         expect(yield* backend.calls).toHaveLength(0);
+-        expect((yield* unlink(shared)).status).toBe(200);
++        expect((yield* unlink(actors.owner, shared)).status).toBe(200);
+         yield* serverControl("stop");
+         // Reconstruct the released 4.0.24 acquisition layout over retained real token accounts.
+         // The next full product start must migrate it without replacing those accounts or fields.
+@@ -118,7 +119,10 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
+           {
+             sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
+             params: [
+-              JSON.stringify({ fixture: { app: pool.id, membership: "executor-links-v1" } }),
++              JSON.stringify({
++                fixture: { app: pool.id, membership: "executor-links-v1" },
++                contributed: { app: contributed.id, membership: "executor-links-v1" },
++              }),
+               actors.organization.id,
+             ],
+           },
+@@ -166,11 +170,51 @@ layer(RuntimeLive, { excludeTestServices: true })("Native pool account mirrors",
+           yield* api.request(actors.owner, "GET", `${pool.path}/accounts/app`),
+         );
+         expect(after.map((row) => row.account.id)).toEqual([shared]);
+-        expect((yield* unlink(shared)).status).toBe(200);
++        expect((yield* unlink(actors.owner, shared)).status).toBe(200);
+         expect(yield* backend.references).toContain((yield* backend.calls)[0]!.reference);
+         expect(
+           (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${shared}`)).status,
+         ).toBe(200);
++
++        const beforeContribution = (yield* backend.calls).length;
++        expect((yield* link(actors.owner, personal, contributed)).status).toBe(403);
++        expect((yield* link(actors.admin, personal, contributed)).status).toBe(403);
++        expect(yield* backend.calls).toHaveLength(beforeContribution);
++        expect((yield* link(actors.member, personal, contributed)).status).toBe(200);
++        const mirrored = (yield* backend.calls).at(-1)!;
++        expect(mirrored).toMatchObject({
++          account: personal,
++          fields: { token: "synthetic-hosted-private-key" },
++        });
++        expect((yield* link(actors.member, personal, contributed)).status).toBe(200);
++        expect(yield* backend.calls).toHaveLength(beforeContribution + 1);
++        const use = (app: typeof pool) =>
++          api.request(actors.member, "POST", `${app.path}/tools/call`, {
++            tool: "present",
++            kind: "query",
++            input: {},
++          });
++        const firstUse = yield* use(contributed);
++        expect(firstUse.status, JSON.stringify(firstUse.body)).toBe(200);
++        expect(firstUse.body).toEqual([{ id: personal, method: "apiKey", fields: ["token"] }]);
++
++        const updated = yield* api.request(actors.owner, "POST", `${pool.path}/deploy`, {
++          files: [{ path: "index.ts", content: source("app", true) }, appsManifest],
++        });
++        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
++        expect((yield* link(actors.member, personal, pool)).status).toBe(200);
++        expect(yield* backend.calls).toHaveLength(beforeContribution + 1);
++        expect((yield* unlink(actors.member, personal, contributed)).status).toBe(200);
++        const detachedUse = yield* use(contributed);
++        expect(detachedUse.status, JSON.stringify(detachedUse.body)).toBe(200);
++        expect(detachedUse.body).toEqual([]);
++        const retainedUse = yield* use(pool);
++        expect(retainedUse.status, JSON.stringify(retainedUse.body)).toBe(200);
++        expect(retainedUse.body).toEqual(firstUse.body);
++        expect(yield* backend.references).toContain(mirrored.reference);
++        expect(
++          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${personal}`)).status,
++        ).toBe(200);
+       }),
+     ),
+   );
 diff --git a/packages/apps/protocols/25.json b/packages/apps/protocols/25.json
 new file mode 100644
-index 0000000..717c9e6
+index 0000000000000000000000000000000000000000..717c9e6fabb1f80074d3ef95e82150ae7f43a783
 --- /dev/null
 +++ b/packages/apps/protocols/25.json
 @@ -0,0 +1,2463 @@
@@ -4950,7 +5153,7 @@ index 0000000..717c9e6
 +  }
 +}
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 6ae284e..fb08247 100644
+index 6ae284ec6eb04f198596245d3962a4eeab80b0ec..fb08247b926b7834353e3039ffe8c2a28b410282 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -4961,7 +5164,7 @@ index 6ae284e..fb08247 100644
 +export const frameworkProtocol = 25;
 diff --git a/packages/apps/src/contracts/protocols/24.ts b/packages/apps/src/contracts/protocols/24.ts
 new file mode 100644
-index 0000000..c64efaa
+index 0000000000000000000000000000000000000000..c64efaa94ccba35e692df39c65b9b520388d14ad
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/24.ts
 @@ -0,0 +1,682 @@
@@ -5648,7 +5851,7 @@ index 0000000..c64efaa
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index c5b4b0c..02a3bff 100644
+index c5b4b0c5b267630a50a23828d7daa9a621617a8b..02a3bffa00a359eaa2df8c5e6c2c9c56ed046471 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -13,7 +13,7 @@ import { AccountObservationResult } from "../account-observation.ts";
@@ -5669,7 +5872,7 @@ index c5b4b0c..02a3bff 100644
     * The slot's provider defines an account check. Kept beside the definition, not in it, so
     * adding or editing a check never changes the provider's identity.
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index 9b8fc0f..e43572d 100644
+index 9b8fc0f688571486ac2f94f36b8b39993edc3f54..e43572d72bc59d20c696805a101fcaaed53c4408 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -30,6 +30,8 @@ import { protocol20 } from "./20.ts";
@@ -5688,7 +5891,7 @@ index 9b8fc0f..e43572d 100644
 +  protocol24,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index 07e7a45..3b5400d 100644
+index 07e7a45859076eabcb11f6a64f187abb66b78ce4..3b5400d318565cc5656aeb0c5b198fe92ddfd84f 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -315,7 +315,13 @@ export class Provider<Auth extends AuthMethods> extends Data.Class<{
@@ -5707,7 +5910,7 @@ index 07e7a45..3b5400d 100644
  /** Infer the data for one method from its native Effect decoder. */
  export type AuthMethodData<Method> =
 diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/implementation/app.ts
-index 7930ddd..145fee4 100644
+index 7930ddd5d09aea91e1f5f2da3a54492f549c60b7..145fee4b7ef11cffd54d832a2d9000e7d9edb1b6 100644
 --- a/packages/apps/src/implementation/app.ts
 +++ b/packages/apps/src/implementation/app.ts
 @@ -1,3 +1,4 @@
@@ -5733,7 +5936,7 @@ index 7930ddd..145fee4 100644
      if (Object.hasOwn(user, name))
        throw new TypeError(
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 5c431a6..48757a5 100644
+index 5c431a624ea4340011edb0ebafff7afeae0ce6d7..48757a554d57045be3f5f1a1c07abc05d537ee07 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -231,6 +231,7 @@ function declaredSlots(slots: AccountSlots, checks: readonly string[] | undefine
@@ -5745,7 +5948,7 @@ index 5c431a6..48757a5 100644
          ...(provider.health === undefined ? {} : { health: true }),
          ...(hostAcquisition.length === 0 ? {} : { hostAcquisition }),
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index b2aea60..f143fcd 100644
+index b2aea60c5ef733f3bfd6929000e1a1b2d0b25ceb..f143fcdc87b82df576edadfe1143f5441744f1de 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -54,6 +54,8 @@ export const AccountRequirement = Schema.Struct({
@@ -5758,7 +5961,7 @@ index b2aea60..f143fcd 100644
    health: Schema.optionalKey(Schema.Literal(true)),
    /** This slot can check app-acquired references through connect.check. */
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index f2c57b0..db26d96 100644
+index f2c57b0bcf8e3b5f992379f104bc9a109ccf9206..db26d963b8aa675475740559c7ab2a7875ae5aed 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
 @@ -304,6 +304,7 @@ const protocol13: AppProtocol = {
@@ -5778,7 +5981,7 @@ index f2c57b0..db26d96 100644
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 466e511..feab497 100644
+index 466e511911c6a2bc5c528b1ebab7ce3824c4f748..feab49726794e21385fd0ac26b701737a9f6ae10 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
 @@ -466,6 +466,14 @@ export const makeApps = (
@@ -5821,7 +6024,7 @@ index 466e511..feab497 100644
                  ...(interactiveHealth === undefined ? {} : { interactiveHealth }),
                  ...(hostAcquisition === undefined ? {} : { hostAcquisition }),
 diff --git a/packages/ui/src/contracts/app-accounts.ts b/packages/ui/src/contracts/app-accounts.ts
-index c3c8136..1929b11 100644
+index c3c8136b54ef22fda320cc767d2d15e6ae0a70c3..1929b11979662ee0f6658a5521fec9ec76e1a929 100644
 --- a/packages/ui/src/contracts/app-accounts.ts
 +++ b/packages/ui/src/contracts/app-accounts.ts
 @@ -24,6 +24,10 @@ interface LinkedAccount {
@@ -5836,7 +6039,7 @@ index c3c8136..1929b11 100644
  
  /** One account a requirement lists: linked to it, or one the caller could link. */
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 0650c65..11b7bec 100644
+index 0650c65b7cafb380afcf71fe038ec871435f1986..11b7bec40b7d2f6f4ff5519455489f62d2161ea6 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
 @@ -365,12 +365,39 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
