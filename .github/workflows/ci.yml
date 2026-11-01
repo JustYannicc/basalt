@@ -165,7 +165,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app"
+          "^Hosted identity reuse preserves personal placement|^OAuth clients authenticate to services|^OAuth classifies token and callback error responses|^Agents learn safely when an MCP server needs them to write the app|^invitation roles cannot grant|^organization admins who manage an app"
           --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream

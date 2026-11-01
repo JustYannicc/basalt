@@ -667,7 +667,7 @@
     {
       "identity": "basalt-native-pool-sharing",
       "file": "0072-native-pool-sharing.patch",
-      "content_sha256": "6943781a62b2bfbf9a326644c1fe5f6995815e04d42c26f1a7e00c66028aacb4",
+      "content_sha256": "01b8a1e6cf3059e978225341d96ffa2b3cab71fd474d24b21596a79c83e02709",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

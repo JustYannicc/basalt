@@ -8,8 +8,12 @@ const require = createRequire(
 const { betterAuth } = await import(require.resolve("better-auth"));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
 const { cloudAuthOptions } = await load("apps/hosted/cloud/src/implementation/auth-options.ts");
+const { selfHostAuthOptions } = await load(
+  "apps/hosted/self-host/src/implementation/auth-options.ts",
+);
 
-export async function nativeAuth() {
+export async function nativeAuth(host: "cloud" | "self-host" = "cloud") {
+  const sent: unknown[] = [];
   let fail = false;
   const removing: { organization: string; member: string }[] = [];
   const deleting: string[] = [];
@@ -55,21 +59,28 @@ export async function nativeAuth() {
     hosts: { sharedCookieDomain: Option.none(), passkey: { rpId: "localhost", origin: url } },
     rateLimitEnabled: false,
   };
-  const options = cloudAuthOptions(
-    settings,
-    [],
-    () => Effect.void,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    access,
-  );
+  const options =
+    host === "self-host"
+      ? selfHostAuthOptions({ ...settings, sso: null }, [], null)
+      : cloudAuthOptions(
+          settings,
+          [],
+          (email: unknown) =>
+            Effect.sync(() => {
+              sent.push(email);
+            }),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          access,
+        );
   const auth = betterAuth({
     ...options,
     secret: "fixture-only-auth-secret-never-used-outside-tests",
+    rateLimit: { enabled: false },
     database: memoryAdapter(db),
     emailAndPassword: { enabled: true, autoSignIn: false },
     logger: { disabled: true },
@@ -100,8 +111,7 @@ export async function nativeAuth() {
   const guest = await signup("guest");
   const spare = await signup("spare");
   const org = await auth.api.createOrganization({
-    headers: owner.headers,
-    body: { name: "Fixture", slug: "fixture" },
+    body: { name: "Fixture", slug: "fixture", userId: owner.id },
   });
   assert.equal(
     db.member.find((row) => row.userId === owner.id).role,
@@ -131,6 +141,7 @@ export async function nativeAuth() {
     removing,
     deleting,
     added,
+    sent,
     fail: () => {
       fail = true;
     },

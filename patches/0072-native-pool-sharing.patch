@@ -1,58 +1,57 @@
 diff --git a/apps/hosted/cloud/src/implementation/access-hooks.ts b/apps/hosted/cloud/src/implementation/access-hooks.ts
-index 4bf0364..c52759e 100644
+index 4bf0364..d406de3 100644
 --- a/apps/hosted/cloud/src/implementation/access-hooks.ts
 +++ b/apps/hosted/cloud/src/implementation/access-hooks.ts
-@@ -1,4 +1,4 @@
+@@ -1,6 +1,6 @@
 -/** Better Auth's Promise boundary for host access notifications and member-only sharing. */
 +/** Better Auth's Promise boundary for host access notifications. */
  import type { BetterAuthPlugin } from "better-auth";
- import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
+-import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
++import { organizationRoleHooks } from "@executor-js/hosted-server";
  import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
-@@ -17,10 +17,15 @@ export interface CloudAccessHooks {
+ import type { OrganizationOptions } from "better-auth/plugins/organization";
+ import { Schema } from "effect";
+@@ -17,13 +17,6 @@ export interface CloudAccessHooks {
    readonly userDeleting: (user: string) => Promise<void>;
  }
  
 -const requireMember = (role: string) => {
 -  if (role !== "member")
-+const requireAssignableRole = (role: string) => {
-+  // Native updates normalize role strings before this hook, including duplicate compound roles.
-+  const requested = tryGetCurrentAuthEndpointContext()?.body?.role;
-+  if (
-+    (role !== "admin" && role !== "member") ||
-+    (requested !== undefined && requested !== "admin" && requested !== "member")
-+  )
-     throw new APIError("FORBIDDEN", {
+-    throw new APIError("FORBIDDEN", {
 -      message: "People can only join as members. Choose the member role and try again.",
-+      message: "Choose either the admin or member role.",
-     });
- };
+-    });
+-};
+-
+ const beforeRemoval = async (
+   access: CloudAccessHooks | undefined,
+   organization: string,
+@@ -40,6 +33,7 @@ const beforeRemoval = async (
  
-@@ -54,13 +59,21 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+   ({
++    ...organizationRoleHooks,
+     beforeCreateOrganization: async ({ organization }) => {
+       if (organization.metadata === undefined) return;
+       const { basaltPools: _, ...metadata } = organization.metadata;
+@@ -53,14 +47,9 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+           message: "Organization metadata cannot be updated through authentication requests.",
          });
      },
-     beforeCreateInvitation: async ({ invitation }) => {
+-    beforeCreateInvitation: async ({ invitation }) => {
 -      requireMember(invitation.role);
-+      requireAssignableRole(invitation.role);
-     },
-     beforeAcceptInvitation: async ({ invitation }) => {
+-    },
+-    beforeAcceptInvitation: async ({ invitation }) => {
 -      requireMember(invitation.role);
-+      requireAssignableRole(invitation.role);
-+    },
-+    beforeAddMember: async ({ member, user }) => {
-+      // Organization creation assigns its sole owner through this same hook.
-+      const creator =
-+        tryGetCurrentAuthEndpointContext()?.path === "/organization/create" &&
-+        member.role === "owner" &&
-+        member.userId === user.id;
-+      if (!creator) requireAssignableRole(member.role);
-     },
-     beforeUpdateMemberRole: async ({ newRole, member, organization }) => {
+-    },
+-    beforeUpdateMemberRole: async ({ newRole, member, organization }) => {
 -      requireMember(newRole);
-+      requireAssignableRole(newRole);
++    beforeUpdateMemberRole: async (input) => {
++      await organizationRoleHooks.beforeUpdateMemberRole(input);
++      const { newRole, member, organization } = input;
        try {
          await access?.memberRoleChanging?.(organization.id, member.id, newRole);
        } catch {
-@@ -69,14 +82,6 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
+@@ -69,14 +58,6 @@ export const organizationAccessHooks = (access?: CloudAccessHooks) =>
          });
        }
      },
@@ -100,6 +99,35 @@ index 8a0acbf..d3e875f 100644
      Layer.succeed(HostManagedAccountRecords, poolAccessRecords),
      Layer.succeed(HostManagedAccountRecovery, poolAccountRecovery(Option.isSome(poolKey))),
      Layer.succeed(
+diff --git a/apps/hosted/self-host/src/implementation/auth-options.ts b/apps/hosted/self-host/src/implementation/auth-options.ts
+index c5ef237..27fe198 100644
+--- a/apps/hosted/self-host/src/implementation/auth-options.ts
++++ b/apps/hosted/self-host/src/implementation/auth-options.ts
+@@ -1,5 +1,10 @@
+ /** Self-host credentials and optional operator-owned OpenID Connect configuration. */
+-import { authOptions, authSettings, singleResourceOrigin } from "@executor-js/hosted-server";
++import {
++  authOptions,
++  authSettings,
++  organizationRoleHooks,
++  singleResourceOrigin,
++} from "@executor-js/hosted-server";
+ import { genericOAuth } from "better-auth/plugins/generic-oauth";
+ import { organization } from "better-auth/plugins/organization";
+ import { Config, Effect, Option, Redacted, Schema } from "effect";
+@@ -126,7 +131,11 @@ export const selfHostAuthOptions = (
+     ...base,
+     emailAndPassword: { enabled: true, disableSignUp: true },
+     plugins: [
+-      organization({ disableOrganizationDeletion: true, allowUserToCreateOrganization: false }),
++      organization({
++        disableOrganizationDeletion: true,
++        allowUserToCreateOrganization: false,
++        organizationHooks: organizationRoleHooks,
++      }),
+       ...base.plugins,
+       genericOAuth({
+         config:
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 index 040c2a5..ee9bc3c 100644
 --- a/apps/hosted/server/package.json
@@ -271,6 +299,84 @@ index ee68d40..33c538d 100644
    hostedOAuthClientHandlers,
    hostedWebhookSetupHandlers,
    hostedWebhookHandlers,
+diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+index f80c4e5..8358d4b 100644
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -9,6 +9,7 @@ import {
+ } from "../contracts/product-analytics.ts";
+ import { RequireOrganization } from "../contracts/organization.ts";
+ import { explicitOrganizationAuth } from "./organization-auth.ts";
++import { organizationInvitationRole } from "./organization-roles.ts";
+ import { mcpOAuthPlugins, type GrantObservers } from "./mcp-oauth.ts";
+ import { nativeGrantHost } from "./native-grant-host.ts";
+ import type { ResourceOrigins } from "@executor-js/mcp-auth";
+@@ -105,6 +106,7 @@ export const authOptions = (
+     plugins: [
+       admin(),
+       explicitOrganizationAuth,
++      organizationInvitationRole,
+       apiKeys,
+       ...mcpOAuthPlugins({
+         origin: settings.url,
+diff --git a/apps/hosted/server/src/implementation/organization-roles.ts b/apps/hosted/server/src/implementation/organization-roles.ts
+new file mode 100644
+index 0000000..2f14383
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/organization-roles.ts
+@@ -0,0 +1,52 @@
++import type { BetterAuthPlugin } from "better-auth";
++import { tryGetCurrentAuthEndpointContext } from "@better-auth/core/context";
++import { APIError, createAuthMiddleware } from "better-auth/api";
++import type { OrganizationOptions } from "better-auth/plugins/organization";
++
++const requireAssignableRole = (role: unknown) => {
++  // Native updates normalize role strings before this hook, including duplicate compound roles.
++  const requested = tryGetCurrentAuthEndpointContext()?.body?.role;
++  if (
++    (role !== "admin" && role !== "member") ||
++    (requested !== undefined && requested !== "admin" && requested !== "member")
++  )
++    throw new APIError("FORBIDDEN", {
++      message: "Choose either the admin or member role.",
++    });
++};
++
++export const organizationRoleHooks = {
++  beforeCreateInvitation: async ({ invitation }) => {
++    requireAssignableRole(invitation.role);
++  },
++  beforeAcceptInvitation: async ({ invitation }) => {
++    requireAssignableRole(invitation.role);
++  },
++  beforeAddMember: async ({ member, user }) => {
++    // Organization creation assigns its sole owner through this same hook.
++    const creator =
++      tryGetCurrentAuthEndpointContext()?.path === "/organization/create" &&
++      member.role === "owner" &&
++      member.userId === user.id;
++    if (!creator) requireAssignableRole(member.role);
++  },
++  beforeUpdateMemberRole: async ({ newRole }) => {
++    requireAssignableRole(newRole);
++  },
++} satisfies NonNullable<OrganizationOptions["organizationHooks"]>;
++
++export const organizationInvitationRole = {
++  id: "host-organization-invitation-role",
++  hooks: {
++    before: [
++      {
++        matcher: (context) =>
++          context.request === undefined && context.path === "/organization/invite-member",
++        // Native resends return before beforeCreateInvitation, after writing and sending mail.
++        handler: createAuthMiddleware(async (context) => {
++          requireAssignableRole(context.body?.role);
++        }),
++      },
++    ],
++  },
++} satisfies BetterAuthPlugin;
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
 new file mode 100644
 index 0000000..0763291
@@ -475,6 +581,18 @@ index 0000000..0763291
 +      setPoolCap(params.app, params.member, payload.weekly),
 +    ),
 +);
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index 0ae5d8e..0f389cc 100644
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -22,6 +22,7 @@ export {
+ } from "./contracts/auth.ts";
+ export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
+ export * from "./contracts/organization.ts";
++export { organizationRoleHooks } from "./implementation/organization-roles.ts";
+ export {
+   CallStateCache,
+   ConcurrentStatements,
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 index d4343a4..369f6c0 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
