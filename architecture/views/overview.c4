@@ -101,6 +101,25 @@ views {
     autoLayout TopBottom
   }
 
+  view current_provider_apps {
+    title "Basalt/Model provider apps"
+    description "The catalog serves installable model-provider packages. The tools gateway owns saved accounts and checks host-supported methods before creation, legacy submission and linking. The catalog publishes favicon URLs without saved account credentials. Existing-account adoption and native pool activation remain separate operations."
+
+    include
+      basalt.catalog,
+      basalt.catalog.providerApps,
+      basalt.toolsGateway,
+      basalt.toolsGateway.providerAccountMethods,
+      chatSubscriptionBrand,
+      assistantSubscriptionBrand
+    exclude * -> *
+
+    include basalt.toolsGateway -> basalt.catalog
+    include basalt.catalog -> chatSubscriptionBrand
+    include basalt.catalog -> assistantSubscriptionBrand
+    autoLayout TopBottom
+  }
+
   view current_pool_app {
     title "Basalt/Current pool app"
     description "Implemented in source, live acceptance pending. The tools service installs private pool apps, runs their tools with the caller and supplies its patched apps framework to the compiler. Signed control calls go through the router; the controller scopes accounts to a channel group and enforces owner-only changes. Screen hosting is disabled."

@@ -719,6 +719,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-provider-apps-ui",
+      "file": "0082-provider-apps-ui.patch",
+      "content_sha256": "7f93a463cece6c532975ac03f3626e93b6a14f7d7dd9b6d3dba5ce9eaafee749",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-encrypted-workflow-input-wait",
       "file": "0091-encrypted-workflow-input-wait.patch",
       "content_sha256": "9566315ac9814fba68837a2b64dcacaa1603eda1b5ed3d001877ea982713df4e",
