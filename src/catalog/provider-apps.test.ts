@@ -26,6 +26,7 @@ test("OpenAI and Anthropic publish installable sources with the canonical saved-
     assert.deepEqual(source, providerAppSource(root, lab));
     assert.equal(source.package, entry.package);
     const declaration = source.files.find((file: { path: string }) => file.path === "providers.ts");
+    assert.ok(declaration, `${lab} is missing its provider declaration`);
     assert.equal(declaration.content, readFileSync(`${root}src/pool/provider-accounts/definitions.ts`, "utf8"));
   }
   assert.equal(providerApps.length, 2);
