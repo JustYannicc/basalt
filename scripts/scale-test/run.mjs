@@ -163,7 +163,6 @@ async function destroy() {
   for (const script of before.scripts) await remove("worker", () => cf(`workers/scripts/${script.id}?force=true`, "DELETE"));
   for (const drive of before.drives) await remove("hyperdrive", () => cf(`hyperdrive/configs/${drive.id}`, "DELETE"));
   for (const certificate of before.certificates) await remove("certificate", () => cf(`mtls_certificates/${certificate.id}`, "DELETE"));
-  for (const namespace of before.kv) await remove("kv", () => cf(`storage/kv/namespaces/${namespace.id}`, "DELETE"));
   if (before.database.length) await remove("database", () => pg("DELETE"));
   const after = await inventory(); save("teardown", { at: new Date().toISOString(), cleanupErrors, resources: publicInventory(after) });
   assertAbsent(after);
