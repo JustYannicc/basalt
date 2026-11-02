@@ -1730,3 +1730,15 @@ index 081399d..746ac2d 100644
 +  background-color: color-mix(in oklab, var(--provider-ink) 12%, var(--background));
 +  border-color: color-mix(in oklab, var(--provider-ink) 30%, var(--border));
 +}
+diff --git a/apps/hosted/self-host/src/worker.ts b/apps/hosted/self-host/src/worker.ts
+--- a/apps/hosted/self-host/src/worker.ts
++++ b/apps/hosted/self-host/src/worker.ts
+@@ -193,7 +193,7 @@
+             }),
+           ),
+         );
+-      });
++      }).pipe(Effect.provideContext(common));
+       return {
+         fetch: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof addressed>>(context)(
+           addressed,
