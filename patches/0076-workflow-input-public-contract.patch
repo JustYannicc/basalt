@@ -1,0 +1,13 @@
+diff --git a/apps/hosted/web/src/contracts/workflow-input-review.ts b/apps/hosted/web/src/contracts/workflow-input-review.ts
+--- a/apps/hosted/web/src/contracts/workflow-input-review.ts
++++ b/apps/hosted/web/src/contracts/workflow-input-review.ts
+@@ -9,8 +9,7 @@
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { acknowledge } from "@executor-js/ui/contracts/mutations";
+ import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
+-import { AppId, WorkflowInputId } from "@executor-js/sdk/core";
+-import type { ElicitationResponse } from "apps/contracts";
++import { AppId, WorkflowInputId, type ElicitationResponse } from "@executor-js/sdk/core";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
