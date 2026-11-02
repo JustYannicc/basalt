@@ -1,9 +1,12 @@
+import { workflowDeliverySource } from "./recipes/workflow-fields.mjs";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Effect } from "effect";
 import { recipeHarness, runtime, root, appsManifest, until } from "./recipes/harness.mjs";
+import { verifySubmissionRevision } from "./recipes/submission-revision.mjs";
+import { verifyWorkflowIsolation } from "./recipes/workflow-isolation.mjs";
 import { verifyScanHealth } from "./recipes/scan-health.mjs";
 import { verifyWatchingWorkflow } from "./recipes/watching-workflow.mjs";
 import { startRecipeUpstream } from "./recipes/upstream.mjs";
@@ -53,8 +56,7 @@ const send = mutation({ approval: never(), input: object({ message: string(), re
 export default defineApp({}, { tools: router({ send }) });`,
     },
   ]);
-  const configuration = `export const configuration = { organization: ${JSON.stringify(h.actors.organization.id)}, accounts: [${JSON.stringify(account.id)}], pools: [], quietHours: null,
-    channel: { app: ${JSON.stringify(channel.id)}, tool: "send", input: (message, reviewUrl) => ({ message, reviewUrl }), receipt: (value) => value.receipt },
+  const configuration = `export const configuration = { organization: ${JSON.stringify(h.actors.organization.id)}, accounts: [${JSON.stringify(account.id)}], pools: [],
     operator: { release: null, availability: null, workflowApps: [], runtime: null, httpErrors: null, errorCounts: null } };`;
   const files = source.files
     .filter((file) => file.path !== "package.json")
@@ -63,9 +65,11 @@ export default defineApp({}, { tools: router({ send }) });`,
       content:
         file.path === "common/configuration.ts"
           ? configuration
-          : file.path === "common/installation.ts"
-            ? file.content.replace('"https://app.signalbox.run"', JSON.stringify(h.origin))
-            : file.content,
+          : file.path === "common/workflow-fields.ts"
+            ? workflowDeliverySource(file.content, ["checkMyConnections"], channel.id)
+            : file.path === "common/installation.ts"
+              ? file.content.replace('"https://app.signalbox.run"', JSON.stringify(h.origin))
+              : file.content,
     }));
   const copy = yield* deploy("Private connection checks", files);
   const key = yield* h.request("POST", "/api/auth/api-key/create", {
@@ -183,6 +187,7 @@ export default defineApp({}, { tools: router({ send }) });`,
   yield* Effect.promise(() => accepted).pipe(Effect.timeout("15 seconds"));
   checked("second episode reaches its channel once", fixture.sends.length, 2);
   const submitted = yield* checkpoint();
+  const submissionConsent = yield* h.call(copy.id, "settings");
   const refused = yield* Effect.all(
     [1, 2].map(() =>
       h.call(
@@ -193,6 +198,7 @@ export default defineApp({}, { tools: router({ send }) });`,
           episode: submitted.episode,
           question: submitted.question.id,
           attempt: crypto.randomUUID(),
+          expectedRevision: submissionConsent.revision,
         },
         "mutation",
       ),
@@ -281,6 +287,22 @@ export default defineApp({}, { tools: router({ send }) });`,
     account,
     channel,
     managementKey: key.key,
+  });
+  yield* verifyWorkflowIsolation({
+    h,
+    deploy,
+    fixture,
+    checked,
+    managementKey: key.key,
+    directory,
+  });
+  yield* verifySubmissionRevision({
+    h,
+    deploy,
+    fixture,
+    checked,
+    managementKey: key.key,
+    directory,
   });
   return { checks, syntheticMessagesOnly: true, runtimeDirectory: h.runtimeDirectory };
 });

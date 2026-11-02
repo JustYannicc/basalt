@@ -9,12 +9,16 @@ export async function startRecipeUpstream() {
   const replies = new Set();
   const healthReplies = new Set();
   let heldToken;
+  let holdAfter = 1;
+  let matchingReads = 0;
   let healthAccepted;
   const sends = [];
   const server = createServer(async (request, response) => {
     response.setHeader("Content-Type", "application/json");
     if (request.url === "/health") {
-      if (request.headers["x-fixture-account"] === heldToken && heldToken !== undefined) {
+      const matched = request.headers["x-fixture-account"] === heldToken && heldToken !== undefined;
+      if (matched) matchingReads++;
+      if (matched && matchingReads >= holdAfter) {
         healthReplies.add(response);
         healthAccepted?.();
       } else response.end(JSON.stringify({ status: health }));
@@ -39,8 +43,10 @@ export async function startRecipeUpstream() {
     setHealth(value) {
       health = value;
     },
-    holdHealth(token) {
+    holdHealth(token, after = 1) {
       heldToken = token;
+      holdAfter = after;
+      matchingReads = 0;
       return new Promise((resolve) => {
         healthAccepted = resolve;
       });
