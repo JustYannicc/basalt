@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { PoolContainer as FrozenPool, handlePoolWorkerRequest, type PoolEnvironment } from "../../.local/scale-candidate/src/pool/worker.ts";
+import { PoolContainer as FrozenPool, handlePoolWorkerRequest, type PoolEnvironment } from "@basalt-scale/candidate/src/pool/worker.ts";
 import { mockSource, generatorSource, samplerSource } from "./sources.generated.ts";
 interface Environment extends PoolEnvironment {
   TEST_DEADLINE: string;
@@ -16,7 +16,7 @@ const denied = () => new Response(null, { status: 403 });
 export class Outbound extends WorkerEntrypoint<Environment> {
   async fetch(request: Request) {
     const url = new URL(request.url);
-    if (url.hostname !== "scale-mock.invalid" || Date.now() >= deadline(this.env)) return denied();
+    if (url.hostname !== "scale-mock.invalid" || !["/health", "/v1/models", "/v1/chat/completions", "/v1/responses", "/v1/messages"].includes(url.pathname) || Date.now() >= deadline(this.env)) return denied();
     return stub(this.env.Mock).fetch(new Request(`http://fixture${url.pathname}${url.search}`, request));
   }
 }
@@ -34,6 +34,7 @@ export class PoolContainer extends FrozenPool {
   }
   private async installInterception() {
     const outbound = (this.ctx.exports as unknown as { Outbound(options: { props: object }): Fetcher }).Outbound({ props: {} });
+    // Home requires its direct PostgreSQL TCP connection; disable every other HTTP(S) destination here.
     await this.ctx.container!.interceptAllOutboundHttp(outbound);
     await this.ctx.container!.interceptOutboundHttps("*", outbound);
   }
@@ -67,7 +68,7 @@ export class PoolContainer extends FrozenPool {
       return Response.json({ exitCode: output.exitCode, sample: JSON.parse(new TextDecoder().decode(output.stdout)), ready: await ready.json() });
     }
     if (url.pathname === "/_harness/isolation") {
-      const code = "import urllib.request,json\nr=[]\nfor u in ['http://api.openai.com/v1/models','http://scale-mock.invalid/health']:\n try:\n  x=urllib.request.urlopen(u,timeout=10); r.append({'url':u,'status':x.status})\n except urllib.error.HTTPError as e:r.append({'url':u,'status':e.code})\nprint(json.dumps(r))";
+      const code = "import urllib.request,json\nr=[]\nfor u in ['http://api.openai.com/v1/models','https://api.openai.com/v1/models','http://scale-mock.invalid/health']:\n try:\n  x=urllib.request.urlopen(u,timeout=10); r.append({'url':u,'status':x.status})\n except urllib.error.HTTPError as e:r.append({'url':u,'status':e.code})\nprint(json.dumps(r))";
       const proc = await this.ctx.container!.exec(["python3", "-c", code]);
       const output = await proc.output();
       return Response.json({ exitCode: output.exitCode, checks: JSON.parse(new TextDecoder().decode(output.stdout)) });
@@ -97,17 +98,19 @@ export class PoolContainer extends FrozenPool {
 
 class Fixture extends DurableObject<Environment> {
   source = "";
+  internet = false;
+  processEnvironment(): Record<string, string> { return { SCALE_DEADLINE: String(deadline(this.env) / 1000) }; }
   private starting?: Promise<void>;
   async alarm() { await this.ctx.container!.destroy(); await this.ctx.storage.deleteAll(); }
   async fetch(request: Request) {
-    if (new URL(request.url).pathname === "/stop" && request.headers.get("X-Scale-Admin") === this.env.TEST_ADMIN) {
+    if (new URL(request.url).pathname === "/stop") {
       await this.alarm(); return Response.json({ stopped: true });
     }
     if (Date.now() >= deadline(this.env)) return new Response(null, { status: 410 });
     const c = this.ctx.container!;
     if (!c.running) {
       this.starting ??= (async () => {
-        c.start({ enableInternet: true, entrypoint: ["python3", "-c", this.source], env: { SCALE_DEADLINE: String(deadline(this.env) / 1000), SCALE_ADMIN: this.env.TEST_ADMIN, SCALE_ORIGIN: this.env.TEST_ORIGIN, SCALE_KEY_SEED: this.env.TEST_KEY_SEED } });
+        c.start({ enableInternet: this.internet, entrypoint: ["python3", "-c", this.source], env: this.processEnvironment() });
         await this.ctx.storage.setAlarm(deadline(this.env));
       })().finally(() => this.starting = undefined);
       await this.starting;
@@ -117,7 +120,13 @@ class Fixture extends DurableObject<Environment> {
   }
 }
 export class Mock extends Fixture { source = mockSource; }
-export class Generator extends Fixture { source = generatorSource; }
+export class Generator extends Fixture {
+  source = generatorSource;
+  internet = true;
+  processEnvironment() {
+    return { ...super.processEnvironment(), SCALE_ADMIN: this.env.TEST_ADMIN, SCALE_ORIGIN: this.env.TEST_ORIGIN, SCALE_KEY_SEED: this.env.TEST_KEY_SEED };
+  }
+}
 
 export default {
   async fetch(request: Request, env: Environment) {

@@ -6,13 +6,13 @@ import * as Output from "alchemy/Output";
 import * as Planetscale from "alchemy/Planetscale";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, FileSystem, Layer, Redacted } from "effect";
-import { poolDatabaseUrl } from "../../.local/scale-candidate/src/pool/database-settings.ts";
+import { poolDatabaseUrl } from "@basalt-scale/candidate/src/pool/database-settings.ts";
 import { database, prefix, stage, worker } from "./settings.ts";
 
 // This stack owns no DNS, production bindings, retained databases or shared app resources.
 export default Alchemy.Stack(prefix, {
   providers: Layer.mergeAll(Cloudflare.providers(), Planetscale.providers(), Command.providers(), Docker.providers()),
-  state: Cloudflare.state(),
+  state: Alchemy.localState(),
 }, Effect.gen(function* () {
   if ((yield* Stage) !== stage) return yield* Effect.die(new Error("Only scale-180 is allowed"));
   const cluster = yield* Planetscale.PostgresDatabase("Database", {

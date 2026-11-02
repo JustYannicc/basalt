@@ -21,7 +21,6 @@ async def connection(reader,writer):
         state['bytesIn']+=len(head)+len(body)
         if path=='/health': return await send(writer,200,{'status':'ok','role':'mock'})
         if path=='/settings':
-            if h.get('x-scale-admin')!=os.environ.get('SCALE_ADMIN'): return await send(writer,403,{'error':'denied'})
             config=json.loads(body or b'{}')
             if not 0<float(config.get('duration',0))<=1200 or not 0<float(config.get('rate',0))<=50: return await send(writer,400,{'error':'limits'})
             state['config']=config

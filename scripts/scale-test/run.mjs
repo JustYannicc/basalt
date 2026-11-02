@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { cf, list, inventory, assertAbsent, pg } from "./api.mjs";
-import { candidate, credentials, imageDigest, stage, validate, worker } from "./settings.ts";
+import { cf, list, inventory, assertAbsent, pg, publicInventory } from "./api.mjs";
+import { stageClient, stageOrigin } from "./stage-client.mjs";
+import { candidate, credentials, imageDigest, prefix, sizes, stage, validate, worker } from "./settings.ts";
 
 validate();
 if (process.env.SCALE_MODE === "validate") { console.log("Scale guards passed"); process.exit(); }
@@ -14,6 +15,9 @@ const secrets = credentials();
 let origin;
 let deadline;
 let image;
+const jobStarted = Number(process.env.SCALE_JOB_STARTED_AT);
+if (process.env.SCALE_MODE === "run" && (!Number.isFinite(jobStarted) || jobStarted > Date.now())) throw new Error("Missing CI job start time");
+const trafficEndsAt = () => Math.min(deadline - 20 * 60_000, jobStarted + 70 * 60_000);
 class CapacityStop extends Error {}
 let billedBytesUpper = 0;
 const previousBytes = new Map();
@@ -37,9 +41,9 @@ function deploy(size) {
   if (result.status !== 0) throw new Error("Scale Alchemy deploy failed; no provider output was published");
 }
 async function request(path, body, method = body === undefined ? "GET" : "POST") {
-  if (Date.now() >= deadline - 20 * 60_000) throw new Error("Traffic deadline reached");
-  const response = await fetch(origin + path, { method, headers: { "X-Scale-Admin": secrets.admin, "Content-Type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(210_000) });
+  if (Date.now() >= trafficEndsAt()) throw new Error("Traffic deadline reached");
+  const response = await stageClient.fetch(origin, path, { method, headers: { "X-Scale-Admin": secrets.admin, "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(Math.max(1, Math.min(210_000, trafficEndsAt() - Date.now()))) });
   if (!response.ok) { await response.body?.cancel(); throw new Error(`Synthetic control request failed (${response.status})`); }
   return response.status === 204 ? null : response.json();
 }
@@ -58,7 +62,7 @@ async function configure(size) {
   save(`${size}-startup`, { elapsedMs: Date.now() - started, runtime: await request("/_test/pool/stats") });
   const isolation = await request("/_test/pool/isolation");
   save(`${size}-isolation`, isolation);
-  if (isolation.exitCode !== 0 || isolation.checks?.[0]?.status !== 403 || isolation.checks?.[1]?.status !== 200)
+  if (isolation.exitCode !== 0 || isolation.checks?.[0]?.status !== 403 || isolation.checks?.[1]?.status !== 403 || isolation.checks?.[2]?.status !== 200)
     throw new Error("Synthetic egress isolation failed");
   const keys = Array.from({ length: 5000 }, (_, user) => `scale-${createHash("sha256").update(`${secrets.seed}:${user}`).digest("hex")}`);
   const config = {
@@ -123,37 +127,45 @@ async function job(spec) {
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
+async function resize(size) {
+  if (!sizes.includes(size)) throw new Error("Unsupported test instance size");
+  const app = (await inventory()).applications.find((row) => row.name === `${prefix}-pool`);
+  if (!app?.configuration?.image?.endsWith(imageDigest)) throw new Error("Isolated pool image differs from the frozen target");
+  if (app.configuration.instance_type === size) return;
+  const configuration = { ...app.configuration, instance_type: size };
+  await cf(`containers/applications/${app.id}`, "PATCH", { max_instances: 1, configuration });
+  // Use the same immediate rollout as the pinned Alchemy container provider.
+  await cf(`containers/applications/${app.id}/rollouts`, "POST", {
+    strategy: "rolling", kind: "full_auto", step_percentage: 100, target_configuration: configuration,
+  });
+  const observed = await cf(`containers/applications/${app.id}`);
+  if (observed?.result?.configuration?.instance_type !== size) throw new Error("Test instance size readback differs");
+}
 async function destroy() {
-  const before = await inventory(); save("teardown-before", before);
+  process.env.SCALE_CONTROL_END_AT = String(Math.min(Date.now() + 15 * 60_000,
+    Number.isFinite(jobStarted) ? jobStarted + 90 * 60_000 : Infinity));
+  const before = await inventory(); save("teardown-before", publicInventory(before));
   if (Object.values(before).every((rows) => rows.length === 0)) {
-    save("teardown", { at: new Date().toISOString(), resources: before, alreadyAbsent: true }); return;
+    save("teardown", { at: new Date().toISOString(), resources: publicInventory(before), alreadyAbsent: true }); return;
   }
   const expectedDeadline = process.env.SCALE_EXPECT_DEADLINE;
   if (expectedDeadline) {
     const settings = await cf(`workers/scripts/${worker}/settings`);
     const observed = settings?.result?.bindings?.find((row) => row.name === "TEST_DEADLINE")?.text;
-    if (!observed) throw new Error("Automatic expiry cannot identify this lease; use explicit destroy");
-    if (observed !== expectedDeadline) {
+    if (observed && observed !== expectedDeadline) {
       save("expiry-skipped", { reason: "A different lease owns the stage" }); return;
     }
   }
-  const result = spawnSync("bun", ["run", "alchemy", "destroy", "../../../../../../scripts/scale-test/stack.ts", "--stage", stage, "--yes"], {
-    cwd: ".local/scale-candidate/.upstream/apps/hosted/cloud", env: { ...process.env, ALCHEMY_STAGE: stage, SCALE_SIZE: "lite", SCALE_IMAGE: image ?? `unavailable@${imageDigest}`,
-      SCALE_ADMIN: secrets.admin, SCALE_MANAGEMENT: secrets.management, SCALE_SIGNING: secrets.signing,
-      SCALE_SEED: secrets.seed, SCALE_DEADLINE: String(deadline ?? 0), SCALE_ORIGIN: origin ?? "https://invalid.invalid" },
-    encoding: "utf8", timeout: 12 * 60_000, maxBuffer: 8 * 1024 * 1024,
-  });
-  // Recover partial deploys too, always limited to this issue's exact prefix.
-  const remaining = await inventory();
+  // Missing Workers do not prevent reclaiming the remaining issue-scoped resources.
   const cleanupErrors = [];
   const remove = async (kind, operation) => { try { await operation(); } catch { cleanupErrors.push(kind); } };
-  for (const app of remaining.applications) await remove("container", () => cf(`containers/applications/${app.id}`, "DELETE"));
-  for (const script of remaining.scripts) await remove("worker", () => cf(`workers/scripts/${script.id}?force=true`, "DELETE"));
-  for (const drive of remaining.drives) await remove("hyperdrive", () => cf(`hyperdrive/configs/${drive.id}`, "DELETE"));
-  for (const certificate of remaining.certificates) await remove("certificate", () => cf(`mtls_certificates/${certificate.id}`, "DELETE"));
-  for (const namespace of remaining.kv) await remove("kv", () => cf(`storage/kv/namespaces/${namespace.id}`, "DELETE"));
-  if (remaining.database.length) await remove("database", () => pg("DELETE"));
-  const after = await inventory(); save("teardown", { at: new Date().toISOString(), alchemyExit: result.status, cleanupErrors, resources: after });
+  for (const app of before.applications) await remove("container", () => cf(`containers/applications/${app.id}`, "DELETE"));
+  for (const script of before.scripts) await remove("worker", () => cf(`workers/scripts/${script.id}?force=true`, "DELETE"));
+  for (const drive of before.drives) await remove("hyperdrive", () => cf(`hyperdrive/configs/${drive.id}`, "DELETE"));
+  for (const certificate of before.certificates) await remove("certificate", () => cf(`mtls_certificates/${certificate.id}`, "DELETE"));
+  for (const namespace of before.kv) await remove("kv", () => cf(`storage/kv/namespaces/${namespace.id}`, "DELETE"));
+  if (before.database.length) await remove("database", () => pg("DELETE"));
+  const after = await inventory(); save("teardown", { at: new Date().toISOString(), cleanupErrors, resources: publicInventory(after) });
   assertAbsent(after);
 }
 try {
@@ -166,21 +178,24 @@ try {
     image = matches[0] ?? (repository ? `${repository.split("@")[0].replace(/:[^/]+$/, "")}@${imageDigest}` : undefined);
     if (!image) throw new Error("Frozen pool image repository is unavailable in this Cloudflare account");
     const subdomain = (await cf("workers/subdomain"))?.result?.subdomain;
-    if (!/^[a-z0-9-]+$/.test(subdomain ?? "")) throw new Error("Missing Cloudflare workers.dev subdomain");
-    origin = `https://${worker}.${subdomain}.workers.dev`; deadline = Date.now() + 2 * 60 * 60_000;
+    origin = stageOrigin(subdomain); deadline = Date.now() + 2 * 60 * 60_000;
     save("lease", { candidate, imageDigest, stage, firstCreateNotBefore: new Date().toISOString(), deleteBy: new Date(deadline).toISOString(), capUsd: 10, priorEstimateUpperUsd: 0.20 });
     deploy("lite");
     await settings();
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `deadline=${deadline}\n`);
   } else {
     await settings();
+    process.env.SCALE_CONTROL_END_AT = String(trafficEndsAt());
     save("candidate", { candidate, imageDigest, deleteBy: new Date(deadline).toISOString(), usersAreDistinctFromConcurrentStreams: true,
       fixtureSha256: Object.fromEntries(["mock", "generator", "sampler"].map((name) => [name, createHash("sha256").update(readFileSync(`scripts/scale-test/${name}.py`)).digest("hex")])) });
-    for (const size of ["lite", "basic", "standard-2"]) {
-      if (deadline - Date.now() < 30 * 60_000) throw new Error("Insufficient time remains for the next size and teardown");
+    for (const size of sizes) {
+      if (trafficEndsAt() - Date.now() < 20 * 60_000) {
+        save("size-budget-stop", { unmeasuredSizes: sizes.slice(sizes.indexOf(size)), remainingMs: Math.max(0, trafficEndsAt() - Date.now()) });
+        break;
+      }
       try {
-        deploy(size);
-        save(`${size}-deployment`, await inventory());
+        await resize(size);
+        save(`${size}-deployment`, publicInventory(await inventory()));
         await request("/_test/pool/stop", {});
         await configure(size);
         for (const protocol of ["chat", "responses", "messages"]) await job({ id: `${size}-${protocol}-probe`, protocol, users: 1, concurrency: 1, requests: 1, streamSeconds: 2, bodyBytes: 1024 });

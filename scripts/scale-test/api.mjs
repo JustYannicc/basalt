@@ -1,8 +1,14 @@
 import { database, prefix, worker } from "./settings.ts";
 
-export async function cf(path, method = "GET") {
+function controlSignal() {
+  const remaining = Number(process.env.SCALE_CONTROL_END_AT ?? Infinity) - Date.now();
+  if (remaining <= 0) throw new Error("Control-plane time reserve exhausted");
+  return AbortSignal.timeout(Math.min(30_000, remaining));
+}
+export async function cf(path, method = "GET", body) {
   const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/${path}`, {
-    method, headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` }, signal: AbortSignal.timeout(30_000),
+    method, headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controlSignal(),
   });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Cloudflare ${method} failed (${response.status})`);
@@ -24,11 +30,17 @@ export async function list(path) {
 }
 export async function pg(method = "GET") {
   const response = await fetch(`https://api.planetscale.com/v1/organizations/${encodeURIComponent(process.env.PLANETSCALE_ORGANIZATION)}/databases/${database}`, {
-    method, headers: { Authorization: `${process.env.PLANETSCALE_API_TOKEN_ID}:${process.env.PLANETSCALE_API_TOKEN}` }, signal: AbortSignal.timeout(30_000),
+    method, headers: { Authorization: `${process.env.PLANETSCALE_API_TOKEN_ID}:${process.env.PLANETSCALE_API_TOKEN}` }, signal: controlSignal(),
   });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`PlanetScale ${method} failed (${response.status})`);
   return method === "DELETE" ? true : response.json();
+}
+const owned = (name) => typeof name === "string" && name.startsWith(`${prefix}-`);
+export function publicInventory(resources) {
+  return Object.fromEntries(Object.entries(resources).map(([kind, rows]) => [kind, {
+    count: rows.length, names: rows.map((row) => row.name ?? row.title ?? (kind === "scripts" ? row.id : "unnamed")),
+  }]));
 }
 export async function inventory() {
   const [applications, namespaces, scripts, kv, drives, certificates, cluster] = await Promise.all([
@@ -36,12 +48,12 @@ export async function inventory() {
     list("storage/kv/namespaces"), list("hyperdrive/configs"), list("mtls_certificates"), pg(),
   ]);
   return {
-    applications: applications.filter((row) => row.name?.startsWith(prefix)),
-    namespaces: namespaces.filter((row) => row.script === worker || row.name?.startsWith(prefix)),
-    scripts: scripts.filter((row) => row.id?.startsWith(prefix)),
-    kv: kv.filter((row) => row.title?.startsWith(prefix)),
-    drives: drives.filter((row) => row.name?.startsWith(prefix)),
-    certificates: certificates.filter((row) => row.name?.startsWith(prefix)),
+    applications: applications.filter((row) => owned(row.name)),
+    namespaces: namespaces.filter((row) => row.script === worker || owned(row.name)),
+    scripts: scripts.filter((row) => owned(row.id)),
+    kv: kv.filter((row) => owned(row.title)),
+    drives: drives.filter((row) => owned(row.name)),
+    certificates: certificates.filter((row) => owned(row.name)),
     database: cluster ? [{ name: database }] : [],
   };
 }
