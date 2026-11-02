@@ -22,7 +22,7 @@ function executable(name: string): string {
   throw new Error(`Native stack inventory requires ${name}`);
 }
 
-function evaluate(root: string): NativeInventory {
+function evaluate(root: string, options: { manualCron?: true } = {}): NativeInventory {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "native-stack-")));
   try {
     const bun = executable("bun");
@@ -32,6 +32,7 @@ function evaluate(root: string): NativeInventory {
       PATH: process.env.PATH ?? "/usr/bin:/bin", CI: "true", DO_NOT_TRACK: "1",
       ALCHEMY_HOME: join(scratch, "auth"), TMPDIR: join(scratch, "tmp"),
       BUN_INSTALL_CACHE_DIR: join(scratch, "cache"), NATIVE_STACK_ROOT: realpathSync(root),
+      NATIVE_STACK_MANUAL_CRON: String(options.manualCron ?? false),
     };
     const worker = fileURLToPath(new URL("./native-stack-worker.mjs", import.meta.url));
     let command: string, args: string[];
@@ -55,7 +56,7 @@ function evaluate(root: string): NativeInventory {
     const result = spawnSync(command, args, { cwd: scratch, env, encoding: "utf8", timeout: 35_000, maxBuffer: 2 * 1024 * 1024 });
     if (result.error || result.signal || result.status !== 0) {
       // Child stderr is deliberately never returned, even when Bun fails before startup.
-      const failure = /^{"error":"native-stack-(setup|import|evaluate)-failed","reason":"(redacted|Invalid native declaration name|Invalid native declaration metadata(?::(?:record|resource|props|env|contribution|data|exports|export|binding)-(?:undefined|object|array|function|string|number|boolean|symbol|bigint))?|Invalid native bindings|Unknown native Worker export kind|Unmatched native workflow export|Invalid native binding contributions)"}$/.exec(result.stdout ?? "");
+      const failure = /^{"error":"native-stack-(setup|import|evaluate)-failed","reason":"(redacted|Invalid native declaration name|Invalid native declaration metadata(?::(?:record|resource|props|env|contribution|data|exports|export|binding)-(?:undefined|object|array|function|string|number|boolean|symbol|bigint))?|Invalid native bindings|Manual cron requires a local E2E Cloud\.|Unknown native Worker export kind|Unmatched native workflow export|Invalid native binding contributions)"}$/.exec(result.stdout ?? "");
       throw new Error(failure ? `Native stack inventory ${failure[1]} failed (${failure[2]}); check installed source dependencies and declaration fixtures` :
         "Native stack inventory sandbox failed or timed out; OS network denial and Bun are required");
     }
@@ -65,8 +66,8 @@ function evaluate(root: string): NativeInventory {
 }
 
 /** Metadata stays outside generated architecture output. Every call evaluates fresh source. */
-export function discoverStackDetails(root: string): { inventory: StackInventoryRecord[]; workers: WorkerMetadata[]; digest: string } {
-  const native = evaluate(root);
+export function discoverStackDetails(root: string, options: { manualCron?: true } = {}): { inventory: StackInventoryRecord[]; workers: WorkerMetadata[]; digest: string } {
+  const native = evaluate(root, options);
   const inventory = native.resources.map(resource => ({
     id: resourceId(resource.type, resource.fqn), kind: resource.type.split(".").at(-1)!,
     source: "alchemy.run.ts", declaredName: resource.declaredName,

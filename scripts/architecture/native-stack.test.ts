@@ -154,3 +154,13 @@ test("a caught unmatched fetch still fails with no request values in the error",
   expect(String(failure)).toMatch(/Native stack inventory evaluate failed/);
   expect(String(failure)).not.toMatch(/secret.invalid|token-value/);
 }, 60_000);
+
+
+test("the production API keeps cron bindings and refuses the local manual-cron override", () => {
+  const stack = discoverStackDetails(root);
+  const api = stack.inventory.find(resource => resource.kind === "Worker" && resource.declaredName === "Api");
+  expect(api).toBeDefined();
+  const worker = stack.workers.find(worker => resourceId("Cloudflare.Worker", worker.fqn) === api!.id);
+  expect(worker?.cronTriggerCount).toBeGreaterThan(0);
+  expect(() => discoverStackDetails(root, { manualCron: true })).toThrow("Manual cron requires a local E2E Cloud.");
+}, 80_000);

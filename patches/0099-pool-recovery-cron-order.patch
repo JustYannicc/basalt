@@ -1,0 +1,313 @@
+diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
+index ad0458e..2f58c12 100644
+--- a/apps/hosted/cloud/alchemy.run.ts
++++ b/apps/hosted/cloud/alchemy.run.ts
+@@ -7,7 +7,8 @@ import * as Planetscale from "alchemy/Planetscale";
+ import * as Neon from "alchemy/Neon";
+ import * as Docker from "alchemy/Docker";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+-import { Effect, Layer, Option } from "effect";
++import { Config, Effect, Layer, Option, Schema } from "effect";
++import { Stack } from "alchemy/Stack";
+ import AppPages from "./src/app-ui.ts";
+ import { appUiAddressScheme } from "@executor-js/hosted-server/app-ui";
+ import { cloudAppUiBase } from "./src/contracts/app-ui.ts";
+@@ -81,6 +82,17 @@ export const cloudProviders = Layer.mergeAll(
+ );
+ 
+ export const cloudDeployment = Effect.gen(function* () {
++  const manualCron = yield* Config.Boolean("EXECUTOR_E2E_MANUAL_CRON").pipe(
++    Config.withDefault(false),
++  );
++  if (
++    manualCron &&
++    (!(yield* AlchemyContext).dev ||
++      (yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""))) !==
++        "test-local" ||
++      !Option.getOrElse(yield* stageName, () => "").startsWith("e2e-"))
++  )
++    return yield* Effect.die(new Error("Manual cron requires a local E2E Cloud."));
+   // Stops the deploy before anything changes when a setting would stop the Worker at startup.
+   yield* productionOAuthProxyCheck.pipe(Effect.orDie);
+   // Stops the deploy before anything changes when the release before this one is not live.
+@@ -90,6 +102,16 @@ export const cloudDeployment = Effect.gen(function* () {
+   if (!(yield* AlchemyContext).dev) yield* previewPoolSize;
+   yield* authEmailInfrastructure.pipe(Effect.orDie);
+   const api = yield* Api;
++  if (manualCron) {
++    // Keep the runtime scheduled handler. Only the local timer's deployment bindings change.
++    const stack = yield* Stack;
++    const cron = Schema.Struct({ crons: Schema.Array(Schema.String) });
++    stack.bindings[api.FQN] = (stack.bindings[api.FQN] ?? []).map((binding) =>
++      Schema.is(cron)(binding.data)
++        ? { ...binding, data: { ...binding.data, crons: [] } }
++        : binding,
++    );
++  }
+   if (!(yield* AlchemyContext).dev) {
+     yield* Marketing;
+     yield* testStageRoleHostRecords;
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index c94a608..2328609 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -322,7 +322,7 @@ const notRunInCi: Partial<
+   cloudPoolAccountRecovery: {
+     targets: ["cloud"],
+     reason:
+-      "The Basalt host-managed-accounts job runs it with an isolated synthetic pool signing key.",
++      "The Basalt host-managed-accounts job runs it with an isolated synthetic pool signing key and --manual-cron.",
+   },
+   cloudPoolAccountEventualRepair: {
+     targets: ["cloud"],
+diff --git a/e2e/run.ts b/e2e/run.ts
+index 081c2bf..a73bef7 100644
+--- a/e2e/run.ts
++++ b/e2e/run.ts
+@@ -27,6 +27,8 @@ const command = Command.make(
+     // Start managed Cloud with its rollback switch on, sign-in on the deployment origin, and run
+     // only the scenarios proving it.
+     rollback: Flag.Boolean("rollback").pipe(Flag.withDefault(false)),
++    // Observe the queue between explicit calls to the real scheduled handler.
++    manualCron: Flag.Boolean("manual-cron").pipe(Flag.withDefault(false)),
+     // Start a second managed Cloud as the OAuth proxy's production, run against a test stage that
+     // signs in through it, and run only the scenarios that prove the proxy.
+     oauthProxyPreview: Flag.Boolean("oauth-proxy-preview").pipe(Flag.withDefault(false)),
+diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
+index 9413ce6..b3f3e5c 100644
+--- a/e2e/sdk/suite.ts
++++ b/e2e/sdk/suite.ts
+@@ -51,6 +51,7 @@ export const runSuite = ({
+   authRateLimit = false,
+   rollback = false,
+   oauthProxyPreview = false,
++  manualCron = false,
+   attachment,
+ }: {
+   readonly target: "self-host" | "local" | "cloud" | "all" | "hosted";
+@@ -71,6 +72,8 @@ export const runSuite = ({
+    * signs in through it, for the scenarios that prove the proxy.
+    */
+   readonly oauthProxyPreview?: boolean;
++  /** Run queue observations between explicit calls to the real local scheduled handler. */
++  readonly manualCron?: boolean;
+   readonly attachment?: {
+     readonly origin: string;
+     readonly fixtures: typeof FixtureControl.Type;
+@@ -134,6 +137,18 @@ export const runSuite = ({
+           message:
+             "The OAuth proxy preview runs only on managed Cloud, without --auth-rate-limit or --rollback. Use --target cloud without E2E_CLOUD_URL.",
+         });
++      if (
++        manualCron &&
++        (authRateLimit ||
++          rollback ||
++          oauthProxyPreview ||
++          selected !== "cloud" ||
++          Option.isSome(cloud))
++      )
++        return yield* new RunFailed({
++          message:
++            "Manual cron runs only on managed Cloud without other Cloud modes or E2E_CLOUD_URL.",
++        });
+       const interactive = yield* Config.Boolean("E2E_INTERACTIVE").pipe(Config.withDefault(false));
+       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
+       if (observeUI && (selected !== "cloud" || Option.isSome(cloud)))
+@@ -174,7 +189,9 @@ export const runSuite = ({
+             ? "rolled-back"
+             : oauthProxyPreview
+               ? "oauth-proxy-preview"
+-              : "managed";
++              : manualCron
++                ? "manual-cron"
++                : "managed";
+       const plan = scenariosForSuite(selected === "hosted" ? "hosted" : "all", cloudMode);
+       const filter = yield* Effect.try({
+         try: () => new RegExp(name),
+@@ -231,7 +248,7 @@ export const runSuite = ({
+                 runtime:
+                   target === "cloud"
+                     ? managedCloud
+-                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}`
++                      ? `Local Cloud Worker + Postgres · no saved credentials · auth rate limit ${authRateLimit ? "on" : "off"}${manualCron ? " · manual cron" : ""}${rollback ? " · sign-in on the deployment origin" : ""}${oauthProxyPreview ? " · a test stage signing in through a second local Cloud's OAuth proxy" : ""}`
+                       : "Cloud endpoint"
+                     : target === "local" && Option.isSome(packagedEntry)
+                       ? "Installed npm CLI + PGlite per scenario"
+@@ -289,6 +306,7 @@ export const runSuite = ({
+                         commit,
+                         observeUI,
+                         authRateLimit,
++                        manualCron,
+                         telemetryRelay: telemetryRelaySelected,
+                         browserOrigin: rollback ? "deployment" : "app",
+                         ...Option.match(production, {
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index c55e746..16d29d6 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -146,6 +146,7 @@ export const startCloudEnvironment = (input: {
+    * scenarios that prove it.
+    */
+   readonly authRateLimit: boolean;
++  readonly manualCron?: boolean;
+   /** Enable the synthetic local relay for the focused telemetry relay scenario. */
+   readonly telemetryRelay?: boolean;
+   /**
+@@ -180,6 +181,8 @@ export const startCloudEnvironment = (input: {
+     const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
+     const directory = path.resolve(input.directory);
+     const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
++    if (input.manualCron && poolBackend)
++      return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
+     const apiPort = poolBackend
+       ? yield* cloudPoolGateway(input.origin, directory)
+       : Number(new URL(input.origin).port);
+@@ -300,6 +303,7 @@ export const startCloudEnvironment = (input: {
+       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,
+       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
+       EXECUTOR_ENVIRONMENT: "test-local",
++      EXECUTOR_E2E_MANUAL_CRON: String(input.manualCron ?? false),
+       TEST_STAGE_AUTH_RATE_LIMIT: String(input.authRateLimit),
+       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
+       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 709e285..4e8aaac 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -13,6 +13,7 @@ export const TargetPlan = Schema.Union([
+         "rate-limited",
+         "rolled-back",
+         "oauth-proxy-preview",
++        "manual-cron",
+       ]),
+     ),
+   }),
+@@ -8575,7 +8576,7 @@ export const scenarios = plan({
+     title: "Cloud pool account recovery queues one owner job and preserves permissions and backoff",
+     targets: {
+       "self-host": na("The Cloud host owns automatic pool setup."),
+-      cloud: { status: "scheduled", runtime: "managed" },
++      cloud: { status: "scheduled", runtime: "manual-cron" },
+       local: na("The Cloud host owns automatic pool setup."),
+     },
+   },
+@@ -10282,7 +10283,8 @@ export type CloudMode =
+   | "attached"
+   | "rate-limited"
+   | "rolled-back"
+-  | "oauth-proxy-preview";
++  | "oauth-proxy-preview"
++  | "manual-cron";
+ 
+ const cloudRuntimeReasons = {
+   managed: "Requires the managed local Cloud target and its local collectors.",
+@@ -10291,6 +10293,7 @@ const cloudRuntimeReasons = {
+     "Requires a managed local Cloud with the per-address auth limit on: e2e:cloud --auth-rate-limit.",
+   "rolled-back":
+     "Requires a managed local Cloud with its rollback switch on: e2e:cloud --rollback.",
++  "manual-cron": "Requires the local Cloud with automatic cron disabled: e2e:cloud --manual-cron.",
+   "oauth-proxy-preview":
+     "Requires a managed test stage signing in through a second local Cloud's OAuth proxy: e2e:cloud --oauth-proxy-preview.",
+ } as const;
+@@ -10325,7 +10328,8 @@ export const scenariosForSuite = (
+         cloud.runtime === undefined
+           ? cloudMode !== "rate-limited" &&
+             cloudMode !== "rolled-back" &&
+-            cloudMode !== "oauth-proxy-preview"
++            cloudMode !== "oauth-proxy-preview" &&
++            cloudMode !== "manual-cron"
+           : cloud.runtime === cloudMode;
+       return runs
+         ? scenario
+@@ -10335,11 +10339,13 @@ export const scenariosForSuite = (
+               ...scenario.targets,
+               cloud: na(
+                 cloud.runtime === undefined
+-                  ? cloudMode === "rolled-back"
+-                    ? "Runs on Cloud with sign-in on app., without the rollback switch."
+-                    : cloudMode === "oauth-proxy-preview"
+-                      ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
+-                      : "Runs on Cloud without the per-address auth limit."
++                  ? cloudMode === "manual-cron"
++                    ? "Runs on Cloud with automatic cron triggers."
++                    : cloudMode === "rolled-back"
++                      ? "Runs on Cloud with sign-in on app., without the rollback switch."
++                      : cloudMode === "oauth-proxy-preview"
++                        ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
++                        : "Runs on Cloud without the per-address auth limit."
+                   : cloudRuntimeReasons[cloud.runtime],
+               ),
+             },
+diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
+index 9662a70..6bd9eb3 100644
+--- a/e2e/tests/pool-account-recovery.spec.ts
++++ b/e2e/tests/pool-account-recovery.spec.ts
+@@ -1,5 +1,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
++import { HttpClient } from "effect/http";
++import { Target } from "../support/platform.ts";
+ import { randomUUID } from "node:crypto";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+@@ -30,7 +32,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+         const api = yield* Api,
+           actors = yield* Actors,
+           evidence = yield* Evidence,
+-          database = yield* cloudLocks;
++          database = yield* cloudLocks,
++          http = yield* HttpClient.HttpClient,
++          target = yield* Target;
++        const tick = Effect.scoped(
++          Effect.gen(function* () {
++            const response = yield* http.get(
++              `${target.metadata.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
++            );
++            expect(response.status).toBe(200);
++            yield* response.text;
++          }),
++        );
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
+         // This case owns the lab, and no pool Worker receives its cleanup notification.
+@@ -42,6 +55,8 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+             [actors.organization.id],
+           ).pipe(Effect.orDie),
+         );
++        // Finish the rollout producer before arranging the queue the reads must preserve.
++        yield* tick;
+         const session = yield* body(
+           Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
+           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
+@@ -240,6 +255,11 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+               queuedByRead: true,
+               executionDeferred: true,
+             });
++            // The real consumer runs only after the last exact queue observation.
++            yield* tick;
++            const consumed = yield* recovery();
++            expect(consumed).not.toEqual(fresh);
++            yield* evidence.json("pool-recovery-consumed.json", { jobs: consumed });
+           }),
+         );
+         yield* deferJobs();
+diff --git a/e2e/vitest.config.ts b/e2e/vitest.config.ts
+index 2eee9a1..a77e462 100644
+--- a/e2e/vitest.config.ts
++++ b/e2e/vitest.config.ts
+@@ -9,7 +9,14 @@ if (!directory) throw new Error("Use bun run e2e to start an isolated target fir
+ const target = Schema.decodeUnknownSync(Target)(process.env.E2E_TARGET);
+ const suite = Schema.decodeUnknownSync(Schema.Literals(["all", "hosted"]))(process.env.E2E_SUITE);
+ const cloudMode = Schema.decodeUnknownSync(
+-  Schema.Literals(["managed", "attached", "rate-limited", "rolled-back", "oauth-proxy-preview"]),
++  Schema.Literals([
++    "managed",
++    "attached",
++    "rate-limited",
++    "rolled-back",
++    "oauth-proxy-preview",
++    "manual-cron",
++  ]),
+ )(process.env.E2E_CLOUD_MODE);
+ export default defineConfig({
+   test: {
