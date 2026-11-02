@@ -1,0 +1,32 @@
+diff --git a/apps/hosted/cloud/scripts/build-framework.ts b/apps/hosted/cloud/scripts/build-framework.ts
+index 4a8adae..46e4286 100644
+--- a/apps/hosted/cloud/scripts/build-framework.ts
++++ b/apps/hosted/cloud/scripts/build-framework.ts
+@@ -17,7 +17,7 @@ NodeRuntime.runMain(
+       path.join(root, "apps/hosted/cloud/.generated/executor-authoring.json"),
+       JSON.stringify({
+         ...Object.fromEntries(documents),
+-        "framework-reference.json": JSON.stringify(reference),
++        "framework-reference.json": reference,
+       }),
+     );
+   }).pipe(Effect.provide(NodeServices.layer)),
+diff --git a/apps/hosted/cloud/src/authoring.ts b/apps/hosted/cloud/src/authoring.ts
+index c1221c3..25bc133 100644
+--- a/apps/hosted/cloud/src/authoring.ts
++++ b/apps/hosted/cloud/src/authoring.ts
+@@ -21,5 +21,13 @@ export default Authoring.make(
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+     };
+   }),
+-  Effect.succeed(Authoring.of({ files: () => Effect.succeed(authoring) })),
++  Effect.succeed(
++    Authoring.of({
++      files: () =>
++        Effect.succeed({
++          ...authoring,
++          "framework-reference.json": JSON.stringify(authoring["framework-reference.json"]),
++        }),
++    }),
++  ),
+ );
