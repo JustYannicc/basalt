@@ -771,6 +771,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-authoring-reference-encoding",
+      "file": "0097-authoring-reference-encoding.patch",
+      "content_sha256": "f7ed02b038137c9ab3e35469ab613b6f748af71eb3230e41d8e00c17889e4db5",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
