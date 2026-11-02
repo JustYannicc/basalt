@@ -1,8 +1,25 @@
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
-index 09033a633f6510adbbc4ba809ec04eef0ceaf223..4c57acb5ec01c37e687a9f67e74998560bab2292 100644
+index 09033a633f6510adbbc4ba809ec04eef0ceaf223..d7b99acc596fa8ff90272e5a85ac504f9949e1e4 100644
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
-@@ -116,6 +116,22 @@ const message = Match.type<AppUiError>().pipe(
+@@ -43,6 +43,7 @@ class AppUiKey extends Data.Class<{
+  * Keyed by the app and its origin, not its version, so an activation refreshes the read in place
+  * and a mounted app frame stays mounted while its own watch script reloads it.
+  */
++// Retain the family binding too, so garbage collection cannot discard its loaded location.
+ const location = Atom.family((key: AppUiKey) =>
+   // The open-app control polls version status; it loads after hydration.
+   browserOnly(
+@@ -54,7 +55,7 @@ const location = Atom.family((key: AppUiKey) =>
+         Schedule.spaced("3 seconds"),
+       ).pipe(Stream.takeUntil((location) => location.status !== "pending")),
+     ),
+-  ).pipe(revalidated),
++  ).pipe(revalidated, Atom.setIdleTTL("30 minutes")),
+ );
+ /** A stable, non-secret app link; opening it initiates authentication when needed. */
+ export const appUiLocationAtom = (key: ConstructorParameters<typeof AppUiKey>[0]) =>
+@@ -116,6 +117,22 @@ const message = Match.type<AppUiError>().pipe(
        pageOutdated() ? outdatedPageMessage : "The server returned an unexpected response.",
    }),
  );
@@ -913,10 +930,10 @@ index 01d372e9b68c351e32e591de00cb45fc57a433ca..b882d6a5bf08e50fae0ce3924b739085
      file: "early-form-submission.spec.ts",
 diff --git a/e2e/tests/instant-console-navigation.spec.ts b/e2e/tests/instant-console-navigation.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..849e7b6325c4c11cf06b3ae9314db402d24ff628
+index 0000000000000000000000000000000000000000..152b1e8f57a7f0c5a7269f308fa46ba1f7ce5dd2
 --- /dev/null
 +++ b/e2e/tests/instant-console-navigation.spec.ts
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,455 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -1100,6 +1117,9 @@ index 0000000000000000000000000000000000000000..849e7b6325c4c11cf06b3ae9314db402
 +            connected: element.isConnected,
 +            visible: element.checkVisibility({ visibilityProperty: true }),
 +          })),
++        );
++        yield* browser.use("Collect unused bindings while the app page is closed", (page) =>
++          page.requestGC(),
 +        );
 +        const returned = yield* observeNavigation(
 +          "Return to the app screen",
