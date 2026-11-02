@@ -1,7 +1,7 @@
 import type { Account } from "../../apps/pool/contract.ts";
 import { accountsView } from "./accounts-view.ts";
 import type { HomeClient, PoolHome } from "./control.ts";
-import { fail, object, unavailable } from "./json.ts";
+import { fail, object, unavailable, type Json } from "./json.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 
 export async function checkAccount(home: PoolHome, client: HomeClient, collection: QuotaCollection, id: string, callerSignal: AbortSignal): Promise<Account> {
@@ -13,6 +13,17 @@ export async function readCheckedAccount(home: PoolHome, client: HomeClient, col
   const ids = new Set((await home.membership(signal)).members.map((member) => member.auth_id));
   if (!ids.has(id)) return fail(404, "not_found", "This subscription was removed from the pool.");
   const [files, reading] = await Promise.all([home.credentials(signal), refresh ? collection.refresh(id, signal) : collection.read(id, signal)]);
+  return checkedCredential(client, id, signal, files, reading);
+}
+
+/** The caller establishes pool membership or an authorized saved-account binding first. */
+export async function readCredentialAccount(client: HomeClient, collection: QuotaCollection, id: string, signal: AbortSignal, files: Json[], refresh = false) {
+  if (!files.some((file) => file.id === id)) return fail(404, "not_found", "This subscription was removed.");
+  const reading = refresh ? await collection.refresh(id, signal) : await collection.read(id, signal);
+  return checkedCredential(client, id, signal, files, reading);
+}
+
+async function checkedCredential(client: HomeClient, id: string, signal: AbortSignal, files: Json[], reading: Json | null) {
   const account = accountsView(files, reading ? [reading] : [], new Set([id]))[0];
   if (!account) return fail(404, "not_found", "This subscription was removed from the pool.");
   const file = files.find((file) => file.id === id)!;

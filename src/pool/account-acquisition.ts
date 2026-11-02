@@ -1,9 +1,8 @@
 import { callbackOrigin } from "../../apps/pool/sign-in.ts";
 import providers from "./providers.json" with { type: "json" };
 import type { HomeClient } from "./control.ts";
-import { object, post, readBody, rows, text, unavailable } from "./json.ts";
-import { openEnvelope } from "./token.ts";
-import { accountAcquisitionPrefix as prefix } from "./account-acquisition-contract.ts";
+import { object, post, rows, text, unavailable } from "./json.ts";
+import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { homeReference, homeReferences } from "./home-references.ts";
 
 const storageKey = "pool-account-acquisitions-v1";
@@ -61,20 +60,10 @@ export class HomeAccountAcquisitions {
 
   async handle(request: Request): Promise<Response> {
     if (request.method !== "POST") return new Response(null, { status: 405 });
-    let value: unknown;
+    let value;
     try {
-      const bytes = await readBody(request, 32_768);
-      if (bytes === undefined) throw new Error("Body too large");
-      const body: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
-      if (!object(body) || typeof body.envelope !== "string") throw new Error("Missing assertion");
-      value = await openEnvelope(this.signingKey, prefix, body.envelope, this.previousSigningKey);
+      value = await acquisitionAssertion(request, this.signingKey, this.previousSigningKey, this.now());
     } catch { return Response.json({ error: "acquisition_forbidden" }, { status: 403 }); }
-    if (!object(value) || !text(value.owner) || typeof value.operation !== "string" || !value.operation
-      || typeof value.at !== "number" || typeof value.expiresAt !== "number"
-      || !Number.isFinite(value.at) || !Number.isFinite(value.expiresAt)
-      || value.at > this.now() + 5_000 || value.expiresAt <= this.now()
-      || value.expiresAt <= value.at || value.expiresAt - value.at > 30_000 || value.operation.length > 255)
-      return Response.json({ error: "acquisition_forbidden" }, { status: 403 });
 
     try {
       const attempts = await this.storage.get<Record<string, Attempt>>(storageKey) ?? {};

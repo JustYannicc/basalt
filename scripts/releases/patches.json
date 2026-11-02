@@ -728,6 +728,15 @@
       "workflow_sensitive": false
     },
     {
+      "identity": "basalt-native-subscription-health",
+      "file": "0083-native-subscription-health.patch",
+      "content_sha256": "a3af140b1664e503b00ccac46512d94a6a460aea45525712aa3590207526b8ba",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "executor-encrypted-workflow-input-wait",
       "file": "0091-encrypted-workflow-input-wait.patch",
       "content_sha256": "9566315ac9814fba68837a2b64dcacaa1603eda1b5ed3d001877ea982713df4e",
