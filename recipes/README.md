@@ -11,10 +11,10 @@ still needs a fresh check of the account.
 A workflow can supply any supported MCP form schema directly. For a custom display,
 `display: { kind: "mcp-app", view }` retains the existing MCP Apps view observation
 with its source, selection, input and `ui://` resource URI beside the form fallback.
-The encrypted request stores this data without a separate SQL column. The later
-Approvals client must resolve it through the existing authenticated MCP Apps resource
+The encrypted request stores this data without a separate SQL column. Human in the
+loop resolves custom displays through the existing authenticated MCP Apps resource
 and callback paths. The descriptor grants no access and cannot answer the question
-for the person. This release stores and returns it; rendering follows in the UI PR.
+for the person. The standard form remains available.
 
 These are three ordinary apps: production checks, pool-owner checks and personal
 connection checks. Install a private copy from the catalog. Its source, tools,
@@ -43,11 +43,10 @@ configuring the copy again; retained older runs cannot use the new consent to
 send to an old destination. Schedules start paused and delivery starts off. This
 repository does not configure or activate production copies.
 
-This backend release exposes workflow questions through the public workflow-input
-APIs and native workflow history. Hosted answers require the recipient's browser
-session; a tool or API key cannot approve a question for them. The Approvals form
-card is a separate UI change. Keep a dry-run copy paused unless the recipient has
-a verified way to inspect and answer its questions.
+Workflow questions appear in Human in the loop, the public workflow-input APIs
+and native workflow history. Hosted answers require the recipient's browser
+session; a tool or API key cannot approve a question for them. Keep a dry-run copy
+paused unless the recipient has a verified way to inspect and answer its questions.
 
 Use a separate private copy for each owner. These recipes bind their SQL state
 to the person who configures them. Do not share a copy containing private watch

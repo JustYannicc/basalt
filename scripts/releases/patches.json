@@ -683,6 +683,15 @@
       "workflow_sensitive": true
     },
     {
+      "identity": "basalt-human-in-the-loop",
+      "file": "0074-human-in-the-loop.patch",
+      "content_sha256": "7105b303268c20b085974ee546a4fd68e0c875ef638b448e028efd76587e6e4f",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
+    },
+    {
       "identity": "basalt-app-window",
       "file": "0075-app-window.patch",
       "content_sha256": "b443f82581c27144cab0c8e19521256b5187ae2593cd750c540d6070675165ec",

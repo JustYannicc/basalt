@@ -185,6 +185,45 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  human-in-the-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify workflow requests and scheduled approvals in the human-in-the-loop tab
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "^Approvals answers free text|^Approvals renders custom|^hosted schedule controls enable|^Before a route"
+          --workers 1
+      - name: Verify local navigation, custom displays and scheduled approvals
+        working-directory: .upstream
+        run: >-
+          bun run e2e:local --test-name
+          "^local Approvals renders|^browser schedule controls enable"
+          --workers 1
+      - name: Verify the human-in-the-loop route while Cloud code and data load
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name "^Before a route" --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: human-in-the-loop-e2e
+          path: .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   contributed-accounts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
