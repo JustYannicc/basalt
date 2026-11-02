@@ -1,0 +1,250 @@
+diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+--- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
++++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+@@ -3,10 +3,16 @@
+   AccountAcquisitionUnavailable,
+   identifyProvider,
+   type AccountAcquisitionContext,
++  type AccountAcquisitionAccountContext,
+   type AccountAcquisitionRegistration,
+ } from "@executor-js/sdk/core";
+ import { providerDeclaration } from "apps/host";
+-import { InteractiveStart, InteractiveStatus } from "apps/contracts";
++import {
++  AccountCheckResult,
++  InteractiveStart,
++  InteractiveStatus,
++  ProviderError,
++} from "apps/contracts";
+ import { Crypto, Effect, Option, Redacted, Schema } from "effect";
+ import { providers } from "./pool-provider-definitions.ts";
+ import { providerCapabilities } from "./pool-provider-capabilities.ts";
+@@ -91,6 +97,20 @@
+           else await mirror.remove(context);
+         },
+         ...(oauth ? {} : { mirror: mirror.mirror }),
++        ...(oauth
++          ? {
++              check: async (context: AccountAcquisitionAccountContext) => {
++                const answer = await send(context, "check", {
++                  reference: Redacted.value(context.reference),
++                });
++                const failure = Schema.Struct({ failure: ProviderError.fields.reason });
++                if (Schema.is(failure)(answer)) throw new ProviderError({ reason: answer.failure });
++                return Schema.decodeUnknownSync(Schema.Struct({ result: AccountCheckResult }))(
++                  answer,
++                ).result;
++              },
++            }
++          : {}),
+       });
+       // The previous label-sensitive identity can still name an account deployed by an older app.
+       for (const provider of new Set([identified.identity, identified.legacy]))
+diff --git a/e2e/support/subscription-health-backend.ts b/e2e/support/subscription-health-backend.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/subscription-health-backend.ts
+@@ -0,0 +1,83 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++/** A signed external credential custodian for the production subscription registration. */
++export const subscriptionHealthBackend = Effect.gen(function* () {
++  const calls = yield* Ref.make<readonly string[]>([]);
++  const answer = yield* Ref.make<Schema.Json>({
++    result: { accountInfo: { displayName: "Synthetic subscriber" } },
++  });
++  const route = HttpRouter.add(
++    "POST",
++    "/pool/v1/account-acquisitions",
++    Effect.gen(function* () {
++      const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++        Schema.Struct({ envelope: Schema.String }),
++      );
++      const [prefix, payload, signature, extra] = envelope.split(".");
++      if (
++        prefix !== "sbaa1" ||
++        payload === undefined ||
++        signature === undefined ||
++        extra !== undefined
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++        .update(`${prefix}.${payload}`)
++        .digest();
++      const actual = Buffer.from(signature, "base64url");
++      if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++        return HttpServerResponse.empty({ status: 401 });
++      const input = yield* Schema.decodeUnknownEffect(
++        Schema.Struct({
++          action: Schema.String,
++          provider: Schema.String,
++          owner: Schema.String,
++          operation: Schema.String,
++          at: Schema.Number,
++          expiresAt: Schema.Number,
++          reference: Schema.optionalKey(Schema.String),
++        }),
++      )(JSON.parse(Buffer.from(payload, "base64url").toString())).pipe(Effect.orDie);
++      if (
++        input.provider !== "codex" ||
++        input.at > Date.now() ||
++        input.expiresAt <= Date.now() ||
++        input.expiresAt > input.at + 30_000
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      if (input.action === "start")
++        return HttpServerResponse.jsonUnsafe({
++          session: "synthetic-subscription-session",
++          url: "https://provider.example.test/device",
++          expiresAt: Date.now() + 60_000,
++        });
++      if (input.action === "status")
++        return HttpServerResponse.jsonUnsafe({
++          state: "connected",
++          ref: "opaque-subscription-reference",
++        });
++      if (input.action === "remove" || input.action === "cancel")
++        return HttpServerResponse.jsonUnsafe(null);
++      if (input.action !== "check" || input.reference !== "opaque-subscription-reference")
++        return HttpServerResponse.empty({ status: 400 });
++      yield* Ref.update(calls, (values) => [...values, input.owner]);
++      return HttpServerResponse.jsonUnsafe(yield* Ref.get(answer));
++    }),
++  );
++  const context = yield* Layer.build(
++    HttpRouter.serve(route, { disableLogger: true, disableListenLog: true }).pipe(
++      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++    ),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++  if (!("port" in server.address)) return yield* Effect.die("Expected subscription fixture port");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    calls: Ref.get(calls),
++    answer: (value: Schema.Json) => Ref.set(answer, value),
++  };
++});
+diff --git a/e2e/tests/native-subscription-health.spec.ts b/e2e/tests/native-subscription-health.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/native-subscription-health.spec.ts
+@@ -0,0 +1,95 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { serverControl } from "../support/server-control.ts";
++import { subscriptionHealthBackend } from "../support/subscription-health-backend.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import { defineApp, defineProvider, interactive, object, secrets, string } from "apps";
++const openai = defineProvider({ name: "OpenAI", hosts: ["api.openai.com", "chatgpt.com"], auth: {
++  codex: interactive({ label: "ChatGPT subscription", acquisition: "host" }),
++  apiKey: secrets({ label: "OpenAI API key", fields: object({ token: string({ minLength: 1 }) }) }),
++} });
++export default defineApp({ user: { accounts: { openai: openai.many() } } }, {});`;
++
++layer(RuntimeLive, { excludeTestServices: true })("Native subscription health", (it) => {
++  it.effect(scenarios.nativeSubscriptionHealth.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          backend = yield* subscriptionHealthBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        let account: string | undefined;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Subscription health fixture",
++          files: [{ path: "index.ts", content: source }, appsManifest],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(Resource, deployed);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
++            if (account !== undefined)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* providerAccountProduct(backend.origin);
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app.id}/accounts/user/openai/connections`,
++          {},
++        );
++        expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++        const connection = yield* body(Resource, pending);
++        const path = `${prefix}/connections/${connection.id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${path}/start`, { method: "codex" })).status,
++        ).toBe(200);
++        const saved = yield* api.request(actors.owner, "GET", `${path}/status`);
++        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++        account = (yield* body(Schema.Struct({ account: Resource }), saved)).account.id;
++        const accountPath = `${prefix}/accounts/${account}`;
++        const check = () => api.request(actors.owner, "POST", `${accountPath}/health`);
++        const healthy = yield* check();
++        expect(healthy.status, JSON.stringify(healthy.body)).toBe(200);
++        expect(healthy.body).toMatchObject({
++          driver: { checkable: true, check: { status: "healthy", current: true } },
++          info: { displayName: "Synthetic subscriber" },
++        });
++        for (const [reason, status] of [
++          ["unauthorized", "credentials_rejected"],
++          ["rate_limited", "upstream_unavailable"],
++          ["unavailable", "upstream_unavailable"],
++        ] as const) {
++          yield* backend.answer({ failure: reason });
++          const result = yield* check();
++          expect(result.status, JSON.stringify(result.body)).toBe(200);
++          expect(result.body).toMatchObject({ driver: { check: { status, current: true } } });
++          expect(JSON.stringify(result.body)).not.toContain("opaque-subscription-reference");
++        }
++        const calls = (yield* backend.calls).length;
++        expect((yield* api.request(actors.member, "POST", `${accountPath}/health`)).status).toBe(
++          403,
++        );
++        expect((yield* backend.calls).length).toBe(calls);
++        yield* backend.answer({ result: {} });
++        expect((yield* check()).body).toMatchObject({ driver: { check: { status: "healthy" } } });
++        yield* serverControl("restart");
++        const retained = yield* api.request(actors.owner, "GET", accountPath);
++        expect(retained.body).toMatchObject({
++          health: { driver: { check: { status: "healthy", current: true } } },
++        });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8156,6 +8156,16 @@
+       cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
+     },
+   },
++  nativeSubscriptionHealth: {
++    fixtures: "actors",
++    file: "native-subscription-health.spec.ts",
++    title: "native subscriptions check current credentials through the production registration",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted production provider registrations and authorization."),
++      cloud: na("Uses a process-owned registration and loopback credential custodian."),
++    },
++  },
+   accountCreateBeforeLink: {
+     fixtures: "actors",
+     file: "account-create-before-link.spec.ts",
