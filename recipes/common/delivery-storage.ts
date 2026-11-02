@@ -61,7 +61,7 @@ export const beginDelivery = mutation(
       expectedRevision: string(),
     }),
   },
-  async (ctx: Writer, input) => {
+  async (ctx: Writer, input): Promise<boolean | "configuration-changed"> => {
     const revision = await configurationRevision();
     let submission: boolean | "configuration-changed" = false;
     write(ctx, input.key, (current, tx) => {
