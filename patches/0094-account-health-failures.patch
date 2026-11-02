@@ -1,0 +1,526 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8246,6 +8246,26 @@
+       cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
+     },
+   },
++  accountHealthFailures: {
++    fixtures: "actors",
++    file: "account-health-failures.spec.ts",
++    title: "account health retains bounded failure phases and tags in results and telemetry",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises hosted saved accounts through public HTTP."),
++      cloud: scheduled,
++    },
++  },
++  driverHealthFailures: {
++    fixtures: "actors",
++    file: "account-health-failures.spec.ts",
++    title: "driver health retains bounded failure records and clears them after recovery",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted accounts and operator-owned acquisition registration."),
++      cloud: na("Uses process-owned acquisition registration."),
++    },
++  },
+   accountDirectoryHealth: {
+     fixtures: "actors",
+     file: "account-directory-health.spec.ts",
+diff --git a/e2e/tests/account-health-failures.spec.ts b/e2e/tests/account-health-failures.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/account-health-failures.spec.ts
+@@ -0,0 +1,196 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Resource } from "../support/contracts.ts";
++import { HostedLive, withHostedHttpCase } from "../support/case.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Failure = Schema.Struct({ phase: Schema.String, tag: Schema.String });
++const Check = Schema.Struct({
++  status: Schema.String,
++  current: Schema.Boolean,
++  failure: Schema.optionalKey(Failure),
++});
++const Health = Schema.Struct({
++  apps: Schema.Array(Schema.Struct({ check: Schema.NullOr(Check) })),
++});
++
++const files = (health: string, prelude = "") => [
++  {
++    path: "index.ts",
++    content: `import { defineApp, defineProvider, ProviderError, secrets, object, string } from "apps";
++${prelude}
++const service = defineProvider({name: "Failure record fixture", auth: {
++  key: secrets({label: "Key", fields: object({token: string()})})
++}, async health({account}) { ${health} }});
++export default defineApp({app: {accounts: {service}}}, {});`,
++  },
++  appsManifest,
++];
++
++layer(HostedLive, { excludeTestServices: true })("Account health failure records", (it) => {
++  it.effect(scenarios.accountHealthFailures.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          telemetry = yield* Telemetry,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const app = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: "Health failure records",
++            files: files("return {};"),
++          }),
++        );
++        let account: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
++            if (account !== undefined)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        const appPath = `${prefix}/apps/${app.id}`;
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${appPath}/accounts/app/service/connections`,
++            {},
++          ),
++        );
++        account = (yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/submit`,
++            {
++              method: "key",
++              label: "Failure account",
++              fields: { token: "synthetic-health-secret" },
++            },
++          ),
++        )).id;
++        const path = `${prefix}/accounts/${account}`;
++        const check = () =>
++          api
++            .request(actors.owner, "POST", `${path}/health`)
++            .pipe(Effect.flatMap((r) => body(Health, r)));
++        const deploy = (health: string, prelude = "") =>
++          api
++            .request(actors.owner, "POST", `${appPath}/deploy`, {
++              files: files(health, prelude),
++            })
++            .pipe(Effect.map((r) => expect(r.status, JSON.stringify(r.body)).toBe(200)));
++        expect((yield* check()).apps[0]?.check?.failure).toBeUndefined();
++        const cases = [
++          {
++            health:
++              'const error = new Error(account.fields.token); error.name = "untrusted-health-tag"; throw error;',
++            expected: { phase: "app-threw", tag: "HostOperationFailed" },
++          },
++          {
++            health:
++              'throw new ProviderError({reason:"forbidden",status:200,upstream:{code:"missing_scope"}});',
++            expected: { phase: "vendor", tag: "ProviderError" },
++          },
++          {
++            health: 'return JSON.parse(\'{"accountInfo":{"displayName":[]}}\');',
++            expected: { phase: "decode", tag: "HostOutputInvalid" },
++          },
++          {
++            health: 'return {accountInfo:{displayName:"health-reply-unanswered"}};',
++            prelude: `const answer = Response.json;
++Response.json = function(data, init) {
++  if (JSON.stringify(data).includes("health-reply-unanswered")) throw new Error("untrusted-runtime-text");
++  return answer.call(this, data, init);
++};`,
++            expected: { phase: "invoke", tag: "HostDeclarationInvalid" },
++          },
++          {
++            health: "await new Promise(() => {});",
++            expected: { phase: "timeout", tag: "WorkflowFailure" },
++          },
++        ];
++        for (const test of cases) {
++          yield* deploy(test.health, test.prelude);
++          const failed = yield* check();
++          expect(failed.apps[0]?.check).toMatchObject({ failure: test.expected, current: true });
++          expect(JSON.stringify(failed)).not.toContain("synthetic-health-secret");
++          const retained = yield* body(
++            Schema.Struct({ health: Health }),
++            yield* api.request(actors.owner, "GET", path),
++          );
++          expect(retained.health.apps[0]?.check?.failure).toEqual(test.expected);
++          const delivered = yield* telemetry
++            .spans("sdk.accounts.checkApp", {
++              "executor.account.id": account,
++              "executor.account.check.failure.phase": test.expected.phase,
++              "executor.account.check.failure.tag": test.expected.tag,
++            })
++            .pipe(
++              Effect.flatMap((spans) =>
++                spans.length > 0
++                  ? Effect.succeed(spans)
++                  : Effect.fail("Health failure span has not arrived"),
++              ),
++              Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++            );
++          expect(JSON.stringify(delivered)).not.toContain("untrusted-health-tag");
++          expect(JSON.stringify(delivered)).not.toContain("untrusted-runtime-text");
++          expect(JSON.stringify(delivered)).not.toContain("synthetic-health-secret");
++          yield* evidence.json(`health-failure-${test.expected.phase}.json`, {
++            failure: test.expected,
++            delivered,
++          });
++        }
++        yield* deploy("return {};");
++        expect((yield* check()).apps[0]?.check).toMatchObject({ status: "healthy", current: true });
++        const recovered = yield* body(
++          Schema.Struct({ health: Health }),
++          yield* api.request(actors.owner, "GET", path),
++        );
++        expect(recovered.health.apps[0]?.check?.failure).toBeUndefined();
++      }),
++    ),
++  );
++
++  it.effect(scenarios.driverHealthFailures.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const { account } = yield* f.create(f.actors.owner);
++        const path = `${f.prefix}/accounts/${account}`;
++        const DriverHealth = Schema.Struct({ driver: Schema.Struct({ check: Check }) });
++        const check = () =>
++          f.api
++            .request(f.actors.owner, "POST", `${path}/health`)
++            .pipe(Effect.flatMap((r) => body(DriverHealth, r)));
++        yield* f.backend.driverHealth({}, 503);
++        const failed = yield* check();
++        expect(failed.driver.check.failure).toEqual({
++          phase: "app-threw",
++          tag: "HostOperationFailed",
++        });
++        const retained = yield* body(
++          Schema.Struct({ health: DriverHealth }),
++          yield* f.api.request(f.actors.owner, "GET", path),
++        );
++        expect(retained.health.driver.check.failure).toEqual(failed.driver.check.failure);
++        expect(JSON.stringify(retained)).not.toContain("opaque-");
++        yield* f.backend.driverHealth({});
++        expect((yield* check()).driver.check.failure).toBeUndefined();
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/account-check-failure.ts b/packages/sdk/src/contracts/account-check-failure.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/contracts/account-check-failure.ts
+@@ -0,0 +1,26 @@
++import { Schema } from "effect";
++
++/** Closed host diagnostics; app text and vendor responses never enter this record. */
++export const AccountCheckFailure = Schema.Struct({
++  phase: Schema.Literals(["invoke", "app-threw", "timeout", "decode", "vendor"]),
++  tag: Schema.Literals([
++    "RuntimeBuildUnavailable",
++    "RuntimeProtocolFailed",
++    "RuntimeProtocolUnsupported",
++    "HostRequestInvalid",
++    "HostDeclarationInvalid",
++    "HostAccountsInvalid",
++    "HostOperationNotFound",
++    "HostOperationFailed",
++    "HostOutputInvalid",
++    "WorkflowFailure",
++    "ProviderError",
++    "OAuthReconnectRequired",
++    "OAuthRenewalFailed",
++    "AccountAcquisitionUnavailable",
++    "TimeoutError",
++    "SchemaError",
++    "Unknown",
++  ]),
++});
++export type AccountCheckFailure = typeof AccountCheckFailure.Type;
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -1,3 +1,5 @@
++import { AccountCheckFailure } from "./account-check-failure.ts";
++export { AccountCheckFailure } from "./account-check-failure.ts";
+ import { AccountAcquisitionUnavailable } from "./account-acquisition-driver.ts";
+ import { AccountObservationView, AccountObservationInput } from "./account-observation.ts";
+ import { ProviderError } from "apps/contracts";
+@@ -68,6 +70,7 @@
+     Schema.Struct({
+       status: AccountCheckStatus,
+       reason: Schema.optionalKey(ProviderError.fields.reason),
++      failure: Schema.optionalKey(AccountCheckFailure),
+       checkedAt: Schema.Date,
+       /** Public display data from this check only; outdated results remain marked outdated. */
+       displayStatus: Schema.optionalKey(AccountStatus),
+@@ -97,6 +100,7 @@
+     Schema.Struct({
+       status: AccountCheckStatus,
+       reason: Schema.optionalKey(ProviderError.fields.reason),
++      failure: Schema.optionalKey(AccountCheckFailure),
+       checkedAt: Schema.Date,
+       current: Schema.Boolean,
+       message: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
+@@ -157,6 +161,7 @@
+ /** A check of credentials before they are saved; nothing is recorded. */
+ export const CredentialCheck = Schema.Struct({
+   status: AccountCheckStatus,
++  failure: Schema.optionalKey(AccountCheckFailure),
+   info: Schema.NullOr(AccountInfo),
+   /**
+    * The message of an error the app's check threw, bounded and with the checked credentials
+diff --git a/packages/sdk/src/implementation/account-check-failure.ts b/packages/sdk/src/implementation/account-check-failure.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-check-failure.ts
+@@ -0,0 +1,57 @@
++import { Cause, Effect, Option, Schema } from "effect";
++import { AccountCheckFailure } from "../contracts/account-check-failure.ts";
++import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
++
++const TaggedFailure = Schema.Struct({ _tag: AccountCheckFailure.fields.tag });
++
++/** Only a deadline failure, rather than any late failure, is classified as a timeout. */
++export const accountCheckFailure = (error: unknown, late = false): AccountCheckFailure => {
++  if (Cause.isTimeoutError(error)) return { phase: "timeout", tag: "TimeoutError" };
++  const parsed = Schema.decodeUnknownOption(TaggedFailure)(error);
++  const tag = Option.isSome(parsed) ? parsed.value._tag : "Unknown";
++  switch (tag) {
++    case "RuntimeProtocolFailed":
++      return {
++        phase: Schema.is(RuntimeProtocolFailed)(error)
++          ? error.reason === "timeout"
++            ? "timeout"
++            : error.reason === "invalid-reply"
++              ? "decode"
++              : "invoke"
++          : "invoke",
++        tag,
++      };
++    case "WorkflowFailure":
++      // The app host's shared deadline guard returns this tag after the check's deadline.
++      return { phase: late ? "timeout" : "invoke", tag };
++    case "HostOutputInvalid":
++    case "SchemaError":
++      return { phase: "decode", tag };
++    case "HostOperationFailed":
++      return { phase: "app-threw", tag };
++    case "ProviderError":
++    case "OAuthReconnectRequired":
++    case "OAuthRenewalFailed":
++      return { phase: "vendor", tag };
++    case "TimeoutError":
++      return { phase: "timeout", tag };
++    default:
++      return { phase: "invoke", tag };
++  }
++};
++
++/** Console logs and exported spans carry the same two bounded values as stored health. */
++export const recordAccountCheckFailure = (failure: AccountCheckFailure) =>
++  Effect.annotateCurrentSpan({
++    "executor.account.check.failure.phase": failure.phase,
++    "executor.account.check.failure.tag": failure.tag,
++  }).pipe(
++    Effect.andThen(
++      Effect.logWarning("Account health check failed").pipe(
++        Effect.annotateLogs({
++          "executor.account.check.failure.phase": failure.phase,
++          "executor.account.check.failure.tag": failure.tag,
++        }),
++      ),
++    ),
++  );
+diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
+--- a/packages/sdk/src/implementation/account-check-record.ts
++++ b/packages/sdk/src/implementation/account-check-record.ts
+@@ -1,9 +1,19 @@
++import { AccountCheckFailure } from "../contracts/account-check-failure.ts";
+ /** Display data shares the existing health JSON; older servers decode its identity fields only. */
+ import { Effect, Option, Schema } from "effect";
+ import { AccountInfo, AccountStatus } from "apps/contracts";
+ import { StorageError } from "../contracts/shared.ts";
+
+-const Record = Schema.Struct({ displayStatus: Schema.optionalKey(AccountStatus) });
++const Record = Schema.Struct({
++  displayStatus: Schema.optionalKey(AccountStatus),
++  checkFailure: Schema.optionalKey(AccountCheckFailure),
++});
++
++export const recordedCheckFailure = (info: unknown) =>
++  Schema.decodeUnknownOption(Record)(info).pipe(
++    Option.flatMap((record) => Option.fromNullishOr(record.checkFailure)),
++    Option.getOrUndefined,
++  );
+ export const recordedDisplayStatus = (info: unknown) =>
+   Schema.decodeUnknownOption(Record)(info).pipe(
+     Option.flatMap((record) => Option.fromNullishOr(record.displayStatus)),
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -1,3 +1,4 @@
++import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
+ import { Clock, Effect, Option, Result, Schema } from "effect";
+ import { AccountInfo, AccountCheckResult, HostOutputInvalid, ProviderError } from "apps/contracts";
+ import { AccountAcquisitionUnavailable } from "../contracts/account-acquisition-driver.ts";
+@@ -9,7 +10,7 @@
+ import type { StoredAccount } from "../contracts/storage.ts";
+ import { StorageError } from "../contracts/shared.ts";
+ import { query, transaction, type Query } from "./database.ts";
+-import { accountCheckRecord } from "./account-check-record.ts";
++import { accountCheckRecord, recordedCheckFailure } from "./account-check-record.ts";
+ import {
+   driverSourceCurrent,
+   retainedDriverBinding,
+@@ -62,6 +63,7 @@
+         saved.bindingRevision === binding.revision;
+       const info =
+         saved === undefined ? Option.none() : Schema.decodeUnknownOption(AccountInfo)(saved.info);
++      const failure = saved === undefined ? undefined : recordedCheckFailure(saved.info);
+       return {
+         driver: {
+           source: {
+@@ -78,6 +80,7 @@
+                   checkedAt: saved.checkedAt,
+                   current,
+                   ...(saved.reason === null ? {} : { reason: saved.reason }),
++                  ...(failure === undefined ? {} : { failure }),
+                   ...(saved.message === null ? {} : { message: saved.message }),
+                 },
+         } satisfies AccountDriverHealth,
+@@ -148,6 +151,10 @@
+       if (Result.isFailure(outcome) && Schema.is(AccountAcquisitionUnavailable)(outcome.failure))
+         return yield* outcome.failure;
+       const late = (yield* Clock.currentTimeMillis) >= startedAt + 14_000;
++      const detail = Result.isFailure(outcome)
++        ? accountCheckFailure(outcome.failure, late)
++        : undefined;
++      if (detail !== undefined) yield* recordAccountCheckFailure(detail);
+       yield* transaction(db, () =>
+         Effect.gen(function* () {
+           if (!(yield* driverSourceCurrent(source, account))) return;
+@@ -181,6 +188,7 @@
+                 : null,
+             checkedAt,
+             ...identity,
++            info: detail === undefined ? identity.info : { ...identity.info, checkFailure: detail },
+             message: Result.isSuccess(outcome)
+               ? null
+               : (failure.message(outcome.failure, late)?.slice(0, 500) ?? null),
+@@ -197,7 +205,11 @@
+             yield* recordObservation({ account, source, result: success, startedAt });
+         }),
+       );
+-    });
++    }).pipe(
++      Effect.withSpan("sdk.accounts.checkDriver", {
++        attributes: { "executor.account.id": account.id },
++      }),
++    );
+   return { report, list, check };
+ };
+
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -1,3 +1,4 @@
++import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
+ import type { AccountDriverResolver } from "./account-driver-source.ts";
+ import { makeDriverAccountHealth, withDriverHealth } from "./account-driver-health.ts";
+ import { privateAccountCheck } from "./account-status-output.ts";
+@@ -32,7 +33,11 @@
+ import { storedAccount } from "./accounts.ts";
+ import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
+ import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
+-import { accountCheckRecord, recordedDisplayStatus } from "./account-check-record.ts";
++import {
++  accountCheckRecord,
++  recordedCheckFailure,
++  recordedDisplayStatus,
++} from "./account-check-record.ts";
+ import { checkInteractiveAccount } from "./interactive-check.ts";
+ import { query, type Query } from "./database.ts";
+ import type { makeOAuth } from "./oauth.ts";
+@@ -188,6 +193,7 @@
+           Effect.gen(function* () {
+             const row = rows.find((item) => item.app === app.id);
+             const displayStatus = row === undefined ? undefined : recordedDisplayStatus(row.info);
++            const failure = row === undefined ? undefined : recordedCheckFailure(row.info);
+             const check =
+               row === undefined
+                 ? null
+@@ -197,6 +203,7 @@
+                     ),
+                     checkedAt: row.checkedAt,
+                     ...(displayStatus === undefined ? {} : { displayStatus }),
++                    ...(failure === undefined ? {} : { failure }),
+                     ...(row.info !== null &&
+                     typeof row.info === "object" &&
+                     "checkReason" in row.info &&
+@@ -367,6 +374,10 @@
+         return yield* Effect.fail(outcome.failure);
+       if (Result.isSuccess(outcome) && outcome.success === undefined) return;
+       const status = Result.isSuccess(outcome) ? "healthy" : statusOf(outcome.failure);
++      const failure = Result.isFailure(outcome)
++        ? accountCheckFailure(outcome.failure, late)
++        : undefined;
++      if (failure !== undefined) yield* recordAccountCheckFailure(failure);
+       const existing = yield* query(() =>
+         db.findFirst("accountChecks", {
+           where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
+@@ -388,9 +399,15 @@
+         checkedAt,
+         ...record,
+         info:
+-          Result.isFailure(outcome) && Schema.is(ProviderError)(outcome.failure)
+-            ? { ...record.info, checkReason: outcome.failure.reason }
+-            : record.info,
++          failure === undefined
++            ? record.info
++            : {
++                ...record.info,
++                checkFailure: failure,
++                ...(Result.isFailure(outcome) && Schema.is(ProviderError)(outcome.failure)
++                  ? { checkReason: outcome.failure.reason }
++                  : {}),
++              },
+         message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
+       };
+       yield* query(() =>
+@@ -477,9 +494,12 @@
+         return yield* Effect.fail(outcome.failure);
+       if (Result.isSuccess(outcome))
+         return { status: "healthy" as const, info: outcome.success.accountInfo ?? null };
++      const failure = accountCheckFailure(outcome.failure, late);
++      yield* recordAccountCheckFailure(failure);
+       const message = messageOf(outcome.failure, late);
+       return {
+         status: statusOf(outcome.failure),
++        failure,
+         info: null,
+         ...(message === undefined ? {} : { message }),
+       };

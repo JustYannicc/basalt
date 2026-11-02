@@ -35,6 +35,10 @@ export async function startSlackHealthFixture(getAnswer, calls) {
       user: url.searchParams.get("user"),
     });
     response.setHeader("content-type", "application/json");
+    if (answer.kind === "profile-body" && url.pathname.endsWith("users.profile.get")) {
+      response.end(JSON.stringify(answer.body));
+      return;
+    }
     if (
       (answer.kind === "auth-error" && url.pathname.endsWith("auth.test")) ||
       (answer.kind === "profile-error" && url.pathname.endsWith("users.profile.get"))

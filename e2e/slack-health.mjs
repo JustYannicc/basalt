@@ -172,11 +172,28 @@ const program = Effect.gen(function* () {
   }
   for (const [error, expected, http] of [
     ["invalid_auth", "credentials_rejected", 200],
+    ["missing_scope", "forbidden", 200],
     ["missing_scope", "forbidden", 403],
+    ["not_allowed_token_type", "forbidden", 200],
+    ["unknown_fixture_failure", "check_failed", 200],
     ["ratelimited", "upstream_unavailable", 429],
   ]) {
     answer = { kind: "profile-error", error, status: http };
-    record(`profile ${error}`, status(yield* check(ids[0])), expected);
+    const health = yield* check(ids[0]);
+    record(`profile ${error} HTTP ${http}`, status(health), expected);
+    record(`profile failure ${error} HTTP ${http}`,
+      health.apps.find((a) => a.app === app.id)?.check?.failure,
+      error === "unknown_fixture_failure"
+        ? { phase: "app-threw", tag: "HostOperationFailed" }
+        : { phase: "vendor", tag: "ProviderError" });
+  }
+  for (const [name, body] of [
+    ["missing profile", { ok: true }],
+    ["null profile", { ok: true, profile: null }],
+    ["malformed profile fields", { ok: true, profile: { display_name: { bad: true }, real_name: 7, email: [], image_192: "javascript:invalid" } }],
+  ]) {
+    answer = { kind: "profile-body", body };
+    record(name, status(yield* check(ids[0])), "healthy");
   }
   answer = { kind: "optional" };
   const optional = yield* check(ids[0]);

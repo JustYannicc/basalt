@@ -762,6 +762,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": true
+    },
+    {
+      "identity": "basalt-account-health-failures",
+      "file": "0094-account-health-failures.patch",
+      "content_sha256": "1a74ef2131bcf107d41a2b8bc9ae233ff033dd115d325397952bba4672a54b03",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
