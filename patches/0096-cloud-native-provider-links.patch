@@ -1,0 +1,253 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -197,5 +197,5 @@
+       Effect.withSpan("runtime.cloud.executor.initialize"),
+     ),
+   );
+-  return { executor, database };
++  return { executor, database, acquisition };
+ });
+diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+--- a/apps/hosted/cloud/src/infrastructure/product-services.ts
++++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
+@@ -17,7 +17,7 @@
+ } from "@executor-js/hosted-server/pool-access-provenance";
+ import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
+ import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
+-import { BlobStore } from "@executor-js/sdk/core";
++import { AccountAcquisitionConfiguration, BlobStore } from "@executor-js/sdk/core";
+ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+ import { RuntimeContext } from "alchemy";
+ import type * as Cloudflare from "alchemy/Cloudflare";
+@@ -42,7 +42,7 @@
+ ) {
+   const origin = yield* cloudOrigin.pipe(Effect.orDie);
+   const blobs = yield* cloudBlobs;
+-  const { executor, database } = yield* cloudExecutor(databases, sources);
++  const { executor, database, acquisition } = yield* cloudExecutor(databases, sources);
+   const assets = yield* makeExecutionMemo(
+     cachedBuildAssets(
+       origin,
+@@ -69,6 +69,7 @@
+   const wire = yield* cloudOAuthWire;
+   const services = Layer.mergeAll(
+     wire,
++    Layer.succeed(AccountAcquisitionConfiguration, acquisition),
+     Layer.succeed(AccessLifecycle, accessLifecycle),
+     Layer.succeed(
+       PoolUsageBackend,
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -285,6 +285,10 @@
+     { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
+   >
+ > = {
++  nativeProviderCloudLinks: {
++    targets: ["cloud"],
++    reason: "The Basalt production-ops job supplies an isolated native acquisition signing key.",
++  },
+   cloudProductionOps: {
+     targets: ["cloud"],
+     reason:
+diff --git a/e2e/support/native-provider-link-fixture.ts b/e2e/support/native-provider-link-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/native-provider-link-fixture.ts
+@@ -0,0 +1,125 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { appsManifest } from "./apps-release.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import { Resource } from "./contracts.ts";
++import { providerAppsCatalog } from "./provider-apps-catalog.ts";
++
++const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++const Provider = Schema.Array(Schema.Struct({ provider: Schema.String }));
++
++/** Seed a pre-existing native account from a public sign-in's encrypted reference in disposable SQL. */
++export const nativeProviderLinkFixture = Effect.gen(function* () {
++  const api = yield* Api,
++    actors = yield* Actors,
++    database = yield* cloudLocks,
++    catalog = yield* providerAppsCatalog;
++  const prefix = `/api/organizations/${actors.organization.id}`;
++  const apps: string[] = [];
++  let account: string | undefined;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      // The disposable Cloud has no outer pool Worker. Remove only its exact synthetic pool rows.
++      yield* database.run({
++        sql: "delete from executor_apps app using organization o, lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry where o.id = $1 and app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id",
++        params: [actors.organization.id],
++      });
++      if (account !== undefined) {
++        for (const [table, column] of [
++          ["hosted_app_account_links", "account"],
++          ["executor_webhook_sources", "account"],
++          ["executor_account_acquisitions", "account"],
++          ["hosted_account_access", "account_id"],
++        ])
++          yield* database.run({
++            sql: `delete from ${table} where ${column} = $1`,
++            params: [account],
++          });
++        yield* database.run({
++          sql: "delete from executor_account_connections where state -> 'account' ->> 'id' = $1",
++          params: [account],
++        });
++        yield* database.run({
++          sql: "delete from executor_accounts where id = $1",
++          params: [account],
++        });
++      }
++      for (const app of apps) {
++        const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++      }
++    }).pipe(Effect.orDie),
++  );
++  const deploy = (name: string, files: readonly { path: string; content: string }[]) =>
++    Effect.gen(function* () {
++      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name,
++        files,
++      });
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      const app = (yield* body(Resource, response)).id;
++      apps.push(app);
++      return app;
++    });
++  const source = yield* deploy("Existing native account source", [
++    appsManifest,
++    {
++      path: "index.ts",
++      content: `import { defineApp, defineProvider, interactive } from "apps";
++const legacy = defineProvider({ name: "Subscription", auth: { codex: interactive({ label: "ChatGPT" }) } });
++export default defineApp({ app: { accounts: { legacy: legacy.many() } } }, {
++  connect: { legacy: {
++    start: async () => ({ session: "synthetic-native-link" }),
++    status: async () => ({ state: "connected", ref: "synthetic-native-link-reference" }),
++    cancel: async () => {}, remove: async () => {}
++  } }
++});`,
++    },
++  ]);
++  const pending = yield* body(
++    Resource,
++    yield* api.request(
++      actors.owner,
++      "POST",
++      `${prefix}/apps/${source}/accounts/app/legacy/connections`,
++      { destination: { kind: "personal" } },
++    ),
++  );
++  const path = `${prefix}/connections/${pending.id}/interactive`;
++  expect(
++    (yield* api.request(actors.owner, "POST", `${path}/start`, { method: "codex" })).status,
++  ).toBe(200);
++  const saved = yield* api.request(actors.owner, "GET", `${path}/status`);
++  expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++  account = (yield* body(Connected, saved)).account.id;
++  const target = yield* deploy("Native OpenAI provider", catalog.sources.get("openai")!.files);
++  const providers = yield* database
++    .run({
++      sql: "select d.requirements -> 'accounts' -> 'openai' ->> 'provider' as provider from executor_deployments d join executor_apps a on a.active_deployment = d.id where a.id = $1",
++      params: [target],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Provider)));
++  const provider = providers[0]!.provider;
++  yield* database.run({
++    sql: "update executor_apps set copied_from = $2::json where id = $1",
++    params: [
++      target,
++      JSON.stringify({
++        reference: "https://catalog.example.test/provider-openai",
++        name: "provider-openai",
++        commit: null,
++      }),
++    ],
++  });
++  yield* database.run({
++    sql: "update executor_accounts set provider = $2 where id = $1",
++    params: [account, provider],
++  });
++  yield* database.run({
++    sql: "insert into executor_account_acquisitions (account,owner,provider,method,driver,driver_revision,generation,revision,removal,mirror_reference,mirror_ready,mirror_operation) select id,owner,provider,method,'basalt-home','oauth-v1',credential_generation,'native-link-fixture',null,null,true,null from executor_accounts where id = $1",
++    params: [account],
++  });
++  return { api, actors, prefix, target, account };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2293,6 +2293,17 @@
+       local: na("Local runs its background jobs in its own server process."),
+     },
+   },
++  nativeProviderCloudLinks: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "native-provider-cloud-links.spec.ts",
++    title: "Cloud native provider accounts link through the hosted API",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Provider app reuse is covered by the self-host provider app scenario."),
++      local: na("The hosted API is not available on the local target."),
++    },
++  },
+   cloudProductionOps: {
+     fixtures: "actors",
+     deferOnboarding: true,
+diff --git a/e2e/tests/native-provider-cloud-links.spec.ts b/e2e/tests/native-provider-cloud-links.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/native-provider-cloud-links.spec.ts
+@@ -0,0 +1,44 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { nativeProviderLinkFixture } from "../support/native-provider-link-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Methods = Schema.Struct({
++  unavailable: Schema.Array(Schema.Struct({ requirement: Schema.String, method: Schema.String })),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Cloud native provider links", (it) => {
++  it.effect(scenarios.nativeProviderCloudLinks.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* nativeProviderLinkFixture;
++        const path = `${p.prefix}/apps/${p.target}`;
++        const linked = yield* p.api.request(
++          p.actors.owner,
++          "PUT",
++          `${path}/accounts/app/openai/${p.account}`,
++        );
++        expect(linked.status, JSON.stringify(linked.body)).toBe(200);
++        const methods = yield* body(
++          Methods,
++          yield* p.api.request(p.actors.owner, "GET", `${path}/accounts/methods`),
++        );
++        expect(methods.unavailable).not.toContainEqual(
++          expect.objectContaining({ requirement: "openai", method: "codex" }),
++        );
++        const links = yield* p.api.request(p.actors.owner, "GET", `${path}/accounts/app`);
++        expect(links.status, JSON.stringify(links.body)).toBe(200);
++        expect(JSON.stringify(links.body)).toContain(p.account);
++        const removed = yield* p.api.request(
++          p.actors.owner,
++          "DELETE",
++          `${path}/accounts/app/openai/${p.account}`,
++        );
++        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++      }),
++    ),
++  );
++});

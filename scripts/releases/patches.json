@@ -789,6 +789,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": true
+    },
+    {
+      "identity": "basalt-cloud-native-provider-links",
+      "file": "0096-cloud-native-provider-links.patch",
+      "content_sha256": "005be0a1880f35ff23ade61464ab7936087cf9107f47f21fc8700df2250cbb34",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {
