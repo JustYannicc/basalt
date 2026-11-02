@@ -1,0 +1,1719 @@
+diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+index ebfd0ac..6af2407 100644
+--- a/apps/hosted/server/src/contracts/app-accounts.ts
++++ b/apps/hosted/server/src/contracts/app-accounts.ts
+@@ -177,7 +177,29 @@ const app = { organization: OrganizationReference, app: AppId };
+ const requirement = { ...app, requirement: Schema.NonEmptyString };
+ const link = { ...requirement, account: AccountId };
+ const prefix = "/api/organizations/:organization/apps/:app/accounts";
++export const AppAccountMethods = Schema.Struct({
++  unavailable: Schema.Array(
++    Schema.Struct({
++      requirement: Schema.NonEmptyString,
++      method: AuthMethodName,
++      reason: Schema.String,
++    }),
++  ),
++  native: Schema.Array(Schema.Struct({ requirement: Schema.NonEmptyString, name: Schema.String })),
++});
++
++const methods = HttpApiEndpoint.get("methods", `${prefix}/methods`, {
++  params: app,
++  success: AppAccountMethods,
++  error: [StorageError, AppNotFound, OrganizationForbidden],
++})
++  .annotate(RequiredAction, "read")
++  .annotate(
++    OpenApi.Description,
++    "Read which provider account methods this host can connect to pools, with reasons for unavailable methods. This contains no saved account data.",
++  );
+ const errors = [
++  AuthMethodInvalid,
+   AccountAcquisitionUnavailable,
+   AccountProvisioned,
+   InteractiveRetirementBusy,
+@@ -307,6 +329,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+ const [appCreate, appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
+ const [userCreate, userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
+ export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
++  .add(methods)
+   .add(appCreate)
+   .add(appList)
+   .add(appGet)
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index 3a3b99d..c06e63e 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -73,6 +73,7 @@ import { currentOwner, ownedConnection } from "./access.ts";
+ import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+ import { AccountLinkedToApp } from "../contracts/accounts.ts";
+ import { requireSeparateNativeAccountLink } from "./pool-account-connection.ts";
++import { requireProviderAccountMethod } from "./provider-account-methods.ts";
+ import { RequirementMismatch } from "../contracts/app-accounts.ts";
+ 
+ /** The apps the caller can use and linked this account to, or that link it for everyone. */
+@@ -336,6 +337,11 @@ export const submitConnection = (
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const connection = yield* ownedConnection(executor, owner, input.connection);
+     const intent = yield* checkConnection(connection);
++    yield* requireProviderAccountMethod(
++      yield* executor.apps.get({ owner, app: connection.target.app }),
++      connection.target.requirement,
++      input.method,
++    );
+     yield* requireSeparateNativeAccountLink(connection, input.method);
+     return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
+       accountDestination(intent.destination),
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index c367a7e..fa12e0f 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -46,6 +46,10 @@ import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
+ import { canDeleteAccount, replacingAccounts } from "./interactive-retirement.ts";
+ import { connectAccount, connectionUrl } from "./accounts.ts";
+ import { createRequirementAccount } from "./requirement-account-creation.ts";
++import {
++  providerAccountMethods,
++  requireProviderAccountMethod,
++} from "./provider-account-methods.ts";
+ import { accountOAuthRedirectUri } from "./auth.ts";
+ import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
+ import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
+@@ -380,6 +384,16 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+   Effect.gen(function* () {
+     const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
+     return handlers
++      .handle("methods", ({ params }) =>
++        Effect.gen(function* () {
++          const owner = yield* currentOwner;
++          const executor = yield* Effect.flatten(HostedExecutor);
++          yield* requireCurrentAppAccess(params.app, "read");
++          return yield* providerAccountMethods(
++            yield* executor.apps.get({ owner, app: params.app }),
++          );
++        }),
++      )
+       .handle("appCreate", ({ params, payload }) =>
+         createRequirementAccount("app", params, payload),
+       )
+@@ -417,9 +431,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+           const owner = yield* currentOwner;
+           const executor = yield* Effect.flatten(HostedExecutor);
+           yield* requireRequirementAccess({ ...params, scope: "app" });
+-          yield* executor.apps.get({ owner, app: params.app });
++          const app = yield* executor.apps.get({ owner, app: params.app });
+           yield* requireAccountAccess(params.account, "use");
+-          yield* executor.accounts.get({ owner, account: params.account });
++          const account = yield* executor.accounts.get({ owner, account: params.account });
++          yield* requireProviderAccountMethod(app, params.requirement, account.method);
+           if (yield* isContributed(yield* policyDatabase, params.app, params.requirement)) {
+             const legacy = yield* executor[InteractiveHost].binding({
+               owner,
+@@ -514,9 +529,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+           const user = yield* caller;
+           const owner = yield* currentOwner;
+           const executor = yield* Effect.flatten(HostedExecutor);
+-          yield* usableApp(executor, owner, params.app);
++          const app = yield* usableApp(executor, owner, params.app);
+           yield* requireAccountAccess(params.account, "use");
+-          yield* executor.accounts.get({ owner, account: params.account });
++          const account = yield* executor.accounts.get({ owner, account: params.account });
++          yield* requireProviderAccountMethod(app, params.requirement, account.method);
+           const changed = yield* replacingAccounts(
+             executor,
+             {
+diff --git a/apps/hosted/server/src/implementation/provider-account-methods.ts b/apps/hosted/server/src/implementation/provider-account-methods.ts
+new file mode 100644
+index 0000000..f311100
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/provider-account-methods.ts
+@@ -0,0 +1,73 @@
++import {
++  AccountAcquisitionConfiguration,
++  AuthMethodInvalid,
++  identifyProvider,
++  StorageError,
++  type App,
++} from "@executor-js/sdk/core";
++import { providerDeclaration } from "apps/host";
++import { Crypto, Effect } from "effect";
++import type { AppAccountMethods } from "../contracts/app-accounts.ts";
++import { providers } from "./pool-provider-definitions.ts";
++import { providerCapabilities } from "./pool-provider-capabilities.ts";
++
++/** These restrictions describe model routing, not ordinary tool apps that use the same provider. */
++export const providerAccountMethods = (app: App) =>
++  Effect.gen(function* () {
++    const unavailable: Array<(typeof AppAccountMethods.Type)["unavailable"][number]> = [];
++    const native: Array<(typeof AppAccountMethods.Type)["native"][number]> = [];
++    const result = { unavailable, native };
++    if (
++      !Object.keys(providers).some((lab) => app.copiedFrom?.name === `provider-${lab}`) &&
++      app.copiedFrom?.reference !== "https://github.com/JustYannicc/basalt/tree/main/apps/pool"
++    )
++      return result;
++    const crypto = yield* Crypto.Crypto;
++    const { registrations } = yield* AccountAcquisitionConfiguration;
++    for (const [lab, provider] of Object.entries(providers)) {
++      const identified = yield* identifyProvider(yield* providerDeclaration(provider), crypto);
++      const capabilities = providerCapabilities.filter((capability) => capability.lab === lab);
++      for (const [requirement, slot] of Object.entries(app.requirements.accounts)) {
++        if (slot.provider !== identified.identity && slot.provider !== identified.legacy) continue;
++        for (const method of Object.keys(slot.definition.auth)) {
++          const capability = capabilities.find((candidate) => candidate.method === method);
++          const registered = registrations.filter(
++            (entry) => entry.current && entry.provider === slot.provider && entry.method === method,
++          );
++          const hostReady =
++            registered.length === 1 &&
++            registered[0]?.driver.id === "basalt-home" &&
++            registered[0].exposeHostReference === true;
++          if (capability?.connection === "unavailable" || capability === undefined || !hostReady) {
++            unavailable.push({
++              requirement,
++              method,
++              reason:
++                capability !== undefined && capability.connection !== "unavailable" && !hostReady
++                  ? "This host cannot connect this sign-in method right now."
++                  : lab === "cloudflare" && method === "oauth"
++                    ? "Cloudflare MCP sign-in connects tools. Model requests need Workers AI credentials."
++                    : "This connection method is not available for pools yet.",
++            });
++          }
++        }
++        if (capabilities.some((capability) => capability.protocol === "typesafe-systemone"))
++          native.push({ requirement, name: "System One" });
++      }
++    }
++    return result;
++  }).pipe(Effect.mapError(() => new StorageError()));
++
++export const requireProviderAccountMethod = (app: App, requirement: string, method: string) =>
++  Effect.gen(function* () {
++    const status = yield* providerAccountMethods(app);
++    if (
++      status.unavailable.some(
++        (entry) => entry.requirement === requirement && entry.method === method,
++      )
++    ) {
++      const slot = app.requirements.accounts[requirement];
++      if (slot !== undefined)
++        return yield* new AuthMethodInvalid({ provider: slot.provider, method });
++    }
++  });
+diff --git a/apps/hosted/server/src/implementation/requirement-account-creation.ts b/apps/hosted/server/src/implementation/requirement-account-creation.ts
+index 2de771f..2c352ef 100644
+--- a/apps/hosted/server/src/implementation/requirement-account-creation.ts
++++ b/apps/hosted/server/src/implementation/requirement-account-creation.ts
+@@ -15,6 +15,7 @@ import { checkDestination } from "./connection-policy.ts";
+ import { requireAccountAccess } from "./resource-policy.ts";
+ import { requireRequirementAccess } from "./contributed-account-policy.ts";
+ import { accountDestination } from "./resource-lifecycle.ts";
++import { requireProviderAccountMethod } from "./provider-account-methods.ts";
+ 
+ /** Creation commits before a native pool's appLink performs any backend mirroring. */
+ export const createRequirementAccount = (
+@@ -32,6 +33,7 @@ export const createRequirementAccount = (
+       : undefined;
+     if (requirement === undefined || requirement.scope !== scope)
+       return yield* new RequirementMismatch({ ...input, scope, reason: "requirement" });
++    yield* requireProviderAccountMethod(app, input.requirement, payload.method);
+     const method = Object.hasOwn(requirement.definition.auth, payload.method)
+       ? requirement.definition.auth[payload.method]
+       : undefined;
+diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
+index 84a00f5..5041324 100644
+--- a/apps/hosted/web/src/contracts/app-accounts.ts
++++ b/apps/hosted/web/src/contracts/app-accounts.ts
+@@ -64,6 +64,20 @@ const liveUserLinks = Atom.family((key: AppKey) => pollingQuery(userLinks(key)))
+  */
+ export const appLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+   appLinks(new AppKey(key));
++/**
++ * Which of the app's requirement methods the host can't connect or route now, with its reason, and
++ * which requirements serve a native non-chat API. Anyone who can use the app reads it; it holds no
++ * account data. Apps the host says nothing about list nothing, so every method stays offered.
++ */
++const appMethods = Atom.family((key: AppKey) =>
++  HostedClient.query("appAccounts", "methods", hydrated({ params: key })).pipe(
++    revalidated,
++    protectedQuery,
++  ),
++);
++export const appMethodsAtom = (key: { organization: OrganizationReference; app: AppId }) =>
++  appMethods(new AppKey(key));
++
+ /** The accounts the caller linked to the app's user requirements and can still use. */
+ export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+   liveUserLinks(new AppKey(key));
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+index e5c2b82..cf582b6 100644
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -306,6 +306,11 @@ export function appConnectionAtoms(key: {
+       )
+       .pipe(Atom.setIdleTTL("5 minutes"), revalidated),
+   );
++  // A new key or token is saved first, then linked, so the host prepares it (a native pool mirrors
++  // it) before the app may use it. One creation id per dialog: a retry after an uncertain answer
++  // returns the account already saved instead of a second one, and a failed link retries the link.
++  const creation = globalThis.crypto.randomUUID();
++  const created = Atom.make<Account | undefined>(undefined);
+   const saved = (get: Atom.FnContext, connection: AccountConnectionId, account: Account) => {
+     connectionSaved(
+       get,
+@@ -321,6 +326,30 @@ export function appConnectionAtoms(key: {
+       get.set(request, undefined),
+     ),
+     oauthSetup: (method: string) => oauthSetup(method),
++    create: HostedClient.runtime.fn(
++      (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
++        Effect.gen(function* () {
++          const client = yield* HostedClient;
++          const params = {
++            organization: key.organization,
++            app: key.app,
++            requirement: key.requirement,
++          };
++          const account =
++            get(created) ??
++            (yield* key.scope === "app"
++              ? client.appAccounts.appCreate({ params, payload: { creation, ...payload } })
++              : client.appAccounts.userCreate({ params, payload: { creation, ...payload } }));
++          get.set(created, account);
++          const link = { params: { ...params, account: account.id } };
++          yield* key.scope === "app"
++            ? client.appAccounts.appLink(link)
++            : client.appAccounts.userLink(link);
++          accountSavedForApp(get, key.organization, account, key.app);
++          refreshAppDiscovery(get, key);
++          return account;
++        }),
++    ),
+     submit: HostedClient.runtime.fn(
+       (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
+         Effect.gen(function* () {
+@@ -584,20 +613,30 @@ function connectionSaved(
+   saved: Account,
+   app: AppId | null,
+ ) {
+-  acknowledgeAccount(get, key.organization, saved, true);
++  accountSavedForApp(get, key.organization, saved, app);
++}
++
++/** A saved account linked to an app: its links, choices, tools and discovery are read again. */
++function accountSavedForApp(
++  get: Atom.FnContext,
++  organization: OrganizationReference,
++  saved: Account,
++  app: AppId | null,
++) {
++  acknowledgeAccount(get, organization, saved, true);
+   if (app !== null) {
+-    const target = { organization: key.organization, app };
+-    const inventory = AsyncResult.value(get(inventoryAtom(key.organization)));
++    const target = { organization, app };
++    const inventory = AsyncResult.value(get(inventoryAtom(organization)));
+     const current = Option.isSome(inventory)
+       ? inventory.value.apps.find((item) => item.id === app)
+       : undefined;
+     refreshAppLinks(get, { ...target, requirements: current?.requirements.accounts });
+     get.refresh(appAtom(target));
+     get.refresh(toolsAtom(target));
+-    if (current !== undefined) refreshAppDiscovery(get, discoveryTarget(key.organization, current));
++    if (current !== undefined) refreshAppDiscovery(get, discoveryTarget(organization, current));
+   }
+   // The inventory response contains linked accounts, which the account response does not.
+-  get.refresh(inventoryAtom(key.organization));
++  get.refresh(inventoryAtom(organization));
+ }
+ 
+ const toolCatalogs = Atom.family((key: ToolKey) =>
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 62e839f..28e67e8 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -13,6 +13,7 @@ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { appAccessAtom } from "../../contracts/resource-access.ts";
+ import type { Provider, AccountRequirement, AccountScope, App } from "@executor-js/sdk";
+ import type { CatalogConnectionNotice } from "@executor-js/catalog/contracts";
++import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
+ import {
+   AppAccounts as SharedAccounts,
+   LinkedAccountMenu,
+@@ -20,7 +21,7 @@ import {
+   type LinkEditing,
+   type ScopeAccounts,
+ } from "@executor-js/ui/dashboard/app-accounts";
+-import type { RequirementLink } from "@executor-js/ui/contracts/app-accounts";
++import type { RequirementLink, RequirementMethods } from "@executor-js/ui/contracts/app-accounts";
+ import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
+ import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import { Button } from "@executor-js/ui/components/button";
+@@ -37,6 +38,7 @@ import { HostedAccountForm, OAuthReturnContext, openAccountOAuth } from "./conne
+ import type { HostedOAuthSignIn } from "@executor-js/hosted-server";
+ import type { AccountId, AccountConnectionId } from "@executor-js/sdk";
+ import {
++  appMethodsAtom,
+   linkAccountAtom,
+   requirementChoicesAtom,
+   unlinkAccountAtom,
+@@ -81,6 +83,19 @@ export function AppAccounts({
+   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
+   const catalog = useQuery(catalogAtom);
+   const canUse = Option.isSome(data) && data.value.canUse;
++  const methodQuery = useQuery(appMethodsAtom({ organization, app: app.id }));
++  const reported = methodQuery.data;
++  const methodsReady = AsyncResult.isSuccess(methodQuery.result) && !methodQuery.result.waiting;
++  const methods: RequirementMethods | undefined = Option.isSome(reported)
++    ? {
++        unavailable: (requirement, method) =>
++          reported.value.unavailable.find(
++            (entry) => entry.requirement === requirement && entry.method === method,
++          )?.reason,
++        native: (requirement) =>
++          reported.value.native.find((entry) => entry.requirement === requirement)?.name,
++      }
++    : undefined;
+   const viewer = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)))?.user.id;
+   const deployed = app.activeVersion !== null;
+   const copiedPackage = app.copiedFrom?.name;
+@@ -114,7 +129,8 @@ export function AppAccounts({
+   }>();
+   const [renaming, setRenaming] = useState<AccountSummary["id"]>();
+   const [connecting, setConnecting] = useState(false);
+-  const connectionDisabled = connecting || connection !== undefined || catalogUnavailable;
++  const connectionDisabled =
++    connecting || connection !== undefined || catalogUnavailable || !methodsReady;
+   const noticesFor = (requirement: AccountRequirement): readonly CatalogConnectionNotice[] =>
+     catalogEntry?.connectionNotices?.filter(
+       (notice) => notice.providerName === requirement.definition.name,
+@@ -148,7 +164,9 @@ export function AppAccounts({
+     unlink: (slot, account) => unlinkAccountAtom({ ...target(scope), requirement: slot, account }),
+     connect: (slot, requirement) => {
+       if (connectionDisabled) return;
+-      const [preferred] = methodsOf(requirement);
++      const preferred = methodsOf(requirement).find(
++        ([method]) => methods?.unavailable(slot, method) === undefined,
++      );
+       if (preferred !== undefined)
+         setConnection({ scope, slot, requirement, method: preferred[0] });
+     },
+@@ -236,6 +254,21 @@ export function AppAccounts({
+   const notDeployed = "Deploy this app to link accounts.";
+   return (
+     <>
++      {!methodsReady && (
++        <div className="mb-4">
++          {AsyncResult.isFailure(methodQuery.result) ? (
++            <HostedFailure
++              cause={methodQuery.result.cause}
++              retry={methodQuery.refresh}
++              layout="compact"
++            />
++          ) : (
++            <p role="status" className="text-sm text-muted-foreground">
++              Loading sign-in methods…
++            </p>
++          )}
++        </div>
++      )}
+       {catalogUnavailable && (
+         <div className="mb-4">
+           {AsyncResult.isFailure(catalog.result) ? (
+@@ -265,6 +298,7 @@ export function AppAccounts({
+       <SharedAccounts
+         app={app}
+         accounts={accounts}
++        methods={methods}
+         Failure={HostedFailure}
+         appAccounts={scopeAccounts(
+           "app",
+@@ -291,6 +325,11 @@ export function AppAccounts({
+             connectionNotices={noticesFor(connection.requirement)}
+             redirectUri={redirectUri}
+             account={connection.account}
++            unavailable={(method) =>
++              methodsReady
++                ? methods?.unavailable(connection.slot, method)
++                : "Sign-in methods are unavailable. Retry loading them."
++            }
+             onPendingChange={setConnecting}
+             onSaved={() => setConnection(undefined)}
+           />
+@@ -332,6 +371,7 @@ export function AppConnectionDialogContent({
+   redirectUri,
+   account,
+   initialAccount,
++  unavailable,
+   onPendingChange,
+   onSaved,
+ }: {
+@@ -339,6 +379,8 @@ export function AppConnectionDialogContent({
+   /** Set when replacing this account's credentials rather than adding an account. */
+   readonly account?: AccountSummary | undefined;
+   readonly initialAccount?: AccountId | undefined;
++  /** The host's reason a method can't be connected for this requirement now. */
++  readonly unavailable?: ((method: string) => string | undefined) | undefined;
+   readonly scope: AccountScope;
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+@@ -437,6 +479,7 @@ export function AppConnectionDialogContent({
+             scope={scope}
+             slot={slot}
+             form={form}
++            unavailable={unavailable}
+             checks={requirement.health === true}
+             onPendingChange={onPendingChange}
+             onSaved={onSaved}
+@@ -459,10 +502,12 @@ function AppConnectionFields({
+   account,
+   site,
+   initialAccount,
++  unavailable,
+ }: {
+   /** Set when replacing this account's credentials rather than adding an account. */
+   readonly account?: AccountSummary | undefined;
+   readonly initialAccount?: AccountId | undefined;
++  readonly unavailable?: ((method: string) => string | undefined) | undefined;
+   /** The slot's provider defines a check, so entered credentials can be validated. */
+   readonly checks: boolean;
+   readonly app: App;
+@@ -488,7 +533,16 @@ function AppConnectionFields({
+       site,
+     }),
+   );
+-  const submit = useAtomSet(atoms.submit, { mode: "promiseExit" });
++  const connectSubmit = useAtomSet(atoms.submit, { mode: "promiseExit" });
++  const create = useAtomSet(atoms.create, { mode: "promiseExit" });
++  // A new key or token for a fixed-site provider is saved, then linked; reconnects and per-site
++  // accounts keep the connection flow, which carries their account or site.
++  const submit = (input: AccountSubmission) => {
++    const auth = form.provider.definition.auth[input.method];
++    return account === undefined && site === undefined && auth?.type === "secrets"
++      ? create(input)
++      : connectSubmit(input);
++  };
+   const start = useAtomSet(atoms.startOAuth, { mode: "promiseExit" });
+   const interactive = {
+     start: useAtomSet(atoms.interactive.start, { mode: "promiseExit" }),
+@@ -513,6 +567,7 @@ function AppConnectionFields({
+       setupQuery={atoms.oauthSetup}
+       redirectUri={form.redirectUri}
+       initialMethod={form.method}
++      unavailable={unavailable}
+       submit={submit}
+       start={(input) =>
+         account !== undefined ||
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index cc61fb6..e3a9356 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -176,7 +176,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   onPendingChange,
+   app,
+   interactive,
++  unavailable,
+ }: {
++  /** The host's reason a method can't be connected here; such methods show greyed out. */
++  readonly unavailable?: ((method: string) => string | undefined) | undefined;
+   /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
+   readonly interactive?: HostedInteractiveActions | undefined;
+   readonly provider: Provider;
+@@ -263,6 +266,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+       site={site}
+       {...(account ? { account } : {})}
+       initialMethod={method}
++      unavailable={unavailable}
+       Failure={HostedFailure}
+       submitLabel={account ? "Save credentials" : "Connect account"}
+       submit={orderedSubmit}
+diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
+index 33859c2..38c99c5 100644
+--- a/e2e/support/provider-account-product.ts
++++ b/e2e/support/provider-account-product.ts
+@@ -4,7 +4,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { Target } from "./platform.ts";
+ import { serverControl } from "./server-control.ts";
+ 
+-export const providerAccountProduct = (origin: string) =>
++export const providerAccountProduct = (origin: string, catalog?: string, keyAvailable = true) =>
+   Effect.gen(function* () {
+     const target = yield* Target,
+       fs = yield* FileSystem.FileSystem,
+@@ -19,8 +19,9 @@ import { main } from "@executor-js/hosted-self-host/server";
+ import { poolAccountAcquisition } from "@executor-js/hosted-server/pool-account-acquisition";
+ import { AccountAcquisitionConfiguration } from "@executor-js/sdk/core";
+ import { Effect, Option, Redacted } from "effect";
++${catalog === undefined ? "" : `process.env.EXECUTOR_CATALOG_URL = ${JSON.stringify(catalog)};`}
+ Runtime.runMain(Effect.gen(function* () {
+-  const acquisition = yield* poolAccountAcquisition(Option.some(Redacted.make("ab".repeat(32))), ${JSON.stringify(origin)});
++  const acquisition = yield* poolAccountAcquisition(${keyAvailable ? 'Option.some(Redacted.make("ab".repeat(32)))' : "Option.none()"}, ${JSON.stringify(origin)});
+   return yield* main.pipe(Effect.provideService(AccountAcquisitionConfiguration, acquisition));
+ }).pipe(Effect.provide(NodeCrypto.layer)));
+ `,
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+new file mode 100644
+index 0000000..42722c5
+--- /dev/null
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -0,0 +1,124 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Clock, Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++const Source = Schema.Struct({
++  package: Schema.String,
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
++const Acquisition = Schema.Struct({
++  action: Schema.String,
++  provider: Schema.String,
++  owner: Schema.String,
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++});
++
++/** Provider packages stay unchanged; the extra consumer detects restrictions leaking to ordinary apps. */
++export const providerAppsCatalog = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem,
++    path = yield* Path.Path;
++  const sources = new Map<string, typeof Source.Type>();
++  for (const lab of ["openai", "anthropic"]) {
++    const content = yield* fs.readFileString(
++      path.resolve("..", "src/catalog/provider-apps", `${lab}.json`),
++    );
++    sources.set(lab, yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Source))(content));
++  }
++  const openai = sources.get("openai")!;
++  const manifest = yield* Schema.decodeUnknownEffect(
++    Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
++  )(openai.files.find((file) => file.path === "package.json")!.content);
++  sources.set("openai-tools", {
++    package: "provider-openai-tools",
++    files: openai.files.map((file) =>
++      file.path === "package.json"
++        ? { ...file, content: JSON.stringify({ ...manifest, name: "provider-openai-tools" }) }
++        : file,
++    ),
++  });
++  const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
++  const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "GET",
++      "/catalog/index.json",
++      Effect.succeed(
++        HttpServerResponse.jsonUnsafe({
++          version: 1,
++          apps: [...sources].map(([lab, source]) => ({
++            id: `provider-${lab}`,
++            package: source.package,
++            name:
++              lab === "openai-tools"
++                ? "Ordinary OpenAI consumer"
++                : lab === "openai"
++                  ? "OpenAI"
++                  : "Anthropic",
++            description: "Reusable model provider accounts for pools.",
++            auth: [{ method: lab.startsWith("openai") ? "codex" : "claude", kind: "interactive" }],
++            icons: [],
++            source: `apps/provider-${lab}.json`,
++          })),
++        }),
++      ),
++    ),
++    ...[...sources].map(([lab, source]) =>
++      HttpRouter.add(
++        "GET",
++        `/catalog/apps/provider-${lab}.json`,
++        Effect.succeed(HttpServerResponse.jsonUnsafe(source)),
++      ),
++    ),
++    HttpRouter.add(
++      "POST",
++      "/pool/v1/account-acquisitions",
++      Effect.gen(function* () {
++        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ envelope: Schema.String }),
++        );
++        const [prefix, payload, signature, extra] = envelope.split(".");
++        if (
++          prefix !== "sbaa1" ||
++          payload === undefined ||
++          signature === undefined ||
++          extra !== undefined
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest();
++        const actual = Buffer.from(signature, "base64url");
++        if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected))
++          return HttpServerResponse.empty({ status: 401 });
++        const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Acquisition))(
++          Buffer.from(payload, "base64url").toString(),
++        );
++        const now = yield* Clock.currentTimeMillis;
++        if (input.at > now || input.expiresAt <= now || input.expiresAt > input.at + 30_000)
++          return HttpServerResponse.empty({ status: 401 });
++        yield* Ref.update(calls, (items) => [...items, input]);
++        if (input.action === "start")
++          return HttpServerResponse.jsonUnsafe({
++            session: `synthetic-session-${input.provider}`,
++            paste: { label: "Callback URL" },
++          });
++        if (input.action === "status" || input.action === "submit")
++          return HttpServerResponse.jsonUnsafe({
++            state: "connected",
++            ref: `synthetic-private-${input.provider}`,
++          });
++        return HttpServerResponse.jsonUnsafe(null);
++      }),
++    ),
++  );
++  const context = yield* Layer.build(
++    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++    ),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++  if (!("port" in server.address)) return yield* Effect.die("Expected a loopback catalog");
++  return { origin: `http://127.0.0.1:${server.address.port}`, sources, calls: Ref.get(calls) };
++});
+diff --git a/e2e/support/provider-apps-ui.ts b/e2e/support/provider-apps-ui.ts
+new file mode 100644
+index 0000000..e2dbddf
+--- /dev/null
++++ b/e2e/support/provider-apps-ui.ts
+@@ -0,0 +1,84 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { Browser } from "./browser.ts";
++import { openInApp, openThroughBrowser } from "./in-app-navigation.ts";
++import { holdQuery } from "./query-transition.ts";
++
++/** Hold the real capability read before its first response, then fail and retry it. */
++export const providerMethodsUi = (app: string) =>
++  Effect.gen(function* () {
++    const actors = yield* Actors;
++    const browser = yield* Browser;
++    yield* browser.login(actors.owner);
++    const paths = [actors.organization.slug, actors.organization.id].map(
++      (organization) => `/api/organizations/${organization}/apps/${app}/accounts/methods`,
++    );
++    const first = yield* holdQuery(paths, "undeclared");
++    yield* openThroughBrowser(
++      "Open OpenAI while method availability is loading",
++      `/org/${actors.organization.slug}/apps/${app}?view=accounts`,
++    );
++    yield* first.requested;
++    yield* browser.use("The capability read visibly waits", (page) =>
++      page.getByText("Loading sign-in methods…", { exact: true }).waitFor({ state: "visible" }),
++    );
++    expect(
++      yield* browser.use("The capability read blocks connection", (page) =>
++        page.getByRole("button", { name: "Connect new account", exact: true }).isEnabled(),
++      ),
++    ).toBe(false);
++    yield* browser.checkpoint("OpenAI waits for host sign-in methods");
++    yield* first.release;
++    yield* browser.use("A failed capability read offers retry", (page) =>
++      page.getByRole("button", { name: "Retry", exact: true }).waitFor({ state: "visible" }),
++    );
++    expect(
++      yield* browser.use("The failed read keeps connection blocked", (page) =>
++        page.getByRole("button", { name: "Connect new account", exact: true }).isEnabled(),
++      ),
++    ).toBe(false);
++    yield* browser.checkpoint("OpenAI method failure stays actionable");
++    const retry = yield* holdQuery(paths, "continue");
++    yield* browser.use("Retry host sign-in methods", (page) =>
++      page.getByRole("button", { name: "Retry", exact: true }).click(),
++    );
++    yield* retry.requested;
++    expect(
++      yield* browser.use("Retry still blocks new connections", (page) =>
++        page.getByRole("button", { name: "Connect new account", exact: true }).isEnabled(),
++      ),
++    ).toBe(false);
++    yield* retry.release;
++    yield* browser.use("Only the successful host response enables connection", (page) =>
++      page
++        .getByRole("button", { name: "Connect new account", exact: true })
++        .and(page.locator(":enabled"))
++        .waitFor({ state: "visible" }),
++    );
++    yield* browser.checkpoint("OpenAI methods recover without a page reload");
++    const lightInk = yield* browser.use("Read the provider accent in light mode", (page) =>
++      page
++        .locator('.provider-icon[data-provider="openai"]')
++        .first()
++        .evaluate((element) => getComputedStyle(element).color),
++    );
++    yield* browser.use("Follow the system dark appearance", (page) =>
++      page.emulateMedia({ colorScheme: "dark" }),
++    );
++    const darkInk = yield* browser.use("Read the provider accent in dark mode", (page) =>
++      page
++        .locator('.provider-icon[data-provider="openai"]')
++        .first()
++        .evaluate((element) => getComputedStyle(element).color),
++    );
++    expect(darkInk).not.toBe(lightInk);
++    yield* browser.checkpoint("Provider identity follows dark appearance");
++    yield* browser.use("Restore light appearance", (page) =>
++      page.emulateMedia({ colorScheme: "light" }),
++    );
++    yield* openInApp(
++      "Leave the app before exercising its independent account lifecycle",
++      `/org/${actors.organization.slug}/connect`,
++    );
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 4502a87..2b9c6c3 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3068,6 +3068,17 @@ export const scenarios = plan({
+       local: na("Shared error views and SDK are exercised through hosted APIs."),
+     },
+   },
++  providerApps: {
++    fixtures: "actors",
++    file: "provider-apps.spec.ts",
++    title:
++      "OpenAI and Anthropic apps connect reusable accounts that keep feeding a pool after app deletion",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a runner-owned loopback catalog and subscription sign-in service."),
++      local: na("Uses hosted organization account policies."),
++    },
++  },
+   catalogOfficialApps: {
+     fixtures: "actors",
+     file: "catalog-official-apps.spec.ts",
+diff --git a/e2e/tests/provider-apps.spec.ts b/e2e/tests/provider-apps.spec.ts
+new file mode 100644
+index 0000000..3c56f43
+--- /dev/null
++++ b/e2e/tests/provider-apps.spec.ts
+@@ -0,0 +1,246 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { providerMethodsUi } from "../support/provider-apps-ui.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Catalog = Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String }));
++const Methods = Schema.Struct({
++  unavailable: Schema.Array(
++    Schema.Struct({ requirement: Schema.String, method: Schema.String, reason: Schema.String }),
++  ),
++  native: Schema.Array(Schema.Struct({ requirement: Schema.String, name: Schema.String })),
++});
++const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
++const Choices = Schema.Struct({
++  accounts: Schema.Array(Schema.Struct({ account: Resource, linked: Schema.Boolean })),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Native provider apps", (it) => {
++  it.effect(scenarios.providerApps.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          catalog = yield* providerAppsCatalog;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
++        const entries = yield* body(
++          Catalog,
++          yield* api.request(actors.owner, "GET", "/api/catalog"),
++        );
++        expect(entries).toEqual(
++          expect.arrayContaining([
++            { id: "provider-openai", name: "OpenAI" },
++            { id: "provider-anthropic", name: "Anthropic" },
++          ]),
++        );
++        const canonical = catalog.sources
++          .get("openai")!
++          .files.find((file) => file.path === "providers.ts")!;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Pool with native provider requirements",
++          files: [
++            appsManifest,
++            canonical,
++            {
++              path: "index.ts",
++              content: `import { defineApp } from "apps";
++import { providers } from "./providers.ts";
++export default defineApp({ app: { accounts: { openai: providers.openai.many(), anthropic: providers.anthropic.many() } } }, {});`,
++            },
++          ],
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const pool = (yield* body(Resource, deployed)).id;
++        apps.push(pool);
++        for (const [lab, method] of [
++          ["openai", "codex"],
++          ["anthropic", "claude"],
++        ]) {
++          const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++            entry: `provider-${lab}`,
++            name: lab === "openai" ? "OpenAI" : "Anthropic",
++          });
++          expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++          const app = (yield* body(Resource, installed)).id;
++          apps.push(app);
++          const appPath = `${prefix}/apps/${app}`;
++          if (lab === "openai") {
++            yield* providerAccountProduct(
++              catalog.origin,
++              `${catalog.origin}/catalog/index.json`,
++              false,
++            );
++            const unavailable = yield* body(
++              Methods,
++              yield* api.request(actors.owner, "GET", `${appPath}/accounts/methods`),
++            );
++            expect(unavailable.unavailable.map((entry) => entry.method).sort()).toEqual([
++              "apiKey",
++              "codex",
++            ]);
++            yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
++            yield* providerMethodsUi(app);
++          }
++          const methods = yield* body(
++            Methods,
++            yield* api.request(actors.owner, "GET", `${appPath}/accounts/methods`),
++          );
++          expect(methods.unavailable.map((item) => item.method)).toEqual(["apiKey"]);
++          const unsupportedCreation = crypto.randomUUID();
++          expect(
++            (yield* api.request(actors.owner, "POST", `${appPath}/accounts/app/${lab}`, {
++              creation: unsupportedCreation,
++              method: "apiKey",
++              fields: { token: "synthetic-unsupported-key" },
++            })).status,
++          ).toBe(422);
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "GET",
++              `${prefix}/accounts/acc_${unsupportedCreation}`,
++            )).status,
++          ).toBe(403);
++          const toolKey = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/apps/${pool}/accounts/app/${lab}`,
++            {
++              creation: crypto.randomUUID(),
++              method: "apiKey",
++              fields: { token: "synthetic-tool-key" },
++            },
++          );
++          expect(toolKey.status, JSON.stringify(toolKey.body)).toBe(200);
++          const toolAccount = (yield* body(Resource, toolKey)).id;
++          accounts.push(toolAccount);
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "PUT",
++              `${appPath}/accounts/app/${lab}/${toolAccount}`,
++            )).status,
++          ).toBe(422);
++          expect(
++            (yield* api.request(actors.member, "GET", `${appPath}/accounts/methods`)).status,
++          ).toBe(403);
++          const pending = yield* api.request(
++            actors.owner,
++            "POST",
++            `${appPath}/accounts/app/${lab}/connections`,
++            {},
++          );
++          expect(pending.status, JSON.stringify(pending.body)).toBe(200);
++          const connection = (yield* body(Resource, pending)).id;
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "POST",
++              `${prefix}/connections/${connection}/submit`,
++              {
++                method: "apiKey",
++                fields: { token: "synthetic-unsupported-key" },
++              },
++            )).status,
++          ).toBe(422);
++          const connectPath = `${prefix}/connections/${connection}/interactive`;
++          expect(
++            (yield* api.request(actors.owner, "POST", `${connectPath}/start`, { method })).status,
++          ).toBe(200);
++          const completed = yield* api.request(actors.owner, "POST", `${connectPath}/submit`, {
++            value: "synthetic-callback",
++          });
++          expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++          const account = (yield* body(Connected, completed)).account.id;
++          accounts.push(account);
++          expect(JSON.stringify(completed.body)).not.toContain("synthetic-private-");
++          const poolPath = `${prefix}/apps/${pool}/accounts/app/${lab}`;
++          const choices = yield* body(Choices, yield* api.request(actors.owner, "GET", poolPath));
++          expect(choices.accounts).toContainEqual({ account: { id: account }, linked: false });
++          expect((yield* api.request(actors.owner, "PUT", `${poolPath}/${account}`)).status).toBe(
++            200,
++          );
++          expect((yield* api.request(actors.owner, "DELETE", appPath)).status).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "GET", `${prefix}/apps/${pool}/accounts/app`)).body,
++          ).toEqual(
++            expect.arrayContaining([
++              expect.objectContaining({
++                requirement: lab,
++                account: expect.objectContaining({ id: account }),
++              }),
++            ]),
++          );
++          expect(
++            (yield* api.request(actors.owner, "DELETE", `${poolPath}/${account}`)).status,
++          ).toBe(200);
++          expect(
++            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account}`)).status,
++          ).toBe(200);
++        }
++        const unaffected = yield* body(
++          Methods,
++          yield* api.request(actors.owner, "GET", `${prefix}/apps/${pool}/accounts/methods`),
++        );
++        expect(unaffected).toEqual({ unavailable: [], native: [] });
++        const ordinary = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "provider-openai-tools",
++          name: "Ordinary OpenAI consumer",
++        });
++        expect(ordinary.status, JSON.stringify(ordinary.body)).toBe(200);
++        const ordinaryApp = (yield* body(Resource, ordinary)).id;
++        apps.push(ordinaryApp);
++        const ordinaryPath = `${prefix}/apps/${ordinaryApp}`;
++        const ordinaryMethods = yield* body(
++          Methods,
++          yield* api.request(actors.owner, "GET", `${ordinaryPath}/accounts/methods`),
++        );
++        expect(ordinaryMethods).toEqual({ unavailable: [], native: [] });
++        const key = yield* api.request(
++          actors.owner,
++          "POST",
++          `${ordinaryPath}/accounts/app/openai`,
++          {
++            creation: crypto.randomUUID(),
++            method: "apiKey",
++            fields: { token: "synthetic-ordinary-openai-key" },
++          },
++        );
++        expect(key.status, JSON.stringify(key.body)).toBe(200);
++        const keyAccount = (yield* body(Resource, key)).id;
++        accounts.push(keyAccount);
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PUT",
++            `${ordinaryPath}/accounts/app/openai/${keyAccount}`,
++          )).status,
++        ).toBe(200);
++      }),
++    ),
++  );
++});
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+index d956717..ae70d6d 100644
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -17,7 +17,7 @@ export type CatalogIcon = typeof CatalogIcon.Type;
+ /** One way to connect an account, as the app's provider declares it. */
+ export const CatalogAuth = Schema.Struct({
+   method: Schema.NonEmptyString,
+-  kind: Schema.Literals(["secrets", "oauth2"]),
++  kind: Schema.Literals(["secrets", "oauth2", "interactive"]),
+   label: Schema.optionalKey(Schema.String),
+ });
+ export type CatalogAuth = typeof CatalogAuth.Type;
+diff --git a/packages/ui/src/contracts/app-accounts.ts b/packages/ui/src/contracts/app-accounts.ts
+index 1929b11..a6abe76 100644
+--- a/packages/ui/src/contracts/app-accounts.ts
++++ b/packages/ui/src/contracts/app-accounts.ts
+@@ -100,3 +100,21 @@ export const usedAccounts = <A extends LinkedAccount>(
+       if (!used.some((item) => item.id === account.id)) used.push(account);
+   return used;
+ };
++
++/**
++ * What the host says about an app's requirement methods. Only the host knows whether it can
++ * connect or route a method now, so a dashboard never guesses: a method without a reason is
++ * available, as every method is for apps the host says nothing about.
++ */
++export interface RequirementMethods {
++  /** Why the host cannot connect or route this requirement's method now, in the user's words. */
++  readonly unavailable: (requirement: string, method: string) => string | undefined;
++  /** The name of the native, non-chat API a requirement's accounts serve, such as System One. */
++  readonly native: (requirement: string) => string | undefined;
++}
++
++/** A requirement's methods people can pick, OAuth first, without the host's own credentials. */
++export const requirementMethods = (requirement: AccountRequirement) =>
++  Object.entries(requirement.definition.auth)
++    .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
++    .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+index 8d2ea30..ddfb5b5 100644
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -46,6 +46,7 @@ export function AccountForm<A, E>({
+   Failure,
+   onPendingChange,
+   initialMethod,
++  unavailable,
+   check,
+   disabled = false,
+ }: {
+@@ -70,6 +71,11 @@ export function AccountForm<A, E>({
+   readonly disabled?: boolean;
+   readonly onPendingChange?: (pending: boolean) => void;
+   readonly initialMethod?: string | undefined;
++  /**
++   * The host's reason a method can't be connected here, if any. Such methods stay listed, greyed
++   * out with the reason, and can't be chosen. Reconnect keeps the account's method.
++   */
++  readonly unavailable?: ((method: string) => string | undefined) | undefined;
+ }) {
+   const selectedSite = site ?? account?.site;
+   const hosts =
+@@ -80,7 +86,16 @@ export function AccountForm<A, E>({
+     .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
+     .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
+   const labels = methodLabels(provider.definition.name, methods);
+-  const [method, setMethod] = useState(account?.method ?? initialMethod ?? methods[0]?.[0] ?? "");
++  const blocked = (name: string) => unavailable?.(name);
++  const firstOpen = methods.find(([name]) => blocked(name) === undefined)?.[0];
++  const [method, setMethod] = useState(
++    account?.method ??
++      (initialMethod !== undefined && blocked(initialMethod) === undefined
++        ? initialMethod
++        : firstOpen) ??
++      "",
++  );
++  const blockedReason = method === "" ? undefined : blocked(method);
+   const [values, setValues] = useState<Readonly<Record<string, string>>>({});
+   const [submitting, setPending] = useState(false);
+   const pending = submitting || disabled;
+@@ -119,6 +134,7 @@ export function AccountForm<A, E>({
+         event.preventDefault();
+         if (
+           !fields ||
++          blockedReason !== undefined ||
+           pending ||
+           verdict.state === "checking" ||
+           !credentialsComplete(fields, values)
+@@ -158,16 +174,42 @@ export function AccountForm<A, E>({
+               <SelectValue />
+             </SelectTrigger>
+             <SelectContent>
+-              {methods.map(([name, auth]) => (
+-                <SelectItem key={name} value={name}>
+-                  {labels.get(name)}
+-                </SelectItem>
+-              ))}
++              {methods.map(([name]) => {
++                const reason = blocked(name);
++                return (
++                  <SelectItem key={name} value={name} disabled={reason !== undefined}>
++                    {labels.get(name)}
++                    {reason !== undefined && <span className="sr-only">. {reason}</span>}
++                  </SelectItem>
++                );
++              })}
+             </SelectContent>
+           </Select>
+         </label>
+       )}
+-      {auth?.type === "oauth2" ? (
++      {!account && methods.some(([name]) => blocked(name) !== undefined) && (
++        <ul
++          aria-label="Methods not available here"
++          className="grid gap-1 text-xs leading-relaxed text-muted-foreground"
++        >
++          {methods.flatMap(([name]) => {
++            const reason = blocked(name);
++            return reason === undefined
++              ? []
++              : [
++                  <li key={name}>
++                    <span className="font-medium text-foreground/80">{labels.get(name)}</span>.{" "}
++                    {reason}
++                  </li>,
++                ];
++          })}
++        </ul>
++      )}
++      {blockedReason !== undefined || (method === "" && methods.length > 0) ? (
++        <p className="setup-notice py-[12px] px-[14px] border border-border rounded-[7px] text-muted-foreground bg-muted text-[13px] my-[8px] mx-0">
++          {blockedReason ?? "No sign-in method can be connected here yet."}
++        </p>
++      ) : auth?.type === "oauth2" ? (
+         <div key={method} className="oauth-fields flex flex-col gap-4">
+           {oauth({
+             method,
+diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+index 11b7bec..8529724 100644
+--- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
+@@ -4,7 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { AsyncResult, type Atom } from "effect/reactivity";
+ import { Exit, Option, type Cause } from "effect";
+ import { HugeiconsIcon } from "@hugeicons/react";
+-import { Add01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
++import { Add01Icon, ArrowDown01Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
+ import { RadioGroup } from "radix-ui";
+ import type {
+   Account,
+@@ -14,7 +14,12 @@ import type {
+   AccountId,
+   AccountRequirement,
+ } from "@executor-js/sdk";
+-import type { RequirementChoice, RequirementLink } from "../../contracts/app-accounts.ts";
++import {
++  requirementMethods,
++  type RequirementChoice,
++  type RequirementLink,
++  type RequirementMethods,
++} from "../../contracts/app-accounts.ts";
+ import {
+   providerDisplayUrl,
+   accountNeedsSignIn,
+@@ -45,6 +50,7 @@ import {
+   DialogTitle,
+ } from "../components/dialog.tsx";
+ import { cn } from "../lib/utils.ts";
++import { methodLabels } from "./method-labels.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ 
+ const provisionedOnly = (requirement: AccountRequirement) =>
+@@ -365,6 +371,38 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
+     ([, requirement]) => requirement.scope === scope,
+   );
+ 
++/** Why the host can't connect or route an account's method for this requirement, if it can't. */
++const methodBlocked = (
++  methods: RequirementMethods | undefined,
++  slot: string,
++  method: string,
++): string | undefined => methods?.unavailable(slot, method);
++
++/** The requirement's methods with the host's reason for each one it can't connect now. */
++const methodStates = (
++  methods: RequirementMethods | undefined,
++  slot: string,
++  requirement: AccountRequirement,
++) => {
++  const entries = requirementMethods(requirement);
++  const labels = methodLabels(requirement.definition.name, entries);
++  return entries.map(([name]) => ({
++    name,
++    label: labels.get(name) ?? name,
++    reason: methodBlocked(methods, slot, name),
++  }));
++};
++
++/** The host can connect none of the requirement's methods now. */
++const noMethodOpen = (
++  methods: RequirementMethods | undefined,
++  slot: string,
++  requirement: AccountRequirement,
++) => {
++  const states = methodStates(methods, slot, requirement);
++  return states.length > 0 && states.every((state) => state.reason !== undefined);
++};
++
+ /**
+  * Who may change one requirement's links: an editor's `edit` covers the scope, `contribute` only
+  * an app collection that opts in to member contributions.
+@@ -457,6 +495,7 @@ export function AppAccounts<E>({
+   appAccounts,
+   yourAccounts,
+   accounts,
++  methods,
+   Failure,
+ }: {
+   readonly app: App;
+@@ -464,6 +503,11 @@ export function AppAccounts<E>({
+   readonly yourAccounts: ScopeAccounts<E>;
+   /** The caller's usable accounts, whose sign-in and check details the choices reuse. */
+   readonly accounts: readonly AccountSummary[];
++  /**
++   * The host's word on which requirement methods it can connect or route now. Without it every
++   * method is offered, and the host still refuses one it can't run.
++   */
++  readonly methods?: RequirementMethods | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }) {
+   useRevalidateChecks(
+@@ -512,6 +556,7 @@ export function AppAccounts<E>({
+           requirements={appRequirements}
+           data={appAccounts}
+           accounts={accounts}
++          methods={methods}
+           showProvisionedProblems={repairs.app}
+           Failure={Failure}
+         />
+@@ -525,6 +570,7 @@ export function AppAccounts<E>({
+           requirements={userRequirements}
+           data={yourAccounts}
+           accounts={accounts}
++          methods={methods}
+           showProvisionedProblems={repairs.user}
+           Failure={Failure}
+         />
+@@ -539,6 +585,7 @@ interface ScopeProps<E> {
+   readonly scope: AccountScope;
+   readonly data: ScopeAccounts<E>;
+   readonly accounts: readonly AccountSummary[];
++  readonly methods?: RequirementMethods | undefined;
+   readonly Failure: ComponentType<FailureProps<E>>;
+ }
+ 
+@@ -552,10 +599,17 @@ function LinkScope<E>({
+   readonly description: string;
+   readonly requirements: readonly RequirementEntry[];
+ }) {
+-  const { data } = props;
+-  const readOnly = requirements.every(
+-    ([, requirement]) => editingFor(data, requirement) === undefined,
++  const { data, methods, accounts } = props;
++  // A requirement the host can connect no method of, with nothing linked and no saved account of
++  // its provider to show, moves to one list at the end instead of an empty block.
++  const closed = requirements.filter(
++    ([slot, requirement]) =>
++      noMethodOpen(methods, slot, requirement) &&
++      !data.links.some((link) => link.requirement === slot) &&
++      !accounts.some((account) => account.provider === requirement.provider),
+   );
++  const open = requirements.filter((entry) => !closed.includes(entry));
++  const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
+   return (
+     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+       <div>
+@@ -566,7 +620,7 @@ function LinkScope<E>({
+         <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+       )}
+       <div className="space-y-5">
+-        {requirements.map(([slot, requirement]) => (
++        {open.map(([slot, requirement]) => (
+           <RequirementView
+             key={slot}
+             {...props}
+@@ -576,11 +630,59 @@ function LinkScope<E>({
+             readOnlyNote={readOnly ? undefined : data.readOnly}
+           />
+         ))}
++        {closed.length > 0 && (
++          <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
++        )}
+       </div>
+     </section>
+   );
+ }
+ 
++/** Requirements the host can't connect yet, collapsed, each method with the host's reason. */
++function UnavailableRequirements({
++  app,
++  requirements,
++  methods,
++}: {
++  readonly app: App;
++  readonly requirements: readonly RequirementEntry[];
++  readonly methods: RequirementMethods | undefined;
++}) {
++  return (
++    <details className="group" data-unavailable-requirements>
++      <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 text-[13px] text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
++        <HugeiconsIcon
++          icon={ArrowDown01Icon}
++          size={12}
++          strokeWidth={2}
++          aria-hidden
++          className="transition-transform duration-150 group-open:rotate-180"
++        />
++        Not available yet · {requirements.length}
++      </summary>
++      <ul className="mt-3 divide-y divide-border/50 overflow-hidden rounded-lg border">
++        {requirements.map(([slot, requirement]) => (
++          <li
++            key={slot}
++            className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3.5 py-3 text-[13px] [&_.provider-icon]:row-span-2 [&_.provider-icon]:size-7"
++          >
++            <AppProviderIcon app={app} provider={requirement.definition} />
++            <span className="font-medium">{requirement.definition.name}</span>
++            <ul className="grid gap-0.75 text-xs text-muted-foreground">
++              {methodStates(methods, slot, requirement).map((state) => (
++                <li key={state.name}>
++                  <span className="font-medium text-foreground/80">{state.label}</span>.{" "}
++                  {state.reason}
++                </li>
++              ))}
++            </ul>
++          </li>
++        ))}
++      </ul>
++    </details>
++  );
++}
++
+ /** Short guidance under a requirement; the rows say the rest. */
+ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+   requirement.cardinality === "many"
+@@ -613,6 +715,21 @@ function RequirementView<E>({
+   const edit = editingFor(data, requirement);
+   const managed = provisionedOnly(requirement);
+   const label = requirement.definition.name.trim() || undefined;
++  const native = props.methods?.native(slot);
++  const states = methodStates(props.methods, slot, requirement);
++  const open = states.filter((state) => state.reason === undefined);
++  const blocked = states.length - open.length;
++  // Said only where the host reports a limit, so apps it says nothing about read as before.
++  const methodsLine =
++    blocked === 0 && native === undefined
++      ? undefined
++      : [
++          open.map((state) => state.label).join(", "),
++          blocked > 0 ? `${blocked} more not available yet` : "",
++          native !== undefined ? "Not offered in chat model pickers" : "",
++        ]
++          .filter((part) => part !== "")
++          .join(" · ") || undefined;
+   return (
+     <section
+       {...(label === undefined ? {} : { "aria-label": label })}
+@@ -621,10 +738,27 @@ function RequirementView<E>({
+       <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+         <AppProviderIcon app={props.app} provider={requirement.definition} large />
+         <div className="min-w-0">
+-          {label !== undefined && <p className="truncate font-medium">{label}</p>}
++          {label !== undefined && (
++            <p className="flex min-w-0 items-center gap-2 font-medium">
++              <span className="truncate">{label}</span>
++              {native !== undefined && (
++                <span
++                  className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground"
++                  title="A native API, not chat"
++                >
++                  {native}
++                </span>
++              )}
++            </p>
++          )}
+           <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
+             {managed ? "Set up automatically" : requirementNote(requirement, linked.length)}
+           </p>
++          {!managed && methodsLine !== undefined && (
++            <p className="text-pretty text-[11px] leading-4.5 text-muted-foreground">
++              {methodsLine}
++            </p>
++          )}
+           {edit === undefined && readOnlyNote !== undefined && (
+             <p className="text-pretty text-xs leading-4.5 text-muted-foreground">{readOnlyNote}</p>
+           )}
+@@ -883,6 +1017,7 @@ function EditableChoices<E>({
+   data,
+   edit,
+   accounts,
++  methods,
+   Failure,
+ }: ScopeProps<E> & {
+   readonly edit: LinkEditing<E>;
+@@ -964,9 +1099,20 @@ function EditableChoices<E>({
+       ready={ready}
+       edit={edit}
+       data={data}
++      blockedReason={methodBlocked(methods, slot, choice.account.method)}
+       Failure={Failure}
+     />
+   ));
++  // With no method the host can connect, the footer says why instead of offering a dead end.
++  const closedReasons = noMethodOpen(methods, slot, requirement)
++    ? [
++        ...new Set(
++          methodStates(methods, slot, requirement).flatMap((state) =>
++            state.reason === undefined ? [] : [state.reason],
++          ),
++        ),
++      ]
++    : [];
+   const list = (
+     <ul
+       {...(requirement.definition.name.trim() === ""
+@@ -1000,6 +1146,10 @@ function EditableChoices<E>({
+         ))}
+       {provisionedOnly(requirement) ? (
+         <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
++      ) : closedReasons.length > 0 ? (
++        <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground" data-connect-unavailable>
++          {closedReasons.join(" ")}
++        </p>
+       ) : (
+         <Button
+           variant="ghost"
+@@ -1043,9 +1193,15 @@ function ChoiceRow<E>({
+   data,
+   Failure,
+   replaces,
++  blockedReason,
+ }: {
+   /** The app-bound account that selecting this one would retire. */
+   readonly replaces?: string | undefined;
++  /**
++   * The host's reason this account's method can't serve the requirement. An unlinked account
++   * can't be linked; a linked one can still be unlinked, so the way out stays open.
++   */
++  readonly blockedReason?: string | undefined;
+   readonly app: App;
+   readonly slot: string;
+   readonly requirement: AccountRequirement;
+@@ -1073,6 +1229,7 @@ function ChoiceRow<E>({
+   const hostProvisioned = !automatic && provisionedMethod(requirement, account);
+   // Another person's contribution stays linked unless the host says the caller may remove it.
+   const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
++  const unusable = !linked && blockedReason !== undefined;
+   // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
+   const appBound = requirement.definition.auth[account.method]?.type === "interactive";
+   const [confirming, setConfirming] = useState(false);
+@@ -1106,7 +1263,7 @@ function ChoiceRow<E>({
+               id={id}
+               value={account.id}
+               aria-label={name}
+-              disabled={!ready || pending || hostProvisioned}
++              disabled={!ready || pending || hostProvisioned || unusable}
+               className={radioClass}
+               onClick={() => {
+                 if (linked) return;
+@@ -1121,7 +1278,7 @@ function ChoiceRow<E>({
+               id={id}
+               checked={linked}
+               aria-label={name}
+-              disabled={!ready || pending || hostProvisioned || fixed}
++              disabled={!ready || pending || hostProvisioned || fixed || unusable}
+               onCheckedChange={(checked) =>
+                 checked !== true && appBound ? setConfirming(true) : void change(checked === true)
+               }
+@@ -1160,8 +1317,13 @@ function ChoiceRow<E>({
+           />
+         </span>
+       </div>
++      {blockedReason !== undefined && (
++        <p className="text-xs text-muted-foreground" data-account-method-unavailable>
++          {blockedReason}
++        </p>
++      )}
+       <AccountStatus app={app} account={account} part="details" />
+-      {!hostProvisioned && data.accountDetails?.(account)}
++      {!hostProvisioned && !unusable && data.accountDetails?.(account)}
+       {error && (
+         <div className="w-full min-w-0 text-xs">
+           <Failure cause={error} />
+diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
+index fbe90d7..2d32b68 100644
+--- a/packages/ui/src/implementation/dashboard/common.tsx
++++ b/packages/ui/src/implementation/dashboard/common.tsx
+@@ -19,6 +19,7 @@ import { Input } from "@executor-js/ui/components/input";
+ import { cn } from "@executor-js/ui/lib/utils";
+ import { Skeleton } from "../components/skeleton.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
++import { providerBrand } from "../lib/provider-brand.ts";
+ import { builtInApp, isDefaultProductBrand } from "../../contracts/product-brand.ts";
+ const noIcons = Atom.make(noCatalogIcons);
+ 
+@@ -56,6 +57,8 @@ export function useAppIconSources(app: App | undefined): {
+  * An app's own icons when given or known to the catalog by name, otherwise the old product's
+  * domain-derived logo, with a neutral fallback on image failure. While an own icon may still
+  * arrive, the tile shows the loading skeleton instead of a domain logo that would then be replaced.
++ * A known model provider's tile carries its brand ink and falls back to its monogram, never to the
++ * generic glyph; the ink is identity only and never stands for health.
+  */
+ export function ProviderIcon({
+   name,
+@@ -84,6 +87,7 @@ export function ProviderIcon({
+   const { logo } = useProductBrand();
+   const [failed, setFailed] = useState<readonly string[]>([]);
+   const normalized = name.toLowerCase().trim();
++  const brand = providerBrand(normalized);
+   const size = large || medium ? 24 : 17;
+   const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
+   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
+@@ -94,7 +98,8 @@ export function ProviderIcon({
+   const own = sources !== null && !failed.includes(sources.light) ? sources : null;
+   const icon =
+     own === null && !waiting && source !== null && !failed.includes(source) ? source : null;
+-  if (!showFallback && !waiting && own === null && icon === null) return null;
++  if (!showFallback && brand === undefined && !waiting && own === null && icon === null)
++    return null;
+   const fail = (key: string) => () =>
+     setFailed((current) => (current.includes(key) ? current : [...current, key]));
+   return (
+@@ -105,6 +110,7 @@ export function ProviderIcon({
+           "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+         medium && "[&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+       )}
++      data-provider={brand?.key}
+       aria-hidden
+     >
+       {own ? (
+@@ -138,6 +144,16 @@ export function ProviderIcon({
+         />
+       ) : waiting ? (
+         <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
++      ) : brand ? (
++        <span
++          data-icon="monogram"
++          className={cn(
++            "font-semibold leading-none tracking-[-0.02em]",
++            large ? "text-[15px]" : medium ? "text-[11px]" : "text-[12px]",
++          )}
++        >
++          {brand.monogram}
++        </span>
+       ) : showFallback ? (
+         <HugeiconsIcon icon={PackageIcon} aria-hidden size={large ? 23 : 17} strokeWidth={1.5} />
+       ) : null}
+diff --git a/packages/ui/src/implementation/lib/provider-brand.ts b/packages/ui/src/implementation/lib/provider-brand.ts
+new file mode 100644
+index 0000000..ce7b13a
+--- /dev/null
++++ b/packages/ui/src/implementation/lib/provider-brand.ts
+@@ -0,0 +1,55 @@
++/**
++ * Model providers' brand identity for their icon tiles. A brand only tints the tile behind the
++ * provider's own logo and gives a monogram when no logo loads; it never says anything about an
++ * account's health, which keeps its own status colours. The name always shows beside the tile.
++ */
++export interface ProviderBrand {
++  /** The `data-provider` value whose ink `dashboard.css` defines for light and dark. */
++  readonly key: string;
++  /** Shown when the provider's logo is missing or fails to load. */
++  readonly monogram: string;
++}
++
++const brand = (key: string, monogram: string): ProviderBrand => ({ key, monogram });
++const openai = brand("openai", "OA");
++const anthropic = brand("anthropic", "A");
++const gemini = brand("gemini", "G");
++const vertex = brand("vertex", "V");
++const antigravity = brand("antigravity", "AG");
++const kimi = brand("kimi", "K");
++const xai = brand("xai", "x");
++const devin = brand("devin", "D");
++const meta = brand("meta", "M");
++const jev = brand("jev", "J");
++const cloudflare = brand("cloudflare", "CF");
++
++/** Provider and product names as provider definitions and apps spell them, lowercased. */
++const brands: ReadonlyMap<string, ProviderBrand> = new Map([
++  ["openai", openai],
++  ["chatgpt", openai],
++  ["codex", openai],
++  ["anthropic", anthropic],
++  ["claude", anthropic],
++  ["gemini", gemini],
++  ["google gemini", gemini],
++  ["gemini cli", gemini],
++  ["google vertex ai", vertex],
++  ["vertex ai", vertex],
++  ["antigravity", antigravity],
++  ["kimi", kimi],
++  ["moonshot ai", kimi],
++  ["xai", xai],
++  ["grok", xai],
++  ["devin", devin],
++  ["cognition", devin],
++  ["meta", meta],
++  ["meta ai", meta],
++  ["jev", jev],
++  ["typesafe", jev],
++  ["cloudflare", cloudflare],
++  ["workers ai", cloudflare],
++]);
++
++/** The brand of a provider or app by its display name, or undefined for every other name. */
++export const providerBrand = (name: string): ProviderBrand | undefined =>
++  brands.get(name.toLowerCase().trim());
+diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
+index 081399d..746ac2d 100644
+--- a/packages/ui/src/implementation/styles/dashboard.css
++++ b/packages/ui/src/implementation/styles/dashboard.css
+@@ -13,3 +13,47 @@ body:has([data-name-account-handoff][data-state="open"])
+   :is([data-slot="dialog-content"], [data-slot="dialog-overlay"])[data-state="closed"] {
+   display: none;
+ }
++
++/*
++ * Model provider identity on icon tiles (`provider-brand.ts`). The ink tints only the tile behind
++ * the provider's logo and its monogram; account health keeps its own colours. Unlayered so the
++ * tile's utility background and border yield to it. Light and dark follow the page's color-scheme.
++ */
++.provider-icon[data-provider="openai"] {
++  --provider-ink: light-dark(#087f63, #57d3ad);
++}
++.provider-icon[data-provider="anthropic"] {
++  --provider-ink: light-dark(#a84d2f, #e9a185);
++}
++.provider-icon[data-provider="gemini"] {
++  --provider-ink: light-dark(#285ec4, #8ab4ff);
++}
++.provider-icon[data-provider="vertex"] {
++  --provider-ink: light-dark(#2867bd, #8ab4ff);
++}
++.provider-icon[data-provider="antigravity"] {
++  --provider-ink: light-dark(#6348bd, #bca6ff);
++}
++.provider-icon[data-provider="kimi"] {
++  --provider-ink: light-dark(#087d58, #61d6a7);
++}
++.provider-icon[data-provider="xai"] {
++  --provider-ink: var(--foreground);
++}
++.provider-icon[data-provider="devin"] {
++  --provider-ink: light-dark(#2469ad, #83bcf5);
++}
++.provider-icon[data-provider="meta"] {
++  --provider-ink: light-dark(#0866c9, #78b5ff);
++}
++.provider-icon[data-provider="jev"] {
++  --provider-ink: light-dark(#6550a7, #bca9eb);
++}
++.provider-icon[data-provider="cloudflare"] {
++  --provider-ink: light-dark(#a6500a, #ffb467);
++}
++.provider-icon[data-provider] {
++  color: var(--provider-ink);
++  background-color: color-mix(in oklab, var(--provider-ink) 12%, var(--background));
++  border-color: color-mix(in oklab, var(--provider-ink) 30%, var(--border));
++}

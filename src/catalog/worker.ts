@@ -5,12 +5,13 @@ import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
 import { recipeAdditions } from "./recipes/index.ts";
+import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
 import { zendeskAddition } from "./zendesk/source.ts";
 import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./zendesk/metadata.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
-const sourceAdditions: readonly Addition[] = [aws];
+const sourceAdditions: readonly Addition[] = [aws, ...providerApps];
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
