@@ -476,7 +476,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-models.ts b/apps/hosted/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-models.ts
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,150 @@
 +import { GroupDatabase, GroupsUnavailable } from "../contracts/groups.ts";
 +import type { SqlClient } from "effect/sql";
 +import type { StorageError } from "@executor-js/sdk/core";
@@ -610,6 +610,7 @@ new file mode 100644
 +              );
 +            }),
 +          ),
++          Effect.catchTag("HttpClientError", () => Effect.fail(failure("outcome_unknown"))),
 +          Effect.timeout(limits.timeoutMs),
 +          Effect.catchTag("TimeoutError", () => Effect.fail(failure("timeout"))),
 +        );
@@ -658,12 +659,13 @@ diff --git a/e2e/support/app-model-backend.ts b/e2e/support/app-model-backend.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-model-backend.ts
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,139 @@
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
 +import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 +import { createHmac, timingSafeEqual } from "node:crypto";
 +import { createServer } from "node:http";
++import { Socket } from "node:net";
 +
 +const Assertion = Schema.Struct({
 +  nonce: Schema.String,
@@ -688,7 +690,7 @@ new file mode 100644
 +    messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.String })),
 +  }),
 +});
-+type Mode = "ok" | "invalid" | "cap" | "unavailable" | "unknown";
++type Mode = "ok" | "invalid" | "cap" | "unavailable" | "unknown" | "drop";
 +
 +/** The real product signs requests to this external pool peer; no SDK or policy is replaced. */
 +export const appModelBackend = Effect.gen(function* () {
@@ -722,6 +724,13 @@ new file mode 100644
 +    if (value.expiresAt <= now || value.expiresAt > now + 30_000)
 +      return HttpServerResponse.empty({ status: 401 });
 +    yield* Ref.update(calls, (prior) => [...prior, value]);
++    if (mode === "drop") {
++      const source = request.source;
++      if (!("socket" in source) || !(source.socket instanceof Socket))
++        return yield* Effect.die("Model fixture needs the Node request socket");
++      source.socket.destroy();
++      return HttpServerResponse.empty({ status: 500 });
++    }
 +    const held = gate;
 +    if (held !== undefined) {
 +      yield* Deferred.succeed(held.started, undefined);
@@ -914,8 +923,8 @@ diff --git a/e2e/support/app-model-source.ts b/e2e/support/app-model-source.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-model-source.ts
-@@ -0,0 +1,27 @@
-+export const appModelSource = `import { defineApp, mutation, query, appInterval, object, string, router, type AnyScopeMutationContext } from "apps";
+@@ -0,0 +1,33 @@
++export const appModelSource = `import { defineApp, mutation, query, workflow, appInterval, object, string, router, type AnyScopeMutationContext } from "apps";
 +const requirements = { models: { email: { scope: "app", model: "fixture-model" }, personal: { scope: "user", model: "fixture-model" } } } as const;
 +const interpret = mutation({ input: object({ email: string() }) }, async (ctx: AnyScopeMutationContext<typeof requirements>, input) => {
 +  const response = await ctx.models.email.request({ messages: [{ role: "user", content: input.email }],
@@ -932,8 +941,14 @@ new file mode 100644
 +  ctx.models.email.request({ messages: [{ role: "user", content: "No streaming" }], ...Object.fromEntries([["stream", true]]) }));
 +const inspect = query({ input: object({}) }, async (ctx) => ({ models: "models" in ctx,
 +  rows: ctx.sql.exec("SELECT category, actor FROM interpretations ORDER BY seq").toArray() }));
++const modelStep = workflow({ input: object({}) }, async (ctx) =>
++  ctx.step.do("model", { retries: { limit: 2, delay: 10 } }, async (step) =>
++    step.models.email.request({ messages: [{ role: "user", content: "Interpret one email" }] })));
++const mutationStep = workflow({ input: object({}) }, async (ctx) =>
++  ctx.step.runMutation("interpret", interpret, { email: "Interpret one email" }, { retries: { limit: 2, delay: 10 } }));
 +export default defineApp(requirements, async () => ({
 +  tools: router({ interpret, personal, invalid, inspect }),
++  workflows: { modelStep, mutationStep },
 +  schedules: { digest: appInterval({ minutes: 60 }, interpret, { email: "A synthetic invoice needs a reply" }) },
 +}));`;
 +
@@ -980,7 +995,7 @@ diff --git a/e2e/tests/app-model-requests.spec.ts b/e2e/tests/app-model-requests
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-model-requests.spec.ts
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,311 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schedule, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -991,6 +1006,7 @@ new file mode 100644
 +import { serverControl } from "../support/server-control.ts";
 +import { scenarios } from "../test-plan.ts";
 +import { appsManifest } from "../support/apps-release.ts";
++import { WorkflowRun } from "../support/workflow-app.ts";
 +import { appModelMigration } from "../support/app-model-source.ts";
 +
 +const Bindings = Schema.Struct({
@@ -1188,6 +1204,7 @@ new file mode 100644
 +          ["cap", "cap_exceeded"],
 +          ["unavailable", "pool_unavailable"],
 +          ["unknown", "outcome_unknown"],
++          ["drop", "outcome_unknown"],
 +          ["invalid", "invalid_response"],
 +        ] as const) {
 +          yield* backend.respond(mode);
@@ -1199,6 +1216,37 @@ new file mode 100644
 +          });
 +          expect(JSON.stringify(response.body)).not.toContain("synthetic-invalid-response");
 +          expect(yield* backend.calls).toHaveLength(before + 1);
++        }
++        yield* backend.respond("unknown");
++        for (const workflow of ["modelStep", "mutationStep"]) {
++          const before = (yield* backend.calls).length;
++          const started = yield* body(
++            WorkflowRun,
++            yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
++              workflow,
++              input: {},
++            }),
++          );
++          yield* Effect.addFinalizer(() =>
++            api
++              .request(actors.owner, "POST", `${path}/workflow-runs/${started.id}/terminate`)
++              .pipe(Effect.asVoid, Effect.orDie),
++          );
++          const finished = yield* api
++            .request(actors.owner, "GET", `${path}/workflow-runs/${started.id}`)
++            .pipe(
++              Effect.flatMap((response) => body(WorkflowRun, response)),
++              Effect.flatMap((run) =>
++                ["errored", "complete", "terminated"].includes(run.status)
++                  ? Effect.succeed(run)
++                  : Effect.fail("Workflow still running"),
++              ),
++              Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 100 }),
++            );
++          expect(finished.status).toBe("errored");
++          expect(yield* backend.calls).toHaveLength(before);
++          expect(finished.failure).toMatchObject({ errorName: "ModelRequestFailed" });
++          expect(finished.failure?.message).toContain("unavailable inside durable workflow steps");
 +        }
 +        yield* backend.respond("ok");
 +        const held = yield* backend.hold;
@@ -1302,13 +1350,13 @@ diff --git a/packages/app-data/src/cloudflare.ts b/packages/app-data/src/cloudfl
                      (ms) => {
                        waitMs += ms;
                      },
-diff --git a/packages/apps/protocols/27.json b/packages/apps/protocols/27.json
+diff --git a/packages/apps/protocols/26.json b/packages/apps/protocols/26.json
 new file mode 100644
 --- /dev/null
-+++ b/packages/apps/protocols/27.json
-@@ -0,0 +1,3239 @@
++++ b/packages/apps/protocols/26.json
+@@ -0,0 +1,3243 @@
 +{
-+  "protocol": 27,
++  "protocol": 26,
 +  "previous": 25,
 +  "messages": {
 +    "requirements": {
@@ -2603,6 +2651,10 @@ new file mode 100644
 +              {
 +                "_tag": "Literal",
 +                "literal": "outcome_unknown"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "durable_steps_unavailable"
 +              }
 +            ]
 +          },
@@ -4615,7 +4667,7 @@ diff --git a/packages/apps/src/contracts/models.ts b/packages/apps/src/contracts
 new file mode 100644
 --- /dev/null
 +++ b/packages/apps/src/contracts/models.ts
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,137 @@
 +/** Pure model requirements and one non-streaming Chat Completions exchange. */
 +import { Schema, type Effect } from "effect";
 +import { JsonObject } from "./schema.ts";
@@ -4711,11 +4763,14 @@ new file mode 100644
 +      "cancelled",
 +      "timeout",
 +      "outcome_unknown",
++      "durable_steps_unavailable",
 +    ]),
 +  },
 +) {
 +  override get message() {
 +    const messages: Record<ModelRequestFailed["reason"], string> = {
++      durable_steps_unavailable:
++        "Model requests are unavailable inside durable workflow steps. Use a mutation outside a durable workflow, a schedule or a webhook.",
 +      binding_missing: "Choose a model pool for this app requirement first.",
 +      denied: "This app model binding no longer has permission to use its pool.",
 +      pool_unavailable: "The bound model pool is unavailable.",
@@ -4738,6 +4793,7 @@ new file mode 100644
 +export type ModelRpc = (input: unknown) => Promise<unknown>;
 +/** Trusted host authority is captured by the invocation, never supplied by the app. */
 +export type ModelHost = (command: ModelCommand) => Effect.Effect<ModelResponse, ModelRequestFailed>;
++/** Durable workflow steps refuse these calls until the host can preserve external dispatch receipts. */
 +export type ModelSlots<Requirements> = {
 +  readonly models: {
 +    readonly [
@@ -4757,7 +4813,7 @@ diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src
   * This file has no imports so the package build script can read it directly.
   */
 -export const frameworkProtocol = 25;
-+export const frameworkProtocol = 27;
++export const frameworkProtocol = 26;
 diff --git a/packages/apps/src/contracts/protocols/25.ts b/packages/apps/src/contracts/protocols/25.ts
 new file mode 100644
 --- /dev/null
@@ -5698,7 +5754,7 @@ new file mode 100644
 +    // oxlint-disable-next-line executor/authored-code-through-adapter -- the invocation's private model RPC
 +    Effect.tryPromise({
 +      try: () => deliver(Schema.encodeSync(ModelCommand)(command)),
-+      catch: () => new ModelRequestFailed({ reason: "pool_unavailable" }),
++      catch: () => new ModelRequestFailed({ reason: "outcome_unknown" }),
 +    }).pipe(
 +      Effect.flatMap((reply) =>
 +        Schema.decodeUnknownEffect(ModelReply)(reply).pipe(
@@ -5709,6 +5765,26 @@ new file mode 100644
 +        reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error),
 +      ),
 +    );
+diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/apps/src/implementation/workflow-context.ts
+--- a/packages/apps/src/implementation/workflow-context.ts
++++ b/packages/apps/src/implementation/workflow-context.ts
+@@ -16,6 +16,7 @@
+   type WorkflowStepContext as AuthorStepContext,
+ } from "../contracts/workflows.ts";
+ import { JsonValue } from "../contracts/schema.ts";
++import { ModelRequestFailed } from "../contracts/models.ts";
+ import { nativeOperation } from "./operations.ts";
+ import { declaredOperations } from "./router.ts";
+ import { fromPromise, toPromise } from "./authoring.ts";
+@@ -42,7 +43,7 @@
+       return Effect.fail(
+         new WorkflowFailure({
+           reason: "execution",
+-          retryable: !(error instanceof NonRetryableError),
++          retryable: !(error instanceof NonRetryableError) && !Schema.is(ModelRequestFailed)(error),
+           ...(errorName === undefined ? {} : { errorName }),
+           ...(message === undefined ? {} : { message }),
+         }),
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
@@ -5816,7 +5892,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  const protocol23: AppProtocol = { ...protocol20, version: 23, nodeEntry: nodeAppEntry(23) };
  const protocol24: AppProtocol = { ...protocol23, version: 24, nodeEntry: nodeAppEntry(24) };
  const protocol25: AppProtocol = { ...protocol24, version: 25, nodeEntry: nodeAppEntry(25) };
-+const protocol27: AppProtocol = { ...protocol25, version: 27, nodeEntry: nodeAppEntry(27) };
++const protocol26: AppProtocol = { ...protocol25, version: 26, nodeEntry: nodeAppEntry(26) };
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
@@ -5824,7 +5900,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
      protocol23,
      protocol24,
      protocol25,
-+    protocol27,
++    protocol26,
    ].map((protocol) => [protocol.version, protocol]),
  );
  
@@ -5926,7 +6002,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  import { makeAccountObservations } from "./account-observations.ts";
  import { makeObservationReader } from "./account-observation-read.ts";
  import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
-@@ -152,9 +153,26 @@
+@@ -152,9 +153,32 @@
      const base = toEffectRuntime(options.runtime, options.blobs, cache);
      const runtime: Runtime = {
        ...base,
@@ -5935,7 +6011,10 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
 -      webhook: (input) => base.webhook(input).pipe(Effect.provideService(AppEventSink, sink)),
 +      call: (input) =>
 +        Effect.gen(function* () {
-+          const models = yield* modelsForInvocation(db, options.models, input);
++          const models = yield* modelsForInvocation(db, options.models, {
++            ...input,
++            durableStep: input.replay !== undefined,
++          });
 +          return yield* base.call({ ...input, models });
 +        }).pipe(Effect.provideService(AppEventSink, sink)),
 +      mutate: (input) =>
@@ -5950,13 +6029,16 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
 +        }).pipe(Effect.provideService(AppEventSink, sink)),
 +      workflow: (input) =>
 +        Effect.gen(function* () {
-+          const models = yield* modelsForInvocation(db, options.models, input);
++          const models = yield* modelsForInvocation(db, options.models, {
++            ...input,
++            durableStep: true,
++          });
 +          return yield* base.workflow({ ...input, models });
 +        }),
      };
      // The operator's own OAuth clients, by ID; their tokens are managed.
      const firstPartyClients = new Map(
-@@ -318,7 +336,20 @@
+@@ -318,7 +342,21 @@
      return {
        [WebhookSourceHost]: { tick: webhookSources.tick },
        workflowInputs: workflows.inputs,
@@ -5970,6 +6052,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
 +            const models = yield* modelsForInvocation(db, options.models, {
 +              app: seed.app,
 +              build: seed.build,
++              durableStep: true,
 +              ...(context.caller === undefined ? {} : { caller: context.caller }),
 +            });
 +            return { ...context, models };
@@ -5982,7 +6065,7 @@ diff --git a/packages/sdk/src/implementation/models.ts b/packages/sdk/src/implem
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/models.ts
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,70 @@
 +import { Effect, Schema } from "effect";
 +import { ModelRequestFailed, ModelResponse, type ModelHost } from "apps/contracts";
 +import type { ModelBackend } from "../contracts/models.ts";
@@ -5998,12 +6081,16 @@ new file mode 100644
 +    readonly app: string;
 +    readonly build: string;
 +    readonly caller?: string;
++    readonly durableStep?: boolean;
 +  },
 +): Effect.Effect<ModelHost> =>
 +  Effect.gen(function* () {
 +    const services = yield* Effect.context<never>();
 +    return (command) =>
 +      Effect.gen(function* () {
++        // Engine replay can repeat a charged request until durable dispatch receipts exist.
++        if (identity.durableStep)
++          return yield* new ModelRequestFailed({ reason: "durable_steps_unavailable" });
 +        if (backend === undefined)
 +          return yield* new ModelRequestFailed({ reason: "binding_missing" });
 +        const app = yield* storedApp(db, { app: AppId.make(identity.app) });
@@ -6188,7 +6275,7 @@ new file mode 100644
 +                error: Schema.is(ModelRequestFailed)(error)
 +                  ? error
 +                  : new ModelRequestFailed({
-+                      reason: Cause.hasInterrupts(cause) ? "cancelled" : "pool_unavailable",
++                      reason: Cause.hasInterrupts(cause) ? "cancelled" : "outcome_unknown",
 +                    }),
 +              };
 +            },
@@ -6350,3 +6437,15 @@ diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src
                  controls,
                  workflow: execution,
                },
+diff --git a/packages/sdk/src/implementation/workflows.ts b/packages/sdk/src/implementation/workflows.ts
+--- a/packages/sdk/src/implementation/workflows.ts
++++ b/packages/sdk/src/implementation/workflows.ts
+@@ -301,7 +301,7 @@
+                 Effect.fail(
+                   new WorkflowFailure({
+                     reason: "execution",
+-                    retryable: true,
++                    retryable: errorName !== "ModelRequestFailed",
+                     ...(errorName === undefined ? {} : { errorName }),
+                     ...(message.length === 0 ? {} : { message }),
+                   }),

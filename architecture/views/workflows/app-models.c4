@@ -9,6 +9,7 @@ views {
       interactive usage still belongs to the caller and keeps that person's pool caps. Callerless
       schedules and webhooks use the binding's authorizer. Every dispatch rechecks authority.
       Queries and rendering have no model callback, and generation is never retried automatically.
+      Durable workflow steps return a typed refusal until dispatch receipts can survive replay.
     """
 
     include poolMember, appHosting, basalt.toolsGateway, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, basalt.poolDatabase, modelProviders
