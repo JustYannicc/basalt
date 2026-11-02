@@ -1149,22 +1149,28 @@ index c2df1f7..033dee5 100644
      Effect.provide(
        Layer.mergeAll(McpSession.make(mcpSession), cloudTelemetry).pipe(
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 2f38a5e..2e4b3d4 100644
+index 2f38a5e..54483ae 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -103,7 +103,7 @@ const jobs = {
-     runner: 3,
- 
-     pattern:
--      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-+      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud production operations (?:encrypt|scope|bind)|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-   },
-   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
-   // load kept the team installation's workflow span from arriving within its 30-second wait, so
-@@ -285,6 +285,16 @@ const notRunInCi: Partial<
+@@ -285,6 +285,31 @@ const notRunInCi: Partial<
      { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
    >
  > = {
++  cloudProductionOps: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt host-managed-accounts job runs it with an isolated synthetic operation-signing key.",
++  },
++  cloudProductionOpsBinding: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt host-managed-accounts job runs it with an isolated synthetic operation-signing key.",
++  },
++  cloudProductionOpsScope: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt host-managed-accounts job runs it with an isolated synthetic operation-signing key.",
++  },
 +  cloudProductionOpsStableKeys: {
 +    targets: ["cloud"],
 +    reason:
@@ -1179,7 +1185,7 @@ index 2f38a5e..2e4b3d4 100644
      targets: ["cloud"],
      reason:
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 2262db4..13d95c2 100644
+index 2262db4..eb0372e 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
 @@ -2,11 +2,13 @@ import {
@@ -1204,22 +1210,17 @@ index 2262db4..13d95c2 100644
  import {
    OperatorOAuthFixture,
    operatorOAuthFile,
-@@ -265,9 +268,11 @@ export const startCloudEnvironment = (input: {
-       BETTER_AUTH_URL: input.origin,
-       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
-       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
--      ...(process.env.BASALT_E2E_POOL_SETUP === "1"
--        ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
--        : {}),
-+      ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1"
-+        ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
-+        : process.env.BASALT_E2E_POOL_SETUP === "1"
-+          ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
-+          : {}),
+@@ -270,6 +273,9 @@ export const startCloudEnvironment = (input: {
+         : {}),
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
++      ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++        ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
++        : {}),
        APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
-@@ -419,9 +424,12 @@ export const startCloudEnvironment = (input: {
+       EXECUTOR_BUILD_VERSION: input.commit,
+       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
+@@ -419,9 +425,12 @@ export const startCloudEnvironment = (input: {
          ),
          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
        );
@@ -1232,7 +1233,7 @@ index 2262db4..13d95c2 100644
        databasePassword,
        dockerEnv,
        log: `${directory}/postgres.log`,
-@@ -446,71 +454,96 @@ export const startCloudEnvironment = (input: {
+@@ -446,71 +455,96 @@ export const startCloudEnvironment = (input: {
            );
      if (built !== 0)
        return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
@@ -1389,7 +1390,7 @@ index 2262db4..13d95c2 100644
      const fixtures = yield* startFixtureControl(input.origin, directory, browser);
      yield* fixtureRequest(fixtures, "/configure", {
        origin: input.origin,
-@@ -520,9 +553,29 @@ export const startCloudEnvironment = (input: {
+@@ -520,9 +554,29 @@ export const startCloudEnvironment = (input: {
        databaseName: "executor",
        databaseUsername: "executor",
      });
