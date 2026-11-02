@@ -1,0 +1,367 @@
+diff --git a/packages/ui/src/implementation/dashboard/loading.tsx b/packages/ui/src/implementation/dashboard/loading.tsx
+--- a/packages/ui/src/implementation/dashboard/loading.tsx
++++ b/packages/ui/src/implementation/dashboard/loading.tsx
+@@ -151,8 +151,9 @@
+   );
+ }
+ 
+-export const approvalsTitle = "Approvals";
+-export const approvalsDescription = "Answer workflow questions and review scheduled runs.";
++export const approvalsTitle = "Human in the loop";
++export const approvalsDescription =
++  "Decisions, questions, and actions your workflows need from you.";
+ 
+ /** The approvals list while its code or the pending runs load. */
+ export function ApprovalsPending() {
+diff --git a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
+--- a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
++++ b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
+@@ -6,7 +6,6 @@
+   Key01Icon,
+   Plug01Icon,
+   Settings05Icon,
+-  Shield01Icon,
+   UserCircleIcon,
+   UserGroupIcon,
+   UserIcon,
+@@ -25,7 +24,7 @@
+   { to: "/org/$organizationSlug/apps", label: "Apps", icon: BoxesIcon },
+   { to: "/org/$organizationSlug/connect", label: "Connections", icon: Plug01Icon },
+   { to: "/org/$organizationSlug/accounts", label: "Accounts", icon: UserCircleIcon },
+-  { to: "/org/$organizationSlug/approvals", label: "Approvals", icon: Shield01Icon },
++  { to: "/org/$organizationSlug/approvals", label: "Human in the loop", icon: UserIcon },
+   { to: "/org/$organizationSlug/groups", label: "Groups", icon: UserGroupIcon },
+ ] as const;
+ const settings = {
+diff --git a/apps/local/web/src/implementation/app.tsx b/apps/local/web/src/implementation/app.tsx
+--- a/apps/local/web/src/implementation/app.tsx
++++ b/apps/local/web/src/implementation/app.tsx
+@@ -10,7 +10,7 @@
+   LaptopIcon,
+   PackageIcon,
+   Plug01Icon,
+-  Shield01Icon,
++  UserIcon,
+ } from "@hugeicons/core-free-icons";
+ import { overviewAtom } from "../contracts/api.ts";
+ import { bootstrapAtom, sessionAtom } from "../contracts/connection.ts";
+@@ -174,8 +174,8 @@
+                 "active [.sidebar_nav_a&]:bg-accent [.sidebar_nav_a&]:text-foreground",
+             )}
+           >
+-            <HugeiconsIcon icon={Shield01Icon} strokeWidth={2} aria-hidden size={16} />
+-            Approvals
++            <HugeiconsIcon icon={UserIcon} strokeWidth={2} aria-hidden size={16} />
++            Human in the loop
+           </Link>
+         </>
+       }
+diff --git a/apps/hosted/web/src/implementation/components/page-pending.tsx b/apps/hosted/web/src/implementation/components/page-pending.tsx
+--- a/apps/hosted/web/src/implementation/components/page-pending.tsx
++++ b/apps/hosted/web/src/implementation/components/page-pending.tsx
+@@ -62,7 +62,7 @@
+         params={{ organizationSlug }}
+         className="mb-4 inline-flex text-sm text-muted-foreground"
+       >
+-        Back to approvals
++        Back to human in the loop
+       </Link>
+       {children}
+     </main>
+diff --git a/apps/local/web/src/implementation/pages/approvals.tsx b/apps/local/web/src/implementation/pages/approvals.tsx
+--- a/apps/local/web/src/implementation/pages/approvals.tsx
++++ b/apps/local/web/src/implementation/pages/approvals.tsx
+@@ -17,7 +17,7 @@
+   return (
+     <main className="mx-auto w-full max-w-2xl p-4 md:p-6">
+       <Link to="/approvals" className="mb-4 inline-flex text-sm text-muted-foreground">
+-        Back to approvals
++        Back to human in the loop
+       </Link>
+       <BrowserApprovalCard
+         atoms={scheduledReviewAtoms(runId)}
+@@ -38,7 +38,7 @@
+   return (
+     <main className="mx-auto w-full max-w-2xl p-4 md:p-6">
+       <Link to="/approvals" className="mb-4 inline-flex text-sm text-muted-foreground">
+-        Back to approvals
++        Back to human in the loop
+       </Link>
+       <LazyReview load={loadQuestion} props={props} />
+     </main>
+diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/ui/src/implementation/dashboard/approvals.tsx
+--- a/packages/ui/src/implementation/dashboard/approvals.tsx
++++ b/packages/ui/src/implementation/dashboard/approvals.tsx
+@@ -4,13 +4,28 @@
+ import { approvalsDescription, approvalsTitle } from "./loading.tsx";
+ import type { ComponentType, ReactNode } from "react";
+ import type { FailureProps, Query } from "../../contracts/dashboard.ts";
++import type { WorkflowInput } from "@executor-js/sdk/core";
+ import type { ApprovalQueueItem } from "../../contracts/workflow-inputs.ts";
+ import { QueryView } from "./context.tsx";
+ import { Button } from "../components/button.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { productNamed } from "../../contracts/product-brand.ts";
+ 
+-/** Scheduled approvals and workflow questions share the existing queue in local and hosted dashboards. */
++const requestTypes = {
++  text: "Free text",
++  choice: "Choice",
++  confirm: "Confirmation",
++  number: "Number",
++  date: "Date",
++  "reconnect-account": "Reconnect account",
++  "mcp-app": "Custom display",
++};
++
++function requestType(input: WorkflowInput) {
++  return input.display === undefined ? "Form" : requestTypes[input.display.kind];
++}
++
++/** Existing question and run identities keep saved review links valid across the tab rename. */
+ export function ApprovalsPage<E>({
+   query,
+   Failure,
+@@ -27,25 +42,28 @@
+       <QueryView query={query} Failure={Failure}>
+         {(items) =>
+           items.length === 0 ? (
+-            <EmptyState title="No approvals waiting">
+-              Scheduled runs and workflow questions that need your response will appear here.
++            <EmptyState title="Nothing needs you right now">
++              Workflow requests appear here when they need your input or approval.
+             </EmptyState>
+           ) : (
+-            <div className="divide-y rounded-lg border">
++            <ul aria-label="Requests for you" className="divide-y rounded-lg border">
+               {items.map((item) => {
+                 const expiresAt =
+                   item.kind === "workflow" ? item.input.expiresAt : item.run.expiresAt;
+                 return (
+-                  <div
++                  <li
+                     key={item.kind === "workflow" ? item.input.id : item.run.id}
+-                    className="flex items-center justify-between gap-4 p-4"
++                    className="flex flex-wrap items-start justify-between gap-4 p-4 sm:flex-nowrap"
+                   >
+                     <div className="min-w-0">
+-                      <p className="text-sm font-medium break-words">
++                      <h2 className="text-sm font-medium whitespace-pre-wrap break-words">
++                        {item.kind === "workflow" ? item.input.form.message : item.run.name}
++                      </h2>
++                      <p className="mt-1 text-xs text-muted-foreground">
+                         {productNamed(item.app.name, brand)}
+-                      </p>
+-                      <p className="mt-1 text-xs text-muted-foreground">
+-                        {item.kind === "workflow" ? item.input.name : item.run.name}
++                        {" · "}
++                        {item.kind === "workflow" ? requestType(item.input) : "Tool approval"}
++                        {item.kind === "workflow" && <> · {item.input.workflow}</>}
+                         {expiresAt && (
+                           <>
+                             {" · Expires "}
+@@ -57,10 +75,10 @@
+                     <Button size="sm" variant="outline" asChild>
+                       {review(item)}
+                     </Button>
+-                  </div>
++                  </li>
+                 );
+               })}
+-            </div>
++            </ul>
+           )
+         }
+       </QueryView>
+diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
+--- a/e2e/tests/workflow-input-browser.spec.ts
++++ b/e2e/tests/workflow-input-browser.spec.ts
+@@ -1,4 +1,4 @@
+-/** People answer durable questions in the existing Approvals tab, with ordinary forms as fallback. */
++/** People answer durable questions in the human-in-the-loop tab, with ordinary forms as fallback. */
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { body } from "../support/api.ts";
+@@ -13,7 +13,7 @@
+ import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+-layer(HostedLive, { excludeTestServices: true })("Workflow questions in Approvals", (it) => {
++layer(HostedLive, { excludeTestServices: true })("Human workflow requests", (it) => {
+   it.effect(scenarios.workflowInputBrowser.title, (context) =>
+     withHostedCase(
+       context,
+@@ -23,6 +23,15 @@
+         const run = yield* f.start(86400000, "no", f.actors.owner, "defaults");
+         yield* browser.login(f.actors.owner);
+         const queue = `/org/${f.actors.organization.slug}/approvals`;
++        const types = [
++          "Free text",
++          "Choice",
++          "Confirmation",
++          "Number",
++          "Date",
++          "Reconnect account",
++          "Custom display",
++        ];
+         const messages = [
+           "Explain the exception in your own words",
+           "Choose a destination",
+@@ -34,7 +43,53 @@
+         ];
+         for (const [index, message] of messages.entries()) {
+           const question = yield* f.pending(run.id);
+-          yield* browser.use("Open the existing Approvals queue", (page) => page.goto(queue));
++          yield* browser.use("Open the current saved queue link", (page) => page.goto(queue));
++          yield* browser.use("Enter through Human in the loop", (page) =>
++            page
++              .getByRole("navigation", { name: "Main navigation" })
++              .getByRole("link", { name: "Human in the loop", exact: true })
++              .click(),
++          );
++          yield* browser.use("The tab has its human-in-the-loop heading", (page) =>
++            page.getByRole("heading", { name: "Human in the loop", exact: true }).waitFor(),
++          );
++          yield* browser.use("The queue shows the actual question", (page) =>
++            page
++              .getByRole("list", { name: "Requests for you" })
++              .getByRole("listitem")
++              .getByRole("heading", { name: message, exact: true })
++              .waitFor(),
++          );
++          yield* browser.use("The request identifies its default type", (page) =>
++            page
++              .getByRole("list", { name: "Requests for you" })
++              .getByRole("listitem")
++              .filter({ hasText: message })
++              .getByText(new RegExp(` · ${types[index]} · `))
++              .waitFor(),
++          );
++          if (index === 0) {
++            yield* browser.checkpoint("Human in the loop shows the question and request type");
++            yield* browser.use("Use a phone-sized viewport", (page) =>
++              page.setViewportSize({ width: 390, height: 844 }),
++            );
++            yield* browser.use("Open the phone navigation", (page) =>
++              page.getByRole("button", { name: "Menu", exact: true }).click(),
++            );
++            yield* browser.use("Enter Human in the loop from the phone menu", (page) =>
++              page
++                .getByRole("dialog")
++                .getByRole("link", { name: "Human in the loop", exact: true })
++                .click(),
++            );
++            yield* browser.use("The phone queue retains the same pending request", (page) =>
++              page.getByRole("heading", { name: message, exact: true }).waitFor(),
++            );
++            yield* browser.checkpoint("Human in the loop on a phone");
++            yield* browser.use("Restore the desktop viewport", (page) =>
++              page.setViewportSize({ width: 1440, height: 960 }),
++            );
++          }
+           yield* browser.use("Respond to the workflow question", (page) =>
+             page.getByRole("link", { name: "Respond", exact: true }).click(),
+           );
+@@ -173,7 +228,20 @@
+             .frameLocator('iframe[title="Custom workflow display"]')
+             .frameLocator('iframe[title="App content"]');
+         const url = `/org/${f.actors.organization.slug}/approvals/workflow/${question.app}/${question.id}`;
+-        yield* browser.use("Open an authored custom question", (page) => page.goto(url));
++        yield* browser.use("Open the human-in-the-loop tab", (page) =>
++          page.goto(`/org/${f.actors.organization.slug}/approvals`),
++        );
++        yield* browser.use("Custom displays arrive in the same queue", (page) =>
++          page
++            .getByRole("list", { name: "Requests for you" })
++            .getByRole("listitem")
++            .filter({ hasText: "Custom question with a standard form" })
++            .getByRole("link", { name: "Respond", exact: true })
++            .click(),
++        );
++        yield* browser.use("The saved request link still identifies the same question", (page) =>
++          page.waitForURL(`**${url}`),
++        );
+         yield* browser.use("The native app receives its own input", (page) =>
+           guest(page).getByText("Frame input", { exact: true }).waitFor(),
+         );
+@@ -343,7 +411,10 @@
+         const path = `${f.path}/workflow-inputs/${question.id}/display`;
+         const otherRecipient = yield* f.api.request(f.actors.owner, "POST", path);
+         expect(otherRecipient.status).toBe(500);
+-        expect(otherRecipient.body).toMatchObject({ _tag: "WorkflowFailure", reason: "not_found" });
++        expect(otherRecipient.body).toMatchObject({
++          _tag: "WorkflowFailure",
++          reason: "not_found",
++        });
+         const opened = yield* f.api.request(f.actors.member, "POST", path);
+         expect(opened.status, JSON.stringify(opened.body)).toBe(200);
+         const view = yield* body(
+@@ -365,7 +436,10 @@
+           { capability: view.capability, uri: "fixture://note" },
+         );
+         expect(otherResource.status).toBe(500);
+-        expect(otherResource.body).toMatchObject({ _tag: "WorkflowFailure", reason: "not_found" });
++        expect(otherResource.body).toMatchObject({
++          _tag: "WorkflowFailure",
++          reason: "not_found",
++        });
+         yield* f.share("private");
+         expect((yield* resource()).status).toBe(403);
+         expect(
+diff --git a/e2e/tests/schedule-browser.spec.ts b/e2e/tests/schedule-browser.spec.ts
+--- a/e2e/tests/schedule-browser.spec.ts
++++ b/e2e/tests/schedule-browser.spec.ts
+@@ -45,7 +45,7 @@
+         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
+         yield* browser.use("Pair the dashboard", (page) => page.goto(url));
+         yield* browser.use("Wait for authentication", (page) =>
+-          page.getByRole("link", { name: "Approvals", exact: true }).waitFor(),
++          page.getByRole("link", { name: "Human in the loop", exact: true }).waitFor(),
+         );
+         yield* browser.use("Open schedule controls", (page) =>
+           page.goto(`${target.metadata.origin}/apps/${app.id}?view=schedules`),
+@@ -76,7 +76,7 @@
+           ),
+         ).toBe(200);
+         yield* browser.use("Open approvals", (page) =>
+-          page.getByRole("link", { name: "Approvals", exact: true }).click(),
++          page.getByRole("link", { name: "Human in the loop", exact: true }).click(),
+         );
+         yield* browser.use("Reload the approval queue", (page) => page.reload());
+         yield* browser.use("Wait for pending approval", (page) =>
+diff --git a/e2e/tests/hosted-schedule-browser.spec.ts b/e2e/tests/hosted-schedule-browser.spec.ts
+--- a/e2e/tests/hosted-schedule-browser.spec.ts
++++ b/e2e/tests/hosted-schedule-browser.spec.ts
+@@ -514,7 +514,7 @@
+           ),
+         ).toBe(200);
+         yield* browser.use("Open approvals", (page) =>
+-          page.getByRole("link", { name: "Approvals", exact: true }).click(),
++          page.getByRole("link", { name: "Human in the loop", exact: true }).click(),
+         );
+         yield* browser.use("Reload the approval queue", (page) => page.reload());
+         yield* browser.use("Wait for pending approval", (page) =>
+diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
+--- a/e2e/tests/local-workflow-inputs.spec.ts
++++ b/e2e/tests/local-workflow-inputs.spec.ts
+@@ -167,7 +167,7 @@
+         );
+         yield* browser.use("Pair the local dashboard", (page) => page.goto(pairing.url));
+         yield* browser.use("The paired dashboard is ready", (page) =>
+-          page.getByRole("link", { name: "Approvals", exact: true }).waitFor(),
++          page.getByRole("link", { name: "Human in the loop", exact: true }).waitFor(),
+         );
+         yield* browser.use("Open local Approvals", (page) =>
+           page.goto(`${target.metadata.origin}/approvals`),
+diff --git a/apps/docs/content/concepts/tools-and-approvals.md b/apps/docs/content/concepts/tools-and-approvals.md
+--- a/apps/docs/content/concepts/tools-and-approvals.md
++++ b/apps/docs/content/concepts/tools-and-approvals.md
+@@ -108,7 +108,7 @@
+ 
+ ## Workflow questions
+ 
+-Open **Approvals** to answer a waiting workflow question. Questions can ask for
++Open **Human in the loop** for workflow questions and scheduled tool approvals. Questions can ask for
+ free text, a choice, confirmation, a number, a date, or a fresh connection check.
+ Saving a response lets the workflow continue; it does not confirm that an account
+ or service has recovered. Reconnect first, then ask the workflow to verify it.
