@@ -2,6 +2,10 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path";
 import { brand } from "../../brand.ts";
 import { productionOperation } from "./client.ts";
+import { failure, failureReceipt, OperationFailure, type FailureReceipt } from "./failure.ts";
+
+const output = resolve(process.env.OPS_OUTPUT_DIRECTORY ?? ".generated/production-ops");
+let phase: FailureReceipt["phase"] = "config";
 
 try {
   if (
@@ -50,6 +54,7 @@ try {
       readFileSync(join(process.env.OPS_PREVIOUS_DIRECTORY ?? "", "operation.json"), "utf8"),
     );
   }
+  phase = "request";
   const result = await productionOperation({
     target: `https://${brand.host}`,
     signingKey: process.env.POOL_APP_SIGNING_KEY ?? "",
@@ -62,7 +67,7 @@ try {
     go: process.env.OPS_GO ?? "",
     ...(previous === undefined ? {} : { previous }),
   });
-  const output = resolve(process.env.OPS_OUTPUT_DIRECTORY ?? ".generated/production-ops");
+  phase = "receipt";
   mkdirSync(output, { recursive: true, mode: 0o700 });
   writeFileSync(join(output, "operation.json"), `${JSON.stringify(result)}\n`, {
     mode: 0o600,
@@ -94,9 +99,27 @@ try {
   process.stdout.write(
     "Production operation completed; encrypted artifact and safe summary saved.\n",
   );
-} catch {
+} catch (error) {
+  const receipt =
+    error instanceof OperationFailure
+      ? (failureReceipt(error.receipt) ?? failure("unknown", "receipt"))
+      : failure(phase === "config" ? "config" : "unknown", phase);
+  // Numeric HTTP status comes from fetch, never from an untrusted response field.
+  const safe =
+    error instanceof OperationFailure && error.receipt.httpStatus !== undefined
+      ? { ...receipt, httpStatus: error.receipt.httpStatus }
+      : receipt;
+  try {
+    mkdirSync(output, { recursive: true, mode: 0o700 });
+    writeFileSync(join(output, "failure.json"), `${JSON.stringify(safe)}\n`, {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch {
+    process.stderr.write("Safe failure receipt could not be saved.\n");
+  }
   process.stderr.write(
-    "Production operation failed. No credential-bearing error or response was logged. Inspect the saved receipt before retrying an apply.\n",
+    "Production operation failed. Inspect failure.json and the saved apply receipt before retrying.\n",
   );
   process.exitCode = 1;
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { signEnvelope } from "../../src/pool/token.ts";
 import { canonical, hash } from "./artifact.ts";
+import { failure, failureReceipt, OperationFailure } from "./failure.ts";
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -24,18 +25,23 @@ export async function productionOperation(
 ): Promise<Record<string, unknown>> {
   const target = new URL(input.target);
   if (target.origin !== input.target || target.protocol !== "https:")
-    throw new Error("Invalid target");
+    throw new OperationFailure(failure("config", "config"));
   if (
     !/^[a-f0-9]{64}$/i.test(input.signingKey) ||
     !/^[a-z0-9][a-z0-9-]{0,127}$/.test(input.selection)
   )
-    throw new Error("Invalid operator input");
+    throw new OperationFailure(failure("config", "config"));
   const action = input.action === "migrate" ? input.mode : input.action;
   if (!["inventory", "backup", "prepare", "dry-run", "apply"].includes(action))
-    throw new Error("Invalid action");
+    throw new OperationFailure(failure("config", "config"));
   if (input.recipient.length > 2048 || !/^[A-Za-z0-9+/]+={0,2}$/.test(input.recipient))
-    throw new Error("Invalid recipient");
-  const request: unknown = JSON.parse(input.request);
+    throw new OperationFailure(failure("config", "config"));
+  let request: unknown;
+  try {
+    request = JSON.parse(input.request);
+  } catch {
+    throw new OperationFailure(failure("decode", "decode"));
+  }
   if (
     !record(request) ||
     typeof request.organization !== "string" ||
@@ -43,7 +49,7 @@ export async function productionOperation(
     request.organization.length > 256 ||
     Buffer.byteLength(input.request) > 500_000
   )
-    throw new Error("Invalid request");
+    throw new OperationFailure(failure("config", "config"));
   const operation: Record<string, unknown> = {
     action,
     selection: input.selection,
@@ -62,7 +68,7 @@ export async function productionOperation(
       input.go !== `GO ${input.planSha256}` ||
       hash(`${canonical(previous.backup)}\n`) !== previous.backupSha256
     )
-      throw new Error("Apply inputs do not match the saved dry-run");
+      throw new OperationFailure(failure("config", "config"));
     Object.assign(operation, {
       artifact: previous.artifact,
       planSha256: input.planSha256,
@@ -78,6 +84,8 @@ export async function productionOperation(
     at,
     expiresAt: at + 60_000,
     operation,
+  }).catch(() => {
+    throw new OperationFailure(failure("auth", "auth"));
   });
   const response = await fetcher(`${target.origin}/api/internal/production-ops`, {
     method: "POST",
@@ -85,30 +93,55 @@ export async function productionOperation(
     body: JSON.stringify({ envelope }),
     redirect: "error",
     signal: AbortSignal.timeout(30_000),
+  }).catch(() => {
+    throw new OperationFailure(failure("unknown", "request"));
   });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Production operation refused with HTTP ${response.status}`);
-  }
-  if (!response.body) throw new Error("Empty operator response");
+  const refusal = () =>
+    failure(
+      response.status === 401 || response.status === 403
+        ? "auth"
+        : response.status === 503
+          ? "config"
+          : "unknown",
+      "request",
+      response.status,
+    );
+  if (!response.body) throw new OperationFailure(refusal());
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     for (;;) {
-      const part = await reader.read();
+      const part = await reader.read().catch(() => {
+        throw new OperationFailure(failure("decode", "decode", response.status));
+      });
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > 48_000_000) {
+      if (size > (response.ok ? 48_000_000 : 4096)) {
         await reader.cancel();
-        throw new Error("Operator response exceeds its bound");
+        throw new OperationFailure(failure("decode", "decode", response.status));
       }
       chunks.push(part.value);
     }
   } finally {
     reader.releaseLock();
   }
-  const result: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (!record(result) || result.action !== action) throw new Error("Unexpected operator response");
+  let result: unknown;
+  try {
+    result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new OperationFailure(
+      response.ok ? failure("decode", "decode", response.status) : refusal(),
+    );
+  }
+  if (!response.ok) {
+    const diagnostic = record(result) ? failureReceipt(result.failure) : undefined;
+    throw new OperationFailure({
+      ...(diagnostic ?? refusal()),
+      httpStatus: response.status,
+    });
+  }
+  if (!record(result) || result.action !== action)
+    throw new OperationFailure(failure("decode", "decode", response.status));
   return result;
 }

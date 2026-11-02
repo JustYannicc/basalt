@@ -36,6 +36,11 @@ The workflow's artifact `production-ops-<run ID>` contains `operation.json` and 
 safe `summary.json`. Inventories and backups are encrypted before leaving the
 runtime; do not paste their decrypted contents into public logs or issues.
 
+A failed run still uploads `failure.json`. Its fixed category and phase locate
+the failed boundary; a SQL failure can include its two-character SQL state class.
+Use this receipt when deciding the next diagnostic step. It contains no raw error
+message, response, SQL statement or credentials, and does not authorize a retry.
+
 Download the artifact, then decrypt its inventory into a private local file:
 
 ```sh

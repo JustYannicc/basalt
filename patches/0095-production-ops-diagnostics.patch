@@ -1,0 +1,293 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+new file mode 100644
+index 0000000..11e5569
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+@@ -0,0 +1,94 @@
++import { Cause, Effect, Option, Schema } from "effect";
++import { SqlError } from "effect/sql";
++
++const SqlStateClass = Schema.Literals([
++  "08",
++  "09",
++  "0A",
++  "0B",
++  "0F",
++  "0L",
++  "0P",
++  "0Z",
++  "20",
++  "21",
++  "22",
++  "23",
++  "24",
++  "25",
++  "26",
++  "27",
++  "28",
++  "2B",
++  "2D",
++  "2F",
++  "34",
++  "38",
++  "39",
++  "3B",
++  "3D",
++  "3F",
++  "40",
++  "42",
++  "44",
++  "53",
++  "54",
++  "55",
++  "57",
++  "58",
++  "72",
++  "F0",
++  "HV",
++  "P0",
++  "XX",
++]);
++export const FailureReceipt = Schema.Struct({
++  format: Schema.Literal("basalt-production-ops-failure-v1"),
++  category: Schema.Literals(["config", "auth", "decode", "sql", "encryption", "unknown"]),
++  phase: Schema.Literals(["config", "auth", "decode", "sql", "encryption", "forward"]),
++  sqlStateClass: Schema.optionalKey(SqlStateClass),
++});
++type FailureReceipt = typeof FailureReceipt.Type;
++type Phase = FailureReceipt["phase"];
++
++class DiagnosticFailure extends Error {
++  readonly receipt: FailureReceipt;
++  constructor(receipt: FailureReceipt) {
++    super("Production operation refused");
++    this.receipt = receipt;
++  }
++}
++
++/** No message, query, row, response or credential enters this projection. */
++export function diagnostic(cause: Cause.Cause<unknown>, phase: Phase): FailureReceipt {
++  const error = Cause.findErrorOption(cause);
++  if (Option.isSome(error)) {
++    if (error.value instanceof DiagnosticFailure) return error.value.receipt;
++    if (SqlError.isSqlError(error.value)) {
++      const driver = error.value.reason.cause;
++      const code =
++        typeof driver === "object" && driver !== null && "code" in driver ? driver.code : undefined;
++      const state = Schema.decodeUnknownOption(SqlStateClass)(
++        typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code.slice(0, 2) : undefined,
++      );
++      return {
++        format: "basalt-production-ops-failure-v1",
++        category: "sql",
++        phase,
++        ...(Option.isSome(state) ? { sqlStateClass: state.value } : {}),
++      };
++    }
++  }
++  return {
++    format: "basalt-production-ops-failure-v1",
++    category: phase === "sql" || phase === "forward" ? "unknown" : phase,
++    phase,
++  };
++}
++
++export const atPhase =
++  (phase: Phase) =>
++  <A, E, R>(work: Effect.Effect<A, E, R>) =>
++    work.pipe(
++      Effect.catchCause((cause) => Effect.fail(new DiagnosticFailure(diagnostic(cause, phase)))),
++    );
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+index ef893bf..4861bf9 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { McpServer } from "../mcp-server-worker.ts";
+ import { requestBody } from "./body.ts";
++import { atPhase, diagnostic } from "./diagnostics.ts";
+ export { productionOpsPath } from "./contracts.ts";
+ 
+ const Binding = Schema.declare(
+@@ -19,9 +20,12 @@ export const cloudProductionOpsForward = Effect.gen(function* () {
+   return Effect.gen(function* () {
+     const body = yield* requestBody.pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++      atPhase("decode"),
+     );
+     const environment = yield* Cloudflare.WorkerEnvironment;
+-    const worker = yield* Schema.decodeUnknownEffect(Binding)(environment[McpServer.LogicalId]);
++    const worker = yield* Schema.decodeUnknownEffect(Binding)(
++      environment[McpServer.LogicalId],
++    ).pipe(atPhase("config"));
+     const request = yield* HttpServerRequest.HttpServerRequest;
+     const response = yield* Effect.tryPromise(() =>
+       worker.fetch(
+@@ -31,12 +35,12 @@ export const cloudProductionOpsForward = Effect.gen(function* () {
+           body: JSON.stringify(body),
+         }),
+       ),
+-    );
++    ).pipe(atPhase("forward"));
+     return HttpServerResponse.fromWeb(response);
+   }).pipe(
+-    Effect.catchCause(() =>
++    Effect.catchCause((cause) =>
+       HttpServerResponse.json(
+-        { error: "operation_refused" },
++        { error: "operation_refused", failure: diagnostic(cause, "forward") },
+         { status: 409, headers: { "cache-control": "no-store" } },
+       ),
+     ),
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+index ad32d87..71c6fb4 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -11,6 +11,7 @@ import { Operation, runProductionOperation } from "./runner.ts";
+ import { cloudProductionPreparations } from "./preparations.ts";
+ import { requestBody } from "./body.ts";
+ import { canonical, sha256 } from "./crypto.ts";
++import { atPhase, diagnostic } from "./diagnostics.ts";
+ export { productionOpsPath } from "./contracts.ts";
+ 
+ const SignedRequest = Schema.Struct({
+@@ -31,13 +32,25 @@ export const cloudProductionOps = Effect.gen(function* () {
+   const runtimeConnection = yield* cloudDatabaseConnection;
+   const directConnection = yield* cloudDirectDatabaseConnection;
+   return Effect.gen(function* () {
+-    if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++    if (Option.isNone(key))
++      return yield* HttpServerResponse.json(
++        {
++          error: "operation_refused",
++          failure: {
++            format: "basalt-production-ops-failure-v1",
++            category: "config",
++            phase: "config",
++          },
++        },
++        { status: 503, headers: { "cache-control": "no-store" } },
++      );
+     const body = yield* requestBody.pipe(
+       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++      atPhase("decode"),
+     );
+     const raw = yield* Effect.tryPromise(() =>
+       openEnvelope(Redacted.value(key.value), "sbops1", body.envelope),
+-    );
++    ).pipe(atPhase("auth"));
+     const signed = yield* Schema.decodeUnknownEffect(SignedRequest)(raw).pipe(Effect.option);
+     const now = yield* Clock.currentTimeMillis;
+     if (
+@@ -48,16 +61,22 @@ export const cloudProductionOps = Effect.gen(function* () {
+       signed.value.expiresAt > signed.value.at + 60_000 ||
+       signed.value.id.length > 128
+     )
+-      return HttpServerResponse.empty({ status: 401 });
+-    const sql = yield* Effect.flatten(GroupDatabase);
+-    const secret = yield* encryptionKey;
++      return yield* HttpServerResponse.json(
++        {
++          error: "operation_refused",
++          failure: { format: "basalt-production-ops-failure-v1", category: "auth", phase: "auth" },
++        },
++        { status: 401, headers: { "cache-control": "no-store" } },
++      );
++    const sql = yield* Effect.flatten(GroupDatabase).pipe(atPhase("sql"));
++    const secret = yield* encryptionKey.pipe(atPhase("config"));
+     // Include the direct origin because a Hyperdrive proxy address can survive an origin change.
+     // Credentials stay inside this digest; rotating either binding invalidates an old plan.
+     const databaseTargetSha256 = sha256(
+       canonical({
+         context: "basalt-production-database-v1",
+-        runtime: Redacted.value(yield* runtimeConnection.connectionString),
+-        direct: Redacted.value(yield* directConnection.connectionString),
++        runtime: Redacted.value(yield* runtimeConnection.connectionString.pipe(atPhase("config"))),
++        direct: Redacted.value(yield* directConnection.connectionString.pipe(atPhase("config"))),
+       }),
+     );
+     const result = yield* runProductionOperation(
+@@ -69,13 +88,19 @@ export const cloudProductionOps = Effect.gen(function* () {
+         preparations,
+       },
+       signed.value.operation,
+-    ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.timeout("25 seconds"));
+-    return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
++    ).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++      Effect.timeout("25 seconds"),
++      atPhase("sql"),
++    );
++    return yield* HttpServerResponse.json(result, {
++      headers: { "cache-control": "no-store" },
++    }).pipe(atPhase("decode"));
+   }).pipe(
+     // SQL errors can quote credentials from a rejected row. Only a fixed refusal crosses HTTP or telemetry.
+-    Effect.catchCause(() =>
++    Effect.catchCause((cause) =>
+       HttpServerResponse.json(
+-        { error: "operation_refused" },
++        { error: "operation_refused", failure: diagnostic(cause, "config") },
+         { status: 409, headers: { "cache-control": "no-store" } },
+       ),
+     ),
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+index b518371..74ba200 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -11,6 +11,7 @@ import { backupSelections, backupTables, snapshotTables } from "./backup.ts";
+ import { inventory } from "./inventory.ts";
+ import { productionMigrations } from "./migrations.ts";
+ import { checkPlanScope, OrganizationRequest, requireOrganization } from "./scope.ts";
++import { atPhase } from "./diagnostics.ts";
+ 
+ export const Operation = Schema.Struct({
+   action: Schema.Literals(["inventory", "backup", "prepare", "dry-run", "apply"]),
+@@ -134,7 +135,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+     const protect = (value: unknown) =>
+       Effect.tryPromise(() =>
+         protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
+-      );
++      ).pipe(atPhase("encryption"));
+     if (operation.action === "inventory") {
+       const result = yield* readOnly(
+         Effect.gen(function* () {
+@@ -250,8 +251,8 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+       return yield* fail("Apply requires the reviewed plan hash and exact GO");
+     const raw = yield* Effect.tryPromise(() =>
+       openArtifact(operation.artifact!, settings.encryptionKey, settings.target),
+-    );
+-    const saved = yield* Schema.decodeUnknownEffect(Plan)(raw);
++    ).pipe(atPhase("encryption"));
++    const saved = yield* Schema.decodeUnknownEffect(Plan)(raw).pipe(atPhase("decode"));
+     if (
+       saved.target !== settings.target ||
+       saved.release !== settings.release ||
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+index fd4550c..622a54d 100644
+--- a/e2e/tests/production-ops.spec.ts
++++ b/e2e/tests/production-ops.spec.ts
+@@ -38,6 +38,22 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+         );
+         expect((yield* request(read("select * from account"))).status).toBe(409);
+ 
++        const poison = "never-retain-raw-response-password";
++        const refused = yield* request({
++          ...read("organizations"),
++          recipient: Buffer.from(poison).toString("base64"),
++        });
++        expect(refused.status).toBe(409);
++        expect(refused.body).toEqual({
++          error: "operation_refused",
++          failure: {
++            format: "basalt-production-ops-failure-v1",
++            category: "encryption",
++            phase: "encryption",
++          },
++        });
++        expect(JSON.stringify(refused.body)).not.toContain(poison);
++
+         for (const selection of [
+           "organizations",
+           "accounts",

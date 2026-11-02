@@ -86,6 +86,7 @@ jobs:
           OPS_PREVIOUS_DIRECTORY: ${{ runner.temp }}/previous-operation
           OPS_OUTPUT_DIRECTORY: ${{ runner.temp }}/production-ops
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: production-ops-${{ github.run_id }}
           path: ${{ runner.temp }}/production-ops
