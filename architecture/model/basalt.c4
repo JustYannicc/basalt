@@ -31,6 +31,12 @@ model {
       }
     }
 
+    productionOps = module "Production operations" {
+      #basalt #deep
+      description "A manual main-branch workflow signs fixed runtime operations with existing deploy credentials. Inventories and affected-table backups leave the runtime encrypted for a local recipient. Apply binds a successful saved dry-run, exact GO, deployed source and unchanged row hashes; a serializable transaction records its receipt and verifies writes. The operator checks receipts before resolving an uncertain result."
+      metadata { code "scripts/production-ops|scripts/production-ops.test.ts|.github/workflows/production-ops.yml" }
+    }
+
     releaseUpdates = module "Release updates" {
       #basalt #v1 #deep
       description "Detects pinned upstream updates and opens one update pull request per release. Tools candidates require published versioned releases. CI proves the exact merge commit against current main. A stale release branch is updated and waits for fresh checks; release merge attempts are serialized in their own workflow. An exact-head preview must pass real sign-in and native client acceptance, then destroy and verify all temporary resources before automatic merge. Database or workflow identity changes take the manual path: they deploy from a main-only environment after a completed backup, with no approval step, and the main deploy starts that path itself. A workflow identity change fails before deploying while any workflow instance is still running. Stopping new work, quiescing writes and database restore are done by whoever dispatches. A protected workflow exports exact dedicated subscription accounts through the owner-scoped control API straight into Actions secrets. Manual rollback accepts the latest successful or failed database release and deploys recorded previous pins once the dispatcher names the restored backup, which must match the recorded one. The next release that contains a single failed release rolls forward over it, re-applying its forward-only migrations and data steps; a second failure, or one the release does not contain, waits for a person, and undoing database writes stays that deliberate rollback. V1 accepts a main advance between the final check and squash merge; production deploys only the exact commit whose own main CI passed. Tools gateway storage migration failures retain only known error classes, SQLSTATE and the attempted registered schema version; release logs never receive SQL, parameters or driver messages. Live acceptance is pending account setup."
@@ -323,6 +329,11 @@ model {
   basalt.router -[sync]-> basalt.catalog "CATALOG_SERVICE: /catalog/index.json and app sources"
   basalt.toolsGateway -[sync]-> basalt.catalog "read hosted catalog and app sources"
   basalt.catalog -[sync]-> basalt.workflowRecipes "serve editable defaults as app source"
+  basalt.productionOps -[sync]-> repositoryApi "verify the completed source dispatch"
+  basalt.productionOps -[sync]-> basalt.router "send a signed operation to the production origin"
+  basalt.productionOps -[sync]-> basalt.toolsGateway "signed named reads, encrypted snapshots and exact reviewed migrations"
+  basalt.productionOps -[sync]-> basalt.modelGateway "reuse the signed-envelope codec"
+  basalt.productionOps -[sync]-> basalt.brandConfig "read the production origin"
   basalt.build -[sync]-> basalt.workflowRecipes "package ordinary app sources"
   basalt.toolsGateway.workflowDisplayApi -[sync]-> basalt.toolsGateway.workflowDisplayHost "McpServer: open, resource, call, resume, renew and close"
   basalt.toolsGateway.workflowDisplayHost -[sync]-> basalt.toolsGateway.workflowDisplayApi "result and bounded product usage events"

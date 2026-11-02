@@ -1,0 +1,1181 @@
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index 7a13959..b34c9ab 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -13,6 +13,7 @@ import { Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { cloudAuthSetup } from "./auth-provisioning.ts";
+ import { migrateAppDomainRecords } from "./app-domain-records.ts";
++import { migrateProductionOps } from "../infrastructure/production-ops/schema.ts";
+ import {
+   blockerReport,
+   guardMigration,
+@@ -211,6 +212,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+         "5_v1_import_map": migrateV1ImportMap,
+         "6_setup_assignments": migrateSetupAssignments,
+         "7_v1_import_orgs": migrateV1ImportOrgs,
++        "8_production_ops_receipts": migrateProductionOps,
+       });
+     });
+     yield* Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+new file mode 100644
+index 0000000..6b367e2
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/backup.ts
+@@ -0,0 +1,84 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { canonical, sha256 } from "./crypto.ts";
++
++/** Full rows stay inside encrypted snapshots. This list is changed only by reviewed source. */
++export const backupTables = new Set([
++  "organization",
++  "member",
++  "user",
++  "account",
++  "executor_accounts",
++  "executor_account_identities",
++  "executor_providers",
++  "executor_oauth_grants",
++  "executor_account_acquisitions",
++  "executor_account_connections",
++  "hosted_account_access",
++  "hosted_account_groups",
++  "hosted_account_observation_access",
++  "hosted_app_account_links",
++  "hosted_app_access",
++  "hosted_app_groups",
++  "hosted_groups",
++  "hosted_group_members",
++  "executor_apps",
++  "executor_deployments",
++  "hosted_contributed_departure_jobs",
++  "hosted_contributed_departures",
++  "executor_account_observations",
++  "executor_schedules",
++  "executor_workflow_runs",
++]);
++
++export const snapshotTables = (tables: readonly string[]) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const unique = [...new Set(tables)].sort();
++    if (
++      unique.length === 0 ||
++      unique.length > 24 ||
++      unique.some((table) => !backupTables.has(table))
++    )
++      return yield* Effect.fail(new Error("Unknown backup table"));
++    const snapshot: Record<string, readonly Schema.Json[]> = {};
++    for (const table of unique) {
++      const rows = yield* sql
++        .unsafe(`select to_jsonb(entry) as row from "${table}" entry limit 10001`)
++        .pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ row: Schema.Json }))),
++          ),
++        );
++      if (rows.length > 10000) return yield* Effect.fail(new Error("Backup exceeds its row bound"));
++      snapshot[table] = rows
++        .map(({ row }) => row)
++        .sort((left, right) => canonical(left).localeCompare(canonical(right), "en"));
++      if (Buffer.byteLength(canonical(snapshot)) > 8_000_000)
++        return yield* Effect.fail(new Error("Backup exceeds its byte bound"));
++    }
++    return { tables: unique, rows: snapshot, sha256: sha256(canonical(snapshot)) };
++  });
++
++export const backupSelections: Readonly<Record<string, readonly string[]>> = {
++  accounts: [
++    "executor_accounts",
++    "executor_account_identities",
++    "executor_providers",
++    "executor_oauth_grants",
++    "hosted_account_access",
++    "hosted_account_groups",
++    "hosted_app_account_links",
++  ],
++  pools: [
++    "organization",
++    "executor_apps",
++    "executor_deployments",
++    "hosted_app_access",
++    "hosted_app_groups",
++    "hosted_app_account_links",
++  ],
++  departures: ["hosted_contributed_departure_jobs", "hosted_contributed_departures"],
++  reporters: ["executor_account_observations", "hosted_account_observation_access"],
++  workflows: ["executor_schedules", "executor_workflow_runs"],
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/body.ts b/apps/hosted/cloud/src/infrastructure/production-ops/body.ts
+new file mode 100644
+index 0000000..02905be
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/body.ts
+@@ -0,0 +1,22 @@
++import { Effect, Stream } from "effect";
++import { HttpServerRequest } from "effect/http";
++
++/** Read with a byte bound before parsing, including requests without Content-Length. */
++export const requestBody = Effect.gen(function* () {
++  const request = yield* HttpServerRequest.HttpServerRequest;
++  const chunks: Uint8Array[] = [];
++  let length = 0;
++  yield* request.stream.pipe(
++    Stream.runForEach((chunk) =>
++      Effect.gen(function* () {
++        length += chunk.byteLength;
++        if (length > 24_000_000)
++          return yield* Effect.fail(new Error("Ops request exceeds its bound"));
++        chunks.push(chunk);
++      }),
++    ),
++  );
++  return yield* Effect.try(() =>
++    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+new file mode 100644
+index 0000000..f0e4760
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+@@ -0,0 +1,52 @@
++import type { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++
++export type Json =
++  | null
++  | boolean
++  | number
++  | string
++  | readonly Json[]
++  | { readonly [key: string]: Json };
++
++export interface Change {
++  readonly table: string;
++  readonly key: Readonly<Record<string, string>>;
++  readonly action: "insert" | "update" | "delete";
++  readonly beforeSha256: string | null;
++  readonly afterSha256: string | null;
++}
++
++export interface MigrationPlan {
++  readonly changes: readonly Change[];
++  readonly data: Json;
++}
++
++export interface Verification {
++  readonly ok: boolean;
++  readonly checks: Readonly<Record<string, boolean>>;
++}
++
++/** The runner owns transactions, backup binding, authorization and receipts. Modules perform SQL only. */
++export interface ProductionMigration {
++  readonly name: string;
++  readonly revision: string;
++  readonly tables: readonly string[];
++  readonly inspect: (request: Json) => Effect.Effect<MigrationPlan, unknown, SqlClient.SqlClient>;
++  readonly apply: (
++    request: Json,
++    plan: MigrationPlan,
++  ) => Effect.Effect<void, unknown, SqlClient.SqlClient>;
++  readonly verify: (
++    request: Json,
++    plan: MigrationPlan,
++  ) => Effect.Effect<Verification, unknown, SqlClient.SqlClient>;
++}
++
++/** Network proof collection has a separate, read-only operation before migration inspection. */
++export interface ProductionPreparation {
++  readonly name: string;
++  readonly run: (request: Json) => Effect.Effect<Json, unknown, SqlClient.SqlClient>;
++}
++
++export const productionOpsPath = "/api/internal/production-ops";
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts b/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
+new file mode 100644
+index 0000000..3a9af56
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
+@@ -0,0 +1,131 @@
++import { createHash } from "node:crypto";
++import { Schema } from "effect";
++import type { Json } from "./contracts.ts";
++
++const encoder = new TextEncoder();
++const context = "basalt-production-ops-v1";
++const Sealed = Schema.Struct({
++  version: Schema.Literal(1),
++  iv: Schema.String,
++  ciphertext: Schema.String,
++});
++const Recipient = Schema.Struct({
++  version: Schema.Literal(1),
++  recipient: Schema.String,
++  wrappedKey: Schema.String,
++  iv: Schema.String,
++  ciphertext: Schema.String,
++});
++export const ProtectedArtifact = Schema.Struct({
++  version: Schema.Literal(1),
++  sha256: Schema.String,
++  sealed: Sealed,
++  recipient: Recipient,
++});
++export type ProtectedArtifact = typeof ProtectedArtifact.Type;
++
++/** Sorted object keys make the reviewed file hash independent of transport serialization. */
++export function canonical(value: unknown): string {
++  return JSON.stringify(value, (_key, entry: unknown) => {
++    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
++    return Object.fromEntries(
++      Object.entries(entry).sort(([left], [right]) => left.localeCompare(right, "en")),
++    );
++  });
++}
++
++export const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
++const bytes = (value: string) => Uint8Array.from(Buffer.from(value, "base64"));
++const base64 = (value: ArrayBuffer | Uint8Array) =>
++  Buffer.from(value instanceof Uint8Array ? value : new Uint8Array(value)).toString("base64");
++
++async function encryptionKey(secret: string, usage: "encrypt" | "decrypt") {
++  if (!/^[a-f0-9]{64}$/i.test(secret)) throw new Error("Invalid ops encryption key");
++  const source = await crypto.subtle.importKey(
++    "raw",
++    Uint8Array.from(Buffer.from(secret, "hex")),
++    "HKDF",
++    false,
++    ["deriveKey"],
++  );
++  return crypto.subtle.deriveKey(
++    {
++      name: "HKDF",
++      hash: "SHA-256",
++      salt: encoder.encode(context),
++      info: encoder.encode("artifacts"),
++    },
++    source,
++    { name: "AES-GCM", length: 256 },
++    false,
++    [usage],
++  );
++}
++
++/** The runner copy supports later apply; the recipient copy keeps recovery independent of runtime secrets. */
++export async function protectArtifact(
++  value: unknown,
++  secret: string,
++  recipient: string,
++  target: string,
++): Promise<ProtectedArtifact> {
++  const plaintext = encoder.encode(`${canonical(value)}\n`);
++  if (plaintext.byteLength > 8_000_000) throw new Error("Ops artifact exceeds its bound");
++  const aad = encoder.encode(`${context}:${target}`);
++  const iv = crypto.getRandomValues(new Uint8Array(12));
++  const ciphertext = await crypto.subtle.encrypt(
++    { name: "AES-GCM", iv, additionalData: aad },
++    await encryptionKey(secret, "encrypt"),
++    plaintext,
++  );
++  const publicBytes = bytes(recipient);
++  const publicKey = await crypto.subtle.importKey(
++    "spki",
++    publicBytes,
++    { name: "RSA-OAEP", hash: "SHA-256" },
++    false,
++    ["encrypt"],
++  );
++  if ((publicKey.algorithm as RsaHashedKeyAlgorithm).modulusLength < 3072)
++    throw new Error("Ops recipient requires RSA 3072 or stronger");
++  const rawKey = crypto.getRandomValues(new Uint8Array(32));
++  const copyKey = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["encrypt"]);
++  const copyIv = crypto.getRandomValues(new Uint8Array(12));
++  const copy = await crypto.subtle.encrypt(
++    { name: "AES-GCM", iv: copyIv, additionalData: aad },
++    copyKey,
++    plaintext,
++  );
++  const wrappedKey = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, rawKey);
++  return {
++    version: 1,
++    sha256: sha256(new TextDecoder().decode(plaintext)),
++    sealed: { version: 1, iv: base64(iv), ciphertext: base64(ciphertext) },
++    recipient: {
++      version: 1,
++      recipient: sha256(base64(publicBytes)),
++      wrappedKey: base64(wrappedKey),
++      iv: base64(copyIv),
++      ciphertext: base64(copy),
++    },
++  };
++}
++
++export async function openArtifact(
++  artifact: ProtectedArtifact,
++  secret: string,
++  target: string,
++): Promise<Json> {
++  const plaintext = await crypto.subtle.decrypt(
++    {
++      name: "AES-GCM",
++      iv: bytes(artifact.sealed.iv),
++      additionalData: encoder.encode(`${context}:${target}`),
++    },
++    await encryptionKey(secret, "decrypt"),
++    bytes(artifact.sealed.ciphertext),
++  );
++  const text = new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
++  if (sha256(text) !== artifact.sha256) throw new Error("Ops artifact hash mismatch");
++  return Schema.decodeUnknownSync(Schema.Json)(JSON.parse(text));
++}
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+new file mode 100644
+index 0000000..ef893bf
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/forward.ts
+@@ -0,0 +1,45 @@
++import * as Cloudflare from "alchemy/Cloudflare";
++import { Effect, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { McpServer } from "../mcp-server-worker.ts";
++import { requestBody } from "./body.ts";
++export { productionOpsPath } from "./contracts.ts";
++
++const Binding = Schema.declare(
++  (value): value is { readonly fetch: (request: Request) => Promise<Response> } =>
++    typeof value === "object" &&
++    value !== null &&
++    "fetch" in value &&
++    typeof value.fetch === "function",
++);
++
++/** Large operator modules stay in the private Worker already holding the SQL and OAuth services. */
++export const cloudProductionOpsForward = Effect.gen(function* () {
++  yield* Cloudflare.Workers.bindWorker(McpServer);
++  return Effect.gen(function* () {
++    const body = yield* requestBody.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
++    const environment = yield* Cloudflare.WorkerEnvironment;
++    const worker = yield* Schema.decodeUnknownEffect(Binding)(environment[McpServer.LogicalId]);
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const response = yield* Effect.tryPromise(() =>
++      worker.fetch(
++        new Request(request.originalUrl, {
++          method: "POST",
++          headers: { "content-type": "application/json" },
++          body: JSON.stringify(body),
++        }),
++      ),
++    );
++    return HttpServerResponse.fromWeb(response);
++  }).pipe(
++    Effect.catchCause(() =>
++      HttpServerResponse.json(
++        { error: "operation_refused" },
++        { status: 409, headers: { "cache-control": "no-store" } },
++      ),
++    ),
++    Effect.withTracerEnabled(false),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+new file mode 100644
+index 0000000..b81d970
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -0,0 +1,70 @@
++import { openEnvelope } from "@executor-js/hosted-server/pool-token";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { cloudEncryptionKey } from "../secrets.ts";
++import { cloudHosts } from "../stage.ts";
++import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
++import { Operation, runProductionOperation } from "./runner.ts";
++import { cloudProductionPreparations } from "./preparations.ts";
++import { requestBody } from "./body.ts";
++export { productionOpsPath } from "./contracts.ts";
++
++const SignedRequest = Schema.Struct({
++  version: Schema.Literal(1),
++  id: Schema.NonEmptyString,
++  target: Schema.NonEmptyString,
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++  operation: Operation,
++});
++
++/** No browser session or user-controlled SQL participates in the operator's signed request. */
++export const cloudProductionOps = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const encryptionKey = yield* cloudEncryptionKey.pipe(Effect.orDie);
++  const hosts = yield* cloudHosts.pipe(Effect.orDie);
++  const preparations = yield* cloudProductionPreparations;
++  return Effect.gen(function* () {
++    if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++    const body = yield* requestBody.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++    );
++    const raw = yield* Effect.tryPromise(() =>
++      openEnvelope(Redacted.value(key.value), "sbops1", body.envelope),
++    );
++    const signed = yield* Schema.decodeUnknownEffect(SignedRequest)(raw).pipe(Effect.option);
++    const now = yield* Clock.currentTimeMillis;
++    if (
++      Option.isNone(signed) ||
++      signed.value.target !== hosts.browser ||
++      signed.value.at > now + 5000 ||
++      signed.value.expiresAt <= now ||
++      signed.value.expiresAt > signed.value.at + 60_000 ||
++      signed.value.id.length > 128
++    )
++      return HttpServerResponse.empty({ status: 401 });
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const secret = yield* encryptionKey;
++    const result = yield* runProductionOperation(
++      {
++        target: hosts.browser,
++        release: productionOpsRelease,
++        encryptionKey: Redacted.value(secret),
++        preparations,
++      },
++      signed.value.operation,
++    ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.timeout("25 seconds"));
++    return yield* HttpServerResponse.json(result, { headers: { "cache-control": "no-store" } });
++  }).pipe(
++    // SQL errors can quote credentials from a rejected row. Only a fixed refusal crosses HTTP or telemetry.
++    Effect.catchCause(() =>
++      HttpServerResponse.json(
++        { error: "operation_refused" },
++        { status: 409, headers: { "cache-control": "no-store" } },
++      ),
++    ),
++    Effect.withTracerEnabled(false),
++  );
++});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+new file mode 100644
+index 0000000..c798414
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -0,0 +1,53 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** These projections are the complete SQL interface; workflow inputs never supply SQL. */
++export const inventoryQueries = {
++  receipts: `select plan_sha256, migration, revision, release, backup_sha256,
++    verification, applied_at::text from private_production_ops_receipts
++    order by applied_at desc, plan_sha256 limit 2001`,
++  organizations: `select o.id as organization, o.name as organization_name, m.id as member,
++    m."userId" as user_id, m.role, u.email,
++    coalesce((select jsonb_agg(distinct a."providerId") from account a where a."userId" = u.id), '[]'::jsonb) as linked_sign_in_methods,
++    coalesce(u."emailVerified", false) as email_verified
++    from organization o left join member m on m."organizationId" = o.id
++    left join "user" u on u.id = m."userId"
++    order by o.id, m.id limit 2001`,
++  accounts: `select a.id, a.owner, a.provider, a.method, a.label, a.credential_generation,
++    p.organization_id, p.creator_id, p.personal_user_id, p.kind, p.audience, p.revision
++    from executor_accounts a left join hosted_account_access p on p.account_id = a.id
++    order by a.id limit 2001`,
++  pools: `select o.id as organization, entry.key as owner, entry.value ->> 'app' as app,
++    entry.value ->> 'version' as version, entry.value ->> 'authorization' as authorization,
++    entry.value ->> 'membership' as membership
++    from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++    order by o.id, entry.key limit 2001`,
++  "app-links": `select l.app, l.requirement, l.subject, l.account, l.linked_by, l.created_at::text,
++    a.owner, a.active_deployment from hosted_app_account_links l join executor_apps a on a.id = l.app
++    order by l.app, l.requirement, l.account, l.subject nulls first limit 2001`,
++  "retired-tokens": `select a.id, a.owner, a.provider, a.method,
++    p.organization_id, p.creator_id, p.kind, p.revision
++    from executor_accounts a join hosted_account_access p on p.account_id = a.id
++    where p.kind = 'provisioned' order by a.id limit 2001`,
++  departures: `select id, organization_id, user_id, status, attempts,
++    available_at::text, updated_at::text from hosted_contributed_departure_jobs order by id limit 2001`,
++  workflows: `select id, app, owner, actor, name, status, "created_at"::text
++    from executor_workflow_runs order by id limit 2001`,
++  schedules: `select id, app, owner, actor, name, enabled, revision, next_at::text,
++    active_run from executor_schedules order by id limit 2001`,
++  reporters: `select id, account, owner, source, generation, checked_at::text,
++    next_allowed_at::text, lease_until::text from executor_account_observations order by id limit 2001`,
++} as const;
++
++export const inventory = (selection: string) =>
++  Effect.gen(function* () {
++    if (!Object.hasOwn(inventoryQueries, selection))
++      return yield* Effect.fail(new Error("Unknown inventory"));
++    const sql = yield* SqlClient.SqlClient;
++    const query = inventoryQueries[selection as keyof typeof inventoryQueries];
++    const rows = yield* sql
++      .unsafe(query)
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Json))));
++    if (rows.length > 2000) return yield* Effect.fail(new Error("Inventory exceeds its bound"));
++    return { selection, rows };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+new file mode 100644
+index 0000000..b63d256
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -0,0 +1,4 @@
++import type { ProductionMigration } from "./contracts.ts";
++
++/** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
++export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+new file mode 100644
+index 0000000..61c6758
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -0,0 +1,7 @@
++import { Effect } from "effect";
++import type { ProductionPreparation } from "./contracts.ts";
++
++/** Each registration binds its runtime dependencies before exposing the SQL-only operation. */
++export const cloudProductionPreparations = Effect.succeed<
++  Readonly<Record<string, ProductionPreparation>>
++>({});
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+new file mode 100644
+index 0000000..d6fcc3a
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -0,0 +1,289 @@
++import { Clock, Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type {
++  Json,
++  MigrationPlan,
++  ProductionMigration,
++  ProductionPreparation,
++} from "./contracts.ts";
++import { canonical, openArtifact, protectArtifact, ProtectedArtifact, sha256 } from "./crypto.ts";
++import { backupSelections, backupTables, snapshotTables } from "./backup.ts";
++import { inventory } from "./inventory.ts";
++import { productionMigrations } from "./migrations.ts";
++
++export const Operation = Schema.Struct({
++  action: Schema.Literals(["inventory", "backup", "prepare", "dry-run", "apply"]),
++  selection: Schema.NonEmptyString,
++  request: Schema.Json,
++  recipient: Schema.NonEmptyString,
++  artifact: Schema.optionalKey(ProtectedArtifact),
++  planSha256: Schema.optionalKey(Schema.String),
++  backupSha256: Schema.optionalKey(Schema.String),
++  go: Schema.optionalKey(Schema.String),
++});
++export type Operation = typeof Operation.Type;
++
++const Plan = Schema.Struct({
++  format: Schema.Literal("basalt-production-plan-v1"),
++  target: Schema.String,
++  database: Schema.String,
++  release: Schema.String,
++  migration: Schema.String,
++  revision: Schema.String,
++  preparedAt: Schema.Number,
++  request: Schema.Json,
++  plan: Schema.Struct({
++    changes: Schema.Array(
++      Schema.Struct({
++        table: Schema.String,
++        key: Schema.Record(Schema.String, Schema.String),
++        action: Schema.Literals(["insert", "update", "delete"]),
++        beforeSha256: Schema.NullOr(Schema.String),
++        afterSha256: Schema.NullOr(Schema.String),
++      }),
++    ),
++    data: Schema.Json,
++  }),
++  backupSha256: Schema.String,
++});
++
++export interface OpsSettings {
++  readonly target: string;
++  readonly release: string;
++  readonly encryptionKey: string;
++  readonly preparations: Readonly<Record<string, ProductionPreparation>>;
++}
++
++const fail = (reason: string) => Effect.fail(new Error(reason));
++const checksum = /^[a-f0-9]{64}$/;
++
++function validPlan(module: ProductionMigration, plan: MigrationPlan): boolean {
++  if (plan.changes.length > 2000 || !/^[a-z0-9][a-z0-9.-]{0,127}$/.test(module.revision))
++    return false;
++  const seen = new Set<string>();
++  return (
++    module.tables.length > 0 &&
++    module.tables.every((table) => backupTables.has(table)) &&
++    plan.changes.every((change) => {
++      const id = canonical([change.table, change.key]);
++      const unique = !seen.has(id);
++      seen.add(id);
++      const before = change.beforeSha256;
++      const after = change.afterSha256;
++      return (
++        unique &&
++        module.tables.includes(change.table) &&
++        Object.keys(change.key).length > 0 &&
++        Object.values(change.key).every((value) => value.length > 0 && value.length <= 512) &&
++        (change.action === "insert"
++          ? before === null && after !== null && checksum.test(after)
++          : change.action === "delete"
++            ? before !== null && checksum.test(before) && after === null
++            : before !== null && after !== null && checksum.test(before) && checksum.test(after))
++      );
++    })
++  );
++}
++
++const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level repeatable read read only`;
++        yield* sql`set local statement_timeout = '5s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++        return yield* work;
++      }),
++    );
++  });
++
++const databaseName = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  const rows = yield* sql`select current_database() as name`.pipe(
++    Effect.flatMap(
++      Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ name: Schema.String }))),
++    ),
++  );
++  return rows[0]?.name ?? (yield* fail("Database identity unavailable"));
++});
++
++const inspect = (module: ProductionMigration, request: Json) =>
++  module
++    .inspect(request)
++    .pipe(
++      Effect.flatMap((plan) =>
++        validPlan(module, plan) ? Effect.succeed(plan) : fail("Invalid migration plan"),
++      ),
++    );
++
++/** Only the registered modules can reach writes. Inventory, backup and plan inspection stay SQL read-only. */
++export const runProductionOperation = (settings: OpsSettings, operation: Operation) =>
++  Effect.gen(function* () {
++    const now = yield* Clock.currentTimeMillis;
++    const protect = (value: unknown) =>
++      Effect.tryPromise(() =>
++        protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
++      );
++    if (operation.action === "inventory") {
++      const result = yield* readOnly(inventory(operation.selection));
++      return {
++        action: "inventory",
++        rows: result.rows.length,
++        artifact: yield* protect({
++          format: "basalt-production-inventory-v1",
++          target: settings.target,
++          release: settings.release,
++          observedAt: now,
++          ...result,
++        }),
++      };
++    }
++    const module = Object.hasOwn(productionMigrations, operation.selection)
++      ? productionMigrations[operation.selection]
++      : undefined;
++    if (operation.action === "backup") {
++      const tables = module?.tables ?? backupSelections[operation.selection];
++      if (tables === undefined) return yield* fail("Unknown backup selection");
++      const snapshot = yield* readOnly(snapshotTables(tables));
++      return {
++        action: "backup",
++        tables: snapshot.tables,
++        artifact: yield* protect({
++          format: "basalt-production-backup-v1",
++          target: settings.target,
++          release: settings.release,
++          observedAt: now,
++          ...snapshot,
++        }),
++      };
++    }
++    if (operation.action === "prepare") {
++      const preparation = Object.hasOwn(settings.preparations, operation.selection)
++        ? settings.preparations[operation.selection]
++        : undefined;
++      if (preparation === undefined || preparation.name !== operation.selection)
++        return yield* fail("Unknown preparation selection");
++      const result = yield* preparation.run(operation.request);
++      return {
++        action: "prepare",
++        artifact: yield* protect({
++          format: "basalt-production-preparation-v1",
++          target: settings.target,
++          release: settings.release,
++          observedAt: now,
++          selection: preparation.name,
++          request: operation.request,
++          result,
++        }),
++      };
++    }
++    if (module === undefined || module.name !== operation.selection)
++      return yield* fail("Unknown migration");
++    if (operation.action === "dry-run") {
++      const result = yield* readOnly(
++        Effect.gen(function* () {
++          const database = yield* databaseName;
++          const plan = yield* inspect(module, operation.request);
++          const snapshot = yield* snapshotTables(module.tables);
++          return { database, plan, snapshot };
++        }),
++      );
++      const backup = yield* protect({
++        format: "basalt-production-backup-v1",
++        target: settings.target,
++        release: settings.release,
++        migration: module.name,
++        revision: module.revision,
++        observedAt: now,
++        ...result.snapshot,
++      });
++      const backupSha256 = sha256(`${canonical(backup)}\n`);
++      const plan = {
++        format: "basalt-production-plan-v1",
++        target: settings.target,
++        database: result.database,
++        release: settings.release,
++        migration: module.name,
++        revision: module.revision,
++        preparedAt: now,
++        request: operation.request,
++        plan: result.plan,
++        backupSha256,
++      };
++      return {
++        action: "dry-run",
++        changes: result.plan.changes.length,
++        backupSha256,
++        artifact: yield* protect(plan),
++        backup,
++      };
++    }
++    if (
++      operation.artifact === undefined ||
++      operation.planSha256 === undefined ||
++      operation.artifact.sha256 !== operation.planSha256 ||
++      operation.go !== `GO ${operation.planSha256}`
++    )
++      return yield* fail("Apply requires the reviewed plan hash and exact GO");
++    const raw = yield* Effect.tryPromise(() =>
++      openArtifact(operation.artifact!, settings.encryptionKey, settings.target),
++    );
++    const saved = yield* Schema.decodeUnknownEffect(Plan)(raw);
++    if (
++      saved.target !== settings.target ||
++      saved.release !== settings.release ||
++      saved.migration !== module.name ||
++      saved.revision !== module.revision ||
++      saved.backupSha256 !== operation.backupSha256 ||
++      canonical(saved.request) !== canonical(operation.request) ||
++      !validPlan(module, saved.plan) ||
++      now - saved.preparedAt > 3_600_000 ||
++      saved.preparedAt > now
++    )
++      return yield* fail("The reviewed plan no longer matches this operation");
++    const sql = yield* SqlClient.SqlClient;
++    const hash = operation.planSha256;
++    const receipt = yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level serializable`;
++        yield* sql`set local statement_timeout = '5s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++        if ((yield* databaseName) !== saved.database)
++          return yield* fail("Database identity changed");
++        const prior =
++          yield* sql`select migration, revision, release, backup_sha256 from private_production_ops_receipts
++      where plan_sha256 = ${hash} for update`;
++        if (prior.length > 0) {
++          const row = prior[0];
++          if (
++            row?.migration !== saved.migration ||
++            row?.revision !== saved.revision ||
++            row?.release !== saved.release ||
++            row?.backup_sha256 !== saved.backupSha256
++          )
++            return yield* fail("Receipt identity differs");
++          return { repeated: true };
++        }
++        const current = yield* inspect(module, saved.request);
++        if (canonical(current) !== canonical(saved.plan))
++          return yield* fail("Migration inputs changed after review");
++        yield* sql`insert into private_production_ops_receipts
++      (plan_sha256, migration, revision, release, backup_sha256, verification)
++      values (${hash}, ${module.name}, ${module.revision}, ${settings.release}, ${saved.backupSha256}, '{}'::jsonb)`;
++        yield* module.apply(saved.request, saved.plan);
++        const verification = yield* module.verify(saved.request, saved.plan);
++        if (!verification.ok || Object.values(verification.checks).some((value) => !value))
++          return yield* fail("Migration verification failed");
++        yield* sql`update private_production_ops_receipts set verification = ${JSON.stringify(verification)}::jsonb
++      where plan_sha256 = ${hash}`;
++        return { repeated: false };
++      }),
++    );
++    const verification = yield* readOnly(module.verify(saved.request, saved.plan));
++    if (!verification.ok || Object.values(verification.checks).some((value) => !value))
++      return yield* fail("Committed migration needs operator investigation");
++    return { action: "apply", planSha256: hash, ...receipt, verification };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
+new file mode 100644
+index 0000000..d729f77
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
+@@ -0,0 +1,16 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** An additive receipt makes an interrupted apply observable without replaying its writes. */
++export const migrateProductionOps = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists private_production_ops_receipts (
++    plan_sha256 text primary key,
++    migration text not null,
++    revision text not null,
++    release text not null,
++    backup_sha256 text not null,
++    verification jsonb not null,
++    applied_at timestamptz not null default now()
++  )`;
++});
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index ce5e4aa..a2a1cf4 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -26,6 +26,10 @@ import {
+ import { AppWorkflows } from "./infrastructure/workflows.ts";
+ import { cloudDataSteps } from "./infrastructure/data-steps.ts";
+ import { reportHostPoolInventory } from "./infrastructure/pool-inventory.ts";
++import {
++  cloudProductionOpsForward,
++  productionOpsPath,
++} from "./infrastructure/production-ops/forward.ts";
+ import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { SqlClient } from "effect/sql";
+@@ -612,7 +616,11 @@ export default Api.make(
+       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
+       HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
+     );
++    const productionOps = yield* cloudProductionOpsForward;
+     const routes = Layer.mergeAll(
++      HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+index c2df1f7..033dee5 100644
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -24,6 +24,8 @@ import {
+ } from "./infrastructure/telemetry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { cloudSite } from "./infrastructure/site.ts";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { cloudProductionOps, productionOpsPath } from "./infrastructure/production-ops/http.ts";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+ /** The executor and MCP identity are built once per isolate and shared by its objects. */
+@@ -78,7 +80,20 @@ export default McpServer.make(
+     };
+   }),
+   Effect.gen(function* () {
+-    return yield* makeWorkflowDisplayRpc(yield* cloudServingProduct(yield* appDataSupervisors));
++    const services = yield* cloudServingProduct(yield* appDataSupervisors);
++    const operations = yield* cloudProductionOps;
++    return {
++      ...(yield* makeWorkflowDisplayRpc(services)),
++      fetch: Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        if (
++          request.method !== "POST" ||
++          new URL(request.originalUrl).pathname !== productionOpsPath
++        )
++          return HttpServerResponse.empty({ status: 404 });
++        return yield* operations.pipe(Effect.provide(services));
++      }),
++    };
+   }).pipe(
+     Effect.provide(
+       Layer.mergeAll(McpSession.make(mcpSession), cloudTelemetry).pipe(
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 7f0c740..33bce88 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -103,7 +103,7 @@ const jobs = {
+     runner: 3,
+ 
+     pattern:
+-      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
++      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud production operations encrypt|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 2262db4..ba8a827 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -265,9 +265,11 @@ export const startCloudEnvironment = (input: {
+       BETTER_AUTH_URL: input.origin,
+       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+-      ...(process.env.BASALT_E2E_POOL_SETUP === "1"
+-        ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
+-        : {}),
++      ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++        ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
++        : process.env.BASALT_E2E_POOL_SETUP === "1"
++          ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
++          : {}),
+       MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
+       MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 4502a87..91e5fe5 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -2270,6 +2270,17 @@ export const scenarios = plan({
+       local: na("Local runs its background jobs in its own server process."),
+     },
+   },
++  cloudProductionOps: {
++    fixtures: "actors",
++    file: "production-ops.spec.ts",
++    title:
++      "Cloud production operations encrypt named read-only inventories and backups and refuse unreviewed writes",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
+   cloudPoolMigrationInventory: {
+     fixtures: "actors",
+     file: "pool-migration-inventory.spec.ts",
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+new file mode 100644
+index 0000000..6511f8e
+--- /dev/null
++++ b/e2e/tests/production-ops.spec.ts
+@@ -0,0 +1,200 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import {
++  constants,
++  createDecipheriv,
++  createHash,
++  createHmac,
++  generateKeyPairSync,
++  privateDecrypt,
++  randomUUID,
++} from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Artifact = Schema.Struct({
++  version: Schema.Literal(1),
++  sha256: Schema.String,
++  sealed: Schema.Struct({
++    version: Schema.Literal(1),
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++  recipient: Schema.Struct({
++    version: Schema.Literal(1),
++    recipient: Schema.String,
++    wrappedKey: Schema.String,
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++});
++const Response = Schema.Struct({ action: Schema.String, artifact: Artifact });
++const Inventory = Schema.Struct({
++  format: Schema.Literal("basalt-production-inventory-v1"),
++  target: Schema.String,
++  release: Schema.String,
++  selection: Schema.String,
++  rows: Schema.Array(Schema.Json),
++});
++const Backup = Schema.Struct({
++  format: Schema.Literal("basalt-production-backup-v1"),
++  target: Schema.String,
++  release: Schema.String,
++  tables: Schema.Array(Schema.String),
++  rows: Schema.Record(Schema.String, Schema.Array(Schema.Json)),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Production operations", (it) => {
++  it.effect(scenarios.cloudProductionOps.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target;
++        const origin = targetHosts(target).browser;
++        const anonymous = yield* api.session();
++        const pair = generateKeyPairSync("rsa", { modulusLength: 3072 });
++        const recipient = pair.publicKey.export({ type: "spki", format: "der" }).toString("base64");
++        const request = (
++          operation: unknown,
++          overrides: { target?: string; expiresAt?: number; secret?: string } = {},
++        ) => {
++          const at = Date.now();
++          const payload = Buffer.from(
++            JSON.stringify({
++              version: 1,
++              id: randomUUID(),
++              target: overrides.target ?? origin,
++              at,
++              expiresAt: overrides.expiresAt ?? at + 60_000,
++              operation,
++            }),
++          ).toString("base64url");
++          const signature = createHmac(
++            "sha256",
++            Buffer.from(overrides.secret ?? "ab".repeat(32), "hex"),
++          )
++            .update(`sbops1.${payload}`)
++            .digest("base64url");
++          return api.request(anonymous, "POST", "/api/internal/production-ops", {
++            envelope: `sbops1.${payload}.${signature}`,
++          });
++        };
++        const read = (selection: string) => ({
++          action: "inventory",
++          selection,
++          request: {},
++          recipient,
++        });
++        const decrypt = (artifact: typeof Artifact.Type) => {
++          const copy = artifact.recipient;
++          const key = privateDecrypt(
++            { key: pair.privateKey, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" },
++            Buffer.from(copy.wrappedKey, "base64"),
++          );
++          const encrypted = Buffer.from(copy.ciphertext, "base64");
++          const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(copy.iv, "base64"));
++          decipher.setAAD(Buffer.from(`basalt-production-ops-v1:${origin}`));
++          decipher.setAuthTag(encrypted.subarray(-16));
++          const plaintext = Buffer.concat([
++            decipher.update(encrypted.subarray(0, -16)),
++            decipher.final(),
++          ]);
++          expect(createHash("sha256").update(plaintext).digest("hex")).toBe(artifact.sha256);
++          return JSON.parse(plaintext.toString("utf8"));
++        };
++
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/internal/production-ops", {})).status,
++        ).toBe(409);
++        expect((yield* request(read("organizations"), { secret: "cd".repeat(32) })).status).toBe(
++          401,
++        );
++        expect(
++          (yield* request(read("organizations"), { target: "https://another.example.test" }))
++            .status,
++        ).toBe(401);
++        expect((yield* request(read("organizations"), { expiresAt: Date.now() - 1 })).status).toBe(
++          401,
++        );
++        expect((yield* request(read("select * from account"))).status).toBe(409);
++
++        for (const selection of [
++          "organizations",
++          "accounts",
++          "pools",
++          "app-links",
++          "retired-tokens",
++          "departures",
++          "workflows",
++          "schedules",
++          "reporters",
++          "receipts",
++        ]) {
++          const response = yield* request(read(selection));
++          expect(response.status).toBe(200);
++          const encrypted = yield* body(Response, response);
++          expect(JSON.stringify(response.body)).not.toContain("@example.test");
++          const inventory = yield* Schema.decodeUnknownEffect(Inventory)(
++            decrypt(encrypted.artifact),
++          );
++          expect(inventory.selection).toBe(selection);
++          expect(inventory.target).toBe(origin);
++          expect(inventory.release).toMatch(/^[a-f0-9]{40}$/);
++          if (selection === "organizations")
++            expect(
++              inventory.rows.some(
++                (row) =>
++                  typeof row === "object" &&
++                  row !== null &&
++                  !Array.isArray(row) &&
++                  "organization" in row &&
++                  row.organization === actors.organization.id,
++              ),
++            ).toBe(true);
++        }
++        const before = yield* body(Response, yield* request(read("accounts")));
++        const snapshotResponse = yield* request({
++          action: "backup",
++          selection: "accounts",
++          request: {},
++          recipient,
++        });
++        expect(snapshotResponse.status).toBe(200);
++        const snapshot = yield* body(Response, snapshotResponse);
++        const backup = yield* Schema.decodeUnknownEffect(Backup)(decrypt(snapshot.artifact));
++        expect(backup.tables).toEqual([
++          "executor_account_identities",
++          "executor_accounts",
++          "executor_oauth_grants",
++          "executor_providers",
++          "hosted_account_access",
++          "hosted_account_groups",
++          "hosted_app_account_links",
++        ]);
++        expect(Object.keys(backup.rows).sort()).toEqual(backup.tables);
++        const after = yield* body(Response, yield* request(read("accounts")));
++        expect(
++          (yield* Schema.decodeUnknownEffect(Inventory)(decrypt(after.artifact))).rows,
++        ).toEqual((yield* Schema.decodeUnknownEffect(Inventory)(decrypt(before.artifact))).rows);
++        for (const action of ["backup", "prepare", "dry-run", "apply"])
++          expect(
++            (yield* request({ action, selection: "unregistered", request: {}, recipient })).status,
++          ).toBe(409);
++        expect(
++          (yield* request({
++            action: "backup",
++            selection: "account;drop-table",
++            request: {},
++            recipient,
++          })).status,
++        ).toBe(409);
++      }),
++    ),
++  );
++});
