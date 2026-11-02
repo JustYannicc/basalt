@@ -1,6 +1,6 @@
 import type { WorkflowContext, WorkflowStepContext } from "apps";
 import { configurationRevision } from "./configuration-revision.ts";
-import { configuration } from "./configuration.ts";
+import { fieldsFor, type WorkflowName } from "./workflow-fields.ts";
 import { api, ReadUnavailable, record, text, tool } from "./api.ts";
 import { requirements } from "./installation.ts";
 import { quietAt } from "./conditions.ts";
@@ -47,16 +47,27 @@ async function pending(step: Step, question: NonNullable<Checkpoint["question"]>
     after = next;
   }
 }
-export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAgain: ReadAgain) {
+export async function nudge(
+  ctx: Flow,
+  key: string,
+  previous: Checkpoint,
+  readAgain: ReadAgain,
+  workflow: WorkflowName,
+) {
+  const fields = fieldsFor(workflow);
+  if (fields.destination.kind === "approvals") return "approvals-only";
   const question = previous.question;
-  if (!question || previous.notified !== "none" || configuration.channel === null)
-    return "already-notified";
+  if (!question || previous.notified !== "none") return "already-notified";
   const observation = await ctx.step.do("recheck before nudge", (step) =>
     readAgain(step, previous),
   );
   const deliveryAt = await ctx.step.do("delivery clock", async () => Date.now());
-  if (observation.verdict !== "action" || quietAt(deliveryAt, configuration.quietHours))
-    return "deferred";
+  if (observation.verdict !== "action") return "deferred";
+  try {
+    if (quietAt(deliveryAt, fields.quietHours)) return "deferred";
+  } catch {
+    return "delivery-unconfigured";
+  }
   const claimed = await ctx.step.runMutation("claim one nudge", claimNudge, {
     key,
     episode: previous.episode,
@@ -68,13 +79,14 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
     // The provider may accept a send even when its HTTP response or workflow receipt is lost.
     let attempt: string | undefined;
     try {
+      const expectedRevision = await configurationRevision();
       const consent = record(await tool(step, { app: question.app, tool: "settings", input: {} }));
       const latest = record(
         await tool(step, { app: question.app, tool: "checkpoint", input: { key } }),
       );
       if (
         consent?.deliveryEnabled !== true ||
-        consent.revision !== (await configurationRevision()) ||
+        consent.revision !== expectedRevision ||
         latest?.open !== true ||
         record(latest.question)?.id !== question.id ||
         typeof latest.mutedUntil !== "number" ||
@@ -86,18 +98,25 @@ export async function nudge(ctx: Flow, key: string, previous: Checkpoint, readAg
         (await readAgain(step, previous)).verdict !== "action"
       )
         return { status: "refused" };
-      const channel = configuration.channel;
-      if (channel === null) return { status: "refused" };
+      const channel = fields.destination;
+      if (channel.kind !== "tool") return { status: "refused" };
       const candidate = crypto.randomUUID();
       const acquired = await tool(
         step,
         {
           app: question.app,
           tool: "beginDelivery",
-          input: { key, episode: previous.episode, question: question.id, attempt: candidate },
+          input: {
+            key,
+            episode: previous.episode,
+            question: question.id,
+            attempt: candidate,
+            expectedRevision,
+          },
         },
         "mutation",
       );
+      if (acquired === "configuration-changed") return { status: "refused" };
       if (acquired !== true) return { status: "uncertain" };
       attempt = candidate;
       const result = await tool(

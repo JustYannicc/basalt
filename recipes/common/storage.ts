@@ -48,6 +48,7 @@ export const saveObservation = mutation(
       sourceAt: number().optional(),
       evidenceUrl: string().optional(),
       attemptedSha: string().optional(),
+      details: array(object({ label: string(), value: string() })).optional(),
       decision: string().optional(),
       poolQuotaOpen: boolean().optional(),
       poolMembers: array(object({ id: string(), seenAt: number(), inUse: boolean() })).optional(),
@@ -67,6 +68,14 @@ export const saveObservation = mutation(
       )
         throw new Error("Pool observation exceeds its bounded inventory.");
     }
+    if (
+      input.details &&
+      (input.details.length > 8 ||
+        input.details.some(
+          (detail) => !detail.label || detail.label.length > 120 || detail.value.length > 500,
+        ))
+    )
+      throw new Error("Observation evidence exceeds its bounds.");
     let withdrawn: Checkpoint["question"];
     const state = write(ctx, input.key, (before, tx) => {
       if (before.revision !== input.revision) return before;
@@ -90,6 +99,7 @@ export const saveObservation = mutation(
         ...(input.sourceAt === undefined ? {} : { sourceAt: input.sourceAt }),
         ...(input.evidenceUrl === undefined ? {} : { evidenceUrl: input.evidenceUrl }),
         ...(input.attemptedSha === undefined ? {} : { attemptedSha: input.attemptedSha }),
+        ...(input.details === undefined ? {} : { details: input.details }),
         ...(input.decision === undefined ? {} : { decision: input.decision }),
         ...(input.poolQuotaOpen === undefined ? {} : { poolQuotaOpen: input.poolQuotaOpen }),
         ...(input.poolMembers === undefined ? {} : { poolMembers: input.poolMembers }),

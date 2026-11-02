@@ -1,0 +1,611 @@
+diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+index ebfd0ac..8e60f56 100644
+--- a/apps/hosted/server/src/contracts/app-accounts.ts
++++ b/apps/hosted/server/src/contracts/app-accounts.ts
+@@ -4,6 +4,7 @@ import {
+   InteractiveRetirementFailed,
+   InteractiveReconnectUnsupported,
+ } from "@executor-js/sdk/core";
++import { ContributedDepartures } from "./contributed-departures.ts";
+ import { RequiredAction } from "./authorization.ts";
+ /**
+  * The accounts linked to an app's requirements. An app link fills an app requirement for every
+@@ -307,6 +308,18 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+ const [appCreate, appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
+ const [userCreate, userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
+ export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
++  .add(
++    HttpApiEndpoint.get("departures", `${prefix}/departures`, {
++      params: app,
++      success: ContributedDepartures,
++      error: [StorageError, AppNotFound, OrganizationForbidden],
++    })
++      .annotate(RequiredAction, "read")
++      .annotate(
++        OpenApi.Description,
++        "Read up to 100 pending or failed contributed-account cleanup links. Requires current app management access. A null queuedAt or lastError means older code did not record it. complete=false cannot establish recovery.",
++      ),
++  )
+   .add(appCreate)
+   .add(appList)
+   .add(appGet)
+diff --git a/apps/hosted/server/src/contracts/contributed-departures.ts b/apps/hosted/server/src/contracts/contributed-departures.ts
+new file mode 100644
+index 0000000..5b2d627
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/contributed-departures.ts
+@@ -0,0 +1,34 @@
++import { AccountId } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++
++/** Stable error kinds only; provider messages and SQL causes never enter the outbox projection. */
++export const DepartureError = Schema.Literals([
++  "lock-unavailable",
++  "storage-error",
++  "unlink-failed",
++  "invalid-snapshot",
++  "interrupted",
++  "execution-failed",
++]);
++export type DepartureError = typeof DepartureError.Type;
++
++/** One remaining link snapshot, visible only to the app's current managers. */
++export const ContributedDeparture = Schema.Struct({
++  job: Schema.String,
++  requirement: Schema.String,
++  account: AccountId,
++  accountLabel: Schema.NullOr(Schema.String),
++  status: Schema.Literals(["queued", "running", "failed"]),
++  attempts: Schema.Number,
++  /** Older jobs have no known enqueue timestamp; updatedAt is only a lower bound on their age. */
++  queuedAt: Schema.NullOr(Schema.Date),
++  updatedAt: Schema.Date,
++  lastError: Schema.NullOr(DepartureError),
++});
++/** A bounded current snapshot; an incomplete page cannot establish that cleanup is healthy. */
++export const ContributedDepartures = Schema.Struct({
++  appName: Schema.String,
++  observedAt: Schema.Date,
++  complete: Schema.Boolean,
++  items: Schema.Array(ContributedDeparture),
++});
+diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index c367a7e..450836b 100644
+--- a/apps/hosted/server/src/implementation/app-account-links.ts
++++ b/apps/hosted/server/src/implementation/app-account-links.ts
+@@ -1,3 +1,4 @@
++import { contributedDepartures } from "./contributed-departure-reads.ts";
+ import {
+   prepareNativePoolAccountMirror,
+   verifyNativePoolAccountMirror,
+@@ -380,6 +381,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+   Effect.gen(function* () {
+     const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
+     return handlers
++      .handle("departures", ({ params }) => contributedDepartures(params.app))
+       .handle("appCreate", ({ params, payload }) =>
+         createRequirementAccount("app", params, payload),
+       )
+diff --git a/apps/hosted/server/src/implementation/contributed-account-departure.ts b/apps/hosted/server/src/implementation/contributed-account-departure.ts
+index 92e9b47..f259736 100644
+--- a/apps/hosted/server/src/implementation/contributed-account-departure.ts
++++ b/apps/hosted/server/src/implementation/contributed-account-departure.ts
+@@ -1,10 +1,11 @@
+ /** Immutable native-link snapshots authorize detach only, never saved-credential deletion. */
+-import { AccountId, AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
++import { AccountId, AppId, StorageHost } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { organizationOwner, type OrganizationId } from "../contracts/organization.ts";
+ import { removeLink } from "./app-accounts.ts";
++import { ContributedDepartureFailed, departureFailed } from "./contributed-departure-errors.ts";
+ import { lockOrganizationAccess } from "./organization-access-lock.ts";
+ 
+ const DepartureLink = Schema.Struct({ app: AppId, requirement: Schema.String, account: AccountId });
+@@ -36,9 +37,11 @@ export const removeContributedDeparture = (input: {
+         where l.app = ${link.app} and l.requirement = ${link.requirement} and l.account = ${link.account}
+           and l.subject is null and l.linked_by = ${input.user}`;
+           if (present.length > 0)
+-            yield* removeLink(sql, executor.webhooks, { ...link, subject: null });
++            yield* removeLink(sql, executor.webhooks, { ...link, subject: null }).pipe(
++              Effect.mapError(() => new ContributedDepartureFailed({ code: "unlink-failed" })),
++            );
+           yield* sql`delete from hosted_contributed_departures where job = ${input.id}
+         and app = ${link.app} and requirement = ${link.requirement} and account = ${link.account}`;
+-        }),
++        }).pipe(Effect.mapError(departureFailed)),
+       );
+-  }).pipe(Effect.mapError(() => new StorageError()));
++  }).pipe(Effect.mapError(departureFailed));
+diff --git a/apps/hosted/server/src/implementation/contributed-departure-errors.ts b/apps/hosted/server/src/implementation/contributed-departure-errors.ts
+new file mode 100644
+index 0000000..e106356
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/contributed-departure-errors.ts
+@@ -0,0 +1,22 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Schema } from "effect";
++import { isSqlError } from "effect/sql/SqlError";
++import { DepartureError } from "../contracts/contributed-departures.ts";
++
++/** Carries an allowlisted stage or error kind across the queue, never the original cause. */
++export class ContributedDepartureFailed extends Schema.TaggedError<ContributedDepartureFailed>()(
++  "ContributedDepartureFailed",
++  { code: DepartureError },
++) {}
++
++export const departureFailed = (error: unknown) => {
++  if (error instanceof ContributedDepartureFailed) return error;
++  const code = isSqlError(error)
++    ? ["LockTimeoutError", "DeadlockError"].includes(error.reason._tag)
++      ? "lock-unavailable"
++      : "storage-error"
++    : Schema.is(StorageError)(error)
++      ? "storage-error"
++      : "invalid-snapshot";
++  return new ContributedDepartureFailed({ code });
++};
+diff --git a/apps/hosted/server/src/implementation/contributed-departure-observability-schema.ts b/apps/hosted/server/src/implementation/contributed-departure-observability-schema.ts
+new file mode 100644
+index 0000000..f0d787c
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/contributed-departure-observability-schema.ts
+@@ -0,0 +1,12 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Older jobs keep an unknown enqueue time instead of acquiring a fabricated migration timestamp. */
++export const migrateContributedDepartureObservability = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`alter table hosted_contributed_departure_jobs add column queued_at timestamptz`;
++  yield* sql`alter table hosted_contributed_departure_jobs alter column queued_at set default now()`;
++  yield* sql`alter table hosted_contributed_departure_jobs add column last_error text
++    check (last_error in ('lock-unavailable', 'storage-error', 'unlink-failed',
++      'invalid-snapshot', 'interrupted', 'execution-failed'))`;
++});
+diff --git a/apps/hosted/server/src/implementation/contributed-departure-queue.ts b/apps/hosted/server/src/implementation/contributed-departure-queue.ts
+index 8df3865..fe0c39d 100644
+--- a/apps/hosted/server/src/implementation/contributed-departure-queue.ts
++++ b/apps/hosted/server/src/implementation/contributed-departure-queue.ts
+@@ -1,8 +1,10 @@
+ /** Independent durable cleanup, recovered by Cloud's cron and self-host's queue worker. */
+ import { StorageError } from "@executor-js/sdk/core";
+-import { Effect, Exit, Schema } from "effect";
++import { Cause, Effect, Exit, Option, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { OrganizationId } from "../contracts/organization.ts";
++import { ContributedDepartureFailed } from "./contributed-departure-errors.ts";
++import type { DepartureError } from "../contracts/contributed-departures.ts";
+ import { removeContributedDeparture } from "./contributed-account-departure.ts";
+ 
+ const Departure = Schema.Struct({
+@@ -30,7 +32,7 @@ export const runContributedDeparture = (id: string) =>
+       user: job.user_id,
+     }).pipe(
+       Effect.andThen(sql`update hosted_contributed_departure_jobs
+-        set status = 'succeeded', updated_at = now()
++        set status = 'succeeded', last_error = null, updated_at = now()
+         where id = ${id} and status = 'running' and attempts = ${job.attempts}`),
+       Effect.onExit((exit) =>
+         Exit.isSuccess(exit)
+@@ -38,7 +40,12 @@ export const runContributedDeparture = (id: string) =>
+           : sql`update hosted_contributed_departure_jobs
+               set status = case when attempts >= 8 then 'failed' else 'queued' end,
+                 available_at = now() + least(300, power(2, attempts)) * interval '1 second',
+-                updated_at = now()
++                updated_at = now(), last_error = ${Option.match(Cause.findErrorOption(exit.cause), {
++                  onSome: (error): DepartureError =>
++                    error instanceof ContributedDepartureFailed ? error.code : "execution-failed",
++                  onNone: (): DepartureError =>
++                    Cause.hasInterrupts(exit.cause) ? "interrupted" : "execution-failed",
++                })}
+               where id = ${id} and status = 'running' and attempts = ${job.attempts}`.pipe(
+               Effect.ignore,
+             ),
+diff --git a/apps/hosted/server/src/implementation/contributed-departure-reads.ts b/apps/hosted/server/src/implementation/contributed-departure-reads.ts
+new file mode 100644
+index 0000000..e083121
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/contributed-departure-reads.ts
+@@ -0,0 +1,36 @@
++import { StorageError, type AppId } from "@executor-js/sdk/core";
++import { Clock, Effect, Schema } from "effect";
++import { ContributedDeparture } from "../contracts/contributed-departures.ts";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import { policyDatabase, requireCurrentAppAccess } from "./resource-policy.ts";
++
++/** App management and organization are rechecked before exposing retained account identities. */
++export const contributedDepartures = (app: AppId) =>
++  Effect.gen(function* () {
++    yield* requireCurrentAppAccess(app, "manage");
++    const { organization, owner } = yield* CurrentOrganization;
++    const sql = yield* policyDatabase;
++    const [row] = yield* sql`select name from executor_apps where id = ${app} and owner = ${owner}`;
++    const appName = yield* Schema.decodeUnknownEffect(Schema.Struct({ name: Schema.String }))(row);
++    const items = yield* sql`select j.id as job, d.requirement, d.account,
++      a.label as "accountLabel", j.status, j.attempts,
++      j.queued_at as "queuedAt", j.updated_at as "updatedAt", j.last_error as "lastError"
++    from hosted_contributed_departure_jobs j
++    join hosted_contributed_departures d on d.job = j.id and d.app = ${app}
++    left join executor_accounts a on a.id = d.account and a.owner = ${owner}
++    where j.organization_id = ${organization} and j.status in ('queued', 'running', 'failed')
++    order by j.updated_at, j.id, d.requirement, d.account limit 101`.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ContributedDeparture))),
++    );
++    return {
++      appName: appName.name,
++      observedAt: new Date(yield* Clock.currentTimeMillis),
++      complete: items.length <= 100,
++      items: items.slice(0, 100),
++    };
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new StorageError(),
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index f8b6b35..cf5bf45 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -15,6 +15,7 @@ import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
+ import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
+ import { migrateAppAccountLinks } from "./app-account-schema.ts";
+ import { migrateAccountIdentityIndex } from "./account-identity-schema.ts";
++import { migrateContributedDepartureObservability } from "./contributed-departure-observability-schema.ts";
+ import { migrateContributedDepartures } from "./contributed-departure-schema.ts";
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ 
+@@ -138,6 +139,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+   "10_account_observations": migrateAccountObservations,
+   "11_contributed_departures": migrateContributedDepartures,
+   "12_account_identity_index": migrateAccountIdentityIndex,
++  "13_contributed_departure_observability": migrateContributedDepartureObservability,
+ });
+ 
+ /**
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 7f0c740..2f38a5e 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -129,7 +129,7 @@ const jobs = {
+     runner: 2,
+ 
+     pattern:
+-      "A Better Auth query|Cloud starts organization removals whose Workflow start stalled|an app link that waits for the admin.s membership while a demotion commits",
++      "A Better Auth query|Cloud starts organization removals whose Workflow start stalled|departure diagnostics retain the real eighth failure|an app link that waits for the admin.s membership while a demotion commits",
+   },
+   // This holds a lock on the accounts table to stop a tool call's batch partway, which would
+   // stall every other scenario that reads accounts.
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 6309233..9d0ad28 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -34,7 +34,7 @@ export const beforeHostedAccountObservations = () =>
+     { sql: "DROP VIEW hosted_contributions" },
+     { sql: "DROP TABLE hosted_contributed_departures, hosted_contributed_departure_jobs" },
+     { sql: "DROP TABLE hosted_account_observation_access" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id IN (10, 11, 12)" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id IN (10, 11, 12, 13)" },
+   ] as const;
+ 
+ /**
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 4502a87..01d372e 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -143,6 +143,29 @@ export const scenarios = plan({
+       cloud: scheduled,
+     },
+   },
++  contributedDepartureDiagnostics: {
++    fixtures: "actors",
++    file: "contributed-departure-observability.spec.ts",
++    title:
++      "departure diagnostics retain the real eighth failure and stay bounded behind current app management",
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": na("Uses managed Cloud row locks to force an actual eighth failure."),
++      cloud: scheduled,
++    },
++  },
++  contributedDepartureRetainedDiagnostics: {
++    fixtures: "actors",
++    file: "contributed-departure-observability.spec.ts",
++    title:
++      "retained departure diagnostics migrate once without inventing old queue timestamps or errors",
++    legacyStorage: true,
++    targets: {
++      local: na("Local has no organization contributions."),
++      "self-host": scheduled,
++      cloud: na("Exercises the previous self-host schema."),
++    },
++  },
+   contributedAppDepartureRecovery: {
+     fixtures: "actors",
+     file: "contributed-app-departures.spec.ts",
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+index 165c026..b60f453 100644
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -3,6 +3,7 @@ import { Effect } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { observationFixture } from "../support/account-observation-fixture.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
++import { Evidence } from "../support/evidence.ts";
+ import {
+   beforeAccountAcquisition,
+   beforeHostedAccountObservations,
+@@ -16,6 +17,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+       context,
+       Effect.gen(function* () {
+         const f = yield* observationFixture();
++        const evidence = yield* Evidence;
+         const health = yield* f.check();
+         expect(health.status).toBe(200);
+         expect((yield* f.refresh()).status).toBe(200);
+@@ -32,13 +34,20 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           health: health.body,
+         });
+         // Reconstruct the supported 4.0.17 layout; existing account, health and app rows remain intact.
+-        yield* legacyStorage([
++        const downgraded = yield* legacyStorage([
+           { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
+           ...beforeAccountAcquisition(),
+           ...beforeHostedAccountObservations(),
+           { sql: "DROP TABLE executor_account_observations" },
+           { sql: "DROP TABLE executor_account_reports" },
++          {
++            sql: "SELECT migration_id FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++          },
++          {
++            sql: "SELECT to_regclass('hosted_account_observation_access')::text AS observation_access",
++          },
+         ]);
++        yield* evidence.json("legacy-observation-layout.json", downgraded.slice(-2));
+         yield* serverControl("start");
+         expect((yield* f.detail()).body).toMatchObject({
+           account: { id: f.account },
+@@ -46,12 +55,18 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+         });
+         expect((yield* f.refresh()).status).toBe(200);
+         const saved = (yield* f.read()).body;
+-        const [versions, steps, tables] = yield* legacyStorage([
++        const [versions, steps, tables, hostedSteps, diagnostics] = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+           { sql: "SELECT name FROM private_hosted_migrations WHERE migration_id = 10" },
+           {
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_acquisitions', 'executor_account_driver_checks', 'executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
+           },
++          {
++            sql: "SELECT migration_id FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++          },
++          {
++            sql: "SELECT column_name FROM information_schema.columns WHERE table_name = 'hosted_contributed_departure_jobs' AND column_name IN ('queued_at', 'last_error') ORDER BY column_name",
++          },
+         ]);
+         expect(currentVersion).toHaveLength(1);
+         expect(versions).toEqual(currentVersion);
+@@ -62,10 +77,25 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           { table_name: "executor_account_observations" },
+           { table_name: "hosted_account_observation_access" },
+         ]);
++        expect(hostedSteps).toEqual([
++          { migration_id: 10 },
++          { migration_id: 11 },
++          { migration_id: 12 },
++          { migration_id: 13 },
++        ]);
++        expect(diagnostics).toEqual([{ column_name: "last_error" }, { column_name: "queued_at" }]);
++        yield* evidence.json("upgraded-observation-and-departure-layout.json", {
++          hostedSteps,
++          diagnostics,
++        });
+         yield* serverControl("start");
+         yield* serverControl("restart");
+         expect((yield* f.read()).body).toEqual(saved);
+         expect((yield* f.detail()).body).toMatchObject({ health: health.body });
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${f.appPath}/accounts/departures`)).status,
++        ).toBe(200);
++        expect((yield* f.refresh()).status).toBe(200);
+       }),
+     ),
+   );
+diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+new file mode 100644
+index 0000000..9ffa82a
+--- /dev/null
++++ b/e2e/tests/contributed-departure-observability.spec.ts
+@@ -0,0 +1,178 @@
++/** Durable cleanup diagnostics stay bounded and obey the app's current management authority. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { ok } from "../support/app-links.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { contributedApp } from "../support/contributed-app.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Item = Schema.Struct({
++  job: Schema.String,
++  account: Schema.String,
++  accountLabel: Schema.NullOr(Schema.String),
++  attempts: Schema.Number,
++  status: Schema.String,
++  queuedAt: Schema.NullOr(Schema.String),
++  updatedAt: Schema.String,
++  lastError: Schema.NullOr(Schema.String),
++});
++const Page = Schema.Struct({
++  complete: Schema.Boolean,
++  appName: Schema.String,
++  items: Schema.Array(Item),
++});
++
++layer(RuntimeLive, { excludeTestServices: true })("Departure observability", (it) => {
++  it.effect(scenarios.contributedDepartureDiagnostics.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* contributedApp;
++        const locks = yield* cloudLocks;
++        const evidence = yield* Evidence;
++        yield* f.role(f.ids.admin, "member");
++        const account = yield* f.connect(
++          f.actors.member,
++          "app",
++          "shared",
++          "Departing pool account",
++        );
++        const path = `${f.prefix}/apps/${f.app.id}/accounts/departures`;
++        const read = f.api
++          .request(f.actors.owner, "GET", path)
++          .pipe(Effect.flatMap((response) => body(Page, response)));
++        expect((yield* f.api.request(f.actors.admin, "GET", path)).status).toBe(403);
++        yield* locks.hold({
++          sql: "SELECT id FROM executor_apps WHERE id = $1 FOR NO KEY UPDATE",
++          params: [f.app.id],
++        });
++        yield* ok(
++          yield* f.api.request(f.actors.owner, "POST", "/api/auth/organization/remove-member", {
++            organizationId: f.actors.organization.id,
++            memberIdOrEmail: f.member.email,
++          }),
++        );
++        const pending = yield* read.pipe(
++          Effect.repeat({
++            schedule: Schedule.spaced("100 millis"),
++            while: (page) => page.items.length !== 1 || page.items[0]?.lastError === null,
++          }),
++          Effect.timeout("15 seconds"),
++        );
++        expect(pending).toMatchObject({
++          complete: true,
++          items: [
++            {
++              account,
++              accountLabel: "Departing pool account",
++              status: "queued",
++              lastError: "lock-unavailable",
++            },
++          ],
++        });
++        expect(pending.items[0]?.queuedAt).not.toBeNull();
++        yield* evidence.json("queued-departure-safe-error.json", pending);
++        // Seven preceding failures are retained state; the next wake must execute the real eighth failure.
++        yield* locks.run({
++          sql: "UPDATE hosted_contributed_departure_jobs SET attempts = 7, available_at = now() - interval '1 second' WHERE organization_id = $1 AND user_id = $2",
++          params: [f.actors.organization.id, f.ids.member],
++        });
++        yield* ok(yield* f.call(f.actors.owner, "accounts"));
++        const failed = yield* read.pipe(
++          Effect.repeat({
++            schedule: Schedule.spaced("100 millis"),
++            while: (page) => page.items[0]?.status !== "failed",
++          }),
++          Effect.timeout("15 seconds"),
++        );
++        expect(failed.items[0]).toMatchObject({
++          account,
++          attempts: 8,
++          status: "failed",
++          lastError: "lock-unavailable",
++        });
++        expect(failed.items[0]?.queuedAt).toBe(pending.items[0]?.queuedAt);
++        yield* evidence.json("eighth-failure-retained.json", failed);
++        yield* locks.release;
++        const other = yield* f.another(
++          `import { defineApp } from "apps"; export default defineApp({}, {});`,
++        );
++        const unrelated = yield* f.api
++          .request(f.actors.owner, "GET", `${other}/accounts/departures`)
++          .pipe(Effect.flatMap((response) => body(Page, response)));
++        expect(unrelated.items).toEqual([]);
++        // The projection caps remaining links, even when older code left many terminal failures.
++        yield* locks.run({
++          sql: `WITH jobs AS (INSERT INTO hosted_contributed_departure_jobs (id, organization_id, user_id, status, attempts)
++        SELECT $1 || n, $2, $3, 'failed', 8 FROM generate_series(1, 101) n RETURNING id)
++        INSERT INTO hosted_contributed_departures (job, app, requirement, account, linked_at)
++        SELECT id, $4, 'shared', $5, now() FROM jobs`,
++          params: [
++            `${f.app.id}-diagnostic-`,
++            f.actors.organization.id,
++            f.ids.member,
++            f.app.id,
++            account,
++          ],
++        });
++        const bounded = yield* read;
++        expect(bounded.complete).toBe(false);
++        expect(bounded.items).toHaveLength(100);
++        yield* f.role(f.ids.admin, "admin");
++        expect((yield* f.api.request(f.actors.admin, "GET", path)).status).toBe(200);
++        yield* f.role(f.ids.admin, "member");
++        expect((yield* f.api.request(f.actors.admin, "GET", path)).status).toBe(403);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.contributedDepartureRetainedDiagnostics.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* contributedApp;
++        const evidence = yield* Evidence;
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++        const account = yield* f.connect(f.actors.member, "app", "shared", "Retained pool account");
++        // The previous host stored this job before migration 13 and could not retain its diagnostics.
++        yield* legacyStorage([
++          { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
++          { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
++          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 13" },
++          {
++            sql: "INSERT INTO hosted_contributed_departure_jobs (id, organization_id, user_id, status, attempts, updated_at) VALUES ($1, $2, $3, 'failed', 8, now() - interval '10 minutes')",
++            params: [`${f.app.id}-retained`, f.actors.organization.id, f.ids.member],
++          },
++          {
++            sql: "INSERT INTO hosted_contributed_departures (job, app, requirement, account, linked_at) SELECT $1, app, requirement, account, created_at FROM hosted_app_account_links WHERE app = $2 AND account = $3 AND subject IS NULL",
++            params: [`${f.app.id}-retained`, f.app.id, account],
++          },
++        ]);
++        yield* serverControl("start");
++        const read = f.api
++          .request(f.actors.owner, "GET", `${f.prefix}/apps/${f.app.id}/accounts/departures`)
++          .pipe(Effect.flatMap((response) => body(Page, response)));
++        const retained = yield* read;
++        expect(retained.items).toMatchObject([
++          { account, status: "failed", attempts: 8, queuedAt: null, lastError: null },
++        ]);
++        yield* serverControl("restart");
++        expect(yield* read).toEqual(retained);
++        yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
++        const [journal] = yield* legacyStorage([
++          {
++            sql: "SELECT count(*)::integer AS count FROM private_hosted_migrations WHERE migration_id = 13",
++          },
++        ]);
++        expect(journal).toEqual([{ count: 1 }]);
++        yield* serverControl("start");
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+index 8aa3afa..92314ce 100644
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -62,6 +62,7 @@ const ledger = [
+   "account_observations",
+   "contributed_departures",
+   "account_identity_index",
++  "contributed_departure_observability",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });

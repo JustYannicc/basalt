@@ -12,6 +12,8 @@ import {
 } from "./storage.ts";
 import type { Checkpoint, Observation } from "./types.ts";
 
+import type { WorkflowName } from "./workflow-fields.ts";
+
 type Flow = WorkflowContext<typeof requirements>;
 export const clock = (ctx: Flow, name: string) => ctx.step.do(name, async () => Date.now());
 export async function withdraw(
@@ -32,6 +34,7 @@ export async function withdraw(
 const evidenceFor = (observation: Observation) => [
   { label: "Condition", value: observation.code },
   { label: "Observed at", value: new Date(observation.at).toISOString() },
+  ...(observation.details ?? []),
   ...(observation.attemptedSha
     ? [{ label: "Attempted commit", value: observation.attemptedSha }]
     : []),
@@ -43,7 +46,7 @@ export async function ask(
   readAgain: ReadAgain,
   link: string,
   label: string,
-  workflow: string,
+  workflow: WorkflowName,
 ) {
   const now = await clock(ctx, "question clock");
   const claim = await ctx.step.runMutation("claim question", claimQuestion, {
@@ -54,7 +57,7 @@ export async function ask(
   });
   if (!claim.owned)
     return {
-      status: await nudge(ctx, key, claim.state, readAgain),
+      status: await nudge(ctx, key, claim.state, readAgain, workflow),
       code: claim.state.observation.code,
     };
   const question = await ctx.step.requestInput("review resource", {
@@ -105,7 +108,7 @@ export async function ask(
     return { status: "obsolete" };
   }
   const state = await ctx.step.runQuery("current waiting state", checkpoint, { key });
-  const delivery = await nudge(ctx, key, state, readAgain);
+  const delivery = await nudge(ctx, key, state, readAgain, workflow);
   const response = await ctx.step.waitForInput("wait for the owner", question);
   const answeredAt = await clock(ctx, "answer clock");
   const declined = response.status === "answered" && response.response.action !== "accept";
@@ -164,7 +167,7 @@ export async function observe(
   readAgain: ReadAgain,
   link: string,
   label: string,
-  workflow: string,
+  workflow: WorkflowName,
 ) {
   const currentSettings = await ctx.step.runQuery("check private ownership", settings, {});
   if (!currentSettings.current) return { status: "unconfigured", code: "configuration-changed" };

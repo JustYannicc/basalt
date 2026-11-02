@@ -1,0 +1,92 @@
+package openai
+
+import (
+	"maps"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/tidwall/gjson"
+)
+
+func TestBasaltHomeOnlyModelContinuation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dispatcher := &homeResponsesWebsocketDispatcher{}
+	executor := &homeResponsesWebsocketExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
+	manager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
+	manager.RegisterExecutor(executor)
+	// Home owns the catalog; no local credential/model registration exists.
+	registry.GetGlobalRegistry().UnregisterClient("home-responses-websocket-auth")
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Errorf("close websocket: %v", errClose)
+		}
+	}()
+
+	requests := []string{
+		`{"type":"response.create","model":"basalt-home-only-model","input":[]}`,
+		`{"type":"response.create","model":"basalt-home-only-model","previous_response_id":"home-response","input":[]}`,
+	}
+	for index, request := range requests {
+		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(request)); errWrite != nil {
+			t.Fatalf("write websocket request %d: %v", index+1, errWrite)
+		}
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			t.Fatalf("read websocket response %d: %v", index+1, errRead)
+		}
+		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+			t.Fatalf("response %d type = %q, want %q: %s", index+1, got, wsEventTypeCompleted, payload)
+		}
+		if index == 0 {
+			executor.mu.Lock()
+			firstMetadata := maps.Clone(executor.metadata[0])
+			executor.mu.Unlock()
+			sessionID, _ := firstMetadata[coreexecutor.ExecutionSessionMetadataKey].(string)
+			if _, ok := manager.GetExecutionSessionAuthByID(sessionID, "home-responses-websocket-auth"); !ok {
+				t.Fatal("first selected-auth callback did not stage the session runtime auth")
+			}
+		}
+	}
+
+	executor.mu.Lock()
+	metadata := append([]map[string]any(nil), executor.metadata...)
+	executor.mu.Unlock()
+	if len(metadata) != 2 {
+		t.Fatalf("executor metadata calls = %d, want 2", len(metadata))
+	}
+	if got := metadata[1][coreexecutor.PinnedAuthMetadataKey]; got != "home-responses-websocket-auth" {
+		t.Fatalf("second turn pinned auth metadata = %#v, want home selected auth (first metadata: %#v, second metadata: %#v)", got, metadata[0], metadata[1])
+	}
+	if got := dispatcher.calls.Load(); got != 1 {
+		t.Fatalf("Home RPOP calls = %d, want 1 after selected-auth callback pin", got)
+	}
+	if got := executor.calls.Load(); got != 2 {
+		t.Fatalf("executor calls = %d, want 2", got)
+	}
+}

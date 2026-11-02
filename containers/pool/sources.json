@@ -19,13 +19,13 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "d946c4fba6fc9a5cfbca1f3d85184d62ad2fb683",
-      "sha256": "6182c0e7ab64dea342253da9d6aaf66214e7c8e68885f779eda6414cc6deaa82",
+      "commit": "7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc",
+      "sha256": "b3134943a47d5931e547937b12ef1c79c7d6d6116fe44498b44b179f186bfad5",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
-          "file": "cliproxy-node-v8.0.40-metadata-only.patch",
-          "sha256": "59b067a60ec1e80808bc81eb7dfc2022780854bd8e6ad572624e621809aa5979",
+          "file": "cliproxy-node-v8.0.51-metadata-only.patch",
+          "sha256": "b2f3c24b2e2efaf41659435331c3c043e63b25169ae65b79cdeae5cfa3c473fe",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
@@ -34,7 +34,7 @@
         {
           "identity": "cliproxy-native-typesafe-registration",
           "file": "0066-typesafe-native-registration.patch",
-          "sha256": "bd887e4772d191bdc7ba346d3a69eb0dfaf9dd8136e34c0fd53861f1a221a1f1",
+          "sha256": "fe7ebe60f5e90303b0b2f88aa16a6a18941c20ebc7810db179048f0ff8dbfc2e",
           "retirement": {
             "mode": "manual",
             "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."
@@ -46,9 +46,9 @@
   "plugins": {
     "gemini-cli": {
       "repository": "router-for-me/cpa-plugin-gemini-cli",
-      "tag": "v1.0.0",
-      "commit": "fc71896865b1d5d77dd9a80b93c847ed69c10c83",
-      "sha256": "0bd5c5d0da1a82c9131be5b5122144d0240326426bedbaa92d89224fa20cf264",
+      "tag": "v1.0.5",
+      "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
+      "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
       "auth_providers": [
         "gemini-cli"
       ]

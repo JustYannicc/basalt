@@ -6,7 +6,6 @@ const rows = {
     { id: "foreign-app", name: "production-pool" }],
   "workers/scripts": [],
   "workers/durable_objects/namespaces": [],
-  "storage/kv/namespaces": [],
   "hyperdrive/configs": [{ id: "fixture-drive", name: "basalt-180-scale-auth", origin: { host: "private-database-host-sentinel", user: "private-role-sentinel" } }],
   "mtls_certificates": [{ id: "fixture-ca", name: "basalt-180-scale-ca" }],
 };
@@ -24,7 +23,11 @@ globalThis.fetch = async (target, init = {}) => {
     return database ? response({ name: "basalt-180-scale-pg", private: "private-database-sentinel" }) : response({}, 404);
   }
   if (url.hostname !== "api.cloudflare.com") throw new Error("Unexpected provider");
+  if (new Headers(init.headers).get("authorization") !== `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`)
+    return response({ errors: [{ code: 10000, message: "private-authorization-sentinel" }] }, 401);
   const path = url.pathname.replace(/^\/client\/v4\/accounts\/[^/]+\//, "");
+  if (path === "storage/kv/namespaces" || process.env.SCALE_FIXTURE_REFUSAL === "true")
+    return response({ errors: [{ code: 10000, message: "private-provider-response-sentinel" }] }, 401);
   if (path.endsWith("/settings") && process.env.SCALE_FIXTURE_RUN === "true") return response({ result: { bindings: [
     { name: "TEST_DEADLINE", text: String(Date.now() + 2 * 60 * 60_000) },
     { name: "TEST_ORIGIN", text: "https://basalt-180-scale-gateway.fixture.workers.dev" },

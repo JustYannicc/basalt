@@ -1,14 +1,6 @@
 /** Edit this private copy, then approve its delivery setting and enable its native schedule. */
 export const configuration = {
   organization: "",
-  /** The existing connected channel app and its exact send tool. No default recipient. */
-  channel: null as null | {
-    app: string;
-    tool: string;
-    input: (message: string, reviewUrl: string) => Record<string, unknown>;
-    receipt: (result: unknown) => string | undefined;
-  },
-  quietHours: null as null | { timezone: string; startHour: number; endHour: number },
   /** Empty watches all personal, checkable accounts returned by the authorized inventory. */
   accounts: [] as string[],
   /** Provider IDs come from the pool's view. No provider or plan assumptions are made here. */
