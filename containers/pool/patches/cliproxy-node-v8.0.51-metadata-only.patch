@@ -1,6 +1,6 @@
 diff --git a/internal/api/middleware/metadata_only_test.go b/internal/api/middleware/metadata_only_test.go
 new file mode 100644
-index 0000000..f28b1cf
+index 00000000..f28b1cf9
 --- /dev/null
 +++ b/internal/api/middleware/metadata_only_test.go
 @@ -0,0 +1,41 @@
@@ -46,7 +46,7 @@ index 0000000..f28b1cf
 +	}
 +}
 diff --git a/internal/api/middleware/request_logging.go b/internal/api/middleware/request_logging.go
-index 48f2d58..809eb31 100644
+index a5c51402..df677504 100644
 --- a/internal/api/middleware/request_logging.go
 +++ b/internal/api/middleware/request_logging.go
 @@ -16,6 +16,7 @@ import (
@@ -57,7 +57,7 @@ index 48f2d58..809eb31 100644
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
  	log "github.com/sirupsen/logrus"
-@@ -32,7 +33,7 @@ const (
+@@ -34,7 +35,7 @@ const (
  // large and unknown-size bodies are spooled to disk and retained only for error logs.
  func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
  	return func(c *gin.Context) {
@@ -67,10 +67,10 @@ index 48f2d58..809eb31 100644
  			return
  		}
 diff --git a/internal/api/server.go b/internal/api/server.go
-index fc1646c..dd0704b 100644
+index 32a7c567..ddf04915 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
-@@ -121,6 +121,7 @@ type Server struct {
+@@ -122,6 +122,7 @@ type Server struct {
  func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
  	if cfg != nil {
  		cfg = cfg.CloneForRuntime()
@@ -80,7 +80,7 @@ index fc1646c..dd0704b 100644
  		requestLoggerFactory: defaultRequestLoggerFactory,
 diff --git a/internal/api/server_metadata_only_test.go b/internal/api/server_metadata_only_test.go
 new file mode 100644
-index 0000000..60f4e3d
+index 00000000..60f4e3da
 --- /dev/null
 +++ b/internal/api/server_metadata_only_test.go
 @@ -0,0 +1,55 @@
@@ -140,10 +140,10 @@ index 0000000..60f4e3d
 +	}
 +}
 diff --git a/internal/api/server_reload.go b/internal/api/server_reload.go
-index 36c8e1c..61e393f 100644
+index 312182c0..15b89178 100644
 --- a/internal/api/server_reload.go
 +++ b/internal/api/server_reload.go
-@@ -55,6 +55,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
+@@ -56,6 +56,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
  		return false
  	}
  	cfg = cfg.CloneForRuntime()
@@ -152,7 +152,7 @@ index 36c8e1c..61e393f 100644
  	var oldCfg *config.Config
  	s.cfgMu.RLock()
 diff --git a/internal/config/config_load.go b/internal/config/config_load.go
-index baca01e..71bae52 100644
+index baca01e9..71bae52c 100644
 --- a/internal/config/config_load.go
 +++ b/internal/config/config_load.go
 @@ -155,6 +155,14 @@ func managementSecretKeyPath(data []byte) []string {
@@ -172,7 +172,7 @@ index baca01e..71bae52 100644
  	if err != nil {
 diff --git a/internal/config/metadata_only.go b/internal/config/metadata_only.go
 new file mode 100644
-index 0000000..5802fb0
+index 00000000..5802fb06
 --- /dev/null
 +++ b/internal/config/metadata_only.go
 @@ -0,0 +1,15 @@
@@ -193,7 +193,7 @@ index 0000000..5802fb0
 +}
 diff --git a/internal/config/metadata_only_test.go b/internal/config/metadata_only_test.go
 new file mode 100644
-index 0000000..3604c46
+index 00000000..3604c46a
 --- /dev/null
 +++ b/internal/config/metadata_only_test.go
 @@ -0,0 +1,52 @@
@@ -250,7 +250,7 @@ index 0000000..3604c46
 +	}
 +}
 diff --git a/internal/config/parse.go b/internal/config/parse.go
-index c3442be..6ae8016 100644
+index c3442be1..6ae80168 100644
 --- a/internal/config/parse.go
 +++ b/internal/config/parse.go
 @@ -125,6 +125,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
@@ -263,7 +263,7 @@ index c3442be..6ae8016 100644
  }
 diff --git a/internal/diagnostics/metadata_only.go b/internal/diagnostics/metadata_only.go
 new file mode 100644
-index 0000000..44e006d
+index 00000000..44e006db
 --- /dev/null
 +++ b/internal/diagnostics/metadata_only.go
 @@ -0,0 +1,90 @@
@@ -359,7 +359,7 @@ index 0000000..44e006d
 +}
 diff --git a/internal/diagnostics/metadata_only_test.go b/internal/diagnostics/metadata_only_test.go
 new file mode 100644
-index 0000000..9f1640a
+index 00000000..9f1640a0
 --- /dev/null
 +++ b/internal/diagnostics/metadata_only_test.go
 @@ -0,0 +1,75 @@
@@ -439,7 +439,7 @@ index 0000000..9f1640a
 +	}
 +}
 diff --git a/internal/logging/home_app_log_forwarder.go b/internal/logging/home_app_log_forwarder.go
-index 32cd5a5..a59fd16 100644
+index 32cd5a59..a59fd16a 100644
 --- a/internal/logging/home_app_log_forwarder.go
 +++ b/internal/logging/home_app_log_forwarder.go
 @@ -7,7 +7,6 @@ import (
@@ -474,7 +474,7 @@ index 32cd5a5..a59fd16 100644
  	default:
 diff --git a/internal/logging/home_app_log_privacy.go b/internal/logging/home_app_log_privacy.go
 new file mode 100644
-index 0000000..2e7973e
+index 00000000..2e7973e7
 --- /dev/null
 +++ b/internal/logging/home_app_log_privacy.go
 @@ -0,0 +1,36 @@
@@ -516,7 +516,7 @@ index 0000000..2e7973e
 +}
 diff --git a/internal/logging/home_app_log_privacy_test.go b/internal/logging/home_app_log_privacy_test.go
 new file mode 100644
-index 0000000..bca7497
+index 00000000..bca7497b
 --- /dev/null
 +++ b/internal/logging/home_app_log_privacy_test.go
 @@ -0,0 +1,67 @@
@@ -589,7 +589,7 @@ index 0000000..bca7497
 +}
 diff --git a/internal/redisqueue/metadata_only_test.go b/internal/redisqueue/metadata_only_test.go
 new file mode 100644
-index 0000000..e4dfca7
+index 00000000..e4dfca7c
 --- /dev/null
 +++ b/internal/redisqueue/metadata_only_test.go
 @@ -0,0 +1,138 @@
@@ -732,7 +732,7 @@ index 0000000..e4dfca7
 +	})
 +}
 diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
-index 04328ef..54e7c88 100644
+index c922a73c..e53b87ef 100644
 --- a/internal/redisqueue/plugin.go
 +++ b/internal/redisqueue/plugin.go
 @@ -8,6 +8,7 @@ import (
@@ -764,41 +764,40 @@ index 04328ef..54e7c88 100644
  	accessProvider := strings.TrimSpace(record.AccessProvider)
  	if accessProvider == "" {
  		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
-@@ -156,6 +164,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
- 		Endpoint:             resolveEndpoint(ctx),
- 		AuthType:             authType,
- 		APIKey:               apiKey,
-+		APIKeyFingerprint:    apiKeyFingerprint,
- 		IsNativeKey:          isNativeKey,
- 		AccessProvider:       accessProvider,
- 		RequestID:            requestID,
-@@ -189,6 +198,7 @@ type queuedUsageDetail struct {
- 	Endpoint             string                   `json:"endpoint"`
- 	AuthType             string                   `json:"auth_type"`
- 	APIKey               string                   `json:"api_key"`
-+	APIKeyFingerprint    string                   `json:"api_key_fingerprint,omitempty"`
- 	IsNativeKey          bool                     `json:"is_native_key"`
- 	AccessProvider       string                   `json:"access_provider,omitempty"`
- 	RequestID            string                   `json:"request_id"`
-@@ -239,12 +249,16 @@ type tokenStats struct {
+@@ -171,6 +179,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 		Endpoint:              resolveEndpoint(ctx),
+ 		AuthType:              authType,
+ 		APIKey:                apiKey,
++		APIKeyFingerprint:     apiKeyFingerprint,
+ 		IsNativeKey:           isNativeKey,
+ 		AccessProvider:        accessProvider,
+ 		RequestID:             requestID,
+@@ -215,6 +224,7 @@ type queuedUsageDetail struct {
+ 	Alias                 string                      `json:"alias"`
+ 	Endpoint              string                      `json:"endpoint"`
+ 	AuthType              string                      `json:"auth_type"`
++	APIKeyFingerprint     string                      `json:"api_key_fingerprint,omitempty"`
+ 	APIKey                string                      `json:"api_key"`
+ 	IsNativeKey           bool                        `json:"is_native_key"`
+ 	AccessProvider        string                      `json:"access_provider,omitempty"`
+@@ -293,6 +303,7 @@ type tokenStats struct {
  type failDetail struct {
  	StatusCode int    `json:"status_code"`
  	Body       string `json:"body"`
 +	Type       string `json:"type,omitempty"`
-+	Code       string `json:"code,omitempty"`
+ 	Code       string `json:"code,omitempty"`
  }
  
- func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
+@@ -300,6 +311,7 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
  	fail := failDetail{
  		StatusCode: record.Fail.StatusCode,
  		Body:       strings.TrimSpace(record.Fail.Body),
 +		Type:       strings.TrimSpace(record.Fail.Type),
-+		Code:       strings.TrimSpace(record.Fail.Code),
+ 		Code:       strings.TrimSpace(record.Fail.Code),
  	}
  	if !failed {
- 		return failDetail{StatusCode: 200}
 diff --git a/internal/runtime/executor/helps/logging_helpers.go b/internal/runtime/executor/helps/logging_helpers.go
-index e1db297..5f6cfaa 100644
+index cdf1264d..a1504182 100644
 --- a/internal/runtime/executor/helps/logging_helpers.go
 +++ b/internal/runtime/executor/helps/logging_helpers.go
 @@ -13,6 +13,7 @@ import (
@@ -823,10 +822,10 @@ index e1db297..5f6cfaa 100644
 +	if cfg == nil || cfg.CommercialMode || diagnostics.MetadataOnlyEnabled() {
  		return
  	}
- 	ginCtx := ginContextFrom(ctx)
+ 	// Check the immutable policy before accessing the pooled request context.
 diff --git a/internal/runtime/executor/helps/metadata_only_test.go b/internal/runtime/executor/helps/metadata_only_test.go
 new file mode 100644
-index 0000000..9a56630
+index 00000000..9a566304
 --- /dev/null
 +++ b/internal/runtime/executor/helps/metadata_only_test.go
 @@ -0,0 +1,96 @@
@@ -927,10 +926,10 @@ index 0000000..9a56630
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index 6a2b951..935e46e 100644
+index a037cba6..f348a1da 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
-@@ -16,6 +16,7 @@ import (
+@@ -19,6 +19,7 @@ import (
  	"github.com/gin-gonic/gin"
  	"github.com/google/uuid"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
@@ -938,7 +937,7 @@ index 6a2b951..935e46e 100644
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
  	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-@@ -86,6 +87,7 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
+@@ -91,6 +92,7 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
  }
  
  func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
@@ -946,7 +945,7 @@ index 6a2b951..935e46e 100644
  	apiKey := APIKeyFromContext(ctx)
  	accessProvider := AccessProviderFromContext(ctx)
  	isNativeKey := false
-@@ -110,19 +112,44 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -115,19 +117,44 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
  	}
  	baseURL := ""
  	if auth != nil {
@@ -993,7 +992,7 @@ index 6a2b951..935e46e 100644
  	reporter := &UsageReporter{
  		requestID:       uuid.NewString(),
  		traceID:         traceID,
-@@ -136,17 +163,24 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -142,17 +169,24 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
  		isNativeKey:     isNativeKey,
  		sessionID:       sessionID,
  		parentSessionID: parentSessionID,
@@ -1027,7 +1026,7 @@ index 6a2b951..935e46e 100644
  	}
  	return reporter
  }
-@@ -196,12 +230,16 @@ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
+@@ -202,12 +236,16 @@ func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
  		return
  	}
  	r.authMu.Lock()
@@ -1046,7 +1045,7 @@ index 6a2b951..935e46e 100644
  		return ""
  	}
  	r.authMu.RLock()
-@@ -212,7 +250,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
+@@ -218,7 +256,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
  // ObserveResponseModel stores the model reported by an upstream response or event and
  // ignores payloads without one; the substitution warning is emitted at publish time.
  func (r *UsageReporter) ObserveResponseModel(payload []byte) {
@@ -1055,7 +1054,7 @@ index 6a2b951..935e46e 100644
  		return
  	}
  	provider := ""
-@@ -236,7 +274,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
+@@ -242,7 +280,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
  
  // SetResponseModel sets the reported model directly if valid and not already marked final.
  func (r *UsageReporter) SetResponseModel(model string) {
@@ -1064,7 +1063,7 @@ index 6a2b951..935e46e 100644
  		return
  	}
  	model = strings.TrimSpace(model)
-@@ -253,7 +291,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
+@@ -259,7 +297,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
  // Model substitution detection compares the response against this upstream model,
  // while usage accounting preserves the client's requested model.
  func (r *UsageReporter) SetUpstreamModel(model string) {
@@ -1073,7 +1072,7 @@ index 6a2b951..935e46e 100644
  		return
  	}
  	r.upstreamModelMu.Lock()
-@@ -279,7 +317,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
+@@ -285,7 +323,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
  // warnModelSubstitution warns about a silent upstream model swap, and labels the
  // credential by index only, never by account.
  func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
@@ -1082,7 +1081,7 @@ index 6a2b951..935e46e 100644
  		return
  	}
  	served := r.ResponseModel()
-@@ -350,6 +388,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
+@@ -356,6 +394,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
  	if r == nil {
  		return
  	}
@@ -1094,7 +1093,7 @@ index 6a2b951..935e46e 100644
  	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
  	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
  }
-@@ -699,6 +742,9 @@ func failFromErrors(errs ...error) usage.Failure {
+@@ -717,6 +760,9 @@ func failFromErrors(errs ...error) usage.Failure {
  		if err == nil {
  			continue
  		}
@@ -1104,7 +1103,7 @@ index 6a2b951..935e46e 100644
  		body := strings.TrimSpace(err.Error())
  		type responseBodyProvider interface {
  			ResponseBody() []byte
-@@ -908,6 +954,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
+@@ -1007,6 +1053,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
  	if b == nil || !ok {
  		return
  	}
@@ -1114,39 +1113,31 @@ index 6a2b951..935e46e 100644
 +		detail.ResponseServiceTier = diagnostics.SafeServiceTier(detail.ResponseServiceTier)
 +	}
  	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
- 	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) {
+ 	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) || hasStructuredUsageDetail(detail) {
  		preservedTier := b.detail.ResponseServiceTier
-@@ -935,7 +986,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
- 	hasUsageCandidate := bytes.Contains(payload, openAIStreamUsageMarker)
- 	needTier := b.detail.ResponseServiceTier == "" || hasUsageCandidate
+@@ -1208,7 +1259,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
  	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
+ 	hasToolCallsCandidate := bytes.Contains(payload, openAIStreamToolCallsMarker)
+ 	hasImageCompletedCandidate := bytes.Contains(payload, openAIStreamImageDoneMarker)
 -	if b.responseModel == "" {
 +	if !diagnostics.MetadataOnlyEnabled() && b.responseModel == "" {
  		if model, _ := extractGenericResponseModelEvent(payload); model != "" {
  			b.responseModel = model
  		}
-@@ -967,7 +1018,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
- 	if b == nil {
+@@ -1350,7 +1401,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
  		return
  	}
--	if b.responseModel == "" {
-+	if !diagnostics.MetadataOnlyEnabled() && b.responseModel == "" {
- 		if payload := jsonPayload(line); len(payload) > 0 {
- 			if model, _ := extractClaudeResponseModelEvent(payload); model != "" {
- 				b.responseModel = model
+ 	payload := jsonPayload(line)
+-	if b.responseModel == "" && len(payload) > 0 {
++	if !diagnostics.MetadataOnlyEnabled() && b.responseModel == "" && len(payload) > 0 {
+ 		if model, _ := extractClaudeResponseModelEvent(payload); model != "" {
+ 			b.responseModel = model
+ 		}
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index 77871d2..24714ca 100644
+index b790b4f4..26ef4017 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
-@@ -8,6 +8,7 @@ import (
- 	"time"
- 
- 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
-+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
- 	"github.com/tidwall/sjson"
- )
- 
-@@ -310,7 +311,15 @@ func homeExecutionAttemptContext(ctx context.Context, selection *HomeDispatchSel
+@@ -318,7 +318,15 @@ func homeExecutionAttemptContext(ctx context.Context, selection *HomeDispatchSel
  	if selection == nil {
  		return nil, func() {}, fmt.Errorf("Home dispatch selection is nil")
  	}
@@ -1157,14 +1148,14 @@ index 77871d2..24714ca 100644
 +	}
 +	if auth := selection.CloneAuth(); auth != nil {
 +		model := canonicalHomeConcurrencyModelKey(auth.Attributes[homeUpstreamModelAttributeKey])
-+		ctx = usage.WithSelectedModel(ctx, auth.ID, model)
++		ctx = coreusage.WithSelectedModel(ctx, auth.ID, model)
 +	}
 +	return ctx, release, nil
  }
  
  func wrapHomeStream(ctx context.Context, result *cliproxyexecutor.StreamResult, selection *HomeDispatchSelection, releaseAttempt func()) *cliproxyexecutor.StreamResult {
 diff --git a/sdk/cliproxy/auth/home_execution_paths_test.go b/sdk/cliproxy/auth/home_execution_paths_test.go
-index e45b9b0..a09c50b 100644
+index e45b9b09..a09c50bc 100644
 --- a/sdk/cliproxy/auth/home_execution_paths_test.go
 +++ b/sdk/cliproxy/auth/home_execution_paths_test.go
 @@ -1522,3 +1522,39 @@ func TestHomePrepareFailureResultPreservesRequestMetadata(t *testing.T) {
@@ -1208,10 +1199,10 @@ index e45b9b0..a09c50b 100644
 +	}
 +}
 diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
-index 5bb761e..9c25659 100644
+index 686d78a4..67609b29 100644
 --- a/sdk/cliproxy/usage/manager.go
 +++ b/sdk/cliproxy/usage/manager.go
-@@ -9,6 +9,7 @@ import (
+@@ -10,6 +10,7 @@ import (
  	"time"
  
  	"github.com/google/uuid"
@@ -1219,19 +1210,18 @@ index 5bb761e..9c25659 100644
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	log "github.com/sirupsen/logrus"
  )
-@@ -81,6 +82,8 @@ type Record struct {
+@@ -88,6 +89,7 @@ const FailureStreamTruncatedCode = "stream_truncated"
  type Failure struct {
  	StatusCode int
  	Body       string
 +	Type       string // Closed failure category in metadata-only diagnostics.
-+	Code       string // Closed HTTP-status classification in metadata-only diagnostics.
- }
- 
- // Detail holds the token usage breakdown.
-@@ -535,6 +538,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
- 			record.IsNativeKey = IsNativeAccessProvider(record.AccessProvider)
+ 	// Code carries structured failure classification (e.g. FailureStreamTruncatedCode)
+ 	// across usage sinks so downstream schedulers do not treat locally
+ 	// synthesized statuses as received upstream refusals.
+@@ -754,6 +756,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
  		}
  	}
+ 	ctx = WithCapturedIdentity(ctx, record.APIKey, record.AccessProvider, record.IsNativeKey)
 +	if diagnostics.MetadataOnlyEnabled() {
 +		ctx, record = RedactForMetadataOnly(ctx, record)
 +	}
@@ -1240,10 +1230,10 @@ index 5bb761e..9c25659 100644
  	m.mu.Lock()
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
 new file mode 100644
-index 0000000..b15e09d
+index 00000000..0b1f50d2
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only.go
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,212 @@
 +package usage
 +
 +import (
@@ -1369,6 +1359,9 @@ index 0000000..b15e09d
 +			status = 500
 +		}
 +		failureType, failureCode := diagnostics.FailureClassification(status)
++		if record.Fail.Code == FailureStreamTruncatedCode {
++			failureCode = FailureStreamTruncatedCode
++		}
 +		record.Fail = Failure{StatusCode: status, Type: failureType, Code: failureCode}
 +	} else {
 +		record.Fail = Failure{}
@@ -1399,7 +1392,7 @@ index 0000000..b15e09d
 +	record.ResponseServiceTier = diagnostics.SafeServiceTier(record.ResponseServiceTier)
 +	record.ResponseModel = ""
 +	record.ResponseHeaders = safeQuotaHeaders(record.Provider, record.ResponseHeaders)
-+	record.Detail.ResponseServiceTier = diagnostics.SafeServiceTier(record.Detail.ResponseServiceTier)
++	record.Detail = metadataOnlyDetail(record.Detail)
 +	record.Detail = EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
 +	record.IsNativeKey = false
 +	if record.Generate != nil {
@@ -1453,12 +1446,52 @@ index 0000000..b15e09d
 +		return ""
 +	}
 +}
+diff --git a/sdk/cliproxy/usage/metadata_only_detail.go b/sdk/cliproxy/usage/metadata_only_detail.go
+new file mode 100644
+index 00000000..92316259
+--- /dev/null
++++ b/sdk/cliproxy/usage/metadata_only_detail.go
+@@ -0,0 +1,34 @@
++package usage
++
++import "github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++
++// Provider detail objects can contain free-form strings and map keys alongside counters.
++func metadataOnlyDetail(detail Detail) Detail {
++	detail.ResponseServiceTier = diagnostics.SafeServiceTier(detail.ResponseServiceTier)
++	detail.UpstreamServiceTier = diagnostics.SafeServiceTier(detail.UpstreamServiceTier)
++	detail.Speed = ""
++	detail.InferenceGeo = ""
++	detail.RequestedImageDetails = nil
++	detail.ImageDetails = nil
++	detail.Iterations = nil
++	if detail.CacheDetails != nil {
++		cache := detail.CacheDetails.Clone()
++		cache.Mode, cache.TTL, cache.Retention = "", "", ""
++		cache.ByTTL = nil
++		for _, ttl := range []string{"5m", "30m", "1h", "12h"} {
++			if count, ok := detail.CacheDetails.ByTTL[ttl]; ok {
++				if cache.ByTTL == nil {
++					cache.ByTTL = make(map[string]int64)
++				}
++				cache.ByTTL[ttl] = count
++			}
++		}
++		detail.CacheDetails = cache
++	}
++	if detail.ToolUsageDetails != nil {
++		tools := detail.ToolUsageDetails.Clone()
++		tools.Extra = nil
++		detail.ToolUsageDetails = tools
++	}
++	return detail
++}
 diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
 new file mode 100644
-index 0000000..3e6a1a3
+index 00000000..9ef9efea
 --- /dev/null
 +++ b/sdk/cliproxy/usage/metadata_only_test.go
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,253 @@
 +package usage
 +
 +import (
@@ -1672,5 +1705,43 @@ index 0000000..3e6a1a3
 +	_, projected := RedactForMetadataOnly(context.Background(), Record{SessionID: "private-session-content-629"})
 +	if projected.SessionID == "" || projected.SessionID == "private-session-content-629" {
 +		t.Fatal("custom session was not projected to an opaque identifier")
++	}
++}
++
++func TestMetadataOnlyRedactsExpandedUsageDetails(t *testing.T) {
++	const secret = "expanded-provider-response-sentinel"
++	detail := Detail{
++		InputTokens: 13, OutputTokens: 5, TotalTokens: 18,
++		ResponseServiceTier: "priority", UpstreamServiceTier: secret,
++		Speed: secret, InferenceGeo: secret,
++		CacheDetails: &CacheDetails{Mode: secret, TTL: secret, Retention: secret,
++			Ephemeral5mInputTokens: Int64Ptr(7), ByTTL: map[string]int64{secret: 9, "5m": 7}},
++		ImageDetails: &ImageDetails{Size: secret}, RequestedImageDetails: &ImageDetails{MimeType: secret},
++		ToolUsageDetails: &ToolUsageDetails{WebSearchCalls: Int64Ptr(2), Extra: map[string]int64{secret: 3}},
++		Iterations:       &[]IterationUsage{{Type: secret, Model: secret}},
++	}
++	_, record := RedactForMetadataOnly(context.Background(), Record{Detail: detail})
++	raw, errMarshal := json.Marshal(record)
++	if errMarshal != nil {
++		t.Fatal(errMarshal)
++	}
++	if strings.Contains(string(raw), secret) {
++		t.Fatal("expanded usage details retained provider response text")
++	}
++	if record.Detail.InputTokens != 13 || record.Detail.OutputTokens != 5 || record.Detail.TotalTokens != 18 ||
++		record.Detail.ResponseServiceTier != "priority" || record.Detail.CacheDetails.ByTTL["5m"] != 7 ||
++		*record.Detail.CacheDetails.Ephemeral5mInputTokens != 7 || *record.Detail.ToolUsageDetails.WebSearchCalls != 2 {
++		t.Fatal("metadata projection lost counters or the closed billing tier")
++	}
++	if detail.CacheDetails.ByTTL[secret] != 9 || detail.ToolUsageDetails.Extra[secret] != 3 {
++		t.Fatal("metadata projection mutated the provider's original usage detail")
++	}
++}
++
++func TestMetadataOnlyPreservesTruncatedStreamClassification(t *testing.T) {
++	_, record := RedactForMetadataOnly(context.Background(), Record{Failed: true,
++		Fail: Failure{StatusCode: http.StatusBadGateway, Code: FailureStreamTruncatedCode, Body: "private failure"}})
++	if record.Fail.Code != FailureStreamTruncatedCode || record.Fail.Body != "" {
++		t.Fatal("metadata projection lost the synthetic stream failure classification or retained its body")
 +	}
 +}
