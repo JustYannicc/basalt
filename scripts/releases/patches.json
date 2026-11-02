@@ -712,7 +712,7 @@
     {
       "identity": "executor-contributed-departure-observability",
       "file": "0077-contributed-departure-observability.patch",
-      "content_sha256": "b9f6d2dd3f04bb8f3d5710bd4528790affa0e9e41a1fd9ccd4e26db2b3723a18",
+      "content_sha256": "77e2acfbddf62dd1e93c7bf26d1d76d3896f3a82f2608b1ad020556c4be859eb",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

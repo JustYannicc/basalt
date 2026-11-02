@@ -278,6 +278,19 @@ index 7f0c740..2f38a5e 100644
    },
    // This holds a lock on the accounts table to stop a tool call's batch partway, which would
    // stall every other scenario that reads accounts.
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 6309233..9d0ad28 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -34,7 +34,7 @@ export const beforeHostedAccountObservations = () =>
+     { sql: "DROP VIEW hosted_contributions" },
+     { sql: "DROP TABLE hosted_contributed_departures, hosted_contributed_departure_jobs" },
+     { sql: "DROP TABLE hosted_account_observation_access" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id IN (10, 11, 12)" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id IN (10, 11, 12, 13)" },
+   ] as const;
+ 
+ /**
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index 4502a87..01d372e 100644
 --- a/e2e/test-plan.ts
@@ -312,6 +325,94 @@ index 4502a87..01d372e 100644
    contributedAppDepartureRecovery: {
      fixtures: "actors",
      file: "contributed-app-departures.spec.ts",
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+index 165c026..b60f453 100644
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -3,6 +3,7 @@ import { Effect } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { observationFixture } from "../support/account-observation-fixture.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
++import { Evidence } from "../support/evidence.ts";
+ import {
+   beforeAccountAcquisition,
+   beforeHostedAccountObservations,
+@@ -16,6 +17,7 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+       context,
+       Effect.gen(function* () {
+         const f = yield* observationFixture();
++        const evidence = yield* Evidence;
+         const health = yield* f.check();
+         expect(health.status).toBe(200);
+         expect((yield* f.refresh()).status).toBe(200);
+@@ -32,13 +34,20 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           health: health.body,
+         });
+         // Reconstruct the supported 4.0.17 layout; existing account, health and app rows remain intact.
+-        yield* legacyStorage([
++        const downgraded = yield* legacyStorage([
+           { sql: "UPDATE private_executor_settings SET value = '4.0.17' WHERE key = 'version'" },
+           ...beforeAccountAcquisition(),
+           ...beforeHostedAccountObservations(),
+           { sql: "DROP TABLE executor_account_observations" },
+           { sql: "DROP TABLE executor_account_reports" },
++          {
++            sql: "SELECT migration_id FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++          },
++          {
++            sql: "SELECT to_regclass('hosted_account_observation_access')::text AS observation_access",
++          },
+         ]);
++        yield* evidence.json("legacy-observation-layout.json", downgraded.slice(-2));
+         yield* serverControl("start");
+         expect((yield* f.detail()).body).toMatchObject({
+           account: { id: f.account },
+@@ -46,12 +55,18 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+         });
+         expect((yield* f.refresh()).status).toBe(200);
+         const saved = (yield* f.read()).body;
+-        const [versions, steps, tables] = yield* legacyStorage([
++        const [versions, steps, tables, hostedSteps, diagnostics] = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+           { sql: "SELECT name FROM private_hosted_migrations WHERE migration_id = 10" },
+           {
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name IN ('executor_account_acquisitions', 'executor_account_driver_checks', 'executor_account_observations', 'hosted_account_observation_access') ORDER BY table_name",
+           },
++          {
++            sql: "SELECT migration_id FROM private_hosted_migrations WHERE migration_id >= 10 ORDER BY migration_id",
++          },
++          {
++            sql: "SELECT column_name FROM information_schema.columns WHERE table_name = 'hosted_contributed_departure_jobs' AND column_name IN ('queued_at', 'last_error') ORDER BY column_name",
++          },
+         ]);
+         expect(currentVersion).toHaveLength(1);
+         expect(versions).toEqual(currentVersion);
+@@ -62,10 +77,25 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
+           { table_name: "executor_account_observations" },
+           { table_name: "hosted_account_observation_access" },
+         ]);
++        expect(hostedSteps).toEqual([
++          { migration_id: 10 },
++          { migration_id: 11 },
++          { migration_id: 12 },
++          { migration_id: 13 },
++        ]);
++        expect(diagnostics).toEqual([{ column_name: "last_error" }, { column_name: "queued_at" }]);
++        yield* evidence.json("upgraded-observation-and-departure-layout.json", {
++          hostedSteps,
++          diagnostics,
++        });
+         yield* serverControl("start");
+         yield* serverControl("restart");
+         expect((yield* f.read()).body).toEqual(saved);
+         expect((yield* f.detail()).body).toMatchObject({ health: health.body });
++        expect(
++          (yield* f.api.request(f.actors.owner, "GET", `${f.appPath}/accounts/departures`)).status,
++        ).toBe(200);
++        expect((yield* f.refresh()).status).toBe(200);
+       }),
+     ),
+   );
 diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
 new file mode 100644
 index 0000000..9ffa82a
@@ -496,3 +597,15 @@ index 0000000..9ffa82a
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+index 8aa3afa..92314ce 100644
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -62,6 +62,7 @@ const ledger = [
+   "account_observations",
+   "contributed_departures",
+   "account_identity_index",
++  "contributed_departure_observability",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
