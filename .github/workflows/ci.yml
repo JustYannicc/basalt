@@ -252,7 +252,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "^Cloud encrypted workflow|^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
           --workers 1
       - name: Verify editable workflow fields and departure questions
         run: |

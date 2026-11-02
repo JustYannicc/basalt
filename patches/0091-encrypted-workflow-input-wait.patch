@@ -1,0 +1,259 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/workflows.ts b/apps/hosted/cloud/src/infrastructure/workflows.ts
+index ad04f66..40b5609 100644
+--- a/apps/hosted/cloud/src/infrastructure/workflows.ts
++++ b/apps/hosted/cloud/src/infrastructure/workflows.ts
+@@ -45,6 +45,23 @@ const runEncryptedWorkflow = (
+     const services = yield* Effect.context<never>();
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const driver: WorkflowDriver = {
++      waitForInput: (name, id, expiresAt) =>
++        results.withStep(
++          name,
++          Effect.gen(function* () {
++            const remaining = expiresAt - (yield* Clock.currentTimeMillis);
++            if (remaining <= 0) return;
++            const storedName = yield* results.storedStepName(name);
++            yield* safe(step.waitForEvent(storedName, { type: id, timeout: remaining })).pipe(
++              Effect.catch((error) =>
++                Effect.flatMap(Clock.currentTimeMillis, (now) =>
++                  now >= expiresAt ? Effect.void : Effect.fail(error),
++                ),
++              ),
++              Effect.asVoid,
++            );
++          }),
++        ),
+       do: (name, options, work) =>
+         safe(
+           encryptedWorkflowTask({
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 2f38a5e..ddb722e 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -103,7 +103,7 @@ const jobs = {
+     runner: 3,
+ 
+     pattern:
+-      "Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
++      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+   },
+   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
+   // load kept the team installation's workflow span from arriving within its 30-second wait, so
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 2262db4..69132cd 100644
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -265,6 +265,8 @@ export const startCloudEnvironment = (input: {
+       BETTER_AUTH_URL: input.origin,
+       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
++      // Fresh test installs use the encrypted native journal, as production does.
++      EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
+       ...(process.env.BASALT_E2E_POOL_SETUP === "1"
+         ? { POOL_APP_SIGNING_KEY: randomBytes(32).toString("hex") }
+         : {}),
+diff --git a/e2e/support/workflow-input-acceptance-app.ts b/e2e/support/workflow-input-acceptance-app.ts
+new file mode 100644
+index 0000000..cab9423
+--- /dev/null
++++ b/e2e/support/workflow-input-acceptance-app.ts
+@@ -0,0 +1,29 @@
++/** No accounts, database or tools: the question must suspend its native workflow by itself. */
++import { appsManifest } from "./apps-release.ts";
++
++const source = `import { defineApp, workflow, object } from "apps";
++const acceptance = workflow({ input: object({}) }, async (ctx) => {
++  const question = await ctx.step.requestInput("acceptance-question", {
++    timeoutMs: 900000,
++    form: {
++      mode: "form",
++      message: "What should the Basalt HITL test return?",
++      requestedSchema: {
++        type: "object",
++        properties: { answer: { type: "string", title: "Test answer", minLength: 1 } },
++        required: ["answer"]
++      }
++    },
++    evidence: [{ label: "Purpose", value: "Single authorized acceptance test; no external actions." }]
++  });
++  const result = await ctx.step.waitForInput("acceptance-answer", question);
++  return { question: question.id, status: result.status,
++    answer: result.status === "answered" ? result.response : null };
++});
++export default defineApp({}, { workflows: { acceptance } });
++`;
++
++export const acceptanceFiles = (timeoutMs = 900000) => [
++  appsManifest,
++  { path: "index.ts", content: source.replace("timeoutMs: 900000", `timeoutMs: ${timeoutMs}`) },
++];
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 01d372e..3e33e7e 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8541,6 +8541,26 @@ export const scenarios = plan({
+       cloud: na("Local pairing boundary."),
+     },
+   },
++  encryptedWorkflowInputAnswer: {
++    fixtures: "actors",
++    file: "workflow-input-encrypted.spec.ts",
++    title: "Cloud encrypted workflow waits for a human answer and resumes with it",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Cloud's encrypted native workflow driver."),
++      local: na("Cloud's encrypted native workflow driver."),
++    },
++  },
++  encryptedWorkflowInputExpiry: {
++    fixtures: "actors",
++    file: "workflow-input-encrypted.spec.ts",
++    title: "Cloud encrypted workflow resumes when its human question expires",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Cloud's encrypted native workflow driver."),
++      local: na("Cloud's encrypted native workflow driver."),
++    },
++  },
+   workflowInputLifecycle: {
+     fixtures: "actors",
+     file: "workflow-inputs.spec.ts",
+diff --git a/e2e/tests/workflow-input-encrypted.spec.ts b/e2e/tests/workflow-input-encrypted.spec.ts
+new file mode 100644
+index 0000000..ee15a16
+--- /dev/null
++++ b/e2e/tests/workflow-input-encrypted.spec.ts
+@@ -0,0 +1,133 @@
++/** A question-only app must suspend the real encrypted Cloud workflow before anyone answers. */
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { acceptanceFiles } from "../support/workflow-input-acceptance-app.ts";
++import { Input, Run } from "../support/workflow-input-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const fixture = (timeoutMs?: number) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const actors = yield* Actors;
++    const evidence = yield* Evidence;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const files = acceptanceFiles(timeoutMs);
++    yield* evidence.json("authored-workflow", files);
++    const deploy = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: "Human input acceptance",
++      files,
++    });
++    expect(deploy.status, JSON.stringify(deploy.body)).toBe(200);
++    const app = yield* body(Schema.Struct({ id: Schema.String }), deploy);
++    const path = `${prefix}/apps/${app.id}`;
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
++      }).pipe(Effect.orDie),
++    );
++    const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
++      workflow: "acceptance",
++      input: {},
++    });
++    expect(started.status, JSON.stringify(started.body)).toBe(200);
++    const run = yield* body(Run, started);
++    yield* Effect.addFinalizer(() =>
++      api
++        .request(actors.owner, "POST", `${path}/workflow-runs/${run.id}/terminate`)
++        .pipe(Effect.asVoid, Effect.orDie),
++    );
++    const wait = (status: "complete") =>
++      Effect.gen(function* () {
++        const deadline = (yield* Clock.currentTimeMillis) + 20000;
++        while (true) {
++          const response = yield* api.request(
++            actors.owner,
++            "GET",
++            `${path}/workflow-runs/${run.id}`,
++          );
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          const current = yield* body(Run, response);
++          if (current.status === status) {
++            yield* evidence.json(`run-${status}`, current);
++            return current;
++          }
++          if (["errored", "terminated", "complete"].includes(current.status)) {
++            yield* evidence.json("unexpected-terminal-run", current);
++            expect(current.status, JSON.stringify(current)).toBe(status);
++          }
++          expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(deadline);
++          yield* Effect.sleep("50 millis");
++        }
++      });
++    const pending = () =>
++      api.request(actors.owner, "GET", `${prefix}/workflow-inputs?pending=true`).pipe(
++        Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++        Effect.flatMap((response) => body(Schema.Struct({ items: Schema.Array(Input) }), response)),
++        Effect.map(({ items }) => items.filter((input) => input.run === run.id)),
++      );
++    const question = Effect.gen(function* () {
++      const deadline = (yield* Clock.currentTimeMillis) + 20000;
++      while (true) {
++        const inputs = yield* pending();
++        const response = yield* api.request(actors.owner, "GET", `${path}/workflow-runs/${run.id}`);
++        expect(response.status).toBe(200);
++        const current = yield* body(Run, response);
++        expect(["errored", "terminated", "complete"], JSON.stringify(current)).not.toContain(
++          current.status,
++        );
++        if (inputs.length > 0) {
++          expect(inputs).toHaveLength(1);
++          yield* evidence.json("pending-question", { input: inputs[0], run: current });
++          return inputs[0]!;
++        }
++        expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
++        yield* Effect.sleep("50 millis");
++      }
++    });
++    return { api, actors, path, run, wait, pending, question };
++  });
++
++layer(RuntimeLive, { excludeTestServices: true })("Encrypted workflow input", (it) => {
++  it.effect(scenarios.encryptedWorkflowInputAnswer.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture();
++        const input = yield* f.question;
++        const response = { action: "accept", content: { answer: "resumed from human input" } };
++        expect(
++          (yield* f.api.request(f.actors.owner, "POST", `${f.path}/workflow-inputs/${input.id}`, {
++            response,
++          })).status,
++        ).toBe(200);
++        expect((yield* f.wait("complete")).output).toEqual({
++          question: input.id,
++          status: "answered",
++          answer: response,
++        });
++        expect(yield* f.pending()).toEqual([]);
++      }),
++    ),
++  );
++  it.effect(scenarios.encryptedWorkflowInputExpiry.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* fixture(5000);
++        // No answer is ever sent, so completion must come from the native expiry timer.
++        const input = yield* f.question;
++        expect((yield* f.wait("complete")).output).toEqual({
++          question: input.id,
++          status: "expired",
++          answer: null,
++        });
++        expect(yield* f.pending()).toEqual([]);
++      }),
++    ),
++  );
++});
