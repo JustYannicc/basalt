@@ -37,6 +37,18 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
      Layer.succeed(AccessLifecycle, accessLifecycle),
      Layer.succeed(
        PoolUsageBackend,
+diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+--- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
++++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+@@ -127,7 +127,7 @@
+           current: true,
+           exposeHostReference: true,
+           driver,
+-          fetch: globalThis.fetch,
++          fetch: (input, init) => globalThis.fetch(input, init),
+         });
+     }
+     return { registrations };
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
@@ -51,135 +63,396 @@ diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
    cloudProductionOps: {
      targets: ["cloud"],
      reason:
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -29,6 +29,8 @@
+ import { roleHost } from "./role-hosts.ts";
+ import { freePort } from "./ports.ts";
+ import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
++import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
++import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import {
+   OperatorOAuthFixture,
+   operatorOAuthFile,
+@@ -177,6 +179,11 @@
+     const cloud = path.resolve("apps/hosted/cloud");
+     const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
+     const directory = path.resolve(input.directory);
++    const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
++    const apiPort = poolBackend
++      ? yield* cloudPoolGateway(input.origin, directory)
++      : Number(new URL(input.origin).port);
++    const stack = poolBackend ? yield* cloudNativeStack(cloud, directory) : undefined;
+     const stage = `e2e-${randomBytes(8).toString("hex")}`;
+     const container = `executor-${stage}`;
+     const fixture =
+@@ -275,7 +282,7 @@
+         : {}),
+       MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
+       MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
+-      ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1"
++      ...(process.env.BASALT_E2E_PRODUCTION_OPS === "1" || poolBackend
+         ? { POOL_APP_SIGNING_KEY: "ab".repeat(32) }
+         : {}),
+       APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+@@ -302,10 +309,13 @@
+       PUBLIC_POSTHOG_PATH: "/api/0123456789abcdef",
+       PUBLIC_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
+       VITE_EXECUTOR_ENVIRONMENT: "test-local",
+-      // Serve the same built assets and routing as a deployed stage. Vite's
+-      // on-demand source transforms must not compete with timed scenarios.
+-      CLOUD_DEV_DASHBOARD: "built",
+-      CLOUD_DEV_API_PORT: new URL(input.origin).port,
++      // Built assets avoid Vite contention in timed scenarios. The HTTP-only native backend
++      // uses the supported source port configuration, without starting the dashboard dev process.
++      CLOUD_DEV_DASHBOARD: poolBackend ? "source" : "built",
++      CLOUD_DEV_API_PORT: String(apiPort),
++      ...(poolBackend
++        ? { EXECUTOR_CATALOG_URL: `${browser}/native-provider-fixture/catalog/index.json` }
++        : {}),
+       CLOUD_DEV_APP_UI_PORT: String(input.appPort),
+       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${input.appPort}`,
+       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+@@ -462,17 +472,26 @@
+       const scope = yield* Scope.fork(ownerScope);
+       return yield* Effect.gen(function* () {
+         const server = yield* processes.spawn(
+-          ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
+-            cwd: cloud,
+-            env: {
+-              ...env,
+-              AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
++          ChildProcess.make(
++            "node",
++            [
++              "scripts/dev.ts",
++              "--stage",
++              stage,
++              ...(stack === undefined ? [] : ["--config", stack]),
++            ],
++            {
++              cwd: cloud,
++              env: {
++                ...env,
++                AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
++              },
++              extendEnv: false,
++              stdout: "pipe",
++              stderr: "pipe",
++              forceKillAfter: "15 seconds",
+             },
+-            extendEnv: false,
+-            stdout: "pipe",
+-            stderr: "pipe",
+-            forceKillAfter: "15 seconds",
+-          }),
++          ),
+         );
+         // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+         // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+diff --git a/e2e/support/cloud-native-stack.ts b/e2e/support/cloud-native-stack.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/cloud-native-stack.ts
+@@ -0,0 +1,47 @@
++import { Effect, FileSystem, Path } from "effect";
++
++/** Use the production dev stack's Workers and preflights without its unrelated dashboard dev process. */
++export const cloudNativeStack = (cloud: string, directory: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const module = (file: string) => JSON.stringify(path.join(cloud, file));
++    const entry = path.join(directory, "native-http-stack.ts");
++    yield* fs.writeFileString(
++      entry,
++      `
++import * as Alchemy from "alchemy";
++import { AlchemyContext } from "alchemy/AlchemyContext";
++import { Effect } from "effect";
++import { cloudWorkers, cloudProviders } from ${module("alchemy.run.ts")};
++import { Api } from ${module("src/main.ts")};
++import AppPages from ${module("src/app-ui.ts")};
++import { McpServer } from ${module("src/infrastructure/mcp-server-worker.ts")};
++import { stackState } from ${module("src/infrastructure/state.ts")};
++import { databaseInfrastructure } from ${module("src/infrastructure/database.ts")};
++import { authEmailInfrastructure } from ${module("src/infrastructure/email.ts")};
++import { cloudAppUiBase } from ${module("src/contracts/app-ui.ts")};
++import { productionOAuthProxyCheck } from ${module("src/infrastructure/deploy-settings.ts")};
++import { mcpSessionRetirementGate } from ${module("src/infrastructure/mcp-session-release.ts")};
++import { uploadCloudSourceMaps } from ${module("src/infrastructure/sentry.ts")};
++export default Alchemy.Stack("executor-next-hosted", { providers: cloudProviders, state: stackState },
++  Effect.gen(function* () {
++    if (!(yield* AlchemyContext).dev) return yield* Effect.die("Native HTTP fixture requires local dev");
++    yield* productionOAuthProxyCheck.pipe(Effect.orDie);
++    yield* mcpSessionRetirementGate.pipe(Effect.orDie);
++    yield* databaseInfrastructure;
++    yield* authEmailInfrastructure.pipe(Effect.orDie);
++    const api = yield* Api;
++    if ((yield* cloudAppUiBase.pipe(Effect.orDie)) !== undefined) {
++      const pages = yield* AppPages;
++      yield* uploadCloudSourceMaps("app-pages", pages.hash).pipe(Effect.orDie);
++    }
++    yield* uploadCloudSourceMaps("api", api.hash).pipe(Effect.orDie);
++    yield* uploadCloudSourceMaps("mcp-server", (yield* McpServer).hash).pipe(Effect.orDie);
++    return { url: api.url };
++  }).pipe(Effect.provide(cloudWorkers)),
++);
++`,
++    );
++    return entry;
++  });
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -0,0 +1,164 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, FileSystem, Layer, Path, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer, request } from "node:http";
++import { freePort } from "./ports.ts";
++
++const access = "/pool/v1/access";
++const acquisition = "/pool/v1/account-acquisitions";
++const catalog = "/native-provider-fixture/catalog";
++const Signed = Schema.Struct({
++  action: Schema.String,
++  provider: Schema.optionalKey(Schema.String),
++  at: Schema.Number,
++  expiresAt: Schema.Number,
++});
++
++/** The outer pool service is external to the Cloud Worker, including for its own-origin callbacks. */
++export const cloudPoolGateway = (origin: string, directory: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const port = yield* freePort;
++    const source = yield* fs.readFileString(
++      path.resolve("..", "src/catalog/provider-apps/openai.json"),
++    );
++    const events = yield* Ref.make<
++      readonly {
++        path: string;
++        action: string;
++        provider: string | undefined;
++        refused: boolean;
++      }[]
++    >([]);
++    const backend = (url: string) =>
++      Effect.gen(function* () {
++        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ envelope: Schema.String }),
++        );
++        const [prefix, payload, signature, extra] = envelope.split(".");
++        if (
++          prefix !== (url === access ? "sba1" : "sbaa1") ||
++          payload === undefined ||
++          signature === undefined ||
++          extra !== undefined
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest();
++        const supplied = Buffer.from(signature, "base64url");
++        if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
++          return HttpServerResponse.empty({ status: 401 });
++        const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Signed))(
++          Buffer.from(payload, "base64url").toString(),
++        );
++        const now = Date.now();
++        if (input.at > now || input.expiresAt <= now || input.expiresAt > input.at + 30_000)
++          return HttpServerResponse.empty({ status: 401 });
++        const refused =
++          process.env.BASALT_E2E_POOL_CLEANUP_REFUSED === "1" &&
++          (input.action === "remove" ||
++            input.action === "pool-deleted" ||
++            input.action === "person-deleted");
++        const event = { path: url, action: input.action, provider: input.provider, refused };
++        yield* Ref.update(events, (previous) => [...previous, event]);
++        yield* fs.writeFileString(
++          path.join(directory, "pool-backend.ndjson"),
++          JSON.stringify(event) + "\n",
++          { flag: "a", mode: 0o600 },
++        );
++        if (refused) return HttpServerResponse.empty({ status: 503 });
++        if (url === access) return HttpServerResponse.jsonUnsafe(null);
++        if (input.action === "start")
++          return HttpServerResponse.jsonUnsafe({ session: "synthetic-cloud-native-session" });
++        if (input.action === "status" || input.action === "submit")
++          return HttpServerResponse.jsonUnsafe({
++            state: "connected",
++            ref: "synthetic-cloud-native-reference",
++          });
++        if (input.action === "check") return HttpServerResponse.jsonUnsafe({ result: {} });
++        return HttpServerResponse.jsonUnsafe(null);
++      });
++    const routes = Layer.mergeAll(
++      HttpRouter.add("POST", access, backend(access)),
++      HttpRouter.add("POST", acquisition, backend(acquisition)),
++      HttpRouter.add(
++        "GET",
++        "/native-provider-fixture/backend-events",
++        Ref.get(events).pipe(Effect.map(HttpServerResponse.jsonUnsafe)),
++      ),
++      HttpRouter.add(
++        "GET",
++        `${catalog}/index.json`,
++        Effect.succeed(
++          HttpServerResponse.jsonUnsafe({
++            version: 1,
++            apps: [
++              {
++                id: "provider-openai",
++                package: "provider-openai",
++                name: "OpenAI",
++                description: "Native provider account fixture",
++                auth: [{ method: "codex", kind: "interactive" }],
++                icons: [],
++                source: "apps/provider-openai.json",
++              },
++            ],
++          }),
++        ),
++      ),
++      HttpRouter.add(
++        "GET",
++        `${catalog}/apps/provider-openai.json`,
++        Effect.succeed(HttpServerResponse.text(source, { contentType: "application/json" })),
++      ),
++    );
++    const context = yield* Layer.build(
++      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++    if (!("port" in server.address)) return yield* Effect.die("Expected a TCP pool backend");
++    const backendPort = server.address.port;
++    yield* Effect.acquireRelease(
++      Effect.promise(() => {
++        const gateway = createServer((incoming, outgoing) => {
++          const url = new URL(incoming.url ?? "/", origin).pathname;
++          const forwarded = request(
++            {
++              hostname: "127.0.0.1",
++              port:
++                url.startsWith("/pool/v1/") || url.startsWith("/native-provider-fixture/")
++                  ? backendPort
++                  : port,
++              path: incoming.url,
++              method: incoming.method,
++              headers: incoming.headers,
++            },
++            (response) => {
++              outgoing.writeHead(response.statusCode ?? 502, response.headers);
++              response.pipe(outgoing);
++            },
++          );
++          forwarded.on("error", () => outgoing.writeHead(502).end());
++          incoming.pipe(forwarded);
++        });
++        return new Promise<typeof gateway>((resolve, reject) => {
++          gateway.once("error", reject);
++          gateway.listen(Number(new URL(origin).port), "127.0.0.1", () => resolve(gateway));
++        });
++      }),
++      (gateway) =>
++        Effect.promise(
++          () =>
++            new Promise<void>((resolve) => {
++              gateway.closeAllConnections();
++              gateway.close(() => resolve());
++            }),
++        ),
++    );
++    return port;
++  });
 diff --git a/e2e/support/native-provider-link-fixture.ts b/e2e/support/native-provider-link-fixture.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/native-provider-link-fixture.ts
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,77 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "./actors.ts";
 +import { Api, body } from "./api.ts";
-+import { appsManifest } from "./apps-release.ts";
-+import { cloudLocks } from "./cloud-locks.ts";
 +import { Resource } from "./contracts.ts";
-+import { providerAppsCatalog } from "./provider-apps-catalog.ts";
 +
 +const Connected = Schema.Struct({ state: Schema.Literal("connected"), account: Resource });
-+const Provider = Schema.Array(Schema.Struct({ provider: Schema.String }));
++const Source = Schema.Struct({
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
 +
-+/** Seed a pre-existing native account from a public sign-in's encrypted reference in disposable SQL. */
++/** Both account acquisition and cleanup use the real hosted API and its external native backend. */
 +export const nativeProviderLinkFixture = Effect.gen(function* () {
 +  const api = yield* Api,
-+    actors = yield* Actors,
-+    database = yield* cloudLocks,
-+    catalog = yield* providerAppsCatalog;
++    actors = yield* Actors;
 +  const prefix = `/api/organizations/${actors.organization.id}`;
-+  const apps: string[] = [];
-+  let account: string | undefined;
-+  yield* Effect.addFinalizer(() =>
-+    Effect.gen(function* () {
-+      // The disposable Cloud has no outer pool Worker. Remove only its exact synthetic pool rows.
-+      yield* database.run({
-+        sql: "delete from executor_apps app using organization o, lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry where o.id = $1 and app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id",
-+        params: [actors.organization.id],
-+      });
-+      if (account !== undefined) {
-+        for (const [table, column] of [
-+          ["hosted_app_account_links", "account"],
-+          ["executor_webhook_sources", "account"],
-+          ["executor_account_acquisitions", "account"],
-+          ["hosted_account_access", "account_id"],
-+        ])
-+          yield* database.run({
-+            sql: `delete from ${table} where ${column} = $1`,
-+            params: [account],
-+          });
-+        yield* database.run({
-+          sql: "delete from executor_account_connections where state -> 'account' ->> 'id' = $1",
-+          params: [account],
-+        });
-+        yield* database.run({
-+          sql: "delete from executor_accounts where id = $1",
-+          params: [account],
-+        });
-+      }
-+      for (const app of apps) {
-+        const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
-+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
-+      }
-+    }).pipe(Effect.orDie),
++  let pendingAccount: string | undefined;
++  let acquiringApp: string | undefined;
++  const removeAccount = Effect.gen(function* () {
++    if (pendingAccount === undefined) return;
++    if (acquiringApp !== undefined) {
++      const unlinked = yield* api.request(
++        actors.owner,
++        "DELETE",
++        `${prefix}/apps/${acquiringApp}/accounts/app/openai/${pendingAccount}`,
++      );
++      expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++      acquiringApp = undefined;
++    }
++    const removed = yield* api.request(
++      actors.owner,
++      "DELETE",
++      `${prefix}/accounts/${pendingAccount}`,
++    );
++    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++    pendingAccount = undefined;
++  });
++  yield* Effect.addFinalizer(() => removeAccount.pipe(Effect.orDie));
++  const source = yield* body(
++    Source,
++    yield* api.request(
++      actors.owner,
++      "GET",
++      "/native-provider-fixture/catalog/apps/provider-openai.json",
++    ),
 +  );
-+  const deploy = (name: string, files: readonly { path: string; content: string }[]) =>
-+    Effect.gen(function* () {
-+      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+        name,
-+        files,
-+      });
-+      expect(response.status, JSON.stringify(response.body)).toBe(200);
-+      const app = (yield* body(Resource, response)).id;
-+      apps.push(app);
-+      return app;
-+    });
-+  const source = yield* deploy("Existing native account source", [
-+    appsManifest,
-+    {
-+      path: "index.ts",
-+      content: `import { defineApp, defineProvider, interactive } from "apps";
-+const legacy = defineProvider({ name: "Subscription", auth: { codex: interactive({ label: "ChatGPT" }) } });
-+export default defineApp({ app: { accounts: { legacy: legacy.many() } } }, {
-+  connect: { legacy: {
-+    start: async () => ({ session: "synthetic-native-link" }),
-+    status: async () => ({ state: "connected", ref: "synthetic-native-link-reference" }),
-+    cancel: async () => {}, remove: async () => {}
-+  } }
-+});`,
-+    },
-+  ]);
++  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++    name: "Ordinary OpenAI account consumer",
++    files: source.files,
++  });
++  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++  const app = (yield* body(Resource, deployed)).id;
++  acquiringApp = app;
 +  const pending = yield* body(
 +    Resource,
 +    yield* api.request(
 +      actors.owner,
 +      "POST",
-+      `${prefix}/apps/${source}/accounts/app/legacy/connections`,
++      `${prefix}/apps/${app}/accounts/app/openai/connections`,
 +      { destination: { kind: "personal" } },
 +    ),
 +  );
 +  const path = `${prefix}/connections/${pending.id}/interactive`;
-+  expect(
-+    (yield* api.request(actors.owner, "POST", `${path}/start`, { method: "codex" })).status,
-+  ).toBe(200);
++  const started = yield* api.request(actors.owner, "POST", `${path}/start`, { method: "codex" });
++  expect(started.status, JSON.stringify(started.body)).toBe(200);
 +  const saved = yield* api.request(actors.owner, "GET", `${path}/status`);
 +  expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-+  account = (yield* body(Connected, saved)).account.id;
-+  const target = yield* deploy("Native OpenAI provider", catalog.sources.get("openai")!.files);
-+  const providers = yield* database
-+    .run({
-+      sql: "select d.requirements -> 'accounts' -> 'openai' ->> 'provider' as provider from executor_deployments d join executor_apps a on a.active_deployment = d.id where a.id = $1",
-+      params: [target],
-+    })
-+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Provider)));
-+  const provider = providers[0]!.provider;
-+  yield* database.run({
-+    sql: "update executor_apps set copied_from = $2::json where id = $1",
-+    params: [
-+      target,
-+      JSON.stringify({
-+        reference: "https://catalog.example.test/provider-openai",
-+        name: "provider-openai",
-+        commit: null,
-+      }),
-+    ],
++  const account = (yield* body(Connected, saved)).account.id;
++  pendingAccount = account;
++  const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++    entry: "provider-openai",
++    name: "Native OpenAI provider",
 +  });
-+  yield* database.run({
-+    sql: "update executor_accounts set provider = $2 where id = $1",
-+    params: [account, provider],
-+  });
-+  yield* database.run({
-+    sql: "insert into executor_account_acquisitions (account,owner,provider,method,driver,driver_revision,generation,revision,removal,mirror_reference,mirror_ready,mirror_operation) select id,owner,provider,method,'basalt-home','oauth-v1',credential_generation,'native-link-fixture',null,null,true,null from executor_accounts where id = $1",
-+    params: [account],
-+  });
-+  return { api, actors, prefix, target, account };
++  expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++  const target = (yield* body(Resource, installed)).id;
++  return { api, actors, prefix, target, account, removeAccount };
 +});
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
@@ -206,13 +479,15 @@ diff --git a/e2e/tests/native-provider-cloud-links.spec.ts b/e2e/tests/native-pr
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/native-provider-cloud-links.spec.ts
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,71 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { body } from "../support/api.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { nativeProviderLinkFixture } from "../support/native-provider-link-fixture.ts";
 +import { scenarios } from "../test-plan.ts";
++
++const Inventory = Schema.Struct({ accounts: Schema.Array(Schema.Struct({ id: Schema.String })) });
 +
 +const Methods = Schema.Struct({
 +  unavailable: Schema.Array(Schema.Struct({ requirement: Schema.String, method: Schema.String })),
@@ -247,6 +522,31 @@ new file mode 100644
 +          `${path}/accounts/app/openai/${p.account}`,
 +        );
 +        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++        const inventory = () =>
++          p.api
++            .request(p.actors.owner, "GET", `${p.prefix}/inventory`)
++            .pipe(Effect.flatMap((response) => body(Inventory, response)));
++        expect((yield* inventory()).accounts).toContainEqual(
++          expect.objectContaining({ id: p.account }),
++        );
++        yield* p.removeAccount;
++        expect((yield* inventory()).accounts).not.toContainEqual(
++          expect.objectContaining({ id: p.account }),
++        );
++        const events = yield* p.api.request(
++          p.actors.owner,
++          "GET",
++          "/native-provider-fixture/backend-events",
++        );
++        expect(events.status).toBe(200);
++        expect(events.body).toContainEqual(
++          expect.objectContaining({
++            path: "/pool/v1/account-acquisitions",
++            action: "remove",
++            provider: "codex",
++            refused: false,
++          }),
++        );
 +      }),
 +    ),
 +  );

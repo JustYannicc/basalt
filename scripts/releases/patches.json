@@ -793,7 +793,7 @@
     {
       "identity": "basalt-cloud-native-provider-links",
       "file": "0096-cloud-native-provider-links.patch",
-      "content_sha256": "005be0a1880f35ff23ade61464ab7936087cf9107f47f21fc8700df2250cbb34",
+      "content_sha256": "53622dc0158f1f2ea9252d269241aa0d1d27fcb7a8743001a2222dfa5f7a1662",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
