@@ -1,7 +1,7 @@
 {
   "identity": "executor-app-model-requests",
   "file": "0089-app-model-requests.patch",
-  "content_sha256": "bfd100effdc0ce36f668324b59b94a7fe99e3844c0f4219aeba1ac8a07352226",
+  "content_sha256": "0ef6a4b54024e518501361f9b2b467e4bc78bf86aaeae8dc60b7a003607d6486",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

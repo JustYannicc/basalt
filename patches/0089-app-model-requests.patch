@@ -476,7 +476,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-models.ts b/apps/hosted/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-models.ts
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,153 @@
 +import { GroupDatabase, GroupsUnavailable } from "../contracts/groups.ts";
 +import type { SqlClient } from "effect/sql";
 +import type { StorageError } from "@executor-js/sdk/core";
@@ -605,9 +605,12 @@ new file mode 100644
 +              if (response.status === 401 || response.status === 403)
 +                return yield* failure("denied");
 +              if (response.status !== 200) return yield* failure("pool_unavailable");
-+              return yield* HttpClientResponse.schemaBodyJson(ModelResponse)(response).pipe(
-+                Effect.mapError(() => failure("invalid_response")),
++              const body = yield* response.text.pipe(
++                Effect.mapError(() => failure("outcome_unknown")),
 +              );
++              return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ModelResponse))(
++                body,
++              ).pipe(Effect.mapError(() => failure("invalid_response")));
 +            }),
 +          ),
 +          Effect.catchTag("HttpClientError", () => Effect.fail(failure("outcome_unknown"))),
@@ -659,7 +662,7 @@ diff --git a/e2e/support/app-model-backend.ts b/e2e/support/app-model-backend.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-model-backend.ts
-@@ -0,0 +1,139 @@
+@@ -0,0 +1,148 @@
 +import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 +import { Clock, Deferred, Effect, Layer, Ref, Schema } from "effect";
 +import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -690,7 +693,7 @@ new file mode 100644
 +    messages: Schema.Array(Schema.Struct({ role: Schema.String, content: Schema.String })),
 +  }),
 +});
-+type Mode = "ok" | "invalid" | "cap" | "unavailable" | "unknown" | "drop";
++type Mode = "ok" | "invalid" | "cap" | "unavailable" | "unknown" | "drop" | "drop-body";
 +
 +/** The real product signs requests to this external pool peer; no SDK or policy is replaced. */
 +export const appModelBackend = Effect.gen(function* () {
@@ -730,6 +733,15 @@ new file mode 100644
 +        return yield* Effect.die("Model fixture needs the Node request socket");
 +      source.socket.destroy();
 +      return HttpServerResponse.empty({ status: 500 });
++    }
++    if (mode === "drop-body") {
++      const source = request.source;
++      if (!("socket" in source) || !(source.socket instanceof Socket))
++        return yield* Effect.die("Model fixture needs the Node request socket");
++      source.socket.end(
++        'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n{"id":',
++      );
++      return yield* Effect.never;
 +    }
 +    const held = gate;
 +    if (held !== undefined) {
@@ -995,7 +1007,7 @@ diff --git a/e2e/tests/app-model-requests.spec.ts b/e2e/tests/app-model-requests
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-model-requests.spec.ts
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,312 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schedule, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -1205,6 +1217,7 @@ new file mode 100644
 +          ["unavailable", "pool_unavailable"],
 +          ["unknown", "outcome_unknown"],
 +          ["drop", "outcome_unknown"],
++          ["drop-body", "outcome_unknown"],
 +          ["invalid", "invalid_response"],
 +        ] as const) {
 +          yield* backend.respond(mode);
