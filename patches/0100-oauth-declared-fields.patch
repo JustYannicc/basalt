@@ -1,0 +1,159 @@
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -1,3 +1,4 @@
++import { projectOAuthFields as project } from "./oauth-fields.ts";
+ import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { oauthIdentityConsent } from "../contracts/oauth-families.ts";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+@@ -16,12 +17,10 @@
+   Effect,
+   Exit,
+   Fiber,
+-  JsonSchema,
+   Match,
+   Redacted,
+   Result,
+   Schema,
+-  SchemaRepresentation,
+   Struct,
+ } from "effect";
+ import { Base64, Hex } from "effect/encoding";
+@@ -213,29 +212,6 @@
+   secret.token_endpoint_auth_method === undefined
+     ? Effect.succeed(undefined)
+     : decode(OAuthRegistration, secret);
+-
+-/** Apply the authored output schema after removing host-only token material. */
+-const project = (response: JsonObject, fields: unknown) =>
+-  Effect.gen(function* () {
+-    const input = yield* decode(JsonObject, fields);
+-    const publicFields = Object.fromEntries(
+-      Object.entries(input).filter(
+-        ([key]) =>
+-          !["refresh_token", "id_token", "client_secret", "client_assertion"].includes(key),
+-      ),
+-    );
+-    const decoder = yield* Effect.try({
+-      try: () =>
+-        Schema.toType(
+-          SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(response)),
+-        ),
+-      catch: () => new StorageError(),
+-    });
+-    return yield* Schema.decodeUnknownEffect(decoder)(publicFields).pipe(
+-      Effect.flatMap((fields) => decode(JsonObject, fields)),
+-      Effect.mapError(() => new StorageError()),
+-    );
+-  });
+
+ /** Safe evidence from a protocol failure, kept on the user-facing error for diagnosis. */
+ const causeOf = (
+@@ -2765,7 +2741,12 @@
+         const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
+         // The service refused exactly the credentials this grant still holds. A grant another
+         // call has renewed since then holds different ones, which this call uses instead.
+-        const refused = rejected !== undefined && sameFields(grant.fields, rejected);
++        const method = provider.auth[account.method];
++        const presented =
++          rejected !== undefined && method?.type === "oauth2"
++            ? yield* project(method.response, grant.fields)
++            : grant.fields;
++        const refused = rejected !== undefined && sameFields(presented, rejected);
+         /** These values as the credential this grant holds: managed or not, and its generation. */
+         const held = (fields: JsonObject): AccountCredential => ({
+           fields: Redacted.make(fields),
+@@ -3258,7 +3239,19 @@
+   ) =>
+     Effect.gen(function* () {
+       if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
+-      const fields = yield* resolveCredentials(account, provider, resolution, rejected);
++      const credential = yield* resolveCredentials(account, provider, resolution, rejected);
++      const method = provider.auth[account.method];
++      // Old grants can contain undeclared token metadata. Apply the current declaration on reads
++      // too, before app invocation and the credential privacy checks see those values.
++      const fields =
++        method?.type === "oauth2"
++          ? {
++              ...credential,
++              fields: Redacted.make(
++                yield* project(method.response, Redacted.value(credential.fields)),
++              ),
++            }
++          : credential;
+       // A remote token refresh can outlive a permission change, an unlinking or account deletion.
+       if (resolution.contested) yield* recheck;
+       return fields;
+diff --git a/packages/sdk/src/implementation/oauth-fields.ts b/packages/sdk/src/implementation/oauth-fields.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/oauth-fields.ts
+@@ -0,0 +1,68 @@
++/** OAuth response fields exposed to apps; refresh material stays in the trusted grant. */
++import { Effect, JsonSchema, Schema, SchemaAST, SchemaRepresentation } from "effect";
++import { JsonObject, StorageError } from "../contracts/shared.ts";
++
++// JSON Schema export makes structs open. An OAuth response's named fields are the app's
++// credential contract, so incidental token metadata must not become invocation credentials.
++const declaredFields = (ast: SchemaAST.AST): SchemaAST.AST => {
++  switch (ast._tag) {
++    case "Objects":
++      return ast.propertySignatures.length === 0
++        ? ast
++        : new SchemaAST.Objects(
++            ast.propertySignatures,
++            [],
++            ast.annotations,
++            ast.checks,
++            ast.encoding,
++            ast.context,
++            ast.encodingChecks,
++          );
++    case "Union":
++      return new SchemaAST.Union(
++        ast.types.map(declaredFields),
++        ast.options,
++        ast.annotations,
++        ast.checks,
++        ast.encoding,
++        ast.context,
++        ast.encodingChecks,
++      );
++    case "Suspend":
++      return new SchemaAST.Suspend(
++        () => declaredFields(ast.thunk()),
++        ast.annotations,
++        ast.checks,
++        ast.encoding,
++        ast.context,
++      );
++    default:
++      return ast;
++  }
++};
++
++export const projectOAuthFields = (response: JsonObject, fields: unknown) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(JsonObject)(fields).pipe(
++      Effect.mapError(() => new StorageError()),
++    );
++    const publicFields = Object.fromEntries(
++      Object.entries(input).filter(
++        ([key]) =>
++          !["refresh_token", "id_token", "client_secret", "client_assertion"].includes(key),
++      ),
++    );
++    const decoder = yield* Effect.try({
++      try: () => {
++        const schema = Schema.toType(
++          SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(response)),
++        );
++        return Schema.toType(Schema.make(declaredFields(schema.ast)));
++      },
++      catch: () => new StorageError(),
++    });
++    return yield* Schema.decodeUnknownEffect(decoder)(publicFields).pipe(
++      Effect.flatMap((value) => Schema.decodeUnknownEffect(JsonObject)(value)),
++      Effect.mapError(() => new StorageError()),
++    );
++  });
