@@ -128,6 +128,7 @@ jobs:
         working-directory: .local/scale-candidate
       - run: node scripts/scale-test/prepare.mjs
       - name: Destroy the expired stage and verify absence
+        if: always()
         run: node scripts/scale-test/run.mjs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

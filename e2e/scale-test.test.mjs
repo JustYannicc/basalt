@@ -25,7 +25,10 @@ test("synthetic mock completes Chat, Responses and Messages SSE through HTTP", a
     env: { PATH: process.env.PATH, SCALE_ADMIN: "fixture-control", SCALE_BIND: "127.0.0.1", SCALE_PORT: String(port), SCALE_DEADLINE: String(Date.now() / 1000 + 30) },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  t.after(async () => { child.kill("SIGTERM"); await once(child, "exit"); });
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
+  });
   await new Promise((resolve, reject) => {
     child.stdout.on("data", (data) => { if (data.toString().includes("READY")) resolve(); });
     child.once("error", reject); child.once("exit", (code) => reject(new Error(`Mock exited ${code}`)));
