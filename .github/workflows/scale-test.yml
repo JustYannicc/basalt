@@ -1,0 +1,144 @@
+name: Pool scale test
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Isolated synthetic pool experiment; deploy starts a two-hour lease
+        required: true
+        type: choice
+        options: [deploy, run, destroy]
+      stage:
+        description: Only scale-180 is permitted
+        required: true
+        type: choice
+        options: [scale-180]
+        default: scale-180
+
+permissions:
+  contents: read
+
+jobs:
+  scale:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    concurrency:
+      group: scale-180
+      cancel-in-progress: false
+    outputs:
+      deadline: ${{ steps.execute.outputs.deadline }}
+    env:
+      SCALE_MODE: ${{ inputs.mode }}
+      SCALE_STAGE: ${{ inputs.stage }}
+      SCALE_OUTPUT: .local/scale-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Refuse other stages before loading credentials
+        run: node -e 'if (process.env.SCALE_STAGE !== "scale-180" || !["deploy", "run", "destroy"].includes(process.env.SCALE_MODE)) throw new Error("Only scale-180 deploy/run/destroy is permitted");'
+      - uses: actions/checkout@v4
+        with:
+          ref: f8213cfd9957fa7cf467c56035ce3dac96438b3c
+          path: .local/scale-candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Prepare the frozen deployment toolchain
+        working-directory: .local/scale-candidate
+        run: npm run prepare:upstream
+      - name: Prepare synthetic sources
+        run: node scripts/scale-test/prepare.mjs
+      - name: Check the prepared isolated stack
+        run: |
+          .local/scale-candidate/.upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/scale-test/tsconfig.stack.json
+          .local/scale-candidate/.upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/scale-test/tsconfig.worker.json
+      - name: Execute isolated mode
+        id: execute
+        if: success() || (always() && inputs.mode == 'destroy')
+        run: node scripts/scale-test/run.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      - name: Tear down after traffic or an unsuccessful deploy
+        if: always() && (inputs.mode == 'run' || (inputs.mode == 'deploy' && steps.execute.outcome == 'failure'))
+        run: node scripts/scale-test/run.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          SCALE_MODE: destroy
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale-180-${{ github.run_id }}
+          path: .local/scale-results
+          if-no-files-found: warn
+          retention-days: 7
+  lease:
+    needs: scale
+    if: inputs.mode == 'deploy' && needs.scale.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - name: Wait until the teardown reserve begins
+        env:
+          DEADLINE: ${{ needs.scale.outputs.deadline }}
+        run: |
+          node -e 'const ms = Number(process.env.DEADLINE) - Date.now() - 20 * 60_000; if (!Number.isFinite(ms)) process.exit(1); setTimeout(() => {}, Math.max(0, ms));'
+  expire:
+    needs: [scale, lease]
+    if: always() && inputs.mode == 'deploy' && needs.scale.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: scale-180
+      cancel-in-progress: false
+    env:
+      SCALE_MODE: destroy
+      SCALE_EXPECT_DEADLINE: ${{ needs.scale.outputs.deadline }}
+      SCALE_STAGE: scale-180
+      SCALE_OUTPUT: .local/scale-results
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f8213cfd9957fa7cf467c56035ce3dac96438b3c
+          path: .local/scale-candidate
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: npm run prepare:upstream
+        working-directory: .local/scale-candidate
+      - run: node scripts/scale-test/prepare.mjs
+      - name: Destroy the expired stage and verify absence
+        run: node scripts/scale-test/run.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale-180-expiry-${{ github.run_id }}
+          path: .local/scale-results
+          if-no-files-found: warn
+          retention-days: 7

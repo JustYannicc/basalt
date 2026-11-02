@@ -29,3 +29,5 @@ clients/mobile/android/
 clients/mobile/ios/
 clients/mobile/dist-ios/
 clients/mobile/dist-android/
+
+scripts/scale-test/sources.generated.ts
