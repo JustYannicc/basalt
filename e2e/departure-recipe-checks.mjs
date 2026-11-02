@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { recipeHarness, runtime, root, appsManifest, until } from "./recipes/harness.mjs";
 import { startRecipeUpstream } from "./recipes/upstream.mjs";
 import { scenarios } from "../.upstream/e2e/test-plan.ts";
+import { beforeHostedModelBindings } from "../.upstream/e2e/support/profile-removal-rollback.ts";
 
 const directory = resolve(process.argv[2] ?? join(root, ".generated/departure-recipe-checks"));
 await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -67,6 +68,7 @@ export default defineApp({ app: { accounts: { shared: service.many().contributed
   yield* h.control("storage/legacy", {
     database: "product",
     statements: [
+      ...beforeHostedModelBindings(),
       { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
       { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
       { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 13" },
