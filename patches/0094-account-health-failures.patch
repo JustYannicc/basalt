@@ -280,6 +280,110 @@ new file mode 100644
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -1,6 +1,7 @@
+ /** Reporting upgrades preserve selected sites, credentials and checked account status. */
+ import { expect, layer } from "@effect/vitest";
+-import { Array, Effect } from "effect";
++import { Array, Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { accountStatusSource, displayedStatus } from "../support/account-status-fixture.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+@@ -13,6 +14,14 @@
+   beforeAccountAcquisition,
+   beforeAccountIdentities,
+ } from "../support/profile-removal-rollback.ts";
++const AccountHealth = Schema.Struct({
++  health: Schema.Struct({
++    info: Schema.Unknown,
++    infoCheckedAt: Schema.NullOr(Schema.String),
++    apps: Schema.Array(Schema.Struct({ check: Schema.Unknown })),
++  }),
++});
++
+ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+   it.effect(scenarios.accountStatusStorage.title, (context) =>
+     withHostedCase(
+@@ -106,6 +115,9 @@
+             apps: [{ check: { displayStatus: { stats: [{ label: "Requests", value: "43" }] } } }],
+           },
+         });
++        const beforeFailure = yield* body(AccountHealth, yield* fixture.read());
++        expect(beforeFailure.health.info).toEqual({ displayName: "Checked fixture identity" });
++        expect(beforeFailure.health.infoCheckedAt).toEqual(expect.any(String));
+         yield* fixture.statusBackend.answer({ status: 503, body: {} });
+         expect((yield* fixture.check()).status).toBe(200);
+         yield* serverControl("restart");
+@@ -114,6 +126,14 @@
+             info: { displayName: "Checked fixture identity" },
+             apps: [{ check: { status: "upstream_unavailable" } }],
+           },
++        });
++        const failed = yield* body(AccountHealth, yield* fixture.read());
++        expect(failed.health.info).toEqual(beforeFailure.health.info);
++        expect(failed.health.infoCheckedAt).toEqual(beforeFailure.health.infoCheckedAt);
++        expect(failed.health.apps[0]?.check).toMatchObject({
++          status: "upstream_unavailable",
++          reason: "unavailable",
++          failure: { phase: "vendor", tag: "ProviderError" },
+         });
+         const persisted = yield* legacyStorage([
+           {
+@@ -124,12 +144,49 @@
+         expect(persisted).toEqual([
+           [
+             {
+-              account_info: { displayName: "Checked fixture identity", checkReason: "unavailable" },
++              account_info: {
++                displayName: "Checked fixture identity",
++                checkReason: "unavailable",
++                checkFailure: { phase: "vendor", tag: "ProviderError" },
++              },
+             },
+           ],
+         ]);
+         yield* serverControl("start");
+-      }).pipe(Effect.provide(McpClient.layer)),
++        const restarted = yield* body(AccountHealth, yield* fixture.read());
++        expect(restarted.health).toEqual(failed.health);
++        yield* fixture.statusBackend.answer({ status: 200, body: { status: displayedStatus } });
++        expect((yield* fixture.check()).status).toBe(200);
++        const recovered = yield* body(AccountHealth, yield* fixture.read());
++        expect(recovered.health.info).toEqual(beforeFailure.health.info);
++        expect(recovered.health.infoCheckedAt).toEqual(beforeFailure.health.infoCheckedAt);
++        expect(recovered.health.apps[0]?.check).toMatchObject({ status: "healthy" });
++        expect(recovered.health.apps[0]?.check).not.toHaveProperty("failure");
++        expect(recovered.health.apps[0]?.check).not.toHaveProperty("reason");
++        const cleared = yield* legacyStorage([
++          {
++            sql: "SELECT account_info FROM executor_account_checks WHERE account = $1",
++            params: [fixture.account],
++          },
++        ]);
++        expect(cleared).toEqual([
++          [
++            {
++              account_info: {
++                displayName: "Checked fixture identity",
++                displayStatus: displayedStatus,
++              },
++            },
++          ],
++        ]);
++        yield* serverControl("start");
++        expect((yield* body(AccountHealth, yield* fixture.read())).health).toEqual(
++          recovered.health,
++        );
++      }).pipe(
++        Effect.ensuring(serverControl("start").pipe(Effect.orDie)),
++        Effect.provide(McpClient.layer),
++      ),
+     ),
+   );
+ });
 diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
 --- a/packages/mcp/src/implementation/app-asset-paths.ts
 +++ b/packages/mcp/src/implementation/app-asset-paths.ts
