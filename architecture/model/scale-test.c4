@@ -1,0 +1,35 @@
+model {
+  extend basalt {
+    scaleTest = module "Isolated pool scale test" {
+      #basalt
+      description "A manually dispatched test owns one temporary stage, synthetic traffic, its time and cost limits, and verified cleanup. Provisioning keeps state on its own runner. Size changes and deletion use only issue-scoped resources; production state and runtime are outside this boundary."
+      metadata {
+        code "scripts/scale-test|.github/workflows/scale-test.yml"
+        libraries "asyncio|ssl|resource"
+        bindings "stageClient=basalt.scaleStage|globalThis=basalt.scaleStage|stub(this.env.Mock)=basalt.scaleStage.fixtures|super=basalt.scaleStage.controller|this.ctx.container!.getTcpPort=basalt.scaleStage.runtime|c.getTcpPort=basalt.scaleStage.fixtures|stub(env.PoolContainer)=basalt.scaleStage.controller|target=basalt.scaleStage.fixtures"
+      }
+    }
+    scaleStage = adapter "Isolated scale stage" {
+      #external
+      metadata { hosts "workers.dev" }
+      controller = actor "Test pool controller"
+      runtime = adapter "Test pool runtime"
+      fixtures = adapter "Synthetic provider and load generator" {
+        metadata { endpointHosts "scale-mock.invalid|fixture" }
+      }
+    }
+  }
+  frozenScaleCandidate = adapter "Pinned test source" {
+    #external
+    metadata { sdks "@basalt-scale/candidate" }
+  }
+  basalt.scaleTest -[sync]-> basalt.scaleStage "call only the validated test gateway"
+  basalt.scaleTest -[sync]-> basalt.scaleStage.controller "wrap the pinned controller with test control operations"
+  basalt.scaleTest -[sync]-> basalt.scaleStage.runtime "sample processes, readiness and direct database usage"
+  basalt.scaleTest -[sync]-> basalt.scaleStage.fixtures "route synthetic provider requests and drive measured load"
+  basalt.scaleTest -[sync]-> frozenScaleCandidate "use the immutable gateway source and database contract"
+  basalt.scaleTest -[sync]-> deploymentProvider "provision, resize and remove only isolated test resources"
+  basalt.scaleTest -[sync]-> databaseProvider "create and remove only the temporary test database"
+  basalt.scaleTest -[sync]-> databaseService "read usage and authenticate against the isolated test database"
+  basalt.scaleTest -[sync]-> repositoryApi "download workflow actions and pinned source"
+}
