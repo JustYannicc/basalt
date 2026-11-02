@@ -1,0 +1,93 @@
+name: Production operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Named read, encrypted backup, preparation or reviewed migration
+        required: true
+        type: choice
+        options: [inventory, backup, prepare, migrate]
+      selection:
+        description: Allow-listed inventory, backup selection, preparation or migration name
+        required: true
+        type: string
+      mode:
+        description: Migration mode; other actions ignore this
+        required: true
+        default: dry-run
+        type: choice
+        options: [dry-run, apply]
+      request:
+        description: Exact non-secret JSON request; never credentials or tokens
+        required: true
+        default: "{}"
+        type: string
+      recipient:
+        description: RSA 3072+ public recipient key, SPKI DER encoded as base64
+        required: true
+        type: string
+      source_run:
+        description: Successful dry-run workflow ID required for apply
+        required: false
+        type: string
+      plan_sha256:
+        description: Exact reviewed plaintext plan checksum required for apply
+        required: false
+        type: string
+      go:
+        description: Coordinator's exact GO followed by a space and the reviewed plan checksum
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-ops
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Load the completed encrypted dry-run before apply
+        if: inputs.action == 'migrate' && inputs.mode == 'apply'
+        uses: actions/download-artifact@v4
+        with:
+          name: production-ops-${{ inputs.source_run }}
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/previous-operation
+      - name: Execute the named operation
+        run: node scripts/production-ops/run.ts
+        env:
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OPS_ACTION: ${{ inputs.action }}
+          OPS_SELECTION: ${{ inputs.selection }}
+          OPS_MODE: ${{ inputs.mode }}
+          OPS_REQUEST: ${{ inputs.request }}
+          OPS_RECIPIENT: ${{ inputs.recipient }}
+          OPS_SOURCE_RUN: ${{ inputs.source_run }}
+          OPS_PLAN_SHA256: ${{ inputs.plan_sha256 }}
+          OPS_GO: ${{ inputs.go }}
+          OPS_PREVIOUS_DIRECTORY: ${{ runner.temp }}/previous-operation
+          OPS_OUTPUT_DIRECTORY: ${{ runner.temp }}/production-ops
+      - uses: actions/upload-artifact@v4
+        with:
+          name: production-ops-${{ github.run_id }}
+          path: ${{ runner.temp }}/production-ops
+          if-no-files-found: error
+          retention-days: 30

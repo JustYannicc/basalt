@@ -1,0 +1,194 @@
+import { Effect, Schema } from "effect";
+import { SqlClient } from "effect/sql";
+import type { Change, ProductionMigration } from "./contracts.ts";
+import { canonical, sha256 } from "./crypto.ts";
+
+const Request = Schema.Struct({
+  organization: Schema.String,
+  account: Schema.String,
+  app: Schema.String,
+  connection: Schema.String,
+  subject: Schema.String,
+  job: Schema.String,
+  workflow: Schema.String,
+  schedule: Schema.String,
+  foreign: Schema.String,
+  operation: Schema.String,
+});
+const cases: Readonly<Record<string, { table: string; column: string; key: string }>> = {
+  "departure-app": { table: "hosted_contributed_departures", column: "app", key: "job" },
+  "departure-account": { table: "hosted_contributed_departures", column: "account", key: "job" },
+  "workflow-deployment": { table: "executor_workflow_runs", column: "deployment", key: "workflow" },
+  "schedule-run": { table: "executor_schedules", column: "active_run", key: "schedule" },
+  "account-grant": { table: "executor_accounts", column: "oauth_grant_id", key: "account" },
+  "account-identity": { table: "executor_accounts", column: "identity_id", key: "account" },
+  "app-deployment": { table: "executor_apps", column: "active_deployment", key: "app" },
+  "connection-source": {
+    table: "executor_account_connections",
+    column: "source_account",
+    key: "connection",
+  },
+  "connection-reconnect": {
+    table: "executor_account_connections",
+    column: "reconnect_account",
+    key: "connection",
+  },
+  "link-null": { table: "hosted_app_account_links", column: "linked_by", key: "app" },
+  "link-subject": { table: "hosted_app_account_links", column: "subject", key: "app" },
+};
+const descriptor = (request: typeof Request.Type) => {
+  const reference = cases[request.operation];
+  const table = reference?.table ?? "executor_accounts";
+  const id =
+    reference?.key === "app"
+      ? request.app
+      : reference?.key === "connection"
+        ? request.connection
+        : reference?.key === "job"
+          ? request.job
+          : reference?.key === "workflow"
+            ? request.workflow
+            : reference?.key === "schedule"
+              ? request.schedule
+              : request.account;
+  const key: Record<string, string | null> =
+    table === "hosted_contributed_departures"
+      ? {
+          job: request.job,
+          app: request.operation === "departure-app" ? request.foreign : request.app,
+          requirement: "scope-proof",
+          account: request.operation === "departure-account" ? request.foreign : request.account,
+        }
+      : table === "hosted_app_account_links"
+        ? {
+            app: request.app,
+            requirement: "scope-proof",
+            account: request.account,
+            subject:
+              request.operation === "link-subject"
+                ? request.foreign
+                : request.subject === "null"
+                  ? null
+                  : request.subject,
+          }
+        : request.operation === "mutable-delete" || request.operation === "collision"
+          ? { id, owner: `organization:${request.organization}` }
+          : { id };
+  return { table, id, key, reference };
+};
+export const scopeProof: ProductionMigration = {
+  name: "scope-proof",
+  revision: "fixture-v1",
+  tables: [
+    "executor_accounts",
+    "executor_apps",
+    "executor_account_connections",
+    "hosted_app_account_links",
+    "hosted_contributed_departures",
+    "executor_workflow_runs",
+    "executor_schedules",
+  ],
+  inspect: (raw) =>
+    Effect.gen(function* () {
+      const request = yield* Schema.decodeUnknownEffect(Request)(raw);
+      const sql = yield* SqlClient.SqlClient;
+      const { table, id, key } = descriptor(request);
+      const rows = yield* sql
+        .unsafe(
+          `select to_jsonb(entry) as row from "${table}" entry where ${table === "hosted_app_account_links" ? "app" : table === "hosted_contributed_departures" ? "job" : "id"} = $1`,
+          [id],
+        )
+        .pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ row: Schema.Json }))),
+          ),
+        );
+      const before = rows[0]?.row;
+      const inserting =
+        request.operation === "collision" ||
+        request.operation === "implicit-grant" ||
+        request.operation === "grantless-insert" ||
+        request.operation === "link-subject" ||
+        request.operation.startsWith("departure-");
+      if (before === undefined && !inserting)
+        return yield* Effect.fail(new Error("Missing proof row"));
+      const deleting = request.operation === "mutable-delete" || request.operation === "delete";
+      const change: Change = {
+        table,
+        key,
+        action: inserting ? "insert" : deleting ? "delete" : "update",
+        beforeSha256: inserting ? null : sha256(canonical(before)),
+        afterSha256: deleting ? null : sha256(canonical([before, request.foreign])),
+      };
+      return {
+        changes: [change],
+        data:
+          request.operation === "increment" || request.operation === "bad-verification"
+            ? {
+                generation:
+                  (yield* Schema.decodeUnknownEffect(
+                    Schema.Struct({ credential_generation: Schema.Number }),
+                  )(before)).credential_generation + 1,
+              }
+            : null,
+      };
+    }),
+  apply: (raw) =>
+    Effect.gen(function* () {
+      const request = yield* Schema.decodeUnknownEffect(Request)(raw);
+      const sql = yield* SqlClient.SqlClient;
+      const { table, id, reference } = descriptor(request);
+      if (request.operation === "implicit-grant" || request.operation === "grantless-insert") {
+        yield* sql`insert into executor_accounts select
+          (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object(
+            'id', ${id}::text, 'owner', ${`organization:${request.organization}`}::text,
+            'method', ${request.operation === "implicit-grant" ? "oauth" : "apiKey"}::text,
+            'identity_id', null, 'oauth_grant_id', null))).*
+          from executor_accounts a where a.id = ${request.foreign}`;
+      } else if (request.operation.startsWith("departure-")) {
+        yield* sql`insert into hosted_contributed_departures (job, app, requirement, account, linked_at)
+        values (${request.job}, ${request.operation === "departure-app" ? request.foreign : request.app}, 'scope-proof', ${request.operation === "departure-account" ? request.foreign : request.account}, now())`;
+      } else if (request.operation === "link-subject") {
+        yield* sql`insert into hosted_app_account_links (app, requirement, account, subject, linked_by)
+        values (${request.app}, 'scope-proof', ${request.account}, ${request.foreign}, ${request.subject})`;
+      } else if (reference !== undefined) {
+        yield* sql.unsafe(
+          `update "${table}" set "${reference.column}" = $2 where ${table === "hosted_app_account_links" ? "app" : table === "hosted_contributed_departures" ? "job" : "id"} = $1`,
+          [id, request.foreign],
+        );
+      } else if (request.operation === "mutable-delete") {
+        yield* sql`update executor_accounts set owner = ${request.foreign} where id = ${id}`;
+      } else if (request.operation === "collision") {
+        yield* sql`update executor_accounts set owner = ${`organization:${request.organization}`} where id = ${id}`;
+      } else if (request.operation === "delete") {
+        yield* sql`delete from executor_accounts where id = ${id}`;
+      } else {
+        yield* sql`update executor_accounts set credential_generation = credential_generation + 1 where id = ${id}`;
+      }
+    }),
+  verify: (raw, plan) =>
+    Effect.gen(function* () {
+      const request = yield* Schema.decodeUnknownEffect(Request)(raw);
+      if (request.operation === "increment") {
+        const expected = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ generation: Schema.Number }),
+        )(plan.data);
+        const sql = yield* SqlClient.SqlClient;
+        const rows =
+          yield* sql`select credential_generation from executor_accounts where id = ${request.account}`.pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.Array(Schema.Struct({ credential_generation: Schema.Number })),
+              ),
+            ),
+          );
+        const ok = rows.length === 1 && rows[0]?.credential_generation === expected.generation;
+        return { ok, checks: { verified: ok } };
+      }
+      // Adversarial writes have a permissive verifier so only the runner's row guard can reject them.
+      return {
+        ok: request.operation !== "bad-verification",
+        checks: { verified: request.operation !== "bad-verification" },
+      };
+    }),
+};
