@@ -708,6 +708,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "executor-contributed-departure-observability",
+      "file": "0077-contributed-departure-observability.patch",
+      "content_sha256": "b9f6d2dd3f04bb8f3d5710bd4528790affa0e9e41a1fd9ccd4e26db2b3723a18",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": true,
+      "workflow_sensitive": false
     }
   ],
   "pool_carries": {

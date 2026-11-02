@@ -1,4 +1,4 @@
-import { emptyCheckpoint, type Checkpoint, type Observation } from "./types.ts";
+import { emptyCheckpoint, type Observation } from "./types.ts";
 export interface ConnectionFact {
   id: string;
   at: number;
@@ -128,6 +128,16 @@ export function quietAt(
   hours: null | { timezone: string; startHour: number; endHour: number },
 ) {
   if (hours === null) return false;
+  if (
+    !Number.isInteger(hours.startHour) ||
+    !Number.isInteger(hours.endHour) ||
+    hours.startHour < 0 ||
+    hours.startHour > 23 ||
+    hours.endHour < 0 ||
+    hours.endHour > 23 ||
+    !hours.timezone
+  )
+    throw new Error("Invalid workflow quiet hours.");
   const hour = Number(
     new Intl.DateTimeFormat("en", {
       timeZone: hours.timezone,

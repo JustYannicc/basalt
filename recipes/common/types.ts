@@ -10,7 +10,7 @@ export interface PoolCheck {
   count: number;
 }
 export type Verdict = "healthy" | "action" | "unknown" | "withdraw";
-/** Only opaque IDs, known codes, numbers and times cross a workflow checkpoint. */
+/** Checkpoints retain bounded resource names, identifiers and fixed diagnostics, never credential fields. */
 export interface Observation {
   cursor: string;
   at: number;
@@ -27,6 +27,7 @@ export interface Observation {
   sourceAt?: number;
   evidenceUrl?: string;
   attemptedSha?: string;
+  details?: readonly { label: string; value: string }[];
   decision?: string;
   poolQuotaOpen?: boolean;
   poolMembers?: readonly PoolMember[];

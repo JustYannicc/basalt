@@ -1,3 +1,4 @@
+import { workflowDeliverySource } from "./workflow-fields.mjs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -14,7 +15,7 @@ export const verifyWatchingWorkflow = ({
   managementKey,
 }) =>
   Effect.gen(function* () {
-    const copy = (role, configuration) =>
+    const copy = (role, configuration, channel) =>
       Effect.gen(function* () {
         const source = JSON.parse(
           yield* Effect.promise(() =>
@@ -30,9 +31,18 @@ export const verifyWatchingWorkflow = ({
               content:
                 file.path === "common/configuration.ts"
                   ? configuration
-                  : file.path === "common/installation.ts"
-                    ? file.content.replace('"https://app.signalbox.run"', JSON.stringify(h.origin))
-                    : file.content,
+                  : file.path === "common/workflow-fields.ts"
+                    ? workflowDeliverySource(
+                        file.content,
+                        ["checkMyConnections", "checkWorkflowHealth"],
+                        channel,
+                      )
+                    : file.path === "common/installation.ts"
+                      ? file.content.replace(
+                          '"https://app.signalbox.run"',
+                          JSON.stringify(h.origin),
+                        )
+                      : file.content,
             })),
         );
         yield* h.connect(app.id, "service", {
@@ -46,7 +56,6 @@ export const verifyWatchingWorkflow = ({
       organization: h.actors.organization.id,
       accounts: [account.id],
       pools: [],
-      quietHours: null,
       operator: {
         release: null,
         availability: null,
@@ -58,7 +67,6 @@ export const verifyWatchingWorkflow = ({
     };
     const configuration = (app, workflowApps = []) =>
       `export const configuration = { ...${JSON.stringify(base)},
-        channel: { app: ${JSON.stringify(app)}, tool: "send", input: (message, reviewUrl) => ({ message, reviewUrl }), receipt: (value) => value.receipt },
         operator: ${JSON.stringify({ ...base.operator, workflowApps })} };`;
     const refusedChannel = yield* deploy("Synthetic protected delivery channel", [
       {
@@ -71,7 +79,7 @@ const send = mutation({ approval: always(), input: object({ message: string(), r
 export default defineApp({}, { tools: router({ send }) });`,
       },
     ]);
-    const watched = yield* copy("personal", configuration(refusedChannel.id));
+    const watched = yield* copy("personal", configuration(refusedChannel.id), refusedChannel.id);
     fixture.setHealth("rejected");
     const initialSends = fixture.sends.length;
     let tick = 0;
@@ -101,6 +109,7 @@ export default defineApp({}, { tools: router({ send }) });`,
           workflows: [{ name: "checkMyConnections", maximumAgeMinutes: 30 }],
         },
       ]),
+      channel.id,
     );
     const watcherKey = "production:checkWorkflowHealth";
     const watch = () => scan(watcher.id, "checkWorkflowHealth", "checkWorkflowHealth");

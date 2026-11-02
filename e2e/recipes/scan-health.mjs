@@ -48,8 +48,6 @@ export const verifyScanHealth = ({
       organization: h.actors.organization.id,
       accounts: [],
       pools: [],
-      channel: null,
-      quietHours: null,
       operator: {
         release: null,
         availability: null,

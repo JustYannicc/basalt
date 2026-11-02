@@ -1,3 +1,4 @@
+import { workflowDeliverySource } from "./workflow-fields.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -35,8 +36,7 @@ export default defineApp({}, { tools: router({ probe, send }) });`,
           ),
         );
         const config = `export const configuration = {
-      organization: ${JSON.stringify(h.actors.organization.id)}, accounts: [], pools: [{ app: ${JSON.stringify(pool.id)}, provider: "codex" }], quietHours: null,
-      channel: { app: ${JSON.stringify(channel.id)}, tool: "send", input: (message, reviewUrl) => ({ message, reviewUrl }), receipt: (value) => value.receipt },
+      organization: ${JSON.stringify(h.actors.organization.id)}, accounts: [], pools: [{ app: ${JSON.stringify(pool.id)}, provider: "codex" }],
       operator: { release: null, availability: null, workflowApps: [], runtime: null, httpErrors: null, errorCounts: null }
     };`;
         const app = yield* deployAs(
@@ -49,9 +49,18 @@ export default defineApp({}, { tools: router({ probe, send }) });`,
               content:
                 file.path === "common/configuration.ts"
                   ? config
-                  : file.path === "common/installation.ts"
-                    ? file.content.replace('"https://app.signalbox.run"', JSON.stringify(h.origin))
-                    : file.content,
+                  : file.path === "common/workflow-fields.ts"
+                    ? workflowDeliverySource(
+                        file.content,
+                        ["checkMyPool", "checkContributedDepartures"],
+                        channel.id,
+                      )
+                    : file.path === "common/installation.ts"
+                      ? file.content.replace(
+                          '"https://app.signalbox.run"',
+                          JSON.stringify(h.origin),
+                        )
+                      : file.content,
             }))
             .map(transform),
         );

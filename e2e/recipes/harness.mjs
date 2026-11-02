@@ -23,11 +23,15 @@ export const until = (read, predicate, label) =>
     Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 600 }),
   );
 
-export const recipeHarness = (directory, fixtureOrigin) =>
+export const recipeHarness = (
+  directory,
+  fixtureOrigin,
+  scenarioLabel = "Private check recipe public path",
+) =>
   Effect.gen(function* () {
     const base = yield* startEnvironment({ target: "self-host", headless: true });
     const registry = yield* lockedNpmRegistry;
-    const prepared = yield* prepareScenario(base.target, "Private check recipe public path");
+    const prepared = yield* prepareScenario(base.target, scenarioLabel);
     const authSecret = randomBytes(32).toString("hex");
     const actors = yield* Effect.promise(() =>
       provisionSelfHostActors({
@@ -96,12 +100,16 @@ export const recipeHarness = (directory, fixtureOrigin) =>
           fields,
         });
       });
-    const control = (action) =>
+    const control = (action, body) =>
       Effect.tryPromise({
         try: async () => {
           const response = await fetch(`${server.controlOrigin}/${action}`, {
             method: "POST",
-            headers: { authorization: `Bearer ${Redacted.value(prepared.apiKey)}` },
+            headers: {
+              authorization: `Bearer ${Redacted.value(prepared.apiKey)}`,
+              "Content-Type": "application/json",
+            },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           });
           assert.equal(response.status, 200, `Control ${action}: ${await response.text()}`);
         },

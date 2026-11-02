@@ -26,19 +26,30 @@ watched accounts are target IDs, not required credentials on this app. A broken
 watched connection therefore does not prevent the monitoring app from starting.
 The source API credential itself still has to work.
 
-Edit `common/configuration.ts` in your private copy. Set its organization and
-watch targets, then select the exact send tool from an app you have connected.
-`channel.input` builds that tool's ordinary input from the fixed nudge and review
-URL; `channel.receipt` extracts its documented opaque receipt. Gmail, Slack,
-Cloudflare Email Sending or another connected tool can be used. There is no
-operator address or default destination. Do not put credentials in the source.
-The channel's existing policy must permit the agreed unattended send. A workflow
-form answer does not authorize a protected tool.
+Edit `common/configuration.ts` for this copy's organization and watch targets.
+Each named workflow's `destination` and `quietHours` live in
+`common/workflow-fields.ts`. Edit the workflow's fields to change its behavior;
+there is no shared destination or quiet-hours preference. The default destination
+is Human in the loop with external nudges off. Personal connection nudges default to
+quiet hours from 22:00 to 08:00 in Europe/Zurich; pool and production workflows
+have no quiet hours. Quiet hours affect external nudges, never the inbox item.
+
+For email or Slack, change that workflow's destination to `kind: "tool"`, with
+the existing connected app and its exact send tool. Its `input` builds the tool's
+ordinary input from the fixed nudge and review URL; `receipt` extracts its
+opaque receipt. Credentials remain in normal account connections. The tool's
+existing policy must permit the agreed unattended send. Answering a workflow
+question does not authorize a protected tool.
+
+Customized copies keep their source. When updating one manually, move its former
+`configuration.channel` and `configuration.quietHours` values into each affected
+workflow's fields, preserving its destinations and timing before removing the
+shared fields. An update to the catalog never resets a customized copy.
 
 Run `configure` with `deliveryEnabled: false`, then use Run now on its schedule.
 Inspect the read results and pending workflow input before approving delivery and
 enabling the schedule. Delivery consent is bound to a hash of this copy's
-configuration, including its selected channel formatter. Changing it requires
+configuration, including each workflow's destination formatter and quiet hours. Changing it requires
 configuring the copy again; retained older runs cannot use the new consent to
 send to an old destination. Schedules start paused and delivery starts off. This
 repository does not configure or activate production copies.
@@ -47,6 +58,7 @@ Workflow questions appear in Human in the loop, the public workflow-input APIs
 and native workflow history. Hosted answers require the recipient's browser
 session; a tool or API key cannot approve a question for them. Keep a dry-run copy
 paused unless the recipient has a verified way to inspect and answer its questions.
+A workflow using only Human in the loop needs no external channel setup.
 
 Use a separate private copy for each owner. These recipes bind their SQL state
 to the person who configures them. Do not share a copy containing private watch
@@ -68,8 +80,18 @@ least 30 minutes can ask the owner to review or pause that account. Rate limitin
 and provider outages do not become reconnect requests. Pausing and resuming the
 account remain native pool actions.
 
-Quiet hours have no default timezone. Set them explicitly if wanted. They defer
-the nudge while the workflow input remains pending. `mute` takes a UTC timestamp;
+The pool-owner copy also checks contributed-account departure cleanup once per
+minute for each distinct watched app, across provider groups. A terminal eighth
+failure or cleanup pending for at least five minutes opens one Human in the loop
+question with the pool, affected account, job, attempts and fixed last-error kind.
+Older jobs label missing enqueue times and error diagnostics as unknown. The read
+requires current app management access and returns at most 100 remaining links.
+An incomplete read cannot establish recovery. The workflow observes cleanup; it
+does not retry detachment or delete saved accounts. Lost source access withdraws
+the question. Removing a member already blocks their native pool use before this
+physical cleanup completes.
+
+Each workflow's quiet hours include an explicit timezone. They defer the nudge while the workflow input remains pending. `mute` takes a UTC timestamp;
 `unmute` reverses it. Declining the form ends that proposed action until recovery.
 Deferring sets a wake time and the next scan rechecks the facts before asking
 again. Pausing a schedule stops future scans; existing waiting workflows remain.

@@ -26,10 +26,12 @@ import type { Checkpoint, Observation } from "../common/types.ts";
 import { startTick } from "../common/triggers.ts";
 import { storageTools } from "../common/storage.ts";
 
+import type { WorkflowName } from "../common/workflow-fields.ts";
+
 const input = object({ target: string(), tick: number() });
 const page = () => `/org/${encodeURIComponent(configuration.organization)}/apps`;
 function check(
-  name: string,
+  name: WorkflowName,
   description: string,
   read: (
     step: WorkflowStepContext<typeof requirements>,
@@ -86,17 +88,35 @@ const checkServiceBudget = workflow({ input }, async () => ({
 const tick = mutation(
   { approval: undefined, input: object({}) },
   async (ctx: MutationContext<typeof requirements>) => {
-    for (const name of ["checkPoolRuntime", "checkServiceErrors", "checkPublicAvailability"])
+    const checks = [
+      ["checkPoolRuntime", configuration.operator.runtime],
+      ["checkServiceErrors", configuration.operator.httpErrors],
+      ["checkPublicAvailability", configuration.operator.availability],
+    ] as const;
+    let started = 0;
+    for (const [name, source] of checks) {
+      if (source === null) continue;
       await startTick(ctx, name, name, 60000);
-    return { started: 3 };
+      started++;
+    }
+    return { started };
   },
 );
 const slowTick = mutation(
   { approval: undefined, input: object({}) },
   async (ctx: MutationContext<typeof requirements>) => {
-    for (const name of ["checkProductionRelease", "checkErrorSpike", "checkWorkflowHealth"])
+    const checks = [
+      ["checkProductionRelease", configuration.operator.release !== null],
+      ["checkErrorSpike", configuration.operator.errorCounts !== null],
+      ["checkWorkflowHealth", configuration.operator.workflowApps.length > 0],
+    ] as const;
+    let started = 0;
+    for (const [name, configured] of checks) {
+      if (!configured) continue;
       await startTick(ctx, name, name, 5 * 60000);
-    return { started: 3 };
+      started++;
+    }
+    return { started };
   },
 );
 export default defineApp(requirements, {

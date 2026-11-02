@@ -246,19 +246,26 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^independent departure cleanup|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^independent departure cleanup|^retained departure diagnostics migrate once|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
           --workers 1
       - name: Verify contributed accounts through Cloud
         working-directory: .upstream
         run: >-
           bun run e2e:cloud --test-name
-          "^members contribute to opted-in app collections|^pending contributions recheck|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
+          "^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
           --workers 1
+      - name: Verify editable workflow fields and departure questions
+        run: |
+          node e2e/recipe-checks.mjs .generated/alerting-checks/workflow-fields
+          node e2e/departure-recipe-checks.mjs .generated/alerting-checks/departures
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: contributed-accounts-e2e
           path: |
+            .generated/alerting-checks/*/report.json
+            .generated/alerting-checks/*/partial-checks.json
+            .generated/alerting-checks/*/failure.txt
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/cloud.log
