@@ -802,7 +802,7 @@
     {
       "identity": "basalt-oauth-declared-fields",
       "file": "0100-oauth-declared-fields.patch",
-      "content_sha256": "b7d9013be8812a0b009e9455eba4e2b3c914c77ea8f3a4d2389eb5bdd5bcbb9f",
+      "content_sha256": "cd0c83e3e7926aa76b14f61c0f31d7e0026ad3a4bfec5b17380fd01dd6182762",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
