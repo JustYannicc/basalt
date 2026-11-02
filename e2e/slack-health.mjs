@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { verifyMiroOAuth } from "./oauth-catalog-health.mjs";
 import { startSlackHealthFixture } from "./slack-upstream.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomBytes } from "node:crypto";
@@ -70,25 +71,23 @@ const program = Effect.gen(function* () {
   const session = yield* api.session(Redacted.make(actors.owner.cookies));
   const request = (method, path, data) =>
     Effect.map(
-      api
-        .request(session, method, path, data)
-        .pipe(
-          Effect.tapError((error) =>
-            Effect.promise(() =>
-              writeFile(
-                join(directory, "request-failure.json"),
-                JSON.stringify({
-                  method,
-                  path,
-                  reason: error.reason,
-                  status: error.status,
-                  response: error.response,
-                }),
-                { mode: 0o600 },
-              ),
+      api.request(session, method, path, data).pipe(
+        Effect.tapError((error) =>
+          Effect.promise(() =>
+            writeFile(
+              join(directory, "request-failure.json"),
+              JSON.stringify({
+                method,
+                path,
+                reason: error.reason,
+                status: error.status,
+                response: error.response,
+              }),
+              { mode: 0o600 },
             ),
           ),
         ),
+      ),
       (response) => {
         assert.equal(response.status, 200, `${method} ${path}: ${JSON.stringify(response.body)}`);
         return response.body;
@@ -144,8 +143,13 @@ const program = Effect.gen(function* () {
   const status = (health) => health.apps.find((a) => a.app === app.id)?.check?.status;
   for (const [index, id] of ids.entries()) {
     const health = yield* check(id);
+    record(
+      `failure record ${index + 1}`,
+      health.apps.find((a) => a.app === app.id)?.check?.failure,
+      undefined,
+    );
     record(`identity ${index + 1}`, health.info, {
-      externalId: `U${index + 1}`,
+      externalId: ["U0100FIRST1", "U0100OTHER2"][index],
       displayName: "Synthetic Person",
       username: "fixture-person",
       email: "person@example.test",
@@ -181,16 +185,29 @@ const program = Effect.gen(function* () {
     answer = { kind: "profile-error", error, status: http };
     const health = yield* check(ids[0]);
     record(`profile ${error} HTTP ${http}`, status(health), expected);
-    record(`profile failure ${error} HTTP ${http}`,
+    record(
+      `profile failure ${error} HTTP ${http}`,
       health.apps.find((a) => a.app === app.id)?.check?.failure,
       error === "unknown_fixture_failure"
         ? { phase: "app-threw", tag: "HostOperationFailed" }
-        : { phase: "vendor", tag: "ProviderError" });
+        : { phase: "vendor", tag: "ProviderError" },
+    );
   }
   for (const [name, body] of [
     ["missing profile", { ok: true }],
     ["null profile", { ok: true, profile: null }],
-    ["malformed profile fields", { ok: true, profile: { display_name: { bad: true }, real_name: 7, email: [], image_192: "javascript:invalid" } }],
+    [
+      "malformed profile fields",
+      {
+        ok: true,
+        profile: {
+          display_name: { bad: true },
+          real_name: 7,
+          email: [],
+          image_192: "javascript:invalid",
+        },
+      },
+    ],
   ]) {
     answer = { kind: "profile-body", body };
     record(name, status(yield* check(ids[0])), "healthy");
@@ -198,7 +215,7 @@ const program = Effect.gen(function* () {
   answer = { kind: "optional" };
   const optional = yield* check(ids[0]);
   record("optional profile fields", optional.info, {
-    externalId: "U1",
+    externalId: "U0100FIRST1",
     displayName: "Synthetic Real",
     username: "fixture-person",
     profileUrl: "https://fixture.slack.com/",
@@ -216,13 +233,25 @@ const program = Effect.gen(function* () {
     record(
       `saved account ${index + 1} retained`,
       (yield* check(id)).info?.externalId,
-      `U${index + 1}`,
+      ["U0100FIRST1", "U0100OTHER2"][index],
     );
+  const miroBytes = yield* Effect.promise(() => readFile(join(root, "src/catalog/miro.json")));
+  const miro = yield* verifyMiroOAuth({
+    request,
+    prefix,
+    fixtureOrigin: fixture.origin,
+    source: JSON.parse(miroBytes),
+  });
+  record("Miro OAuth remains healthy", miro.check?.status, "healthy");
+  record("Miro OAuth keeps public identity", miro.info, {
+    externalId: "M0100FIXTURE",
+    username: "Miro fixture",
+  });
   record(
     "profile request identifies auth.test user",
     calls
       .filter((c) => c.path.endsWith("users.profile.get"))
-      .every((c) => ["U1", "U2"].includes(c.user) && c.method === "GET"),
+      .every((c) => ["U0100FIRST1", "U0100OTHER2"].includes(c.user) && c.method === "GET"),
     true,
   );
   record(
@@ -234,6 +263,7 @@ const program = Effect.gen(function* () {
     results,
     sourceSha256: createHash("sha256").update(snapshotBytes).digest("hex"),
     fixtureMetadataOnly: true,
+    miroSourceSha256: createHash("sha256").update(miroBytes).digest("hex"),
     beforeSha256: createHash("sha256").update(beforeBytes).digest("hex"),
   };
 });

@@ -6,12 +6,29 @@ import { createServer } from "node:http";
 export async function startSlackHealthFixture(getAnswer, calls) {
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
-    if (url.pathname === "/oauth/v2/authorize") {
+    if (["/oauth/v2/authorize", "/oauth/authorize"].includes(url.pathname)) {
       const callback = new URL(url.searchParams.get("redirect_uri"));
       callback.searchParams.set("state", url.searchParams.get("state"));
       callback.searchParams.set("code", url.searchParams.get("fixture_user"));
       response.writeHead(302, { location: callback.href });
       response.end();
+      return;
+    }
+    if (url.pathname === "/v1/oauth/token") {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          access_token: "synthetic-miro",
+          token_type: "bearer",
+          user_id: "M0100FIXTURE",
+        }),
+      );
+      return;
+    }
+    if (url.pathname === "/v1/oauth-token") {
+      assert.equal(request.headers.authorization, "Bearer synthetic-miro");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ user: { id: "M0100FIXTURE", name: "Miro fixture" } }));
       return;
     }
     if (url.pathname === "/api/oauth.v2.access") {
@@ -21,7 +38,19 @@ export async function startSlackHealthFixture(getAnswer, calls) {
       assert.ok(["synthetic-one", "synthetic-two"].includes(code));
       response.setHeader("content-type", "application/json");
       response.end(
-        JSON.stringify({ ok: true, authed_user: { access_token: code, token_type: "user" } }),
+        JSON.stringify({
+          ok: true,
+          app_id: "A0100FIXTURE",
+          authed_user: {
+            id: code === "synthetic-one" ? "U0100FIRST1" : "U0100OTHER2",
+            access_token: code,
+            token_type: "user",
+            scope: "users:read,users.profile:read",
+          },
+          team: { id: "T0100FIXTURE", name: "Fixture workspace" },
+          enterprise: null,
+          is_enterprise_install: false,
+        }),
       );
       return;
     }
@@ -49,7 +78,7 @@ export async function startSlackHealthFixture(getAnswer, calls) {
       response.end(
         JSON.stringify({
           ok: true,
-          user_id: token === "synthetic-one" ? "U1" : "U2",
+          user_id: token === "synthetic-one" ? "U0100FIRST1" : "U0100OTHER2",
           user: "fixture-person",
           url: "https://fixture.slack.com/",
         }),
