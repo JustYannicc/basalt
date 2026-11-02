@@ -721,7 +721,7 @@
     {
       "identity": "basalt-production-ops",
       "file": "0078-production-ops.patch",
-      "content_sha256": "9bf2eddacc423ce5e6f16fb54b61a0ee78c162fc0a67f7973bf131c06e1a67b0",
+      "content_sha256": "edc925cfe023c780b374f5f074eeba4b949b44f9a1c75208e6937cbee330541a",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": true,

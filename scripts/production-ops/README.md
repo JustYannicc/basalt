@@ -27,6 +27,11 @@ Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key 
 - `accounts`, `pools`, `app-links`, `retired-tokens`, `departures`, `workflows`,
   `schedules`, `reporters` or `receipts`.
 
+`retired-tokens` uses the same recorded pool-app, personal placement and exact
+provider provenance as host-managed pool-access rows. Labels do not identify
+these accounts. Before a retirement GO, compare every dry-run account ID with
+the corresponding visible Accounts row.
+
 The workflow's artifact `production-ops-<run ID>` contains `operation.json` and a
 safe `summary.json`. Inventories and backups are encrypted before leaving the
 runtime; do not paste their decrypted contents into public logs or issues.
@@ -67,7 +72,9 @@ the target, database, deployed source commit, module revision, exact request,
 row keys and before/after hashes, plus the encrypted backup checksum.
 The organization is part of the signed request and plan hash. The runner checks
 declared row ownership before apply and before verification, including replay.
-Writes that move a row outside the organization roll back. Global auth and
+Row keys must match the table's stable identity exactly. App-link identities include
+the nullable subject. Foreign credential, app, account and subject references are
+refused. Writes that move a row outside the organization roll back. Global auth and
 provider rows may be backed up but cannot be changed by an organization repair.
 
 The successful workflow upload must finish before apply. Download and decrypt
@@ -98,3 +105,12 @@ before deciding what to do next. A repeated, still-valid committed plan returns
 its receipt and verifies again without replaying its writes. If the deployment
 or plan validity changed, use the saved receipt and backup to prepare a reviewed
 follow-up. Do not invent a new plan merely to repeat an uncertain mutation.
+
+## Prove the migration boundary locally
+
+After preparing the pinned upstream and its E2E assets, run
+`node scripts/production-ops/prove-scope.ts`. It temporarily registers a synthetic
+migration while the normal managed Cloud suite exercises signed dry-run, apply,
+verification and replay requests. It restores the original registry and removes
+the fixture module afterward. The proof module is never part of a carried patch
+or a deployment.
