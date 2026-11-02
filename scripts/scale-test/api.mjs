@@ -11,7 +11,12 @@ export async function cf(path, method = "GET", body) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: controlSignal(),
   });
   if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`Cloudflare ${method} failed (${response.status})`);
+  if (!response.ok) {
+    const collection = ["containers/applications", "workers/durable_objects/namespaces", "workers/scripts",
+      "workers/subdomain", "hyperdrive/configs", "mtls_certificates"].find((name) =>
+      path === name || path.startsWith(`${name}/`) || path.startsWith(`${name}?`)) ?? "request";
+    throw new Error(`Cloudflare ${method} ${collection} failed (${response.status})`);
+  }
   const data = await response.json();
   if (data.success === false) throw new Error("Cloudflare rejected the operation");
   return data;
@@ -43,15 +48,15 @@ export function publicInventory(resources) {
   }]));
 }
 export async function inventory() {
-  const [applications, namespaces, scripts, kv, drives, certificates, cluster] = await Promise.all([
+  const [applications, namespaces, scripts, drives, certificates, cluster] = await Promise.all([
     list("containers/applications"), list("workers/durable_objects/namespaces"), list("workers/scripts"),
-    list("storage/kv/namespaces"), list("hyperdrive/configs"), list("mtls_certificates"), pg(),
+    // The isolated stack uses runner-local state and declares no KV namespace.
+    list("hyperdrive/configs"), list("mtls_certificates"), pg(),
   ]);
   return {
     applications: applications.filter((row) => owned(row.name)),
     namespaces: namespaces.filter((row) => row.script === worker || owned(row.name)),
     scripts: scripts.filter((row) => owned(row.id)),
-    kv: kv.filter((row) => owned(row.title)),
     drives: drives.filter((row) => owned(row.name)),
     certificates: certificates.filter((row) => owned(row.name)),
     database: cluster ? [{ name: database }] : [],

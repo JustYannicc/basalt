@@ -46,7 +46,7 @@ test("synthetic mock completes Chat, Responses and Messages SSE through HTTP", a
   assert.equal(state.requests, 3); assert.equal(state.completed, 3); assert.equal(state.errors, 0);
 });
 
-test("expiry reclaims partial resources without a Worker and publishes only names and counts", async () => {
+test("expiry reclaims partial resources without unused KV access and publishes only names and counts", async () => {
   const { mkdtempSync, readFileSync, readdirSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -60,6 +60,7 @@ test("expiry reclaims partial resources without a Worker and publishes only name
   });
   assert.equal(result.status, 0, result.stderr);
   const operations = readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(!operations.some((row) => row.path.includes("/storage/kv/")));
   assert.ok(operations.some((row) => row.method === "DELETE" && row.host === "api.planetscale.com"));
   assert.ok(operations.some((row) => row.method === "DELETE" && row.path.endsWith("/fixture-app")));
   assert.ok(!operations.some((row) => row.method === "DELETE" && row.path.includes("foreign-app")));
@@ -103,4 +104,23 @@ test("a delayed run leaves all sizes unmeasured and starts no traffic or resize"
   const stopped = JSON.parse(readFileSync(join(directory, "results", "size-budget-stop.json")));
   assert.deepEqual(stopped.unmeasuredSizes, ["lite", "basic", "standard-2"]);
   assert.ok(stopped.remainingMs <= 5 * 60_000);
+});
+
+test("provider refusals identify the collection without publishing credentials or remote bodies", async () => {
+  const { mkdtempSync, readFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const directory = mkdtempSync(join(tmpdir(), "scale-refusal-"));
+  const result = spawnSync(process.execPath, ["--import", "./e2e/scale-provider-fixture.mjs", "scripts/scale-test/run.mjs"], {
+    encoding: "utf8", env: { PATH: process.env.PATH, GITHUB_ACTIONS: "true", GITHUB_REF: "refs/heads/main",
+      SCALE_STAGE: "scale-180", SCALE_MODE: "deploy", SCALE_OUTPUT: join(directory, "results"),
+      SCALE_FIXTURE_REFUSAL: "true", SCALE_FIXTURE_CALLS: join(directory, "calls.jsonl"),
+      CLOUDFLARE_ACCOUNT_ID: "private-account-sentinel", CLOUDFLARE_API_TOKEN: "private-token-sentinel" },
+  });
+  assert.notEqual(result.status, 0);
+  const failure = readFileSync(join(directory, "results", "failure.json"), "utf8");
+  assert.match(failure, /Cloudflare GET containers\/applications failed \(401\)/);
+  assert.doesNotMatch(failure + result.stderr, /private-(account|token|provider-response|authorization)-sentinel/);
+  const operations = readFileSync(join(directory, "calls.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(operations.every((row) => row.method === "GET"));
 });
