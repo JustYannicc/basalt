@@ -1,8 +1,7 @@
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
-index ebfd0ac..6af2407 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
-@@ -177,7 +177,29 @@ const app = { organization: OrganizationReference, app: AppId };
+@@ -178,7 +178,29 @@
  const requirement = { ...app, requirement: Schema.NonEmptyString };
  const link = { ...requirement, account: AccountId };
  const prefix = "/api/organizations/:organization/apps/:app/accounts";
@@ -32,14 +31,14 @@ index ebfd0ac..6af2407 100644
    AccountAcquisitionUnavailable,
    AccountProvisioned,
    InteractiveRetirementBusy,
-@@ -307,6 +329,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
+@@ -308,6 +330,7 @@
  const [appCreate, appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
  const [userCreate, userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
  export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
 +  .add(methods)
-   .add(appCreate)
-   .add(appList)
-   .add(appGet)
+   .add(
+     HttpApiEndpoint.get("departures", `${prefix}/departures`, {
+       params: app,
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
 index 3a3b99d..c06e63e 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
@@ -65,10 +64,9 @@ index 3a3b99d..c06e63e 100644
      return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
        accountDestination(intent.destination),
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index c367a7e..fa12e0f 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
-@@ -46,6 +46,10 @@ import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
+@@ -47,6 +47,10 @@
  import { canDeleteAccount, replacingAccounts } from "./interactive-retirement.ts";
  import { connectAccount, connectionUrl } from "./accounts.ts";
  import { createRequirementAccount } from "./requirement-account-creation.ts";
@@ -79,7 +77,7 @@ index c367a7e..fa12e0f 100644
  import { accountOAuthRedirectUri } from "./auth.ts";
  import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
  import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
-@@ -380,6 +384,16 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+@@ -381,6 +385,16 @@
    Effect.gen(function* () {
      const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
      return handlers
@@ -93,10 +91,10 @@ index c367a7e..fa12e0f 100644
 +          );
 +        }),
 +      )
+       .handle("departures", ({ params }) => contributedDepartures(params.app))
        .handle("appCreate", ({ params, payload }) =>
          createRequirementAccount("app", params, payload),
-       )
-@@ -417,9 +431,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+@@ -419,9 +433,10 @@
            const owner = yield* currentOwner;
            const executor = yield* Effect.flatten(HostedExecutor);
            yield* requireRequirementAccess({ ...params, scope: "app" });
@@ -109,7 +107,7 @@ index c367a7e..fa12e0f 100644
            if (yield* isContributed(yield* policyDatabase, params.app, params.requirement)) {
              const legacy = yield* executor[InteractiveHost].binding({
                owner,
-@@ -514,9 +529,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
+@@ -516,9 +531,10 @@
            const user = yield* caller;
            const owner = yield* currentOwner;
            const executor = yield* Effect.flatten(HostedExecutor);
