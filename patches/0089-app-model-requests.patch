@@ -6484,3 +6484,89 @@ diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/s
    sandbox:
      "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
  } as const;
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -147,7 +147,7 @@
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+           reason:
+-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25. Declare a supported apps version.",
++            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26. Declare a supported apps version.",
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(
+diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+--- a/e2e/tests/contributed-departure-observability.spec.ts
++++ b/e2e/tests/contributed-departure-observability.spec.ts
+@@ -9,6 +9,7 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { RuntimeLive } from "../support/platform.ts";
++import { beforeHostedModelBindings } from "../support/profile-removal-rollback.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+
+@@ -142,6 +143,7 @@
+         const account = yield* f.connect(f.actors.member, "app", "shared", "Retained pool account");
+         // The previous host stored this job before migration 13 and could not retain its diagnostics.
+         yield* legacyStorage([
++          ...beforeHostedModelBindings(),
+           { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
+           { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
+           { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 13" },
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -12,12 +12,20 @@
+     { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+   ] as const;
+
++/** Roll back the model-binding objects and journal together before replaying earlier hosted steps. */
++export const beforeHostedModelBindings = () =>
++  [
++    { sql: "DROP TABLE hosted_model_bindings" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
++  ] as const;
++
+ /**
+  * The hosted migrator starts after its greatest recorded id. Remove later objects and journal
+  * rows together before making observation step 10 pending again.
+  */
+ export const beforeHostedAccountObservations = () =>
+   [
++    ...beforeHostedModelBindings(),
+     { sql: "DROP INDEX hosted_account_connection_identity" },
+     { sql: "DROP TRIGGER hosted_contributed_member_departure ON member" },
+     { sql: 'DROP TRIGGER hosted_contributed_user_departure ON "user"' },
+diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
+--- a/e2e/tests/account-observation-migration.spec.ts
++++ b/e2e/tests/account-observation-migration.spec.ts
+@@ -82,6 +82,7 @@
+           { migration_id: 11 },
+           { migration_id: 12 },
+           { migration_id: 13 },
++          { migration_id: 14 },
+         ]);
+         expect(diagnostics).toEqual([{ column_name: "last_error" }, { column_name: "queued_at" }]);
+         yield* evidence.json("upgraded-observation-and-departure-layout.json", {
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes steps 9 through 12 from the ledger and their objects, and writes the profiles an
++ * fixture removes steps 9 through 14 from the ledger and their objects, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -63,6 +63,7 @@
+   "contributed_departures",
+   "account_identity_index",
+   "contributed_departure_observability",
++  "model_bindings",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
