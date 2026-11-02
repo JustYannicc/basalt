@@ -794,6 +794,19 @@ index 4502a87..2b9c6c3 100644
    catalogOfficialApps: {
      fixtures: "actors",
      file: "catalog-official-apps.spec.ts",
+diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
+index 52b8423..7420f1c 100644
+--- a/e2e/tests/contributed-app-accounts.spec.ts
++++ b/e2e/tests/contributed-app-accounts.spec.ts
+@@ -111,7 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it
+             page.waitForResponse(
+               (response) =>
+                 response.request().method() === "POST" &&
+-                /\/connections\/[^/]+\/submit$/.test(new URL(response.url()).pathname),
++                new URL(response.url()).pathname.endsWith(`/apps/${f.app.id}/accounts/app/shared`),
+             ),
+             page.getByRole("dialog").getByRole("button", { name: "Continue", exact: true }).click(),
+           ]).then(([response]) =>
 diff --git a/e2e/tests/provider-apps.spec.ts b/e2e/tests/provider-apps.spec.ts
 new file mode 100644
 index 0000000..3c56f43

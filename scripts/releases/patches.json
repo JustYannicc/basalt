@@ -721,7 +721,7 @@
     {
       "identity": "basalt-provider-apps-ui",
       "file": "0082-provider-apps-ui.patch",
-      "content_sha256": "255c3d7355e26f1d58dff7c511935d6636ad878c890d9abbd65cc1cc91df4a92",
+      "content_sha256": "fe6c8031c378da29f6dd1dc6da32efffd31e66dcf3d24621372c63823da0a2f5",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,

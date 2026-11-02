@@ -33,6 +33,16 @@ model {
     technology "Logo service the dashboard already uses for provider icons"
     metadata { hosts "integrations.sh" }
   }
+  chatSubscriptionBrand = adapter "Chat subscription branding" {
+    #external
+    technology "OpenAI brand assets"
+    metadata { hosts "openai.com" }
+  }
+  assistantSubscriptionBrand = adapter "Assistant subscription branding" {
+    #external
+    technology "Anthropic brand assets"
+    metadata { hosts "www.anthropic.com" }
+  }
   connectorIdentity = adapter "Connector identity" {
     #external
     technology "Google OAuth"
@@ -58,6 +68,8 @@ model {
     technology "Slack MCP and OAuth"
     metadata { hosts "slack.com|mcp.slack.com" }
   }
+  basalt.catalog -[sync]-> chatSubscriptionBrand "publish the provider favicon URL for the browser to load"
+  basalt.catalog -[sync]-> assistantSubscriptionBrand "publish the provider favicon URL for the browser to load"
   basalt.catalog -[sync]-> catalogSource "read official index and app sources"
   basalt.build -[sync]-> catalogSource "read official workspace catalog snapshots for the OAuth proof"
   basalt.build -[sync]-> connectorIdentity "read public workspace identity metadata for the OAuth proof"
