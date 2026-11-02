@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { canonical, hash } from "./production-ops/artifact.ts";
 import { productionOperation, type OpsInput } from "./production-ops/client.ts";
 import { openEnvelope } from "../src/pool/token.ts";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { OperationFailure } from "./production-ops/failure.ts";
 
 const target = "https://operator.example.test";
 const signingKey = "ab".repeat(32);
@@ -81,7 +86,88 @@ test("a refused response never exposes its private body or repeats the mutation"
   await assert.rejects(
     productionOperation({ ...request, previous }, send),
     (error: unknown) =>
-      error instanceof Error && error.message === "Production operation refused with HTTP 409",
+      error instanceof OperationFailure &&
+      error.message === "Production operation failed" &&
+      error.receipt.category === "unknown" &&
+      error.receipt.phase === "request" &&
+      error.receipt.httpStatus === 409,
   );
   assert.equal(calls, 1);
+});
+
+const poison = "DO-NOT-RETAIN-password-response-credential";
+
+function run(response?: unknown) {
+  const directory = mkdtempSync(join(tmpdir(), "production-ops-failure-"));
+  const fixture = join(directory, "fetch.mjs");
+  writeFileSync(
+    fixture,
+    `globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(response))}, {status: 409});`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ["--import", fixture, "scripts/production-ops/run.ts"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_EVENT_NAME: "workflow_dispatch",
+        POOL_APP_SIGNING_KEY: response === undefined ? poison : "ab".repeat(32),
+        OPS_ACTION: "inventory",
+        OPS_SELECTION: "organizations",
+        OPS_REQUEST: '{"organization":"synthetic-organization"}',
+        OPS_RECIPIENT: "c3ludGhldGlj",
+        OPS_OUTPUT_DIRECTORY: directory,
+        GITHUB_STEP_SUMMARY: join(directory, "step-summary"),
+      },
+    },
+  );
+  return { directory, result };
+}
+
+test("a failed operator CLI saves a safe receipt before exiting", () => {
+  const { directory, result } = run();
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Production operation failed/);
+    const text = readFileSync(join(directory, "failure.json"), "utf8");
+    assert.deepEqual(JSON.parse(text), {
+      format: "basalt-production-ops-failure-v1",
+      category: "config",
+      phase: "config",
+    });
+    assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("runtime refusals retain only allowlisted diagnostic fields", () => {
+  const { directory, result } = run({
+    error: poison,
+    failure: {
+      format: "basalt-production-ops-failure-v1",
+      category: "sql",
+      phase: "sql",
+      sqlStateClass: "42",
+      message: poison,
+      credentials: poison,
+    },
+  });
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Production operation failed/);
+    const text = readFileSync(join(directory, "failure.json"), "utf8");
+    assert.deepEqual(JSON.parse(text), {
+      format: "basalt-production-ops-failure-v1",
+      category: "sql",
+      phase: "sql",
+      sqlStateClass: "42",
+      httpStatus: 409,
+    });
+    assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -780,6 +780,15 @@
       "upstream_pull_request": null,
       "database_sensitive": false,
       "workflow_sensitive": false
+    },
+    {
+      "identity": "basalt-production-ops-diagnostics",
+      "file": "0095-production-ops-diagnostics.patch",
+      "content_sha256": "d6bd7d08a659040f869bb7734b85efa3ad93ae265b0e356fb7f3f119de09ab7a",
+      "kind": "overlay",
+      "upstream_pull_request": null,
+      "database_sensitive": false,
+      "workflow_sensitive": true
     }
   ],
   "pool_carries": {
