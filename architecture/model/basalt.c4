@@ -192,6 +192,8 @@ model {
       description """
         Uses the released node WebSocket session pinning for Home-owned model catalogs.
         Continuations on the same socket retain Home authority without a node-local model registration.
+        Metadata-only usage keeps the captured client identity until projection produces its fingerprint,
+        so Home can attribute records and charges without retaining credentials in the reporter or queue.
         The image build verifies this through the actual Responses handler before plugin probes.
         Projects application logs before the node formats or queues them and independently before
         control-plane ingestion prints or stores them. Keeps a fixed count line, closed severity,

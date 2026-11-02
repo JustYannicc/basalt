@@ -825,10 +825,10 @@ index cdf1264d..a1504182 100644
  	// Check the immutable policy before accessing the pooled request context.
 diff --git a/internal/runtime/executor/helps/metadata_only_test.go b/internal/runtime/executor/helps/metadata_only_test.go
 new file mode 100644
-index 00000000..9a566304
+index 00000000..91ebc25e
 --- /dev/null
 +++ b/internal/runtime/executor/helps/metadata_only_test.go
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,144 @@
 +package helps
 +
 +import (
@@ -837,6 +837,7 @@ index 00000000..9a566304
 +	"net/http/httptest"
 +	"strings"
 +	"testing"
++	"time"
 +
 +	"github.com/gin-gonic/gin"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -925,8 +926,55 @@ index 00000000..9a566304
 +		t.Fatal("client model text bypassed the Home selection")
 +	}
 +}
++
++type metadataOnlyPublishedUsage struct {
++	requestID string
++	received  chan coreusage.Record
++}
++
++func (p metadataOnlyPublishedUsage) HandleUsage(_ context.Context, record coreusage.Record) {
++	if record.RequestID == p.requestID {
++		p.received <- record
++	}
++}
++
++func TestMetadataOnlyPublishedReporterPreservesCapturedClientAttribution(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	const key = "synthetic-original-client-key"
++	const account = "metadata-only-published-account"
++	const model = "metadata-only-home-model"
++	for _, failed := range []bool{false, true} {
++		ctx := coreusage.WithCapturedIdentity(context.Background(), key, "home")
++		ctx = coreusage.WithSelectedModel(ctx, account, model)
++		reporter := NewUsageReporter(ctx, "home-provider", model, &cliproxyauth.Auth{ID: account})
++		if reporter.apiKey != "" {
++			t.Fatal("reporter retained a client credential")
++		}
++		received := make(chan coreusage.Record, 1)
++		coreusage.RegisterNamedPlugin(t.Name(), metadataOnlyPublishedUsage{reporter.RequestID(), received})
++		if failed {
++			reporter.PublishFailure(ctx, &metadataOnlyResponseError{})
++		} else {
++			reporter.Publish(ctx, coreusage.Detail{InputTokens: 2, OutputTokens: 1, TotalTokens: 3})
++		}
++		select {
++		case record := <-received:
++			if record.APIKey != diagnostics.FingerprintAPIKey(key) {
++				t.Fatal("published usage lost the original client key fingerprint")
++			}
++			if record.Model != model || record.AuthID != account || record.Failed != failed {
++				t.Fatal("published usage lost Home selection or request outcome")
++			}
++			if !failed && record.Detail.TotalTokens != 3 {
++				t.Fatal("published usage lost token accounting")
++			}
++		case <-time.After(5 * time.Second):
++			t.Fatal("reporter did not publish usage")
++		}
++	}
++}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index a037cba6..f348a1da 100644
+index a037cba6..13a9dd67 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
 @@ -19,6 +19,7 @@ import (
@@ -1093,7 +1141,17 @@ index a037cba6..f348a1da 100644
  	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
  	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
  }
-@@ -717,6 +760,9 @@ func failFromErrors(errs ...error) usage.Failure {
+@@ -610,7 +653,8 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
+ 
+ func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
+ 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+-	if r != nil {
++	// Metadata-only reporters omit credentials; preserve the ingress snapshot until redaction.
++	if r != nil && !diagnostics.MetadataOnlyEnabled() {
+ 		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
+ 	}
+ 	usage.PublishRecord(ctx, record)
+@@ -717,6 +761,9 @@ func failFromErrors(errs ...error) usage.Failure {
  		if err == nil {
  			continue
  		}
@@ -1103,7 +1161,7 @@ index a037cba6..f348a1da 100644
  		body := strings.TrimSpace(err.Error())
  		type responseBodyProvider interface {
  			ResponseBody() []byte
-@@ -1007,6 +1053,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
+@@ -1007,6 +1054,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
  	if b == nil || !ok {
  		return
  	}
@@ -1115,7 +1173,7 @@ index a037cba6..f348a1da 100644
  	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
  	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) || hasStructuredUsageDetail(detail) {
  		preservedTier := b.detail.ResponseServiceTier
-@@ -1208,7 +1259,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
+@@ -1208,7 +1260,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
  	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
  	hasToolCallsCandidate := bytes.Contains(payload, openAIStreamToolCallsMarker)
  	hasImageCompletedCandidate := bytes.Contains(payload, openAIStreamImageDoneMarker)
@@ -1124,7 +1182,7 @@ index a037cba6..f348a1da 100644
  		if model, _ := extractGenericResponseModelEvent(payload); model != "" {
  			b.responseModel = model
  		}
-@@ -1350,7 +1401,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+@@ -1350,7 +1402,7 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
  		return
  	}
  	payload := jsonPayload(line)
