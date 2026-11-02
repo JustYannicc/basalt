@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "23e994cbc7b1c0d0b5aecb8106881f17d671b21ac556dac1f50782d99c9e89b2" }
+    metadata { bindings "16cdb0e13a77723849509eaafe88e419444a2f40d994383aae6eec5e2eb04b37" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -214,6 +214,13 @@ deployment {
       worker resource-e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395 "Dashboard" {
         app = instanceOf basalt.toolsGateway {
           metadata { resource "resource-e7c89213092e1b5d4b398dfd72e3626be968372181a1e0bd1898041949d6c395" }
+        }
+      }
+    }
+    zone group-e0aa1def59085a8a "Single sign-on service" {
+      worker resource-788034ee557d123216961f26810903c7b395cae8fc8db771f10e716503df971c "Sso" {
+        app = instanceOf basalt.toolsGateway.ssoService {
+          metadata { resource "resource-788034ee557d123216961f26810903c7b395cae8fc8db771f10e716503df971c" }
         }
       }
     }
@@ -441,6 +448,16 @@ views {
   deployment view deployment_group_b4510e9c00e2f70d {
     title "Basalt/Deployment/Tools gateway"
     include deployed.group-b4510e9c00e2f70d.*
+    autoLayout TopBottom
+  }
+  deployment view worker_resource_788034ee557d123216961f26810903c7b395cae8fc8db771f10e716503df971c {
+    title "Basalt/Deployment/Single sign-on service/Sso"
+    include deployed.group-e0aa1def59085a8a.resource-788034ee557d123216961f26810903c7b395cae8fc8db771f10e716503df971c.**
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_e0aa1def59085a8a {
+    title "Basalt/Deployment/Single sign-on service"
+    include deployed.group-e0aa1def59085a8a.*
     autoLayout TopBottom
   }
   deployment view deployment_group_0492fe9825ed3b1f {
