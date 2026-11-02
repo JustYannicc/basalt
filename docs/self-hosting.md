@@ -105,7 +105,7 @@ Create a GitHub OAuth App named after `brand.oauthAppName` (Signalbox) with home
 
 ## App UI hosting
 
-App screens open inside their dashboard page’s **App** tab. Apps with a deployed UI select that tab by default; tool-only apps keep Overview. Explicit tab and tool links keep their destination. **Open in new tab** remains available. The Apps list marks apps with an App screen.
+App screens open inside their dashboard page’s **App** tab. Apps with a deployed UI select that tab by default; tool-only apps keep Overview. Explicit tab and tool links keep their destination. **Open in new tab** opens the app alone, full-window, at the dashboard's `/org/<organization>/apps/<app>/window` address, so the app's own origin never shows. The Apps list marks apps with an App screen.
 
 [brand.ts](../brand.ts) enables hosting with `scheme: "opaque"`, `embedded: true` and `origin: "https://signalbox.run"`. Deployment sets `EXECUTOR_APP_UI_BASE_URL`, `EXECUTOR_APP_UI_ADDRESS_SCHEME=opaque` and `EXECUTOR_APP_UI_EMBEDDED=true`. The carried patch defaults upstream to `nested` and embedding off. `EXECUTOR_APP_UI_MANAGED_ROUTE=false` leaves routing to Basalt’s router.
 
