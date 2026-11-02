@@ -87,6 +87,7 @@ test("a refused response never exposes its private body or repeats the mutation"
     productionOperation({ ...request, previous }, send),
     (error: unknown) =>
       error instanceof OperationFailure &&
+      error.message === "Production operation failed" &&
       error.receipt.category === "unknown" &&
       error.receipt.phase === "request" &&
       error.receipt.httpStatus === 409,
