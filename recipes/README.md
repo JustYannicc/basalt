@@ -102,7 +102,10 @@ and reports `delivery-uncertain`; do not retry it or switch channels blindly.
 Reconcile it using the provider's receipt/history. `retryRefusedDelivery` works
 only after an identified refusal before execution, never after an ambiguous send.
 Saving an answer is shown separately from a verified healthy resource.
-The send callback commits its submission claim before calling the connector. If
+The send callback commits its submission claim before calling the connector.
+That transaction requires the callback's configuration revision to match both
+the active build and stored consent. A reconfigure after preflight refuses the
+old callback before it submits; a safe retry requires the owner's normal approval. If
 that callback replays after a lost receipt, it cannot acquire another submission.
 An interrupted attempt stays uncertain even if it stopped before sending. A
 replayed preflight refusal cannot change an earlier submission into a safe retry.

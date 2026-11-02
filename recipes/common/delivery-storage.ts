@@ -53,23 +53,32 @@ export const claimNudge = mutation(
 export const beginDelivery = mutation(
   {
     approval: undefined,
-    input: object({ key: string(), episode: number(), question: string(), attempt: string() }),
+    input: object({
+      key: string(),
+      episode: number(),
+      question: string(),
+      attempt: string(),
+      expectedRevision: string(),
+    }),
   },
   async (ctx: Writer, input) => {
     const revision = await configurationRevision();
-    let acquired = false;
+    let submission: boolean | "configuration-changed" = false;
     write(ctx, input.key, (current, tx) => {
       const consent = tx
         .exec<{ configuration_revision: string; delivery_enabled: number }>(
           "SELECT configuration_revision, delivery_enabled FROM controls WHERE id = 1",
         )
         .one();
+      // A retained callback cannot borrow consent from the active build after its preflight.
       if (
-        consent.configuration_revision !== revision ||
-        consent.delivery_enabled !== 1 ||
-        current.declined ||
-        current.mutedUntil > Date.now()
-      )
+        input.expectedRevision !== revision ||
+        consent.configuration_revision !== input.expectedRevision
+      ) {
+        submission = "configuration-changed";
+        return current;
+      }
+      if (consent.delivery_enabled !== 1 || current.declined || current.mutedUntil > Date.now())
         return current;
       if (
         !current.open ||
@@ -78,7 +87,7 @@ export const beginDelivery = mutation(
         current.notified !== "claimed"
       )
         return current;
-      acquired = true;
+      submission = true;
       return {
         ...current,
         revision: current.revision + 1,
@@ -87,7 +96,7 @@ export const beginDelivery = mutation(
         deliveryAt: Date.now(),
       };
     });
-    return acquired;
+    return submission;
   },
 );
 export const deliveryResult = mutation(

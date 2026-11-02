@@ -79,13 +79,14 @@ export async function nudge(
     // The provider may accept a send even when its HTTP response or workflow receipt is lost.
     let attempt: string | undefined;
     try {
+      const expectedRevision = await configurationRevision();
       const consent = record(await tool(step, { app: question.app, tool: "settings", input: {} }));
       const latest = record(
         await tool(step, { app: question.app, tool: "checkpoint", input: { key } }),
       );
       if (
         consent?.deliveryEnabled !== true ||
-        consent.revision !== (await configurationRevision()) ||
+        consent.revision !== expectedRevision ||
         latest?.open !== true ||
         record(latest.question)?.id !== question.id ||
         typeof latest.mutedUntil !== "number" ||
@@ -105,10 +106,17 @@ export async function nudge(
         {
           app: question.app,
           tool: "beginDelivery",
-          input: { key, episode: previous.episode, question: question.id, attempt: candidate },
+          input: {
+            key,
+            episode: previous.episode,
+            question: question.id,
+            attempt: candidate,
+            expectedRevision,
+          },
         },
         "mutation",
       );
+      if (acquired === "configuration-changed") return { status: "refused" };
       if (acquired !== true) return { status: "uncertain" };
       attempt = candidate;
       const result = await tool(

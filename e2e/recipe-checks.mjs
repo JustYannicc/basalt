@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Effect } from "effect";
 import { recipeHarness, runtime, root, appsManifest, until } from "./recipes/harness.mjs";
+import { verifySubmissionRevision } from "./recipes/submission-revision.mjs";
 import { verifyWorkflowIsolation } from "./recipes/workflow-isolation.mjs";
 import { verifyScanHealth } from "./recipes/scan-health.mjs";
 import { verifyWatchingWorkflow } from "./recipes/watching-workflow.mjs";
@@ -186,6 +187,7 @@ export default defineApp({}, { tools: router({ send }) });`,
   yield* Effect.promise(() => accepted).pipe(Effect.timeout("15 seconds"));
   checked("second episode reaches its channel once", fixture.sends.length, 2);
   const submitted = yield* checkpoint();
+  const submissionConsent = yield* h.call(copy.id, "settings");
   const refused = yield* Effect.all(
     [1, 2].map(() =>
       h.call(
@@ -196,6 +198,7 @@ export default defineApp({}, { tools: router({ send }) });`,
           episode: submitted.episode,
           question: submitted.question.id,
           attempt: crypto.randomUUID(),
+          expectedRevision: submissionConsent.revision,
         },
         "mutation",
       ),
@@ -286,6 +289,14 @@ export default defineApp({}, { tools: router({ send }) });`,
     managementKey: key.key,
   });
   yield* verifyWorkflowIsolation({
+    h,
+    deploy,
+    fixture,
+    checked,
+    managementKey: key.key,
+    directory,
+  });
+  yield* verifySubmissionRevision({
     h,
     deploy,
     fixture,
