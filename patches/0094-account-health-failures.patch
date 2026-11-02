@@ -1,7 +1,7 @@
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8246,6 +8246,26 @@
+@@ -8265,6 +8265,26 @@
        cloud: na("Uses process-owned product registrations and synthetic native pool opt-in."),
      },
    },
@@ -32,9 +32,13 @@ diff --git a/e2e/tests/account-health-failures.spec.ts b/e2e/tests/account-healt
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/account-health-failures.spec.ts
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,247 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { createServer } from "node:http";
++import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
++import { serverControl } from "../support/server-control.ts";
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, Schedule, Schema } from "effect";
++import { Deferred, Effect, Fiber, Layer, Schedule, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
 +import { Api, body } from "../support/api.ts";
 +import { Resource } from "../support/contracts.ts";
@@ -58,6 +62,7 @@ new file mode 100644
 +  {
 +    path: "index.ts",
 +    content: `import { defineApp, defineProvider, ProviderError, secrets, object, string } from "apps";
++import { HostOperationFailed } from "apps/contracts";
 +${prelude}
 +const service = defineProvider({name: "Failure record fixture", auth: {
 +  key: secrets({label: "Key", fields: object({token: string()})})
@@ -151,10 +156,14 @@ new file mode 100644
 +};`,
 +            expected: { phase: "invoke", tag: "HostDeclarationInvalid" },
 +          },
-+          {
-+            health: "await new Promise(() => {});",
-+            expected: { phase: "timeout", tag: "WorkflowFailure" },
-+          },
++          ...[
++            { source: "", phase: "invoke" },
++            { source: 'source:"service",', phase: "vendor" },
++            { source: 'source:"storage",', phase: "invoke" },
++          ].map(({ source, phase }) => ({
++            health: `throw new HostOperationFailed({${source}});`,
++            expected: { phase, tag: "HostOperationFailed" },
++          })),
 +        ];
 +        for (const test of cases) {
 +          yield* deploy(test.health, test.prelude);
@@ -188,6 +197,42 @@ new file mode 100644
 +            delivered,
 +          });
 +        }
++        const started = yield* Deferred.make<void>(),
++          release = yield* Deferred.make<void>();
++        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
++        const gate = HttpRouter.add(
++          "GET",
++          "/release",
++          Deferred.succeed(started, undefined).pipe(
++            Effect.andThen(Deferred.await(release)),
++            Effect.as(HttpServerResponse.empty()),
++          ),
++        );
++        const fixture = yield* Layer.build(
++          HttpRouter.serve(gate).pipe(
++            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++          ),
++        );
++        const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(fixture));
++        const address = server.address;
++        if (!("port" in address)) return yield* Effect.die("Fixture needs a TCP address");
++        yield* deploy(
++          `await fetch("http://127.0.0.1:${address.port}/release"); return {accountInfo:{displayName:"health-late-nontimeout"}};`,
++          `const json = Response.json;
++Response.json = function(data, init) {
++  if (JSON.stringify(data).includes("health-late-nontimeout"))
++    return json.call(this, {ok:false,error:{_tag:"WorkflowFailure",reason:"unavailable",retryable:false}}, init);
++  return json.call(this, data, init);
++};`,
++        );
++        const pending = yield* check().pipe(Effect.forkChild);
++        yield* Deferred.await(started);
++        yield* serverControl("clock/advance", 200, { milliseconds: 14100 });
++        yield* Deferred.succeed(release, undefined);
++        expect((yield* Fiber.join(pending)).apps[0]?.check?.failure).toEqual({
++          phase: "invoke",
++          tag: "WorkflowFailure",
++        });
 +        yield* deploy("return {};");
 +        expect((yield* check()).apps[0]?.check).toMatchObject({ status: "healthy", current: true });
 +        const recovered = yield* body(
@@ -214,7 +259,7 @@ new file mode 100644
 +        yield* f.backend.driverHealth({}, 503);
 +        const failed = yield* check();
 +        expect(failed.driver.check.failure).toEqual({
-+          phase: "app-threw",
++          phase: "invoke",
 +          tag: "HostOperationFailed",
 +        });
 +        const retained = yield* body(
@@ -225,6 +270,12 @@ new file mode 100644
 +        expect(JSON.stringify(retained)).not.toContain("opaque-");
 +        yield* f.backend.driverHealth({});
 +        expect((yield* check()).driver.check.failure).toBeUndefined();
++        const gate = yield* f.backend.holdCheck;
++        const pending = yield* check().pipe(Effect.forkChild);
++        yield* gate.started;
++        const timedOut = yield* Fiber.join(pending);
++        yield* gate.release;
++        expect(timedOut.driver.check.failure).toEqual({ phase: "timeout", tag: "TimeoutError" });
 +      }),
 +    ),
 +  );
@@ -297,15 +348,16 @@ diff --git a/packages/sdk/src/implementation/account-check-failure.ts b/packages
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-check-failure.ts
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,67 @@
 +import { Cause, Effect, Option, Schema } from "effect";
 +import { AccountCheckFailure } from "../contracts/account-check-failure.ts";
++import { HostOperationFailed } from "apps/contracts";
 +import { RuntimeProtocolFailed } from "../contracts/runtime.ts";
 +
 +const TaggedFailure = Schema.Struct({ _tag: AccountCheckFailure.fields.tag });
 +
 +/** Only a deadline failure, rather than any late failure, is classified as a timeout. */
-+export const accountCheckFailure = (error: unknown, late = false): AccountCheckFailure => {
++export const accountCheckFailure = (error: unknown): AccountCheckFailure => {
 +  if (Cause.isTimeoutError(error)) return { phase: "timeout", tag: "TimeoutError" };
 +  const parsed = Schema.decodeUnknownOption(TaggedFailure)(error);
 +  const tag = Option.isSome(parsed) ? parsed.value._tag : "Unknown";
@@ -322,13 +374,22 @@ new file mode 100644
 +        tag,
 +      };
 +    case "WorkflowFailure":
-+      // The app host's shared deadline guard returns this tag after the check's deadline.
-+      return { phase: late ? "timeout" : "invoke", tag };
++      // Older hosts share this tag with non-timeout failures, so it proves no deadline cause.
++      return { phase: "invoke", tag };
 +    case "HostOutputInvalid":
 +    case "SchemaError":
 +      return { phase: "decode", tag };
 +    case "HostOperationFailed":
-+      return { phase: "app-threw", tag };
++      return {
++        phase: Schema.is(HostOperationFailed)(error)
++          ? error.source === "app"
++            ? "app-threw"
++            : error.source === "service"
++              ? "vendor"
++              : "invoke"
++          : "invoke",
++        tag,
++      };
 +    case "ProviderError":
 +    case "OAuthReconnectRequired":
 +    case "OAuthRenewalFailed":
@@ -412,18 +473,16 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
                    ...(saved.message === null ? {} : { message: saved.message }),
                  },
          } satisfies AccountDriverHealth,
-@@ -148,6 +151,10 @@
+@@ -148,6 +151,8 @@
        if (Result.isFailure(outcome) && Schema.is(AccountAcquisitionUnavailable)(outcome.failure))
          return yield* outcome.failure;
        const late = (yield* Clock.currentTimeMillis) >= startedAt + 14_000;
-+      const detail = Result.isFailure(outcome)
-+        ? accountCheckFailure(outcome.failure, late)
-+        : undefined;
++      const detail = Result.isFailure(outcome) ? accountCheckFailure(outcome.failure) : undefined;
 +      if (detail !== undefined) yield* recordAccountCheckFailure(detail);
        yield* transaction(db, () =>
          Effect.gen(function* () {
            if (!(yield* driverSourceCurrent(source, account))) return;
-@@ -181,6 +188,7 @@
+@@ -181,6 +186,7 @@
                  : null,
              checkedAt,
              ...identity,
@@ -431,7 +490,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages
              message: Result.isSuccess(outcome)
                ? null
                : (failure.message(outcome.failure, late)?.slice(0, 500) ?? null),
-@@ -197,7 +205,11 @@
+@@ -197,7 +203,11 @@
              yield* recordObservation({ account, source, result: success, startedAt });
          }),
        );
@@ -481,18 +540,16 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
                      ...(row.info !== null &&
                      typeof row.info === "object" &&
                      "checkReason" in row.info &&
-@@ -367,6 +374,10 @@
+@@ -367,6 +374,8 @@
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome) && outcome.success === undefined) return;
        const status = Result.isSuccess(outcome) ? "healthy" : statusOf(outcome.failure);
-+      const failure = Result.isFailure(outcome)
-+        ? accountCheckFailure(outcome.failure, late)
-+        : undefined;
++      const failure = Result.isFailure(outcome) ? accountCheckFailure(outcome.failure) : undefined;
 +      if (failure !== undefined) yield* recordAccountCheckFailure(failure);
        const existing = yield* query(() =>
          db.findFirst("accountChecks", {
            where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
-@@ -388,9 +399,15 @@
+@@ -388,9 +397,15 @@
          checkedAt,
          ...record,
          info:
@@ -511,11 +568,11 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
          message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
        };
        yield* query(() =>
-@@ -477,9 +494,12 @@
+@@ -477,9 +492,12 @@
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome))
          return { status: "healthy" as const, info: outcome.success.accountInfo ?? null };
-+      const failure = accountCheckFailure(outcome.failure, late);
++      const failure = accountCheckFailure(outcome.failure);
 +      yield* recordAccountCheckFailure(failure);
        const message = messageOf(outcome.failure, late);
        return {
