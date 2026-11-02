@@ -924,10 +924,10 @@ index 0000000..1095121
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
 new file mode 100644
-index 0000000..959c422
+index 0000000000000000000000000000000000000000..488484426b7a0c8b21a6b1ac71576ee84a7edc92
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,162 @@
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type { Change, MigrationPlan } from "./contracts.ts";
@@ -950,6 +950,10 @@ index 0000000..959c422
 +  and (g.owner = 'organization:' || $1 or (g.owner is null
 +    and exists (select 1 from executor_accounts a where coalesce(a.oauth_grant_id, a.id) = g.id and a.owner = 'organization:' || $1)
 +    and not exists (select 1 from executor_accounts a where coalesce(a.oauth_grant_id, a.id) = g.id and a.owner <> 'organization:' || $1))))`;
++// OAuth falls back to the account ID; other auth methods can have no grant at all.
++const accountGrant = `(${grant("coalesce(entry.oauth_grant_id, entry.id)")}
++  or (entry.oauth_grant_id is null and not exists
++    (select 1 from executor_oauth_grants g where g.id = entry.id)))`;
 +
 +interface RowScope {
 +  readonly keys: readonly string[];
@@ -962,7 +966,7 @@ index 0000000..959c422
 +  organization: id("entry.id = $1"),
 +  member: id('entry."organizationId" = $1'),
 +  executor_accounts: id(
-+    `${owner} and ${optional("identity_id", owned("executor_account_identities", "identity_id"))} and ${optional("oauth_grant_id", grant("entry.oauth_grant_id"))}`,
++    `${owner} and ${optional("identity_id", owned("executor_account_identities", "identity_id"))} and ${accountGrant}`,
 +  ),
 +  executor_account_identities: id(owner),
 +  executor_oauth_grants: id(grant("entry.id")),
@@ -1524,10 +1528,10 @@ index 0000000..a47083f
 +  });
 diff --git a/e2e/support/production-ops-account.ts b/e2e/support/production-ops-account.ts
 new file mode 100644
-index 0000000..ddd032e
+index 0000000000000000000000000000000000000000..6a3a318d6bbcedf39af64e6cbed54ef044692c94
 --- /dev/null
 +++ b/e2e/support/production-ops-account.ts
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,57 @@
 +import { expect } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Api, body, type Session } from "./api.ts";
@@ -1545,10 +1549,11 @@ index 0000000..ddd032e
 +      files: [
 +        {
 +          path: "index.ts",
-+          content: `import { defineApp, defineProvider, object, router, secrets, string } from "apps";
++          content: `import { defineApp, defineProvider, oauth2, object, router, secrets, string } from "apps";
 +const service = defineProvider({ name: "Operations fixture", auth: {
 +  apiKey: secrets({ label: "API key", fields: object({ token: string() }) }),
-+  token: secrets({ label: "Pool token", fields: object({ token: string() }) })
++  token: secrets({ label: "Pool token", fields: object({ token: string() }) }),
++  oauth: oauth2({ authorizationUrl: "https://identity.example.test/authorize", tokenUrl: "https://identity.example.test/token", scopes: ["read"], tokenEndpointAuthMethod: "none" })
 +} });
 +export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
 +        },
@@ -2055,10 +2060,10 @@ index 01d372e..9c0713c 100644
      file: "pool-migration-inventory.spec.ts",
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
 new file mode 100644
-index 0000000..2c3e34b
+index 0000000000000000000000000000000000000000..d9937f85b3c35931f6b770ba66320b13bb366ec9
 --- /dev/null
 +++ b/e2e/tests/production-ops-migrations.spec.ts
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,217 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -2218,6 +2223,36 @@ index 0000000..2c3e34b
 +      context,
 +      Effect.gen(function* () {
 +        const p = yield* proof;
++        const grantlessId = randomUUID();
++        yield* Effect.addFinalizer(() =>
++          p.database
++            .run({
++              sql: "delete from executor_accounts where id = $1 or id = $2",
++              params: [p.foreign.grant, grantlessId],
++            })
++            .pipe(Effect.orDie),
++        );
++        expect(yield* p.account(p.foreign.grant)).toEqual([]);
++        const implicit = p.operation("implicit-grant", p.foreign.account, p.foreign.grant);
++        const implicitPlan = yield* p.dryRun(implicit);
++        expect(
++          (yield* p.request(p.apply(implicit, implicitPlan))).status,
++          "Null references must not borrow a foreign grant at the inserted account ID",
++        ).toBe(409);
++        expect(yield* p.account(p.foreign.grant)).toEqual([]);
++        expect(
++          yield* p.database.run({
++            sql: "select plan_sha256 from private_production_ops_receipts where plan_sha256 = $1",
++            params: [implicitPlan.artifact.sha256],
++          }),
++        ).toEqual([]);
++        const grantless = p.operation("grantless-insert", p.own.account, grantlessId);
++        const grantlessPlan = yield* p.dryRun(grantless);
++        expect((yield* p.request(p.apply(grantless, grantlessPlan))).status).toBe(200);
++        expect((yield* p.account(grantlessId)).length).toBe(1);
++        const grantlessReplay = yield* p.request(p.apply(grantless, grantlessPlan));
++        expect(grantlessReplay.status).toBe(200);
++        expect((yield* body(Applied, grantlessReplay)).repeated).toBe(true);
 +        for (const [name, foreign] of [
 +          ["account-grant", p.foreign.grant],
 +          ["account-identity", p.foreign.identity],

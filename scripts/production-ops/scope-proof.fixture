@@ -106,6 +106,8 @@ export const scopeProof: ProductionMigration = {
       const before = rows[0]?.row;
       const inserting =
         request.operation === "collision" ||
+        request.operation === "implicit-grant" ||
+        request.operation === "grantless-insert" ||
         request.operation === "link-subject" ||
         request.operation.startsWith("departure-");
       if (before === undefined && !inserting)
@@ -136,7 +138,14 @@ export const scopeProof: ProductionMigration = {
       const request = yield* Schema.decodeUnknownEffect(Request)(raw);
       const sql = yield* SqlClient.SqlClient;
       const { table, id, reference } = descriptor(request);
-      if (request.operation.startsWith("departure-")) {
+      if (request.operation === "implicit-grant" || request.operation === "grantless-insert") {
+        yield* sql`insert into executor_accounts select
+          (jsonb_populate_record(null::executor_accounts, to_jsonb(a) || jsonb_build_object(
+            'id', ${id}::text, 'owner', ${`organization:${request.organization}`}::text,
+            'method', ${request.operation === "implicit-grant" ? "oauth" : "apiKey"}::text,
+            'identity_id', null, 'oauth_grant_id', null))).*
+          from executor_accounts a where a.id = ${request.foreign}`;
+      } else if (request.operation.startsWith("departure-")) {
         yield* sql`insert into hosted_contributed_departures (job, app, requirement, account, linked_at)
         values (${request.job}, ${request.operation === "departure-app" ? request.foreign : request.app}, 'scope-proof', ${request.operation === "departure-account" ? request.foreign : request.account}, now())`;
       } else if (request.operation === "link-subject") {
