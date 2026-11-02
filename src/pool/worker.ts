@@ -1,3 +1,8 @@
+import { appUsage } from "./model-history/app-usage.ts";
+import { AppModels } from "./app-models.ts";
+import { appModelPath } from "./app-model-contract.ts";
+import { appAttributionReady } from "./model-history/schema.ts";
+import type { ModelIdentity } from "./model-membership.ts";
 import { accountMirrorPath, handleAccountKeyMirror } from "./account-key-mirror.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
@@ -61,6 +66,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private control: PoolControl;
   private mirrorHome: HomeClient;
   private computers: Computers;
+  private appModels: AppModels;
   private prices: PriceUpkeep;
   private usage: PoolUsage;
   private managementReadyUntil = 0;
@@ -114,12 +120,27 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool), defer: (work) => ctx.waitUntil(work),
       collection: this.control.collection,
+      appUsage: (input) => env.POOL_MODEL_HISTORY_ENABLED !== "true" ? Promise.resolve(undefined)
+        : withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) => appUsage(db, input)),
       permissions: (pool, user) => this.computers.permissions(pool, user),
     });
     this.computers = new Computers({
       storage: ctx.storage, home: new ComputerHome(new HomeClient(home), onProductEvent),
       signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       onProductEvent, usage: this.usage,
+    });
+    this.appModels = new AppModels({
+      storage: ctx.storage, home: new ComputerHome(this.mirrorHome),
+      signingKey: env.POOL_APP_SIGNING_KEY, previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      now: () => Date.now(),
+      schedule: async (at) => {
+        const alarm = await ctx.storage.getAlarm();
+        if (alarm === null || alarm > at) await ctx.storage.setAlarm(at);
+      },
+      ready: () => env.POOL_MODEL_HISTORY_ENABLED !== "true" ? Promise.resolve(false)
+        : withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, async (db) =>
+          await appAttributionReady(db) && (await db.query("SELECT 1 FROM basalt_model_history_cursor LIMIT 1")).rows.length > 0),
+      forward: (request, identity) => this.forward(request, identity),
     });
     const membership = new HomeMembership(new HomeClient(home));
     this.memberships = new NativeMemberships({
@@ -168,6 +189,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
 
   async alarm() {
+    await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
     await this.memberships.tick();
     await this.computers.expire();
     await (await this.lifecycle).warm();
@@ -208,6 +230,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return new Response(null, { status: 204 });
       } catch { return Response.json({ error: "membership_unavailable" }, { status: 503 }); }
     }
+    if (pathname === appModelPath) return this.appModels.handle(request);
     if (pathname === accountMirrorPath) return handleAccountKeyMirror(request, {
       home: this.mirrorHome, signingKey: this.env.POOL_APP_SIGNING_KEY,
       previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -245,7 +268,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     if (isControlPath(pathname)) return this.control.handle(request);
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
+    return this.forward(request);
+  }
+
+  private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
+    const port = poolPort(new URL(request.url).pathname);
     return forwardPoolRequest(request, port, {
+      ...(appModel === undefined ? {} : { appModel }),
       env: this.env, computers: this.computers, memberships: this.memberships,
       streams: this.modelStreams, lifecycle: this.lifecycle, protection: this.protection,
       fetch: (forwarded, target) => {
@@ -268,7 +297,7 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
-  if (pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
+  if (pathname === appModelPath || pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
   if (pathname !== accountAcquisitionPath && pathname !== accessPath && pathname !== membershipPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
     return new Response(null, { status: 404 });
   }

@@ -1,4 +1,4 @@
-import { callerHeader, controlBasePath, usageDays, type UsageSummary } from "../../apps/pool/contract.ts";
+import { callerHeader, controlBasePath, usageDays, type AppUsage, type UsageSummary } from "../../apps/pool/contract.ts";
 import { readCap, readCaps, setCap } from "./caps.ts";
 import { accountsView, HomeClient, poolGroupPrefix } from "./control.ts";
 import type { PoolPermissions } from "./authorization.ts";
@@ -30,6 +30,7 @@ interface Dependencies {
   defer?: (work: Promise<void>) => void;
   now?: () => Date;
   collection?: QuotaCollection;
+  appUsage?: (input: { pool: string; members: readonly string[]; from: string; to: string }) => Promise<Map<string, AppUsage[]> | undefined>;
 }
 
 export class PoolUsage {
@@ -103,14 +104,23 @@ export class PoolUsage {
       if (this.deps.defer) this.deps.defer(work);
       else await work;
     }
+    const people = canManage ? [...new Set([owner, ...members])] : [caller];
+    let summary: UsageSummary;
     if (!canManage) {
       const cap = await readCap(this.deps.client, caller, pool);
-      return this.ledger.summary(pool, { owner, caller, canManage, members: [], days, now, cap: () => cap });
+      summary = await this.ledger.summary(pool, { owner, caller, canManage, members: [], days, now, cap: () => cap });
+    } else {
+      const capped = [...new Set([caller, ...people])].filter((person) => person !== owner);
+      const caps = await readCaps(this.deps.client, pool, capped);
+      summary = await this.ledger.summary(pool, { owner, caller, canManage, members: people, days, now, cap: (member) => caps.get(member) ?? null });
     }
-    const people = [...new Set([owner, ...members])];
-    const capped = [...new Set([caller, ...people])].filter((person) => person !== owner);
-    const caps = await readCaps(this.deps.client, pool, capped);
-    return this.ledger.summary(pool, { owner, caller, canManage, members: people, days, now, cap: (member) => caps.get(member) ?? null });
+    const apps = await this.deps.appUsage?.({ pool, members: people, from: summary.from, to: summary.to });
+    return apps === undefined ? summary : {
+      ...summary,
+      ...(summary.members === undefined ? { apps: apps.get(caller) ?? [] } : {
+        members: summary.members.map((member) => ({ ...member, apps: apps.get(member.member) ?? [] })),
+      }),
+    };
   }
 
   /** The caller authorizes management; the recorded owner is never capped. */

@@ -51,7 +51,7 @@ export async function handleUsageImport(request: Request, access: HistoryAccess)
         await db.query("SET LOCAL lock_timeout = '500ms'");
         await db.query("SET LOCAL statement_timeout = '5s'");
         const records = await resolveImportIdentity(db, parsed.records, parsed.local, parsed.homeUsageIds);
-        const resolvedDigest = await digest(JSON.stringify({ input: parsed.digest, records: records.map(recordValues) }));
+        const resolvedDigest = await digest(JSON.stringify({ input: parsed.digest, records: records.map((row) => recordValues(row)) }));
         if (mode === "apply") {
           const token = typeof input.approval === "string" ? await openEnvelope(access.signingKey, approvalPrefix,
             input.approval, access.previousSigningKey) : undefined;

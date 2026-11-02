@@ -1,3 +1,4 @@
+import { appModelLabelSqlPattern } from "../app-model-contract.ts";
 import { digest, parseBackendUserName } from "../backend-users.ts";
 import { amount, counter, endpointMetadata, historyObject, homePrice, identifier, invalidHistory, priceRule, reference,
   timestamp, type ModelRequest } from "./record.ts";
@@ -33,11 +34,16 @@ export const homeHistorySelect = `SELECT u.id::text AS source_id,
     'response_tier_fallback', c.price_snapshot->'response_tier_fallback',
     'matched_rule', c.matched_price_rule) AS price,
   COALESCE(c.api_key_id, k.id)::text AS key_id,
-  a.username
+  a.username,
+  CASE WHEN attribution_key.display_name ~ '${appModelLabelSqlPattern}'
+    THEN split_part(attribution_key.display_name, ':', 2) END AS app_id,
+  CASE WHEN attribution_key.display_name ~ '${appModelLabelSqlPattern}'
+    THEN split_part(attribution_key.display_name, ':', 3) END AS requirement
   FROM usage u
   LEFT JOIN billing_charge c ON c.usage_id = u.id
   LEFT JOIN api_key k ON k.diagnostic_fingerprint = u.api_key AND u.api_key ~ '^sha256:[0-9a-f]{64}$'
-  LEFT JOIN "user" a ON a.id = COALESCE(c.user_id,k.user_id)`;
+  LEFT JOIN "user" a ON a.id = COALESCE(c.user_id,k.user_id)
+  LEFT JOIN api_key attribution_key ON attribution_key.id = COALESCE(c.api_key_id,k.id)`;
 
 export async function homeRequest(raw: unknown, source: string): Promise<ModelRequest> {
   const row = historyObject(raw);
@@ -63,7 +69,7 @@ export async function homeRequest(raw: unknown, source: string): Promise<ModelRe
     id: await digest(JSON.stringify([source, sourceRecord])), source, sourceRecord, timestamp: at,
     pool: user?.pool ?? null, person: user?.person ?? null,
     account: await reference(source, "account", row.auth_index), clientKey: await reference(source, "key", row.key_id),
-    requestId, provider: identifier(row.provider), model: identifier(row.model),
+    requestId, appId: identifier(row.app_id), requirement: identifier(row.requirement), provider: identifier(row.provider), model: identifier(row.model),
     ...endpointMetadata(row.endpoint), serviceTier: identifier(row.service_tier),
     inputTokens: counter(canonical ? row.accounting_input_tokens : row.input_tokens),
     outputTokens: counter(canonical ? row.accounting_output_tokens : row.output_tokens),

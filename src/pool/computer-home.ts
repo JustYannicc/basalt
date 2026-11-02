@@ -44,29 +44,30 @@ export class ComputerHome {
     if (provisioned) created?.();
     return user.id;
   }
-  async group(pool: string, accountId?: string): Promise<number> {
+  async group(pool: string, accountId?: string, signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
     if (typeof pool !== "string" || !pool.trim()) return unavailable();
     const name = `${poolGroupPrefix}${pool}`;
-    let groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === name);
+    let groups = (await this.client.allPoolGroups(signal)).filter((group) => group.channel_name === name);
     let created = false;
     if (!groups.length) {
-      const response = await this.client.response("/channel-groups", post({ channel_name: name }));
+      const response = await this.client.response("/channel-groups", { ...post({ channel_name: name }), signal });
       if (!response.ok && response.status !== 409) throw new BackendFailure(response.status);
       created = response.ok;
       await response.body?.cancel();
-      groups = (await this.client.allPoolGroups()).filter((group) => group.channel_name === name);
+      groups = (await this.client.allPoolGroups(signal)).filter((group) => group.channel_name === name);
     }
     if (!groups.length || !id(groups[0]?.id)) return unavailable();
     if (created && accountId) emitProductEvent(this.onProductEvent, "pool_created", accountId);
     return groups[0].id;
   }
-  private async writeScopedKey(pool: string, input: Json, method: "POST" | "PATCH", accountId?: string): Promise<Json> {
-    const group = await this.group(pool, accountId);
+  private async writeScopedKey(pool: string, input: Json, method: "POST" | "PATCH", accountId?: string, signal?: AbortSignal): Promise<Json> {
+    const group = await this.group(pool, accountId, signal);
     // Home treats empty channels as unrestricted. Verify the exact pool group at the write boundary.
-    if (!id(group) || !(await this.client.allPoolGroups()).some((row) =>
+    if (!id(group) || !(await this.client.allPoolGroups(signal)).some((row) =>
       row.id === group && row.channel_name === `${poolGroupPrefix}${pool}`)) return unavailable();
     const channels: [number] = [group];
-    return this.client.data("/access/api-keys", { ...post({ ...input, channels }), method });
+    return this.client.data("/access/api-keys", { ...post({ ...input, channels }), method, signal });
   }
   /** `owner` is credited if this mint creates the pool's group; a member's first mint can. */
   async mint(person: string, pool: string, computer: string, owner = person): Promise<{ key: string; keyId: number; userId: number }> {
@@ -79,6 +80,22 @@ export class ComputerHome {
     const created = data.api_key;
     if (!object(created) || !id(created.api_key_id ?? created.id) || created.user_id !== userId) return unavailable();
     return { key, keyId: (created.api_key_id ?? created.id) as number, userId };
+  }
+  /** One short app request uses the same person/pool user and caps as that person's computer. */
+  async mintAppModel(person: string, pool: string, label: string, owner: string, signal: AbortSignal) {
+    const userId = await this.user(person, pool, undefined, signal);
+    signal.throwIfAborted();
+    const key = randomSecret(brand.setup.keyPrefix);
+    const data = await this.writeScopedKey(pool, { api_key: key, display_name: label,
+      user_id: userId, model_groups: [] }, "POST", owner, signal);
+    const created = data.api_key;
+    const keyId = object(created) ? created.api_key_id ?? created.id : undefined;
+    if (!id(keyId) || !object(created) || created.user_id !== userId) return unavailable();
+    return { key, keyId };
+  }
+  async findAppModel(label: string) {
+    return rows((await this.client.data("/access/api-keys")).items)
+      .filter((key) => key.display_name === label).map((key) => key.api_key_id ?? key.id).filter(id);
   }
   /** Used after an interrupted create, never returned through a public endpoint. */
   async find(computer: string): Promise<number[]> {

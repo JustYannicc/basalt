@@ -1,3 +1,4 @@
+import { appAttributionReady } from "./schema.ts";
 import { homeHistorySelect, homeRequest } from "./home.ts";
 import { invalidHistory, type ModelRequest } from "./record.ts";
 import { requireHomePrivacyReady } from "./privacy.ts";
@@ -10,7 +11,7 @@ export async function resolveImportIdentity(db: HistoryDatabase, records: readon
   if (!local) return [...records];
   if (usageIds.length !== records.length || usageIds.some((id) => id === null || id === "0")) return invalidHistory();
   await requireHomePrivacyReady(db);
-  const retained = await db.query(`SELECT ${retainedProjection}
+  const retained = await db.query(`SELECT ${retainedProjection(await appAttributionReady(db))}
     FROM basalt_model_requests WHERE id=ANY($1::text[])`, [records.map((row) => row.id)]);
   const byId = new Map(retained.rows.map(retainedRequest).map((row) => [row.id, row]));
   const pending = usageIds.filter((_, index) => !byId.has(records[index]!.id));

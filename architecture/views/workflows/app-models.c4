@@ -1,0 +1,30 @@
+views {
+  dynamic view v1_app_model_request {
+    #v1
+    variant sequence
+    title "Workflows/Basalt/An app interprets an email"
+    description """
+      Source implementation, pending live app acceptance. The app's placed binding chooses and pays
+      for the pool. App-wide delegation permits its current users without direct pool access;
+      interactive usage still belongs to the caller and keeps that person's pool caps. Callerless
+      schedules and webhooks use the binding's authorizer. Every dispatch rechecks authority.
+      Queries and rendering have no model callback, and generation is never retried automatically.
+    """
+
+    include poolMember, appHosting, basalt.toolsGateway, basalt.router, basalt.modelGateway, basalt.poolController, basalt.poolRuntime, basalt.poolDatabase, modelProviders
+    poolMember -> appHosting "interpret one email in an app mutation"
+    appHosting -> basalt.toolsGateway "invocation-owned model callback with app, build and declared slot"
+    basalt.toolsGateway -> basalt.router "current binding and access checks; expiring signed one-request assertion"
+    basalt.router -> basalt.modelGateway "route the signed app model request"
+    basalt.modelGateway -> basalt.poolController "admit the nonce once and journal temporary-key cleanup"
+    basalt.poolController -> basalt.poolRuntime "one non-streaming completion using the caller's capped pool user"
+    basalt.poolRuntime -> modelProviders "provider request"
+    basalt.poolRuntime <- modelProviders "one completion"
+    basalt.poolRuntime -> basalt.poolDatabase "usage and exact charge with retained temporary-key metadata"
+    basalt.poolController <- basalt.poolRuntime "finite completion; retire the temporary key"
+    basalt.modelGateway -> basalt.poolDatabase "capture app requirement and person on the same immutable request row"
+    basalt.router <- basalt.modelGateway "typed completion or refusal, without credentials"
+    basalt.toolsGateway <- basalt.router "return the finite model reply"
+    appHosting <- basalt.toolsGateway "structured email interpretation"
+  }
+}

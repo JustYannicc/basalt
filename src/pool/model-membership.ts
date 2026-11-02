@@ -5,7 +5,7 @@ import { NativeMemberships } from "./membership.ts";
 import type { RefusalIdentity } from "./gateway-failure.ts";
 import { signEnvelope } from "./token.ts";
 
-interface NativeIdentity { pool: string; person: string; keyId?: number }
+export interface ModelIdentity { pool: string; person: string; keyId?: number; appId?: string; requirement?: string }
 export class ModelMembershipUnavailable extends Error {
   readonly identity?: RefusalIdentity;
   constructor(identity?: RefusalIdentity) {
@@ -20,7 +20,7 @@ export async function modelMembership(
   memberships: NativeMemberships,
   signingKey: string,
   connectionString: string | undefined,
-  native?: NativeIdentity,
+  native?: ModelIdentity,
 ): Promise<{ request: Request; identity?: RefusalIdentity; pool?: string }> {
   const headers = new Headers(request.headers);
   headers.delete(policyHeader);
@@ -31,6 +31,7 @@ export async function modelMembership(
   if (!pool) throw new ModelMembershipUnavailable();
   const identity: RefusalIdentity = {
     pool, person: native ? await digest(native.person) : scope?.person ?? null,
+    ...(native?.appId === undefined ? {} : { appId: native.appId, requirement: native.requirement }),
     ...(native?.keyId ?? scope?.keyId ? { keyId: native?.keyId ?? scope?.keyId } : {}),
   };
   const policy = await memberships.authority(pool).catch(() => { throw new ModelMembershipUnavailable(identity); });
