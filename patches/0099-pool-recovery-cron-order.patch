@@ -171,7 +171,7 @@ index c55e746..16d29d6 100644
        VITE_POSTHOG_KEY: "synthetic-ingestion-key",
        VITE_POSTHOG_PATH: "/api/0123456789abcdef",
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 709e285..4e8aaac 100644
+index 0caeea9..df00756 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -13,6 +13,7 @@ export const TargetPlan = Schema.Union([
@@ -182,7 +182,7 @@ index 709e285..4e8aaac 100644
        ]),
      ),
    }),
-@@ -8575,7 +8576,7 @@ export const scenarios = plan({
+@@ -8585,7 +8586,7 @@ export const scenarios = plan({
      title: "Cloud pool account recovery queues one owner job and preserves permissions and backoff",
      targets: {
        "self-host": na("The Cloud host owns automatic pool setup."),
@@ -191,7 +191,7 @@ index 709e285..4e8aaac 100644
        local: na("The Cloud host owns automatic pool setup."),
      },
    },
-@@ -10282,7 +10283,8 @@ export type CloudMode =
+@@ -10292,7 +10293,8 @@ export type CloudMode =
    | "attached"
    | "rate-limited"
    | "rolled-back"
@@ -201,7 +201,7 @@ index 709e285..4e8aaac 100644
  
  const cloudRuntimeReasons = {
    managed: "Requires the managed local Cloud target and its local collectors.",
-@@ -10291,6 +10293,7 @@ const cloudRuntimeReasons = {
+@@ -10301,6 +10303,7 @@ const cloudRuntimeReasons = {
      "Requires a managed local Cloud with the per-address auth limit on: e2e:cloud --auth-rate-limit.",
    "rolled-back":
      "Requires a managed local Cloud with its rollback switch on: e2e:cloud --rollback.",
@@ -209,7 +209,7 @@ index 709e285..4e8aaac 100644
    "oauth-proxy-preview":
      "Requires a managed test stage signing in through a second local Cloud's OAuth proxy: e2e:cloud --oauth-proxy-preview.",
  } as const;
-@@ -10325,7 +10328,8 @@ export const scenariosForSuite = (
+@@ -10335,7 +10338,8 @@ export const scenariosForSuite = (
          cloud.runtime === undefined
            ? cloudMode !== "rate-limited" &&
              cloudMode !== "rolled-back" &&
@@ -219,7 +219,7 @@ index 709e285..4e8aaac 100644
            : cloud.runtime === cloudMode;
        return runs
          ? scenario
-@@ -10335,11 +10339,13 @@ export const scenariosForSuite = (
+@@ -10345,11 +10349,13 @@ export const scenariosForSuite = (
                ...scenario.targets,
                cloud: na(
                  cloud.runtime === undefined
@@ -239,7 +239,7 @@ index 709e285..4e8aaac 100644
                ),
              },
 diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
-index 9662a70..6bd9eb3 100644
+index 9662a70..2ac2497 100644
 --- a/e2e/tests/pool-account-recovery.spec.ts
 +++ b/e2e/tests/pool-account-recovery.spec.ts
 @@ -1,5 +1,7 @@
@@ -270,16 +270,41 @@ index 9662a70..6bd9eb3 100644
          const prefix = `/api/organizations/${actors.organization.id}`;
          const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
          // This case owns the lab, and no pool Worker receives its cleanup notification.
-@@ -42,6 +55,8 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+@@ -42,6 +55,11 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
              [actors.organization.id],
            ).pipe(Effect.orDie),
          );
-+        // Finish the rollout producer before arranging the queue the reads must preserve.
-+        yield* tick;
++        const onboarding = yield* rows(
++          `select id, status, attempts from hosted_provisioning where organization_id = $1 order by id`,
++          [actors.organization.id],
++        );
++
          const session = yield* body(
            Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
            yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
-@@ -240,6 +255,11 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+@@ -55,6 +73,21 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
+           );
+         // Onboarding has not started these jobs. Keep them out of request-finalizer dispatch.
+         yield* deferJobs();
++        // The warm-up also dispatches jobs. Defer actor onboarding before it can start a workflow.
++        yield* tick;
++        const afterWarm = yield* rows(
++          `select id, status, attempts from hosted_provisioning
++            where id in (select jsonb_array_elements_text($1::jsonb)) order by id`,
++          [JSON.stringify(onboarding.map((job) => job.id))],
++        );
++        yield* evidence.json("pool-recovery-onboarding.json", {
++          before: onboarding,
++          after: afterWarm,
++        });
++        expect(onboarding.length).toBeGreaterThan(0);
++        expect(afterWarm).toEqual(
++          onboarding.map((job) => ({ id: job.id, status: "queued", attempts: 0 })),
++        );
+         const pending = () =>
+           rows(
+             `select id, status, attempts, (available_at <= now()) as ready,
+@@ -240,6 +273,11 @@ layer(HostedLive, { excludeTestServices: true })("Pool account recovery", (it) =
                queuedByRead: true,
                executionDeferred: true,
              });

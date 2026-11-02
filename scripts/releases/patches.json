@@ -820,7 +820,7 @@
     {
       "identity": "executor-pool-recovery-cron-order",
       "file": "0099-pool-recovery-cron-order.patch",
-      "content_sha256": "fb03201070705dbde66e7e58fbdde0ecc0eed136a53cc78233b4c92f2fe30c43",
+      "content_sha256": "f3e2d9b0f3ae559619c6b244bb373ef6fed768eee9144104f404b4be54cf5ba5",
       "kind": "overlay",
       "upstream_pull_request": null,
       "database_sensitive": false,
