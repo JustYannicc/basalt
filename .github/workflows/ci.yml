@@ -594,12 +594,26 @@ jobs:
         env:
           ARCHITECTURE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: npm run architecture:test
+      - name: Free runner disk before pool builds
+        run: |
+          echo "Runner disk before cleanup (bytes)"
+          df -B1 /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
+          docker builder prune --all --force
+          echo "Runner disk after cleanup (bytes)"
+          df -B1 /
       - name: Build the pinned pool image
         run: |
           mkdir -p "$RUNNER_TEMP/pool-usage-privacy-baseline"
           git archive b35314687e8972f64d7c1c3c73a1492a50fb7bac containers/pool | tar -x -C "$RUNNER_TEMP/pool-usage-privacy-baseline"
           docker build --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
+          echo "Runner disk before compatibility build cache cleanup (bytes)"
+          df -B1 /
+          docker builder prune --all --force
+          docker image inspect basalt-1409-pool:usage-privacy-baseline basalt-1409-pool:privacy-legacy > /dev/null
+          echo "Runner disk before candidate build (bytes)"
+          df -B1 /
           docker build --target runtime --tag basalt-1409-pool:test containers/pool
       - name: Check the pool runtime and database contracts
         run: node --test --test-concurrency=1 scripts/pool-tests/*.test.ts
@@ -608,6 +622,19 @@ jobs:
           POOL_TEST_IMAGE: basalt-1409-pool:test
           POOL_TEST_LEGACY_IMAGE: basalt-1409-pool:privacy-legacy
           POOL_TEST_USAGE_PRIVACY_IMAGE: basalt-1409-pool:usage-privacy-baseline
+      - name: Release pool build disk
+        if: always()
+        run: |
+          echo "Runner disk before pool cleanup (bytes)"
+          df -B1 /
+          for image in basalt-1409-pool:test basalt-1409-pool:privacy-legacy basalt-1409-pool:usage-privacy-baseline; do
+            if docker image inspect "$image" > /dev/null 2>&1; then
+              docker image rm "$image"
+            fi
+          done
+          docker builder prune --all --force
+          echo "Runner disk after pool cleanup (bytes)"
+          df -B1 /
       - run: npm run check:upstream
         env:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
