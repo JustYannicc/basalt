@@ -146,10 +146,10 @@ diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/u
 +                const heading =
 +                  item.kind === "workflow"
 +                    ? item.input.form.message.trim() || humanize(item.input.name)
-+                    : humanize(item.invocation?.tool ?? item.run.name);
++                    : humanize(item.invocationSummary?.tool ?? item.run.name);
 +                const argumentsText =
-+                  item.kind === "scheduled" && item.invocation !== undefined
-+                    ? JSON.stringify(item.invocation.input)
++                  item.kind === "scheduled" && item.invocationSummary !== undefined
++                    ? item.invocationSummary.arguments
 +                    : undefined;
                  return (
 -                  <div
@@ -178,7 +178,7 @@ diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/u
                          {expiresAt && (
                            <>
                              {" · Expires "}
-@@ -53,14 +85,23 @@
+@@ -53,14 +85,21 @@
                            </>
                          )}
                        </p>
@@ -186,9 +186,7 @@ diff --git a/packages/ui/src/implementation/dashboard/approvals.tsx b/packages/u
 +                        <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
 +                          {argumentsText === undefined
 +                            ? "Request details unavailable"
-+                            : argumentsText.length > 180
-+                              ? `${argumentsText.slice(0, 180)}…`
-+                              : argumentsText}
++                            : argumentsText}
 +                        </p>
 +                      )}
                      </div>
@@ -391,9 +389,18 @@ diff --git a/e2e/tests/schedule-browser.spec.ts b/e2e/tests/schedule-browser.spe
          );
          yield* browser.use("Enable the schedule", (page) =>
            page.getByRole("button", { name: "Enable", exact: true }).click(),
-@@ -76,11 +76,20 @@
+@@ -75,13 +75,34 @@
+             ]).then(([response]) => response.status()),
            ),
          ).toBe(200);
++        const detailReads = yield* browser.use("Observe queue request fan-out", (page) => {
++          const reads: string[] = [];
++          page.on("request", (request) => {
++            if (/\/scheduled-runs\/[^/]+\/approval$/.test(new URL(request.url()).pathname))
++              reads.push(request.url());
++          });
++          return Promise.resolve(reads);
++        });
          yield* browser.use("Open approvals", (page) =>
 -          page.getByRole("link", { name: "Approvals", exact: true }).click(),
 +          page.getByRole("link", { name: "Human in the loop", exact: true }).click(),
@@ -401,7 +408,7 @@ diff --git a/e2e/tests/schedule-browser.spec.ts b/e2e/tests/schedule-browser.spe
          yield* browser.use("Reload the approval queue", (page) => page.reload());
          yield* browser.use("Wait for pending approval", (page) =>
            page.getByRole("link", { name: "Review", exact: true }).waitFor(),
-+        );
+         );
 +        yield* browser.use("The queue names the saved tool", (page) =>
 +          page
 +            .getByRole("list", { name: "Requests for you" })
@@ -410,9 +417,14 @@ diff --git a/e2e/tests/schedule-browser.spec.ts b/e2e/tests/schedule-browser.spe
 +        );
 +        yield* browser.use("The queue summarizes the saved arguments", (page) =>
 +          page.getByText('{"message":"Weekly synthetic update"}', { exact: true }).waitFor(),
-         );
++        );
++        expect(
++          detailReads,
++          "Queue summaries arrive with the runs list, without per-row requests",
++        ).toEqual([]);
          yield* browser.checkpoint("02 Approvals list");
          yield* browser.use("Review the pending run", (page) =>
+           page.getByRole("link", { name: "Review", exact: true }).click(),
 diff --git a/e2e/tests/hosted-schedule-browser.spec.ts b/e2e/tests/hosted-schedule-browser.spec.ts
 --- a/e2e/tests/hosted-schedule-browser.spec.ts
 +++ b/e2e/tests/hosted-schedule-browser.spec.ts
@@ -461,9 +473,18 @@ diff --git a/e2e/tests/hosted-schedule-browser.spec.ts b/e2e/tests/hosted-schedu
          );
          yield* browser.use("Enable the schedule", (page) =>
            page.getByRole("button", { name: "Enable", exact: true }).click(),
-@@ -514,11 +514,20 @@
+@@ -513,13 +513,34 @@
+             ]).then(([response]) => response.status()),
            ),
          ).toBe(200);
++        const detailReads = yield* browser.use("Observe queue request fan-out", (page) => {
++          const reads: string[] = [];
++          page.on("request", (request) => {
++            if (/\/scheduled-runs\/[^/]+\/approval$/.test(new URL(request.url()).pathname))
++              reads.push(request.url());
++          });
++          return Promise.resolve(reads);
++        });
          yield* browser.use("Open approvals", (page) =>
 -          page.getByRole("link", { name: "Approvals", exact: true }).click(),
 +          page.getByRole("link", { name: "Human in the loop", exact: true }).click(),
@@ -471,7 +492,7 @@ diff --git a/e2e/tests/hosted-schedule-browser.spec.ts b/e2e/tests/hosted-schedu
          yield* browser.use("Reload the approval queue", (page) => page.reload());
          yield* browser.use("Wait for pending approval", (page) =>
            page.getByRole("link", { name: "Review", exact: true }).waitFor(),
-+        );
+         );
 +        yield* browser.use("The queue names the saved tool", (page) =>
 +          page
 +            .getByRole("list", { name: "Requests for you" })
@@ -480,9 +501,14 @@ diff --git a/e2e/tests/hosted-schedule-browser.spec.ts b/e2e/tests/hosted-schedu
 +        );
 +        yield* browser.use("The queue summarizes the saved arguments", (page) =>
 +          page.getByText('{"message":"Weekly synthetic update"}', { exact: true }).waitFor(),
-         );
++        );
++        expect(
++          detailReads,
++          "Queue summaries arrive with the runs list, without per-row requests",
++        ).toEqual([]);
          yield* browser.checkpoint("02 Hosted approvals list");
          yield* browser.use("Review the pending run", (page) =>
+           page.getByRole("link", { name: "Review", exact: true }).click(),
 diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-inputs.spec.ts
 --- a/e2e/tests/local-workflow-inputs.spec.ts
 +++ b/e2e/tests/local-workflow-inputs.spec.ts
@@ -498,7 +524,19 @@ diff --git a/e2e/tests/local-workflow-inputs.spec.ts b/e2e/tests/local-workflow-
 diff --git a/apps/docs/content/concepts/tools-and-approvals.md b/apps/docs/content/concepts/tools-and-approvals.md
 --- a/apps/docs/content/concepts/tools-and-approvals.md
 +++ b/apps/docs/content/concepts/tools-and-approvals.md
-@@ -108,7 +108,7 @@
+@@ -97,8 +97,9 @@
+ 
+ When you run a tool yourself from an app's **Tools** tab, the dashboard shows
+ the saved call (the tool and its arguments) and resumes it only after you approve.
+-Only you can answer a run you started there. Approvals from an MCP client or a
+-schedule are answered where they were requested.
++Only you can answer a run you started there. Scheduled tool approvals appear in
++**Human in the loop** beside workflow questions. MCP approvals follow the
++connection's elicitation mode; browser requests open their own review link.
+ 
+ A tool can also ask for input rather than permission, using a form. The
+ mechanism is the same.
+@@ -108,7 +109,7 @@
  
  ## Workflow questions
  
@@ -659,7 +697,7 @@ diff --git a/e2e/tests/app-accounts-tab.spec.ts b/e2e/tests/app-accounts-tab.spe
                        ]),
                      ),
 -                  page.getByRole("combobox", { name: "Approvals for report" }).count(),
-+                  page.getByRole("combobox", { name: "Review mode for report" }).count(),
++                  reportRow(page).getByRole("combobox").count(),
                    reportRow(page).getByText("Your schedule", { exact: true }).count(),
                  ]),
              );
@@ -671,81 +709,47 @@ diff --git a/e2e/tests/local-app-accounts-tab.spec.ts b/e2e/tests/local-app-acco
                  reportRow(page).getByText("App schedule", { exact: true }).count(),
                  reportRow(page).getByRole("button").allInnerTexts(),
 -                page.getByRole("combobox", { name: "Approvals for report" }).count(),
-+                page.getByRole("combobox", { name: "Review mode for report" }).count(),
++                reportRow(page).getByRole("combobox").count(),
                ]),
              );
            });
 diff --git a/packages/ui/src/contracts/schedules.ts b/packages/ui/src/contracts/schedules.ts
 --- a/packages/ui/src/contracts/schedules.ts
 +++ b/packages/ui/src/contracts/schedules.ts
-@@ -5,6 +5,7 @@
-   ScheduleId,
-   ScheduleSettings,
+@@ -7,6 +7,7 @@
    ScheduledRun,
-+  ToolInvocation,
    AppId,
  } from "@executor-js/sdk";
++import type { ScheduledRunSummary } from "@executor-js/mcp/browser";
  import type { Atom } from "effect/reactivity";
+ import type { Query } from "./dashboard.ts";
+ 
 @@ -51,5 +52,6 @@
  /** Approval lists need only safe run metadata and product-supplied app names/links. */
  export interface ApprovalListItem {
    readonly run: ScheduledRun;
-+  readonly invocation: ToolInvocation | undefined;
++  readonly invocationSummary: ScheduledRunSummary["invocationSummary"];
    readonly app: { readonly id: AppId; readonly name: string };
  }
 diff --git a/apps/hosted/web/src/contracts/schedules.ts b/apps/hosted/web/src/contracts/schedules.ts
 --- a/apps/hosted/web/src/contracts/schedules.ts
 +++ b/apps/hosted/web/src/contracts/schedules.ts
-@@ -159,8 +159,23 @@
-         [get.result(runsQuery(organization)), get.result(inventoryAtom(organization))],
-         { concurrency: "unbounded" },
+@@ -161,6 +161,7 @@
        );
--      return runs.map((run): ApprovalListItem => ({
-+      const client = yield* HostedClient;
-+      const invocations = yield* Effect.forEach(
-+        runs,
-+        (run) =>
-+          client.schedules.approval({ params: { organization, run: run.id } }).pipe(
-+            Effect.map((view) =>
-+              view.status === "pending" && view.request.status === "approval-required"
-+                ? view.request.invocation
-+                : undefined,
-+            ),
-+            Effect.catch(() => Effect.succeed(undefined)),
-+          ),
-+        { concurrency: 4 },
-+      );
-+      return runs.map((run, index): ApprovalListItem => ({
+       return runs.map((run): ApprovalListItem => ({
          run,
-+        invocation: invocations[index],
++        invocationSummary: run.invocationSummary,
          app: {
            id: run.app,
            name: inventory.apps.find((app) => app.id === run.app)?.name ?? "App unavailable",
 diff --git a/apps/local/web/src/contracts/schedules.ts b/apps/local/web/src/contracts/schedules.ts
 --- a/apps/local/web/src/contracts/schedules.ts
 +++ b/apps/local/web/src/contracts/schedules.ts
-@@ -119,8 +119,23 @@
-   Effect.gen(function* () {
-     const runs = yield* get.result(runsQuery);
+@@ -121,6 +121,7 @@
      const inventory = yield* get.result(overviewAtom);
--    return runs.map((run): ApprovalListItem => ({
-+    const client = yield* DashboardClient;
-+    const invocations = yield* Effect.forEach(
-+      runs,
-+      (run) =>
-+        client.schedules.approval({ params: { run: run.id } }).pipe(
-+          Effect.map((view) =>
-+            view.status === "pending" && view.request.status === "approval-required"
-+              ? view.request.invocation
-+              : undefined,
-+          ),
-+          Effect.catch(() => Effect.succeed(undefined)),
-+        ),
-+      { concurrency: 4 },
-+    );
-+    return runs.map((run, index): ApprovalListItem => ({
+     return runs.map((run): ApprovalListItem => ({
        run,
-+      invocation: invocations[index],
++      invocationSummary: run.invocationSummary,
        app: {
          id: run.app,
          name: inventory.apps.find((app) => app.id === run.app)?.name ?? "App unavailable",
@@ -773,3 +777,194 @@ diff --git a/packages/ui/src/implementation/dashboard/workflow-input.tsx b/packa
          </h1>
        </header>
        {question.evidence.length > 0 && (
+diff --git a/packages/mcp/src/contracts/browser.ts b/packages/mcp/src/contracts/browser.ts
+--- a/packages/mcp/src/contracts/browser.ts
++++ b/packages/mcp/src/contracts/browser.ts
+@@ -2,6 +2,8 @@
+ import { Schema, type Effect } from "effect";
+ import { ElicitationResponse } from "apps/contracts";
+ import {
++  ScheduledRun,
++  ToolName,
+   ApprovalRequestId,
+   Json,
+   ToolResumeResult,
+@@ -30,6 +32,17 @@
+   Schema.Struct({ status: Schema.Literal("unavailable") }),
+ ]);
+ export type BrowserApprovalView = typeof BrowserApprovalView.Type;
++/** A bounded preview, supplied only after the product authorizes this browser's saved call. */
++export const ScheduledRunSummary = Schema.Struct({
++  ...ScheduledRun.fields,
++  invocationSummary: Schema.optionalKey(
++    Schema.Struct({
++      tool: ToolName,
++      arguments: Schema.String.check(Schema.isMaxLength(181)),
++    }),
++  ),
++});
++export type ScheduledRunSummary = typeof ScheduledRunSummary.Type;
+ /** Submitting twice never changes the first answer. Submission does not execute a tool. */
+ export const BrowserApprovalAcknowledgement = Schema.Struct({
+   status: Schema.Literals(["answered", "unavailable"]),
+diff --git a/apps/hosted/server/src/contracts/schedules.ts b/apps/hosted/server/src/contracts/schedules.ts
+--- a/apps/hosted/server/src/contracts/schedules.ts
++++ b/apps/hosted/server/src/contracts/schedules.ts
+@@ -7,13 +7,13 @@
+   AppSchedule,
+   ScheduleSettings,
+   ScheduleApprovalMode,
+-  ScheduledRun,
+   ScheduledRunId,
+   ScheduleErrors,
+   ScheduleId,
+   type ScheduleAuthority,
+ } from "@executor-js/sdk/core";
+ import {
++  ScheduledRunSummary,
+   BrowserApprovalView,
+   BrowserApprovalAcknowledgement,
+   BrowserApprovalAnswer,
+@@ -122,7 +122,7 @@
+         app: Schema.optional(AppId),
+         pending: Schema.optional(Schema.Boolean),
+       },
+-      success: Schema.Array(ScheduledRun),
++      success: Schema.Array(ScheduledRunSummary),
+       error: errors,
+     }),
+   )
+diff --git a/apps/local/server/src/contracts/schedules.ts b/apps/local/server/src/contracts/schedules.ts
+--- a/apps/local/server/src/contracts/schedules.ts
++++ b/apps/local/server/src/contracts/schedules.ts
+@@ -7,12 +7,12 @@
+   AppSchedule,
+   ScheduleSettings,
+   ScheduleApprovalMode,
+-  ScheduledRun,
+   ScheduledRunId,
+   ScheduleErrors,
+   ScheduleId,
+ } from "@executor-js/sdk/core";
+ import {
++  ScheduledRunSummary,
+   BrowserApprovalView,
+   BrowserApprovalAcknowledgement,
+   BrowserApprovalAnswer,
+@@ -97,7 +97,7 @@
+         app: Schema.optional(AppId),
+         pending: Schema.optional(Schema.Boolean),
+       },
+-      success: Schema.Array(ScheduledRun),
++      success: Schema.Array(ScheduledRunSummary),
+       error: ScheduleErrors,
+     }),
+   )
+diff --git a/apps/hosted/server/src/implementation/schedules.ts b/apps/hosted/server/src/implementation/schedules.ts
+--- a/apps/hosted/server/src/implementation/schedules.ts
++++ b/apps/hosted/server/src/implementation/schedules.ts
+@@ -17,7 +17,7 @@
+   type ScheduleSettings,
+ } from "@executor-js/sdk/core";
+ import { ApprovalResponse, approvalElicitation } from "apps/contracts";
+-import { BrowserApprovalView } from "@executor-js/mcp/browser";
++import { BrowserApprovalView, type ScheduledRunSummary } from "@executor-js/mcp/browser";
+ import { HostedApi } from "../contracts/api.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { ScheduleWakeup } from "../contracts/schedules.ts";
+@@ -257,7 +257,7 @@
+             ),
+           ),
+         );
+-        return yield* Effect.filter(runs, (run) =>
++        const visible = yield* Effect.filter(runs, (run) =>
+           Effect.gen(function* () {
+             yield* usableApp(executor, owner, run.app);
+             if (query.pending)
+@@ -269,6 +269,33 @@
+               AppNotFound: () => Effect.succeed(false),
+             }),
+           ),
++        );
++        const browser = yield* browserOnly.pipe(Effect.isSuccess);
++        if (!query.pending || !browser) return visible;
++        return yield* Effect.forEach(
++          visible,
++          (run) =>
++            Effect.gen(function* () {
++              const pending = yield* executor.schedules.approval({ run: run.id, owner });
++              yield* checkInvocationAccounts(executor, owner, pending.invocation);
++              const argumentsText = JSON.stringify(pending.invocation.input);
++              return {
++                ...run,
++                invocationSummary: {
++                  tool: pending.invocation.tool,
++                  arguments:
++                    argumentsText.length > 180 ? `${argumentsText.slice(0, 180)}…` : argumentsText,
++                },
++              } satisfies ScheduledRunSummary;
++            }).pipe(
++              Effect.catch((error) =>
++                Effect.logWarning("Scheduled request summary unavailable", {
++                  run: run.id,
++                  reason: error._tag,
++                }).pipe(Effect.as(run)),
++              ),
++            ),
++          { concurrency: 4 },
+         );
+       }),
+     )
+diff --git a/apps/local/server/src/implementation/schedules.ts b/apps/local/server/src/implementation/schedules.ts
+--- a/apps/local/server/src/implementation/schedules.ts
++++ b/apps/local/server/src/implementation/schedules.ts
+@@ -3,7 +3,7 @@
+ import { HttpApiBuilder } from "effect/http-api";
+ import { StorageError, RequestInvalid, type Executor } from "@executor-js/sdk/core";
+ import { ApprovalResponse, approvalElicitation } from "apps/contracts";
+-import { BrowserApprovalView } from "@executor-js/mcp/browser";
++import { BrowserApprovalView, type ScheduledRunSummary } from "@executor-js/mcp/browser";
+ import { DashboardApi } from "../contracts/dashboard.ts";
+ import type { ServerConfig } from "../contracts/config.ts";
+ import type { LocalAuth } from "./auth.ts";
+@@ -50,7 +50,39 @@
+       )
+       .handle("runCopy", ({ params }) => executor.schedules.runNow(params))
+       .handle("remove", ({ params }) => executor.schedules.remove(params))
+-      .handle("runs", ({ query }) => executor.schedules.runs(query))
++      .handle("runs", ({ query }) =>
++        Effect.gen(function* () {
++          const runs = yield* executor.schedules.runs(query);
++          const browser = yield* browserOnly(config, auth).pipe(Effect.isSuccess);
++          if (!query.pending || !browser) return runs;
++          return yield* Effect.forEach(
++            runs,
++            (run) =>
++              executor.schedules.approval({ run: run.id }).pipe(
++                Effect.map((pending): ScheduledRunSummary => {
++                  const argumentsText = JSON.stringify(pending.invocation.input);
++                  return {
++                    ...run,
++                    invocationSummary: {
++                      tool: pending.invocation.tool,
++                      arguments:
++                        argumentsText.length > 180
++                          ? `${argumentsText.slice(0, 180)}…`
++                          : argumentsText,
++                    },
++                  };
++                }),
++                Effect.catch((error) =>
++                  Effect.logWarning("Scheduled request summary unavailable", {
++                    run: run.id,
++                    reason: error._tag,
++                  }).pipe(Effect.as(run)),
++                ),
++              ),
++            { concurrency: 4 },
++          );
++        }),
++      )
+       .handle("approval", ({ params }) =>
+         Effect.gen(function* () {
+           yield* browserOnly(config, auth);
