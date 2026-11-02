@@ -7,6 +7,7 @@ import { QuotaCollection } from "./quota-collection.ts";
 import { AccountActions } from "./account-actions.ts";
 import { enableNewCodexWebSockets } from "./codex-websockets.ts";
 import { HomeAccountAcquisitions } from "./account-acquisition.ts";
+import { nativeAccountHealth } from "./account-health.ts";
 
 export const attributionStorageKey = "pool-control-v1";
 // Home's device waiters use 16 minutes; callback exchanges use 5 minutes.
@@ -103,6 +104,11 @@ export class PoolControl implements ControlAttribution {
   }
   private now(): number { return this.deps.now?.().getTime() ?? Date.now(); }
   async acquire(request: Request): Promise<Response> {
+    const health = await nativeAccountHealth(request.clone(), {
+      client: this.client, collection: this.collection, signingKey: this.deps.signingKey,
+      previousSigningKey: this.deps.previousSigningKey, now: () => this.now(),
+    });
+    if (health !== undefined) return health;
     const result = await this.run(() => this.acquisitions.handle(request));
     await this.acquisitions.keepAlive();
     return result.value;
