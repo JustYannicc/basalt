@@ -1,0 +1,1361 @@
+diff --git a/apps/hosted/web/src/contracts/workflow-inputs.ts b/apps/hosted/web/src/contracts/workflow-inputs.ts
+index b6902fd739f2396b85731094f585cc85711633cd..b3f62a06699bfb091eee093b3caaed2cc7ab6994 100644
+--- a/apps/hosted/web/src/contracts/workflow-inputs.ts
++++ b/apps/hosted/web/src/contracts/workflow-inputs.ts
+@@ -9,6 +9,7 @@ import { protectedQuery } from "./protected-query.ts";
+ import { inventoryAtom } from "./organization.ts";
+ import { pendingApprovalsAtom } from "./schedules.ts";
+ 
++// The family is weak: retain its outer result too, or GC can recreate the raw read on revisit.
+ export const questions = Atom.family((organization: OrganizationReference) =>
+   HostedClient.runtime
+     .atom(
+@@ -21,7 +22,7 @@ export const questions = Atom.family((organization: OrganizationReference) =>
+         ),
+       ),
+     )
+-    .pipe(revalidated, protectedQuery),
++    .pipe(revalidated, protectedQuery, Atom.setIdleTTL("30 minutes")),
+ );
+ const pending = Atom.family((organization: OrganizationReference) =>
+   pollingQuery(questions(organization), steadyPolling),
+diff --git a/apps/hosted/web/src/implementation/components/app-frame-view.tsx b/apps/hosted/web/src/implementation/components/app-frame-view.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..4df130ed9107d2ddc1740e64f67979c198fcdc73
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/components/app-frame-view.tsx
+@@ -0,0 +1,96 @@
++/** One embedded app document with its loading, failure and shown-or-hidden messages. */
++import { Button } from "@executor-js/ui/components/button";
++import { Skeleton } from "@executor-js/ui/components/skeleton";
++import { useEffect, useLayoutEffect, useRef } from "react";
++
++export type FrameState = "loading" | "ready" | "failed";
++
++export function AppSkeleton() {
++  return (
++    <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
++      <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
++    </div>
++  );
++}
++
++/** A document still loading has another origin, so the target origin drops the message to it. */
++const tell = (frame: HTMLIFrameElement | null, url: string, active: boolean) =>
++  frame?.contentWindow?.postMessage({ type: "executor:app-active", active }, new URL(url).origin);
++
++/**
++ * A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError.
++ * Each document that reports ready, including one its version watcher reloaded, and each app client
++ * that asks then hears whether the host shows it, so the client can pause its polling while the
++ * frame is not shown. The owner keeps `state`, so a document that stays mounted keeps its answer.
++ */
++export function FrameView({
++  url,
++  name,
++  active,
++  state,
++  onSettle,
++  onRetry,
++}: {
++  readonly url: string;
++  readonly name: string;
++  readonly active: boolean;
++  readonly state: FrameState;
++  readonly onSettle: (state: FrameState) => void;
++  readonly onRetry: () => void;
++}) {
++  const frame = useRef<HTMLIFrameElement>(null);
++  const shown = useRef(active);
++  const settle = useRef(onSettle);
++  useLayoutEffect(() => {
++    settle.current = onSettle;
++  }, [onSettle]);
++  useEffect(() => {
++    shown.current = active;
++    tell(frame.current, url, active);
++  }, [active, url]);
++  useEffect(() => {
++    const timer = window.setTimeout(() => settle.current("failed"), 30000);
++    const ready = (event: MessageEvent) => {
++      if (event.origin !== new URL(url).origin || event.source !== frame.current?.contentWindow)
++        return;
++      // An app client asks when it starts, which may be after the document loaded.
++      if (event.data?.type === "executor:app-client") tell(frame.current, url, shown.current);
++      if (event.data?.type !== "executor:app-ready") return;
++      window.clearTimeout(timer);
++      settle.current("ready");
++      tell(frame.current, url, shown.current);
++    };
++    window.addEventListener("message", ready);
++    return () => {
++      window.clearTimeout(timer);
++      window.removeEventListener("message", ready);
++    };
++  }, [url]);
++  return (
++    <div className="relative flex min-h-0 flex-1 flex-col">
++      {state === "loading" && (
++        <div className="absolute inset-0 z-10 flex">
++          <AppSkeleton />
++        </div>
++      )}
++      {state === "failed" && (
++        <div role="alert" className="flex items-center gap-3 border-b p-3 text-sm">
++          <span>The app did not finish loading. Retry or open it in a new tab.</span>
++          <Button variant="outline" onClick={onRetry}>
++            Retry
++          </Button>
++        </div>
++      )}
++      <iframe
++        ref={frame}
++        src={url}
++        title={`${name} app`}
++        className="min-h-0 w-full flex-1 border-0"
++        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
++        allow="clipboard-write"
++        referrerPolicy="no-referrer"
++        onError={() => onSettle("failed")}
++      />
++    </div>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/components/app-frames.tsx b/apps/hosted/web/src/implementation/components/app-frames.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..a70ed3e1d5e23974c9695554c446b33a5795b60e
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/components/app-frames.tsx
+@@ -0,0 +1,322 @@
++/**
++ * Embedded app documents belong to the organization layout, not to the page that shows them, so
++ * returning to an app from another console page shows its running document at once.
++ *
++ * Moving an iframe in the DOM reloads its document. The layout therefore keeps every frame in one
++ * fixed layer, in a stable order, and places each over the slot its page renders. A frame with no
++ * visible slot stays loaded but hidden, inert and told it is inactive, so its client can pause.
++ */
++import {
++  createContext,
++  useContext,
++  useEffect,
++  useLayoutEffect,
++  useRef,
++  useState,
++  useSyncExternalStore,
++  type CSSProperties,
++  type ReactNode,
++} from "react";
++import { useAtomValue } from "@effect/atom-react";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import type { AppId } from "@executor-js/sdk";
++import { AsyncResult } from "effect/reactivity";
++import { retainProtectedFailure } from "../../contracts/protected-query.ts";
++import { appAccessAtom } from "../../contracts/resource-access.ts";
++import { FrameView, type FrameState } from "./app-frame-view.tsx";
++
++type Entry = {
++  readonly app: AppId;
++  readonly url: string;
++  readonly name: string;
++  readonly attempt: number;
++  readonly state: FrameState;
++  readonly slot: HTMLElement | null;
++  readonly active: boolean;
++  readonly shownAt: number;
++};
++/** Hidden documents kept running; the least recently shown beyond this are closed. */
++const hiddenLimit = 2;
++
++class FrameStore {
++  private entries: readonly Entry[] = [];
++  private readonly listeners = new Set<() => void>();
++  readonly subscribe = (listener: () => void) => {
++    this.listeners.add(listener);
++    return () => void this.listeners.delete(listener);
++  };
++  readonly snapshot = () => this.entries;
++  private set(entries: readonly Entry[]) {
++    const hidden = entries
++      .filter((entry) => entry.slot === null)
++      .sort((a, b) => b.shownAt - a.shownAt)
++      .slice(hiddenLimit);
++    // Removing an entry never moves the others, so their documents keep running.
++    this.entries = hidden.length === 0 ? entries : entries.filter((e) => !hidden.includes(e));
++    for (const listener of this.listeners) listener();
++  }
++  private change(app: AppId, update: (entry: Entry) => Entry) {
++    this.set(this.entries.map((entry) => (entry.app === app ? update(entry) : entry)));
++  }
++  claim(app: AppId, url: string, name: string, slot: HTMLElement, active: boolean) {
++    const existing = this.entries.find((entry) => entry.app === app);
++    const shown = { name, slot, active, shownAt: Date.now() };
++    if (existing === undefined)
++      this.set([...this.entries, { app, url, attempt: 0, state: "loading", ...shown }]);
++    // A new location, such as a new active version, replaces the document in place.
++    else
++      this.change(app, (entry) =>
++        entry.url === url ? { ...entry, ...shown } : { ...entry, ...shown, url, state: "loading" },
++      );
++  }
++  show(app: AppId, slot: HTMLElement, active: boolean) {
++    this.change(app, (entry) => (entry.slot === slot ? { ...entry, active } : entry));
++  }
++  release(app: AppId, slot: HTMLElement) {
++    this.change(app, (entry) =>
++      entry.slot === slot ? { ...entry, slot: null, active: false, shownAt: Date.now() } : entry,
++    );
++  }
++  evict(app: AppId) {
++    if (this.entries.some((entry) => entry.app === app))
++      this.set(this.entries.filter((entry) => entry.app !== app));
++  }
++  clear() {
++    if (this.entries.length > 0) this.set([]);
++  }
++  settle(app: AppId, url: string, attempt: number, state: FrameState) {
++    this.change(app, (entry) =>
++      entry.url === url && entry.attempt === attempt ? { ...entry, state } : entry,
++    );
++  }
++  retry(app: AppId) {
++    this.change(app, (entry) => ({ ...entry, attempt: entry.attempt + 1, state: "loading" }));
++  }
++}
++
++const FrameContext = createContext<FrameStore | null>(null);
++
++/** Owns the organization's app documents; changing organization closes them all. */
++export function AppFrameHost({
++  organization,
++  reference,
++  children,
++}: {
++  /** The URL slug, which names the organization while its reference resolves to an ID. */
++  readonly organization: string;
++  readonly reference: OrganizationReference;
++  readonly children: ReactNode;
++}) {
++  const [store] = useState(() => new FrameStore());
++  const entries = useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
++  const owner = useRef(organization);
++  useEffect(() => {
++    if (owner.current === organization) return;
++    owner.current = organization;
++    store.clear();
++  }, [organization, store]);
++  useEffect(() => () => store.clear(), [store]);
++  return (
++    <FrameContext.Provider value={store}>
++      {children}
++      {entries.map((entry) => (
++        <PlacedFrame
++          key={`${entry.app}\n${entry.url}\n${entry.attempt}`}
++          entry={entry}
++          store={store}
++          organization={reference}
++        />
++      ))}
++    </FrameContext.Provider>
++  );
++}
++
++/** Close an app's document once the person can no longer open its screen. */
++export function useEvictAppFrame(app: AppId, evict: boolean) {
++  const store = useContext(FrameContext);
++  useEffect(() => {
++    if (evict) store?.evict(app);
++  }, [app, evict, store]);
++}
++
++/**
++ * Where a page shows an app's document. Inside an organization the layout owns the document; a
++ * page outside one, such as the app's own window, holds it in place.
++ */
++export function AppFrameSlot(props: {
++  readonly app: AppId;
++  readonly url: string;
++  readonly name: string;
++  readonly active: boolean;
++}) {
++  const store = useContext(FrameContext);
++  return store === null ? (
++    <InlineFrame url={props.url} name={props.name} active={props.active} />
++  ) : (
++    <Slot store={store} {...props} />
++  );
++}
++
++function Slot({
++  store,
++  app,
++  url,
++  name,
++  active,
++}: {
++  readonly store: FrameStore;
++  readonly app: AppId;
++  readonly url: string;
++  readonly name: string;
++  readonly active: boolean;
++}) {
++  const slot = useRef<HTMLDivElement>(null);
++  // Showing or hiding the slot must not release the document, so `active` is read, not tracked.
++  const shown = useRef(active);
++  useLayoutEffect(() => {
++    shown.current = active;
++  }, [active]);
++  useLayoutEffect(() => {
++    const element = slot.current;
++    if (element === null) return;
++    store.claim(app, url, name, element, shown.current);
++    return () => store.release(app, element);
++  }, [store, app, url, name]);
++  useLayoutEffect(() => {
++    if (slot.current !== null) store.show(app, slot.current, active);
++  }, [store, app, active]);
++  return <div ref={slot} className="flex min-h-0 flex-1" />;
++}
++
++function InlineFrame({
++  url,
++  name,
++  active,
++}: {
++  readonly url: string;
++  readonly name: string;
++  readonly active: boolean;
++}) {
++  const [attempt, setAttempt] = useState(0);
++  const [state, setState] = useState<FrameState>("loading");
++  return (
++    <FrameView
++      key={attempt}
++      url={url}
++      name={name}
++      active={active}
++      state={state}
++      onSettle={setState}
++      onRetry={() => {
++        setState("loading");
++        setAttempt((value) => value + 1);
++      }}
++    />
++  );
++}
++
++type Box = {
++  readonly left: number;
++  readonly top: number;
++  readonly width: number;
++  readonly height: number;
++  readonly clip: string;
++};
++const sameBox = (a: Box | null, b: Box | null) =>
++  a === b ||
++  (a !== null &&
++    b !== null &&
++    a.left === b.left &&
++    a.top === b.top &&
++    a.width === b.width &&
++    a.height === b.height &&
++    a.clip === b.clip);
++
++/** The slot's viewport box, clipped to the scrolling main region it sits in. */
++function useSlotBox(slot: HTMLElement | null) {
++  const [box, setBox] = useState<Box | null>(null);
++  useLayoutEffect(() => {
++    if (slot === null) return;
++    const measure = () => {
++      const rect = slot.getBoundingClientRect();
++      const main = slot.closest("main")?.getBoundingClientRect();
++      const clip =
++        main === undefined
++          ? "none"
++          : `inset(${Math.max(0, main.top - rect.top)}px ${Math.max(0, rect.right - main.right)}px ${Math.max(0, rect.bottom - main.bottom)}px ${Math.max(0, main.left - rect.left)}px)`;
++      const next =
++        rect.width === 0 || rect.height === 0
++          ? null
++          : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, clip };
++      setBox((current) => (sameBox(current, next) ? current : next));
++    };
++    measure();
++    const observer = new ResizeObserver(measure);
++    observer.observe(slot);
++    const main = slot.closest("main");
++    if (main !== null) observer.observe(main);
++    window.addEventListener("resize", measure);
++    // Scroll events do not bubble; capturing sees scrolling in any container above the slot.
++    document.addEventListener("scroll", measure, true);
++    return () => {
++      observer.disconnect();
++      window.removeEventListener("resize", measure);
++      document.removeEventListener("scroll", measure, true);
++    };
++  }, [slot]);
++  return slot === null ? null : box;
++}
++
++function PlacedFrame({
++  entry,
++  store,
++  organization,
++}: {
++  readonly entry: Entry;
++  readonly store: FrameStore;
++  readonly organization: OrganizationReference;
++}) {
++  const box = useSlotBox(entry.slot);
++  // A kept document follows the app's access while its page is closed. An authoritative denial,
++  // such as a removed or unshared app, hides it at once and closes it; a transport failure keeps it,
++  // so its drafts survive.
++  const access = useAtomValue(appAccessAtom({ organization, app: entry.app }));
++  const denied =
++    (AsyncResult.isFailure(access) && !retainProtectedFailure(access.cause)) ||
++    (AsyncResult.isSuccess(access) && !access.value.canUse);
++  useEffect(() => {
++    if (denied) store.evict(entry.app);
++  }, [denied, entry.app, store]);
++  const visible = !denied && entry.active && box !== null;
++  const style: CSSProperties = visible
++    ? {
++        position: "fixed",
++        left: box.left,
++        top: box.top,
++        width: box.width,
++        height: box.height,
++        clipPath: box.clip,
++      }
++    : // A hidden document keeps a real size so its layout does not collapse while it waits.
++      {
++        position: "fixed",
++        left: 0,
++        top: 0,
++        width: "100vw",
++        height: "100dvh",
++        visibility: "hidden",
++        pointerEvents: "none",
++      };
++  return (
++    <div style={style} className="flex flex-col bg-background" inert={!visible}>
++      <FrameView
++        url={entry.url}
++        name={entry.name}
++        active={visible}
++        state={entry.state}
++        onSettle={(state) => store.settle(entry.app, entry.url, entry.attempt, state)}
++        onRetry={() => store.retry(entry.app)}
++      />
++    </div>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+index 795102ef9c843b223d129563aaa56438c38ea85f..cbd7c18899afcb738af9363631b452d6e25ad78f 100644
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -43,6 +43,7 @@ import {
+ import { Button } from "@executor-js/ui/components/button";
+ import { Spinner } from "@executor-js/ui/components/spinner";
+ 
++import { AppFrameHost } from "./app-frames.tsx";
+ import { HostedDashboard } from "./dashboard-bindings.tsx";
+ import {
+   OrganizationForm,
+@@ -112,7 +113,10 @@ export function OrganizationContent({
+       </EmptyState>
+     </section>
+   ) : route.released ? (
+-    children
++    // The slug names the organization; its reference changes from slug to ID as access is verified.
++    <AppFrameHost organization={route.slug} reference={route.organization}>
++      {children}
++    </AppFrameHost>
+   ) : (
+     pending
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index f891efd5a88e96f672f0bb9fe0c0b627f5a7da86..d093669133eeca7d46cd07c98b3f34840f4c62af 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -50,6 +50,7 @@ import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
+ import { PublishApp, WhenPublishing } from "@executor-js/ui/dashboard/publish-app";
+ import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
+ import { AppScreen, NoAppScreen } from "./app-screen.tsx";
++import { useEvictAppFrame } from "../components/app-frames.tsx";
+ import { AppDetailLayout, appScreenTab } from "@executor-js/ui/dashboard/app-detail";
+ import {
+   AppOverview,
+@@ -201,6 +202,8 @@ export function AppDetailPage({
+   });
+   // Only callers who can use the app get its tab and its prewarmed frame.
+   const screenApp = screenTab === "present" ? screenRecord : undefined;
++  // The layout keeps an opened app's document running across pages; losing the screen closes it.
++  useEvictAppFrame(appId, screenTab === "absent");
+   // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
+   // instead of showing Overview and switching once the screen turns up.
+   const selectedView: AppView | undefined =
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+index e427beb650960e31655bfb6c451c503c45d1bba3..863126c8783f080515c04ceed456fcc77bc3956a 100644
+--- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -1,12 +1,15 @@
+ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+ import type { App } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
+-import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { AsyncResult } from "effect/reactivity";
+-import { useEffect, useRef, useState } from "react";
++import { useEffect, useRef } from "react";
+ import { appUiError, appUiLocationAtom } from "../../contracts/app-ui.ts";
++import { AppSkeleton } from "../components/app-frame-view.tsx";
++import { AppFrameSlot, useEvictAppFrame } from "../components/app-frames.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
++export { AppSkeleton };
++
+ /** App metadata keeps the card label in the existing list request. */
+ export function AppScreenBadge({ app }: { readonly app: App }) {
+   const hasUi = "hasUi" in app ? app.hasUi : undefined;
+@@ -36,6 +39,17 @@ export function useAppUiLocation(app: App) {
+ /** `active` says whether the host shows the screen; a prewarmed one stays mounted while hidden. */
+ export function AppScreen({ app, active }: { readonly app: App; readonly active: boolean }) {
+   const { result, refresh } = useAppUiLocation(app);
++  const frame =
++    AsyncResult.isSuccess(result) &&
++    result.value.status !== "pending" &&
++    result.value.status !== "failed" &&
++    result.value.status !== "unavailable" &&
++    result.value.url !== null &&
++    result.value.embedded
++      ? result.value.url
++      : undefined;
++  // Any settled answer without a frame, including a failed read, closes a document kept running.
++  useEvictAppFrame(app.id, frame === undefined && !AsyncResult.isInitial(result));
+   if (AsyncResult.isFailure(result))
+     return <ScreenStatus message={appUiError(result.cause)} retry={refresh} />;
+   if (!AsyncResult.isSuccess(result)) return <AppSkeleton />;
+@@ -56,9 +70,9 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
+     );
+   if (result.value.url === null)
+     return <ScreenStatus message="App domain setup needs attention." retry={refresh} />;
+-  if (!result.value.embedded)
++  if (frame === undefined)
+     return <ScreenStatus message="Embedded app screens are not enabled on this host." />;
+-  return <AppFrame key={result.value.url} url={result.value.url} name={app.name} active={active} />;
++  return <AppFrameSlot app={app.id} url={frame} name={app.name} active={active} />;
+ }
+ 
+ /** The App view of an app whose active version has no UI, or that has no active version. */
+@@ -86,92 +100,3 @@ function ScreenStatus({
+     </div>
+   );
+ }
+-
+-export function AppSkeleton() {
+-  return (
+-    <div role="status" aria-label="Loading app" className="relative flex min-h-0 flex-1">
+-      <Skeleton className="absolute inset-0 size-full rounded-none motion-reduce:animate-none" />
+-    </div>
+-  );
+-}
+-
+-/** A document still loading has another origin, so the target origin drops the message to it. */
+-const tell = (frame: HTMLIFrameElement | null, url: string, active: boolean) =>
+-  frame?.contentWindow?.postMessage({ type: "executor:app-active", active }, new URL(url).origin);
+-
+-/**
+- * A host-owned readiness message catches blocked frames and HTTP errors, which do not fire onError.
+- * Each document that reports ready, including one its version watcher reloaded, and each app client
+- * that asks then hears whether the host shows it, so the client can pause its polling while the
+- * frame sits behind other tabs.
+- */
+-function AppFrame({
+-  url,
+-  name,
+-  active,
+-}: {
+-  readonly url: string;
+-  readonly name: string;
+-  readonly active: boolean;
+-}) {
+-  const frame = useRef<HTMLIFrameElement>(null);
+-  const [attempt, setAttempt] = useState(0);
+-  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
+-  const shown = useRef(active);
+-  useEffect(() => {
+-    shown.current = active;
+-    tell(frame.current, url, active);
+-  }, [active, url]);
+-  useEffect(() => {
+-    const timer = window.setTimeout(() => setState("failed"), 30000);
+-    const ready = (event: MessageEvent) => {
+-      if (event.origin !== new URL(url).origin || event.source !== frame.current?.contentWindow)
+-        return;
+-      // An app client asks when it starts, which may be after the document loaded.
+-      if (event.data?.type === "executor:app-client") tell(frame.current, url, shown.current);
+-      if (event.data?.type !== "executor:app-ready") return;
+-      window.clearTimeout(timer);
+-      setState("ready");
+-      tell(frame.current, url, shown.current);
+-    };
+-    window.addEventListener("message", ready);
+-    return () => {
+-      window.clearTimeout(timer);
+-      window.removeEventListener("message", ready);
+-    };
+-  }, [url, attempt]);
+-  return (
+-    <div className="relative flex min-h-0 flex-1 flex-col">
+-      {state === "loading" && (
+-        <div className="absolute inset-0 z-10 flex">
+-          <AppSkeleton />
+-        </div>
+-      )}
+-      {state === "failed" && (
+-        <div role="alert" className="flex items-center gap-3 border-b p-3 text-sm">
+-          <span>The app did not finish loading. Retry or open it in a new tab.</span>
+-          <Button
+-            variant="outline"
+-            onClick={() => {
+-              setState("loading");
+-              setAttempt((value) => value + 1);
+-            }}
+-          >
+-            Retry
+-          </Button>
+-        </div>
+-      )}
+-      <iframe
+-        key={attempt}
+-        ref={frame}
+-        src={url}
+-        title={`${name} app`}
+-        className="min-h-0 w-full flex-1 border-0"
+-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
+-        allow="clipboard-write"
+-        referrerPolicy="no-referrer"
+-        onError={() => setState("failed")}
+-      />
+-    </div>
+-  );
+-}
+diff --git a/e2e/support/instant-navigation.ts b/e2e/support/instant-navigation.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fc6e4b572505b5a6fd91589360e1b0fe966950e7
+--- /dev/null
++++ b/e2e/support/instant-navigation.ts
+@@ -0,0 +1,174 @@
++/** Observe every committed DOM state between a dashboard navigation and its content. */
++import { Effect } from "effect";
++import { Browser } from "./browser.ts";
++
++/** How the navigation starts inside the running page, so its start time is exact. */
++export type InstantStart =
++  | { readonly kind: "sidebar"; readonly link: string }
++  | { readonly kind: "path"; readonly path: string };
++
++/** What only the loaded page renders inside `main`: a visible selector match, text, or both. */
++export type InstantContent = { readonly selector?: string; readonly text?: string };
++
++export type InstantObservation = {
++  readonly contentMs: number | null;
++  /** True when the departing page already matched the content marker, which makes it ambiguous. */
++  readonly contentAtStart: boolean;
++  /** Loading states that were committed inside the main region, with when they first appeared. */
++  readonly loading: readonly {
++    readonly label: string;
++    /** Tag and first class, which tell apart loading states that share a label. */
++    readonly element: string;
++    readonly atMs: number;
++  }[];
++  readonly samples: number;
++};
++
++/**
++ * The probe samples on every DOM mutation and every animation frame, so a loading state that is
++ * committed and replaced before the next frame is still recorded. Sampling continues for a short
++ * window after the content appears so a loading state that replaces content is also caught.
++ */
++const probe = (input: { readonly start: InstantStart; readonly content: InstantContent }) =>
++  new Promise<InstantObservation>((resolve, reject) => {
++    const loadingSelector = '[role="status"][aria-label^="Loading"], [data-slot="skeleton"]';
++    const loading: { label: string; element: string; atMs: number }[] = [];
++    let contentMs: number | null = null;
++    let samples = 0;
++    let started = 0;
++    // The departing page's own loading states are not part of the destination.
++    const departing = new WeakSet<Element>();
++    const hasContent = (main: Element) =>
++      (input.content.selector === undefined ||
++        [...main.querySelectorAll(input.content.selector)].some((element) =>
++          element.checkVisibility({ visibilityProperty: true }),
++        )) &&
++      (input.content.text === undefined || (main.textContent ?? "").includes(input.content.text));
++    const initial = document.querySelector("main");
++    const contentAtStart = initial !== null && hasContent(initial);
++    for (const element of initial?.querySelectorAll(loadingSelector) ?? []) departing.add(element);
++    const sample = () => {
++      samples++;
++      const main = document.querySelector("main");
++      if (main === null) return;
++      const atMs = performance.now() - started;
++      for (const element of main.querySelectorAll(loadingSelector)) {
++        if (departing.has(element)) continue;
++        const label =
++          element.closest("[aria-label]")?.getAttribute("aria-label") ?? "Unlabelled skeleton";
++        const kind = `${element.tagName.toLowerCase()}.${element.getAttribute("class")?.split(" ")[0] ?? ""}`;
++        if (!loading.some((entry) => entry.label === label && entry.element === kind))
++          loading.push({ label, element: kind, atMs });
++      }
++      if (
++        contentMs === null &&
++        hasContent(main) &&
++        [...main.querySelectorAll(loadingSelector)].every((element) => departing.has(element))
++      )
++        contentMs = atMs;
++    };
++    const observer = new MutationObserver(sample);
++    observer.observe(document.documentElement, {
++      subtree: true,
++      childList: true,
++      attributes: true,
++      characterData: true,
++    });
++    const settleMs = 750;
++    const timeoutMs = 20_000;
++    const frame = () => {
++      sample();
++      const elapsed = performance.now() - started;
++      if ((contentMs !== null && elapsed > contentMs + settleMs) || elapsed > timeoutMs) {
++        observer.disconnect();
++        resolve({ contentMs, contentAtStart, loading, samples });
++        return;
++      }
++      requestAnimationFrame(frame);
++    };
++    started = performance.now();
++    if (input.start.kind === "sidebar") {
++      const name = input.start.link;
++      const link = [
++        ...document.querySelectorAll<HTMLAnchorElement>('nav[aria-label="Main navigation"] a'),
++      ].find((anchor) => anchor.textContent?.trim() === name && anchor.offsetParent !== null);
++      if (link === undefined) {
++        observer.disconnect();
++        reject(new Error(`No visible sidebar link named ${name}`));
++        return;
++      }
++      link.click();
++    } else {
++      window.history.pushState(window.history.state, "", input.start.path);
++    }
++    sample();
++    requestAnimationFrame(frame);
++  });
++
++/** Navigate inside the hydrated dashboard and record every loading state before the content. */
++export const observeNavigation = (label: string, start: InstantStart, content: InstantContent) =>
++  Effect.flatMap(Browser, (browser) =>
++    browser.use(label, (page) => page.evaluate(probe, { start, content })),
++  );
++
++/** Observe the retained app layer through the shared navigation sheet and viewport change. */
++export const inspectFrameLayout = (selector: string) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    return yield* Effect.acquireUseRelease(
++      browser.use("Remember the viewport", (page) => Promise.resolve(page.viewportSize())),
++      () =>
++        Effect.gen(function* () {
++          yield* browser.use("Resize the app's page", (page) =>
++            page.setViewportSize({ width: 640, height: 680 }),
++          );
++          yield* browser.use("Capture the frame after resizing", (page) =>
++            page.locator(selector).screenshot(),
++          );
++          const frameWithinPage = yield* browser.use(
++            "Observe the app inside its resized page",
++            (page) =>
++              page.locator(selector).evaluate((element) => {
++                const rect = element.getBoundingClientRect();
++                const main = document.querySelector("main")?.getBoundingClientRect();
++                return (
++                  main !== undefined &&
++                  rect.width > 0 &&
++                  rect.height > 0 &&
++                  rect.left >= main.left - 1 &&
++                  rect.right <= main.right + 1 &&
++                  rect.top >= main.top - 1 &&
++                  rect.bottom <= main.bottom + 1
++                );
++              }),
++          );
++          yield* browser.use("Open the navigation sheet above the app", (page) =>
++            page.getByRole("button", { name: "Menu", exact: true }).click(),
++          );
++          yield* browser.use("The navigation sheet is visible", (page) =>
++            page.getByRole("dialog", { name: "Menu", exact: true }).waitFor({ state: "visible" }),
++          );
++          const dialogReceivesInput = yield* browser.use(
++            "The sheet receives input above the frame",
++            (page) =>
++              page.getByRole("dialog", { name: "Menu", exact: true }).evaluate((element) => {
++                const rect = element.getBoundingClientRect();
++                return element.contains(
++                  document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
++                );
++              }),
++          );
++          yield* browser.use("Close the navigation sheet", (page) => page.keyboard.press("Escape"));
++          yield* browser.use("The navigation sheet closes", (page) =>
++            page.getByRole("dialog", { name: "Menu", exact: true }).waitFor({ state: "hidden" }),
++          );
++          return { dialogReceivesInput, frameWithinPage };
++        }),
++      (previous) =>
++        previous === null
++          ? Effect.void
++          : browser
++              .use("Restore the viewport", (page) => page.setViewportSize(previous))
++              .pipe(Effect.orDie),
++    );
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 4502a87118ee6edb80c6d897e61abee4db503df4..7cd53d37c956ff7ab64c69afaef6f84a259ffe94 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -5075,6 +5075,25 @@ export const scenarios = plan({
+       local: na("Local has no hosted organization membership."),
+     },
+   },
++  instantConsoleRevisit: {
++    fixtures: "actors",
++    file: "instant-console-navigation.spec.ts",
++    appOrigin: true,
++    title: "Returning to loaded console pages commits no loading state",
++    serverEnvironment: {
++      BETTER_AUTH_URL: "http://app.fixture.localhost:0",
++      EXECUTOR_APP_UI_BASE_URL: "http://fixture.localhost:0",
++      EXECUTOR_APP_UI_ADDRESS_SCHEME: "opaque",
++      EXECUTOR_APP_UI_EMBEDDED: "true",
++    },
++    targets: {
++      "self-host": scheduled,
++      cloud: na(
++        "This scenario owns a self-host process with opaque addressing and embedding enabled.",
++      ),
++      local: na("This journey checks the hosted console's sidebar pages and organization reads."),
++    },
++  },
+   earlyFormSubmission: {
+     fixtures: "actors",
+     file: "early-form-submission.spec.ts",
+diff --git a/e2e/tests/instant-console-navigation.spec.ts b/e2e/tests/instant-console-navigation.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e48d01d7f6623910d793dd451c7cbaa45bcbd25
+--- /dev/null
++++ b/e2e/tests/instant-console-navigation.spec.ts
+@@ -0,0 +1,392 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import {
++  type InstantContent,
++  type InstantObservation,
++  type InstantStart,
++  observeNavigation,
++  inspectFrameLayout,
++} from "../support/instant-navigation.ts";
++import { holdQuery, installBrowserClock, refreshVisiblePage } from "../support/query-transition.ts";
++import { workflowInputFixture } from "../support/workflow-input-fixture.ts";
++import { waitForAppUrl } from "../support/app-pages.ts";
++import type { Request, Route } from "playwright";
++import { scenarios } from "../test-plan.ts";
++
++const screenFiles = [
++  {
++    path: "index.ts",
++    content: `import { defineApp } from "apps"; export default defineApp({}, {});`,
++  },
++  {
++    path: "ui/index.html",
++    content: `<!doctype html><html><head><title>Screen fixture</title></head><body><main><h1>Screen fixture</h1></main></body></html>`,
++  },
++  appsManifest,
++];
++
++layer(HostedLive, { excludeTestServices: true })("Instant console navigation", (it) => {
++  it.effect(scenarios.instantConsoleRevisit.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const name = `Instant ${randomUUID().slice(0, 8)}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name,
++          files: [
++            {
++              path: "index.ts",
++              content: `
++import { defineApp, query, router } from "apps";
++export default defineApp({}, async () => ({
++  tools: router({ ping: query({ description: "Ping" }, async () => "pong") })
++}));
++`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
++            Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++            Effect.orDie,
++          ),
++        );
++        const organization = `/org/${actors.organization.slug}`;
++        const pages: readonly {
++          readonly page: string;
++          readonly start: InstantStart;
++          readonly content: InstantContent;
++        }[] = [
++          {
++            page: "Accounts",
++            start: { kind: "sidebar", link: "Accounts" },
++            content: { text: "No accounts available" },
++          },
++          {
++            page: "Human in the loop",
++            start: { kind: "sidebar", link: "Human in the loop" },
++            content: { text: "Nothing needs you right now" },
++          },
++          {
++            page: "App settings",
++            start: { kind: "path", path: `${organization}/apps/${app.id}?view=settings` },
++            content: { text: "Rename" },
++          },
++          {
++            page: "App workflows",
++            start: { kind: "path", path: `${organization}/apps/${app.id}?view=workflows` },
++            content: { selector: '[aria-label="App workflows"]' },
++          },
++          {
++            page: "Apps",
++            start: { kind: "sidebar", link: "Apps" },
++            content: { selector: `[aria-label^="Open ${name}"]` },
++          },
++        ];
++        yield* browser.login(actors.owner);
++        yield* openThroughBrowser("Open the apps list", `${organization}/apps`);
++        yield* browser.use("The apps list has loaded", (page) =>
++          page.getByText(name, { exact: true }).first().waitFor({ state: "visible" }),
++        );
++        const results: { pass: string; page: string; observation: InstantObservation }[] = [];
++        const visit = (pass: "first" | "return") =>
++          Effect.forEach(pages, ({ page, start, content }) =>
++            Effect.gen(function* () {
++              const observation = yield* observeNavigation(
++                `${pass === "first" ? "Open" : "Return to"} ${page}`,
++                start,
++                content,
++              );
++              results.push({ pass, page, observation });
++              expect(observation.contentAtStart, `${page} has its own content marker`).toBe(false);
++              expect(observation.contentMs, `${page} content appears`).not.toBeNull();
++              if (pass === "return") yield* browser.checkpoint(`${page} on return`);
++            }),
++          );
++        yield* visit("first");
++        yield* visit("return");
++
++        // An opened app's document keeps running while other console pages are shown.
++        const screen = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Kept screen fixture",
++          files: screenFiles,
++        });
++        expect(screen.status, JSON.stringify(screen.body)).toBe(200);
++        const screenApp = yield* body(App, screen);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${screenApp.id}`).pipe(Effect.orDie),
++        );
++        const screenUrl = new URL(
++          yield* waitForAppUrl(actors.owner, `${prefix}/apps/${screenApp.id}/ui`),
++        );
++        const frame = `iframe[title="${screenApp.name} app"]`;
++        let documentLoads = 0;
++        const countDocument = (request: Request) => {
++          const url = new URL(request.url());
++          if (request.resourceType() === "document" && url.origin === screenUrl.origin)
++            documentLoads += 1;
++        };
++        yield* Effect.acquireRelease(
++          browser.use("Count the app's document loads", (page) =>
++            Promise.resolve(void page.on("request", countDocument)),
++          ),
++          () =>
++            browser
++              .use("Stop counting the app's document loads", (page) =>
++                Promise.resolve(void page.off("request", countDocument)),
++              )
++              .pipe(Effect.orDie),
++        );
++        const screenPath = `${organization}/apps/${screenApp.id}`;
++        const opened = yield* observeNavigation(
++          "Open the app screen",
++          { kind: "path", path: screenPath },
++          { selector: frame },
++        );
++        expect(opened.contentMs, "The app screen is shown").not.toBeNull();
++        yield* browser.use("The app document has loaded", (page) =>
++          page.frameLocator(frame).getByRole("heading", { name: "Screen fixture" }).waitFor(),
++        );
++        const original = yield* browser.use("Remember the app's frame", (page) =>
++          page.locator(frame).elementHandle(),
++        );
++        const loadsBefore = documentLoads;
++        // Opening an app signs it in on its own origin, which takes several document requests.
++        expect(loadsBefore, "The app document loaded").toBeGreaterThan(0);
++        const elsewhere = yield* observeNavigation(
++          "Open Accounts while the app is open",
++          { kind: "sidebar", link: "Accounts" },
++          { text: "No accounts available" },
++        );
++        expect(elsewhere.contentMs).not.toBeNull();
++        const hidden = yield* browser.use("Check the app's frame while Accounts is shown", () =>
++          original.evaluate((element) => ({
++            connected: element.isConnected,
++            visible: element.checkVisibility({ visibilityProperty: true }),
++          })),
++        );
++        const returned = yield* observeNavigation(
++          "Return to the app screen",
++          { kind: "path", path: screenPath },
++          { selector: frame },
++        );
++        results.push({ pass: "return", page: "App screen", observation: returned });
++        expect(returned.contentMs, "The app screen is shown").not.toBeNull();
++        yield* browser.checkpoint("App screen on return");
++        const same = yield* browser.use("Compare the shown frame with the original", (page) =>
++          page.evaluate(([selector, previous]) => document.querySelector(selector) === previous, [
++            frame,
++            original,
++          ] as const),
++        );
++        const layout = yield* inspectFrameLayout(frame);
++        expect(layout.dialogReceivesInput, "The dialog receives input above the frame").toBe(true);
++        expect(layout.frameWithinPage, "The frame stays inside its resized page").toBe(true);
++        // Asserted at the end, so a run against older code still records the later journeys.
++        // A kept document closes once its app can no longer be opened, even with its page closed.
++        const closedPage = yield* observeNavigation(
++          "Leave the app screen again",
++          { kind: "sidebar", link: "Accounts" },
++          { text: "No accounts available" },
++        );
++        expect(closedPage.contentMs).not.toBeNull();
++        const removed = yield* api.request(
++          actors.owner,
++          "DELETE",
++          `${prefix}/apps/${screenApp.id}`,
++        );
++        expect(removed.status).toBe(200);
++        yield* refreshVisiblePage;
++        const closedOnRemoval = yield* browser.use(
++          "The removed app's kept document closes",
++          (page) =>
++            page
++              .waitForFunction((element) => !element.isConnected, original, { timeout: 10_000 })
++              .then(
++                () => true,
++                () => false,
++              ),
++        );
++        const kept = {
++          documentLoads,
++          loadsBefore,
++          away: hidden,
++          sameFrame: same,
++          closedOnRemoval,
++        };
++        yield* evidence.json("instant-console-frame.json", kept);
++
++        // A review whose code failed to download offers Try again. Chromium keeps a failed dynamic
++        // import in its module map, so Try again cannot fetch the same chunk again; the outcome is
++        // recorded rather than asserted until the product reloads or re-addresses failed chunks.
++        const reviewChunk = (url: URL) =>
++          /\/assets\/approvals-list-client-[^/]+\.js$/.test(url.pathname);
++        let blockedLoads = 0;
++        const blockChunk = (route: Route) => {
++          blockedLoads += 1;
++          return route.abort("failed");
++        };
++        yield* browser.use("Start a fresh dashboard document", (page) =>
++          page.goto(`${organization}/connect`),
++        );
++        yield* Effect.acquireRelease(
++          browser.use("Fail the review code download", (page) =>
++            page.route(reviewChunk, blockChunk),
++          ),
++          () =>
++            browser
++              .use("Stop failing the review code download", (page) =>
++                page.unroute(reviewChunk, blockChunk),
++              )
++              .pipe(Effect.orDie),
++        );
++        const failed = yield* observeNavigation(
++          "Open Human in the loop while its code cannot load",
++          { kind: "sidebar", link: "Human in the loop" },
++          { text: "This page could not load" },
++        );
++        expect(failed.contentMs, "The load failure offers a retry").not.toBeNull();
++        expect(blockedLoads, "The review code download was attempted").toBe(1);
++        yield* browser.checkpoint("Human in the loop after its code failed to load");
++        yield* browser.use("Let the review code download", (page) =>
++          page.unroute(reviewChunk, blockChunk),
++        );
++        let chunkRequestsAfterRetry = 0;
++        const countChunk = (request: { url: () => string }) => {
++          if (reviewChunk(new URL(request.url()))) chunkRequestsAfterRetry += 1;
++        };
++        const retry = yield* browser.use("Try loading the review again", (page) => {
++          page.on("request", countChunk);
++          return page
++            .getByRole("button", { name: "Try again", exact: true })
++            .click()
++            .then(() =>
++              page
++                .getByText("Nothing needs you right now", { exact: true })
++                .waitFor({ timeout: 5_000 })
++                .then(
++                  () => true,
++                  () => false,
++                ),
++            )
++            .finally(() => page.off("request", countChunk));
++        });
++        yield* browser.checkpoint("Human in the loop after Try again");
++        // Leaving and returning must call the loader again, never hold a spinner on a failed load.
++        const away = yield* observeNavigation(
++          "Leave the failed review",
++          { kind: "sidebar", link: "Apps" },
++          { selector: `[aria-label^="Open ${name}"]` },
++        );
++        expect(away.contentMs).not.toBeNull();
++        const again = yield* observeNavigation(
++          "Return to the failed review",
++          { kind: "sidebar", link: "Human in the loop" },
++          { text: retry ? "Nothing needs you right now" : "This page could not load" },
++        );
++        expect(
++          again.contentMs,
++          "A failed review settles instead of loading forever",
++        ).not.toBeNull();
++        results.push(
++          { pass: "retry-failure", page: "Human in the loop", observation: failed },
++          { pass: "retry-again", page: "Human in the loop", observation: again },
++        );
++        yield* evidence.json("instant-console-navigation.json", results);
++        yield* evidence.json("instant-console-retry.json", {
++          blockedLoads,
++          recoveredOnTryAgain: retry,
++          chunkRequestsAfterRetry,
++        });
++
++        // A stale queue stays on screen while its refresh is held, then takes the new answer.
++        // The browser clock cannot be removed again, so this leg runs last.
++        const inputs = yield* workflowInputFixture;
++        const queue = '[aria-label="Requests for you"]';
++        const requests = (label: string) =>
++          browser.use(label, (page) => page.locator(`${queue} > li`).count());
++        yield* inputs.pending((yield* inputs.start()).id);
++        yield* installBrowserClock;
++        yield* browser.use("Start a dashboard document with a controlled clock", (page) =>
++          page.goto(`${organization}/connect`),
++        );
++        const loaded = yield* observeNavigation(
++          "Open Human in the loop with one request",
++          { kind: "sidebar", link: "Human in the loop" },
++          { selector: queue },
++        );
++        expect(loaded.contentMs).not.toBeNull();
++        expect(yield* requests("The queue shows one request")).toBe(1);
++        const left = yield* observeNavigation(
++          "Leave Human in the loop",
++          { kind: "sidebar", link: "Apps" },
++          { selector: `[aria-label^="Open ${name}"]` },
++        );
++        expect(left.contentMs).not.toBeNull();
++        yield* inputs.pending((yield* inputs.start()).id);
++        yield* browser.use("Leave the queue until it is stale", (page) =>
++          page.clock.runFor(31_000),
++        );
++        const refresh = yield* holdQuery(
++          /^\/api\/organizations\/[^/]+\/workflow-inputs$/,
++          "continue",
++          {
++            query: { pending: "true" },
++          },
++        );
++        const stale = yield* observeNavigation(
++          "Return to the stale queue with its refresh held",
++          { kind: "sidebar", link: "Human in the loop" },
++          { selector: queue },
++        );
++        yield* refresh.requested;
++        const heldQueue = yield* requests("The queue while its refresh is held");
++        results.push({
++          pass: "return",
++          page: "Human in the loop (stale, read held)",
++          observation: stale,
++        });
++        yield* evidence.json("instant-console-navigation.json", results);
++        yield* browser.checkpoint("Human in the loop while its refresh is held");
++        expect(stale.contentMs, "The stale queue is shown").not.toBeNull();
++        expect(heldQueue, "The held refresh keeps the previous queue").toBe(1);
++        yield* refresh.release;
++        yield* browser.use("The refreshed queue shows the new request", (page) =>
++          page.locator(`${queue} > li`).nth(1).waitFor(),
++        );
++        expect(yield* requests("The refreshed queue")).toBe(2);
++        yield* browser.checkpoint("Human in the loop after its refresh");
++
++        const flashes = results
++          .filter((result) => result.pass === "return")
++          .map((result) => ({ page: result.page, loading: result.observation.loading }))
++          .filter((result) => result.loading.length > 0);
++        expect(flashes, "A return to a loaded page commits no loading state").toEqual([]);
++        expect(kept.away, "The app's frame stays loaded and hidden behind Accounts").toEqual({
++          connected: true,
++          visible: false,
++        });
++        expect(kept.sameFrame, "The app's frame was never replaced").toBe(true);
++        expect(kept.documentLoads, "The app document was not loaded again").toBe(kept.loadsBefore);
++        expect(kept.closedOnRemoval, "A removed app's kept document closes").toBe(true);
++      }),
++    ),
++  );
++});
+diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
+index a506376ecc86c5f11af8122c714b691200d87872..82b25602be01ca5fec6eadda7716f93e44cd20e7 100644
+--- a/packages/ui/src/implementation/dashboard/accounts.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts.tsx
+@@ -1,20 +1,20 @@
+-import { lazy, Suspense, useState } from "react";
++import { Suspense } from "react";
+ import { useHydrated } from "../hooks/hydrated.ts";
+ import type { AccountsPage as AccountsPageClient } from "./accounts-client.tsx";
+ import { PageFrame, PageHeader } from "./page.tsx";
+ import { AccountRowsSkeleton } from "./loading.tsx";
++import { retainedLazy } from "./review-lazy.tsx";
+ 
+ // Server-side lazy chunks still upload and compile on every Worker cold start.
+ const load = () =>
+   import.meta.env.SSR
+     ? Promise.reject(new Error("Account controls render only in a browser"))
+     : import("./accounts-client.tsx");
++const loadView = () => load().then((module) => ({ default: module.AccountsPage }));
+ 
+ export function AccountsPage<E>(props: Parameters<typeof AccountsPageClient<E>>[0]) {
+   const hydrated = useHydrated();
+-  const [View] = useState(() =>
+-    lazy(() => load().then((module) => ({ default: module.AccountsPage<E> }))),
+-  );
++  const View = retainedLazy<Parameters<typeof AccountsPageClient<E>>[0]>(loadView);
+   return hydrated ? (
+     <Suspense
+       fallback={
+@@ -24,6 +24,7 @@ export function AccountsPage<E>(props: Parameters<typeof AccountsPageClient<E>>[
+         </PageFrame>
+       }
+     >
++      {/* oxlint-disable-next-line react/static-components -- retainedLazy returns the same component for each module-level loader */}
+       <View {...props} />
+     </Suspense>
+   ) : (
+diff --git a/packages/ui/src/implementation/dashboard/review-lazy.tsx b/packages/ui/src/implementation/dashboard/review-lazy.tsx
+index 7fdab4bf32378b362f10c75390d78c9dccabd688..62490d45817040436bf6f8518a801192c0efc3ee 100644
+--- a/packages/ui/src/implementation/dashboard/review-lazy.tsx
++++ b/packages/ui/src/implementation/dashboard/review-lazy.tsx
+@@ -1,20 +1,50 @@
+-import { Component, lazy, Suspense, useState, type ComponentType, type ReactNode } from "react";
++import {
++  Component,
++  lazy,
++  Suspense,
++  useState,
++  type ComponentType,
++  type LazyExoticComponent,
++  type ReactNode,
++} from "react";
+ import { useHydrated } from "../hooks/hydrated.ts";
+ import { Button } from "../components/button.tsx";
+ import { Spinner } from "../components/spinner.tsx";
+ import { ApprovalCard } from "./loading.tsx";
+ 
++type Loader<P> = () => Promise<{ default: ComponentType<P> }>;
++const retained = new WeakMap<object, unknown>();
++
++/**
++ * One lazy component per module-level loader. A new `lazy` suspends on its first render even when
++ * the module is already loaded, so a page opened again would show its fallback every time. A failed
++ * load is dropped, so the next mount or retry calls the loader again.
++ */
++export function retainedLazy<P>(load: Loader<P>): ComponentType<P> {
++  const existing = retained.get(load);
++  // Each entry is the component made from its own key, so it has that loader's props.
++  if (existing !== undefined) return existing as ComponentType<P>;
++  const View: LazyExoticComponent<ComponentType<P>> = lazy(() =>
++    load().catch((error: unknown) => {
++      if (retained.get(load) === View) retained.delete(load);
++      return Promise.reject(error);
++    }),
++  );
++  retained.set(load, View);
++  return View;
++}
++
+ /** Review code loads only when a browser opens the request. */
+ export function LazyReview<P extends object>({
+   load,
+   props,
+ }: {
+-  readonly load: () => Promise<{ default: ComponentType<P> }>;
++  readonly load: Loader<P>;
+   readonly props: P;
+ }) {
+   const hydrated = useHydrated();
+   const [attempt, setAttempt] = useState(0);
+-  const [Review, setReview] = useState(() => lazy(load));
++  const Review = retainedLazy(load);
+   const pending = (
+     <ApprovalCard>
+       <Spinner />
+@@ -23,14 +53,9 @@ export function LazyReview<P extends object>({
+   return !hydrated ? (
+     pending
+   ) : (
+-    <ReviewBoundary
+-      key={attempt}
+-      retry={() => {
+-        setReview(() => lazy(load));
+-        setAttempt(attempt + 1);
+-      }}
+-    >
++    <ReviewBoundary key={attempt} retry={() => setAttempt(attempt + 1)}>
+       <Suspense fallback={pending}>
++        {/* oxlint-disable-next-line react/static-components -- retainedLazy returns the same component for each module-level loader */}
+         <Review {...props} />
+       </Suspense>
+     </ReviewBoundary>
