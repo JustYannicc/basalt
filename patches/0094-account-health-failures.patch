@@ -28,6 +28,25 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    accountDirectoryHealth: {
      fixtures: "actors",
      file: "account-directory-health.spec.ts",
+@@ -8463,6 +8483,18 @@
+     file: "account-status-storage.spec.ts",
+     title:
+       "account status preserves selected sites and retained identity through a reporting upgrade and restarts",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses isolated PGlite metadata."),
++      local: na("Uses hosted HTTP endpoints."),
++    },
++  },
++  accountStatusRecoveryStorage: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-status-storage.spec.ts",
++    title:
++      "account status preserves identity and clears failed check metadata after restart and recovery",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Uses isolated PGlite metadata."),
 diff --git a/e2e/tests/account-health-failures.spec.ts b/e2e/tests/account-health-failures.spec.ts
 new file mode 100644
 --- /dev/null
@@ -307,7 +326,54 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
  layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
    it.effect(scenarios.accountStatusStorage.title, (context) =>
      withHostedCase(
-@@ -106,6 +115,9 @@
+@@ -38,18 +47,20 @@
+           { sql: "UPDATE private_executor_settings SET value = '4.0.21' WHERE key = 'version'" },
+         ]);
+         yield* serverControl("start");
+-        const afterInput = yield* legacyStorage(retainedQueries);
+-        expect(afterInput).toEqual(beforeInput.slice(0, retainedTables.length));
+-        yield* serverControl("start");
+-        yield* serverControl("restart");
+-        const [inputVersion, inputTables] = yield* legacyStorage([
++        const afterInput = yield* legacyStorage([
++          ...retainedQueries,
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+           {
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name = 'executor_workflow_inputs'",
+           },
+         ]);
+-        expect(inputVersion).toEqual([{ value: "4.0.25" }]);
+-        expect(inputTables).toEqual([{ table_name: "executor_workflow_inputs" }]);
++        expect(afterInput.slice(0, retainedTables.length)).toEqual(
++          beforeInput.slice(0, retainedTables.length),
++        );
++        expect(afterInput[retainedTables.length]).toEqual([{ value: "4.0.25" }]);
++        expect(afterInput[retainedTables.length + 1]).toEqual([
++          { table_name: "executor_workflow_inputs" },
++        ]);
+         yield* serverControl("start");
+         expect((yield* fixture.read()).status).toBe(200);
+         const inherited = yield* reportingUpgradeFixture;
+@@ -95,6 +106,18 @@
+             apps: [{ check: { displayStatus: displayedStatus } }],
+           },
+         });
++      }).pipe(
++        Effect.ensuring(serverControl("start").pipe(Effect.orDie)),
++        Effect.provide(McpClient.layer),
++      ),
++    ),
++  );
++  it.effect(scenarios.accountStatusRecoveryStorage.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* statusAccount(accountStatusSource);
++        expect((yield* fixture.check()).status).toBe(200);
+         yield* fixture.statusBackend.answer({
+           status: 200,
+           body: { status: { ...displayedStatus, stats: [{ label: "Requests", value: "43" }] } },
+@@ -106,14 +129,18 @@
              apps: [{ check: { displayStatus: { stats: [{ label: "Requests", value: "43" }] } } }],
            },
          });
@@ -316,12 +382,12 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
 +        expect(beforeFailure.health.infoCheckedAt).toEqual(expect.any(String));
          yield* fixture.statusBackend.answer({ status: 503, body: {} });
          expect((yield* fixture.check()).status).toBe(200);
-         yield* serverControl("restart");
-@@ -114,6 +126,14 @@
-             info: { displayName: "Checked fixture identity" },
-             apps: [{ check: { status: "upstream_unavailable" } }],
-           },
-+        });
+-        yield* serverControl("restart");
+-        expect((yield* fixture.read()).body).toMatchObject({
+-          health: {
+-            info: { displayName: "Checked fixture identity" },
+-            apps: [{ check: { status: "upstream_unavailable" } }],
+-          },
 +        const failed = yield* body(AccountHealth, yield* fixture.read());
 +        expect(failed.health.info).toEqual(beforeFailure.health.info);
 +        expect(failed.health.infoCheckedAt).toEqual(beforeFailure.health.infoCheckedAt);
@@ -332,7 +398,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          });
          const persisted = yield* legacyStorage([
            {
-@@ -124,12 +144,49 @@
+@@ -124,12 +151,46 @@
          expect(persisted).toEqual([
            [
              {
@@ -377,10 +443,7 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
 +        expect((yield* body(AccountHealth, yield* fixture.read())).health).toEqual(
 +          recovered.health,
 +        );
-+      }).pipe(
-+        Effect.ensuring(serverControl("start").pipe(Effect.orDie)),
-+        Effect.provide(McpClient.layer),
-+      ),
++      }).pipe(Effect.ensuring(serverControl("start").pipe(Effect.orDie))),
      ),
    );
  });
