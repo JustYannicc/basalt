@@ -78,9 +78,11 @@ and request with `mode=apply`, `source_run` equal to the successful dry-run run 
 The CLI verifies that the source was a successful main-branch dispatch of this
 workflow and that its downloaded backup matches its checksum before sending
 anything. The runtime refuses changed requests, deployments, revisions,
-databases or inputs, and plans older than one hour. It re-inspects inside the
-write transaction and verifies before and after commit. A failed in-transaction
-verification rolls back the writes and receipt together.
+databases or inputs, and plans older than one hour. Database binding includes
+fingerprints of the trusted runtime and direct connections, so a same-name
+database on another target or a credential rotation requires a new dry-run.
+It re-inspects inside the write transaction and verifies before and after commit.
+A failed in-transaction verification rolls back the writes and receipt together.
 
 There is no automatic retry. If an apply fails or its result is uncertain, run
 `inventory` with selection `receipts` and inspect the exact plan hash privately

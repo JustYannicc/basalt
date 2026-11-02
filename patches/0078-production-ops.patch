@@ -384,21 +384,23 @@ index 0000000..ef893bf
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 new file mode 100644
-index 0000000..b81d970
+index 0000000..ad32d87
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,84 @@
 +import { openEnvelope } from "@executor-js/hosted-server/pool-token";
 +import { GroupDatabase } from "@executor-js/hosted-server/groups";
 +import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
 +import { HttpServerResponse } from "effect/http";
 +import { SqlClient } from "effect/sql";
 +import { cloudEncryptionKey } from "../secrets.ts";
++import { cloudDatabaseConnection, cloudDirectDatabaseConnection } from "../database.ts";
 +import { cloudHosts } from "../stage.ts";
 +import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
 +import { Operation, runProductionOperation } from "./runner.ts";
 +import { cloudProductionPreparations } from "./preparations.ts";
 +import { requestBody } from "./body.ts";
++import { canonical, sha256 } from "./crypto.ts";
 +export { productionOpsPath } from "./contracts.ts";
 +
 +const SignedRequest = Schema.Struct({
@@ -416,6 +418,8 @@ index 0000000..b81d970
 +  const encryptionKey = yield* cloudEncryptionKey.pipe(Effect.orDie);
 +  const hosts = yield* cloudHosts.pipe(Effect.orDie);
 +  const preparations = yield* cloudProductionPreparations;
++  const runtimeConnection = yield* cloudDatabaseConnection;
++  const directConnection = yield* cloudDirectDatabaseConnection;
 +  return Effect.gen(function* () {
 +    if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
 +    const body = yield* requestBody.pipe(
@@ -437,10 +441,20 @@ index 0000000..b81d970
 +      return HttpServerResponse.empty({ status: 401 });
 +    const sql = yield* Effect.flatten(GroupDatabase);
 +    const secret = yield* encryptionKey;
++    // Include the direct origin because a Hyperdrive proxy address can survive an origin change.
++    // Credentials stay inside this digest; rotating either binding invalidates an old plan.
++    const databaseTargetSha256 = sha256(
++      canonical({
++        context: "basalt-production-database-v1",
++        runtime: Redacted.value(yield* runtimeConnection.connectionString),
++        direct: Redacted.value(yield* directConnection.connectionString),
++      }),
++    );
 +    const result = yield* runProductionOperation(
 +      {
 +        target: hosts.browser,
 +        release: productionOpsRelease,
++        databaseTargetSha256,
 +        encryptionKey: Redacted.value(secret),
 +        preparations,
 +      },
@@ -542,10 +556,10 @@ index 0000000..61c6758
 +>({});
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 new file mode 100644
-index 0000000..d6fcc3a
+index 0000000..aaa5420
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,306 @@
 +import { Clock, Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type {
@@ -574,7 +588,7 @@ index 0000000..d6fcc3a
 +const Plan = Schema.Struct({
 +  format: Schema.Literal("basalt-production-plan-v1"),
 +  target: Schema.String,
-+  database: Schema.String,
++  database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
 +  release: Schema.String,
 +  migration: Schema.String,
 +  revision: Schema.String,
@@ -598,6 +612,7 @@ index 0000000..d6fcc3a
 +export interface OpsSettings {
 +  readonly target: string;
 +  readonly release: string;
++  readonly databaseTargetSha256: string;
 +  readonly encryptionKey: string;
 +  readonly preparations: Readonly<Record<string, ProductionPreparation>>;
 +}
@@ -657,6 +672,9 @@ index 0000000..d6fcc3a
 +  return rows[0]?.name ?? (yield* fail("Database identity unavailable"));
 +});
 +
++const databaseIdentity = (targetSha256: string) =>
++  databaseName.pipe(Effect.map((name) => ({ name, targetSha256 })));
++
 +const inspect = (module: ProductionMigration, request: Json) =>
 +  module
 +    .inspect(request)
@@ -675,7 +693,12 @@ index 0000000..d6fcc3a
 +        protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
 +      );
 +    if (operation.action === "inventory") {
-+      const result = yield* readOnly(inventory(operation.selection));
++      const result = yield* readOnly(
++        Effect.gen(function* () {
++          const database = yield* databaseIdentity(settings.databaseTargetSha256);
++          return { ...(yield* inventory(operation.selection)), database };
++        }),
++      );
 +      return {
 +        action: "inventory",
 +        rows: result.rows.length,
@@ -694,7 +717,12 @@ index 0000000..d6fcc3a
 +    if (operation.action === "backup") {
 +      const tables = module?.tables ?? backupSelections[operation.selection];
 +      if (tables === undefined) return yield* fail("Unknown backup selection");
-+      const snapshot = yield* readOnly(snapshotTables(tables));
++      const snapshot = yield* readOnly(
++        Effect.gen(function* () {
++          const database = yield* databaseIdentity(settings.databaseTargetSha256);
++          return { ...(yield* snapshotTables(tables)), database };
++        }),
++      );
 +      return {
 +        action: "backup",
 +        tables: snapshot.tables,
@@ -732,7 +760,7 @@ index 0000000..d6fcc3a
 +    if (operation.action === "dry-run") {
 +      const result = yield* readOnly(
 +        Effect.gen(function* () {
-+          const database = yield* databaseName;
++          const database = yield* databaseIdentity(settings.databaseTargetSha256);
 +          const plan = yield* inspect(module, operation.request);
 +          const snapshot = yield* snapshotTables(module.tables);
 +          return { database, plan, snapshot };
@@ -799,7 +827,10 @@ index 0000000..d6fcc3a
 +        yield* sql`set local statement_timeout = '5s'`;
 +        yield* sql`set local lock_timeout = '500ms'`;
 +        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
-+        if ((yield* databaseName) !== saved.database)
++        if (
++          (yield* databaseName) !== saved.database.name ||
++          settings.databaseTargetSha256 !== saved.database.targetSha256
++        )
 +          return yield* fail("Database identity changed");
 +        const prior =
 +          yield* sql`select migration, revision, release, backup_sha256 from private_production_ops_receipts
@@ -933,10 +964,32 @@ index 7f0c740..33bce88 100644
    // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
    // load kept the team installation's workflow span from arriving within its 30-second wait, so
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 2262db4..ba8a827 100644
+index 2262db4..13d95c2 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -265,9 +265,11 @@ export const startCloudEnvironment = (input: {
+@@ -2,11 +2,13 @@ import {
+   Clock,
+   Deferred,
+   Effect,
++  Exit,
+   FileSystem,
+   Path,
+   Redacted,
+   Schedule,
+   Schema,
++  Scope,
+   Stream,
+ } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+@@ -26,6 +28,7 @@ import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
+ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+ import { roleHost } from "./role-hosts.ts";
+ import { freePort } from "./ports.ts";
++import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
+ import {
+   OperatorOAuthFixture,
+   operatorOAuthFile,
+@@ -265,9 +268,11 @@ export const startCloudEnvironment = (input: {
        BETTER_AUTH_URL: input.origin,
        BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
        EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
@@ -951,6 +1004,308 @@ index 2262db4..ba8a827 100644
        MCP_SESSION_KEY_CURRENT: randomBytes(32).toString("hex"),
        MCP_SESSION_KEY_PREVIOUS: randomBytes(32).toString("hex"),
        APP_DOMAIN_CONTROL_SECRET: randomBytes(32).toString("hex"),
+@@ -419,9 +424,12 @@ export const startCloudEnvironment = (input: {
+         ),
+         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
+       );
++    const alternatePort =
++      process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : undefined;
+     yield* startCloudPostgres({
+       container,
+       databasePort: input.databasePort,
++      ...(alternatePort === undefined ? {} : { alternatePort }),
+       databasePassword,
+       dockerEnv,
+       log: `${directory}/postgres.log`,
+@@ -446,71 +454,96 @@ export const startCloudEnvironment = (input: {
+           );
+     if (built !== 0)
+       return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
+-    const server = yield* processes.spawn(
+-      ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
+-        cwd: cloud,
+-        env: {
+-          ...env,
+-          AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
+-        },
+-        extendEnv: false,
+-        stdout: "pipe",
+-        stderr: "pipe",
+-        forceKillAfter: "15 seconds",
+-      }),
+-    );
+-    // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+-    // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+-    const applyFailed = yield* Deferred.make<void>();
+-    yield* capture(server, "cloud.log", (line) =>
+-      isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void,
+-    );
+-    // A Worker that is still starting holds the request until it can answer, so each probe has its
+-    // own deadline and the whole wait has one too.
+-    const ready = Effect.scoped(
+-      http.get(`${input.origin}/health`).pipe(
+-        Effect.flatMap((response) =>
+-          Effect.gen(function* () {
+-            yield* response.text;
+-            if (response.status !== 200)
+-              return yield* new CloudStartFailed({ operation: "Cloud readiness" });
++    const ownerScope = yield* Effect.scope;
++    const launch = Effect.gen(function* () {
++      const scope = yield* Scope.fork(ownerScope);
++      return yield* Effect.gen(function* () {
++        const server = yield* processes.spawn(
++          ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
++            cwd: cloud,
++            env: {
++              ...env,
++              AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
++            },
++            extendEnv: false,
++            stdout: "pipe",
++            stderr: "pipe",
++            forceKillAfter: "15 seconds",
+           }),
+-        ),
+-      ),
+-    ).pipe(
+-      Effect.timeout("10 seconds"),
+-      Effect.retry({ schedule: Schedule.spaced("500 millis") }),
+-      Effect.timeoutOrElse({
+-        duration: readinessDeadline,
+-        orElse: () =>
+-          Effect.fail(
+-            new CloudStartFailed({
+-              operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
+-            }),
+-          ),
+-      }),
+-    );
+-    yield* Effect.raceFirst(
+-      ready,
+-      Effect.raceFirst(
+-        server.exitCode.pipe(
+-          Effect.flatMap(() =>
+-            Effect.fail(
+-              new CloudStartFailed({ operation: "Cloud stopped before readiness; see cloud.log" }),
++        );
++        // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
++        // run nothing will edit the sources it waits on, so the Worker that failed never starts.
++        const applyFailed = yield* Deferred.make<void>();
++        const mcpStarted = yield* Deferred.make<void>();
++        yield* capture(server, "cloud.log", (line) => {
++          if (isAlchemyDevFailure(line)) return Deferred.succeed(applyFailed, undefined);
++          if (line.includes("[McpServer] Started in "))
++            return Deferred.succeed(mcpStarted, undefined);
++          return Effect.void;
++        });
++        // A Worker that is still starting holds the request until it can answer, so each probe has its
++        // own deadline and the whole wait has one too.
++        const health = Effect.scoped(
++          http.get(`${input.origin}/health`).pipe(
++            Effect.flatMap((response) =>
++              Effect.gen(function* () {
++                yield* response.text;
++                if (response.status !== 200)
++                  return yield* new CloudStartFailed({ operation: "Cloud readiness" });
++              }),
+             ),
+           ),
+-        ),
+-        Deferred.await(applyFailed).pipe(
+-          Effect.flatMap(() =>
+-            Effect.fail(
+-              new CloudStartFailed({
+-                operation: "Alchemy could not start every Cloud resource; see cloud.log",
+-              }),
++        ).pipe(
++          Effect.timeout("10 seconds"),
++          Effect.retry({ schedule: Schedule.spaced("500 millis") }),
++          Effect.timeoutOrElse({
++            duration: readinessDeadline,
++            orElse: () =>
++              Effect.fail(
++                new CloudStartFailed({
++                  operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
++                }),
++              ),
++          }),
++        );
++        // API health can answer before a restarted private service has finished booting.
++        const ready =
++          alternatePort === undefined
++            ? health
++            : Effect.all(
++                [health, Deferred.await(mcpStarted).pipe(Effect.timeout(readinessDeadline))],
++                { concurrency: 2 },
++              );
++        yield* Effect.raceFirst(
++          ready,
++          Effect.raceFirst(
++            server.exitCode.pipe(
++              Effect.flatMap(() =>
++                Effect.fail(
++                  new CloudStartFailed({
++                    operation: "Cloud stopped before readiness; see cloud.log",
++                  }),
++                ),
++              ),
++            ),
++            Deferred.await(applyFailed).pipe(
++              Effect.flatMap(() =>
++                Effect.fail(
++                  new CloudStartFailed({
++                    operation: "Alchemy could not start every Cloud resource; see cloud.log",
++                  }),
++                ),
++              ),
+             ),
+           ),
+-        ),
+-      ),
+-    );
++        );
++        return scope;
++      }).pipe(
++        Scope.provide(scope),
++        Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
++      );
++    });
++    let serverScope = yield* launch;
+     const fixtures = yield* startFixtureControl(input.origin, directory, browser);
+     yield* fixtureRequest(fixtures, "/configure", {
+       origin: input.origin,
+@@ -520,9 +553,29 @@ export const startCloudEnvironment = (input: {
+       databaseName: "executor",
+       databaseUsername: "executor",
+     });
++    let binding: "original" | "alternate" = "original";
++    let running = true;
++    const reconfigure = (next: "original" | "alternate") =>
++      Effect.gen(function* () {
++        if (alternatePort === undefined)
++          return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
++        if (next !== binding || !running) {
++          running = false;
++          yield* Scope.close(serverScope, Exit.void);
++          env.CLOUD_DEV_DATABASE_PORT = String(
++            next === "original" ? input.databasePort : alternatePort,
++          );
++          serverScope = yield* launch;
++          binding = next;
++          running = true;
++        }
++        return { binding, databaseName: "executor" };
++      });
++    const controls =
++      alternatePort === undefined ? fixtures : yield* cloudRuntimeControl(fixtures, reconfigure);
+     return {
+       emulators,
+-      fixtures,
++      fixtures: controls,
+       origin: input.origin,
+       oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
+     };
+diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
+index e9dcffc..2c9c62e 100644
+--- a/e2e/support/cloud-postgres.ts
++++ b/e2e/support/cloud-postgres.ts
+@@ -136,6 +136,8 @@ const removeAbandoned = (dockerEnv: DockerEnv, namespace: string) =>
+ export const startCloudPostgres = (input: {
+   readonly container: string;
+   readonly databasePort: number;
++  /** A second runner-owned endpoint for binding-change proof against the same retained database. */
++  readonly alternatePort?: number;
+   readonly databasePassword: string;
+   readonly dockerEnv: DockerEnv;
+   /** Receives the server's output. */
+@@ -178,6 +180,9 @@ export const startCloudPostgres = (input: {
+                 ]),
+             "--publish",
+             `127.0.0.1:${input.databasePort}:5432`,
++            ...(input.alternatePort === undefined
++              ? []
++              : ["--publish", `127.0.0.1:${input.alternatePort}:5432`]),
+             "--env",
+             "POSTGRES_USER=executor",
+             "--env",
+diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+new file mode 100644
+index 0000000..a47083f
+--- /dev/null
++++ b/e2e/support/cloud-runtime-control.ts
+@@ -0,0 +1,72 @@
++/** Runner-only control of the disposable Cloud process, never installed in a product Worker. */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Redacted, Schema } from "effect";
++import {
++  HttpClient,
++  HttpClientRequest,
++  HttpRouter,
++  HttpServer,
++  HttpServerRequest,
++  HttpServerResponse,
++} from "effect/http";
++import { createServer } from "node:http";
++import type { FixtureControl } from "../sdk/contracts.ts";
++
++const Change = Schema.Struct({ binding: Schema.Literals(["original", "alternate"]) });
++
++/** Preserve the existing fixture capability while adding one fixed local runtime operation. */
++export const cloudRuntimeControl = <A, E>(
++  fixtures: typeof FixtureControl.Type,
++  change: (binding: "original" | "alternate") => Effect.Effect<A, E>,
++) =>
++  Effect.gen(function* () {
++    const http = yield* HttpClient.HttpClient;
++    let changing = false;
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      if (request.headers.authorization !== `Bearer ${Redacted.value(fixtures.token)}`)
++        return HttpServerResponse.empty({ status: 401 });
++      if (request.url === "/runtime/database-binding" && request.method === "POST") {
++        const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Change)));
++        if (changing) return HttpServerResponse.empty({ status: 409 });
++        changing = true;
++        const result = yield* change(input.binding).pipe(
++          Effect.ensuring(
++            Effect.sync(() => {
++              changing = false;
++            }),
++          ),
++        );
++        return HttpServerResponse.jsonUnsafe(result);
++      }
++      let forward = HttpClientRequest.make(request.method)(`${fixtures.origin}${request.url}`).pipe(
++        HttpClientRequest.setHeaders(request.headers),
++      );
++      if (request.method !== "GET" && request.method !== "HEAD")
++        forward = HttpClientRequest.bodyText(
++          forward,
++          yield* request.text,
++          request.headers["content-type"],
++        );
++      const response = yield* http.execute(forward);
++      return HttpServerResponse.uint8Array(new Uint8Array(yield* response.arrayBuffer), {
++        status: response.status,
++        headers: response.headers,
++      });
++    }).pipe(
++      Effect.catchCause(() =>
++        HttpServerResponse.json({ error: "runtime_control_failed" }, { status: 503 }),
++      ),
++    );
++    const services = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("*", "/*", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Cloud runtime control requires TCP");
++    return { origin: `http://127.0.0.1:${server.address.port}`, token: fixtures.token };
++  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index 4502a87..91e5fe5 100644
 --- a/e2e/test-plan.ts
@@ -975,10 +1330,10 @@ index 4502a87..91e5fe5 100644
      file: "pool-migration-inventory.spec.ts",
 diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
 new file mode 100644
-index 0000000..6511f8e
+index 0000000..dc70fde
 --- /dev/null
 +++ b/e2e/tests/production-ops.spec.ts
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,240 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import {
@@ -996,6 +1351,7 @@ index 0000000..6511f8e
 +import { Target } from "../support/platform.ts";
 +import { targetHosts } from "../support/role-hosts.ts";
 +import { scenarios } from "../test-plan.ts";
++import { fixtureRequest } from "../sdk/fixtures.ts";
 +
 +const Artifact = Schema.Struct({
 +  version: Schema.Literal(1),
@@ -1018,6 +1374,7 @@ index 0000000..6511f8e
 +  format: Schema.Literal("basalt-production-inventory-v1"),
 +  target: Schema.String,
 +  release: Schema.String,
++  database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
 +  selection: Schema.String,
 +  rows: Schema.Array(Schema.Json),
 +});
@@ -1175,6 +1532,44 @@ index 0000000..6511f8e
 +            recipient,
 +          })).status,
 +        ).toBe(409);
++        if (target.fixtures === undefined) return yield* Effect.die("Cloud fixture required");
++        const fixtures = target.fixtures;
++        // Onboarding may add account rows while the retained organization and memberships stay fixed.
++        const originalResponse = yield* body(Response, yield* request(read("organizations")));
++        const original = yield* Schema.decodeUnknownEffect(Inventory)(
++          decrypt(originalResponse.artifact),
++        );
++        yield* Effect.addFinalizer(() =>
++          fixtureRequest(
++            fixtures,
++            "/runtime/database-binding",
++            { binding: "original" },
++            "5 minutes",
++          ).pipe(Effect.orDie),
++        );
++        yield* fixtureRequest(
++          fixtures,
++          "/runtime/database-binding",
++          { binding: "alternate" },
++          "5 minutes",
++        );
++        const changed = yield* body(Response, yield* request(read("organizations")));
++        const changedInventory = yield* Schema.decodeUnknownEffect(Inventory)(
++          decrypt(changed.artifact),
++        );
++        expect(changedInventory.database.name).toBe(original.database.name);
++        expect(changedInventory.database.targetSha256).not.toBe(original.database.targetSha256);
++        expect(changedInventory.rows).toEqual(original.rows);
++        yield* fixtureRequest(
++          fixtures,
++          "/runtime/database-binding",
++          { binding: "original" },
++          "5 minutes",
++        );
++        const restored = yield* body(Response, yield* request(read("organizations")));
++        expect(
++          (yield* Schema.decodeUnknownEffect(Inventory)(decrypt(restored.artifact))).database,
++        ).toEqual(original.database);
 +      }),
 +    ),
 +  );
