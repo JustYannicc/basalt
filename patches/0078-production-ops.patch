@@ -1163,27 +1163,27 @@ index 2f38a5e..54483ae 100644
 +  cloudProductionOps: {
 +    targets: ["cloud"],
 +    reason:
-+      "The Basalt host-managed-accounts job runs it with an isolated synthetic operation-signing key.",
++      "The Basalt production-ops job runs it with an isolated synthetic operation-signing key.",
 +  },
 +  cloudProductionOpsBinding: {
 +    targets: ["cloud"],
 +    reason:
-+      "The Basalt host-managed-accounts job runs it with an isolated synthetic operation-signing key.",
++      "The Basalt production-ops job runs it with an isolated synthetic operation-signing key.",
 +  },
 +  cloudProductionOpsScope: {
 +    targets: ["cloud"],
 +    reason:
-+      "The Basalt host-managed-accounts job runs it with an isolated synthetic operation-signing key.",
++      "The Basalt production-ops job runs it with an isolated synthetic operation-signing key.",
 +  },
 +  cloudProductionOpsStableKeys: {
 +    targets: ["cloud"],
 +    reason:
-+      "The Basalt host-managed-accounts job runs it through the proof-only migration registry wrapper.",
++      "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
 +  },
 +  cloudProductionOpsReferences: {
 +    targets: ["cloud"],
 +    reason:
-+      "The Basalt host-managed-accounts job runs it through the proof-only migration registry wrapper.",
++      "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
 +  },
    cloudPoolSetupAtomic: {
      targets: ["cloud"],
