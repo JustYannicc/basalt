@@ -36,7 +36,13 @@ export async function productionOperation(
   if (input.recipient.length > 2048 || !/^[A-Za-z0-9+/]+={0,2}$/.test(input.recipient))
     throw new Error("Invalid recipient");
   const request: unknown = JSON.parse(input.request);
-  if (!record(request) || Buffer.byteLength(input.request) > 500_000)
+  if (
+    !record(request) ||
+    typeof request.organization !== "string" ||
+    request.organization.length === 0 ||
+    request.organization.length > 256 ||
+    Buffer.byteLength(input.request) > 500_000
+  )
     throw new Error("Invalid request");
   const operation: Record<string, unknown> = {
     action,

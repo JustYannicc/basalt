@@ -12,7 +12,7 @@ const request: OpsInput = {
   action: "migrate",
   mode: "apply",
   selection: "migration-v1",
-  request: '{"accounts":["acc_proof"]}',
+  request: '{"organization":"org_proof","accounts":["acc_proof"]}',
   recipient: "YQ==",
   planSha256: "1".repeat(64),
   go: `GO ${"1".repeat(64)}`,
@@ -44,7 +44,7 @@ test("an apply requires the exact saved dry-run and uploaded backup before sendi
     assert.deepEqual(signed.operation, {
       action: "apply",
       selection: "migration-v1",
-      request: { accounts: ["acc_proof"] },
+      request: { organization: "org_proof", accounts: ["acc_proof"] },
       recipient: "YQ==",
       artifact: previous.artifact,
       planSha256: request.planSha256,
@@ -59,6 +59,8 @@ test("an apply requires the exact saved dry-run and uploaded backup before sendi
   };
   for (const invalid of [
     request,
+    { ...request, previous, request: "{}" },
+    { ...request, previous, request: '{"organization":""}' },
     { ...request, previous, go: "GO another-plan" },
     { ...request, previous: { ...previous, artifact: { sha256: "2".repeat(64) } } },
     { ...request, previous: { ...previous, backup: { changed: true } } },

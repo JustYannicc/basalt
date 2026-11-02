@@ -33,7 +33,7 @@ model {
 
     productionOps = module "Production operations" {
       #basalt #deep
-      description "A manual main-branch workflow signs fixed runtime operations with existing deploy credentials. Inventories and affected-table backups leave the runtime encrypted for a local recipient. Apply binds a successful saved dry-run, exact GO, deployed source and unchanged row hashes; a serializable transaction records its receipt and verifies writes. The operator checks receipts before resolving an uncertain result."
+      description "A manual main-branch workflow signs fixed runtime operations with existing deploy credentials and an explicit organization. Every inventory is scoped to that organization. Affected-table backups remain an encrypted restore superset for a local recipient. Apply binds a successful saved dry-run, organization, exact GO, deployed source and unchanged row hashes; a serializable transaction checks declared row ownership before and after writes and records an organization-bound receipt. Verification and replay recheck row scope. The operator checks receipts before resolving an uncertain result."
       metadata { code "scripts/production-ops|scripts/production-ops.test.ts|.github/workflows/production-ops.yml" }
     }
 

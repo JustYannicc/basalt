@@ -20,10 +20,10 @@ node scripts/production-ops/artifact.ts recipient /private/path/ops-recipient.pe
 ```
 
 Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key as
-`recipient`, `request={}`, and one selection:
+`recipient`, `request={"organization":"<organization-id>"}`, and one selection:
 
-- `organizations`: organization/member IDs, email, roles, linked sign-in providers
-  and email verification. Start here to locate an existing team and its login.
+- `organizations`: the selected organization's member IDs, email, roles, linked
+  sign-in providers and email verification.
 - `accounts`, `pools`, `app-links`, `retired-tokens`, `departures`, `workflows`,
   `schedules`, `reporters` or `receipts`.
 
@@ -39,6 +39,8 @@ node scripts/production-ops/artifact.ts decrypt /private/path/operation.json /pr
 
 A selection exceeding its row or byte bound fails; it never claims to be a
 complete truncated inventory. An absent table or unknown selection also fails.
+Every operation requires an existing organization ID in its signed request.
+There is no global inventory or discovery fallback.
 
 ## Prepare a repair
 
@@ -55,12 +57,18 @@ workflow inputs.
 
 For a standalone encrypted snapshot use `action=backup` and select `accounts`,
 `pools`, `departures`, `reporters`, `workflows` or a registered migration name.
+Snapshots retain the complete affected tables as an encrypted restore superset;
+inventory and migration row access stay within the selected organization.
 
 For a repair use `action=migrate`, `mode=dry-run`, the registered migration name,
 its exact non-secret JSON request, and your public recipient key. The response
 contains an encrypted affected-table backup and an encrypted plan. The plan binds
 the target, database, deployed source commit, module revision, exact request,
 row keys and before/after hashes, plus the encrypted backup checksum.
+The organization is part of the signed request and plan hash. The runner checks
+declared row ownership before apply and before verification, including replay.
+Writes that move a row outside the organization roll back. Global auth and
+provider rows may be backed up but cannot be changed by an organization repair.
 
 The successful workflow upload must finish before apply. Download and decrypt
 `operation.json` to review the plan and exact IDs. To decrypt the backup, copy its
