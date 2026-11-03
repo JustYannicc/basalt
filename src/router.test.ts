@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../brand.ts";
+import { appModelPath } from "./pool/app-model-contract.ts";
 import router, { handleRequest, notFoundPage, type RouterEnv } from "./router.ts";
 
 function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]): RouterEnv {
@@ -11,6 +12,30 @@ function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]):
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
   };
 }
+
+test("signed app model ingress reaches the pool unchanged", async () => {
+  const body = JSON.stringify({ envelope: "synthetic-signed-envelope" });
+  const request = new Request(`https://${brand.host}${appModelPath}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body,
+  });
+  const env = envWithToolsService(async () => { throw new Error("app model ingress reached tools"); });
+  const poolResponse = new Response("pool reply", { status: 202 });
+  env.POOL_SERVICE.fetch = async (forwarded) => {
+    assert.strictEqual(forwarded, request);
+    assert.equal(forwarded.method, "POST");
+    assert.equal(forwarded.headers.get("content-type"), "application/json");
+    assert.equal(await forwarded.text(), body);
+    return poolResponse;
+  };
+  assert.strictEqual(await handleRequest(request, env), poolResponse);
+
+  for (const path of [`${appModelPath}/`, `${appModelPath}-other`, `${appModelPath};other`, "/%5f%5fmodels/v1/request", "/__models//v1/request", "/__MODELS/v1/request", "/__models/v1", "/api/organizations/example/apps/app_test/models/smoke"]) {
+    const toolsResponse = new Response("tools reply");
+    const other = envWithToolsService(async () => toolsResponse);
+    other.POOL_SERVICE.fetch = async () => { throw new Error("non-ingress path reached pool"); };
+    assert.strictEqual(await handleRequest(new Request(`https://${brand.host}${path}`), other), toolsResponse);
+  }
+});
 
 test("private setup routes never reach a service from the public router", async () => {
   const env = envWithToolsService(async () => { throw new Error("private path forwarded"); });

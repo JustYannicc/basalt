@@ -1,5 +1,6 @@
 import { isControlPath } from "../apps/pool/contract.ts";
 import { accountAcquisitionPath } from "./pool/account-acquisition-contract.ts";
+import { appModelPath } from "./pool/app-model-contract.ts";
 import { isPublicModelPath } from "./pool/lifecycle.ts";
 import { appHosting, brand } from "../brand.ts";
 import { handleSetup, handleSetupPage } from "./setup/host.ts";
@@ -40,8 +41,8 @@ export interface RouterEnv extends RelayEnv, TraceEnv {
   POOL_APP_SIGNING_KEY: string;
 }
 
-function isPoolPath(pathname: string): boolean {
-  return pathname === accountAcquisitionPath || isPublicModelPath(pathname) || isControlPath(pathname);
+function isPoolPath(pathname: string, rawPathname: string): boolean {
+  return pathname === accountAcquisitionPath || rawPathname === appModelPath || isPublicModelPath(pathname) || isControlPath(pathname);
 }
 
 function isPoolManagementPath(pathname: string): boolean {
@@ -215,7 +216,7 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (isPoolManagementPath(pathname)) {
     return Promise.resolve(new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }));
   }
-  if (isPoolPath(pathname)) {
+  if (isPoolPath(pathname, url.pathname)) {
     if (isPublicModelPath(pathname) && request.headers.get(nativeAuthenticationHeader) === "1")
       return nativeModelRequest(request, env);
     return isPublicModelPath(pathname) ? forwardModelRequest(request, env) : env.POOL_SERVICE.fetch(request);
