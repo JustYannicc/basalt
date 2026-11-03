@@ -30,7 +30,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
   assert.equal(env.GOOGLE_MAPS_ROUTES_API_KEY, source.GOOGLE_MAPS_ROUTES_API_KEY);
-  assert.equal(env.EXECUTOR_APPS_VERSION, "0.0.1-beta.104-basalt.1");
+  assert.equal(env.EXECUTOR_APPS_VERSION, "0.0.1-beta.104-basalt.2");
   assert.ok(env.EXECUTOR_APPS_FRAMEWORK!.endsWith("/.upstream/.local/basalt-framework"));
   assert.equal(env.BETTER_AUTH_URL, "https://app.signalbox.run");
   assert.equal(env.ALCHEMY_STAGE, "production");
