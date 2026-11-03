@@ -38,6 +38,35 @@ test("keeps plain-text and malformed JSON failures with secrets removed", async 
   }
 });
 
+test("redacts complete auth and cookie header values without interpreting their schemes", async () => {
+  for (const header of ["Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"]) {
+    for (const value of [
+      "", "token opaque-session", "Bearer opaque-session", "Basic opaque-session",
+      'Digest username="opaque-session", response="opaque-signature"',
+      "Custom opaque-session opaque-signature", '"opaque-session" opaque-signature',
+      "opaque-session; second=opaque-signature", 'token "opaque-session',
+      "token opaque-session\r\n opaque-signature",
+    ]) {
+      const line = `${header}: ${value}`;
+      for (const body of [
+        `upstream failed\n${line}\nstatus 502`,
+        JSON.stringify({ _tag: "ToolCallFailed", message: `upstream failed\n${line}\nstatus 502` }),
+        JSON.stringify({ _tag: "ToolCallFailed", failure: { [header]: value } }),
+        `{"message":"${line}`,
+      ]) {
+        const captured = await captureModelProbeResponse(new Response(body, { status: 502 }));
+        assert.doesNotMatch(captured.body, /opaque-session|opaque-signature/, `${header}: ${value}`);
+        assert.match(captured.body, /<REDACTED>/);
+        if (body.startsWith("upstream failed\n")) assert.match(captured.body, /status 502/);
+      }
+    }
+  }
+  const oversized = "Authorization: token " + "opaque-session".repeat(2_000);
+  const captured = await captureModelProbeResponse(new Response(oversized, { status: 502 }));
+  assert.equal(captured.truncated, true);
+  assert.doesNotMatch(captured.body, /opaque|session/);
+});
+
 test("bounds a streamed failure, cancels it and redacts a cut-off secret", async () => {
   let cancelled = false;
   const body = new ReadableStream<Uint8Array>({

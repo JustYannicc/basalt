@@ -219,6 +219,7 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (isPoolPath(pathname, url.pathname)) {
     if (isPublicModelPath(pathname) && request.headers.get(nativeAuthenticationHeader) === "1")
       return nativeModelRequest(request, env);
+    // Tracing may rewrite trace headers; the app-model signature covers the envelope, not those headers.
     return isPublicModelPath(pathname) ? forwardModelRequest(request, env) : env.POOL_SERVICE.fetch(request);
   }
   // Signed out, the tools service's homepage is its marketing page; sign-in sends people on.

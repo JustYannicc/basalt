@@ -34,10 +34,10 @@ export async function captureModelProbeResponse(response: Response) {
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   const sensitive = /^(?:authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|headers|[\w-]*(?:secret|password|credential|envelope|key|token))$/i;
   const scrub = (text: string) => text
+    .replace(/(\b(?:proxy[-_]?authorization|authorization|set[-_]?cookie|cookie)\b["']?[ \t]*[:=][ \t]*)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/gi, "$1<REDACTED>")
     .replace(/\b(?:Bearer|Basic)\s+[^\s"'<>,;]+/gi, "<REDACTED>")
     .replace(/\b(?:sk-[A-Za-z0-9_-]+|sb-app-model1\S*|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?)/g, "<REDACTED>")
     .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1<REDACTED>@")
-    .replace(/\b((?:set-cookie|cookie)\s*:)\s*[^\r\n]*/gi, "$1 <REDACTED>")
     .replace(/(["']?headers["']?\s*[:=]\s*)[[{][\s\S]*/gi, "$1\"<REDACTED>\"")
     .replace(/(["']?(?:[\w-]*(?:secret|password|credential|envelope|key|token)|authorization|proxy[-_]?authorization|cookie|set[-_]?cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"?|'(?:\\.|[^'\\])*'?|[^\s,;}\]]+)/gi, "$1\"<REDACTED>\"");
   const redact = (value: unknown): unknown => {
