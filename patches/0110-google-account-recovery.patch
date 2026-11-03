@@ -1,0 +1,2745 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+index b86ea29437b5076bad468760ff2fb6e729f468cb..11fb67cd6d6467da24dd4716b74c0cfe8b30499a 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,7 +1,9 @@
++import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
+ import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
++  [googleAccountIdentityV1.name]: googleAccountIdentityV1,
+ };
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a7f7596da3e249124a1bc276c162fee883957d9
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts
+@@ -0,0 +1,210 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json, ProductionMigration } from "../contracts.ts";
++import {
++  GoogleIdentityRefused,
++  GoogleMigrationRequest,
++  accountHash,
++  googleIdentityId,
++  readGoogleAccount,
++  requireGoogleProof,
++  sha256,
++} from "./google-identity-records.ts";
++
++const IdentityRow = Schema.Struct({
++  id: Schema.String,
++  owner: Schema.String,
++  placement: Schema.String,
++  issuer: Schema.String,
++  subject: Schema.String,
++  name: Schema.String,
++  label: Schema.String,
++  verifiedAt: Schema.String,
++  createdAt: Schema.String,
++});
++
++const readIdentity = (id: string, lock = false) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql.unsafe(
++      `select id, owner, placement, issuer, subject, name, label,
++    to_char(verified_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "verifiedAt",
++    to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
++    from executor_account_identities where id = $1${lock ? " for update" : ""}`,
++      [id],
++    );
++    return (yield* Schema.decodeUnknownEffect(Schema.Array(IdentityRow))(rows))[0];
++  });
++
++const prepare = (request: Json, lock = false) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(GoogleMigrationRequest)(request);
++    const proofs = [...input.proofs].sort((a, b) => a.account.localeCompare(b.account));
++    if (new Set(proofs.map((proof) => proof.account)).size !== proofs.length)
++      return yield* new GoogleIdentityRefused({ reason: "duplicate-account-selection" });
++    const accounts = [];
++    const identities = new Map<string, typeof IdentityRow.Type>();
++    const changes = [];
++    for (const proof of proofs) {
++      const row = yield* readGoogleAccount(proof.account, lock);
++      yield* requireGoogleProof(row, proof, input.organization);
++      const id = yield* googleIdentityId(proof);
++      if (row.identity !== null && row.identity !== id)
++        return yield* new GoogleIdentityRefused({ reason: "identity-already-different" });
++      const existing = yield* readIdentity(id, lock);
++      if (
++        existing !== undefined &&
++        (existing.owner !== proof.owner ||
++          existing.placement !== proof.placement ||
++          existing.issuer !== proof.issuer ||
++          existing.subject !== proof.subject)
++      )
++        return yield* new GoogleIdentityRefused({ reason: "identity-provenance-changed" });
++      const identity = {
++        id,
++        owner: proof.owner,
++        placement: proof.placement,
++        issuer: proof.issuer,
++        subject: proof.subject,
++        name: "Google",
++        label: proof.email,
++        verifiedAt: proof.observedAt,
++        createdAt: existing?.createdAt ?? proof.observedAt,
++      };
++      const prior = identities.get(id);
++      if (
++        prior !== undefined &&
++        (prior.label !== identity.label || prior.verifiedAt !== identity.verifiedAt)
++      )
++        return yield* new GoogleIdentityRefused({ reason: "inconsistent-identity-proof" });
++      if (prior === undefined) {
++        identities.set(id, identity);
++        if (
++          existing !== undefined &&
++          Date.parse(existing.verifiedAt) > Date.parse(proof.observedAt)
++        )
++          return yield* new GoogleIdentityRefused({ reason: "newer-identity-proof-exists" });
++        const beforeSha256 = existing === undefined ? null : yield* sha256(existing);
++        const afterSha256 = yield* sha256(identity);
++        if (beforeSha256 !== afterSha256)
++          changes.push({
++            table: "executor_account_identities",
++            key: { id },
++            action: existing === undefined ? ("insert" as const) : ("update" as const),
++            beforeSha256,
++            afterSha256,
++          });
++      }
++      // Authored names survive; generic labels become the issuer-verified email.
++      const label = /^default(?: account| \d+)?$/iu.test(row.label) ? proof.email : row.label;
++      const beforeSha256 = yield* accountHash(row);
++      const afterSha256 = yield* accountHash(row, id, label);
++      if (beforeSha256 !== afterSha256)
++        changes.push({
++          table: "executor_accounts",
++          key: { id: row.account },
++          action: "update" as const,
++          beforeSha256,
++          afterSha256,
++        });
++      accounts.push({
++        account: row.account,
++        identity: id,
++        label,
++        afterSha256,
++        grantSha256: row.grantSha256,
++        credentialsSha256: row.credentialsSha256,
++        linksSha256: row.linksSha256,
++      });
++    }
++    return { changes, data: { accounts, identities: [...identities.values()] } };
++  });
++
++const PlanData = Schema.Struct({
++  accounts: Schema.Array(
++    Schema.Struct({
++      account: Schema.String,
++      identity: Schema.String,
++      label: Schema.String,
++      afterSha256: Schema.String,
++      grantSha256: Schema.String,
++      credentialsSha256: Schema.String,
++      linksSha256: Schema.String,
++    }),
++  ),
++  identities: Schema.Array(IdentityRow),
++});
++
++/** Only verified display identity changes; bindings, grants and every access/link record stay intact. */
++export const googleAccountIdentityV1: ProductionMigration = {
++  name: "google-account-identity-v1",
++  revision: "1",
++  tables: [
++    "executor_accounts",
++    "executor_account_identities",
++    "executor_providers",
++    "executor_oauth_grants",
++    "hosted_account_access",
++    "hosted_account_groups",
++    "hosted_app_account_links",
++  ],
++  inspect: (request) => prepare(request),
++  apply: (request, plan) =>
++    Effect.gen(function* () {
++      const sql = yield* SqlClient.SqlClient;
++      const current = yield* prepare(request, true);
++      if (
++        (yield* sha256(current)) !==
++        (yield* sha256({ changes: plan.changes.map((change) => ({ ...change })), data: plan.data }))
++      )
++        return yield* new GoogleIdentityRefused({ reason: "plan-changed" });
++      for (const identity of current.data.identities) {
++        if (
++          !current.changes.some(
++            (change) =>
++              change.table === "executor_account_identities" && change.key.id === identity.id,
++          )
++        )
++          continue;
++        yield* sql`insert into executor_account_identities
++        (id, owner, placement, issuer, subject, name, label, verified_at, created_at)
++        values (${identity.id}, ${identity.owner}, ${identity.placement}, ${identity.issuer}, ${identity.subject},
++          ${identity.name}, ${identity.label}, ${identity.verifiedAt}::timestamptz, ${identity.createdAt}::timestamptz)
++        on conflict (id) do update set label = excluded.label, verified_at = excluded.verified_at`;
++      }
++      for (const account of current.data.accounts) {
++        if (
++          !current.changes.some(
++            (change) => change.table === "executor_accounts" && change.key.id === account.account,
++          )
++        )
++          continue;
++        yield* sql`update executor_accounts set identity_id = ${account.identity}, label = ${account.label}
++        where id = ${account.account}`;
++      }
++    }),
++  verify: (request, plan) =>
++    Effect.gen(function* () {
++      yield* Schema.decodeUnknownEffect(GoogleMigrationRequest)(request);
++      const expected = yield* Schema.decodeUnknownEffect(PlanData)(plan.data);
++      let identities = true,
++        accountMetadata = true,
++        credentials = true,
++        appLinks = true;
++      for (const identity of expected.identities) {
++        const actual = yield* readIdentity(identity.id);
++        identities &&=
++          actual !== undefined && (yield* sha256(actual)) === (yield* sha256(identity));
++      }
++      for (const account of expected.accounts) {
++        const actual = yield* readGoogleAccount(account.account);
++        accountMetadata &&= (yield* accountHash(actual)) === account.afterSha256;
++        credentials &&=
++          actual.grantSha256 === account.grantSha256 &&
++          actual.credentialsSha256 === account.credentialsSha256;
++        appLinks &&= actual.linksSha256 === account.linksSha256;
++      }
++      const checks = { identities, accountMetadata, credentials, appLinks };
++      return { ok: Object.values(checks).every(Boolean), checks };
++    }),
++};
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..542e6dfc38bed95f3910cf886d2d0e1b4dbab17e
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts
+@@ -0,0 +1,131 @@
++import { Clock, Context, Effect, Redacted, Schema } from "effect";
++import {
++  AccountId,
++  OAuthGrant,
++  isFirstPartyGrant,
++  type Credentials,
++  type FirstPartyOAuthClient,
++} from "@executor-js/sdk/core";
++import type { OAuthProtocol } from "@executor-js/sdk/oauth-protocol-contracts";
++import type { Json } from "../contracts.ts";
++import {
++  GoogleIdentityRefused,
++  GoogleProof,
++  readGoogleAccount,
++  requireGoogleProof,
++} from "./google-identity-records.ts";
++
++/** The fixed operator route lends existing key custody and the issuer-validating OAuth wire client. */
++export class GoogleProofRuntime extends Context.Service<
++  GoogleProofRuntime,
++  {
++    readonly credentials: Pick<Credentials, "decrypt">;
++    readonly identify: OAuthProtocol["identify"];
++    readonly firstPartyClients: readonly FirstPartyOAuthClient[];
++  }
++>()("basalt/production-ops/GoogleProofRuntime") {}
++
++const Request = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  accounts: Schema.Array(Schema.NonEmptyString).check(
++    Schema.isMinLength(1),
++    Schema.isMaxLength(50),
++  ),
++});
++
++/** Read-only proof preparation never renews tokens, records identities, or initializes the SDK. */
++export const prepareGoogleAccountProofs = (request: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(Request)(request);
++    const runtime = yield* GoogleProofRuntime;
++    const now = yield* Clock.currentTimeMillis;
++    const observedAt = new Date(now).toISOString();
++    const proofs: (typeof GoogleProof.Type)[] = [];
++    const insufficientProof: { account: string; reason: string }[] = [];
++    const selected = [...new Set(input.accounts)].sort();
++    if (selected.length !== input.accounts.length)
++      return yield* new GoogleIdentityRefused({ reason: "duplicate-account-selection" });
++    for (const account of selected) {
++      const result = yield* Effect.gen(function* () {
++        const before = yield* readGoogleAccount(account);
++        if (before.organization !== input.organization)
++          return yield* new GoogleIdentityRefused({ reason: "account-outside-organization" });
++        const fields = yield* runtime.credentials.decrypt(
++          AccountId.make(before.grant),
++          Redacted.make(before.encrypted),
++        );
++        const grant = yield* Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(fields));
++        if (
++          grant.grant === "client_credentials" ||
++          (grant.expiresAt !== undefined && grant.expiresAt <= now)
++        )
++          return yield* new GoogleIdentityRefused({ reason: "reconnect-required" });
++        const token = grant.fields.access_token;
++        if (typeof token !== "string" || token.length === 0)
++          return yield* new GoogleIdentityRefused({ reason: "access-token-unavailable" });
++        const operator = isFirstPartyGrant(grant)
++          ? runtime.firstPartyClients.find((client) => client.id === grant.firstParty)
++          : undefined;
++        if (
++          isFirstPartyGrant(grant) &&
++          (operator === undefined || grant.authorizationClient !== operator.clientId)
++        )
++          return yield* new GoogleIdentityRefused({ reason: "client-unavailable" });
++        const server = isFirstPartyGrant(grant)
++          ? {
++              issuer: "https://accounts.google.com",
++              authorization_endpoint: operator!.server.authorizationUrl,
++              token_endpoint: operator!.server.tokenUrl,
++            }
++          : grant.server;
++        const skeleton = {
++          account,
++          owner: before.owner,
++          provider: before.provider,
++          method: before.method,
++          generation: before.generation,
++          placement: before.placement,
++          grantSha256: before.grantSha256,
++          issuer: "https://accounts.google.com" as const,
++          subject: "pending",
++          email: "pending@example.invalid",
++          observedAt,
++          evidence: {
++            kind: "issuer-pinned-userinfo" as const,
++            authorizationEndpoint: server.authorization_endpoint,
++            tokenEndpoint: server.token_endpoint,
++          },
++        };
++        yield* requireGoogleProof(before, skeleton, input.organization);
++        const verified = yield* runtime.identify(
++          { issuer: skeleton.issuer, name: "Google" },
++          server,
++          token,
++        );
++        if (
++          verified.issuer !== skeleton.issuer ||
++          (grant.identity !== undefined &&
++            (grant.identity.issuer !== verified.issuer ||
++              grant.identity.subject !== verified.subject))
++        )
++          return yield* new GoogleIdentityRefused({ reason: "identity-mismatch" });
++        const proof = yield* Schema.decodeUnknownEffect(GoogleProof)({
++          ...skeleton,
++          subject: verified.subject,
++          email: verified.label,
++        });
++        const after = yield* readGoogleAccount(account);
++        yield* requireGoogleProof(after, proof, input.organization);
++        return proof;
++      }).pipe(Effect.result);
++      if (result._tag === "Success") proofs.push(result.success);
++      else
++        insufficientProof.push({
++          account,
++          reason: Schema.is(GoogleIdentityRefused)(result.failure)
++            ? result.failure.reason
++            : "insufficient-proof",
++        });
++    }
++    return { organization: input.organization, proofs, insufficientProof };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdb076037fa2794f6719d3274ec7749c76403b9b
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
+@@ -0,0 +1,236 @@
++import { Effect, Schema } from "effect";
++import { ProviderDefinition } from "@executor-js/sdk/core";
++import { SqlClient } from "effect/sql";
++import type { Json } from "../contracts.ts";
++
++export class GoogleIdentityRefused extends Schema.TaggedError<GoogleIdentityRefused>()(
++  "GoogleIdentityRefused",
++  { reason: Schema.String },
++) {}
++
++export const GoogleProof = Schema.Struct({
++  account: Schema.NonEmptyString,
++  owner: Schema.NonEmptyString,
++  provider: Schema.NonEmptyString,
++  method: Schema.NonEmptyString,
++  generation: Schema.Int,
++  placement: Schema.NonEmptyString,
++  grantSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++  issuer: Schema.Literal("https://accounts.google.com"),
++  subject: Schema.NonEmptyString,
++  email: Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/u)),
++  observedAt: Schema.String,
++  evidence: Schema.Struct({
++    kind: Schema.Literal("issuer-pinned-userinfo"),
++    authorizationEndpoint: Schema.String,
++    tokenEndpoint: Schema.String,
++  }),
++});
++
++export const GoogleMigrationRequest = Schema.Struct({
++  organization: Schema.NonEmptyString,
++  proofs: Schema.Array(GoogleProof).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
++});
++
++const AccountRow = Schema.Struct({
++  account: Schema.NonEmptyString,
++  owner: Schema.String,
++  provider: Schema.String,
++  method: Schema.String,
++  label: Schema.String,
++  description: Schema.NullOr(Schema.String),
++  site: Schema.NullOr(Schema.String),
++  createdAt: Schema.String,
++  grantReference: Schema.NullOr(Schema.String),
++  generation: Schema.Int,
++  identity: Schema.NullOr(Schema.String),
++  organization: Schema.String,
++  kind: Schema.String,
++  person: Schema.NullOr(Schema.String),
++  audience: Schema.NullOr(Schema.String),
++  revision: Schema.String,
++  definition: Schema.Unknown,
++  grant: Schema.String,
++  grantStatus: Schema.String,
++  grantOwner: Schema.NullOr(Schema.String),
++  grantUpdatedAt: Schema.String,
++  encrypted: Schema.Uint8Array,
++  credentials: Schema.Uint8Array,
++});
++
++const sortedJson = (value: Json): string => {
++  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`;
++  if (value !== null && typeof value === "object")
++    return `{${Object.entries(value)
++      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
++      .map(([key, item]) => `${JSON.stringify(key)}:${sortedJson(item)}`)
++      .join(",")}}`;
++  return JSON.stringify(value);
++};
++
++export const sha256 = (value: Json) =>
++  Effect.promise(async () => {
++    const digest = await crypto.subtle.digest(
++      "SHA-256",
++      new TextEncoder().encode(sortedJson(value)),
++    );
++    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
++      "",
++    );
++  });
++
++const bytes = (value: Uint8Array) =>
++  Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
++
++/** The grant and access revision are read again after UserInfo; network I/O holds no SQL locks. */
++export const readGoogleAccount = (account: string, lock = false) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql.unsafe(
++      `select a.id as account, a.owner, a.provider, a.method, a.label, a.description, a.site,
++    to_char(a.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "createdAt",
++    a.oauth_grant_id as "grantReference",
++    a.credential_generation as generation, a.identity_id as identity,
++    h.organization_id as organization, h.kind, h.personal_user_id as person, h.audience,
++    h.revision, p.definition, g.id as grant, g.status as "grantStatus", g.owner as "grantOwner",
++    to_char(g.updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "grantUpdatedAt", g.encrypted,
++    a.encrypted_credentials as credentials
++    from executor_accounts a join executor_providers p on p.id = a.provider
++    join hosted_account_access h on h.account_id = a.id
++    join executor_oauth_grants g on g.id = coalesce(a.oauth_grant_id, a.id)
++    where a.id = $1${lock ? " for update of a, g for share of h, p" : ""}`,
++      [account],
++    );
++    const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(AccountRow))(rows);
++    const row = decoded[0];
++    if (decoded.length !== 1 || row === undefined || !row.grantStatus.startsWith("ready_"))
++      return yield* new GoogleIdentityRefused({ reason: "account-or-grant-unavailable" });
++    const groups = yield* sql.unsafe(
++      `select group_id from hosted_account_groups
++    where account_id = $1 order by group_id${lock ? " for share" : ""}`,
++      [account],
++    );
++    const memberships = yield* Schema.decodeUnknownEffect(
++      Schema.Array(Schema.Struct({ group_id: Schema.String })),
++    )(groups);
++    const placement = JSON.stringify([
++      row.organization,
++      row.kind,
++      row.person,
++      row.audience,
++      memberships.map((group) => group.group_id),
++    ]);
++    const grantSha256 = yield* sha256([
++      row.account,
++      row.owner,
++      row.provider,
++      row.method,
++      row.generation,
++      placement,
++      row.revision,
++      row.grant,
++      row.grantStatus,
++      row.grantOwner,
++      row.grantUpdatedAt,
++      bytes(row.encrypted),
++    ]);
++    const credentialsSha256 = yield* sha256(bytes(row.credentials));
++    const links =
++      yield* sql`select app, requirement, subject, linked_by from hosted_app_account_links
++    where account = ${account} order by app, requirement, subject nulls first`;
++    const linked = yield* Schema.decodeUnknownEffect(
++      Schema.Array(
++        Schema.Struct({
++          app: Schema.String,
++          requirement: Schema.String,
++          subject: Schema.NullOr(Schema.String),
++          linked_by: Schema.NullOr(Schema.String),
++        }),
++      ),
++    )(links);
++    return {
++      ...row,
++      placement,
++      grantSha256,
++      credentialsSha256,
++      linksSha256: yield* sha256(linked),
++    };
++  });
++
++export type GoogleAccountSnapshot = Effect.Success<ReturnType<typeof readGoogleAccount>>;
++
++export const accountHash = (
++  row: GoogleAccountSnapshot,
++  identity = row.identity,
++  label = row.label,
++) =>
++  sha256([
++    row.account,
++    row.owner,
++    row.provider,
++    row.method,
++    row.generation,
++    identity,
++    label,
++    row.description,
++    row.site,
++    row.createdAt,
++    row.grantReference,
++    row.placement,
++    row.revision,
++    row.grantSha256,
++    row.credentialsSha256,
++    row.linksSha256,
++  ]);
++
++export const googleIdentityId = (proof: typeof GoogleProof.Type) =>
++  sha256([proof.owner, proof.placement, proof.issuer, proof.subject]).pipe(
++    Effect.map((digest) => `aid_${digest}`),
++  );
++
++export const requireGoogleProof = (
++  row: GoogleAccountSnapshot,
++  proof: typeof GoogleProof.Type,
++  organization: string,
++) =>
++  Effect.gen(function* () {
++    const definition = yield* Schema.decodeUnknownEffect(ProviderDefinition)(row.definition);
++    const method = definition.auth[row.method];
++    if (
++      method?.type !== "oauth2" ||
++      method.grant === "client_credentials" ||
++      (method.identity !== undefined && method.identity.issuer !== proof.issuer) ||
++      (method.discover === undefined
++        ? method.authorizationUrl !== proof.evidence.authorizationEndpoint ||
++          method.tokenUrl !== proof.evidence.tokenEndpoint
++        : ![
++            proof.issuer,
++            proof.issuer + "/",
++            proof.issuer + "/.well-known/openid-configuration",
++          ].includes(method.discover))
++    )
++      return yield* new GoogleIdentityRefused({ reason: "provider-not-google" });
++    const observed = Date.parse(proof.observedAt);
++    if (
++      !(
++        row.organization === organization &&
++        row.owner === proof.owner &&
++        row.provider === proof.provider &&
++        row.method === proof.method &&
++        row.generation === proof.generation &&
++        row.placement === proof.placement &&
++        row.grantSha256 === proof.grantSha256 &&
++        Number.isFinite(observed) &&
++        new Date(observed).toISOString() === proof.observedAt &&
++        [
++          "https://accounts.google.com/o/oauth2/v2/auth",
++          "https://accounts.google.com/o/oauth2/auth",
++        ].includes(proof.evidence.authorizationEndpoint) &&
++        [
++          "https://oauth2.googleapis.com/token",
++          "https://accounts.google.com/o/oauth2/token",
++        ].includes(proof.evidence.tokenEndpoint)
++      )
++    )
++      return yield* new GoogleIdentityRefused({ reason: "prepared-proof-changed" });
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+index 61c6758675133b4459a8c3006351ee7a5a2d034f..4f2a4326b64c9af4b8948e59393023721e5ff67f 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
+@@ -1,7 +1,46 @@
+-import { Effect } from "effect";
++import { Effect, Option } from "effect";
++import { aesGcmCredentials } from "@executor-js/sdk/core";
++import { firstPartyOAuthClients } from "@executor-js/hosted-server";
++import { productBrandConfig } from "@executor-js/utils/product-brand";
++import { cloudEncryptionKey } from "../secrets.ts";
++import { cloudEmulators } from "../emulators.ts";
++import { cloudEgress } from "../egress.ts";
++import { cloudOAuthWire } from "../oauth-wire.ts";
++import { makeOAuthProtocol } from "../oauth-protocol.ts";
++import {
++  GoogleProofRuntime,
++  prepareGoogleAccountProofs,
++} from "./migrations/google-account-proofs.ts";
+ import type { ProductionPreparation } from "./contracts.ts";
+ 
+-/** Each registration binds its runtime dependencies before exposing the SQL-only operation. */
+-export const cloudProductionPreparations = Effect.succeed<
+-  Readonly<Record<string, ProductionPreparation>>
+->({});
++/** Key access runs inside the signed invocation; preparation never initializes a mutating executor. */
++export const cloudProductionPreparations = Effect.gen(function* () {
++  const key = yield* cloudEncryptionKey;
++  const clients = yield* firstPartyOAuthClients({
++    testDefinitions: Option.isSome(yield* cloudEmulators),
++  });
++  const wire = yield* cloudOAuthWire;
++  const egress = yield* cloudEgress;
++  const protocol = makeOAuthProtocol({
++    clientName: (yield* productBrandConfig).name,
++    httpClient: egress.client,
++    urlPolicy: egress.policy,
++  });
++  const preparations: Readonly<Record<string, ProductionPreparation>> = {
++    "google-account-proofs": {
++      name: "google-account-proofs",
++      run: (request) =>
++        Effect.gen(function* () {
++          const credentials = yield* aesGcmCredentials(yield* key, globalThis.crypto);
++          return yield* prepareGoogleAccountProofs(request).pipe(
++            Effect.provideService(GoogleProofRuntime, {
++              credentials,
++              firstPartyClients: clients,
++              identify: (...args) => protocol.identify(...args).pipe(Effect.provide(wire)),
++            }),
++          );
++        }),
++    },
++  };
++  return preparations;
++}).pipe(Effect.orDie);
+diff --git a/apps/hosted/web/src/implementation/components/connection-status.tsx b/apps/hosted/web/src/implementation/components/connection-status.tsx
+index dff59b1bf931d5b42ebd9e2662c18da5e2194449..ec0797f53703bef426f938f182be89a87b3107a3 100644
+--- a/apps/hosted/web/src/implementation/components/connection-status.tsx
++++ b/apps/hosted/web/src/implementation/components/connection-status.tsx
+@@ -9,10 +9,13 @@ import { productWordmark } from "@executor-js/ui/contracts/product-brand";
+ export function ConnectionStatusPage({
+   status,
+   message,
++  detail,
+   children,
+ }: {
+   readonly status: "connecting" | "failed" | "cancelled";
+   readonly message: string;
++  /** Specifics under the message, such as the access a service left out. */
++  readonly detail?: ReactNode;
+   readonly children?: ReactNode;
+ }) {
+   const brand = useProductBrand();
+@@ -57,6 +60,7 @@ export function ConnectionStatusPage({
+           >
+             {message}
+           </p>
++          {detail && <div className="mt-4 w-full">{detail}</div>}
+           {children && (
+             <div className="mt-6 flex w-full flex-col justify-center gap-2 sm:flex-row">
+               {children}
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+index a94a6f2aa69863a48e0ba26e81bcabda4f05ad26..db7a1bbf686e107a71a3b28cb596b127ee9c8b58 100644
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -38,10 +38,13 @@ export function HostedAccountActions({
+   account,
+   access,
+   open,
++  binding = false,
+ }: {
+   readonly account: AccountSummary;
+   readonly access: typeof AccountAccess.Type | undefined;
+   readonly open: (dialog: AccountDialogKind) => void;
++  /** One sign-in of a grouped identity row; removing it leaves the row's other sign-ins. */
++  readonly binding?: boolean | undefined;
+ }) {
+   return (
+     <AccountActionsMenu account={account}>
+@@ -52,7 +55,7 @@ export function HostedAccountActions({
+       )}
+       <DropdownMenuSeparator />
+       <DropdownMenuItem variant="destructive" onSelect={() => open("delete")}>
+-        Delete account
++        {binding ? "Remove saved sign-in" : "Delete account"}
+       </DropdownMenuItem>
+     </AccountActionsMenu>
+   );
+@@ -70,17 +73,20 @@ export function HostedAccountDialog({
+   id,
+   dialog,
+   onClose,
++  binding = false,
+ }: {
+   readonly id: AccountId;
+   readonly dialog: AccountDialogKind;
+   readonly onClose: () => void;
++  readonly binding?: boolean | undefined;
+ }) {
++  const title = binding && dialog === "delete" ? "Remove saved sign-in?" : titles[dialog];
+   const { organization } = useOrganizationRoute();
+   const [busy, setBusy] = useState(false);
+   return (
+     <AccountDialog
+-      title={titles[dialog]}
+-      description={`${titles[dialog]} for this saved account.`}
++      title={title}
++      description={`${title} for this saved account.`}
+       busy={busy}
+       onClose={onClose}
+     >
+@@ -101,7 +107,12 @@ export function HostedAccountDialog({
+               {data.canManage && <AccountUsageSettings account={id} />}
+             </>
+           ) : (
+-            <DeleteDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
++            <DeleteDialogBody
++              data={data}
++              binding={binding}
++              onPendingChange={setBusy}
++              onClose={onClose}
++            />
+           )
+         }
+       </QueryView>
+@@ -172,10 +183,12 @@ function EditDialogBody({
+ 
+ function DeleteDialogBody({
+   data,
++  binding,
+   onPendingChange,
+   onClose,
+ }: {
+   readonly data: AccountDetail;
++  readonly binding: boolean;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onClose: () => void;
+ }) {
+@@ -185,7 +198,7 @@ function DeleteDialogBody({
+   });
+   return (
+     <DisconnectAccountForm<HostedError>
+-      submitLabel="Delete account"
++      submitLabel={binding ? "Remove saved sign-in" : "Delete account"}
+       impact={
+         <p className="text-[12px] leading-[1.5] text-muted-foreground">
+           These apps lose this account. Their other linked accounts stay linked.
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index a4387f78ff459545bbd362b9d969dfb1dd987752..10c8bac1996784604ccdbdb16fb18f52429b0110 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -41,7 +41,11 @@ export function AccountsPage({
+   const inventory = useQuery(resourceInventoryAtom(organization));
+   const setup = useQuery(inventoryAtom(organization));
+ 
+-  const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
++  const [dialog, setDialog] = useState<{
++    account: AccountId;
++    kind: AccountDialogKind;
++    binding: boolean;
++  }>();
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+   const manageClients = admin && (
+@@ -105,7 +109,7 @@ export function AccountsPage({
+             )
+           );
+         }}
+-        accountActions={(account) => {
++        accountActions={(account, { binding }) => {
+           const entry = Option.isSome(directory.data)
+             ? directory.data.value.accounts.find((item) => item.account.id === account.id)
+             : undefined;
+@@ -113,7 +117,8 @@ export function AccountsPage({
+             <HostedAccountActions
+               account={account}
+               access={entry?.access}
+-              open={(kind) => setDialog({ account: account.id, kind })}
++              binding={binding}
++              open={(kind) => setDialog({ account: account.id, kind, binding })}
+             />
+           );
+         }}
+@@ -175,6 +180,7 @@ export function AccountsPage({
+           key={`${dialog.account}:${dialog.kind}`}
+           id={dialog.account}
+           dialog={dialog.kind}
++          binding={dialog.binding}
+           onClose={() => setDialog(undefined)}
+         />
+       )}
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+index 04dde1644410f15cfeb10c8642a146e2e06eef67..02d846ce0a4447d0eae3325b631ad07a97127272 100644
+--- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
++++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+@@ -15,6 +15,7 @@ import { useContext, useEffect, useRef, useState } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import { CopyButton } from "@executor-js/ui/dashboard/code";
+ import { ConnectionStatusPage } from "../components/connection-status.tsx";
++import { ScopeList } from "@executor-js/ui/dashboard/oauth-scopes";
+ import {
+   appError,
+   completeOAuthAtom,
+@@ -36,6 +37,8 @@ type CallbackState =
+       readonly message: string;
+       readonly recovery: Recovery;
+       readonly fixPrompt?: string | undefined;
++      /** Access the service left out; empty when it did not report what it granted. */
++      readonly missingScopes?: readonly string[] | undefined;
+     };
+ 
+ /**
+@@ -97,10 +100,25 @@ export function OAuthCallbackPage() {
+         });
+         return;
+       }
++      const partial = Option.getOrUndefined(
++        Option.filter(completion, (failure) => failure.reason === "scope_missing"),
++      );
++      const missingScopes =
++        partial === undefined
++          ? undefined
++          : partial.grantedScopesKnown === false
++            ? []
++            : (partial.missingScopes ?? []);
+       setState({
+         status: "failed",
+-        message: appError(cause),
++        message:
++          missingScopes === undefined
++            ? appError(cause)
++            : missingScopes.length === 0
++              ? "The service didn’t report which access it granted, so nothing was saved. Your existing sign-in and connected apps still work."
++              : "The service didn’t grant all the access the app needs, so nothing was saved. Your existing sign-in and connected apps still work.",
+         recovery,
++        missingScopes,
+         fixPrompt: Option.match(error, {
+           onSome: (value) =>
+             recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
+@@ -180,12 +198,23 @@ export function OAuthCallbackPage() {
+               onSome: () => "Finishing sign-in. You’ll return to the app automatically.",
+             })
+       }
++      detail={
++        state.status === "failed" &&
++        state.missingScopes !== undefined &&
++        state.missingScopes.length > 0 && (
++          <div className="rounded-lg border border-border bg-muted/40 p-3 text-left">
++            <p className="mb-2 text-[12px] font-medium text-foreground">Not granted</p>
++            <ScopeList scopes={state.missingScopes} />
++          </div>
++        )
++      }
+     >
+       {state.status !== "connecting" && (
+         <OAuthRecoveryActions
+           pending={pending}
+           recovery={state.status === "cancelled" ? "cancelled" : state.recovery}
+           fixPrompt={state.status === "failed" ? state.fixPrompt : undefined}
++          partial={state.status === "failed" && state.missingScopes !== undefined}
+         />
+       )}
+     </ConnectionStatusPage>
+@@ -197,10 +226,13 @@ function OAuthRecoveryActions({
+   pending,
+   recovery,
+   fixPrompt,
++  partial = false,
+ }: {
+   readonly pending: Option.Option<typeof PendingOAuth.Type>;
+   readonly recovery: Recovery | "cancelled";
+   readonly fixPrompt?: string | undefined;
++  /** The service granted only part of the request; a retry asks for the same access again. */
++  readonly partial?: boolean | undefined;
+ }) {
+   const brand = useProductBrand();
+   if (Option.isNone(pending))
+@@ -214,7 +246,12 @@ function OAuthRecoveryActions({
+   const retry =
+     recovery === "restart" || recovery === "client"
+       ? {
+-          label: recovery === "client" ? "Update client details" : "Try again",
++          label:
++            recovery === "client"
++              ? "Update client details"
++              : partial
++                ? "Grant access again"
++                : "Try again",
+           search:
+             recovery === "client" || context.manualClient === true
+               ? { client: "change" as const }
+diff --git a/apps/local/web/src/contracts/oauth.ts b/apps/local/web/src/contracts/oauth.ts
+index 7ec5caf2694711e9de3c9c8e6cab31373dea17aa..e3fbfca9cc132dd071252c71510d75ab1ea256e4 100644
+--- a/apps/local/web/src/contracts/oauth.ts
++++ b/apps/local/web/src/contracts/oauth.ts
+@@ -3,7 +3,14 @@ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { Data, Effect, Option, Schema, type Redacted } from "effect";
+ import { Atom } from "effect/reactivity";
+-import { AppId, type ProviderId } from "@executor-js/sdk";
++import {
++  AccountId,
++  AccountScope,
++  AppId,
++  OAuthAutomaticClient,
++  OAuthClientReference,
++  type ProviderId,
++} from "@executor-js/sdk";
+ import { DashboardClient, appAtom, toolsAtom } from "./api.ts";
+ import { refreshAppLinks } from "./app-accounts.ts";
+ import { accountCredentialsChanged } from "./accounts.ts";
+@@ -32,9 +39,31 @@ export const oauthCallbackAtom = Atom.make<Redacted.Redacted<string> | undefined
+  * Every sign-in fills an app requirement, so it returns to that app's accounts, where the new
+  * account is already linked. A reconnect keeps the account's name.
+  */
++/**
++ * The identity consent a sign-in asked for, so a partial grant can ask again with the same saved
++ * account and apps. Only selections and IDs: an entered client's credentials are never stored, so
++ * a retry after one uses the account's saved client instead.
++ */
++export const OAuthConsentRetry = Schema.Struct({
++  scope: AccountScope,
++  requirement: Schema.NonEmptyString,
++  method: Schema.NonEmptyString,
++  sourceAccount: Schema.NullOr(AccountId),
++  additionalTargets: Schema.Array(
++    Schema.Struct({
++      app: AppId,
++      requirement: Schema.NonEmptyString,
++      scope: AccountScope,
++      method: Schema.NonEmptyString,
++    }),
++  ),
++  client: Schema.optionalKey(Schema.Union([OAuthClientReference, OAuthAutomaticClient])),
++});
++export type OAuthConsentRetry = typeof OAuthConsentRetry.Type;
+ export const OAuthReturn = Schema.Struct({
+   app: AppId,
+   reconnect: Schema.Boolean,
++  consent: Schema.optionalKey(OAuthConsentRetry),
+ });
+ /** Finish once per document load, even if React remounts the page. */
+ export const completeOAuthAtom = DashboardClient.runtime
+diff --git a/apps/local/web/src/implementation/oauth.ts b/apps/local/web/src/implementation/oauth.ts
+index 7be2435bcfc37202efea3f6925602ede6559817d..c4fe9a4e8a016836393dcaa5501bf32441d1438f 100644
+--- a/apps/local/web/src/implementation/oauth.ts
++++ b/apps/local/web/src/implementation/oauth.ts
+@@ -1,8 +1,9 @@
+ /** Browser navigation only. No OAuth code, client secret, or token is persisted here. */
+ import { Effect, Option, Redacted, Schema } from "effect";
+ import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
+-import { OAuthReturn } from "../contracts/oauth.ts";
+-import type { AccountId } from "@executor-js/sdk";
++import { OAuthReturn, type OAuthConsentRetry } from "../contracts/oauth.ts";
++import type { AccountId, AccountScope, OAuthClientSelection } from "@executor-js/sdk";
++import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+ 
+ const returnKey = "executor.oauth.return";
+ /**
+@@ -32,6 +33,33 @@ export const openOAuth = (
+     else window.sessionStorage.setItem(returnKey, JSON.stringify(returnTo));
+     window.location.assign(authorizationUrl);
+   });
++/**
++ * The return a failed completion left saved. It stays saved, so a retry that leaves for the
++ * service again comes back to the same app.
++ */
++export const savedOAuthReturn = Effect.sync(() => {
++  const saved = window.sessionStorage.getItem(returnKey);
++  return saved === null
++    ? Option.none()
++    : Schema.decodeUnknownOption(Schema.fromJsonString(OAuthReturn))(saved);
++});
++/** The consent to repeat after a partial grant; an entered client is dropped, never stored. */
++export const consentRetry = (input: {
++  readonly scope: AccountScope;
++  readonly requirement: string;
++  readonly method: string;
++  readonly selection: IdentityConsentSelection;
++  readonly client?: OAuthClientSelection | undefined;
++}): OAuthConsentRetry => ({
++  scope: input.scope,
++  requirement: input.requirement,
++  method: input.method,
++  sourceAccount: input.selection.sourceAccount ?? null,
++  additionalTargets: input.selection.additionalTargets ?? [],
++  ...(input.client !== undefined && ("id" in input.client || "automatic" in input.client)
++    ? { client: "id" in input.client ? { id: input.client.id } : { automatic: true as const } }
++    : {}),
++});
+ /** Return to the app whose account the sign-in filled. A reconnect keeps its name. */
+ export const oauthDestination = (account: AccountId) =>
+   Effect.sync(() => {
+diff --git a/apps/local/web/src/implementation/pages/account-actions.tsx b/apps/local/web/src/implementation/pages/account-actions.tsx
+index 334ea049e24c88e4b828dc19716030ef8b58c08c..e14f75b526aa4e91b7e2af0ab40e07d0d3376abd 100644
+--- a/apps/local/web/src/implementation/pages/account-actions.tsx
++++ b/apps/local/web/src/implementation/pages/account-actions.tsx
+@@ -34,9 +34,12 @@ const managed = "This account is managed by the local server.";
+ export function LocalAccountActions({
+   account,
+   open,
++  binding = false,
+ }: {
+   readonly account: AccountSummary;
+   readonly open: (dialog: AccountDialogKind) => void;
++  /** One sign-in of a grouped identity row; removing it leaves the row's other sign-ins. */
++  readonly binding?: boolean | undefined;
+ }) {
+   return (
+     <AccountActionsMenu account={account}>
+@@ -44,7 +47,7 @@ export function LocalAccountActions({
+       <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
+       <DropdownMenuSeparator />
+       <DropdownMenuItem variant="destructive" onSelect={() => open("disconnect")}>
+-        Disconnect account
++        {binding ? "Remove saved sign-in" : "Disconnect account"}
+       </DropdownMenuItem>
+     </AccountActionsMenu>
+   );
+@@ -55,10 +58,12 @@ export function LocalAccountDialog({
+   id,
+   dialog,
+   onClose,
++  binding = false,
+ }: {
+   readonly id: AccountId;
+   readonly dialog: AccountDialogKind;
+   readonly onClose: () => void;
++  readonly binding?: boolean | undefined;
+ }) {
+   const [busy, setBusy] = useState(false);
+   const title =
+@@ -66,7 +71,9 @@ export function LocalAccountDialog({
+       ? "Edit account"
+       : dialog === "health"
+         ? "Account health"
+-        : "Disconnect account?";
++        : binding
++          ? "Remove saved sign-in?"
++          : "Disconnect account?";
+   return (
+     <AccountDialog
+       title={title}
+@@ -81,7 +88,12 @@ export function LocalAccountDialog({
+           ) : dialog === "health" ? (
+             <HealthBody data={data} onClose={onClose} />
+           ) : (
+-            <DisconnectBody data={data} onPendingChange={setBusy} onClose={onClose} />
++            <DisconnectBody
++              data={data}
++              binding={binding}
++              onPendingChange={setBusy}
++              onClose={onClose}
++            />
+           )
+         }
+       </QueryView>
+@@ -140,16 +152,19 @@ function EditBody({
+ 
+ function DisconnectBody({
+   data,
++  binding,
+   onPendingChange,
+   onClose,
+ }: {
+   readonly data: DashboardAccountDetail;
++  readonly binding: boolean;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onClose: () => void;
+ }) {
+   const disconnect = useAtomSet(disconnectAccountAtom(data.account.id), { mode: "promiseExit" });
+   return (
+     <DisconnectAccountForm<DashboardError>
++      {...(binding ? { submitLabel: "Remove saved sign-in" } : {})}
+       data={data}
+       Failure={Failure}
+       disabledReason={data.canManage ? undefined : managed}
+diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
+index d3a93412ed1d9572ba37842fc6532caf4c93f707..a62e1382438cc14bf243e1a64adcbec551ed03c6 100644
+--- a/apps/local/web/src/implementation/pages/accounts.tsx
++++ b/apps/local/web/src/implementation/pages/accounts.tsx
+@@ -20,7 +20,11 @@ import { LocalAccountObservations, LocalAccountPlan } from "./account-observatio
+ /** Local product supplies its own action and typed route. */
+ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
+   const identify = useAtomSet(identifyAccountsAtom, { mode: "promiseExit" });
+-  const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
++  const [dialog, setDialog] = useState<{
++    account: AccountId;
++    kind: AccountDialogKind;
++    binding: boolean;
++  }>();
+   return (
+     <>
+       <SharedPage
+@@ -64,10 +68,11 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+             )}
+           </IdentityAppPicker>
+         )}
+-        accountActions={(account) => (
++        accountActions={(account, { binding }) => (
+           <LocalAccountActions
+             account={account}
+-            open={(kind) => setDialog({ account: account.id, kind })}
++            binding={binding}
++            open={(kind) => setDialog({ account: account.id, kind, binding })}
+           />
+         )}
+         accountMeta={(account) => <LocalAccountPlan account={account} />}
+@@ -96,6 +101,7 @@ export function AccountsPage({ highlight }: { readonly highlight?: AccountId | u
+           key={`${dialog.account}:${dialog.kind}`}
+           id={dialog.account}
+           dialog={dialog.kind}
++          binding={dialog.binding}
+           onClose={() => setDialog(undefined)}
+         />
+       )}
+diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+index 5f5c5d22665b318218777266cb98cef8c78cddc4..4cef298e7ef6d8b3dfc1c787d20f2c53af743e2c 100644
+--- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
++++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+@@ -1,7 +1,7 @@
+ import { usePageUrl } from "@executor-js/dashboard-start/page";
+ import type { AccountOAuthProps, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
+ import type { FailureProps } from "@executor-js/ui/contracts/dashboard";
+-import { useState } from "react";
++import { useRef, useState } from "react";
+ import type { AccountId, AccountScope } from "@executor-js/sdk";
+ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identity-consent";
+ import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
+@@ -29,7 +29,8 @@ import {
+   connectionOAuthSetupAtom,
+ } from "../../contracts/account-connections.ts";
+ import { openConnectionOAuth } from "../account-connections.ts";
+-import { openOAuth } from "../oauth.ts";
++import { consentRetry, openOAuth } from "../oauth.ts";
++import type { OAuthConsentRetry } from "../../contracts/oauth.ts";
+ import { ConnectionLinkFailure, Failure } from "../components/common.tsx";
+ 
+ type FieldsProps = AccountOAuthProps & {
+@@ -62,19 +63,41 @@ export function AppOAuthFields({
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+   const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
+   const reconnect = props.account !== undefined;
++  // The identity consent that left for the service, so the callback can ask for it again.
++  const consent = useRef<OAuthConsentRetry | undefined>(undefined);
++  const authorizeIdentity = (selection: IdentityConsentSelection, client: OAuthSubmission) => {
++    consent.current = consentRetry({
++      scope,
++      requirement,
++      method: props.method,
++      selection,
++      client: client.client,
++    });
++    return authorize({ ...selection, method: props.method, ...client });
++  };
++  const returnTo = () => ({
++    app,
++    reconnect,
++    ...(consent.current === undefined ? {} : { consent: consent.current }),
++  });
+   const fields = (selection: IdentityConsentSelection) => (
+     <Fields
+       {...props}
+       query={atoms.oauthSetup(props.method)}
+       Failure={Failure}
+-      start={(client) =>
+-        reconnect ||
+-        (selection.sourceAccount === undefined && (selection.additionalTargets?.length ?? 0) === 0)
+-          ? start({ method: props.method, ...client })
+-          : authorize({ ...selection, method: props.method, ...client })
+-      }
++      start={(client) => {
++        if (
++          reconnect ||
++          (selection.sourceAccount === undefined &&
++            (selection.additionalTargets?.length ?? 0) === 0)
++        ) {
++          consent.current = undefined;
++          return start({ method: props.method, ...client });
++        }
++        return authorizeIdentity(selection, client);
++      }}
+       onSaved={onSaved}
+-      open={(authorizationUrl) => openOAuth(authorizationUrl, { app, reconnect })}
++      open={(authorizationUrl) => openOAuth(authorizationUrl, returnTo())}
+     />
+   );
+   if (reconnect) return fields({});
+@@ -90,11 +113,11 @@ export function AppOAuthFields({
+       onPendingChange={props.onPendingChange}
+       plan={plan}
+       reuse={reuse}
+-      start={(selection) => authorize({ method: props.method, ...selection })}
++      start={(selection) => authorizeIdentity(selection, {})}
+       onSaved={onSaved}
+       onAuthorized={(value) => {
+         if (value.status === "completed") onSaved(value.account);
+-        else Effect.runSync(openOAuth(value.authorizationUrl, { app, reconnect: false }));
++        else Effect.runSync(openOAuth(value.authorizationUrl, returnTo()));
+       }}
+     >
+       {(selection) => fields(selection)}
+diff --git a/apps/local/web/src/implementation/pages/oauth.tsx b/apps/local/web/src/implementation/pages/oauth.tsx
+index 3a7a51c3f1f80ab8fdd2d91580e5decb4c1fc84b..a1c966709ad94c4630acbe5df1500c72c60ca2bb 100644
+--- a/apps/local/web/src/implementation/pages/oauth.tsx
++++ b/apps/local/web/src/implementation/pages/oauth.tsx
+@@ -1,10 +1,18 @@
+-import { AsyncResult } from "effect/reactivity";
++import { AsyncResult, type Atom } from "effect/reactivity";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+-import { Effect } from "effect";
+-import { useEffect } from "react";
+-import { completeOAuthAtom } from "../../contracts/oauth.ts";
++import { Cause, Effect, Exit, Option, Schema } from "effect";
++import { OAuthCompletionFailed } from "@executor-js/sdk";
++import { ScopeList } from "@executor-js/ui/dashboard/oauth-scopes";
++import { useEffect, useState } from "react";
++import { Button } from "@executor-js/ui/components/button";
++import {
++  completeOAuthAtom,
++  type OAuthConsentRetry,
++  type OAuthReturn,
++} from "../../contracts/oauth.ts";
+ import { accountToNameAtom } from "../../contracts/accounts.ts";
+-import { oauthDestination } from "../oauth.ts";
++import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
++import { oauthDestination, openOAuth, savedOAuthReturn } from "../oauth.ts";
+ import { Link, useNavigate } from "@tanstack/react-router";
+ import { Empty, Failure } from "../components/common.tsx";
+ 
+@@ -29,6 +37,7 @@ export function OAuthCallbackPage() {
+       {AsyncResult.isFailure(result) ? (
+         <>
+           <Failure cause={result.cause} />
++          <MissingAccess cause={result.cause} />
+           <Link to="/accounts">Return to Accounts</Link>
+         </>
+       ) : AsyncResult.isSuccess(result) && result.value === undefined ? (
+@@ -41,3 +50,92 @@ export function OAuthCallbackPage() {
+     </div>
+   );
+ }
++
++/**
++ * A partial grant names the access the service left out; the saved sign-in and its apps are
++ * unchanged. When the sign-in started from a saved identity, it can ask for the same access again.
++ */
++function MissingAccess({ cause }: { readonly cause: Cause.Cause<unknown> }) {
++  // Rendered only after the browser completed the callback, so session storage is available.
++  const [saved] = useState(() => Option.getOrUndefined(Effect.runSync(savedOAuthReturn)));
++  const failure = Option.getOrUndefined(
++    Option.filter(
++      Option.filter(Cause.findErrorOption(cause), Schema.is(OAuthCompletionFailed)),
++      (error) => error.reason === "scope_missing",
++    ),
++  );
++  if (failure === undefined) return null;
++  const missing = failure.grantedScopesKnown === false ? [] : (failure.missingScopes ?? []);
++  return (
++    <div className="my-4 max-w-120 rounded-lg border border-border bg-muted/40 p-3">
++      {missing.length === 0 ? (
++        <p className="text-[12px] text-muted-foreground">
++          The service didn’t report which access it granted. Your existing sign-in and connected
++          apps still work.
++        </p>
++      ) : (
++        <>
++          <p className="mb-2 text-[12px] font-medium text-foreground">Not granted</p>
++          <ScopeList scopes={missing} />
++          <p className="mt-3 text-[12px] text-muted-foreground">
++            Your existing sign-in and connected apps still work.{" "}
++            {saved?.consent === undefined
++              ? "Connect the app again and allow this access."
++              : "Ask again and allow this access on the consent screen."}
++          </p>
++        </>
++      )}
++      {saved?.consent !== undefined && <GrantAccessAgain saved={saved} consent={saved.consent} />}
++    </div>
++  );
++}
++
++/** Repeat the same identity consent through normal validation; nothing changes until it succeeds. */
++function GrantAccessAgain({
++  saved,
++  consent,
++}: {
++  readonly saved: typeof OAuthReturn.Type;
++  readonly consent: OAuthConsentRetry;
++}) {
++  const navigate = useNavigate();
++  const [atoms] = useState(() =>
++    identityConsentAtoms({
++      app: saved.app,
++      scope: consent.scope,
++      requirement: consent.requirement,
++    }),
++  );
++  const start = useAtomSet(atoms.start, { mode: "promiseExit" });
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState<Cause.Cause<Atom.Failure<typeof atoms.start>>>();
++  return (
++    <div className="mt-3 flex flex-col items-start gap-2">
++      <Button
++        size="sm"
++        disabled={busy}
++        loading={busy}
++        onClick={async () => {
++          setBusy(true);
++          setError(undefined);
++          const result = await start({
++            method: consent.method,
++            sourceAccount: consent.sourceAccount,
++            additionalTargets: consent.additionalTargets,
++            ...(consent.client === undefined ? {} : { client: consent.client }),
++          });
++          if (Exit.isFailure(result)) {
++            setError(result.cause);
++            setBusy(false);
++          } else if (result.value.status === "completed") {
++            const { destination } = Effect.runSync(oauthDestination(result.value.account.id));
++            void navigate(destination);
++          } else Effect.runSync(openOAuth(result.value.authorizationUrl, saved));
++        }}
++      >
++        Grant access again
++      </Button>
++      {error !== undefined && <Failure cause={error} layout="compact" />}
++    </div>
++  );
++}
+diff --git a/e2e/support/account-identity-issuer.ts b/e2e/support/account-identity-issuer.ts
+index 4652af8ce923b91740b15a951c5f89fa24bbe32b..6e0e2cec18364dd27f5aadfad64fa17e50d5f13c 100644
+--- a/e2e/support/account-identity-issuer.ts
++++ b/e2e/support/account-identity-issuer.ts
+@@ -16,6 +16,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+   let denied = false;
+   let expiresIn = 3600;
+   let omitRefreshToken = false;
++  let omitScopes = false;
+   let confirmedScopes: string[] | undefined;
+   let authorizations = 0,
+     exchanges = 0,
+@@ -118,7 +119,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+           ...(omitted ? {} : { refresh_token: refreshToken }),
+           token_type: "Bearer",
+           expires_in: issued === undefined ? 3600 : expiresIn,
+-          scope: saved.scopes.join(" "),
++          ...(omitScopes ? {} : { scope: saved.scopes.join(" ") }),
+         });
+       }),
+     ),
+@@ -176,6 +177,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+       denied?: boolean;
+       expiresIn?: number;
+       omitRefreshToken?: boolean;
++      omitScopes?: boolean;
+       scopes?: string[];
+     }) =>
+       Effect.sync(() => {
+@@ -184,6 +186,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
+         if (input.denied !== undefined) denied = input.denied;
+         if (input.expiresIn !== undefined) expiresIn = input.expiresIn;
+         if (input.omitRefreshToken !== undefined) omitRefreshToken = input.omitRefreshToken;
++        if (input.omitScopes !== undefined) omitScopes = input.omitScopes;
+         confirmedScopes = input.scopes;
+       }),
+     metrics: Effect.sync(() => ({ authorizations, exchanges, refreshes, revocations })),
+diff --git a/e2e/support/account-identity-product.ts b/e2e/support/account-identity-product.ts
+index d504b6a573764c19a887097491864be3d583276f..100356e46d0646af238f7e7a5673bcf8a15225e0 100644
+--- a/e2e/support/account-identity-product.ts
++++ b/e2e/support/account-identity-product.ts
+@@ -9,6 +9,7 @@ import { appsManifest } from "./apps-release.ts";
+ export const IdentityAccount = Schema.Struct({
+   id: Schema.String,
+   provider: Schema.String,
++  label: Schema.String,
+   identity: Schema.optionalKey(
+     Schema.Struct({ id: Schema.String, name: Schema.String, label: Schema.String }),
+   ),
+@@ -95,6 +96,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+     connection: string,
+     selection: {
+       readonly clientId?: string;
++      readonly resume?: boolean;
+       readonly sourceAccount?: string | null;
+       readonly additionalConnections?: readonly {
+         readonly connection: string;
+@@ -107,11 +109,13 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
+         connection,
+         method: "oauth",
+         redirectUri: target.metadata.origin + "/api/oauth/callback",
+-        ...(selection.clientId !== undefined
+-          ? { client: { clientId: selection.clientId } }
+-          : selection.sourceAccount == null
+-            ? { client: { clientId: "synthetic-client" } }
+-            : {}),
++        ...(selection.resume === true
++          ? {}
++          : selection.clientId !== undefined
++            ? { client: { clientId: selection.clientId } }
++            : selection.sourceAccount == null
++              ? { client: { clientId: "synthetic-client" } }
++              : {}),
+         ...(selection.sourceAccount === undefined
+           ? {}
+           : { sourceAccount: selection.sourceAccount }),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index ad80d22f4b18dff940d9afd8fa3c7651123253f1..bd7691dc4a71500b82f86c02a626f224bd481302 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -212,6 +212,17 @@ export const scenarios = plan({
+       cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
+     },
+   },
++  googleIdentityMigration: {
++    fixtures: "actors",
++    file: "google-identity-migration.spec.ts",
++    title:
++      "Google identity recovery binds exact grants and preserves credentials and links through signed operations",
++    targets: {
++      local: na("Hosted production operations own this migration."),
++      "self-host": na("The signed operator endpoint is Cloud-only."),
++      cloud: scheduled,
++    },
++  },
+   accountIdentityPolicy: {
+     fixtures: "actors",
+     file: "account-identity-policy.spec.ts",
+diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
+index 3dd312a8ebc7e608af2231ee90cc2f56902f266c..d778b74807e7816e971577ac77e2c2d8080ab71e 100644
+--- a/e2e/tests/account-consent.spec.ts
++++ b/e2e/tests/account-consent.spec.ts
+@@ -25,7 +25,12 @@ const Health = Schema.Struct({
+     }),
+   ),
+ });
+-const Failure = Schema.Struct({ _tag: Schema.String, reason: Schema.String });
++const Failure = Schema.Struct({
++  _tag: Schema.String,
++  reason: Schema.String,
++  missingScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  grantedScopesKnown: Schema.optionalKey(Schema.Boolean),
++});
+ const State = Schema.Struct({ state: Schema.Struct({ status: Schema.String }) });
+ 
+ layer(TestLive, { excludeTestServices: true })("Shared account consent", (it) => {
+@@ -59,6 +64,8 @@ layer(TestLive, { excludeTestServices: true })("Shared account consent", (it) =>
+         expect(read.id).not.toBe(write.id);
+         expect(read.identity?.id).toBe(write.identity?.id);
+         expect(read.identity).toBeDefined();
++        expect(read.label).toBe("same@example.test");
++        expect(write.label).toBe("same@example.test");
+         expect((yield* issuer.metrics).authorizations).toBe(1);
+         for (const app of [readApp, writeApp]) expect((yield* product.read(app)).status).toBe(200);
+         yield* serverControl("restart");
+@@ -207,9 +214,25 @@ layer(TestLive, { excludeTestServices: true })("Shared account consent", (it) =>
+         expect(yield* body(Failure, partial)).toEqual({
+           _tag: "OAuthCompletionFailed",
+           reason: "scope_missing",
++          missingScopes: ["write"],
++          grantedScopesKnown: true,
+         });
++        expect(
++          (yield* body(State, yield* product.request("GET", `/v1/account-connections/${pending}`)))
++            .state.status,
++        ).toBe("pending");
+         expect((yield* product.read(readApp)).status).toBe(200);
+         expect((yield* product.read(writeApp)).status).not.toBe(200);
++        yield* issuer.configure({ omitScopes: true });
++        const unknown = yield* product.consent(pending, { sourceAccount: source.id });
++        expect(yield* body(Failure, unknown)).toMatchObject({
++          reason: "scope_missing",
++          grantedScopesKnown: false,
++        });
++        expect((yield* product.read(readApp)).status).toBe(200);
++        yield* issuer.configure({ scopes: ["read", "write"], omitScopes: false });
++        expect((yield* product.consent(pending, { resume: true })).status).toBe(200);
++        expect((yield* product.read(writeApp)).status).toBe(200);
+       }),
+     ),
+   );
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index f031686701a894f54109ee55bbadda0eca0d9b8d..cc7339d1d1e36f20c74659432190204801be898c 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -31,6 +31,20 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         expect(yield* product.deploy(issuer.origin, "Retained identity", ["read"], {}, app)).toBe(
+           app,
+         );
++        const proven = yield* product.connect(
++          yield* product.deploy(issuer.origin, "Verified migration proof", ["read"]),
++        );
++        // A reviewed metadata migration attaches the verified subject without rewriting a legacy grant.
++        yield* legacyStorage([
++          {
++            sql: "UPDATE executor_accounts SET identity_id = (SELECT identity_id FROM executor_accounts WHERE id = $1), label = $2 WHERE id = $3",
++            params: [proven.id, "same@example.test", before.id],
++          },
++        ]);
++        yield* serverControl("start");
++        const covering = yield* product.deploy(issuer.origin, "After metadata migration", ["read"]);
++        expect((yield* product.reuse(covering, before.id)).status).toBe("completed");
++        expect((yield* product.read(covering)).status).toBe(200);
+         const identified = yield* body(
+           IdentityAccount,
+           yield* product.request("POST", `/v1/accounts/${before.id}/identity`),
+@@ -38,6 +52,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         expect(identified.id).toBe(before.id);
+         expect(identified.provider).toBe(before.provider);
+         expect(identified.identity?.label).toBe("same@example.test");
++        expect(identified.label).toBe("same@example.test");
+         expect((yield* product.read(app)).status).toBe(200);
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
+index 39fd20850c4cf967257e3e7b08873e62ea03ace0..d71a13752aed34f564e6aea1c03aba49524beda2 100644
+--- a/e2e/tests/account-identity-screens.spec.ts
++++ b/e2e/tests/account-identity-screens.spec.ts
+@@ -157,6 +157,12 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+               .getByRole("link", { name: `Connected app ${index + 1}` })
+               .waitFor(),
+           );
++        yield* browser.use("Inspect each app's requested access", (page) =>
++          page.getByText("Requested access", { exact: true }).click(),
++        );
++        yield* browser.use("Show declared permissions without claiming a grant", (page) =>
++          page.locator(".requested-access").getByText("write", { exact: true }).waitFor(),
++        );
+         yield* browser.checkpoint("One verified account with five app links");
+         yield* browser.use("Add a later app from the saved account", (page) =>
+           page.getByRole("button", { name: "Add Fixture identity app", exact: true }).click(),
+@@ -290,10 +296,25 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         yield* browser.checkpoint(
+           "One selected identity and two apps waiting for additional access",
+         );
+-        yield* browser.use("Approve the additional app access", (page) =>
++        yield* issuer.configure({ scopes: ["read"] });
++        yield* browser.use("A partial grant returns with exact missing access", (page) =>
+           page
+             .getByRole("button", { name: "Continue with Fixture identity", exact: true })
+             .click()
++            .then(() => page.getByText("Not granted", { exact: true }).waitFor()),
++        );
++        for (const scope of ["write", "organize"])
++          yield* browser.use("Name the missing permission", (page) =>
++            page.getByText(scope, { exact: true }).waitFor(),
++          );
++        expect((yield* product.read(existing)).status).toBe(200);
++        expect((yield* product.read(writer)).status).not.toBe(200);
++        yield* browser.checkpoint("Missing access with the existing apps preserved");
++        yield* issuer.configure({ scopes: ["read", "write", "organize"] });
++        yield* browser.use("Grant access again for the same identity and selected apps", (page) =>
++          page
++            .getByRole("button", { name: "Grant access again", exact: true })
++            .click()
+             .then(() => dismissAccountName(page)),
+         );
+         yield* browser.use("Return to Accounts", (page) =>
+@@ -315,7 +336,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+         ).toBe(1);
+         for (const app of [existing, writer, organizer])
+           expect((yield* product.read(app)).status).toBe(200);
+-        expect((yield* issuer.metrics).authorizations).toBe(2);
++        expect((yield* issuer.metrics).authorizations).toBe(3);
+         expect(
+           (yield* body(IdentityAccount, yield* product.request("GET", `/v1/accounts/${source.id}`)))
+             .identity?.id,
+diff --git a/e2e/tests/google-identity-migration.spec.ts b/e2e/tests/google-identity-migration.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b3338c1751b3
+--- /dev/null
++++ b/e2e/tests/google-identity-migration.spec.ts
+@@ -0,0 +1,395 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import {
++  createHash,
++  createHmac,
++  generateKeyPairSync,
++  privateDecrypt,
++  createDecipheriv,
++  constants,
++  randomUUID,
++} from "node:crypto";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Target } from "../support/platform.ts";
++import { targetHosts } from "../support/role-hosts.ts";
++import { scenarios } from "../test-plan.ts";
++import { fixtureRequest } from "../sdk/fixtures.ts";
++
++const Artifact = Schema.Struct({
++  version: Schema.Literal(1),
++  sha256: Schema.String,
++  sealed: Schema.Struct({
++    version: Schema.Literal(1),
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++  recipient: Schema.Struct({
++    version: Schema.Literal(1),
++    recipient: Schema.String,
++    wrappedKey: Schema.String,
++    iv: Schema.String,
++    ciphertext: Schema.String,
++  }),
++});
++const canonical = (value: unknown): string =>
++  JSON.stringify(value, (_key, item: unknown) =>
++    item !== null && typeof item === "object" && !Array.isArray(item)
++      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
++      : item,
++  );
++const hash = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
++
++layer(HostedLive, { excludeTestServices: true })("Google recovery operations", (it) => {
++  it.effect(scenarios.googleIdentityMigration.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          database = yield* cloudLocks;
++        const runtime = yield* Target;
++        const target = targetHosts(runtime).browser;
++        const organization = actors.organization.id,
++          owner = `organization:${organization}`;
++        const rows = (sql: string, params: readonly (string | number | null)[] = []) =>
++          database.run({ sql, params });
++        const ids = [`acc_${randomUUID()}`, `acc_${randomUUID()}`],
++          provider = `prv_${randomUUID()}`;
++        const session = yield* body(
++          Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
++          yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
++        );
++        const person = session.user.id;
++        const deployed = yield* api.request(
++          actors.owner,
++          "POST",
++          `/api/organizations/${organization}/apps/deploy`,
++          {
++            name: `Recovery ${randomUUID()}`,
++            files: [
++              appsManifest,
++              {
++                path: "index.ts",
++                content:
++                  'import { defineApp, router } from "apps"; export default defineApp({}, {tools:router({})});',
++              },
++            ],
++          },
++        );
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = (yield* body(Schema.Struct({ id: Schema.String }), deployed)).id;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const id of ids) {
++              yield* rows("delete from executor_accounts where id = $1", [id]);
++              yield* rows("delete from executor_oauth_grants where id = $1", [id]);
++            }
++            yield* rows(
++              "delete from executor_account_identities where owner = $1 and subject = $2",
++              [owner, `subject-${ids[0]}`],
++            );
++            yield* rows("delete from executor_providers where id = $1", [provider]);
++            yield* api.request(
++              actors.owner,
++              "DELETE",
++              `/api/organizations/${organization}/apps/${app}`,
++            );
++          }).pipe(Effect.orDie),
++        );
++        const authorizationEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
++        const tokenEndpoint = "https://oauth2.googleapis.com/token";
++        yield* rows("insert into executor_providers (id,definition) values ($1,$2::jsonb)", [
++          provider,
++          JSON.stringify({
++            name: "Google recovery fixture",
++            auth: {
++              oauth: {
++                type: "oauth2",
++                authorizationUrl: authorizationEndpoint,
++                tokenUrl: tokenEndpoint,
++                scopes: ["openid", "email"],
++                tokenEndpointAuthMethod: "none",
++                response: {
++                  type: "object",
++                  properties: { access_token: { type: "string" } },
++                  required: ["access_token"],
++                },
++              },
++            },
++          }),
++        ]);
++        for (const [index, id] of ids.entries()) {
++          yield* rows(
++            `insert into executor_accounts
++          (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation)
++          values ($1,$2,$3,'oauth',$4,decode('123456','hex'),now(),3)`,
++            [id, owner, provider, index === 0 ? "Default" : "My Google"],
++          );
++          yield* rows(
++            `insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
++          values ($1,decode('abcdef','hex'),'ready_fixture',now(),$2)`,
++            [id, owner],
++          );
++          yield* rows(
++            `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id)
++          values ($1,$2,$3,'personal',$3)`,
++            [id, organization, person],
++          );
++          yield* rows(
++            `insert into hosted_app_account_links (app,requirement,subject,account,linked_by)
++          values ($1,'service',$2,$3,$2)`,
++            [app, person, id],
++          );
++        }
++        const keypair = generateKeyPairSync("rsa", { modulusLength: 3072 });
++        const recipient = keypair.publicKey
++          .export({ type: "spki", format: "der" })
++          .toString("base64");
++        const operation = (
++          action: string,
++          selection: string,
++          request: unknown,
++          extra: object = {},
++        ) =>
++          Effect.gen(function* () {
++            const at = Date.now();
++            const payload = Buffer.from(
++              JSON.stringify({
++                version: 1,
++                id: randomUUID(),
++                target,
++                at,
++                expiresAt: at + 60000,
++                operation: { action, selection, request, recipient, ...extra },
++              }),
++            ).toString("base64url");
++            const signed = `sbops1.${payload}`;
++            const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++              .update(signed)
++              .digest("base64url");
++            return yield* api.request(actors.owner, "POST", "/api/internal/production-ops", {
++              envelope: `${signed}.${signature}`,
++            });
++          });
++        const open = (artifact: typeof Artifact.Type) => {
++          const copy = artifact.recipient;
++          const key = privateDecrypt(
++            {
++              key: keypair.privateKey,
++              padding: constants.RSA_PKCS1_OAEP_PADDING,
++              oaepHash: "sha256",
++            },
++            Buffer.from(copy.wrappedKey, "base64"),
++          );
++          const encrypted = Buffer.from(copy.ciphertext, "base64");
++          const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(copy.iv, "base64"));
++          decipher.setAAD(Buffer.from(`basalt-production-ops-v1:${target}`));
++          decipher.setAuthTag(encrypted.subarray(-16));
++          const text = Buffer.concat([
++            decipher.update(encrypted.subarray(0, -16)),
++            decipher.final(),
++          ]).toString("utf8");
++          expect(createHash("sha256").update(text).digest("hex")).toBe(artifact.sha256);
++          return Schema.decodeUnknownSync(Schema.Json)(JSON.parse(text));
++        };
++        const snapshot = () =>
++          rows(
++            `select a.id, a.owner, a.provider, a.method, a.credential_generation as generation,
++        a.oauth_grant_id, encode(a.encrypted_credentials,'hex') as credentials,
++        encode(g.encrypted,'hex') as encrypted,g.status,g.owner as "grantOwner",
++        to_char(g.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated,
++        h.revision, h.kind, h.personal_user_id as person,h.audience,
++        (select jsonb_agg(to_jsonb(l) order by l.app,l.requirement) from hosted_app_account_links l where l.account=a.id) as links
++        from executor_accounts a join executor_oauth_grants g on g.id=a.id
++        join hosted_account_access h on h.account_id=a.id where a.id in ($1,$2) order by a.id`,
++            ids,
++          );
++        const before = yield* snapshot();
++        const observedAt = new Date().toISOString();
++        const proofs = before.map((row) => {
++          const placement = JSON.stringify([organization, row.kind, row.person, row.audience, []]);
++          return {
++            account: row.id,
++            owner,
++            provider,
++            method: "oauth",
++            generation: row.generation,
++            placement,
++            grantSha256: hash([
++              row.id,
++              owner,
++              provider,
++              "oauth",
++              row.generation,
++              placement,
++              row.revision,
++              row.id,
++              row.status,
++              row.grantOwner,
++              row.updated,
++              row.encrypted,
++            ]),
++            issuer: "https://accounts.google.com",
++            subject: `subject-${ids[0]}`,
++            email: "person@example.test",
++            observedAt,
++            evidence: { kind: "issuer-pinned-userinfo", authorizationEndpoint, tokenEndpoint },
++          };
++        });
++        const request = { organization, proofs };
++        const prepared = yield* operation("prepare", "google-account-proofs", {
++          organization,
++          accounts: ids,
++        });
++        expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
++        const preparation = open(
++          (yield* body(Schema.Struct({ artifact: Artifact }), prepared)).artifact,
++        );
++        const result = Schema.decodeUnknownSync(
++          Schema.Struct({
++            result: Schema.Struct({
++              proofs: Schema.Array(Schema.Unknown),
++              insufficientProof: Schema.Array(
++                Schema.Struct({ account: Schema.String, reason: Schema.String }),
++              ),
++            }),
++          }),
++        )(preparation).result;
++        expect(result.proofs).toEqual([]);
++        expect(result.insufficientProof.map((entry) => entry.account).sort()).toEqual(
++          [...ids].sort(),
++        );
++        expect(yield* snapshot()).toEqual(before);
++        const selection = "google-account-identity-v1";
++        for (const invalid of [
++          proofs.map((proof) => ({ ...proof, issuer: "https://example.invalid" })),
++          proofs.map(({ subject: _subject, ...proof }) => proof),
++        ]) {
++          expect(
++            (yield* operation("dry-run", selection, { organization, proofs: invalid })).status,
++          ).toBe(409);
++        }
++        const dry = yield* operation("dry-run", selection, request);
++        expect(dry.status, JSON.stringify(dry.body)).toBe(200);
++        const plan = yield* body(
++          Schema.Struct({
++            changes: Schema.Number,
++            artifact: Artifact,
++            backup: Artifact,
++            backupSha256: Schema.String,
++          }),
++          dry,
++        );
++        expect(plan.changes).toBe(3);
++        const decoded = Schema.decodeUnknownSync(
++          Schema.Struct({
++            database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++            plan: Schema.Struct({ changes: Schema.Array(Schema.Struct({ table: Schema.String })) }),
++          }),
++        )(open(plan.artifact));
++        expect(decoded.plan.changes.map((change) => change.table).sort()).toEqual([
++          "executor_account_identities",
++          "executor_accounts",
++          "executor_accounts",
++        ]);
++        open(plan.backup);
++        expect(yield* snapshot()).toEqual(before);
++        const apply = (go = `GO ${plan.artifact.sha256}`) =>
++          operation("apply", selection, request, {
++            artifact: plan.artifact,
++            planSha256: plan.artifact.sha256,
++            backupSha256: plan.backupSha256,
++            go,
++          });
++        expect((yield* apply("GO wrong-plan")).status).toBe(409);
++        if (runtime.fixtures === undefined)
++          return yield* Effect.die("Managed Cloud fixtures required");
++        const fixtures = runtime.fixtures;
++        const metadata = () =>
++          rows(
++            "select id,identity_id,label from executor_accounts where id in ($1,$2) order by id",
++            ids,
++          );
++        const retainedMetadata = yield* metadata();
++        const receipt = () =>
++          rows("select plan_sha256 from private_production_ops_receipts where plan_sha256=$1", [
++            plan.artifact.sha256,
++          ]);
++        expect(yield* receipt()).toEqual([]);
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            yield* Effect.acquireRelease(
++              fixtureRequest(
++                fixtures,
++                "/runtime/database-binding",
++                { binding: "alternate" },
++                "5 minutes",
++              ),
++              () =>
++                fixtureRequest(
++                  fixtures,
++                  "/runtime/database-binding",
++                  { binding: "original" },
++                  "5 minutes",
++                ).pipe(Effect.orDie),
++            );
++            const inventory = yield* operation("inventory", "accounts", { organization });
++            expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
++            const changed = Schema.decodeUnknownSync(
++              Schema.Struct({
++                database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++              }),
++            )(
++              open((yield* body(Schema.Struct({ artifact: Artifact }), inventory)).artifact),
++            ).database;
++            expect(decoded.database.name).toBe("executor");
++            expect(changed.name).toBe(decoded.database.name);
++            expect(changed.targetSha256).toMatch(/^[a-f0-9]{64}$/u);
++            expect(changed.targetSha256).not.toBe(decoded.database.targetSha256);
++            const refused = yield* apply();
++            expect(refused.status, JSON.stringify(refused.body)).toBe(409);
++            expect(yield* snapshot()).toEqual(before);
++            expect(yield* metadata()).toEqual(retainedMetadata);
++            expect(yield* receipt()).toEqual([]);
++          }),
++        );
++        yield* rows("update executor_accounts set credential_generation=4 where id=$1", [ids[0]!]);
++        expect((yield* apply()).status).toBe(409);
++        yield* rows("update executor_accounts set credential_generation=3 where id=$1", [ids[0]!]);
++        const applied = yield* apply();
++        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
++        expect(
++          yield* body(
++            Schema.Struct({
++              repeated: Schema.Boolean,
++              verification: Schema.Struct({ ok: Schema.Boolean }),
++            }),
++            applied,
++          ),
++        ).toEqual({ repeated: false, verification: { ok: true } });
++        expect(yield* snapshot()).toEqual(before);
++        const accounts = yield* rows(
++          "select id,identity_id,label from executor_accounts where id in ($1,$2) order by id",
++          ids,
++        );
++        expect(new Set(accounts.map((account) => account.identity_id)).size).toBe(1);
++        expect(accounts.find((account) => account.id === ids[0])?.label).toBe(
++          "person@example.test",
++        );
++        expect(accounts.find((account) => account.id === ids[1])?.label).toBe("My Google");
++        const repeated = yield* apply();
++        expect(repeated.status).toBe(200);
++        expect((yield* body(Schema.Struct({ repeated: Schema.Boolean }), repeated)).repeated).toBe(
++          true,
++        );
++        const noop = yield* operation("dry-run", selection, request);
++        expect(noop.status, JSON.stringify(noop.body)).toBe(200);
++        expect((yield* body(Schema.Struct({ changes: Schema.Number }), noop)).changes).toBe(0);
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
+index 8c6aa1d87dd02c2b2e5917c78f63d6daed57f526..c5b60350955f004dbce2bfa219929ee764d20547 100644
+--- a/packages/sdk/src/contracts/oauth-families.ts
++++ b/packages/sdk/src/contracts/oauth-families.ts
+@@ -43,3 +43,22 @@ export const oauthIdentityConsent = (method: AuthMethod) =>
+         authorizationParams: { include_granted_scopes: "true" },
+       }
+     : undefined;
++
++/** Google returns OIDC identity scope aliases as userinfo URLs in token responses. */
++const scopeKey = (issuer: string | undefined, scope: string) =>
++  issuer === "https://accounts.google.com"
++    ? scope === "email"
++      ? "https://www.googleapis.com/auth/userinfo.email"
++      : scope === "profile"
++        ? "https://www.googleapis.com/auth/userinfo.profile"
++        : scope
++    : scope;
++
++export const missingOAuthScopes = (
++  issuer: string | undefined,
++  requested: readonly string[],
++  granted: readonly string[] | undefined,
++) => {
++  const covered = new Set(granted?.map((scope) => scopeKey(issuer, scope)));
++  return requested.filter((scope) => !covered.has(scopeKey(issuer, scope)));
++};
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 772b197521111ad064b035c10db61c31c6aca8a5..3cda5eec61db5e5c2e6902fcf59b13c41d0109ba 100644
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -780,6 +780,8 @@ export const OAuthCompletionFailed = UserFacingError.define({
+   fields: {
+     /** A consumed attempt always needs a new sign-in. */
+     reason: OAuthCompletionReason,
++    missingScopes: Schema.optional(Schema.Array(Schema.String)),
++    grantedScopesKnown: Schema.optional(Schema.Boolean),
+     cause: Schema.optional(OAuthFailureCause),
+     serviceError: Schema.optional(OAuthServiceError),
+     retryAfter: RetryAfter,
+diff --git a/packages/sdk/src/implementation/account-identification.ts b/packages/sdk/src/implementation/account-identification.ts
+index 55f91ff924b959da505e306f8d8efefefc0a1ce0..e18bd4cc06bf5ff529ff30b4cea4514b5e6fe5f9 100644
+--- a/packages/sdk/src/implementation/account-identification.ts
++++ b/packages/sdk/src/implementation/account-identification.ts
+@@ -28,9 +28,9 @@ export const makeAccountIdentification =
+   (input: Parameters<Executor["accounts"]["get"]>[0]) =>
+     Effect.gen(function* () {
+       const account = yield* ownedAccount(db, input);
+-      const shown = (identity?: Account["identity"]) =>
++      const shown = (identity?: Account["identity"], row = account) =>
+         Schema.decodeUnknownEffect(Account)({
+-          ...accountMetadata(account),
++          ...accountMetadata(row),
+           ...(identity === undefined ? {} : { identity }),
+         }).pipe(Effect.mapError(() => new StorageError()));
+       if (
+@@ -130,5 +130,5 @@ export const makeAccountIdentification =
+         }),
+       );
+       const current = yield* ownedAccount(db, input);
+-      return yield* shown(yield* accountIdentity(db, current, lifecycle));
++      return yield* shown(yield* accountIdentity(db, current, lifecycle), current);
+     }).pipe(Effect.withSpan("sdk.accounts.identify"));
+diff --git a/packages/sdk/src/implementation/account-identities.ts b/packages/sdk/src/implementation/account-identities.ts
+index 1452049bc064835685b1fb4376b60101242a36c6..2f0d7cdd35bccfdaa97629bd5d18aa232c22a783 100644
+--- a/packages/sdk/src/implementation/account-identities.ts
++++ b/packages/sdk/src/implementation/account-identities.ts
+@@ -63,7 +63,7 @@ export const recordAccountIdentity = (
+   db: Query,
+   crypto: Crypto.Crypto,
+   lifecycle: ResourceLifecycle | undefined,
+-  account: Pick<StoredAccount, "id" | "owner" | "credentialGeneration">,
++  account: Pick<StoredAccount, "id" | "owner" | "credentialGeneration" | "label">,
+   verified: VerifiedAccountSubject,
+   now: Date,
+ ) =>
+@@ -103,6 +103,19 @@ export const recordAccountIdentity = (
+           set: { identityId: id },
+         }),
+       );
++      if (/^default(?: account| \d+)?$/iu.test(account.label))
++        yield* query(() =>
++          tx.updateMany("accounts", {
++            where: (b) =>
++              b.and(
++                b("id", "=", account.id),
++                b("owner", "=", account.owner),
++                b("credentialGeneration", "=", account.credentialGeneration),
++                b("label", "=", account.label),
++              ),
++            set: { label: verified.label },
++          }),
++        );
+       return id;
+     }),
+   );
+diff --git a/packages/sdk/src/implementation/oauth-connection-plan.ts b/packages/sdk/src/implementation/oauth-connection-plan.ts
+index afed1e89fc0e085880fcf8d1f3b14297762660f8..ed56f8a809b370162aa2f568f06f59d23abfa0a7 100644
+--- a/packages/sdk/src/implementation/oauth-connection-plan.ts
++++ b/packages/sdk/src/implementation/oauth-connection-plan.ts
+@@ -1,3 +1,4 @@
++import { missingOAuthScopes } from "../contracts/oauth-families.ts";
+ import { accountMetadata } from "./accounts.ts";
+ /** A plan compares real grants and saved connection destinations without creating credentials or links. */
+ import { Effect, Redacted, Schema } from "effect";
+@@ -60,8 +61,9 @@ const readSource = (
+     );
+     if (
+       grant.grant === "client_credentials" ||
+-      grant.identity?.issuer !== proof.issuer ||
+-      grant.identity.subject !== proof.subject ||
++      (grant.identity !== undefined &&
++        (grant.identity.issuer !== proof.issuer || grant.identity.subject !== proof.subject)) ||
++      (source.oauthGrantId !== null && grant.identity === undefined) ||
+       (source.oauthGrantId !== null && grant.identityId !== source.identityId)
+     )
+       return unavailable("identity");
+@@ -267,7 +269,11 @@ export const inspectOAuthConnection = (
+     ].sort();
+     if (operator !== undefined && !union.every((scope) => allowedScopes(operator).includes(scope)))
+       return incompatible("client");
+-    const missing = required.filter((scope) => !grant.grantedScopes?.includes(scope));
++    const missing = missingOAuthScopes(
++      primary.method.identity?.issuer,
++      required,
++      grant.grantedScopes,
++    );
+     return {
+       plan: {
+         ...base,
+diff --git a/packages/sdk/src/implementation/oauth-consent-state.ts b/packages/sdk/src/implementation/oauth-consent-state.ts
+index 7adf6ecf7cf69f8f33871a882fedd4bc8685796f..de7acfab621741446ea220931e137dc7b5f6b589 100644
+--- a/packages/sdk/src/implementation/oauth-consent-state.ts
++++ b/packages/sdk/src/implementation/oauth-consent-state.ts
+@@ -1,3 +1,4 @@
++import { missingOAuthScopes } from "../contracts/oauth-families.ts";
+ import { accountMetadata } from "./accounts.ts";
+ /** Consent commits one verified grant and all its selected app bindings in the resource transaction. */
+ import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+@@ -21,7 +22,7 @@ import {
+ } from "../contracts/shared.ts";
+ import type { Credentials } from "../contracts/storage.ts";
+ import { accountGrantId, accountIdentity } from "./account-identities.ts";
+-import { defaultLabel, ownedAccount } from "./accounts.ts";
++import { ownedAccount } from "./accounts.ts";
+ import {
+   finishConnection,
+   lockConnection,
+@@ -138,8 +139,10 @@ export const lockOAuthConsentSource = (
+     );
+     if (
+       grant.grant === "client_credentials" ||
+-      grant.identity?.issuer !== selected.issuer ||
+-      grant.identity.subject !== selected.subject
++      (grant.identity !== undefined &&
++        (grant.identity.issuer !== selected.issuer ||
++          grant.identity.subject !== selected.subject)) ||
++      (account.oauthGrantId !== null && grant.identity === undefined)
+     )
+       return yield* changed();
+     const proof = yield* query(() =>
+@@ -164,12 +167,23 @@ export const completeOAuthConsent = (
+     const { attempt, grant } = input;
+     if (attempt.consentSource === undefined && (attempt.additionalConnections?.length ?? 0) === 0)
+       return;
+-    if (
+-      grant.grant === "client_credentials" ||
+-      grant.grantedScopes === undefined ||
+-      !(attempt.requestedScopes ?? []).every((scope) => grant.grantedScopes?.includes(scope))
+-    )
+-      return yield* new OAuthCompletionFailed({ reason: "scope_missing" });
++    if (grant.grant === "client_credentials")
++      return yield* new OAuthCompletionFailed({
++        reason: "scope_missing",
++        grantedScopesKnown: false,
++      });
++    const granted = grant.grantedScopes;
++    const missingScopes = missingOAuthScopes(
++      attempt.identity?.issuer,
++      attempt.requestedScopes ?? [],
++      granted,
++    );
++    if (granted === undefined || missingScopes.length > 0)
++      return yield* new OAuthCompletionFailed({
++        reason: "scope_missing",
++        missingScopes,
++        grantedScopesKnown: granted !== undefined,
++      });
+     const primary = yield* ownedAccount(db, { account: attempt.account, owner: attempt.owner });
+     const identity = yield* accountIdentity(db, primary, lifecycle);
+     const proof =
+@@ -294,7 +308,7 @@ export const completeOAuthConsent = (
+           provider: row.provider,
+           method: selection.method,
+           grant: root,
+-          label: yield* defaultLabel(db, row.owner, row.provider),
++          label: identity.label,
+         },
+       );
+       if (account === undefined) return yield* new AccountConnectionRefused(row.target);
+diff --git a/packages/sdk/src/implementation/oauth-grant-bindings.ts b/packages/sdk/src/implementation/oauth-grant-bindings.ts
+index 2bbccd8bf13aee886f96e8a490aa1287f5bd1558..926429c6e31b52d4fd6bf4ee55979522b313ef6a 100644
+--- a/packages/sdk/src/implementation/oauth-grant-bindings.ts
++++ b/packages/sdk/src/implementation/oauth-grant-bindings.ts
+@@ -20,12 +20,26 @@ export const shareOAuthGrant = (
+   Effect.gen(function* () {
+     if (source.oauthGrantId !== null) return source.oauthGrantId;
+     if (source.identityId === null) return yield* new StorageError();
++    const proof = yield* query(() =>
++      db.findFirst("accountIdentities", {
++        where: (b) => b.and(b("id", "=", source.identityId), b("owner", "=", source.owner)),
++      }),
++    );
++    if (proof === null) return yield* new StorageError();
++    // The operator migration binds verified identity to the unchanged legacy grant without rewriting it.
++    if (
++      grant.grant === "client_credentials" ||
++      (grant.identity !== undefined &&
++        (grant.identity.issuer !== proof.issuer || grant.identity.subject !== proof.subject))
++    )
++      return yield* new StorageError();
+     const id = AccountId.make(
+       `acc_grant_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+     );
+     const json = yield* Schema.decodeUnknownEffect(JsonObject)({
+       ...grant,
+       identityId: source.identityId,
++      identity: { issuer: proof.issuer, subject: proof.subject },
+     }).pipe(Effect.mapError(() => new StorageError()));
+     const encrypted = yield* credentials.encrypt(id, Redacted.make(json));
+     yield* query(() =>
+diff --git a/packages/sdk/src/implementation/oauth-grant-reuse.ts b/packages/sdk/src/implementation/oauth-grant-reuse.ts
+index 52e7d8f6dcb5360d533e65d1ec91af19fac6acd0..1a5f25c27a1473539f99eaabfeb0887fae0c2fb5 100644
+--- a/packages/sdk/src/implementation/oauth-grant-reuse.ts
++++ b/packages/sdk/src/implementation/oauth-grant-reuse.ts
+@@ -11,7 +11,7 @@ import {
+ import type { OAuthOptions } from "../contracts/oauth.ts";
+ import type { Credentials } from "../contracts/storage.ts";
+ import { accountGrantId } from "./account-identities.ts";
+-import { ownedAccount, defaultLabel } from "./accounts.ts";
++import { ownedAccount } from "./accounts.ts";
+ import {
+   lockConnection,
+   readConnection,
+@@ -142,7 +142,7 @@ export const makeOAuthGrantReuse =
+               {
+                 provider: row.provider,
+                 method: entry.methodName,
+-                label: input.label ?? (yield* defaultLabel(tx, row.owner, row.provider)),
++                label: input.label ?? source.identity.label,
+                 grant,
+               },
+             );
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index e4dec2e0cf111cd44d2ecf617af7d2d6de2875d6..31b6329172b02e2946ac3fabfd96a74d8fa93399 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -1,6 +1,6 @@
+ import { projectOAuthFields as project } from "./oauth-fields.ts";
+ import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+-import { oauthIdentityConsent } from "../contracts/oauth-families.ts";
++import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+ /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
+ import {
+@@ -2528,7 +2528,9 @@ export const makeOAuth = (
+                     provider: attempt.provider,
+                     owner: attempt.owner,
+                     label:
+-                      attempt.label ?? (yield* defaultLabel(tx, attempt.owner, attempt.provider)),
++                      attempt.label ??
++                      verified?.label ??
++                      (yield* defaultLabel(tx, attempt.owner, attempt.provider)),
+                     description: null,
+                     method: attempt.method,
+                     ...(attempt.site === undefined ? {} : { site: attempt.site }),
+@@ -2579,7 +2581,12 @@ export const makeOAuth = (
+                 tx,
+                 crypto,
+                 lifecycle,
+-                { id: saved.id, owner: saved.owner, credentialGeneration: generation },
++                {
++                  id: saved.id,
++                  owner: saved.owner,
++                  credentialGeneration: generation,
++                  label: saved.label,
++                },
+                 verified,
+                 new Date(completedAt),
+               );
+@@ -2734,7 +2741,8 @@ export const makeOAuth = (
+             grant.identity === undefined ||
+             grant.identityId !== account.identityId ||
+             grant.grantedScopes === undefined ||
+-            !requiredScopes.every((scope) => grant.grantedScopes?.includes(scope))
++            missingOAuthScopes(method.identity?.issuer, requiredScopes, grant.grantedScopes)
++              .length > 0
+           )
+             return yield* reconnect("grant_unusable");
+         }
+diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
+index 614ea957af366251a0e5ea9ecc23194e2664f76e..018b7f5776a51a0672b74f2496979771607485c5 100644
+--- a/packages/ui/src/contracts/account-identities.ts
++++ b/packages/ui/src/contracts/account-identities.ts
+@@ -1,4 +1,5 @@
+ /** Group only verified identities already visible in the product's authorized inventory. */
++import type { ProviderDefinition } from "@executor-js/sdk";
+ import type { AccountSummary, Inventory } from "./dashboard.ts";
+ 
+ export interface AccountGroup {
+@@ -6,6 +7,7 @@ export interface AccountGroup {
+   readonly bindings: readonly AccountSummary[];
+ }
+ 
++/** Bindings join only through the host's verified issuer and subject; labels and emails never group. */
+ export const accountGroups = (accounts: readonly AccountSummary[]): readonly AccountGroup[] => {
+   const groups = new Map<string, AccountSummary[]>();
+   for (const account of accounts) {
+@@ -21,6 +23,14 @@ export const accountGroups = (accounts: readonly AccountSummary[]): readonly Acc
+   });
+ };
+ 
++/** Google rows use the verified email; other providers keep their saved account name. */
++export const accountTitle = (account: AccountSummary) =>
++  account.identity?.issuer === "https://accounts.google.com"
++    ? account.identity.label
++    : account.identity?.label !== undefined && /^default(?: account| \d+)?$/iu.test(account.label)
++      ? account.identity.label
++      : account.label || account.health?.info?.email || "Unnamed account";
++
+ /** App labels come from the visible inventory, never an identity-wide unfiltered count. */
+ export const bindingApps = (inventory: Inventory, bindings: readonly AccountSummary[]) => {
+   const ids = new Set(bindings.map((account) => account.id));
+@@ -30,3 +40,54 @@ export const bindingApps = (inventory: Inventory, bindings: readonly AccountSumm
+     ),
+   );
+ };
++
++const interactiveOAuth = (definition: ProviderDefinition, method: string) => {
++  const auth = definition.auth[method];
++  return auth?.type === "oauth2" && auth.grant !== "client_credentials" ? auth : undefined;
++};
++
++/**
++ * What each visible app using these bindings asks the service for. Declared scopes are requested
++ * access, not a record of what the service granted.
++ */
++export const bindingAccess = (inventory: Inventory, bindings: readonly AccountSummary[]) =>
++  bindingApps(inventory, bindings).flatMap((app) => {
++    const scopes = bindings.flatMap((binding) =>
++      [...inventory.links, ...(inventory.appLinks ?? [])].some(
++        (link) => link.app === app.id && link.account === binding.id,
++      )
++        ? Object.values(app.requirements.accounts).flatMap((requirement) =>
++            requirement.provider === binding.provider && requirement.definition.site === undefined
++              ? (interactiveOAuth(requirement.definition, binding.method)?.scopes ?? [])
++              : [],
++          )
++        : [],
++    );
++    return scopes.length === 0 ? [] : [{ app, scopes: [...new Set(scopes)] }];
++  });
++
++/**
++ * The sign-in family a binding belongs to, such as Google, for explaining why it is not grouped.
++ * A retained binding may predate its app's current provider declaration, so the linked app's
++ * declaration also names the family. Display only: grouping still needs the host's proof.
++ */
++export const bindingFamily = (inventory: Inventory, binding: AccountSummary) => {
++  const requirements = inventory.apps.flatMap((app) => Object.values(app.requirements.accounts));
++  const exact = requirements.find(
++    (requirement) =>
++      requirement.provider === binding.provider &&
++      requirement.definition.site === undefined &&
++      interactiveOAuth(requirement.definition, binding.method)?.identity !== undefined,
++  );
++  if (exact !== undefined)
++    return interactiveOAuth(exact.definition, binding.method)?.identity ?? undefined;
++  for (const app of bindingApps(inventory, [binding]))
++    for (const requirement of Object.values(app.requirements.accounts)) {
++      if (requirement.definition.site !== undefined) continue;
++      for (const method of Object.keys(requirement.definition.auth)) {
++        const identity = interactiveOAuth(requirement.definition, method)?.identity;
++        if (identity !== undefined) return identity;
++      }
++    }
++  return undefined;
++};
+diff --git a/packages/ui/src/contracts/oauth-scopes.ts b/packages/ui/src/contracts/oauth-scopes.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..85c42c197bb241810be0c0ec377a4337f73f9485
+--- /dev/null
++++ b/packages/ui/src/contracts/oauth-scopes.ts
+@@ -0,0 +1,10 @@
++/**
++ * A short name for an OAuth scope. Providers publish scopes as opaque strings, often URLs such as
++ * `https://www.googleapis.com/auth/documents`; the exact value is always shown beside the name.
++ */
++export const scopeName = (scope: string) => {
++  if (!URL.canParse(scope)) return scope;
++  const url = new URL(scope);
++  const path = url.pathname.replace(/^\/auth\//, "").replace(/^\/+|\/+$/g, "");
++  return path === "" ? url.hostname : path;
++};
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+index d4f01497dfbd965244ec8aab4b81c6dd696a2008..973740ecc2ac8f2aff019c1d6a4f6e1c3d418869 100644
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -12,7 +12,14 @@ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dash
+ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
+ 
+ import { Empty, SearchInput } from "./common.tsx";
+-import { accountGroups, bindingApps } from "../../contracts/account-identities.ts";
++import {
++  accountGroups,
++  accountTitle,
++  bindingAccess,
++  bindingApps,
++  bindingFamily,
++} from "../../contracts/account-identities.ts";
++import { RequestedAccess } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+@@ -29,7 +36,11 @@ export function AccountsPage<E>({
+   /** A page action beside the title, such as managing OAuth clients; hidden while there are none. */
+   readonly action?: ReactNode;
+   readonly empty?: ReactNode;
+-  readonly accountActions?: (account: AccountSummary) => ReactNode;
++  /** `binding` marks one sign-in inside a grouped identity row, not the whole account. */
++  readonly accountActions?: (
++    account: AccountSummary,
++    context: { readonly binding: boolean },
++  ) => ReactNode;
+   readonly identityActions?: (
+     bindings: readonly AccountSummary[],
+     inventory: Inventory,
+@@ -96,7 +107,11 @@ function AccountsList({
+   readonly search: string;
+   readonly empty: ReactNode;
+   readonly clearSearch: () => void;
+-  readonly accountActions?: (account: AccountSummary) => ReactNode;
++  /** `binding` marks one sign-in inside a grouped identity row, not the whole account. */
++  readonly accountActions?: (
++    account: AccountSummary,
++    context: { readonly binding: boolean },
++  ) => ReactNode;
+   readonly identityActions?: (
+     bindings: readonly AccountSummary[],
+     inventory: Inventory,
+@@ -113,7 +128,7 @@ function AccountsList({
+   }, [highlight]);
+   const groups = accountGroups(data.accounts).filter(({ bindings }) =>
+     bindings.some((account) =>
+-      `${account.identity?.label ?? ""} ${account.identity?.name ?? ""} ${account.label} ${account.providerName ?? ""} ${bindingApps(
++      `${accountTitle(account)} ${account.identity?.name ?? ""} ${account.label} ${account.providerName ?? ""} ${bindingApps(
+         data,
+         [account],
+       )
+@@ -149,6 +164,11 @@ function AccountsList({
+           {groups.map(({ account, bindings }) => {
+             const apps = bindingApps(data, bindings);
+             const marked = bindings.some((binding) => binding.id === highlight);
++            const title = accountTitle(account);
++            const info = account.health?.info;
++            const family =
++              account.identity === undefined ? bindingFamily(data, account) : undefined;
++            const access = bindingAccess(data, bindings);
+ 
+             return (
+               <div
+@@ -162,9 +182,7 @@ function AccountsList({
+                   <AccountLogo account={account} />
+ 
+                   <div>
+-                    <strong>
+-                      {account.identity?.label ?? (account.label || "Unnamed account")}
+-                    </strong>
++                    <strong>{title}</strong>
+                     {account.description && (
+                       <p
+                         className="account-description mt-0.5 truncate text-[12px] text-muted-foreground"
+@@ -183,12 +201,17 @@ function AccountsList({
+                       <span>
+                         {[...new Set(bindings.map((binding) => binding.method))].join(", ")}
+                       </span>
+-                      {account.health?.info && (
+-                        <>
+-                          <span aria-hidden>·</span>
+-                          <AccountIdentity info={account.health.info} />
+-                        </>
+-                      )}
++                      {info &&
++                        !(
++                          info.displayName === undefined &&
++                          info.username === undefined &&
++                          info.email === title
++                        ) && (
++                          <>
++                            <span aria-hidden>·</span>
++                            <AccountIdentity info={info} />
++                          </>
++                        )}
+                       {accountMeta?.(account)}
+                       {accountNeedsSignIn(account) && (
+                         <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
+@@ -201,6 +224,14 @@ function AccountsList({
+                         </span>
+                       )}
+                     </div>
++                    {family !== undefined && (
++                      <p className="unverified-identity mt-1 text-[11px] leading-4 text-muted-foreground">
++                        {family.name} identity not verified, so this sign-in is listed on its own.{" "}
++                        {apps[0] === undefined
++                          ? "Reconnect it from an app to group it."
++                          : `Reconnect it from ${appDisplayName(apps[0], brand)} to group it.`}
++                      </p>
++                    )}
+                   </div>
+                 </div>
+                 <div className="account-date text-[12px] text-muted-foreground wrap-anywhere max-[1000px]:hidden max-[740px]:hidden">
+@@ -239,7 +270,7 @@ function AccountsList({
+                 <div className="flex items-center justify-end gap-2 max-[740px]:col-span-2 max-[740px]:col-start-1 max-[740px]:row-start-2 max-[740px]:justify-start max-[740px]:flex-wrap max-[740px]:pl-11.5">
+                   {account.identity !== undefined && identityActions?.(bindings, data)}
+                   {bindings.length === 1 ? (
+-                    accountActions?.(account)
++                    accountActions?.(account, { binding: false })
+                   ) : (
+                     <Popover>
+                       <PopoverTrigger asChild>
+@@ -260,13 +291,20 @@ function AccountsList({
+                                 binding.providerName ||
+                                 "Saved sign-in"}
+                             </span>
+-                            {accountActions?.(binding)}
++                            {accountActions?.(binding, { binding: true })}
+                           </div>
+                         ))}
+                       </PopoverContent>
+                     </Popover>
+                   )}
+                 </div>
++                <RequestedAccess
++                  apps={access.map(({ app, scopes }) => ({
++                    id: app.id,
++                    name: appDisplayName(app, brand),
++                    scopes,
++                  }))}
++                />
+                 {accountDetails !== undefined && (
+                   <div className="col-span-full min-w-0 pl-11.5">
+                     {accountDetails(account, apps)}
+diff --git a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
+index 2213725e62235c75d0de8bdd7073330f795987b8..2b1bd348beb1d1ae803e055c7096bb23e332bb3c 100644
+--- a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
++++ b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
+@@ -18,6 +18,7 @@ import {
+   type IdentityConsentSelection,
+ } from "../../contracts/identity-consent.ts";
+ import { QueryView } from "./context.tsx";
++import { ScopeList } from "./oauth-scopes.tsx";
+ import { Button } from "../components/button.tsx";
+ import { Checkbox } from "../components/checkbox.tsx";
+ import { Label } from "../components/label.tsx";
+@@ -223,6 +224,14 @@ function IdentityConsentFields<E, S extends OAuthStartResult>({
+                   ? "This sign-in cannot be shared with the selected apps. Choose another account or connect the apps separately."
+                   : "Continue to approve the additional access. Your connected apps keep working."}
+           </p>
++          {!planning &&
++            planned?.plan.status === "consent-required" &&
++            planned.plan.missingScopes.length > 0 && (
++              <div className="space-y-1.5">
++                <p className="text-xs text-muted-foreground">{family} will ask for:</p>
++                <ScopeList scopes={planned.plan.missingScopes} />
++              </div>
++            )}
+           <Button
+             disabled={
+               busy || planning || planned === undefined || planned.plan.status === "incompatible"
+diff --git a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..f1546acb8fa61e1c8b4be38fd8acd15e2e521e13
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
+@@ -0,0 +1,56 @@
++import { scopeName } from "../../contracts/oauth-scopes.ts";
++import { cn } from "../lib/utils.ts";
++
++/** Each scope's short name with its exact value, which is what the service's consent screen grants. */
++export function ScopeList({
++  scopes,
++  className,
++}: {
++  readonly scopes: readonly string[];
++  readonly className?: string | undefined;
++}) {
++  return (
++    <ul className={cn("flex flex-col gap-1.5 text-left", className)}>
++      {scopes.map((scope) => (
++        <li key={scope} className="min-w-0 text-[12px] leading-5">
++          <span className="font-medium text-foreground">{scopeName(scope)}</span>
++          {scopeName(scope) !== scope && (
++            <span className="block font-mono text-[11px] text-muted-foreground wrap-anywhere">
++              {scope}
++            </span>
++          )}
++        </li>
++      ))}
++    </ul>
++  );
++}
++
++/** Collapsed by default: the row stays one line, and the scopes are one click away. */
++export function RequestedAccess({
++  apps,
++}: {
++  readonly apps: readonly {
++    readonly id: string;
++    readonly name: string;
++    readonly scopes: readonly string[];
++  }[];
++}) {
++  if (apps.length === 0) return null;
++  return (
++    <details className="requested-access col-span-full min-w-0 pl-11.5 text-[12px] text-muted-foreground">
++      <summary className="w-fit cursor-pointer rounded-sm select-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring max-[740px]:flex max-[740px]:min-h-11 max-[740px]:items-center">
++        Requested access
++      </summary>
++      <dl className="mt-2 grid gap-x-6 gap-y-3 sm:grid-cols-2">
++        {apps.map((app) => (
++          <div key={app.id} className="min-w-0">
++            <dt className="mb-1 text-[11px] text-muted-foreground">{app.name}</dt>
++            <dd>
++              <ScopeList scopes={app.scopes} />
++            </dd>
++          </div>
++        ))}
++      </dl>
++    </details>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/verify-identities-client.tsx b/packages/ui/src/implementation/dashboard/verify-identities-client.tsx
+index 21976d64776d079079338bb21e3647e1f6370cdf..e540f1673ec94ffd54808491d81b4d9103bc86ae 100644
+--- a/packages/ui/src/implementation/dashboard/verify-identities-client.tsx
++++ b/packages/ui/src/implementation/dashboard/verify-identities-client.tsx
+@@ -1,8 +1,12 @@
+-/** Retained sign-ins are verified in bounded batches; an unavailable proof leaves them independent. */
++/**
++ * Retained sign-ins are offered for verification; the host decides which ones its issuer and subject
++ * proof covers. An unavailable proof leaves a sign-in independent, never grouped by its email.
++ */
+ import { useState, type ComponentType } from "react";
+ import { Exit, Option, type Cause } from "effect";
+ import type { Account, AccountId } from "@executor-js/sdk";
+ import type { FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";
++import { bindingApps, bindingFamily } from "../../contracts/account-identities.ts";
+ import { useQuery } from "./context.tsx";
+ import { Button } from "../components/button.tsx";
+ 
+@@ -18,25 +22,25 @@ export function VerifyIdentities<E>({
+   const { data, refresh } = useQuery(query);
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+-  const [missing, setMissing] = useState(false);
++  const [outcome, setOutcome] = useState<{
++    readonly verified: number;
++    readonly unproven: number;
++  }>();
++  // Sign-ins the host could not prove stay listed on their own; offering them again changes nothing.
++  const [tried, setTried] = useState<ReadonlySet<AccountId>>(new Set());
+   const inventory = Option.getOrUndefined(data);
+   const accounts =
+-    inventory !== undefined
+-      ? inventory.accounts
+-          .filter(
+-            (account) =>
+-              account.identity === undefined &&
+-              inventory.apps.some((app) =>
+-                Object.values(app.requirements.accounts).some(
+-                  (required) =>
+-                    required.provider === account.provider &&
+-                    required.definition.auth[account.method]?.type === "oauth2",
+-                ),
+-              ),
+-          )
+-          .slice(0, 5)
+-      : [];
+-  if (accounts.length === 0 && error === undefined && !missing) return null;
++    inventory === undefined
++      ? []
++      : inventory.accounts.filter(
++          (account) =>
++            account.identity === undefined &&
++            account.hostManaged !== true &&
++            !tried.has(account.id) &&
++            (bindingFamily(inventory, account) !== undefined ||
++              bindingApps(inventory, [account]).length === 0),
++        );
++  if (accounts.length === 0 && error === undefined && outcome === undefined) return null;
+   return (
+     <div className="space-y-2">
+       {accounts.length > 0 && (
+@@ -47,10 +51,21 @@ export function VerifyIdentities<E>({
+           onClick={async () => {
+             setBusy(true);
+             setError(undefined);
+-            setMissing(false);
+-            const result = await identify(accounts.map((account) => account.id));
+-            if (Exit.isFailure(result)) setError(result.cause);
+-            else setMissing(result.value.some((account) => account.identity === undefined));
++            setOutcome(undefined);
++            const ids = accounts.map((account) => account.id);
++            const completed: Account[] = [];
++            const triedIds: AccountId[] = [];
++            for (const id of ids) {
++              const result = await identify([id]);
++              if (Exit.isFailure(result)) setError((current) => current ?? result.cause);
++              else {
++                completed.push(...result.value);
++                triedIds.push(id);
++              }
++            }
++            const verified = completed.filter((account) => account.identity !== undefined);
++            setOutcome({ verified: verified.length, unproven: completed.length - verified.length });
++            setTried((current) => new Set([...current, ...triedIds]));
+             refresh();
+             setBusy(false);
+           }}
+@@ -58,10 +73,13 @@ export function VerifyIdentities<E>({
+           Verify saved accounts
+         </Button>
+       )}
+-      {missing && (
+-        <p className="max-w-80 text-xs text-muted-foreground">
+-          Some accounts could not verify their identity. Reconnect them from an app to repair their
+-          sign-in.
++      {outcome !== undefined && (
++        <p role="status" className="max-w-80 text-xs text-muted-foreground">
++          {outcome.verified === 0
++            ? "No sign-ins could be verified."
++            : `${outcome.verified} ${outcome.verified === 1 ? "sign-in" : "sign-ins"} verified.`}{" "}
++          {outcome.unproven > 0 &&
++            "Sign-ins without proof of their identity stay listed on their own. Reconnect them from an app to group them."}
+         </p>
+       )}
+       {error !== undefined && <Failure cause={error} layout="compact" />}
