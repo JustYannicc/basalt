@@ -1,6 +1,12 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
+@@ -1,4 +1,4 @@
+-import type { Effect } from "effect";
++import { Data, type Effect } from "effect";
+ import type { SqlClient } from "effect/sql";
+ 
+ export type Json =
 @@ -33,6 +33,11 @@
    readonly revision: string;
    readonly tables: readonly string[];
@@ -13,6 +19,43 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/
    readonly apply: (
      request: Json,
      plan: MigrationPlan,
+@@ -49,4 +54,6 @@
+   readonly run: (request: Json) => Effect.Effect<Json, unknown, SqlClient.SqlClient>;
+ }
+ 
++export class ProductionOperationBusy extends Data.TaggedError("ProductionOperationBusy") {}
++
+ export const productionOpsPath = "/api/internal/production-ops";
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -8,6 +8,7 @@
+ import { cloudHosts } from "../stage.ts";
+ import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
+ import { Operation, runProductionOperation } from "./runner.ts";
++import { ProductionOperationBusy } from "./contracts.ts";
+ import { cloudProductionPreparations } from "./preparations.ts";
+ import { requestBody } from "./body.ts";
+ import { canonical, sha256 } from "./crypto.ts";
+@@ -91,8 +92,18 @@
+     ).pipe(
+       Effect.provideService(SqlClient.SqlClient, sql),
+       Effect.timeout("25 seconds"),
++      Effect.catch((error) =>
++        error instanceof ProductionOperationBusy
++          ? Effect.succeed({ error: "operation_busy" as const, retryable: true as const })
++          : Effect.fail(error),
++      ),
+       atPhase("sql"),
+     );
++    if ("error" in result)
++      return yield* HttpServerResponse.json(result, {
++        status: 409,
++        headers: { "cache-control": "no-store" },
++      });
+     return yield* HttpServerResponse.json(result, {
+       headers: { "cache-control": "no-store" },
+     }).pipe(atPhase("decode"));
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
@@ -132,10 +175,15 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/prov
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-openai-anthropic-v1.ts
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,178 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
-+import type { Json, MigrationPlan, ProductionMigration } from "../contracts.ts";
++import {
++  ProductionOperationBusy,
++  type Json,
++  type MigrationPlan,
++  type ProductionMigration,
++} from "../contracts.ts";
 +import { adoptionRevision, planProviderApps, stateHash } from "./provider-apps-plan.ts";
 +import { readProviderApps } from "./provider-apps-read.ts";
 +import { providerAppsPrerequisites } from "./provider-apps-prerequisites.ts";
@@ -190,17 +238,36 @@ new file mode 100644
 +    }
 +  });
 +
-+const lockAccounts = (request: ProviderAppsRequest) =>
++/** Deletion claims connections before accounts; NOWAIT refuses either contested order without waiting. */
++const lockAccountClaims = (request: ProviderAppsRequest) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    const owner = `organization:${request.organization}`;
 +    for (const item of [...request.accounts].sort((a, b) => a.account.localeCompare(b.account))) {
-+      yield* sql`select id from executor_accounts where id = ${item.account} and owner = ${owner} for update`;
++      yield* sql`select id from executor_accounts where id = ${item.account} and owner = ${owner} for update nowait`;
++      yield* sql`select id from executor_account_connections where owner = ${owner}
++      and (state -> 'account' ->> 'id' = ${item.account} or reconnect_account = ${item.account} or source_account = ${item.account}) order by id for update nowait`;
++    }
++  }).pipe(
++    Effect.mapError((error) => {
++      const driver = error.reason.cause;
++      return typeof driver === "object" &&
++        driver !== null &&
++        "code" in driver &&
++        driver.code === "55P03"
++        ? new ProductionOperationBusy()
++        : error;
++    }),
++  );
++
++const lockDependents = (request: ProviderAppsRequest) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const owner = `organization:${request.organization}`;
++    for (const item of [...request.accounts].sort((a, b) => a.account.localeCompare(b.account))) {
 +      yield* sql`select p.account_id from hosted_account_access p join executor_accounts a on a.id = p.account_id where p.account_id = ${item.account} and p.organization_id = ${request.organization} and a.owner = ${owner} for share of p`;
 +      yield* sql`select r.account from executor_account_acquisitions r join executor_accounts a on a.id = r.account where r.account = ${item.account} and r.owner = ${owner} and a.owner = ${owner} for update of r`;
 +      yield* sql`select s.id from executor_webhook_sources s join executor_accounts a on a.id = s.account join executor_apps app on app.id = s.app where s.account = ${item.account} and s.owner = ${owner} and a.owner = ${owner} and app.owner = ${owner} order by s.id for update of s`;
-+      yield* sql`select id from executor_account_connections where owner = ${`organization:${request.organization}`}
-+      and (state -> 'account' ->> 'id' = ${item.account} or reconnect_account = ${item.account} or source_account = ${item.account}) order by id for update`;
 +    }
 +  });
 +
@@ -233,6 +300,7 @@ new file mode 100644
 +        return yield* refuse("reviewed plan has blocked prerequisites");
 +      const request = yield* decodeRequest(input);
 +      yield* lockAuthority(request);
++      yield* lockAccountClaims(request);
 +      if (!(yield* providerAppsPrerequisites(request)).ready)
 +        return yield* refuse("provider app or pool prerequisites are missing");
 +    }),
@@ -241,7 +309,7 @@ new file mode 100644
 +      const request = yield* decodeRequest(input);
 +      const sql = yield* SqlClient.SqlClient;
 +      const owner = `organization:${request.organization}`;
-+      yield* lockAccounts(request);
++      yield* lockDependents(request);
 +      const prerequisites = yield* providerAppsPrerequisites(request);
 +      if (!prerequisites.ready)
 +        return yield* refuse("provider app or pool prerequisites are missing");
@@ -1054,7 +1122,7 @@ new file mode 100644
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
-@@ -292,6 +292,8 @@
+@@ -293,6 +293,8 @@
              return yield* fail("Receipt identity differs");
            return { repeated: true };
          }
@@ -1095,10 +1163,37 @@ new file mode 100644
 +    }),
 +  );
 +});
+diff --git a/apps/hosted/testing/cloud-locks-fixture.ts b/apps/hosted/testing/cloud-locks-fixture.ts
+--- a/apps/hosted/testing/cloud-locks-fixture.ts
++++ b/apps/hosted/testing/cloud-locks-fixture.ts
+@@ -32,6 +32,7 @@
+   Schema.Union([
+     Schema.Struct({ hold: Statement }),
+     Schema.Struct({ run: Statement }),
++    Schema.Struct({ probe: Statement }),
+     Schema.Struct({ release: Schema.Literal(true) }),
+     Schema.Struct({ signal: Schema.Struct({ pid: Schema.Int, stop: Schema.Boolean }) }),
+     Schema.Struct({ connections: Schema.Boolean }),
+@@ -157,6 +158,15 @@
+               rows = await run(holder, instruction.hold);
+             } else if ("run" in instruction) {
+               rows = await run(pool, instruction.run);
++            } else if ("probe" in instruction) {
++              try {
++                await run(pool, instruction.probe);
++                rows = [{ code: null }];
++              } catch (error) {
++                if (!(error instanceof Error) || !("code" in error) || error.code !== "55P03")
++                  throw error;
++                rows = [{ code: "55P03" }];
++              }
+             } else if ("connections" in instruction) {
+               await allowConnections(instruction.connections);
+               refusing.now = !instruction.connections;
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -309,6 +309,21 @@
+@@ -313,6 +313,26 @@
      targets: ["cloud"],
      reason:
        "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
@@ -1117,9 +1212,26 @@ diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
 +    targets: ["cloud"],
 +    reason:
 +      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
++  },
++  providerAdoptionAccountDelete: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
    },
    cloudPoolSetupAtomic: {
      targets: ["cloud"],
+diff --git a/e2e/support/cloud-locks.ts b/e2e/support/cloud-locks.ts
+--- a/e2e/support/cloud-locks.ts
++++ b/e2e/support/cloud-locks.ts
+@@ -62,6 +62,8 @@
+     hold: (statement: Statement) => send({ hold: statement }),
+     /** Run a statement on another connection, outside the held transaction. */
+     run: (statement: Statement) => send({ run: statement }),
++    /** Try a NOWAIT row lock, reporting only the expected contention code. */
++    probe: (statement: Statement) => send({ probe: statement }),
+     /** Commit the held transaction, releasing its locks. */
+     release: Effect.asVoid(send({ release: true })),
+     /**
 diff --git a/e2e/support/provider-adoption-fixture.ts b/e2e/support/provider-adoption-fixture.ts
 new file mode 100644
 --- /dev/null
@@ -1361,9 +1473,10 @@ diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adopt
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/provider-adoption-locks.ts
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,293 @@
 +import { expect } from "@effect/vitest";
-+import { Effect, Fiber, Schedule, Schema } from "effect";
++import { Effect, Fiber, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 +import { body } from "./api.ts";
 +import { Target } from "./platform.ts";
 +import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
@@ -1372,7 +1485,6 @@ new file mode 100644
 +import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
 +import { DryRun, Plan } from "./provider-adoption-refusals.ts";
 +
-+const Backend = Schema.Array(Schema.Struct({ pid: Schema.Number }));
 +const Failure = Schema.Struct({
 +  error: Schema.Literal("operation_refused"),
 +  failure: Schema.Struct({
@@ -1389,7 +1501,26 @@ new file mode 100644
 +  go: `GO ${dry.artifact.sha256}`,
 +});
 +
-+/** Observe actual blocked database statements, so no timing assumption orders the two HTTP requests. */
++/** SQL boundaries pause actual HTTP transactions; NOWAIT probes establish their held locks. */
++const boundary = (step: "organization" | "app" | "account", id: string) =>
++  Effect.gen(function* () {
++    const origin = process.env.BASALT_ADOPTION_STEP_GATE;
++    if (origin === undefined)
++      return yield* Effect.die("Run scripts/production-ops/prove-provider-adoption.ts");
++    const request = (action: string) =>
++      Effect.gen(function* () {
++        const url = new URL(`/${action}`, origin);
++        url.searchParams.set("step", step);
++        url.searchParams.set("id", id);
++        const response = yield* HttpClient.execute(HttpClientRequest.post(url));
++        if (response.status !== 204) return yield* Effect.die("SQL boundary request refused");
++      }).pipe(Effect.provide(FetchHttpClient.layer));
++    yield* request("arm");
++    yield* Effect.addFinalizer(() => request("release").pipe(Effect.orDie));
++    return { entered: request("entered"), release: request("release") };
++  });
++const Probe = Schema.Array(Schema.Struct({ code: Schema.NullOr(Schema.String) }));
++
 +export const proveConcurrentUnlink = Effect.gen(function* () {
 +  const p = yield* providerAdoptionFixture,
 +    client = yield* productionOpsClient,
@@ -1405,29 +1536,8 @@ new file mode 100644
 +    (yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(dry.artifact))).plan.data.prerequisites
 +      .ready,
 +  ).toBe(true);
-+  const [holder] = yield* p.database
-+    .hold({
-+      sql: "select pg_backend_pid() as pid, id from executor_apps where owner = $1 and id = $2 for no key update",
-+      params: [`organization:${p.request.organization}`, p.pool],
-+    })
-+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Backend)));
-+  expect(holder).toBeDefined();
-+  yield* Effect.addFinalizer(() => p.database.release.pipe(Effect.orDie));
-+  const blockedBy = (pid: number, query: string) =>
-+    p.database
-+      .run({
-+        sql: "select pid from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)) and query ilike $2",
-+        params: [pid, query],
-+      })
-+      .pipe(
-+        Effect.flatMap(Schema.decodeUnknownEffect(Backend)),
-+        Effect.filterOrFail(
-+          (rows) => rows.length === 1,
-+          () => new Error("Expected the selected HTTP statement to wait on its authority lock"),
-+        ),
-+        Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
-+      );
 +  const selected = p.request.accounts[0]!;
++  const unlinkStep = yield* boundary("app", p.pool);
 +  const unlink = yield* p.api
 +    .request(
 +      p.actors.owner,
@@ -1435,43 +1545,162 @@ new file mode 100644
 +      `${p.prefix}/apps/${p.pool}/accounts/app/subscriptions/${selected.account}`,
 +    )
 +    .pipe(Effect.forkChild);
-+  const [unlinkBackend] = yield* blockedBy(holder!.pid, "%executor_apps%");
-+  const applying = yield* client.request(apply(operation, dry)).pipe(Effect.forkChild);
-+  const [applyBackend] = yield* blockedBy(unlinkBackend!.pid, "%pg_advisory_xact_lock%");
-+  const locks = yield* p.database
++  yield* Effect.raceFirst(
++    unlinkStep.entered,
++    Fiber.join(unlink).pipe(
++      Effect.flatMap((response) =>
++        Effect.die(`Unlink completed before its SQL boundary: ${response.status}`),
++      ),
++    ),
++  );
++  const organization = yield* p.database
 +    .run({
-+      sql: "select exists(select 1 from pg_locks where pid = $1 and granted and relation in ('hosted_app_account_links'::regclass, 'executor_accounts'::regclass) and mode in ('RowShareLock','RowExclusiveLock')) as rows_locked",
-+      params: [applyBackend!.pid],
++      sql: "select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired",
++      params: [`executor-access:${p.request.organization}`],
 +    })
 +    .pipe(
 +      Effect.flatMap(
-+        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ rows_locked: Schema.Boolean }))),
++        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ acquired: Schema.Boolean }))),
 +      ),
 +    );
++  expect(organization[0]!.acquired).toBe(false);
++  const applyStep = yield* boundary("organization", p.request.organization);
++  const applying = yield* client.request(apply(operation, dry)).pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    applyStep.entered,
++    Fiber.join(applying).pipe(
++      Effect.flatMap((response) =>
++        Effect.die(
++          `Apply completed before its SQL boundary: ${response.status} ${JSON.stringify(response.body)}`,
++        ),
++      ),
++    ),
++  );
++  const links = yield* p.database
++    .probe({
++      sql: "select l.account from hosted_app_account_links l join executor_apps app on app.id = l.app join executor_accounts a on a.id = l.account where app.owner = $1 and a.owner = $1 and l.app = $2 and l.account = $3 for update of l nowait",
++      params: [`organization:${p.request.organization}`, p.pool, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  const accounts = yield* p.database
++    .probe({
++      sql: "select id from executor_accounts where owner = $1 and id = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
 +  yield* evidence.json("adoption-unlink-lock-order.json", {
-+    unlinkWaitsOnApp: true,
-+    applyWaitsOnOrganization: true,
-+    scopedRowsLockedBeforeAuthority: locks[0]!.rows_locked,
++    unlinkHoldsOrganization: !organization[0]!.acquired,
++    applyAtOrganizationBoundary: true,
++    linkProbe: links[0]!.code,
++    accountProbe: accounts[0]!.code,
 +  });
-+  expect(locks[0]!.rows_locked).toBe(false);
-+  yield* p.database.release;
++  expect(links[0]!.code).toBeNull();
++  expect(accounts[0]!.code).toBeNull();
++  yield* unlinkStep.release;
 +  const unlinked = yield* Fiber.join(unlink);
 +  expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
++  yield* applyStep.release;
 +  const refused = yield* Fiber.join(applying);
 +  expect(refused.status, JSON.stringify(refused.body)).toBe(409);
 +  const failure = yield* body(Failure, refused);
 +  expect(failure.failure.sqlStateClass).not.toBe("55");
-+  const rows = yield* p.database.run({
-+    sql: "select account from hosted_app_account_links where app = $1 and account = $2 and requirement = 'subscriptions'",
-+    params: [p.pool, selected.account],
-+  });
-+  expect(rows).toEqual([]);
++  expect(
++    yield* p.database.run({
++      sql: "select account from hosted_app_account_links where app = $1 and account = $2 and requirement = 'subscriptions'",
++      params: [p.pool, selected.account],
++    }),
++  ).toEqual([]);
 +  expect(
 +    yield* p.database.run({
 +      sql: "select account from executor_account_acquisitions where account = $1",
 +      params: [selected.account],
 +    }),
 +  ).toEqual([]);
++});
++
++export const proveConcurrentAccountDelete = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient,
++    evidence = yield* Evidence;
++  const operation = {
++    action: "dry-run",
++    selection: "provider-apps-openai-anthropic-v1",
++    recipient: client.recipient,
++    request: p.request,
++  };
++  const dry = yield* body(DryRun, yield* client.request(operation));
++  expect(
++    (yield* Schema.decodeUnknownEffect(Plan)(client.decrypt(dry.artifact))).plan.data.prerequisites
++      .ready,
++  ).toBe(true);
++  const selected = p.request.accounts[0]!;
++  const deletingStep = yield* boundary("account", selected.account);
++  const deleting = yield* p.api
++    .request(p.actors.owner, "DELETE", `${p.prefix}/accounts/${selected.account}`)
++    .pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    deletingStep.entered,
++    Fiber.join(deleting).pipe(
++      Effect.flatMap((response) =>
++        Effect.die(
++          `Account DELETE completed before its SQL boundary: ${response.status} ${JSON.stringify(response.body)}`,
++        ),
++      ),
++    ),
++  );
++  const account = yield* p.database
++    .probe({
++      sql: "select id from executor_accounts where owner = $1 and id = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  const connection = yield* p.database
++    .probe({
++      sql: "select id from executor_account_connections where owner = $1 and state -> 'account' ->> 'id' = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  expect(account[0]!.code).toBe("55P03");
++  expect(connection[0]!.code).toBe("55P03");
++  const before = yield* p.snapshot;
++  const refused = yield* client.request(apply(operation, dry));
++  yield* evidence.json("adoption-account-delete-busy.json", {
++    actualDeletePausedAfterClaims: true,
++    accountProbe: account[0]!.code,
++    connectionProbe: connection[0]!.code,
++    status: refused.status,
++    refusal: refused.body,
++  });
++  expect(refused.status).toBe(409);
++  expect(refused.body).toEqual({ error: "operation_busy", retryable: true });
++  expect(yield* p.snapshot).toEqual(before);
++  expect(
++    yield* p.database.run({
++      sql: "select plan_sha256 from private_production_ops_receipts where organization_id = $1",
++      params: [p.request.organization],
++    }),
++  ).toEqual([]);
++  const link = yield* p.database
++    .probe({
++      sql: "select account from hosted_app_account_links where app = $1 and account = $2 for update nowait",
++      params: [p.pool, selected.account],
++    })
++    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Probe)));
++  expect(link[0]!.code).toBeNull();
++  yield* deletingStep.release;
++  const deleted = yield* Fiber.join(deleting);
++  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
++  const inventory = yield* p.api
++    .request(p.actors.owner, "GET", `${p.prefix}/inventory`)
++    .pipe(
++      Effect.flatMap((response) =>
++        body(
++          Schema.Struct({ accounts: Schema.Array(Schema.Struct({ id: Schema.String })) }),
++          response,
++        ),
++      ),
++    );
++  expect(inventory.accounts.some((row) => row.id === selected.account)).toBe(false);
 +});
 +
 +/** Hold foreign rows throughout the blocked GO; it must refuse without waiting on or changing them. */
@@ -1693,10 +1922,12 @@ new file mode 100644
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2283,6 +2283,40 @@
+@@ -2292,6 +2292,51 @@
+       "self-host": scheduled,
+       cloud: na("Cloud runs the same step from its Worker's cron; see the Cloud scenario."),
        local: na("Local runs the same step at its own startup; see the local scenario."),
-     },
-   },
++    },
++  },
 +  providerAdoption: {
 +    fixtures: "actors",
 +    deferOnboarding: true,
@@ -1731,14 +1962,23 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      local: na("Local does not host production operations."),
 +    },
 +  },
++  providerAdoptionAccountDelete: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption refuses a busy concurrent account delete",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
+     },
+   },
    cloudCronJobsPlaced: {
-     fixtures: "actors",
-     file: "cloud-database-placement.spec.ts",
 diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/provider-adoption.spec.ts
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,210 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -1748,6 +1988,7 @@ new file mode 100644
 +import { DryRun, Plan, proveAdoptionRefusals } from "../support/provider-adoption-refusals.ts";
 +import {
 +  proveConcurrentUnlink,
++  proveConcurrentAccountDelete,
 +  proveForeignPlanLocks,
 +} from "../support/provider-adoption-locks.ts";
 +import { scenarios } from "../test-plan.ts";
@@ -1771,6 +2012,9 @@ new file mode 100644
 +layer(HostedLive, { excludeTestServices: true })("Existing provider adoption", (it) => {
 +  it.effect(scenarios.providerAdoptionLocks.title, (context) =>
 +    withHostedCase(context, proveConcurrentUnlink),
++  );
++  it.effect(scenarios.providerAdoptionAccountDelete.title, (context) =>
++    withHostedCase(context, proveConcurrentAccountDelete),
 +  );
 +  it.effect(scenarios.providerAdoptionForeign.title, (context) =>
 +    withHostedCase(context, proveForeignPlanLocks),

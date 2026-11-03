@@ -1,7 +1,7 @@
 {
   "identity": "basalt-provider-apps-adoption",
-  "file": "0081-provider-apps-adoption.patch",
-  "content_sha256": "4ae70365a065888c4d0fd1622b34698150fe0479d5d44050442ad1d966e6120b",
+  "file": "0105-provider-apps-adoption.patch",
+  "content_sha256": "c538e694395c98528cd4b9a47d2bea44c1f7786bab7f160910fb4a251d3e7746",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

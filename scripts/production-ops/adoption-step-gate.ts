@@ -20,7 +20,8 @@ export async function adoptionStepGate() {
         return;
       }
       const key = `${step}/${id}`;
-      if (url.pathname !== "/arrive" || gates.has(key)) process.stderr.write(`adoption-step ${url.pathname} ${step}\n`);
+      if (url.pathname !== "/arrive" || gates.has(key))
+        process.stderr.write(`adoption-step ${url.pathname} ${step}\n`);
       if (url.pathname === "/arm") {
         if (gates.has(key)) throw new Error("Gate already armed");
         gates.set(key, {
