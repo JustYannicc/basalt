@@ -1,0 +1,66 @@
+import { Context, Effect, Exit, Option, type Tracer } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import * as Statement from "effect/sql/Statement";
+
+const active = Context.Reference<boolean>("proof/OAuthRemovalGate", { defaultValue: () => false });
+const origin = "__GATE_ORIGIN__";
+const signal = (action: string, step: string, id: string, committed?: boolean) =>
+  Effect.gen(function* () {
+    const url = new URL(`/${action}`, origin);
+    url.searchParams.set("step", step);
+    url.searchParams.set("id", id);
+    if (committed !== undefined) url.searchParams.set("committed", String(committed));
+    const response = yield* HttpClient.execute(HttpClientRequest.post(url));
+    if (response.status !== 204) return yield* Effect.die("SQL proof gate refused");
+  }).pipe(Effect.provide(FetchHttpClient.layer), Effect.orDie);
+
+/** Wrap only the proof server, preserving the native transaction and every statement/result. */
+export const withOAuthRemovalGate = <A, E, R, B, E2, R2>(
+  work: Effect.Effect<A, E, R>,
+  transaction: (body: Effect.Effect<A, E, R>) => Effect.Effect<B, E2, R2>,
+) => {
+  let renewal: string | undefined;
+  return transaction(Effect.gen(function* () {
+    const previous = yield* Statement.CurrentTransformer;
+    if (yield* active) return yield* work;
+    let deleteClaim: string | undefined;
+    const transformer: Statement.Transformer = (input, sql, fiber, span) =>
+      Effect.gen(function* () {
+        const statement = previous === undefined ? input : yield* previous(input, sql, fiber, span);
+        const [source, params] = statement.compile();
+        const query = source.replaceAll('"', "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (deleteClaim !== undefined) {
+          const id = deleteClaim;
+          deleteClaim = undefined;
+          // Prefer the public DELETE as the victim on old code; PostgreSQL still detects the real cycle.
+          yield* sql.unsafe("set local deadlock_timeout = '100ms'").pipe(
+            Effect.provideService(Statement.CurrentTransformer, undefined),
+            Effect.orDie,
+          );
+          yield* signal("arrive", "delete", id);
+        }
+        const names: string[] = [];
+        let parent: Tracer.AnySpan | undefined = span;
+        while (parent?._tag === "Span") {
+          names.push(parent.name);
+          parent = Option.getOrUndefined(parent.parent);
+        }
+        const id = params.find((value) => typeof value === "string" && value.startsWith("acc_"));
+        if (typeof id === "string" && /^update (?:\w+\.)?executor_accounts\b/.test(query)) {
+          if (renewal === undefined && names.includes("sdk.webhooks.reconcileSource") && names.includes("oauth.resolve")) {
+            renewal = id;
+            // Old code already holds the grant here. Account-first code has not claimed either row.
+            yield* signal("arrive", "renewal", id);
+          }
+          if (names.includes("sdk.accounts.remove") && query.includes("created_at")) deleteClaim = id;
+        }
+        return statement;
+      });
+    return yield* work.pipe(
+      Effect.provideService(Statement.CurrentTransformer, transformer),
+      Effect.provideService(active, true),
+    );
+  })).pipe(Effect.onExit((exit) => renewal === undefined
+    ? Effect.void
+    : signal("finish", "renewal", renewal, Exit.isSuccess(exit))));
+};

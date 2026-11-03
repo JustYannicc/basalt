@@ -1,0 +1,268 @@
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+index 4af45b6..6441eec 100644
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -285,6 +285,10 @@ const notRunInCi: Partial<
+     { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
+   >
+ > = {
++  oauthAccountRemoval: {
++    targets: ["cloud"],
++    reason: "The Basalt host-managed-accounts job runs the disposable SQL-gate wrapper.",
++  },
+   nativeProviderCloudLinks: {
+     targets: ["cloud"],
+     reason: "The Basalt production-ops job supplies an isolated native acquisition signing key.",
+diff --git a/e2e/support/oauth-removal-gates.ts b/e2e/support/oauth-removal-gates.ts
+new file mode 100644
+index 0000000..79c9dd5
+--- /dev/null
++++ b/e2e/support/oauth-removal-gates.ts
+@@ -0,0 +1,35 @@
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++
++/** The disposable wrapper supplies the SQL gates; no product endpoint or deployed hook exists. */
++export const oauthRemovalBoundary = (step: "renewal" | "delete", id: string) =>
++  Effect.gen(function* () {
++    const origin = process.env.EXECUTOR_OAUTH_REMOVAL_GATE;
++    if (origin === undefined) return yield* Effect.die("Run scripts/oauth-removal-tests/prove.ts");
++    const request = (action: string) => {
++      const url = new URL(`/${action}`, origin);
++      url.searchParams.set("step", step);
++      url.searchParams.set("id", id);
++      return HttpClient.execute(HttpClientRequest.post(url)).pipe(
++        Effect.provide(FetchHttpClient.layer),
++      );
++    };
++    const release = request("release").pipe(
++      Effect.flatMap((response) =>
++        response.status === 204 ? Effect.void : Effect.die("Gate release refused"),
++      ),
++    );
++    const armed = yield* request("arm");
++    if (armed.status !== 204) return yield* Effect.die("Gate arm refused");
++    yield* Effect.addFinalizer(() => release.pipe(Effect.orDie));
++    const read = <A>(action: string, schema: Schema.Codec<A>) =>
++      request(action).pipe(
++        Effect.flatMap((response) => response.json),
++        Effect.flatMap(Schema.decodeUnknownEffect(schema)),
++      );
++    return {
++      entered: read("entered", Schema.Struct({ account: Schema.String })),
++      settled: read("settled", Schema.Struct({ committed: Schema.Boolean })),
++      release,
++    };
++  });
+diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
+index 6f6eb4d..f8e7cb7 100644
+--- a/e2e/support/oauth-setup-issuer.ts
++++ b/e2e/support/oauth-setup-issuer.ts
+@@ -52,6 +52,7 @@ export const IssuerPort = Context.Reference<number>("e2e/IssuerPort", { defaultV
+ export const oauthSetupIssuer = Effect.gen(function* () {
+   const port = yield* IssuerPort;
+   const address = yield* Deferred.make<string>();
++  const revocationReceived = yield* Deferred.make<void>();
+   let registration = true;
+   let postChallenge = false;
+   let challenge = true;
+@@ -919,6 +920,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+             client.secret !== null &&
+             presented.secret === client.secret,
+         });
++        yield* Deferred.succeed(revocationReceived, undefined);
+         return revocation === "failing"
+           ? HttpServerResponse.empty({ status: 503 })
+           : HttpServerResponse.empty({ status: 200 });
+@@ -1039,6 +1041,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+   yield* Deferred.succeed(address, origin);
+   return {
+     origin,
++    revoked: Deferred.await(revocationReceived),
+     configure: (input: {
+       readonly requireUserAgent?: boolean;
+       readonly registration?: boolean;
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index c89f8d3..e9345d3 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -4930,6 +4930,16 @@ export const scenarios = plan({
+       local: na("Hosted callback page and account dialogs."),
+     },
+   },
++  oauthAccountRemoval: {
++    fixtures: "actors",
++    file: "oauth-account-removal.spec.ts",
++    title: "Cloud account removal survives concurrent webhook declaration OAuth renewal",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The proof gates the managed Cloud's actual Postgres transactions."),
++      local: na("The proof gates the managed Cloud's actual Postgres transactions."),
++    },
++  },
+   oauthClientAuthentication: {
+     fixtures: "actors",
+     file: "oauth-client-authentication.spec.ts",
+diff --git a/e2e/tests/oauth-account-removal.spec.ts b/e2e/tests/oauth-account-removal.spec.ts
+new file mode 100644
+index 0000000..c419d6b
+--- /dev/null
++++ b/e2e/tests/oauth-account-removal.spec.ts
+@@ -0,0 +1,138 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { oauthRemovalBoundary } from "../support/oauth-removal-gates.ts";
++import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
++
++layer(HostedLive, { excludeTestServices: true })("OAuth account removal", (it) => {
++  it.effect(scenarios.oauthAccountRemoval.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          http = yield* HttpClient.HttpClient;
++        const database = yield* cloudLocks,
++          evidence = yield* Evidence,
++          issuer = yield* oauthSetupIssuer;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        yield* issuer.configure({ refreshTokens: true, expiresIn: 20, revocation: "recorded" });
++        const appResponse = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `OAuth removal ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
++const service=defineProvider({name:"Removal service",auth:{oauth:oauth2(${JSON.stringify({
++                authorizationUrl: `${issuer.origin}/authorize`,
++                tokenUrl: `${issuer.origin}/token`,
++                revocationUrl: `${issuer.origin}/revoke`,
++                scopes: ["read"],
++              })})}});
++export default defineApp({user:{accounts:{service}}},async()=>({tools:router({read:query({input:object({})},async()=>({ok:true}))})}));`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(appResponse.status, JSON.stringify(appResponse.body)).toBe(200);
++        const app = yield* body(Resource, appResponse);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++            {},
++          ),
++        );
++        const client = { clientId: "removal-client", clientSecret: "removal-secret" };
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/oauth/start`,
++          { method: "oauth", label: "Removal evidence", client },
++        );
++        expect(started.status, JSON.stringify(started.body)).toBe(200);
++        const redirect = yield* body(Redirect, started);
++        yield* issuer.allowClient({ ...client, redirect: redirect.redirectUri });
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
++            expect(consent.status).toBe(302);
++            if (consent.headers.location === undefined)
++              return yield* Effect.die("No callback returned");
++            return consent.headers.location;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const renewing = yield* oauthRemovalBoundary("renewal", "any");
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/oauth/complete`,
++          { callbackUrl },
++        );
++        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++        const account = yield* body(Resource, completed);
++        expect((yield* renewing.entered).account).toBe(account.id);
++        const removing = yield* oauthRemovalBoundary("delete", account.id);
++        const deletion = yield* api
++          .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
++          .pipe(Effect.forkChild);
++        yield* Effect.raceFirst(
++          removing.entered,
++          Fiber.join(deletion).pipe(
++            Effect.flatMap((response) =>
++              Effect.die(`DELETE completed before its SQL claim: ${response.status}`),
++            ),
++          ),
++        );
++        yield* renewing.release;
++        yield* removing.release;
++        const deleted = yield* Fiber.join(deletion);
++        const settled = yield* renewing.settled;
++        yield* evidence.json("oauth-removal-lock-order.json", {
++          account: account.id,
++          deletionStatus: deleted.status,
++          deletionBody: deleted.body,
++          backgroundSettlementCommitted: settled.committed,
++        });
++        expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
++        expect(settled.committed).toBe(true);
++        expect(
++          (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account.id}`)).status,
++        ).toBe(403);
++        expect(
++          yield* database.run({
++            sql: "select id from executor_accounts where id = $1",
++            params: [account.id],
++          }),
++        ).toEqual([]);
++        expect(
++          yield* database.run({
++            sql: "select id from executor_oauth_grants where id = $1",
++            params: [account.id],
++          }),
++        ).toEqual([]);
++        yield* issuer.revoked;
++        expect((yield* issuer.metrics).revocations).toEqual([
++          { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
++        ]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index c46519f..e4dec2e 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -2924,6 +2924,14 @@ export const makeOAuth = (
+           const ready = `ready_${yield* nextId}`;
+           const committed = yield* transaction(db, (tx) =>
+             Effect.gen(function* () {
++              // Removal and grant reuse claim the account before its grant. Renewal must do the same.
++              if (grantId === account.id)
++                yield* query(() =>
++                  tx.updateMany("accounts", {
++                    where: (b) => b.and(b("id", "=", account.id), b("oauthGrantId", "is", null)),
++                    set: { createdAt: account.createdAt },
++                  }),
++                );
+               if ((yield* grantBindings(tx, grantId)).length === 0) return false;
+               // Only the tokens are this renewal's. The grant is written on the condition that it
+               // still holds what was read, and read again otherwise, so a write that kept the
