@@ -1,0 +1,433 @@
+diff --git a/e2e/support/alchemy-dev-output.ts b/e2e/support/alchemy-dev-output.ts
+--- a/e2e/support/alchemy-dev-output.ts
++++ b/e2e/support/alchemy-dev-output.ts
+@@ -1,4 +1,4 @@
+-import { Stream } from "effect";
++import { Effect, Stream } from "effect";
+ import type { ChildProcessSpawner } from "effect/process";
+ 
+ /**
+@@ -6,11 +6,40 @@
+  * merged: merging the bytes first would splice a line written in pieces to one pipe with whatever
+  * the other pipe wrote in between.
+  */
+-export const outputLines = (child: ChildProcessSpawner.ChildProcessHandle) =>
+-  Stream.merge(
+-    child.stdout.pipe(Stream.decodeText(), Stream.splitLines),
+-    child.stderr.pipe(Stream.decodeText(), Stream.splitLines),
+-  );
++export const bufferedOutputLines = (
++  child: ChildProcessSpawner.ChildProcessHandle,
++  onOutput: Effect.Effect<void> = Effect.void,
++) => {
++  const pending = { stdout: "", stderr: "" };
++  const flush = (pipe: "stdout" | "stderr") => {
++    const line = pending[pipe];
++    pending[pipe] = "";
++    return line ? [line] : [];
++  };
++  const read = (pipe: "stdout" | "stderr") =>
++    Stream.concat(
++      child[pipe].pipe(
++        Stream.tap(() => onOutput),
++        Stream.decodeText(),
++        Stream.map((text) => {
++          const lines = `${pending[pipe]}${text}`.split(/\r?\n/u);
++          pending[pipe] = lines.pop() ?? "";
++          return lines;
++        }),
++        Stream.flattenIterable,
++      ),
++      Stream.suspend(() => Stream.fromIterable(flush(pipe))),
++    );
++  return {
++    lines: Stream.merge(read("stdout"), read("stderr")),
++    flush: Effect.sync(() => [...flush("stdout"), ...flush("stderr")]),
++  };
++};
++
++export const outputLines = (
++  child: ChildProcessSpawner.ChildProcessHandle,
++  onOutput: Effect.Effect<void> = Effect.void,
++) => bufferedOutputLines(child, onOutput).lines;
+ 
+ /**
+  * How `alchemy dev` starts the line it prints when it gives up on an apply or a whole run
+diff --git a/e2e/support/cloud-startup-output.ts b/e2e/support/cloud-startup-output.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/cloud-startup-output.ts
+@@ -0,0 +1,113 @@
++import { Deferred, Effect, Fiber, FileSystem, Queue, Schema, Stream } from "effect";
++import type { ChildProcessSpawner } from "effect/process";
++import { bufferedOutputLines, isAlchemyDevFailure } from "./alchemy-dev-output.ts";
++
++export class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStartFailed", {
++  operation: Schema.String,
++}) {
++  get message() {
++    return `Cloud test environment failed: ${this.operation}`;
++  }
++}
++
++export const cloudStartupSecrets = (
++  env: Readonly<Record<string, string | undefined>>,
++  services: Readonly<
++    Record<
++      string,
++      { readonly clientId: string; readonly clientSecret: string } | { readonly token: string }
++    >
++  >,
++) => [
++  ...Object.entries(env)
++    .filter(([name]) => /SECRET|TOKEN|PASSWORD|KEY/u.test(name))
++    .flatMap(([, value]) => (value === undefined ? [] : [value])),
++  ...Object.values(services).map((service) =>
++    "clientSecret" in service ? service.clientSecret : service.token,
++  ),
++  ...Object.values(services).flatMap((service) =>
++    "clientSecret" in service
++      ? [Buffer.from(`${service.clientId}:${service.clientSecret}`).toString("base64")]
++      : [],
++  ),
++  ...Object.entries(env).flatMap(([name, secret]) => {
++    const id = env[name.replace(/_SECRET$/u, "_ID")];
++    return name.endsWith("_CLIENT_SECRET") && id && secret
++      ? [Buffer.from(`${id}:${secret}`).toString("base64")]
++      : [];
++  }),
++];
++
++/** One reader owns both pipes, the saved log, and the failure text readiness reports. */
++export const captureCloudStartup = (
++  child: ChildProcessSpawner.ChildProcessHandle,
++  file: string,
++  secrets: ReadonlyArray<string>,
++  onLine: (line: string) => Effect.Effect<void> = () => Effect.void,
++) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const failed = yield* Deferred.make<void>();
++    const ended = yield* Deferred.make<void>();
++    const activity = yield* Queue.sliding<void>(1);
++    let diagnostic: string | undefined;
++    const forms = [
++      ...new Set(secrets.filter(Boolean).flatMap((secret) => [secret, encodeURIComponent(secret)])),
++    ].sort((a, b) => b.length - a.length);
++    const redact = (line: string) => {
++      // Alchemy's BackgroundJobSecret and AppCredentialKey are deliberately uncollected:
++      // they are per-run keys for this throwaway local environment.
++      let safe = line
++        .replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/?#@]+@/giu, "$1[redacted]@")
++        .replace(/#pair=[a-f0-9]{64}/gu, "#pair=<redacted>");
++      for (const secret of forms) safe = safe.replaceAll(secret, "<redacted>");
++      return safe;
++    };
++    const activityReceived = Queue.offer(activity, undefined).pipe(Effect.asVoid);
++    const output = bufferedOutputLines(child, activityReceived);
++    const writeLine = (raw: string) =>
++      Effect.gen(function* () {
++        const line = redact(raw);
++        yield* fs.writeFileString(file, `${line}\n`, { flag: "a", mode: 0o600 });
++        if (diagnostic !== undefined) diagnostic += `\n${line}`;
++        else if (isAlchemyDevFailure(line)) diagnostic = line;
++        if (diagnostic !== undefined) {
++          yield* Queue.offer(activity, undefined);
++          yield* Deferred.succeed(failed, undefined);
++        }
++        yield* onLine(line);
++      }).pipe(Effect.uninterruptible);
++    const reader = yield* output.lines.pipe(
++      Stream.runForEach(writeLine),
++      Effect.ensuring(Deferred.succeed(ended, undefined)),
++      Effect.forkScoped,
++    );
++    const failure = yield* Effect.gen(function* () {
++      yield* Deferred.await(failed);
++      // Failed dev processes keep watching, so their pipes may never end. Debounce output
++      // events only after failure; a quiet 250 ms bounds that fallback without delaying readiness.
++      yield* Effect.raceFirst(
++        Deferred.await(ended),
++        Stream.fromQueue(activity).pipe(Stream.debounce("250 millis"), Stream.runHead),
++      );
++      yield* Fiber.interrupt(reader);
++      yield* Effect.forEach(yield* output.flush, writeLine);
++      return yield* new CloudStartFailed({
++        operation: `Alchemy could not start every Cloud resource; see cloud.log\n${diagnostic}`,
++      });
++    }).pipe(Effect.cached);
++    return {
++      failure,
++      check: Effect.suspend(() => (diagnostic === undefined ? Effect.void : failure)),
++      stopped: child.exitCode.pipe(
++        Effect.andThen(Deferred.await(ended)),
++        Effect.andThen(
++          Effect.suspend(() =>
++            diagnostic === undefined
++              ? new CloudStartFailed({ operation: "Cloud stopped before readiness; see cloud.log" })
++              : failure,
++          ),
++        ),
++      ),
++    };
++  });
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -24,7 +24,12 @@
+   v1DatabaseWriter,
+ } from "./cloud-postgres.ts";
+ import { v1McpForwardFile } from "./v1-mcp-forward.ts";
+-import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
++import { outputLines } from "./alchemy-dev-output.ts";
++import {
++  captureCloudStartup,
++  CloudStartFailed,
++  cloudStartupSecrets,
++} from "./cloud-startup-output.ts";
+ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+ import { roleHost } from "./role-hosts.ts";
+ import { freePort } from "./ports.ts";
+@@ -110,14 +115,6 @@
+     ),
+   };
+ };
+-
+-class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStartFailed", {
+-  operation: Schema.String,
+-}) {
+-  get message() {
+-    return `Cloud test environment failed: ${this.operation}`;
+-  }
+-}
+ 
+ /**
+  * Starts on this host took up to 324 s from `alchemy dev` to a ready API Worker, under load 60
+@@ -499,14 +496,21 @@
+         );
+         // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+         // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+-        const applyFailed = yield* Deferred.make<void>();
+         const mcpStarted = yield* Deferred.make<void>();
+-        yield* capture(server, "cloud.log", (line) => {
+-          if (isAlchemyDevFailure(line)) return Deferred.succeed(applyFailed, undefined);
+-          if (line.includes("[McpServer] Started in "))
+-            return Deferred.succeed(mcpStarted, undefined);
+-          return Effect.void;
+-        });
++        const output = yield* captureCloudStartup(
++          server,
++          `${directory}/cloud.log`,
++          [
++            databasePassword,
++            v1ReaderPassword,
++            v1WriterPassword,
++            ...cloudStartupSecrets(env, Redacted.value(fixture).services),
++          ],
++          (line) =>
++            line.includes("[McpServer] Started in ")
++              ? Deferred.succeed(mcpStarted, undefined).pipe(Effect.asVoid)
++              : Effect.void,
++        ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+         // A Worker that is still starting holds the request until it can answer, so each probe has its
+         // own deadline and the whole wait has one too.
+         const health = Effect.scoped(
+@@ -541,27 +545,8 @@
+                 { concurrency: 2 },
+               );
+         yield* Effect.raceFirst(
+-          ready,
+-          Effect.raceFirst(
+-            server.exitCode.pipe(
+-              Effect.flatMap(() =>
+-                Effect.fail(
+-                  new CloudStartFailed({
+-                    operation: "Cloud stopped before readiness; see cloud.log",
+-                  }),
+-                ),
+-              ),
+-            ),
+-            Deferred.await(applyFailed).pipe(
+-              Effect.flatMap(() =>
+-                Effect.fail(
+-                  new CloudStartFailed({
+-                    operation: "Alchemy could not start every Cloud resource; see cloud.log",
+-                  }),
+-                ),
+-              ),
+-            ),
+-          ),
++          ready.pipe(Effect.andThen(output.check)),
++          Effect.raceFirst(output.stopped, output.failure),
+         );
+         return scope;
+       }).pipe(
+diff --git a/e2e/tests/alchemy-dev-output.spec.ts b/e2e/tests/alchemy-dev-output.spec.ts
+--- a/e2e/tests/alchemy-dev-output.spec.ts
++++ b/e2e/tests/alchemy-dev-output.spec.ts
+@@ -1,14 +1,15 @@
+ /**
+  * A managed local Cloud writes `alchemy dev`'s stdout and stderr to cloud.log line by line, and its
+- * readiness wait fails as soon as alchemy prints that it gave up on starting a resource
+- * (e2e/support/cloud-environment.ts). These cases run a child that writes lines in pieces to both
+- * pipes, and check the lines and failures the harness reads from it.
++ * readiness wait retains the cause after alchemy reports that it gave up on starting a resource.
++ * These cases run a child that writes lines in pieces to both pipes, and check the lines and
++ * failures the harness reads from it.
+  */
+ import { expect, layer } from "@effect/vitest";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+-import { Effect, Stream } from "effect";
++import { Deferred, Effect, FileSystem, Stream } from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { isAlchemyDevFailure, outputLines } from "../support/alchemy-dev-output.ts";
++import { captureCloudStartup, cloudStartupSecrets } from "../support/cloud-startup-output.ts";
+ 
+ const applyFailed =
+   "alchemy dev: apply failed; keeping dev alive so healthy resources keep serving.";
+@@ -45,6 +46,145 @@
+ ];
+ 
+ layer(NodeServices.layer, { excludeTestServices: true })("alchemy dev output", (it) => {
++  for (const completion of ["exit", "quiet", "ready", "partial"] as const) {
++    const keepsWatching = completion !== "exit";
++    it.effect(`startup retains the cause after the failure line (${completion})`, () =>
++      Effect.gen(function* () {
++        const fs = yield* FileSystem.FileSystem;
++        const directory = yield* fs.makeTempDirectoryScoped();
++        const file = `${directory}/cloud.log`;
++        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++        const failed = yield* Deferred.make<void>();
++        const secret = "synthetic-startup-secret";
++        const env = {
++          POOL_APP_SIGNING_KEY: "synthetic-pool-key",
++          EXECUTOR_NPM_REGISTRY: "https://npm-user:uncollected-pass@registry.example",
++          EXECUTOR_OAUTH_FIXTURE_CLIENT_ID: "operator-client",
++          EXECUTOR_OAUTH_FIXTURE_CLIENT_SECRET: "operator secret/+",
++        };
++        const services = {
++          google: { clientId: "google-client", clientSecret: "synthetic-google secret/+" },
++          github: { clientId: "github-client", clientSecret: "synthetic-github-secret" },
++          mail: { token: "synthetic-mail-token" },
++          company: { token: "synthetic-company-token" },
++          billing: { token: "synthetic-billing-token" },
++          workos: { token: "synthetic-workos-token" },
++        };
++        const credentials = [
++          env.POOL_APP_SIGNING_KEY,
++          services.google.clientSecret,
++          services.github.clientSecret,
++          services.mail.token,
++          services.company.token,
++          services.billing.token,
++          services.workos.token,
++          env.EXECUTOR_OAUTH_FIXTURE_CLIENT_SECRET,
++        ];
++        const basic = [
++          Buffer.from(`${services.google.clientId}:${services.google.clientSecret}`).toString(
++            "base64",
++          ),
++          Buffer.from(`${services.github.clientId}:${services.github.clientSecret}`).toString(
++            "base64",
++          ),
++          Buffer.from(
++            `${env.EXECUTOR_OAUTH_FIXTURE_CLIENT_ID}:${env.EXECUTOR_OAUTH_FIXTURE_CLIENT_SECRET}`,
++          ).toString("base64"),
++        ];
++        const child = yield* processes.spawn(
++          ChildProcess.make("node", [
++            "--input-type=module",
++            "--eval",
++            `
++            const write = (pipe, text) => new Promise(resolve => process[pipe].write(text, resolve));
++            await write("stderr", ${JSON.stringify(runFailed + "\n")});
++            await new Promise(resolve => setImmediate(resolve));
++            await write("stderr", "Error: synthetic planning cause\\n");
++            await write("stdout", "resource: SyntheticWorker ${secret} #pair=${"a".repeat(64)}\\n");
++            await write("stdout", ${JSON.stringify(`credentials: ${credentials.join(" ")}\n`)});
++            await write("stdout", ${JSON.stringify(`encodings: ${credentials.map(encodeURIComponent).join(" ")} ${basic.map((value) => `Basic ${value}`).join(" ")}\n`)});
++            await write("stdout", ${JSON.stringify(`registries: ${env.EXECUTOR_NPM_REGISTRY} postgresql://db-user:db-pass@localhost/database custom+scheme://other-user:other-pass@host\n`)});
++            ${completion === "partial" ? 'await write("stdout", "stdout partial cause");' : ""}
++            await write("stderr", ${JSON.stringify("    at synthetic-plan.ts:42")} + ${JSON.stringify(keepsWatching && completion !== "partial" ? "\n" : "")});
++            ${keepsWatching ? "setInterval(() => {}, 10000);" : "process.exitCode = 1;"}
++          `,
++          ]),
++        );
++        const output = yield* captureCloudStartup(
++          child,
++          file,
++          [secret, ...cloudStartupSecrets(env, services)],
++          (line) =>
++            isAlchemyDevFailure(line)
++              ? Deferred.succeed(failed, undefined).pipe(Effect.asVoid)
++              : Effect.void,
++        );
++        yield* Deferred.await(failed);
++        const result = yield* Effect.result(
++          completion === "exit"
++            ? output.stopped
++            : completion === "ready"
++              ? output.check
++              : output.failure,
++        );
++        expect(result._tag).toBe("Failure");
++        if (result._tag !== "Failure") return;
++        expect(result.failure.message).toContain("Error: synthetic planning cause");
++        expect(result.failure.message).toContain("at synthetic-plan.ts:42");
++        expect(result.failure.message).toContain(
++          "resource: SyntheticWorker <redacted> #pair=<redacted>",
++        );
++        const log = yield* fs.readFileString(file);
++        expect(log).toContain("Error: synthetic planning cause");
++        expect(log).toContain("at synthetic-plan.ts:42");
++        for (const destination of [log, result.failure.message]) {
++          expect(destination).toContain("https://[redacted]@registry.example");
++          expect(destination).toContain("postgresql://[redacted]@localhost/database");
++          expect(destination).toContain("custom+scheme://[redacted]@host");
++          expect(destination).not.toContain("npm-user");
++          expect(destination).not.toContain("uncollected-pass");
++          if (completion === "partial") expect(destination).toContain("stdout partial cause");
++        }
++        expect(log).not.toContain(secret);
++        expect(log).not.toContain("a".repeat(64));
++        expect(result.failure.message).not.toContain(secret);
++        expect(result.failure.message).not.toContain("a".repeat(64));
++        for (const credential of [
++          ...credentials,
++          ...credentials.map(encodeURIComponent),
++          ...basic,
++        ]) {
++          expect(log).not.toContain(credential);
++          expect(result.failure.message).not.toContain(credential);
++        }
++        if (keepsWatching) expect(yield* child.isRunning).toBe(true);
++      }).pipe(Effect.scoped),
++    );
++  }
++
++  it.effect("successful readiness does not wait for the output streams to end", () =>
++    Effect.gen(function* () {
++      const fs = yield* FileSystem.FileSystem;
++      const directory = yield* fs.makeTempDirectoryScoped();
++      const ready = yield* Deferred.make<void>();
++      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++      const child = yield* processes.spawn(
++        ChildProcess.make("node", [
++          "--eval",
++          'console.log("[McpServer] Started in test"); setInterval(() => {}, 10000)',
++        ]),
++      );
++      const output = yield* captureCloudStartup(child, `${directory}/cloud.log`, [], (line) =>
++        line.includes("[McpServer] Started in")
++          ? Deferred.succeed(ready, undefined).pipe(Effect.asVoid)
++          : Effect.void,
++      );
++      yield* Deferred.await(ready);
++      yield* output.check;
++      expect(yield* child.isRunning).toBe(true);
++    }).pipe(Effect.scoped),
++  );
++
+   it.effect("lines written in pieces to both pipes reach the harness whole", () =>
+     Effect.gen(function* () {
+       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
