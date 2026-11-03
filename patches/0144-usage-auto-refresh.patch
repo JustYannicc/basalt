@@ -1,0 +1,350 @@
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -1,3 +1,7 @@
++import {
++  observationPublishPath,
++  publishAccountObservations,
++} from "@executor-js/hosted-server/account-observation-upkeep";
+ import { drainContributedDepartures } from "@executor-js/hosted-server/contributed-departures";
+ import { cloudWorkflowInputDisplays } from "./infrastructure/workflow-display.ts";
+ import { appSandboxAddress } from "@executor-js/mcp";
+@@ -622,6 +626,9 @@
+     );
+     const productionOps = yield* cloudProductionOps;
+     const routes = Layer.mergeAll(
++      HttpRouter.add("POST", observationPublishPath, publishAccountObservations).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -1,3 +1,7 @@
++import {
++  observationPublishPath,
++  publishAccountObservations,
++} from "@executor-js/hosted-server/account-observation-upkeep";
+ import { drainContributedDepartures } from "@executor-js/hosted-server/contributed-departures";
+ import { WorkflowInputDisplays } from "@executor-js/hosted-server/workflow-display";
+ import { directWorkflowInputDisplays } from "@executor-js/hosted-server/workflow-display/direct";
+@@ -189,6 +193,9 @@
+       Layer.provide(auth.apiIdentity),
+     );
+     const productRoutes = Layer.mergeAll(
++      HttpRouter.add("POST", observationPublishPath, publishAccountObservations).pipe(
++        HttpRouter.provideRequest(executorServices),
++      ),
+       publishedSkillRoutes(Effect.succeed(skills)),
+       authoring,
+       api,
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -35,6 +35,7 @@
+     "./access-lifecycle": "./src/contracts/access-lifecycle.ts",
+     "./host-managed-accounts": "./src/contracts/host-managed-accounts.ts",
+     "./pool-access-hook": "./src/implementation/pool-access-hook.ts",
++    "./account-observation-upkeep": "./src/implementation/account-observation-upkeep.ts",
+     "./pool-membership": "./src/implementation/pool-membership.ts",
+     "./pool-access-provenance": "./src/implementation/pool-access-provenance.ts",
+     "./pool-defaults": "./src/implementation/pool-defaults.ts",
+diff --git a/apps/hosted/server/src/implementation/account-observation-upkeep.ts b/apps/hosted/server/src/implementation/account-observation-upkeep.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-observation-upkeep.ts
+@@ -0,0 +1,50 @@
++import { AccountId, OwnerId } from "@executor-js/sdk/core";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { policyDatabase } from "./resource-policy.ts";
++import { accountAcquisitionPrefix } from "./pool-account-acquisition-contract.ts";
++import { openEnvelope } from "./pool-token.ts";
++
++export const observationPublishPath = "/api/internal/account-observations/refresh";
++const Request = Schema.Struct({
++  action: Schema.Literal("refresh-observations"),
++  at: Schema.Finite,
++  expiresAt: Schema.Finite,
++});
++const Account = Schema.Struct({ account: AccountId, owner: OwnerId });
++
++/** The existing Home alarm covers saved native bindings, including accounts no pool uses. */
++export const publishAccountObservations = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++  const body = yield* HttpServerRequest.schemaBodyJson(
++    Schema.Struct({ envelope: Schema.NonEmptyString }),
++  );
++  const raw = yield* Effect.tryPromise(() =>
++    openEnvelope(Redacted.value(key.value), accountAcquisitionPrefix, body.envelope),
++  );
++  const value = yield* Schema.decodeUnknownEffect(Request)(raw);
++  const now = yield* Clock.currentTimeMillis;
++  if (value.at > now || value.expiresAt <= now || value.expiresAt > value.at + 30_000)
++    return HttpServerResponse.empty({ status: 401 });
++  const sql = yield* policyDatabase;
++  const executor = yield* Effect.flatten(HostedExecutor);
++  // Only the model-provider driver owns usage. Connector accounts are never candidates.
++  const rows = yield* sql`select a.id as account, a.owner from executor_accounts a
++    join executor_account_acquisitions binding on binding.account = a.id
++    where binding.driver = 'basalt-home' and binding.removal is null
++      and binding.owner = a.owner and binding.provider = a.provider
++      and binding.method = a.method and binding.generation = a.credential_generation
++    order by a.id`;
++  const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(Account))(rows);
++  yield* Effect.forEach(
++    accounts,
++    (account) =>
++      executor.accounts
++        .refreshObservations({ ...account, apps: [] })
++        .pipe(Effect.catch(() => Effect.logWarning("Native account observation refresh failed"))),
++    { concurrency: 4, discard: true },
++  );
++  return HttpServerResponse.empty({ status: 204 });
++}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
+diff --git a/apps/hosted/server/src/implementation/pool-account-acquisition.ts b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+--- a/apps/hosted/server/src/implementation/pool-account-acquisition.ts
++++ b/apps/hosted/server/src/implementation/pool-account-acquisition.ts
+@@ -9,6 +9,7 @@
+ import { providerDeclaration } from "apps/host";
+ import {
+   AccountCheckResult,
++  AccountObservationResult,
+   InteractiveStart,
+   InteractiveStatus,
+   ProviderError,
+@@ -97,6 +98,21 @@
+           else await mirror.remove(context);
+         },
+         ...(oauth ? {} : { mirror: mirror.mirror }),
++        observeAccount: async (context) => {
++          const answer = await send(context, "observe", {
++            reference: Redacted.value(context.reference),
++          });
++          const { result } = Schema.decodeUnknownSync(
++            Schema.Struct({ result: Schema.NullOr(AccountObservationResult) }),
++          )(answer);
++          if (result === null) return undefined;
++          return oauth
++            ? result
++            : {
++                ...result,
++                observation: { ...result.observation, offering: "metered_api" as const },
++              };
++        },
+         ...(oauth
+           ? {
+               check: async (context: AccountAcquisitionAccountContext) => {
+diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
+--- a/e2e/support/account-observation-fixture.ts
++++ b/e2e/support/account-observation-fixture.ts
+@@ -209,7 +209,11 @@
+       freshness: Schema.String,
+       checkedAt: Schema.NullOr(Schema.String),
+       lastAttempt: Schema.NullOr(
+-        Schema.Struct({ attemptedAt: Schema.String, outcome: Schema.String }),
++        Schema.Struct({
++          attemptedAt: Schema.String,
++          outcome: Schema.String,
++          retryAt: Schema.optionalKey(Schema.String),
++        }),
+       ),
+       collecting: Schema.Boolean,
+       nextAllowedAt: Schema.NullOr(Schema.String),
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -40,6 +40,8 @@
+     ),
+   });
+   const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
++  const observation = yield* Ref.make<Schema.Json | null>(null);
++  const clockOffset = yield* Ref.make(0);
+   const routes = Layer.mergeAll(
+     HttpRouter.add(
+       "GET",
+@@ -95,10 +97,12 @@
+         const input = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Acquisition))(
+           Buffer.from(payload, "base64url").toString(),
+         );
+-        const now = yield* Clock.currentTimeMillis;
++        const now = (yield* Clock.currentTimeMillis) + (yield* Ref.get(clockOffset));
+         if (input.at > now || input.expiresAt <= now || input.expiresAt > input.at + 30_000)
+           return HttpServerResponse.empty({ status: 401 });
+         yield* Ref.update(calls, (items) => [...items, input]);
++        if (input.action === "observe")
++          return HttpServerResponse.jsonUnsafe({ result: yield* Ref.get(observation) });
+         if (input.action === "start")
+           return HttpServerResponse.jsonUnsafe({
+             session: `synthetic-session-${input.provider}`,
+@@ -120,5 +124,11 @@
+   );
+   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
+   if (!("port" in server.address)) return yield* Effect.die("Expected a loopback catalog");
+-  return { origin: `http://127.0.0.1:${server.address.port}`, sources, calls: Ref.get(calls) };
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    sources,
++    calls: Ref.get(calls),
++    observation: (value: Schema.Json) => Ref.set(observation, value),
++    advance: (milliseconds: number) => Ref.update(clockOffset, (offset) => offset + milliseconds),
++  };
+ });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3314,6 +3314,17 @@
+       "self-host": scheduled,
+       cloud: na("Uses controlled loopback providers through the shared runtime contract."),
+       local: na("Shared error views and SDK are exercised through hosted APIs."),
++    },
++  },
++  accountObservationInterval: {
++    fixtures: "actors",
++    file: "account-observation-interval.spec.ts",
++    title:
++      "The pool alarm publishes native usage reports without manual refresh or pool membership",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The same private handler is exercised with a controlled loopback Home service."),
++      local: na("The pool alarm belongs to the hosted product."),
+     },
+   },
+   providerApps: {
+diff --git a/e2e/tests/account-observation-interval.spec.ts b/e2e/tests/account-observation-interval.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/account-observation-interval.spec.ts
+@@ -0,0 +1,128 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { createHmac } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { ObservationView, allowance } from "../support/account-observation-fixture.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Automatic account readings", (it) => {
++  it.effect(scenarios.accountObservationInterval.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          home = yield* providerAppsCatalog;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* providerAccountProduct(home.origin, `${home.origin}/catalog/index.json`);
++        const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "provider-openai",
++          name: "Usage interval fixture",
++        });
++        expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++        const app = (yield* body(Resource, installed)).id;
++        apps.push(app);
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app}/accounts/app/openai/connections`,
++          {},
++        );
++        const connection = (yield* body(Resource, pending)).id;
++        const connect = `${prefix}/connections/${connection}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${connect}/start`, { method: "codex" }))
++            .status,
++        ).toBe(200);
++        const connected = yield* api.request(actors.owner, "POST", `${connect}/submit`, {
++          value: "synthetic-callback",
++        });
++        const account = (yield* body(Schema.Struct({ account: Resource }), connected)).account.id;
++        accounts.push(account);
++        // Deleting the app leaves the native account saved with no membership or app reporter.
++        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++          200,
++        );
++        const read = () =>
++          api
++            .request(actors.owner, "GET", `${prefix}/accounts/${account}/observations`)
++            .pipe(Effect.flatMap((response) => body(ObservationView, response)));
++        expect((yield* read()).reports).toEqual([]);
++        let offset = 0;
++        const advance = (milliseconds: number) =>
++          Effect.gen(function* () {
++            yield* serverControl("stop");
++            yield* serverControl("clock/advance", 200, { milliseconds });
++            yield* home.advance(milliseconds);
++            offset += milliseconds;
++            yield* serverControl("start");
++          });
++        const publish = () =>
++          Effect.gen(function* () {
++            const at = Date.now() + offset;
++            const payload = Buffer.from(
++              JSON.stringify({ action: "refresh-observations", at, expiresAt: at + 30_000 }),
++            ).toString("base64url");
++            const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++              .update(`sbaa1.${payload}`)
++              .digest("base64url");
++            return yield* api.request(
++              actors.owner,
++              "POST",
++              "/api/internal/account-observations/refresh",
++              { envelope: `sbaa1.${payload}.${signature}` },
++            );
++          });
++        const first = allowance();
++        yield* home.observation(first);
++        expect((yield* publish()).status).toBe(204);
++        expect((yield* read()).reports[0]).toMatchObject({
++          source: { kind: "driver", id: "basalt-home" },
++          result: { observedAt: first.observedAt },
++        });
++        yield* advance(31 * 60_000);
++        const second = allowance(new Date(Date.now() + offset).toISOString());
++        const retryAt = new Date(Date.now() + offset + 60 * 60_000).toISOString();
++        yield* home.observation({
++          ...second,
++          collection: { attemptedAt: second.observedAt, outcome: "rate_limited", retryAt },
++        });
++        expect((yield* publish()).status).toBe(204);
++        const refreshed = yield* read();
++        expect(refreshed.reports[0]).toMatchObject({
++          result: { observedAt: second.observedAt },
++          lastAttempt: { outcome: "rate_limited", retryAt },
++        });
++        expect(Date.parse(second.observedAt)).toBeGreaterThan(Date.parse(first.observedAt));
++        const count = (yield* home.calls).filter((call) => call.action === "observe").length;
++        expect(count).toBe(2);
++        yield* advance(31 * 60_000);
++        expect((yield* publish()).status).toBe(204);
++        expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(count);
++        expect((yield* read()).reports[0]).toEqual(refreshed.reports[0]);
++        expect(
++          (yield* api.request(actors.owner, "POST", "/api/internal/account-observations/refresh", {
++            envelope: "invalid",
++          })).status,
++        ).toBe(503);
++      }),
++    ),
++  );
++});

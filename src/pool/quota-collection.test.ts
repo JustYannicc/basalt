@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HomeClient } from "./control.ts";
-import { QuotaCollection, quotaCollectInterval } from "./quota-collection.ts";
+import { hasUsageLimits, QuotaCollection, quotaCollectInterval } from "./quota-collection.ts";
 import type { Json } from "./json.ts";
 
 class Storage {
@@ -59,7 +59,7 @@ test("completion is awaited after Home first marks the job collecting", async ()
   let waits = 0;
   const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async () => { waits++; f.fresh(); } });
   const value = await collector.read("a");
-  assert.equal((value?.collection as Json).status, "success");
+  assert.equal((value!.collection as Json).status, "success");
   assert.equal(waits, 1); assert.equal(f.posts(), 1);
 });
 
@@ -68,7 +68,7 @@ test("Home's recent failed attempt also rate-caps forced collects", async () => 
   f.set({ credential: { credential_id: "a" }, collection: { status: "failed", freshness: "never",
     last_attempt_at: new Date(f.options.now()).toISOString(), error: { code: "UPSTREAM_AUTH_REJECTED" } } });
   const result = await new QuotaCollection(f.storage, f.client, f.options).read("a");
-  assert.equal(f.posts(), 0); assert.equal(((result?.collection as Json).error as Json).code, "UPSTREAM_AUTH_REJECTED");
+  assert.equal(f.posts(), 0); assert.equal(((result!.collection as Json).error as Json).code, "UPSTREAM_AUTH_REJECTED");
 });
 
 test("a health check joining the alarm's queued collection waits for completion", async () => {
@@ -79,6 +79,32 @@ test("a health check joining the alarm's queued collection waits for completion"
   const check = collector.read("a");
   await background;
   const result = await check;
-  assert.equal((result?.collection as Json).status, "success");
+  assert.equal((result!.collection as Json).status, "success");
   assert.equal(f.posts(), 1); assert.equal(waits, 1);
+});
+
+
+test("automatic collection honors Home retryAt even beyond the thirty-minute cap", async () => {
+  const f = fixture();
+  const retryAt = f.options.now() + 2 * quotaCollectInterval;
+  f.set({ credential: { credential_id: "a" }, collection: { status: "failed", freshness: "stale",
+    last_attempt_at: new Date(f.options.now() - quotaCollectInterval).toISOString(),
+    next_probe_at: new Date(retryAt).toISOString(), error: { code: "UPSTREAM_RATE_LIMITED" } } });
+  const collector = new QuotaCollection(f.storage, f.client, f.options);
+  await collector.read("a", undefined, false);
+  f.advance(quotaCollectInterval);
+  await collector.read("a", undefined, false);
+  assert.equal(f.posts(), 0);
+  f.advance(quotaCollectInterval);
+  await collector.read("a", undefined, false);
+  assert.equal(f.posts(), 1);
+});
+
+test("connectors and explicitly unlimited accounts have no automatic usage reporter", () => {
+  assert.equal(hasUsageLimits({ provider: "google" }), false);
+  assert.equal(hasUsageLimits({ provider: "slack" }), false);
+  assert.equal(hasUsageLimits({ provider: "codex" }), true);
+  assert.equal(hasUsageLimits({ type: "typesafe" }), true);
+  assert.equal(hasUsageLimits({ provider: "codex" }, { primary_windows: [{ is_unlimited: true }] }), false);
+  assert.equal(hasUsageLimits({ provider: "codex" }, { primary_windows: [{ is_unlimited: true }, { limit: 100 }] }), true);
 });

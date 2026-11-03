@@ -1,3 +1,4 @@
+import providers from "./providers.json" with { type: "json" };
 import type { HomeClient } from "./control.ts";
 import { digest } from "./backend-users.ts";
 import { ControlFailure, object, post, unavailable, type Json } from "./json.ts";
@@ -16,6 +17,16 @@ const instant = (value: unknown) => typeof value === "string" ? Date.parse(value
 export const collectionOf = (value: Json): Json => object(value.collection) ? value.collection
   : object(value.credential) ? value.credential : value;
 const statusOf = (value: Json) => value.status ?? value.collection_status;
+
+/** Only native model accounts have a quota reporter; connector credentials never do. */
+export function hasUsageLimits(file: Json, value: Json = {}): boolean {
+  const provider = file.provider ?? file.type;
+  if (provider !== "typesafe" && !providers.some((entry) => entry.id === provider)) return false;
+  const credential = object(value.credential) ? value.credential : value;
+  const windows = Array.isArray(value.windows) ? value.windows : credential.primary_windows;
+  return !Array.isArray(windows) || windows.length === 0
+    || windows.some((window) => !object(window) || window.is_unlimited !== true);
+}
 
 export function needsQuotaCollection(value: Json, now: number): boolean {
   const collection = collectionOf(value);
@@ -71,6 +82,12 @@ export class QuotaCollection {
     let value = await this.snapshot(id, signal);
     if (!force && (!value || !needsQuotaCollection(value, this.now()))) return value;
     const collection = value ? collectionOf(value) : {};
+    const credential = value && object(value.credential) ? value.credential : value;
+    const windows = value?.windows ?? credential?.primary_windows;
+    if (!force && Array.isArray(windows) && windows.length > 0
+      && windows.every((window) => object(window) && window.is_unlimited === true)) return value;
+    const retryAt = instant(collection.next_probe_at);
+    if (Number.isFinite(retryAt) && retryAt > this.now()) return value;
     const previous = instant(collection.last_attempt_at);
     const key = `quota-collect-v1:${await digest(id)}`;
     const requested = await this.storage.get<number>(key);

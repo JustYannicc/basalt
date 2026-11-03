@@ -13,7 +13,7 @@ import type { Json } from "./json.ts";
 const key = "ab".repeat(32),
   now = Date.parse("2030-01-01T00:00:00Z");
 function fixture(
-  options: { error?: string; stale?: boolean; disabled?: boolean; exhausted?: boolean } = {},
+  options: { error?: string; stale?: boolean; disabled?: boolean; exhausted?: boolean; provider?: string } = {},
 ) {
   const calls: string[] = [],
     storage = new Map<string, unknown>();
@@ -26,7 +26,7 @@ function fixture(
           files: [
             {
               id: "bound-id",
-              provider: "codex",
+              provider: options.provider ?? "codex",
               email: "subscriber@example.test",
               disabled: options.disabled,
             },
@@ -161,4 +161,28 @@ test("invalid assertions and mismatched bindings never probe another credential"
     f.calls.some((path) => path.includes("/quota/")),
     false,
   );
+});
+
+
+test("alarm observations read unlinked bindings without a health check or reset mutations", async () => {
+  const f = fixture({ stale: true });
+  const first = await f.check({ action: "observe" });
+  assert.equal(first?.status, 200);
+  const old = await first!.json() as { result: { observedAt: string } };
+  const second = await f.check({ action: "observe" });
+  const fresh = await second!.json() as { result: { observedAt: string } };
+  assert.ok(Date.parse(fresh.result.observedAt) > Date.parse(old.result.observedAt));
+  assert.equal(fresh.result.observedAt, new Date(now).toISOString());
+  assert.equal(f.calls.filter((path) => path.endsWith("/quota/collect")).length, 1);
+  assert.ok(f.calls.every((path) => /\/(credentials|quota\/collect|quota\/credentials\/bound-id)$/.test(path)));
+});
+
+
+test("mirrored API-limited accounts share interval collection and the same persisted cap", async () => {
+  const f = fixture({ provider: "typesafe", stale: true });
+  await f.check({ action: "observe", provider: "typesafe" });
+  const response = await f.check({ action: "observe", provider: "typesafe" });
+  const body = await response!.json() as { result: { observedAt: string } };
+  assert.equal(body.result.observedAt, new Date(now).toISOString());
+  assert.equal(f.calls.filter((path) => path.endsWith("/quota/collect")).length, 1);
 });
