@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-operator-artifact-portability",
+  "file": "0155-pool-operator-artifact-portability.patch",
+  "content_sha256": "a9bd97a9d2111285ab3fe67a5daa9ddc3f2d9737b5b22714d6b07c37d1210b7d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
