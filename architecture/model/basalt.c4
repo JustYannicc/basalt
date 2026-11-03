@@ -437,6 +437,7 @@ model {
   poolOwner -[sync]-> appHosting "open private app screen in dashboard App tab"
   poolMember -[sync]-> appHosting "open authorized shared app screen in dashboard App tab"
   appHosting -[sync]-> basalt.toolsGateway "authenticate and serve isolated app screen"
+  basalt.toolsGateway -[sync]-> appHosting "return the app capability result"
   poolOwner -[sync]-> basalt.toolsGateway "call pool tools from hosted screen" { #planned }
   basalt.toolsGateway -[sync]-> poolOwner "show pool tool result in hosted screen" { #planned }
   poolOwner -[sync]-> modelProviders "sign in on the provider's page in own browser"
