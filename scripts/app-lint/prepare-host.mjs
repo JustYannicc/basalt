@@ -19,12 +19,9 @@ try {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(
     path,
-    execFileSync("gh", [
-      "api",
-      `repos/UsefulSoftwareCo/executor/contents/packages/apps/package.json?ref=${pin.commit}`,
-      "-H",
-      "Accept: application/vnd.github.raw+json",
-    ]),
+    execFileSync("git", ["show", `${pin.commit}:packages/apps/package.json`], {
+      cwd: join(root, ".upstream"),
+    }),
   );
   execFileSync("git", ["init", "--quiet", scratch]);
   for (const patch of readdirSync(join(root, "patches"))
