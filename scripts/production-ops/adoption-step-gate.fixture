@@ -1,0 +1,50 @@
+import { Context, Effect } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import * as Statement from "effect/sql/Statement";
+
+const active = Context.Reference<boolean>("basalt/proof/AdoptionStepGate", { defaultValue: () => false });
+const origin = "__ADOPTION_STEP_GATE_ORIGIN__";
+const arrive = (step: string, id: string) =>
+  Effect.gen(function* () {
+    const url = new URL("/arrive", origin);
+    url.searchParams.set("step", step);
+    url.searchParams.set("id", id);
+    const response = yield* HttpClient.execute(HttpClientRequest.post(url));
+    if (response.status !== 204) return yield* Effect.die("SQL proof gate refused");
+  }).pipe(Effect.provide(FetchHttpClient.layer), Effect.orDie);
+
+/** Preserve every statement and result; only pause at a selected real transaction boundary. */
+export const withAdoptionStepGate = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const previous = yield* Statement.CurrentTransformer;
+    if (yield* active) return yield* work;
+    let connectionClaimed = false;
+    let accountClaim: string | undefined;
+    const transformer: Statement.Transformer = (input, sql, fiber, span) =>
+      Effect.gen(function* () {
+        const statement = previous === undefined ? input : yield* previous(input, sql, fiber, span);
+        const [source, params] = statement.compile();
+        const query = source.replaceAll('"', "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (accountClaim !== undefined) {
+          const id = accountClaim;
+          accountClaim = undefined;
+          yield* arrive("account", id);
+        }
+        if (query.includes("pg_advisory_xact_lock")) {
+          const key = params.find((value) => typeof value === "string" && value.startsWith("executor-access:"));
+          if (typeof key === "string") yield* arrive("organization", key.slice("executor-access:".length));
+        }
+        if (query.includes("executor_apps") && query.includes("for no key update")) {
+          const id = params.find((value) => typeof value === "string" && value.startsWith("app_"));
+          if (typeof id === "string") yield* arrive("app", id);
+        }
+        if (/^update (?:\w+\.)?executor_account_connections\b/.test(query) && query.includes("revision"))
+          connectionClaimed = true;
+        if (connectionClaimed && /^update (?:\w+\.)?executor_accounts\b/.test(query) && query.includes("created_at")) {
+          const id = params.find((value) => typeof value === "string" && value.startsWith("acc_"));
+          if (typeof id === "string") accountClaim = id;
+        }
+        return statement;
+      });
+    return yield* work.pipe(Effect.provideService(Statement.CurrentTransformer, transformer), Effect.provideService(active, true));
+  });
