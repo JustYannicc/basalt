@@ -1,9 +1,14 @@
+import { selectScopeCases } from "./scope-cases.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+assert.ok(
+  !process.env.E2E_CLOUD_URL,
+  "Scope proofs require a managed disposable Cloud, not E2E_CLOUD_URL",
+);
 const registry = new URL(
   "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts",
   import.meta.url,
@@ -77,33 +82,70 @@ try {
     { cwd: root, stdio: "inherit" },
   );
   assert.equal(checked.status, 0, "The proof-only migration must pass the product typecheck");
-  const child = spawn(
-    "bun",
-    [
-      "run",
-      "e2e:cloud",
-      "--test-name",
-      process.env.BASALT_SCOPE_PROOF_PATTERN ?? "^Cloud production operations enforce",
-      "--workers",
-      "1",
-    ],
-    {
-      cwd: `${root}/.upstream`,
-      stdio: "inherit",
-      env: { ...process.env, BASALT_E2E_PRODUCTION_OPS: "1" },
-    },
+  const { scenarios } = await import("../../.upstream/e2e/test-plan.ts");
+  const cases = selectScopeCases(
+    scenarios,
+    process.env.BASALT_SCOPE_PROOF_PATTERN ?? "^Cloud production operations enforce",
   );
-  const interrupt = () => child.kill("SIGINT");
-  process.on("SIGINT", interrupt);
-  process.on("SIGTERM", interrupt);
-  try {
-    process.exitCode = await new Promise<number>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", (code) => resolve(code ?? 1));
-    });
-  } finally {
-    process.off("SIGINT", interrupt);
-    process.off("SIGTERM", interrupt);
+  for (const scenario of cases) {
+    console.log(`Isolated scope proof: ${scenario.title}`);
+    const evidenceRoot = `${root}/.upstream/.local/e2e`;
+    await mkdir(evidenceRoot, { recursive: true });
+    const previousRuns = new Set(await readdir(evidenceRoot));
+    const environment = { ...process.env };
+    delete environment.BASALT_E2E_PREBOOT_BINDING;
+    const child = spawn(
+      "bun",
+      ["run", "e2e:cloud", "--test-name", scenario.pattern, "--workers", "1"],
+      {
+        cwd: `${root}/.upstream`,
+        stdio: "inherit",
+        env: {
+          ...environment,
+          BASALT_E2E_PRODUCTION_OPS: "1",
+          ...(scenario.binding === undefined
+            ? {}
+            : { BASALT_E2E_PREBOOT_BINDING: scenario.binding }),
+        },
+      },
+    );
+    const interrupt = () => child.kill("SIGINT");
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", interrupt);
+    try {
+      const code = await new Promise<number>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code) => resolve(code ?? 1));
+      });
+      if (code !== 0) {
+        process.exitCode = code;
+        break;
+      }
+      if (scenario.binding !== undefined) {
+        const runs = (await readdir(evidenceRoot)).filter((name) => !previousRuns.has(name));
+        assert.equal(runs.length, 1, "One isolated Cloud run must own this case's evidence");
+        const directory = `${evidenceRoot}/${runs[0]}/cloud`;
+        const ready = JSON.parse(await readFile(`${directory}/runtime-preboot.json`, "utf8"));
+        const launches = (await readFile(`${directory}/runtime-launches.ndjson`, "utf8"))
+          .trim()
+          .split("\n");
+        const switches = (await readFile(`${directory}/runtime-switches.ndjson`, "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        assert.equal(ready.binding, scenario.binding);
+        assert.equal(ready.launches, 2);
+        assert.equal(launches.length, 2, "Fixture switches must not launch another Cloud runtime");
+        assert.ok(switches.some((entry) => entry.binding === scenario.binding));
+        assert.ok(switches.every((entry) => entry.launches === 2));
+        console.log(
+          `Verified two prebooted runtimes and ${switches.length} switches without relaunch`,
+        );
+      }
+    } finally {
+      process.off("SIGINT", interrupt);
+      process.off("SIGTERM", interrupt);
+    }
   }
 } finally {
   assert.equal(await readFile(registry, "utf8"), expected, "The registry changed during the proof");
