@@ -335,7 +335,7 @@ jobs:
         working-directory: .upstream
         env:
           BASALT_E2E_PRODUCTION_OPS: "1"
-        run: bun run e2e:cloud --test-name '^Google identity recovery (binds exact grants|refuses a plan after)' --workers 1
+        run: bun run e2e:cloud --test-name '^(Google|Atlassian) identity recovery (binds exact grants|refuses a plan after)' --workers 1
       - name: Upload Google recovery evidence
         uses: actions/upload-artifact@v4
         if: always()
