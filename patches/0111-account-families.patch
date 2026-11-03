@@ -1271,6 +1271,19 @@ index d71a137..2a498c3 100644
          expect((yield* product.read(later)).status).toBe(200);
          for (const retainedBinding of retained) {
            expect((yield* product.read(retainedBinding.app)).status).toBe(200);
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+index b11eedb..4764c42 100644
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+           reason:
+-            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26. Declare a supported apps version.",
++            "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27. Declare a supported apps version.",
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(
 diff --git a/packages/apps/package.json b/packages/apps/package.json
 index e51067d..5d80e1e 100644
 --- a/packages/apps/package.json
