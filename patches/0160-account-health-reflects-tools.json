@@ -1,7 +1,7 @@
 {
   "identity": "executor-account-health-reflects-tools",
   "file": "0160-account-health-reflects-tools.patch",
-  "content_sha256": "3f70cbcd85fa9e37c4641e32f2b33059738c2a0f57a8a6cca4c09d9c7b2ac697",
+  "content_sha256": "67cd6a8017b95033181080d2e36503e3464e5fcc04fd87981568aec15fe289ac",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

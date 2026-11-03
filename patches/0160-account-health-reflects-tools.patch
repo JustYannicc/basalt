@@ -262,28 +262,31 @@ index cb2ba2e..487c263 100644
    });
  
 diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
-index 7c76fc0..e80919e 100644
+index 7c76fc0..0d6223a 100644
 --- a/packages/sdk/src/implementation/account-check-record.ts
 +++ b/packages/sdk/src/implementation/account-check-record.ts
-@@ -7,8 +7,16 @@ import { StorageError } from "../contracts/shared.ts";
+@@ -7,8 +7,19 @@ import { StorageError } from "../contracts/shared.ts";
  const Record = Schema.Struct({
    displayStatus: Schema.optionalKey(AccountStatus),
    checkFailure: Schema.optionalKey(AccountCheckFailure),
-+  /** Set when agents' tool discovery, not a check, recorded that the app's tools do not load. */
-+  toolsUnavailableFromDiscovery: Schema.optionalKey(Schema.Literal(true)),
++  /**
++   * Set when agents' tool discovery, not a check, recorded that the app's tools do not load: the
++   * catalog context it read, so only a later read of that same context clears it.
++   */
++  toolsUnavailableFromDiscovery: Schema.optionalKey(Schema.String),
  });
  
 +export const recordedDiscoveryMark = (info: unknown) =>
 +  Schema.decodeUnknownOption(Record)(info).pipe(
-+    Option.map((record) => record.toolsUnavailableFromDiscovery === true),
-+    Option.getOrElse(() => false),
++    Option.flatMap((record) => Option.fromNullishOr(record.toolsUnavailableFromDiscovery)),
++    Option.getOrUndefined,
 +  );
 +
  export const recordedCheckFailure = (info: unknown) =>
    Schema.decodeUnknownOption(Record)(info).pipe(
      Option.flatMap((record) => Option.fromNullishOr(record.checkFailure)),
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 63e1925..f6d5b2b 100644
+index 63e1925..e1f4bbe 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -25,6 +25,7 @@ import {
@@ -294,14 +297,22 @@ index 63e1925..f6d5b2b 100644
    type OwnerId,
  } from "../contracts/shared.ts";
  import { AppNotFound } from "../contracts/apps.ts";
-@@ -81,6 +82,18 @@ type CheckRow = {
+@@ -36,6 +37,7 @@ import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
+ import {
+   accountCheckRecord,
+   recordedCheckFailure,
++  recordedDiscoveryMark,
+   recordedDisplayStatus,
+ } from "./account-check-record.ts";
+ import { checkInteractiveAccount } from "./interactive-check.ts";
+@@ -81,6 +83,18 @@ type CheckRow = {
    readonly message: string | null;
  };
  type ReportState = { readonly status: string };
 +/**
-+ * Read the app's tool catalog with one account bound, as agents' discovery does: the reason its
-+ * tools do not load, or undefined when they load or the read cannot tell, such as when the app
-+ * needs another account first.
++ * Read the app's tool catalog with one account bound, as agents' discovery does: `reason` is why
++ * its tools do not load and is absent when they load. Undefined when the read cannot tell, such as
++ * when the app needs another account first or the catalog takes too long.
 + */
 +export type ToolsProbe = (input: {
 +  readonly app: AppId;
@@ -309,11 +320,11 @@ index 63e1925..f6d5b2b 100644
 +  readonly scope: AccountScope;
 +  readonly slot: string;
 +  readonly account: AccountId;
-+}) => Effect.Effect<string | undefined, StorageError>;
++}) => Effect.Effect<{ readonly reason: string | undefined } | undefined, StorageError>;
  
  /** The slot whose provider check covers this account in the app's active version. */
  const checkedSlot = (
-@@ -159,6 +172,7 @@ export const makeAccountHealth = (
+@@ -159,6 +173,7 @@ export const makeAccountHealth = (
      typeof import("./account-observations.ts").makeAccountObservations
    >["fromHealth"],
    acquisition?: AccountDriverResolver,
@@ -321,7 +332,7 @@ index 63e1925..f6d5b2b 100644
  ) => {
    const driver = makeDriverAccountHealth(
      db,
-@@ -373,7 +387,22 @@ export const makeAccountHealth = (
+@@ -373,7 +388,17 @@ export const makeAccountHealth = (
        if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome) && outcome.success === undefined) return;
@@ -337,31 +348,61 @@ index 63e1925..f6d5b2b 100644
 +              account: account.id,
 +            })
 +          : undefined;
-+      const status = Result.isSuccess(outcome)
-+        ? tools === undefined
-+          ? "healthy"
-+          : "tools_unavailable"
-+        : statusOf(outcome.failure);
        const failure = Result.isFailure(outcome) ? accountCheckFailure(outcome.failure) : undefined;
        if (failure !== undefined) yield* recordAccountCheckFailure(failure);
        const existing = yield* query(() =>
-@@ -406,7 +435,9 @@ export const makeAccountHealth = (
+@@ -382,6 +407,21 @@ export const makeAccountHealth = (
+         }),
+       );
+       if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
++      // A read that cannot tell keeps a known tools failure of this version and credentials.
++      const known =
++        tools === undefined &&
++        existing?.status === "tools_unavailable" &&
++        existing.deployment === version.id &&
++        existing.credentialGeneration === account.credentialGeneration
++          ? existing
++          : undefined;
++      const toolsReason = tools?.reason ?? known?.message ?? undefined;
++      const status = Result.isSuccess(outcome)
++        ? tools?.reason !== undefined || known !== undefined
++          ? "tools_unavailable"
++          : "healthy"
++        : statusOf(outcome.failure);
++      const mark = known === undefined ? undefined : recordedDiscoveryMark(known.info);
+       const checkedAt = new Date(startedAt);
+       const success = Result.isSuccess(outcome) ? outcome.success : undefined;
+       const record = yield* accountCheckRecord(
+@@ -398,7 +438,9 @@ export const makeAccountHealth = (
+         ...record,
+         info:
+           failure === undefined
+-            ? record.info
++            ? Result.isSuccess(outcome) && mark !== undefined
++              ? { ...record.info, toolsUnavailableFromDiscovery: mark }
++              : record.info
+             : {
+                 ...record.info,
+                 checkFailure: failure,
+@@ -406,7 +448,11 @@ export const makeAccountHealth = (
                    ? { checkReason: outcome.failure.reason }
                    : {}),
                },
 -        message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
 +        message: Result.isSuccess(outcome)
-+          ? (tools ?? null)
++          ? status === "tools_unavailable"
++            ? (toolsReason ?? null)
++            : null
 +          : (messageOf(outcome.failure, late) ?? null),
        };
        yield* query(() =>
          db.upsert("accountChecks", {
 diff --git a/packages/sdk/src/implementation/account-tools-health.ts b/packages/sdk/src/implementation/account-tools-health.ts
 new file mode 100644
-index 0000000..2157d39
+index 0000000..5323286
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-tools-health.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,128 @@
 +/**
 + * Whether an app's tools load for agents, kept on the app's account checks. A provider check can
 + * accept credentials while the app's tool loader fails, so the check that shows an account as
@@ -413,22 +454,25 @@ index 0000000..2157d39
 +  readonly message: string | null;
 +};
 +
-+/** The row discovery's finding leaves, or undefined when it must not change it. */
-+const marked = (row: Row, problem: string | undefined) => {
++/** The row a discovery of `context` leaves, or undefined when it must not change it. */
++const marked = (row: Row, context: string, problem: string | undefined) => {
 +  const mark = recordedDiscoveryMark(row.info);
 +  const info = Option.getOrElse(
 +    Schema.decodeUnknownOption(JsonObject)(row.info),
 +    (): JsonObject => ({}),
 +  );
 +  if (problem !== undefined) {
-+    if (row.status !== "healthy" && !(mark && row.message !== problem)) return undefined;
++    const refreshed =
++      row.status === "tools_unavailable" && mark === context && row.message !== problem;
++    if (row.status !== "healthy" && !refreshed) return undefined;
 +    return {
 +      status: "tools_unavailable" satisfies AccountCheckStatus,
 +      message: problem,
-+      info: { ...info, toolsUnavailableFromDiscovery: true },
++      info: { ...info, toolsUnavailableFromDiscovery: context },
 +    };
 +  }
-+  if (row.status !== "tools_unavailable" || !mark) return undefined;
++  // Another catalog context, such as one without MCP's app UI, can load while this one fails.
++  if (row.status !== "tools_unavailable" || mark !== context) return undefined;
 +  const { toolsUnavailableFromDiscovery: _mark, ...rest } = info;
 +  return {
 +    status: "healthy" satisfies AccountCheckStatus,
@@ -448,6 +492,8 @@ index 0000000..2157d39
 +    readonly app: AppId;
 +    readonly version: VersionId;
 +    readonly accounts: readonly { readonly id: AccountId; readonly credentialGeneration: number }[];
++    /** Identifies the catalog the read evaluated, as the listing store keys it. */
++    readonly context: string;
 +    readonly problem: string | undefined;
 +  },
 +) =>
@@ -468,7 +514,7 @@ index 0000000..2157d39
 +    );
 +    for (const row of rows) {
 +      if (generation.get(row.account as AccountId) !== row.credentialGeneration) continue;
-+      const update = marked(row, input.problem);
++      const update = marked(row, input.context, input.problem);
 +      if (update === undefined) continue;
 +      yield* query(() =>
 +        db.updateMany("accountChecks", {
@@ -486,7 +532,7 @@ index 0000000..2157d39
 +    }
 +  });
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 482362e..1f9551b 100644
+index 482362e..438d30b 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,4 +1,6 @@
@@ -505,35 +551,37 @@ index 482362e..1f9551b 100644
  import {
    PersonalDataReportingHost,
    type Executor,
-@@ -303,6 +305,35 @@ export const createExecutor = (
+@@ -303,6 +305,37 @@ export const createExecutor = (
        makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
        acquisitionHost,
      );
-+    // The catalog read agents' discovery makes, of the checked version with only the checked
-+    // account bound. An app that needs another account first cannot be read this way; its check
-+    // says nothing about its tools, and agents' discovery still marks them.
-+    // How long an account check waits for the app's catalog after its credentials passed.
++    // The catalog evaluation agents' discovery runs, of the checked version with only the checked
++    // account bound, evaluated now rather than served from a kept listing. An app that needs
++    // another account first cannot be read this way; its check then keeps what it knew, and
++    // agents' discovery still marks it.
 +    const probeMillis = 15_000;
 +    const probeTools: ToolsProbe = (input) =>
 +      tools
-+        .list({
++        .loadNow({
 +          app: input.app,
 +          version: input.version,
 +          accounts:
 +            input.scope === "app"
 +              ? { app: { [input.slot]: [input.account] } }
 +              : { app: {}, user: { [input.slot]: [input.account] } },
-+          limit: 1,
 +        })
 +        .pipe(
-+          Effect.map((page) =>
-+            toolsProblem({ app: input.app, version: page.version }, page.routers),
-+          ),
-+          Effect.catch((error) =>
-+            Schema.is(StorageError)(error)
-+              ? Effect.fail(error)
-+              : Effect.succeed(toolsFailure(error)),
-+          ),
++          Effect.map((listing) => ({
++            reason: toolsProblem(
++              { app: input.app, version: listing.catalog.version },
++              listing.routers,
++            ),
++          })),
++          Effect.catch((error) => {
++            if (Schema.is(StorageError)(error)) return Effect.fail(error);
++            const reason = toolsFailure(error);
++            return Effect.succeed(reason === undefined ? undefined : { reason });
++          }),
 +          // A catalog that takes longer to evaluate tells the check nothing either way.
 +          Effect.timeoutOption(probeMillis),
 +          Effect.map(Option.getOrUndefined),
@@ -541,7 +589,7 @@ index 482362e..1f9551b 100644
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
        runtime,
-@@ -313,6 +344,7 @@ export const createExecutor = (
+@@ -313,6 +346,7 @@ export const createExecutor = (
        options.hooks,
        fromHealth,
        acquisitionHost,
@@ -550,29 +598,60 @@ index 482362e..1f9551b 100644
      const schedules = makeSchedules(
        options.database,
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 2b699fe..082c181 100644
+index 2b699fe..52085c3 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -1,4 +1,5 @@
+@@ -1,6 +1,7 @@
  import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.ts";
 +import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-health.ts";
  import { McpAppViewSink, McpToolResult, type McpAppViewObservation } from "apps/contracts";
- import { ProviderError } from "apps/contracts";
+-import { ProviderError } from "apps/contracts";
++import { McpAppUiProfile, ProviderError } from "apps/contracts";
  import { appProviderFailure } from "./provider-error.ts";
-@@ -1207,10 +1208,30 @@ export const makeTools = (
+ import { invocationAccount } from "./provider.ts";
+ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
+@@ -96,6 +97,7 @@ import {
+   InvocationSelection,
+   type PrefetchedInvocation,
+   type PrefetchHost,
++  ToolListingTimedOut,
+ } from "../contracts/tools.ts";
+ import type { ExecutorDatabase } from "./storage.ts";
+ import type { ProviderDefinition } from "../contracts/provider.ts";
+@@ -1207,10 +1209,50 @@ export const makeTools = (
            name: ToolName.make(tool.name),
          })),
      });
 +  /** Keep what a catalog read found on its accounts' checks; see `observeToolLoad`. */
 +  const observeTools = (state: InvocationSnapshot, problem: string | undefined) =>
-+    observeToolLoad(db, {
-+      app: state.app.id,
-+      version: state.version.id,
-+      accounts: state.selections.flatMap(({ accounts }) =>
-+        accounts.map(({ id, credentialGeneration }) => ({ id, credentialGeneration })),
-+      ),
-+      problem,
++    Effect.gen(function* () {
++      // The inputs the listing store keys a catalog by, besides the version and generations.
++      const context = JSON.stringify([
++        yield* McpAppUiProfile,
++        state.scope,
++        state.selections.map(({ slot, accounts }) => [slot, accounts.map(({ id }) => id)]),
++      ]);
++      yield* observeToolLoad(db, {
++        app: state.app.id,
++        version: state.version.id,
++        accounts: state.selections.flatMap(({ accounts }) =>
++          accounts.map(({ id, credentialGeneration }) => ({ id, credentialGeneration })),
++        ),
++        context,
++        problem,
++      });
 +    }).pipe(Effect.catchCause(() => Effect.logWarning("Recording tool availability failed")));
++  /** A listing that timed out for its reader also failed to load the tools, as agents see it. */
++  const observeTimeout =
++    (state: InvocationSnapshot) =>
++    <A, E, R>(read: Effect.Effect<A, E, R>) =>
++      read.pipe(
++        Effect.tapError((error) =>
++          Schema.is(ToolListingTimedOut)(error)
++            ? observeTools(state, toolsFailure(error))
++            : Effect.void,
++        ),
++      );
    /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
    const listingOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
      inspectRenewing(state, context, (context) => runtime.inspect(inspection(state, context))).pipe(
@@ -590,6 +669,66 @@ index 2b699fe..082c181 100644
      );
    /**
     * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
+@@ -1273,7 +1315,9 @@ export const makeTools = (
+     list: (input: Parameters<Executor["tools"]["list"]>[0], options?: ToolListOptions) =>
+       Effect.gen(function* () {
+         const state = yield* listed(input);
+-        const listing = yield* listings.read(state, listingOf(state), options);
++        const listing = yield* listings
++          .read(state, listingOf(state), options)
++          .pipe(observeTimeout(state));
+         // Pages share the listing's item objects, so a caller can recognise a kept listing.
+         const start = pageStart(listing, input.cursor);
+         const selected = yield* pageTools(
+@@ -1292,6 +1336,19 @@ export const makeTools = (
+             : {}),
+         };
+       }).pipe(Effect.withSpan("sdk.tools.list")),
++    /**
++     * Evaluate the catalog now, as a listing is evaluated but without serving or keeping one, and
++     * keep what it found on the accounts' checks. An account check uses it to confirm the tools
++     * load rather than trusting a listing kept from before.
++     */
++    loadNow: (input: Parameters<typeof snapshot>[1]) =>
++      Effect.gen(function* () {
++        const state = yield* listed(input);
++        const context = yield* resolve(state, resolveAccount).pipe(
++          Effect.withSpan("sdk.accounts.resolve"),
++        );
++        return yield* listingOf(state)(context);
++      }).pipe(Effect.withSpan("sdk.tools.loadNow")),
+     /** Keep the target's current listing as search rows; see `Listings.searchable`. */
+     searchable: (
+       input: Omit<Parameters<Executor["tools"]["list"]>[0], "cursor" | "limit">,
+@@ -1299,7 +1356,9 @@ export const makeTools = (
+     ) =>
+       Effect.gen(function* () {
+         const state = yield* listed(input);
+-        const found = yield* listings.searchable(state, listingOf(state), options);
++        const found = yield* listings
++          .searchable(state, listingOf(state), options)
++          .pipe(observeTimeout(state));
+         return {
+           listing: found.listing,
+           version: state.version.id,
+@@ -1341,7 +1400,7 @@ export const makeTools = (
+     index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
+       Effect.gen(function* () {
+         const state = yield* listed(input);
+-        const listing = yield* listings.read(state, listingOf(state));
++        const listing = yield* listings.read(state, listingOf(state)).pipe(observeTimeout(state));
+         return {
+           ...listing.catalog,
+           routers: listing.routers,
+@@ -1356,7 +1415,7 @@ export const makeTools = (
+     get: (input: Parameters<Executor["tools"]["get"]>[0]) =>
+       Effect.gen(function* () {
+         const state = yield* listed(input);
+-        const listing = yield* listings.read(state, listingOf(state));
++        const listing = yield* listings.read(state, listingOf(state)).pipe(observeTimeout(state));
+         const kept = listing.items.find((tool) => tool.name === input.tool);
+         if (kept !== undefined) {
+           yield* Effect.annotateCurrentSpan("executor.tools.source", "listing");
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
 index ddfb5b5..9a5bd53 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
