@@ -162,8 +162,8 @@ The model gateway registers native System One routes through the backend's serve
 The existing pool alarm publishes native model-account allowance through the tools service's
 ordinary observation refresh writer, after its Home collection pass. The private signed request
 selects current Home-backed bindings, including saved accounts without pool membership; connector
-accounts, and accounts whose collected windows are all unlimited, publish no usage report. Driver report leases and retry deadlines remain authoritative, and Home
-collection keeps its persisted thirty-minute cap and provider backoff. Publication reads reset
+accounts are excluded. Unlimited windows are reported as unlimited, never as an unavailable source. Driver report leases and retry deadlines remain authoritative, and Home
+collection keeps its persisted thirty-minute cap and provider backoff. Each reading stays fresh for that thirty-minute interval plus the five-minute upkeep, capped by any earlier source deadline, reset or expiry. Publication reads reset
 credits without redeeming them. Accounts without a native Home binding, including API keys that
 have never been mirrored and methods whose Home adapter is unavailable, have no periodic usage
 hook in this carry. Multi-credential Home bindings still have no aggregate observation report. Open account rows read the retained report again every 30 seconds while the page is visible, and every 5 seconds while a collection is running, so new readings appear without a manual refresh. Reading never collects.

@@ -54,9 +54,8 @@ export async function nativeAccountHealth(
       if (!ids.every((id) => hasUsageLimits(files.find((file) => file.id === id)!))) return json({ result: null });
       const readings = await Promise.all(ids.map((id) => input.collection.read(id, signal, false)));
       const reading = readings[0];
-      // An account whose collected windows are all unlimited has no usage to report (audit #10).
-      const limited = reading != null && hasUsageLimits(files.find((file) => file.id === ids[0])!, reading);
-      return json({ result: readings.length === 1 && limited
+      // Unlimited windows are reported as unlimited; whether a row shows them is the row's choice.
+      return json({ result: readings.length === 1 && reading != null
         ? publicQuotaObservation(quotaObservation(reading)) : null });
     }
     const checked = await Promise.all(

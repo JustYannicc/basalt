@@ -1,4 +1,6 @@
 import type { PoolAccountObservation } from "../../apps/pool/account-observation-contract.ts";
+import { poolLifecycle } from "./lifecycle.ts";
+import { quotaCollectInterval } from "./quota-collection.ts";
 import type { QuotaObservation, QuotaWindowObservation } from "./quota-observation.ts";
 
 const bounded = (value: string | null, length = 64) => value?.trim().slice(0, length) || undefined;
@@ -8,6 +10,11 @@ const instant = (value: string | null): string | undefined => {
   const iso = new Date(time).toISOString();
   return /^\d{4}-/.test(iso) ? iso : undefined;
 };
+// Collection can become due just after an upkeep pass; keep the source's earlier deadline.
+const staleAt = (observedAt: string, ...deadlines: (string | null)[]) => new Date(Math.min(
+  Date.parse(observedAt) + quotaCollectInterval + poolLifecycle.refreshMs,
+  ...deadlines.flatMap((value) => { const at = instant(value); return at === undefined ? [] : [Date.parse(at)]; }),
+)).toISOString();
 const ratio = (value: number | null) => value !== null && value >= 0 && value <= 1 ? value : undefined;
 
 function label(window: QuotaWindowObservation): string {
@@ -34,7 +41,7 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
     const seconds = window.period.seconds;
     return [{
       id, label: label(window), observedAt: at,
-      ...(instant(window.staleAt) === undefined ? {} : { staleAt: instant(window.staleAt) }),
+      staleAt: staleAt(at, value.staleAt, window.staleAt),
       ...(bounded(window.scope, 128) === undefined ? {} : { scope: { kind: bounded(window.scope, 128)!, ...(bounded(window.scopeId, 128) === undefined ? {} : { id: bounded(window.scopeId, 128) }) } }),
       measure: {
         unit,
@@ -67,7 +74,8 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
     const known = [...groups.values()].reduce((total, count) => total + count, 0);
     if (resets.available > known || groups.size === 0) groups.set("unknown", (groups.get("unknown") ?? 0) + resets.available - known);
     for (const [expiry, available] of groups) balances.push({ id: `resets-${balances.length}`, label: "Banked resets", unit: "resets", available,
-      observedAt: instant(resets.observedAt) ?? observedAt, ...(expiry === "unknown" ? {} : { expiresAt: expiry }) });
+      observedAt: instant(resets.observedAt) ?? observedAt,
+      staleAt: staleAt(instant(resets.observedAt) ?? observedAt, value.staleAt), ...(expiry === "unknown" ? {} : { expiresAt: expiry }) });
   }
   const attemptedAt = instant(value.collection.attemptedAt);
   const retryAt = instant(value.collection.nextAllowedAt);
@@ -79,7 +87,7 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
     observedAt,
     observation: {
       offering: "subscription",
-      ...(plan === undefined ? {} : { plan: { label: plan, observedAt } }),
+      ...(plan === undefined ? {} : { plan: { label: plan, observedAt, staleAt: staleAt(observedAt, value.staleAt) } }),
       windows, balances: balances.slice(0, 8),
     },
     ...(attemptedAt === undefined ? {} : { collection: { attemptedAt, outcome, ...(retryAt === undefined ? {} : { retryAt }) } }),

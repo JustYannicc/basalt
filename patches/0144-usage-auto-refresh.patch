@@ -479,3 +479,42 @@ index 0000000..44c80b6
 +    ),
 +  );
 +});
+diff --git a/packages/sdk/src/implementation/account-observation-state.ts b/packages/sdk/src/implementation/account-observation-state.ts
+index bec0015..770af52 100644
+--- a/packages/sdk/src/implementation/account-observation-state.ts
++++ b/packages/sdk/src/implementation/account-observation-state.ts
+@@ -5,17 +5,19 @@ export const observationLeaseMillis = 20_000;
+ /** Freshness belongs to each source instant, including when a cached request succeeded just now. */
+ export const freshObservation = (result: AccountObservationResult, now: number) => {
+   const readings = [
+-    { observedAt: result.observedAt },
+     ...(result.observation.plan === undefined ? [] : [result.observation.plan]),
+     ...result.observation.windows,
+     ...result.observation.balances,
+   ];
+-  return readings.every((reading) => {
++  // The result timestamp orders reports; individual readings own their freshness horizons.
++  if (Date.parse(result.observedAt) > now + 60_000) return false;
++  const sources = readings.length === 0 ? [{ observedAt: result.observedAt }] : readings;
++  return sources.every((reading) => {
+     const observed = Date.parse(reading.observedAt);
+     const stale =
+-      "staleAt" in reading && reading.staleAt !== undefined
++      "staleAt" in reading && typeof reading.staleAt === "string"
+         ? Date.parse(reading.staleAt)
+-        : Infinity;
++        : observed + freshnessMillis;
+     const reset =
+       "resetsAt" in reading && typeof reading.resetsAt === "string"
+         ? Date.parse(reading.resetsAt)
+@@ -24,9 +26,7 @@ export const freshObservation = (result: AccountObservationResult, now: number)
+       "expiresAt" in reading && typeof reading.expiresAt === "string"
+         ? Date.parse(reading.expiresAt)
+         : Infinity;
+-    return (
+-      observed <= now + 60_000 && now < Math.min(observed + freshnessMillis, stale, reset, expiry)
+-    );
++    return observed <= now + 60_000 && now < Math.min(stale, reset, expiry);
+   });
+ };
+ 

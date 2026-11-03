@@ -179,10 +179,14 @@ test("alarm observations read unlinked bindings without a health check or reset 
 });
 
 
-test("an account whose collected windows are all unlimited publishes no usage report", async () => {
+test("an unlimited account reports its windows as unlimited instead of no reading", async () => {
   const f = fixture({ unlimited: true });
   const response = await f.check({ action: "observe" });
-  assert.deepEqual(await response!.json(), { result: null });
+  const body = (await response!.json()) as {
+    result: { observation: { windows: { measure: { unlimited?: boolean } }[] } } | null;
+  };
+  assert.ok(body.result, "an unlimited reading is a reading, not an unavailable source");
+  assert.deepEqual(body.result.observation.windows.map((window) => window.measure.unlimited), [true]);
 });
 
 test("mirrored API-limited accounts share interval collection and the same persisted cap", async () => {
