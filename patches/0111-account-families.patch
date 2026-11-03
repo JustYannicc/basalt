@@ -249,12 +249,161 @@ index f311100..ad5059b 100644
  
  export const requireProviderAccountMethod = (app: App, requirement: string, method: string) =>
    Effect.gen(function* () {
+diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+index 02d846c..97f1a42 100644
+--- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
++++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
+@@ -15,7 +15,7 @@ import { useContext, useEffect, useRef, useState } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import { CopyButton } from "@executor-js/ui/dashboard/code";
+ import { ConnectionStatusPage } from "../components/connection-status.tsx";
+-import { ScopeList } from "@executor-js/ui/dashboard/oauth-scopes";
++import { MissingOAuthAccess } from "@executor-js/ui/dashboard/oauth-scopes";
+ import {
+   appError,
+   completeOAuthAtom,
+@@ -37,8 +37,7 @@ type CallbackState =
+       readonly message: string;
+       readonly recovery: Recovery;
+       readonly fixPrompt?: string | undefined;
+-      /** Access the service left out; empty when it did not report what it granted. */
+-      readonly missingScopes?: readonly string[] | undefined;
++      readonly scopeFailure?: OAuthCompletionFailed | undefined;
+     };
+ 
+ /**
+@@ -103,22 +102,16 @@ export function OAuthCallbackPage() {
+       const partial = Option.getOrUndefined(
+         Option.filter(completion, (failure) => failure.reason === "scope_missing"),
+       );
+-      const missingScopes =
+-        partial === undefined
+-          ? undefined
+-          : partial.grantedScopesKnown === false
+-            ? []
+-            : (partial.missingScopes ?? []);
+       setState({
+         status: "failed",
+         message:
+-          missingScopes === undefined
++          partial === undefined
+             ? appError(cause)
+-            : missingScopes.length === 0
++            : partial.grantedScopesKnown === false
+               ? "The service didn’t report which access it granted, so nothing was saved. Your existing sign-in and connected apps still work."
+               : "The service didn’t grant all the access the app needs, so nothing was saved. Your existing sign-in and connected apps still work.",
+         recovery,
+-        missingScopes,
++        scopeFailure: partial,
+         fixPrompt: Option.match(error, {
+           onSome: (value) =>
+             recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
+@@ -200,11 +193,9 @@ export function OAuthCallbackPage() {
+       }
+       detail={
+         state.status === "failed" &&
+-        state.missingScopes !== undefined &&
+-        state.missingScopes.length > 0 && (
++        state.scopeFailure !== undefined && (
+           <div className="rounded-lg border border-border bg-muted/40 p-3 text-left">
+-            <p className="mb-2 text-[12px] font-medium text-foreground">Not granted</p>
+-            <ScopeList scopes={state.missingScopes} />
++            <MissingOAuthAccess failure={state.scopeFailure} />
+           </div>
+         )
+       }
+@@ -214,7 +205,13 @@ export function OAuthCallbackPage() {
+           pending={pending}
+           recovery={state.status === "cancelled" ? "cancelled" : state.recovery}
+           fixPrompt={state.status === "failed" ? state.fixPrompt : undefined}
+-          partial={state.status === "failed" && state.missingScopes !== undefined}
++          partial={state.status === "failed" && state.scopeFailure !== undefined}
++          canRetry={
++            state.status !== "failed" ||
++            state.scopeFailure === undefined ||
++            (state.scopeFailure.grantedScopesKnown === true &&
++              state.scopeFailure.scopeNamesOmitted !== true)
++          }
+         />
+       )}
+     </ConnectionStatusPage>
+@@ -227,12 +224,14 @@ function OAuthRecoveryActions({
+   recovery,
+   fixPrompt,
+   partial = false,
++  canRetry = true,
+ }: {
+   readonly pending: Option.Option<typeof PendingOAuth.Type>;
+   readonly recovery: Recovery | "cancelled";
+   readonly fixPrompt?: string | undefined;
+   /** The service granted only part of the request; a retry asks for the same access again. */
+   readonly partial?: boolean | undefined;
++  readonly canRetry?: boolean | undefined;
+ }) {
+   const brand = useProductBrand();
+   if (Option.isNone(pending))
+@@ -244,7 +243,7 @@ function OAuthRecoveryActions({
+   const context = pending.value;
+   // Entered clients are saved only after a successful sign-in, so a retry reopens their fields.
+   const retry =
+-    recovery === "restart" || recovery === "client"
++    canRetry && (recovery === "restart" || recovery === "client")
+       ? {
+           label:
+             recovery === "client"
+diff --git a/apps/local/web/src/implementation/pages/oauth.tsx b/apps/local/web/src/implementation/pages/oauth.tsx
+index a1c9667..b818478 100644
+--- a/apps/local/web/src/implementation/pages/oauth.tsx
++++ b/apps/local/web/src/implementation/pages/oauth.tsx
+@@ -2,7 +2,7 @@ import { AsyncResult, type Atom } from "effect/reactivity";
+ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { Cause, Effect, Exit, Option, Schema } from "effect";
+ import { OAuthCompletionFailed } from "@executor-js/sdk";
+-import { ScopeList } from "@executor-js/ui/dashboard/oauth-scopes";
++import { MissingOAuthAccess } from "@executor-js/ui/dashboard/oauth-scopes";
+ import { useEffect, useState } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import {
+@@ -65,27 +65,14 @@ function MissingAccess({ cause }: { readonly cause: Cause.Cause<unknown> }) {
+     ),
+   );
+   if (failure === undefined) return null;
+-  const missing = failure.grantedScopesKnown === false ? [] : (failure.missingScopes ?? []);
+   return (
+     <div className="my-4 max-w-120 rounded-lg border border-border bg-muted/40 p-3">
+-      {missing.length === 0 ? (
+-        <p className="text-[12px] text-muted-foreground">
+-          The service didn’t report which access it granted. Your existing sign-in and connected
+-          apps still work.
+-        </p>
+-      ) : (
+-        <>
+-          <p className="mb-2 text-[12px] font-medium text-foreground">Not granted</p>
+-          <ScopeList scopes={missing} />
+-          <p className="mt-3 text-[12px] text-muted-foreground">
+-            Your existing sign-in and connected apps still work.{" "}
+-            {saved?.consent === undefined
+-              ? "Connect the app again and allow this access."
+-              : "Ask again and allow this access on the consent screen."}
+-          </p>
+-        </>
+-      )}
+-      {saved?.consent !== undefined && <GrantAccessAgain saved={saved} consent={saved.consent} />}
++      <MissingOAuthAccess failure={failure} />
++      {saved?.consent !== undefined &&
++        failure.grantedScopesKnown === true &&
++        failure.scopeNamesOmitted !== true && (
++          <GrantAccessAgain saved={saved} consent={saved.consent} />
++        )}
+     </div>
+   );
+ }
 diff --git a/e2e/support/account-family-product.ts b/e2e/support/account-family-product.ts
 new file mode 100644
-index 0000000..afebb99
+index 0000000..f417667
 --- /dev/null
 +++ b/e2e/support/account-family-product.ts
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +import { Effect, FileSystem, Path } from "effect";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import { Target } from "./platform.ts";
@@ -279,6 +428,7 @@ index 0000000..afebb99
 +  Effect.provideService(AccountFamilyConfiguration, { recipes: [...defaultAccountFamilies, {
 +    id: "fixture-family", name: "Fixture family", issuer: ${JSON.stringify(origin)},
 +    authorizationUrls: [${JSON.stringify(origin + "/authorize")}], tokenUrls: [${JSON.stringify(origin + "/token")}],
++    diagnosticScopes: ["read", "write", "organize"],
 +    profile: { url: ${JSON.stringify(origin + "/profile")}, subjectField: "account_id", labelFields: ["email"] },
 +  }] })));
 +`,
@@ -610,6 +760,107 @@ index 752e905..dccd246 100644
    accountConsentBatch: {
      file: "account-consent.spec.ts",
      title:
+diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
+index d778b74..685c02f 100644
+--- a/e2e/tests/account-consent.spec.ts
++++ b/e2e/tests/account-consent.spec.ts
+@@ -1,9 +1,12 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, FileSystem, Schema } from "effect";
++import { Target } from "../support/platform.ts";
++import { Evidence } from "../support/evidence.ts";
+ import { TestLive, withCase } from "../support/case.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import { accountIdentityProduct, IdentityAccount } from "../support/account-identity-product.ts";
+ import { body } from "../support/api.ts";
++import { accountFamilyProduct } from "../support/account-family-product.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -28,7 +31,10 @@ const Health = Schema.Struct({
+ const Failure = Schema.Struct({
+   _tag: Schema.String,
+   reason: Schema.String,
++  requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+   missingScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  scopeNamesOmitted: Schema.optionalKey(Schema.Boolean),
+   grantedScopesKnown: Schema.optionalKey(Schema.Boolean),
+ });
+ const State = Schema.Struct({ state: Schema.Struct({ status: Schema.String }) });
+@@ -186,8 +192,9 @@ layer(TestLive, { excludeTestServices: true })("Shared account consent", (it) =>
+     withCase(
+       context,
+       Effect.gen(function* () {
+-        const issuer = yield* accountIdentityIssuer,
+-          product = yield* accountIdentityProduct;
++        const issuer = yield* accountIdentityIssuer;
++        yield* accountFamilyProduct(issuer.origin);
++        const product = yield* accountIdentityProduct;
+         const readApp = yield* product.deploy(issuer.origin, "Protected reader", ["read"]);
+         const source = yield* product.connect(readApp);
+         const writeApp = yield* product.deploy(issuer.origin, "Unlinked writer", ["write"]);
+@@ -214,13 +221,55 @@ layer(TestLive, { excludeTestServices: true })("Shared account consent", (it) =>
+         expect(yield* body(Failure, partial)).toEqual({
+           _tag: "OAuthCompletionFailed",
+           reason: "scope_missing",
++          requestedScopes: ["read", "write"],
++          grantedScopes: ["read"],
++          scopeNamesOmitted: false,
+           missingScopes: ["write"],
+           grantedScopesKnown: true,
+         });
+-        expect(
+-          (yield* body(State, yield* product.request("GET", `/v1/account-connections/${pending}`)))
+-            .state.status,
+-        ).toBe("pending");
++        const RecordedFailure = Schema.Struct({
++          state: Schema.Struct({
++            status: Schema.String,
++            failure: Schema.Struct({ error: Failure }),
++          }),
++        });
++        yield* serverControl("restart");
++        const retained = yield* body(
++          RecordedFailure,
++          yield* product.request("GET", `/v1/account-connections/${pending}`),
++        );
++        expect(retained.state.status).toBe("pending");
++        expect(retained.state.failure.error).toEqual(yield* body(Failure, partial));
++        const fs = yield* FileSystem.FileSystem,
++          target = yield* Target,
++          evidence = yield* Evidence;
++        const native = (yield* fs.readFileString(`${target.directory}/server.log`))
++          .split("\n")
++          .filter((line) => line.startsWith('{"type":"oauth.scope_missing",'))
++          .map((line) => JSON.parse(line))
++          .find((entry) => entry.connection === pending);
++        expect(native).toMatchObject({
++          type: "oauth.scope_missing",
++          connection: pending,
++          requestedScopes: ["read", "write"],
++          grantedScopes: ["read"],
++          missingScopes: ["write"],
++          grantedScopesKnown: true,
++          scopeNamesOmitted: false,
++        });
++        yield* evidence.json("scope-refusal.json", {
++          failure: retained.state.failure.error,
++          native,
++        });
++        yield* issuer.configure({ scopes: ["read", "unreviewed-sensitive-scope"] });
++        const unreviewed = yield* product.consent(pending, { sourceAccount: source.id });
++        expect(yield* body(Failure, unreviewed)).toMatchObject({
++          requestedScopes: ["read", "write"],
++          grantedScopes: ["read"],
++          missingScopes: ["write"],
++          scopeNamesOmitted: true,
++        });
++        expect(JSON.stringify(unreviewed.body)).not.toContain("unreviewed-sensitive-scope");
+         expect((yield* product.read(readApp)).status).toBe(200);
+         expect((yield* product.read(writeApp)).status).not.toBe(200);
+         yield* issuer.configure({ omitScopes: true });
 diff --git a/e2e/tests/account-families.spec.ts b/e2e/tests/account-families.spec.ts
 new file mode 100644
 index 0000000..923a82e
@@ -1146,10 +1397,18 @@ index 0000000..425fed9
 +  );
 +});
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index d71a137..27814bd 100644
+index d71a137..f3ae2e0 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
-@@ -8,6 +8,8 @@ import { body } from "../support/api.ts";
+@@ -1,6 +1,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { TestLive, withCase } from "../support/case.ts";
++import { accountFamilyProduct } from "../support/account-family-product.ts";
+ import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import { accountIdentityProduct, IdentityAccount } from "../support/account-identity-product.ts";
+ import { Browser } from "../support/browser.ts";
+@@ -8,6 +9,8 @@ import { body } from "../support/api.ts";
  import { dismissAccountName } from "../support/name-account.ts";
  import { Target } from "../support/platform.ts";
  import { scenarios } from "../test-plan.ts";
@@ -1158,7 +1417,7 @@ index d71a137..27814bd 100644
  
  layer(TestLive, { excludeTestServices: true })("Account identity screens", (it) => {
    it.effect(scenarios.googleIdentityRecipe.title, (context) =>
-@@ -126,16 +128,83 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -126,16 +129,83 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
            const account = yield* product.connect(app);
            retained.push({ app, account: account.id });
          }
@@ -1244,7 +1503,7 @@ index d71a137..27814bd 100644
              .then(() =>
                page
                  .locator(".inventory-row")
-@@ -144,6 +213,46 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -144,6 +214,46 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
                  .waitFor(),
              ),
          );
@@ -1291,7 +1550,7 @@ index d71a137..27814bd 100644
          expect(
            yield* browser.use("Five app bindings occupy one verified row", (page) =>
              page.locator(".inventory-row").filter({ hasText: "same@example.test" }).count(),
-@@ -158,12 +267,29 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -158,12 +268,29 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
                .waitFor(),
            );
          yield* browser.use("Inspect each app's requested access", (page) =>
@@ -1323,7 +1582,7 @@ index d71a137..27814bd 100644
          yield* browser.use("Add a later app from the saved account", (page) =>
            page.getByRole("button", { name: "Add Fixture identity app", exact: true }).click(),
          );
-@@ -191,6 +317,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+@@ -191,6 +318,7 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
              .waitFor(),
          );
          expect((yield* issuer.metrics).authorizations).toBe(5);
@@ -1331,6 +1590,45 @@ index d71a137..27814bd 100644
          expect((yield* product.read(later)).status).toBe(200);
          for (const retainedBinding of retained) {
            expect((yield* product.read(retainedBinding.app)).status).toBe(200);
+@@ -238,8 +366,9 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+     withCase(
+       context,
+       Effect.gen(function* () {
+-        const issuer = yield* accountIdentityIssuer,
+-          product = yield* accountIdentityProduct,
++        const issuer = yield* accountIdentityIssuer;
++        yield* accountFamilyProduct(issuer.origin);
++        const product = yield* accountIdentityProduct,
+           browser = yield* Browser;
+         const existing = yield* product.deploy(issuer.origin, "Existing reader", ["read"]);
+         const source = yield* product.connect(existing, "own-client");
+@@ -307,9 +436,25 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
+           yield* browser.use("Name the missing permission", (page) =>
+             page.getByText(scope, { exact: true }).waitFor(),
+           );
++        yield* browser.use("Explain permission selection and administrator recovery", (page) =>
++          page
++            .getByText("On the consent screen, select every permission listed above.", {
++              exact: false,
++            })
++            .waitFor(),
++        );
++        yield* browser.use("Open the requested and granted evidence", (page) =>
++          page.getByText("Access details", { exact: true }).click(),
++        );
++        for (const label of ["Requested", "Granted"])
++          yield* browser.use("Show the service's exact scope comparison", (page) =>
++            page.getByText(label, { exact: true }).waitFor(),
++          );
+         expect((yield* product.read(existing)).status).toBe(200);
+         expect((yield* product.read(writer)).status).not.toBe(200);
+-        yield* browser.checkpoint("Missing access with the existing apps preserved");
++        yield* browser.checkpoint(
++          "Missing access with exact scope comparison and recovery guidance",
++        );
+         yield* issuer.configure({ scopes: ["read", "write", "organize"] });
+         yield* browser.use("Grant access again for the same identity and selected apps", (page) =>
+           page
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
 index b11eedb..4764c42 100644
 --- a/e2e/tests/app-package.spec.ts
@@ -5492,10 +5790,10 @@ index 0000000..373f9ba
 +};
 diff --git a/packages/sdk/src/contracts/account-family-recipes.ts b/packages/sdk/src/contracts/account-family-recipes.ts
 new file mode 100644
-index 0000000..98dfbf4
+index 0000000..5754252
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-family-recipes.ts
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,77 @@
 +import { Context } from "effect";
 +
 +/** Reviewed authorization metadata. Families never establish identity without authenticated proof. */
@@ -5515,6 +5813,8 @@ index 0000000..98dfbf4
 +    readonly authorizationParams?: Readonly<Record<string, string>>;
 +  };
 +  readonly scopeAliases?: Readonly<Record<string, string>>;
++  /** Reviewed permission names that may appear in saved failures and native logs. */
++  readonly diagnosticScopes?: readonly string[];
 +  readonly profile?: {
 +    readonly url: string;
 +    readonly subjectField: string;
@@ -5723,7 +6023,7 @@ index c5b6035..56fc3c8 100644
 +  return requested.filter((scope) => !covered.has(key(scope)));
  };
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 3cda5ee..e2e9ca0 100644
+index 3cda5ee..df3daf4 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
 @@ -471,6 +471,8 @@ export const allowedScopes = (client: FirstPartyOAuthClient) =>
@@ -5735,6 +6035,58 @@ index 3cda5ee..e2e9ca0 100644
    readonly clientName: string;
    /** Host transport policy for callbacks, discovery and every token request. */
    readonly urlPolicy: UrlPolicy;
+@@ -780,14 +782,25 @@ export const OAuthCompletionFailed = UserFacingError.define({
+   fields: {
+     /** A consumed attempt always needs a new sign-in. */
+     reason: OAuthCompletionReason,
++    requestedScopes: Schema.optional(Schema.Array(Schema.String)),
++    grantedScopes: Schema.optional(Schema.Array(Schema.String)),
+     missingScopes: Schema.optional(Schema.Array(Schema.String)),
++    /** Unreviewed permission names are withheld from saved failures and diagnostics. */
++    scopeNamesOmitted: Schema.optional(Schema.Boolean),
+     grantedScopesKnown: Schema.optional(Schema.Boolean),
+     cause: Schema.optional(OAuthFailureCause),
+     serviceError: Schema.optional(OAuthServiceError),
+     retryAfter: RetryAfter,
+   },
+   recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
+-  presentation: ({ reason, cause, serviceError, retryAfter }) =>
++  presentation: ({
++    reason,
++    cause,
++    serviceError,
++    retryAfter,
++    grantedScopesKnown,
++    scopeNamesOmitted,
++  }) =>
+     withCause(
+       (
+         {
+@@ -877,13 +890,20 @@ export const OAuthCompletionFailed = UserFacingError.define({
+             instructions:
+               "Read the account and its current grant state, then start a fresh connection. Do not replay this callback or replace the newer grant.",
+           }),
+-          scope_missing: restart({
++          scope_missing: {
+             title: "Some access was not granted",
+             description:
+               "The service did not confirm all the requested access. Your saved sign-in and app links were not changed.",
+-            instructions:
+-              "Start again and grant the access required by the selected apps. Requested scopes are not proof that access was granted.",
+-          }),
++            recovery: {
++              action:
++                grantedScopesKnown === false || scopeNamesOmitted === true
++                  ? "Ask the app owner to check the access details before trying again."
++                  : "Review the missing permissions before connecting again.",
++              instructions:
++                "Compare requested, granted and missing permissions. If the service did not report its grant or permission names were withheld, the app owner must check the permission configuration and token response. Otherwise select every required permission on the consent screen. If a permission is blocked, ask the service administrator to allow the app. If everything was already selected, share the access details with the app owner before retrying. Requested scopes are not proof of granted access.",
++            },
++            agentFixable: false,
++          },
+           denied: {
+             title: "Sign-in was cancelled",
+             description: "Access was not approved on the service’s sign-in page.",
 diff --git a/packages/sdk/src/contracts/provider.ts b/packages/sdk/src/contracts/provider.ts
 index 368df7c..7176c2c 100644
 --- a/packages/sdk/src/contracts/provider.ts
@@ -6086,16 +6438,17 @@ index ed56f8a..15a0957 100644
      return {
        plan: {
 diff --git a/packages/sdk/src/implementation/oauth-consent-state.ts b/packages/sdk/src/implementation/oauth-consent-state.ts
-index de7acfa..61af1a5 100644
+index de7acfa..95619de 100644
 --- a/packages/sdk/src/implementation/oauth-consent-state.ts
 +++ b/packages/sdk/src/implementation/oauth-consent-state.ts
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  import { missingOAuthScopes } from "../contracts/oauth-families.ts";
++import { oauthScopeEvidence } from "./oauth-scope-evidence.ts";
 +import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
  import { accountMetadata } from "./accounts.ts";
  /** Consent commits one verified grant and all its selected app bindings in the resource transaction. */
  import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
-@@ -12,6 +13,7 @@ import {
+@@ -12,6 +14,7 @@ import {
    type OAuthAttemptRecord,
    type OAuthConsentSource,
    type OAuthAdditionalConnection,
@@ -6103,22 +6456,57 @@ index de7acfa..61af1a5 100644
  } from "../contracts/oauth.ts";
  import {
    JsonObject,
-@@ -161,6 +163,7 @@ export const completeOAuthConsent = (
+@@ -161,28 +164,41 @@ export const completeOAuthConsent = (
      readonly attempt: typeof OAuthAttemptRecord.Type;
      readonly attemptId: string;
      readonly grant: OAuthGrant;
 +    readonly accountFamilies?: OAuthOptions["accountFamilies"];
++    readonly scopeNames: readonly string[];
    },
  ) =>
    Effect.gen(function* () {
-@@ -177,6 +180,7 @@ export const completeOAuthConsent = (
-       attempt.identity?.issuer,
-       attempt.requestedScopes ?? [],
-       granted,
-+      input.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes,
-     );
-     if (granted === undefined || missingScopes.length > 0)
+     const { attempt, grant } = input;
+     if (attempt.consentSource === undefined && (attempt.additionalConnections?.length ?? 0) === 0)
+       return;
++    const recipes = input.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes;
+     if (grant.grant === "client_credentials")
        return yield* new OAuthCompletionFailed({
+         reason: "scope_missing",
+-        grantedScopesKnown: false,
++        ...oauthScopeEvidence(
++          attempt.identity?.issuer,
++          attempt.requestedScopes ?? [],
++          undefined,
++          attempt.requestedScopes ?? [],
++          input.scopeNames,
++          recipes,
++        ),
+       });
+     const granted = grant.grantedScopes;
+-    const missingScopes = missingOAuthScopes(
+-      attempt.identity?.issuer,
+-      attempt.requestedScopes ?? [],
+-      granted,
+-    );
+-    if (granted === undefined || missingScopes.length > 0)
++    const requested = attempt.requestedScopes ?? [];
++    const missing = missingOAuthScopes(attempt.identity?.issuer, requested, granted, recipes);
++    if (granted === undefined || missing.length > 0)
+       return yield* new OAuthCompletionFailed({
+         reason: "scope_missing",
+-        missingScopes,
+-        grantedScopesKnown: granted !== undefined,
++        ...oauthScopeEvidence(
++          attempt.identity?.issuer,
++          requested,
++          granted,
++          missing,
++          input.scopeNames,
++          recipes,
++        ),
+       });
+     const primary = yield* ownedAccount(db, { account: attempt.account, owner: attempt.owner });
+     const identity = yield* accountIdentity(db, primary, lifecycle);
 diff --git a/packages/sdk/src/implementation/oauth-grant-reuse.ts b/packages/sdk/src/implementation/oauth-grant-reuse.ts
 index 1a5f25c..4e8620e 100644
 --- a/packages/sdk/src/implementation/oauth-grant-reuse.ts
@@ -6279,8 +6667,45 @@ index 7a5e4ca..a4521e1 100644
          return {
            ...resolved,
            scopes: [...new Set([...resolved.scopes, ...(identityConsent?.scopes ?? [])])],
+diff --git a/packages/sdk/src/implementation/oauth-scope-evidence.ts b/packages/sdk/src/implementation/oauth-scope-evidence.ts
+new file mode 100644
+index 0000000..ba983ea
+--- /dev/null
++++ b/packages/sdk/src/implementation/oauth-scope-evidence.ts
+@@ -0,0 +1,31 @@
++import type { OAuthAccountFamilyRecipe } from "../contracts/account-family-recipes.ts";
++
++/** Provider-authored strings never enter recorded failures or logs without host review. */
++export const oauthScopeEvidence = (
++  issuer: string | undefined,
++  requested: readonly string[],
++  granted: readonly string[] | undefined,
++  missing: readonly string[],
++  scopeNames: readonly string[],
++  recipes: readonly OAuthAccountFamilyRecipe[],
++) => {
++  const recipe = recipes.find((entry) => entry.issuer === issuer);
++  const allowed = new Set([
++    ...scopeNames,
++    ...(recipe?.diagnosticScopes ?? []),
++    ...Object.keys(recipe?.scopeAliases ?? {}),
++    ...Object.values(recipe?.scopeAliases ?? {}),
++  ]);
++  const names = (scopes: readonly string[]) => [
++    ...new Set(scopes.filter((scope) => allowed.has(scope))),
++  ];
++  return {
++    requestedScopes: names(requested),
++    ...(granted === undefined ? {} : { grantedScopes: names(granted) }),
++    missingScopes: names(missing),
++    grantedScopesKnown: granted !== undefined,
++    scopeNamesOmitted: [...requested, ...(granted ?? []), ...missing].some(
++      (scope) => !allowed.has(scope),
++    ),
++  };
++};
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 385601f..0a15b98 100644
+index 385601f..b1cd83d 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,6 +1,8 @@
@@ -6292,7 +6717,15 @@ index 385601f..0a15b98 100644
  import type { BackgroundWork } from "../contracts/declarations.ts";
  /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
  import {
-@@ -1733,7 +1735,10 @@ export const makeOAuth = (
+@@ -13,6 +15,7 @@ import {
+   Array as Arr,
+   Clock,
+   Context,
++  Console,
+   type Crypto,
+   Effect,
+   Exit,
+@@ -1733,7 +1736,10 @@ export const makeOAuth = (
            existing,
            {
              ...chosen.firstParty,
@@ -6304,7 +6737,7 @@ index 385601f..0a15b98 100644
            },
            resolved.redirect,
            method.response,
-@@ -2018,6 +2023,7 @@ export const makeOAuth = (
+@@ -2018,6 +2024,7 @@ export const makeOAuth = (
        const connection = yield* requireOpen(input, saved);
        // Never discover or register a client for a provider the target app no longer requires.
        const provider = yield* requireTargetProvider(db, connection);
@@ -6312,15 +6745,45 @@ index 385601f..0a15b98 100644
        const existing =
          connection.reconnectAccount === null
            ? undefined
-@@ -2578,6 +2584,7 @@ export const makeOAuth = (
+@@ -2202,6 +2209,22 @@ export const makeOAuth = (
+       // including a refusal or changed target that rolled back the account it signed in to: the
+       // claimed sign-in cannot complete again, so the request reads failed until a new one starts.
+       return yield* exchangeClaimed(protocol, input, callback, id, attempt, legacySavedClient).pipe(
++        Effect.tapError((error) =>
++          Schema.is(OAuthCompletionFailed)(error) && error.reason === "scope_missing"
++            ? Console.warn(
++                JSON.stringify({
++                  type: "oauth.scope_missing",
++                  connection: input.connection,
++                  attempt: id,
++                  requestedScopes: error.requestedScopes,
++                  grantedScopes: error.grantedScopes,
++                  missingScopes: error.missingScopes,
++                  grantedScopesKnown: error.grantedScopesKnown,
++                  scopeNamesOmitted: error.scopeNamesOmitted,
++                }),
++              )
++            : Effect.void,
++        ),
+         Effect.tapError((error) =>
+           Schema.is(OAuthCompletionFailed)(error) ||
+           Schema.is(AccountConnectionRefused)(error) ||
+@@ -2578,6 +2601,14 @@ export const makeOAuth = (
                attempt,
                attemptId: id,
                grant: yield* decodedGrantOf(generation),
 +              accountFamilies: options?.accountFamilies,
++              scopeNames: [...firstPartyClients.values()]
++                .filter(
++                  (client) =>
++                    client.server.authorizationUrl === operating.server.authorization_endpoint &&
++                    client.server.tokenUrl === operating.server.token_endpoint,
++                )
++                .flatMap(allowedScopes),
              });
              yield* query(() =>
                tx.updateMany("oauthAttempts", {
-@@ -2724,8 +2731,12 @@ export const makeOAuth = (
+@@ -2724,8 +2755,12 @@ export const makeOAuth = (
              grant.identity === undefined ||
              grant.identityId !== account.identityId ||
              grant.grantedScopes === undefined ||
@@ -6613,10 +7076,15 @@ index 2b1bd34..cfe806d 100644
          </fieldset>
        )}
 diff --git a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
-index f1546ac..7325a84 100644
+index f1546ac..174f147 100644
 --- a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 +++ b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
-@@ -25,7 +25,11 @@ export function ScopeList({
+@@ -1,3 +1,4 @@
++import type { OAuthCompletionFailed } from "@executor-js/sdk";
+ import { scopeName } from "../../contracts/oauth-scopes.ts";
+ import { cn } from "../lib/utils.ts";
+ 
+@@ -25,7 +26,11 @@ export function ScopeList({
    );
  }
  
@@ -6629,7 +7097,7 @@ index f1546ac..7325a84 100644
  export function RequestedAccess({
    apps,
  }: {
-@@ -33,6 +37,7 @@ export function RequestedAccess({
+@@ -33,6 +38,7 @@ export function RequestedAccess({
      readonly id: string;
      readonly name: string;
      readonly scopes: readonly string[];
@@ -6637,7 +7105,7 @@ index f1546ac..7325a84 100644
    }[];
  }) {
    if (apps.length === 0) return null;
-@@ -41,12 +46,30 @@ export function RequestedAccess({
+@@ -41,12 +47,30 @@ export function RequestedAccess({
        <summary className="w-fit cursor-pointer rounded-sm select-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring max-[740px]:flex max-[740px]:min-h-11 max-[740px]:items-center">
          Requested access
        </summary>
@@ -6670,3 +7138,63 @@ index f1546ac..7325a84 100644
              </dd>
            </div>
          ))}
+@@ -54,3 +78,59 @@ export function RequestedAccess({
+     </details>
+   );
+ }
++
++/** Saved failure evidence is allowlisted by the host; these lists never establish granted access. */
++export function MissingOAuthAccess({ failure }: { readonly failure: OAuthCompletionFailed }) {
++  const missing = failure.missingScopes ?? [];
++  return (
++    <div className="space-y-3 text-[12px] leading-5 text-muted-foreground">
++      {missing.length > 0 && (
++        <div>
++          <p className="mb-2 font-medium text-foreground">Not granted</p>
++          <ScopeList scopes={missing} />
++        </div>
++      )}
++      <p>Your existing sign-in and connected apps still work.</p>
++      <p>
++        {failure.grantedScopesKnown === false
++          ? "The service did not report its granted permissions. Ask the app owner to check the service's token response before trying again."
++          : failure.scopeNamesOmitted === true
++            ? "Some permission names are not recognised by this host and are hidden. Ask the app owner to review its permission configuration before trying again."
++            : "On the consent screen, select every permission listed above. If a permission is blocked or unavailable, ask your service administrator to allow this app. If you already allowed everything, share the access details below with the app owner before trying again."}
++      </p>
++      {(failure.requestedScopes !== undefined || failure.grantedScopes !== undefined) && (
++        <details>
++          <summary className="w-fit cursor-pointer rounded-sm font-medium text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
++            Access details
++          </summary>
++          <dl className="mt-3 space-y-3">
++            {failure.requestedScopes !== undefined && (
++              <div>
++                <dt className="mb-1 font-medium text-foreground">Requested</dt>
++                <dd>
++                  {failure.requestedScopes.length === 0 ? (
++                    "No recognised permission names."
++                  ) : (
++                    <ScopeList scopes={failure.requestedScopes} />
++                  )}
++                </dd>
++              </div>
++            )}
++            <div>
++              <dt className="mb-1 font-medium text-foreground">Granted</dt>
++              <dd>
++                {failure.grantedScopesKnown === false ? (
++                  "Not reported by the service."
++                ) : (failure.grantedScopes ?? []).length === 0 ? (
++                  "No recognised permission names."
++                ) : (
++                  <ScopeList scopes={failure.grantedScopes ?? []} />
++                )}
++              </dd>
++            </div>
++          </dl>
++        </details>
++      )}
++    </div>
++  );
++}
