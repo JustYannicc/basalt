@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 COPY --from=source-fetch /source /source
 COPY native /source/node/internal/nativeapi
 COPY home_websocket_continuation_test.go.tmpl /source/node/sdk/api/handlers/openai/basalt_home_websocket_continuation_test.go
-RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible' -count=1 && \
+RUN cd /source/home && go test -p=2 -mod=readonly ./internal/cluster ./internal/cluster/management ./internal/managementhttp ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes' -count=1 && \
     cd /source/node && go test -p=2 -mod=readonly ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/logging ./sdk/api/handlers/openai -run 'MetadataOnly|TestBasaltHomeOnlyModelContinuation' -count=1
 RUN mkdir -p /out/home /out/node && \
     cd /source/home && \
