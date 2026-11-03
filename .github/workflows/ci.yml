@@ -359,15 +359,51 @@ jobs:
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
       - name: Verify exact provider account adoption through signed operations
-        timeout-minutes: 7
+        timeout-minutes: 5
         run: node scripts/production-ops/prove-provider-adoption.ts
       - name: Verify migration ownership through signed apply verification and replay
-        timeout-minutes: 9
+        timeout-minutes: 5
+        env:
+          BASALT_SCOPE_PROOF_PATTERN: ^Cloud production operations enforce (stable identities through apply and replay|organization references before verification)$
         run: node scripts/production-ops/prove-scope.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: production-ops-migrations-e2e
+          include-hidden-files: true
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  production-ops-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated signed migration test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify stable database identity through signed apply verification and replay
+        timeout-minutes: 22
+        env:
+          BASALT_SCOPE_PROOF_PATTERN: ^Cloud production operations enforce (?!(stable identities through apply and replay|organization references before verification)$)
+        run: node scripts/production-ops/prove-scope.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-ops-identity-e2e
           include-hidden-files: true
           path: |
             .upstream/.local/e2e/**/results.json
