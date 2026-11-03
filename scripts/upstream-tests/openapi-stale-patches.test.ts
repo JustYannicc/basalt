@@ -71,6 +71,7 @@ test("only a dropped path item or operation makes a patch stale", () => {
     openapi: "3.1.0",
     paths: { "/v1/user": { get: { responses: {} } } },
     webhooks: { created: { post: { responses: {} } } },
+    "x-webhooks": {},
     components: { schemas: { Payload: { properties: { "": { type: "string" } } } } },
   };
   const skipped = (patch: OpenapiPatch) => {
@@ -81,6 +82,10 @@ test("only a dropped path item or operation makes a patch stale", () => {
   assert.ok(skipped({ op: "replace", path: "/paths/~1v1~1gone/get/parameters", value: [] }));
   assert.ok(skipped({ op: "remove", path: "/paths/~1v1~1user/delete" }));
   assert.ok(skipped({ op: "add", path: "/webhooks/deleted/post/security", value: [] }));
+  // An operation the importer does not support still counts as one the provider dropped.
+  assert.ok(skipped({ op: "replace", path: "/paths/~1v1~1user/trace/parameters", value: [] }));
+  assert.ok(skipped({ op: "remove", path: "/paths/~1v1~1user/additionalOperations/COPY" }));
+  assert.ok(skipped({ op: "add", path: "/x-webhooks/gone/post/security", value: [] }));
   // A property named with the empty string is a valid pointer target, not a malformed patch.
   assert.ok(!skipped({ op: "add", path: "/components/schemas/Payload/properties//description", value: "Note" }));
   const refused = { reason: "invalid_definition" };
@@ -92,6 +97,8 @@ test("only a dropped path item or operation makes a patch stale", () => {
   fails({ op: "replace", path: "/paths/~1v1~1user/parameters", value: [] });
   fails({ op: "replace", path: "/paths/~1v1~1user/servers/0", value: {} });
   fails({ op: "remove", path: "/paths/~1v1~1user/summary" });
+  // A missing `additionalOperations` with no operation named is not a dropped operation.
+  fails({ op: "remove", path: "/paths/~1v1~1user/additionalOperations" });
   // Neither is a missing container or anything outside path items, such as a security scheme.
   assert.throws(
     () => patchOpenapi({ openapi: "3.1.0" }, [{ op: "add", path: "/paths/~1x", value: {} }], () => assert.fail("not stale")),
@@ -102,4 +109,7 @@ test("only a dropped path item or operation makes a patch stale", () => {
   // Malformed patches fail before the walk.
   fails({ op: "replace", path: "/paths/~1v1~1user/get" });
   fails({ op: "add", path: "paths", value: {} });
+  // Even when it targets a dropped route.
+  fails({ op: "copy" as never, path: "/paths/~1v1~1gone/get" });
+  fails({ op: "remove", path: "/paths/~1v1~2gone/get" });
 });

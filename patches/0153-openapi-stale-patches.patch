@@ -146,33 +146,11 @@ index 8048464..4dd5c63 100644
    "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
    "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
    "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
-diff --git a/packages/apps/src/implementation/openapi-compile.ts b/packages/apps/src/implementation/openapi-compile.ts
-index 90cd9ed..f1a78c4 100644
---- a/packages/apps/src/implementation/openapi-compile.ts
-+++ b/packages/apps/src/implementation/openapi-compile.ts
-@@ -351,7 +351,7 @@ export function errorResponses(
- /** Methods whose operations the importer reads from a Path Item's fixed fields. */
- const fixedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
- /** OpenAPI 3.2 adds the QUERY method as a fixed field. */
--const fixedMethods32 = [...fixedMethods, "QUERY"] as const;
-+export const fixedMethods32 = [...fixedMethods, "QUERY"] as const;
- const isImportedMethod = Schema.is(OpenapiOperation.fields.method);
- 
- /**
 diff --git a/packages/apps/src/implementation/openapi-source.ts b/packages/apps/src/implementation/openapi-source.ts
-index 82b6ded..aa71cc3 100644
+index 82b6ded..dc42041 100644
 --- a/packages/apps/src/implementation/openapi-source.ts
 +++ b/packages/apps/src/implementation/openapi-source.ts
-@@ -20,7 +20,7 @@ import {
- } from "../contracts/openapi-compile.ts";
- import { HostToolNotFound, type HostedTool, type HostedToolSummary } from "../contracts/host.ts";
- import { OpenapiResponseError } from "../contracts/api-response-error.ts";
--import { compileOpenApiDocument } from "./openapi-compile.ts";
-+import { compileOpenApiDocument, fixedMethods32 } from "./openapi-compile.ts";
- import { yieldToRuntime } from "./runtime-yield.ts";
- import {
-   openapiToolsEffect,
-@@ -346,10 +346,40 @@ export interface OpenapiSourceOptions extends Omit<
+@@ -346,40 +346,89 @@ export interface OpenapiSourceOptions extends Omit<
    }[];
  }
  
@@ -183,8 +161,19 @@ index 82b6ded..aa71cc3 100644
 +// Where a definition keeps path items. The item's key and its method follow these segments.
 +const pathItemContainers = [["paths"], ["webhooks"], ["x-webhooks"], ["components", "pathItems"]];
 +
-+// The path item keys that hold an operation; its other fields, such as `parameters`, do not.
-+const operationKeys = new Set<string>(fixedMethods32.map((method) => method.toLowerCase()));
++// The path item fields that hold an operation in any OpenAPI version, whether or not the importer
++// supports its method; the item's other fields, such as `parameters`, do not.
++const operationKeys = new Set([
++  "get",
++  "put",
++  "post",
++  "delete",
++  "options",
++  "head",
++  "patch",
++  "trace",
++  "query",
++]);
 +
 +/** Pointer positions where a missing key means the provider dropped a path item or operation. */
 +const droppedAt = (path: readonly string[]) => {
@@ -194,8 +183,10 @@ index 82b6ded..aa71cc3 100644
 +  if (container === undefined) return [];
 +  const item = container.length;
 +  const key = path[item + 1];
-+  // OpenAPI 3.2 keeps other methods' operations under `additionalOperations`.
-+  if (key === "additionalOperations") return [item, item + 1, item + 2];
++  // OpenAPI 3.2 keeps other methods' operations under `additionalOperations`; the patch must name
++  // one of them for its absence to mean a dropped operation.
++  if (key === "additionalOperations")
++    return path.length > item + 2 ? [item, item + 1, item + 2] : [item];
 +  return key !== undefined && operationKeys.has(key) ? [item, item + 1] : [item];
 +};
 +
@@ -214,7 +205,13 @@ index 82b6ded..aa71cc3 100644
  ): JsonObject {
    let result = root;
    for (const patch of patches ?? []) {
-@@ -360,26 +390,30 @@ export function patchOpenapi(
+-    if (!patch.path.startsWith("/")) throw invalid();
++    // A patch is checked whole before its target is looked up, so a malformed one is never skipped.
++    if (!["add", "remove", "replace"].includes(patch.op)) throw invalid();
++    if (!patch.path.startsWith("/") || /~(?![01])/.test(patch.path)) throw invalid();
+     const path = patch.path
+       .slice(1)
+       .split("/")
        .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
      if (path.some((part) => ["__proto__", "constructor", "prototype"].includes(part)))
        throw invalid();
@@ -262,7 +259,7 @@ index 82b6ded..aa71cc3 100644
    }
    return result;
  }
-@@ -488,13 +522,20 @@ const sourceDocument = (
+@@ -488,13 +537,20 @@ const sourceDocument = (
    context: Parameters<typeof download>[1],
  ) =>
    Effect.gen(function* () {
