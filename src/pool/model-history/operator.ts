@@ -2,7 +2,7 @@ import { digest } from "../backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill, type BackfillPlan } from "./activation.ts";
 import { withHistoryDatabase } from "./database.ts";
 import { counter, historyObject, HistoryInputError, identifier, invalidHistory, timestamp } from "./record.ts";
-import { historySchemaStatements, historySchemaVersion, migrateModelHistory, planModelHistorySchema,
+import { historySchemaStatements, historySchemaMigrations, historyBaseSchemaVersion, historySchemaVersion, migrateModelHistory, planModelHistorySchema,
   type HistoryDatabase } from "./schema.ts";
 
 export const historySchemaCatalogPath = "/model-history/schema/catalog";
@@ -24,13 +24,16 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
     await db.query("SET LOCAL statement_timeout = '3s'");
     const applied = existing.has("basalt_model_history_migrations") && (await db.query(
       "SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [historySchemaVersion])).rows.length > 0;
+    const baseApplied = existing.has("basalt_model_history_migrations") && (await db.query(
+      "SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [historyBaseSchemaVersion])).rows.length > 0;
     const ledgerRows = existing.has("basalt_model_requests")
       ? String((await db.query("SELECT count(*)::text AS rows FROM basalt_model_requests")).rows[0]!.rows) : "0";
     await db.query("COMMIT");
-    return { version: historySchemaVersion, schemaHash: await digest(JSON.stringify(historySchemaStatements)),
+    return { version: historySchemaVersion, schemaHash: await digest(JSON.stringify(historySchemaMigrations)),
       catalogHash: await digest(JSON.stringify(catalog)), catalog, history, ledgerRows, applied,
-      catalogDiff: { createTables: applied ? [] : tables.filter((name) => !existing.has(name)),
-        conflicts: applied ? [] : tables.filter((name) => existing.has(name)) },
+      catalogDiff: { createTables: baseApplied ? [] : tables.filter((name) => !existing.has(name)),
+        addColumns: applied ? [] : ["basalt_model_requests.app_id", "basalt_model_requests.requirement"],
+        conflicts: baseApplied ? [] : tables.filter((name) => existing.has(name)) },
       additive: true, writes: false, automaticBackfill: false };
   } catch (error) {
     await db.query("ROLLBACK").catch(() => {});

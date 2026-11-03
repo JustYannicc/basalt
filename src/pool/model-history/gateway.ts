@@ -9,6 +9,8 @@ export interface GatewayRefusal {
   pool: string;
   person: string | null;
   keyId?: number;
+  appId?: string;
+  requirement?: string;
   pathname: string;
   latencyMs: number;
 }
@@ -23,6 +25,7 @@ export async function recordGatewayRefusal(db: HistoryDatabase, input: GatewayRe
   const row: ModelRequest = {
     id: await digest(JSON.stringify([source, sourceRecord])), source, sourceRecord,
     timestamp: timestamp(input.at), pool: (await digest(input.pool)).slice(0, 16), person: input.person,
+    appId: input.appId ?? null, requirement: input.requirement ?? null,
     account: null, clientKey: await reference(source, "key", input.keyId), requestId: input.requestId,
     provider: null, model: null, ...endpointMetadata(input.pathname), apiType: "pool-protection-unavailable",
     serviceTier: null, inputTokens: null, outputTokens: null, cacheReadTokens: null,

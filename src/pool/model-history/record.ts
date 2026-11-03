@@ -10,6 +10,8 @@ export interface ModelRequest {
   account: string | null;
   clientKey: string | null;
   requestId: string | null;
+  appId?: string | null;
+  requirement?: string | null;
   provider: string | null;
   model: string | null;
   endpoint: string | null;

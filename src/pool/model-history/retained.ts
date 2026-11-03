@@ -1,8 +1,8 @@
 import { amount, counter, historyBilling, historyObject, identifier, invalidHistory, priceRule, timestamp, type ModelRequest } from "./record.ts";
 
 // Ledger values are decoded explicitly so replay uses the immutable row, including attribution.
-export const retainedProjection = `id,source,source_record,timestamp_exact,pool,person,account,client_key,
-  request_id,provider,model,endpoint,api_type,service_tier,input_tokens::text,output_tokens::text,
+export const retainedProjection = (apps: boolean) => `id,source,source_record,timestamp_exact,pool,person,account,client_key,
+  request_id,${apps ? "app_id,requirement" : "NULL::text AS app_id,NULL::text AS requirement"},provider,model,endpoint,api_type,service_tier,input_tokens::text,output_tokens::text,
   cache_read_tokens::text,cache_write_tokens::text,reasoning_tokens::text,total_tokens::text,
   token_quality,latency_ms::text,failed,status_code,cost::text,currency,cost_basis,price_version,original_price_rule,price_snapshot,attribution`;
 
@@ -19,6 +19,7 @@ export function retainedRequest(row: Record<string, unknown>): ModelRequest {
   }) : [];
   return {
     id: identifier(row.id, true)!, source: identifier(row.source, true)!, sourceRecord: identifier(row.source_record, true)!,
+    appId: identifier(row.app_id), requirement: identifier(row.requirement),
     timestamp: timestamp(row.timestamp_exact), pool: identifier(row.pool), person: identifier(row.person),
     account: identifier(row.account), clientKey: identifier(row.client_key), requestId: identifier(row.request_id),
     provider: identifier(row.provider), model: identifier(row.model), endpoint: row.endpoint === null ? null : String(row.endpoint),

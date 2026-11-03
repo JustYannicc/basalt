@@ -9,7 +9,7 @@ interface Dependencies extends SentryEnv {
   POOL_MODEL_HISTORY_ENABLED?: string;
   POOL_AUTH_DATABASE?: { connectionString: string };
 }
-export interface RefusalIdentity { pool: string; person: string | null; keyId?: number }
+export interface RefusalIdentity { pool: string; person: string | null; keyId?: number; appId?: string; requirement?: string }
 
 /** Fixed metadata joins the caller's retryable response, its failed history row and error trace. */
 export function gatewayUnavailable(

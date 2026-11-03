@@ -12,6 +12,7 @@ import type { NativeStreams } from "./native-streams.ts";
 import type { RuntimeProtection } from "./runtime-protection.ts";
 
 interface Dependencies {
+  appModel?: import("./model-membership.ts").ModelIdentity;
   env: Parameters<typeof gatewayUnavailable>[0] & { POOL_APP_SIGNING_KEY: string };
   computers: Pick<Computers, "nativeModel" | "observeUsage">;
   memberships: NativeMemberships;
@@ -37,7 +38,7 @@ export async function forwardPoolRequest(request: Request, port: 8317 | 8327 | u
     }
     if (isPublicModelPath(pathname)) {
       const gate = await modelMembership(request, deps.memberships, deps.env.POOL_APP_SIGNING_KEY,
-        deps.env.POOL_AUTH_DATABASE?.connectionString, native);
+        deps.env.POOL_AUTH_DATABASE?.connectionString, native ?? deps.appModel);
       request = gate.request;
       identity = gate.identity;
       if (gate.pool) {

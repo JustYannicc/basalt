@@ -2,7 +2,8 @@ export interface HistoryDatabase {
   query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>;
 }
 
-export const historySchemaVersion = "model_request_history_v1";
+export const historyBaseSchemaVersion = "model_request_history_v1";
+export const historySchemaVersion = "model_request_history_v2_app_attribution";
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -81,6 +82,19 @@ export const historySchemaStatements = [
     FOR EACH STATEMENT EXECUTE FUNCTION basalt_model_history_append_only()`),
 ];
 
+export const historyAppAttributionStatements = [
+  "ALTER TABLE basalt_model_requests ADD COLUMN app_id varchar(256), ADD COLUMN requirement varchar(64)",
+];
+export const historySchemaMigrations = [
+  { name: historyBaseSchemaVersion, statements: historySchemaStatements },
+  { name: historySchemaVersion, statements: historyAppAttributionStatements },
+];
+/** Existing collectors keep working while the additive app migration awaits its approved apply. */
+export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {
+  const result = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [historySchemaVersion]);
+  return result.rows.length === 1;
+}
+
 /** Additive, separate from Home's numbered migrations. Never reads or copies historical payloads. */
 export async function migrateModelHistory(db: HistoryDatabase): Promise<void> {
   await db.query("BEGIN");
@@ -90,10 +104,12 @@ export async function migrateModelHistory(db: HistoryDatabase): Promise<void> {
     await db.query("SELECT pg_advisory_xact_lock(1409, 20)");
     await db.query(`CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
-    const applied = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [historySchemaVersion]);
-    if (!applied.rows.length) {
-      for (const sql of historySchemaStatements) await db.query(sql);
-      await db.query("INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", [historySchemaVersion]);
+    for (const migration of historySchemaMigrations) {
+      const applied = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [migration.name]);
+      if (!applied.rows.length) {
+        for (const sql of migration.statements) await db.query(sql);
+        await db.query("INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", [migration.name]);
+      }
     }
     await db.query("COMMIT");
   } catch (error) {

@@ -1,0 +1,9 @@
+{
+  "identity": "executor-app-model-requests",
+  "file": "0104-app-model-requests.patch",
+  "content_sha256": "2dc2c00b5c5236aa9ff6732fbb5aeeafec53801e49fd2bd01542e98b722264e4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true
+}

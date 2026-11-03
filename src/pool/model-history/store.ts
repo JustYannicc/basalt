@@ -1,3 +1,4 @@
+import { appAttributionReady } from "./schema.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import type { ModelRequest } from "./record.ts";
 
@@ -8,11 +9,12 @@ export class HistoryConflict extends Error {
 
 // This projection is also the JSON sent to Postgres. Extra properties from an import never leave
 // the parser's process, even if a caller passes an object with additional runtime properties.
-export function recordValues(row: ModelRequest) {
+export function recordValues(row: ModelRequest, appAttribution = true) {
   return {
     id: row.id, source: row.source, source_record: row.sourceRecord,
     timestamp: row.timestamp, timestamp_exact: row.timestamp,
     pool: row.pool, person: row.person, account: row.account, client_key: row.clientKey,
+    ...(appAttribution ? { app_id: row.appId ?? null, requirement: row.requirement ?? null } : {}),
     request_id: row.requestId, provider: row.provider, model: row.model,
     endpoint: row.endpoint, api_type: row.apiType, service_tier: row.serviceTier,
     input_tokens: row.inputTokens, output_tokens: row.outputTokens, cache_read_tokens: row.cacheReadTokens,
@@ -65,9 +67,14 @@ export async function existingRequests(db: HistoryDatabase, records: readonly Mo
 export async function insertRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false): Promise<number> {
   await existingRequests(db, records, preserveOriginalAttribution);
   if (!records.length) return 0;
-  const result = await db.query(`INSERT INTO basalt_model_requests (${columns})
-    SELECT ${columns} FROM jsonb_to_recordset($1::jsonb) AS incoming(${typedColumns})
-    ON CONFLICT (id) DO NOTHING RETURNING id`, [JSON.stringify(records.map(recordValues))]);
+  const appAttribution = await appAttributionReady(db);
+  if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
+    throw new Error("App model attribution migration is not ready");
+  const selected = columns + (appAttribution ? ", app_id, requirement" : "");
+  const types = typedColumns + (appAttribution ? ", app_id varchar(256), requirement varchar(64)" : "");
+  const result = await db.query(`INSERT INTO basalt_model_requests (${selected})
+    SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
+    ON CONFLICT (id) DO NOTHING RETURNING id`, [JSON.stringify(records.map((row) => recordValues(row, appAttribution)))]);
   // Repeat the ownership check after ON CONFLICT waits for a concurrent import to commit.
   await existingRequests(db, records, preserveOriginalAttribution);
   return result.rowCount ?? result.rows.length;
@@ -83,8 +90,10 @@ export interface HistoryQuery {
 
 /** Keyset pagination stays bounded even when a pool has years of retained history. */
 export async function readRequests(db: HistoryDatabase, query: HistoryQuery) {
+  const attribution = await appAttributionReady(db)
+    ? "app_id, requirement" : "NULL::text AS app_id, NULL::text AS requirement";
   const result = await db.query(`SELECT id, source, timestamp_exact AS timestamp,
-    person, account, client_key, request_id, provider, model, endpoint, api_type, service_tier,
+    person, account, client_key, request_id, ${attribution}, provider, model, endpoint, api_type, service_tier,
     input_tokens::text, output_tokens::text, cache_read_tokens::text, cache_write_tokens::text,
     reasoning_tokens::text, total_tokens::text, token_quality, latency_ms::text, failed, status_code,
     cost::text, currency, cost_basis, price_version, original_price_rule, price_snapshot, attribution,

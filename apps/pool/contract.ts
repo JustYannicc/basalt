@@ -144,6 +144,11 @@ export interface UsageSlice {
   readonly unpriced: number;
 }
 
+export interface AppUsage extends UsageSlice {
+  readonly app: string | null;
+  readonly requirement: string | null;
+}
+
 export interface ModelUsage extends UsageSlice {
   /** Home's provider id for the account that served it, such as `claude`. */
   readonly provider: string;
@@ -175,6 +180,7 @@ export interface AccountUsage extends UsageSlice {
 
 /** Per member, for the pool's owner only. `member` is the tools-service user id. */
 export interface MemberUsage extends UsageSlice {
+  readonly apps?: readonly AppUsage[];
   readonly member: string;
   /** Only this member's requests, per model and per UTC day. */
   readonly models: readonly ModelUsage[];
@@ -213,6 +219,7 @@ export const usageDays = 30;
  */
 export interface UsageSummary {
   readonly scope: "pool" | "you";
+  readonly apps?: readonly AppUsage[];
   /** ISO start, inclusive, and end, exclusive. */
   readonly from: string;
   readonly to: string;

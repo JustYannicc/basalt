@@ -73,7 +73,7 @@ test("import requires a manager and matching dry run, deduplicates after restart
     assert.equal((await (await history("member")).json() as { records: unknown[] }).records.length, 0);
     assert.equal((await history("removed")).status, 403);
     await db.query('INSERT INTO "user" VALUES (1,$1)', [await backendUserName("member", pool)]);
-    await db.query("INSERT INTO api_key VALUES (1,$1,1)", [`sha256:${"a".repeat(64)}`]);
+    await db.query("INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (1,$1,1)", [`sha256:${"a".repeat(64)}`]);
     const localPayload = { ...payload, source: "home-local-v1" };
     const importBatch = async (body: typeof payload, expected: number) => {
       const dry = await handleUsageImport(request(body), access);
@@ -130,7 +130,7 @@ test("import requires a manager and matching dry run, deduplicates after restart
     assert.equal(originalRule.price_version, null);
     const foreignKey = "b".repeat(64), foreignId = randomUUID();
     await db.query('INSERT INTO "user" VALUES (2,$1)', [await backendUserName("foreign-member", "foreign-pool")]);
-    await db.query("INSERT INTO api_key VALUES (2,$1,2)", [`sha256:${foreignKey}`]);
+    await db.query("INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (2,$1,2)", [`sha256:${foreignKey}`]);
     const foreign = await db.query(`INSERT INTO usage (timestamp,request_id,model,api_key,failed)
       VALUES ('2020-01-01T12:00:00Z',$1,'fixture-model',$2,false) RETURNING id::text`, [foreignId, `sha256:${foreignKey}`]);
     const stolen = await handleUsageImport(request({ ...localPayload,

@@ -27,7 +27,7 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await homeMetadataFixture(db);
     await db.query("UPDATE home_data_migration SET completed=false");
     await db.query('INSERT INTO "user" VALUES (1,$1)', [await backendUserName("fixture-owner", "fixture-pool")]);
-    await db.query("INSERT INTO api_key VALUES (1,$1,1)", [`sha256:${"a".repeat(64)}`]);
+    await db.query("INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (1,$1,1)", [`sha256:${"a".repeat(64)}`]);
     const add = async (client: pg.Client, request: string, at = "2020-01-01T12:00:00.123456Z") => {
       await client.query(`INSERT INTO usage (timestamp,request_id,auth_index,provider,model,endpoint,api_key)
         VALUES ($1,$2,'fixture-account','fixture-provider','fixture-model','/v1/responses',$3)`,
