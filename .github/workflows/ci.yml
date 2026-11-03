@@ -13,7 +13,7 @@ env:
 
 jobs:
   client-connection:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
   client-mobile:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -46,13 +46,14 @@ jobs:
   client-desktop:
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - os: windows-latest
             platform: win
           - os: ubuntu-latest
             platform: linux
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform == 'linux' && vars.BASALT_CI_RUNNER_HEAVY || matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +75,7 @@ jobs:
           path: clients/desktop/dist-packages/Signalbox-Client-*
           if-no-files-found: error
   client-native-product:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -162,7 +163,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
   host-managed-accounts:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -191,7 +192,7 @@ jobs:
         working-directory: .upstream
         run: >-
           bun run e2e:self-host --test-name
-          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^account rows show retained usage and health|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app"
+          "host-managed accounts are hidden|host-provisioned accounts keep working|account radio linking cannot replace|agent connection creation and updates|Executor app card shows|Executor installation shows|Executor installs each|A member's unlinked managed Executor key|a configured product name and logo|failed executor upgrades report a safe SQLSTATE|^Reviewed catalog OAuth clients|^Catalog OAuth grants|^account rows show retained usage and health|^app-acquired account checks publish bounded status|^pool seed upgrades add canonical native slots|^native pool account links mirror current tokens only after hosted authorization|^native pool settings keep|^native sharing keeps existing|^invitation roles cannot grant|^organization admins who manage an app|^An account check and agents' discovery report an app whose tools do not load"
           --workers 1
       - name: Verify shared identities and incremental consent
         working-directory: .upstream
@@ -219,7 +220,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   oauth-account-regressions:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -324,7 +325,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -356,9 +357,9 @@ jobs:
         env:
           BASALT_E2E_POOL_BACKEND: "1"
         run: bun run e2e:cloud --test-name '^Cloud native provider accounts link' --workers 1
-      - name: Verify legacy PAYG checkout and normal seat synchronization
+      - name: Verify isolated billing policy and OIDC sign-in
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud SSO OIDC setup preserves drafts' --workers 1
+        run: bun run e2e:cloud --test-name '^Cloud (billing gates SSO|SSO OIDC setup preserves drafts)' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -371,7 +372,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-migrations:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 14
     steps:
       - uses: actions/checkout@v4
@@ -408,8 +409,29 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   production-ops-identity:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ startsWith(vars.BASALT_CI_RUNNER_HEAVY, 'boat') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
+      matrix:
+        include:
+          - scope: diagnostics
+            scenario: safe refusal and SQL cause classification
+          - scope: credentials
+            scenario: stable plans across credential rotation
+          - scope: host
+            scenario: the reviewed database host
+          - scope: database
+            scenario: the reviewed database name
+          - scope: role
+            scenario: the reviewed SQL login
+          - scope: physical
+            scenario: the reviewed physical database with equivalent fixture rows
+          - scope: without-server
+            scenario: database identity when the server identifier is unavailable
+          - scope: release
+            scenario: a fresh dry run after the reviewed deployment changes
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -428,12 +450,12 @@ jobs:
       - name: Verify stable database identity through signed apply verification and replay
         timeout-minutes: 22
         env:
-          BASALT_SCOPE_PROOF_PATTERN: ^Cloud production operations enforce (?!(stable identities through apply and replay|organization references before verification)$)
+          BASALT_SCOPE_PROOF_PATTERN: '^Cloud production operations enforce ${{ matrix.scenario }}$'
         run: node scripts/production-ops/prove-scope.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: production-ops-identity-e2e
+          name: production-ops-identity-${{ matrix.scope }}-e2e
           include-hidden-files: true
           path: |
             .upstream/.local/e2e/**/results.json
@@ -442,7 +464,7 @@ jobs:
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   compiler-diagnostics:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -506,6 +528,12 @@ jobs:
       - name: Verify the human-in-the-loop route while Cloud code and data load
         working-directory: .upstream
         run: bun run e2e:cloud --test-name "^Before a route|^Organization entry prefetches|^Dashboard loading shows content" --workers 1
+      - name: Verify browser analytics after server rendering
+        working-directory: .upstream
+        run: >-
+          bun run e2e:cloud --test-name
+          "^Cloud product events preserve identity|^Cloud product events record onboarding replay|^Cloud support dialog lists"
+          --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -513,7 +541,7 @@ jobs:
           path: .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   contributed-accounts:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -915,7 +943,7 @@ jobs:
           retention-days: 1
 
   account-acquisition:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
