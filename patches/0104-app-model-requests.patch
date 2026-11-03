@@ -1000,7 +1000,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      cloud: na("Uses runner-owned native pool metadata and a signed loopback model peer."),
 +    },
 +  },
-   poolSharing: {
+   poolSeedNativeUpgrade: {
      fixtures: "actors",
      legacyStorage: true,
 diff --git a/e2e/tests/app-model-requests.spec.ts b/e2e/tests/app-model-requests.spec.ts
