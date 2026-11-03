@@ -1,0 +1,9 @@
+{
+  "identity": "executor-google-account-recovery",
+  "file": "0110-google-account-recovery.patch",
+  "content_sha256": "c59550552615e63574f6ded42ce41d6445545e7f7168743b0896b4823d0adfea",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

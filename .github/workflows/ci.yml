@@ -171,6 +171,20 @@ jobs:
           --workers 1
       - name: Verify account deletion against concurrent OAuth renewal
         run: node scripts/oauth-removal-tests/prove.ts
+      - name: Verify shared account families and consumer capability refusals
+        working-directory: .upstream
+        run: >-
+          bun run e2e:local --test-name
+          '^A declared family reuses|^Consumer capability requirements block|^Family metadata preserves retained|^Exact account reuse preserves each app'
+          --workers 1
+      - name: Verify one saved provider account supplies two native pools
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name '^One OpenAI saved account supplies' --workers 1
+      - name: Verify Google recovery through signed Cloud operations
+        working-directory: .upstream
+        env:
+          BASALT_E2E_PRODUCTION_OPS: "1"
+        run: bun run e2e:cloud --test-name '^Google identity recovery binds exact grants' --workers 1
       - name: Verify account mirror retries and generations through the SDK HTTP host
         working-directory: .upstream
         run: bunx vitest run --config e2e/account-mirrors.config.ts
