@@ -1,0 +1,2049 @@
+diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
+--- a/apps/hosted/server/src/contracts/api.ts
++++ b/apps/hosted/server/src/contracts/api.ts
+@@ -1,3 +1,4 @@
++import { HostedAppConnections } from "./app-connections.ts";
+ import { HostedModels } from "./models.ts";
+ import { hostCookieName } from "./browser.ts";
+ import { HostedWorkflowInputs } from "./workflow-inputs.ts";
+@@ -184,6 +185,7 @@
+     HostedResourceAccess,
+     HostedPoolUsage,
+     HostedModels,
++    HostedAppConnections,
+     HostedOAuthClients,
+     HostedAppData,
+     HostedMcpConnections,
+diff --git a/apps/hosted/server/src/contracts/app-connections.ts b/apps/hosted/server/src/contracts/app-connections.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/app-connections.ts
+@@ -0,0 +1,59 @@
++import {
++  AppAccounts,
++  AppConnection,
++  AppConnectionConflict,
++  AppConnectionRefused,
++  AppConnectionScope,
++  AppId,
++  StorageError,
++} from "@executor-js/sdk/core";
++import { Schema } from "effect";
++import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
++import { RequiredAction } from "./authorization.ts";
++import {
++  OrganizationForbidden,
++  OrganizationReference,
++  RequireOrganization,
++} from "./organization.ts";
++const params = { organization: OrganizationReference, app: AppId };
++const path = "/api/organizations/:organization/apps/:app/connections";
++const error = [OrganizationForbidden, StorageError, AppConnectionConflict, AppConnectionRefused];
++const revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++export const HostedAppConnections = HttpApiGroup.make("appConnections")
++  .add(
++    HttpApiEndpoint.get("list", path, {
++      params,
++      success: Schema.Struct({ connections: Schema.Array(AppConnection) }),
++      error,
++    }).annotate(RequiredAction, "read"),
++  )
++  .add(
++    HttpApiEndpoint.put("save", `${path}/:dependency`, {
++      params: { ...params, dependency: Schema.NonEmptyString },
++      payload: Schema.Struct({
++        scope: AppConnectionScope,
++        target: AppId,
++        revision,
++        accounts: Schema.optionalKey(AppAccounts),
++      }),
++      success: AppConnection,
++      error,
++    }).annotate(RequiredAction, "manage"),
++  )
++  .add(
++    HttpApiEndpoint.patch("update", `${path}/:dependency`, {
++      params: { ...params, dependency: Schema.NonEmptyString },
++      payload: Schema.Struct({ scope: AppConnectionScope, enabled: Schema.Boolean, revision }),
++      success: AppConnection,
++      error,
++    }).annotate(RequiredAction, "manage"),
++  )
++  .add(
++    HttpApiEndpoint.delete("remove", `${path}/:dependency`, {
++      params: { ...params, dependency: Schema.NonEmptyString },
++      query: { scope: AppConnectionScope, revision },
++      success: Schema.Struct({ success: Schema.Literal(true) }),
++      error,
++    }).annotate(RequiredAction, "manage"),
++  )
++  .middleware(RequireOrganization);
+diff --git a/apps/hosted/server/src/implementation/api.ts b/apps/hosted/server/src/implementation/api.ts
+--- a/apps/hosted/server/src/implementation/api.ts
++++ b/apps/hosted/server/src/implementation/api.ts
+@@ -1,3 +1,4 @@
++import { hostedAppConnectionHandlers } from "./app-connections.ts";
+ import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
+ import { hostedAppAccountHandlers } from "./app-account-links.ts";
+ import {
+@@ -85,6 +86,7 @@
+   hostedResourceAccessHandlers,
+   hostedPoolUsageHandlers,
+   hostedModelHandlers,
++  hostedAppConnectionHandlers,
+   hostedOAuthClientHandlers,
+   hostedWebhookSetupHandlers,
+   hostedWebhookHandlers,
+diff --git a/apps/hosted/server/src/implementation/app-connections.ts b/apps/hosted/server/src/implementation/app-connections.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/app-connections.ts
+@@ -0,0 +1,44 @@
++import { Effect } from "effect";
++import { HttpApiBuilder } from "effect/http-api";
++import { CurrentActor } from "@executor-js/sdk/core";
++import { HostedApi } from "../contracts/api.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { currentOwner } from "./access.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++const operation = <A, E, R>(
++  run: (
++    executor: import("@executor-js/sdk/core").Executor,
++    owner: import("@executor-js/sdk/core").OwnerId,
++  ) => Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const owner = yield* currentOwner;
++    return yield* run(executor, owner).pipe(
++      Effect.provideService(CurrentActor, yield* CurrentUserId),
++    );
++  });
++export const hostedAppConnectionHandlers = HttpApiBuilder.group(
++  HostedApi,
++  "appConnections",
++  (handlers) =>
++    handlers
++      .handle("list", ({ params }) =>
++        operation((executor, owner) => executor.appConnections.list({ app: params.app, owner })),
++      )
++      .handle("save", ({ params, payload }) =>
++        operation((executor, owner) =>
++          executor.appConnections.save({ ...params, ...payload, owner }),
++        ),
++      )
++      .handle("update", ({ params, payload }) =>
++        operation((executor, owner) =>
++          executor.appConnections.update({ ...params, ...payload, owner }),
++        ),
++      )
++      .handle("remove", ({ params, query }) =>
++        operation((executor, owner) =>
++          executor.appConnections.remove({ ...params, ...query, owner }),
++        ),
++      ),
++);
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { requireAppAccess } from "./resource-policy.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { GroupDatabase } from "../contracts/groups.ts";
+ import { canDeleteAccountWithSql, replacingAccounts } from "./interactive-retirement.ts";
+@@ -274,6 +275,40 @@
+         ),
+       );
+     const lifecycle: ResourceLifecycle = {
++      appCallAs: (input, work) =>
++        asOwner(
++          input.owner,
++          Effect.gen(function* () {
++            if (input.caller !== undefined)
++              yield* requireAppAccess(input.app, "use").pipe(
++                Effect.provideService(CurrentUserId, input.caller),
++                Effect.mapError(() => new StorageError()),
++              );
++            return yield* Effect.gen(function* () {
++              yield* requireAppAccess(input.app, input.scope === "app" ? "manage" : "use").pipe(
++                Effect.mapError(() => new StorageError()),
++              );
++              yield* requireAppAccess(input.target, "use").pipe(
++                Effect.mapError(() => new StorageError()),
++              );
++              return yield* work;
++            }).pipe(Effect.provideService(CurrentUserId, input.authorizer));
++          }),
++        ).pipe(Effect.provideService(CurrentUserId, input.caller ?? input.authorizer)),
++      appConnectionAuthorizing: (input) =>
++        asOwner(
++          input.owner,
++          Effect.gen(function* () {
++            yield* requireAppAccess(
++              input.app,
++              input.managing && input.scope === "app" ? "manage" : "use",
++            );
++            if (input.target !== undefined)
++              yield* requireAppAccess(input.target, "use").pipe(
++                Effect.mapError(() => new StorageError()),
++              );
++          }),
++        ).pipe(Effect.mapError(() => new StorageError())),
+       userLinks: (input) =>
+         linkedAccounts(sql, { subject: input.subject, apps: [input.app] }).pipe(
+           Effect.map((linked) =>
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -14,6 +14,8 @@
+   | Schema.SchemaError;
+ const errorMessage = Match.type<HostedError>().pipe(
+   Match.tagsExhaustive({
++    AppConnectionConflict: ({ message }) => message,
++    AppConnectionRefused: ({ message }) => message,
+     AccountProvisioned: ({ message }) => message,
+     PoolUsageUnavailable: ({ message }) => message,
+     PoolCapConflict: ({ message }) => message,
+diff --git a/e2e/support/app-call-sdk-source.ts b/e2e/support/app-call-sdk-source.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-call-sdk-source.ts
+@@ -0,0 +1,65 @@
++/** Complete public SDK host with retained PostgreSQL storage and a controlled host clock. */
++export const appCallSdkSource = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import * as Runtime from "@effect/platform-node/NodeRuntime";
++import { nativeRepositories } from "@executor-js/app-source/node";
++import { createExecutor, makeExecutorStorage, executorHandlers, ExecutorApi, OwnerId,
++  AppId, AppCallReceiptId, AppCallsHost, Json, type Executor } from "@executor-js/sdk/core";
++import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
++import { memoryRegistry } from "@executor-js/sdk/testing";
++import { AppCallFailed } from "apps/contracts";
++import { Clock, Console, Deferred, Effect, Layer, Path, Redacted, Schema } from "effect";
++import { HttpApiBuilder } from "effect/http-api";
++import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { pgliteLayer } from "fumadb-effect/pglite";
++import { createServer } from "node:http";
++const input = INPUT;
++const Reserve = Schema.Struct({id: AppCallReceiptId, fingerprint: Schema.String, deadline: Schema.Number});
++const Finish = Schema.Struct({id: AppCallReceiptId, dispatch: Schema.String, result: Schema.optionalKey(Json)});
++Runtime.runMain(Effect.scoped(Effect.gen(function* () {
++  const path = yield* Path.Path;
++  const database = yield* Layer.build(pgliteLayer({dataDir: path.join(input.directory, "postgres")}));
++  const storage = yield* makeExecutorStorage({provider: "postgresql"}).pipe(Effect.provideContext(database));
++  yield* storage.migrate;
++  const secret = Redacted.make("b".repeat(64));
++  const blobs = filesystemBlobStore({directory: path.join(input.directory, "blobs")});
++  const ready = yield* Deferred.make<Executor>();
++  const host = yield* workerdApps({directory: path.join(input.directory, "workerd"), blobs,
++    executor: Deferred.await(ready), npmRegistry: input.npmRegistry, encryptionKey: secret});
++  const executor = yield* createExecutor({database: storage, secret, blobs,
++    git: nativeRepositories(path.join(input.directory, "repositories")), runtime: host.runtime,
++    workflows: host.workflows, registry: memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
++  yield* Deferred.succeed(ready, executor);
++  const owner = OwnerId.make("receipt-host");
++  const listed = yield* executor.apps.list({owner});
++  const app = listed[0] ?? (yield* executor.apps.deploy({owner, name: "Receipt owner",
++    files: input.files})).app;
++  const receipts = executor[AppCallsHost].receipts;
++  let now = 1000;
++  const live = yield* Clock.Clock;
++  const clock: Clock.Clock = {...live, currentTimeMillisUnsafe: () => now,
++    currentTimeMillis: Effect.sync(() => now), currentTimeNanosUnsafe: () => BigInt(now)*1000000n,
++    currentTimeNanos: Effect.sync(() => BigInt(now)*1000000n)};
++  const route = <A, I>(name: string, schema: Schema.Codec<A,I>, run: (value:A) => Effect.Effect<unknown, unknown>) =>
++    HttpRouter.add("POST", \`/_fixture/\${name}\`, Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const value = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(schema)));
++      return yield* run(value).pipe(Effect.provideService(Clock.Clock, clock),
++        Effect.flatMap((value) => HttpServerResponse.json(value)),
++        Effect.catchIf(Schema.is(AppCallFailed), (error) => HttpServerResponse.json({reason: error.reason}, {status:409})));
++    }).pipe(Effect.orDie));
++  const routes = Layer.mergeAll(
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    route("reserve", Reserve, (value) => receipts.reserve({...value, owner, app: AppId.make(app.id), connection:"saved-connection"})),
++    route("finish", Finish, (value) => receipts.finish({...value, owner, app: AppId.make(app.id)})),
++    route("clock", Schema.Number, (value) => Effect.sync(() => {now=value;return null;})),
++  );
++  const services = yield* Layer.build(HttpRouter.serve(routes, {disableLogger:true, disableListenLog:true})
++    .pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, {host:"127.0.0.1",port:0}))));
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("Expected TCP");
++  yield* Console.log(JSON.stringify({port:server.address.port}));
++  return yield* Effect.never;
++})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))));
++`;
+diff --git a/e2e/support/app-call-sdk.ts b/e2e/support/app-call-sdk.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-call-sdk.ts
+@@ -0,0 +1,87 @@
++import { Effect, Exit, FileSystem, Option, Path, Schema, Scope, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { HttpClient, HttpClientRequest } from "effect/http";
++import { appCallSdkSource } from "./app-call-sdk-source.ts";
++import { appsManifest } from "./apps-release.ts";
++import { lockedNpmRegistry } from "./npm-registry.ts";
++import { Target } from "./platform.ts";
++const Ready = Schema.Struct({ port: Schema.Number });
++export const appCallSdk = Effect.gen(function* () {
++  const target = yield* Target;
++  const fs = yield* FileSystem.FileSystem;
++  const path = yield* Path.Path;
++  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++  const client = yield* HttpClient.HttpClient;
++  const registry = yield* lockedNpmRegistry;
++  const entry = path.join(target.directory, "app-call-sdk.ts");
++  const directory = path.join(target.directory, "app-call-sdk");
++  yield* fs.makeDirectory(directory, { recursive: true });
++  yield* fs.writeFileString(
++    entry,
++    appCallSdkSource.replace(
++      "INPUT",
++      JSON.stringify({
++        directory,
++        npmRegistry: registry.url,
++        files: [
++          {
++            path: "index.ts",
++            content: 'import {defineApp} from "apps"; export default defineApp({},{});',
++          },
++          appsManifest,
++        ],
++      }) + " as const",
++    ),
++  );
++  const config = path.join(target.directory, "app-call-sdk-tsconfig.json");
++  yield* fs.writeFileString(
++    config,
++    JSON.stringify({
++      extends: path.resolve("tsconfig.json"),
++      compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++      files: [entry],
++      include: [],
++      exclude: [],
++    }),
++  );
++  const checked = yield* processes.exitCode(
++    ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++      stdout: "inherit",
++      stderr: "inherit",
++    }),
++  );
++  if (checked !== 0) return yield* Effect.die("Public app-call SDK host failed its typecheck");
++  let childScope = yield* Scope.make();
++  let origin = "";
++  yield* Effect.addFinalizer(() => Scope.close(childScope, Exit.void));
++  const start = Effect.gen(function* () {
++    const child = yield* processes
++      .spawn(ChildProcess.make("node", [entry], { stdout: "pipe", stderr: "inherit" }))
++      .pipe(Scope.provide(childScope));
++    const line = yield* child.stdout.pipe(
++      Stream.decodeText(),
++      Stream.splitLines,
++      Stream.filter((line) => line.startsWith('{"port":')),
++      Stream.runHead,
++    );
++    if (Option.isNone(line)) return yield* Effect.die("SDK host exited before listening");
++    const ready = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line.value);
++    origin = `http://127.0.0.1:${ready.port}`;
++  });
++  yield* start;
++  return {
++    restart: Effect.gen(function* () {
++      yield* Scope.close(childScope, Exit.void);
++      childScope = yield* Scope.make();
++      yield* start;
++    }),
++    request: (route: string, data: unknown) =>
++      Effect.gen(function* () {
++        const request = yield* HttpClientRequest.bodyJson(data)(
++          HttpClientRequest.post(origin + "/_fixture/" + route),
++        );
++        const response = yield* client.execute(request);
++        return { status: response.status, body: yield* response.json };
++      }),
++  };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8456,6 +8456,25 @@
+       "self-host": scheduled,
+       cloud: na("Uses a runner-owned synthetic organization for the native UI screenshot pass."),
+       local: na("Uses hosted organization audiences and roles."),
++    },
++  },
++  appCallReceipts: {
++    file: "app-call-receipts.spec.ts",
++    title: "app call receipts fence concurrent dispatch and retain terminal outcomes after restart",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises the public SDK host with a retained PostgreSQL adapter."),
++      cloud: na("Exercises a runner-owned public SDK host."),
++    },
++  },
++  appCallConnections: {
++    fixtures: "actors",
++    file: "app-calls.spec.ts",
++    title: "app dependency connections retain a chosen instance and can be disabled and removed",
++    targets: {
++      local: na("Uses hosted organization audiences and connection authority."),
++      "self-host": scheduled,
++      cloud: managedCloud,
+     },
+   },
+   appModelRequests: {
+diff --git a/e2e/tests/app-call-receipts.spec.ts b/e2e/tests/app-call-receipts.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-call-receipts.spec.ts
+@@ -0,0 +1,104 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { appCallSdk } from "../support/app-call-sdk.ts";
++import { TestLive, withCase } from "../support/case.ts";
++import { scenarios } from "../test-plan.ts";
++const Reserved = Schema.Struct({ status: Schema.Literal("reserved"), dispatch: Schema.String });
++layer(TestLive, { excludeTestServices: true })("App-call receipts", (it) => {
++  it.effect(scenarios.appCallReceipts.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const sdk = yield* appCallSdk;
++        const reserve = (id: string, fingerprint = "first", deadline = 2000) =>
++          sdk.request("reserve", { id, fingerprint, deadline });
++        const contenders = yield* Effect.all([reserve("concurrent"), reserve("concurrent")], {
++          concurrency: 2,
++        });
++        expect(contenders.map((r) => r.status)).toEqual([200, 200]);
++        const winners = contenders.filter((r) => Schema.is(Reserved)(r.body));
++        expect(winners).toHaveLength(1);
++        const winner = yield* Schema.decodeUnknownEffect(Reserved)(winners[0]!.body);
++        expect(contenders.find((r) => !Schema.is(Reserved)(r.body))?.body).toEqual({
++          status: "in_progress",
++        });
++        expect((yield* reserve("concurrent", "different")).body).toEqual({
++          reason: "identity_conflict",
++        });
++        expect(
++          (yield* sdk.request("finish", { id: "concurrent", dispatch: "wrong", result: 1 })).status,
++        ).toBe(409);
++        expect(
++          (yield* sdk.request("finish", {
++            id: "concurrent",
++            dispatch: winner.dispatch,
++            result: { message: "retained" },
++          })).body,
++        ).toEqual({ status: "completed" });
++        expect((yield* reserve("concurrent")).body).toEqual({
++          status: "completed",
++          value: { message: "retained" },
++        });
++        expect(
++          (yield* sdk.request("finish", {
++            id: "concurrent",
++            dispatch: winner.dispatch,
++            result: "replace",
++          })).body,
++        ).toEqual({ status: "completed" });
++        expect((yield* reserve("concurrent")).body).toEqual({
++          status: "completed",
++          value: { message: "retained" },
++        });
++        const interrupted = yield* Schema.decodeUnknownEffect(Reserved)(
++          (yield* reserve("interrupted")).body,
++        );
++        expect(
++          (yield* sdk.request("finish", { id: "interrupted", dispatch: interrupted.dispatch }))
++            .body,
++        ).toEqual({ status: "outcome_unknown" });
++        expect((yield* reserve("interrupted")).body).toEqual({ status: "outcome_unknown" });
++        const pending = yield* reserve("expires");
++        const token = (yield* Schema.decodeUnknownEffect(Reserved)(pending.body)).dispatch;
++        yield* sdk.request("clock", 2000);
++        expect((yield* reserve("expires")).body).toEqual({ status: "outcome_unknown" });
++        expect(
++          (yield* sdk.request("finish", { id: "expires", dispatch: token, result: 1 })).body,
++        ).toEqual({ status: "outcome_unknown" });
++        expect((yield* reserve("expires", "first", 999999)).body).toEqual({
++          status: "outcome_unknown",
++        });
++        expect((yield* reserve("already-expired", "first", 0)).body).toEqual({
++          status: "outcome_unknown",
++        });
++        expect((yield* reserve("already-expired", "first", 999999)).body).toEqual({
++          status: "outcome_unknown",
++        });
++        const active = yield* Schema.decodeUnknownEffect(Reserved)(
++          (yield* reserve("restart-active", "first", 5000)).body,
++        );
++        yield* sdk.restart;
++        expect((yield* reserve("restart-active", "first", 999999)).body).toEqual({
++          status: "in_progress",
++        });
++        yield* sdk.request("clock", 5000);
++        expect((yield* reserve("restart-active", "first", 999999)).body).toEqual({
++          status: "outcome_unknown",
++        });
++        expect(
++          (yield* sdk.request("finish", {
++            id: "restart-active",
++            dispatch: active.dispatch,
++            result: 1,
++          })).body,
++        ).toEqual({ status: "outcome_unknown" });
++        expect((yield* reserve("expires")).body).toEqual({ status: "outcome_unknown" });
++        expect((yield* reserve("already-expired")).body).toEqual({ status: "outcome_unknown" });
++        expect((yield* reserve("concurrent")).body).toEqual({
++          status: "completed",
++          value: { message: "retained" },
++        });
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/app-calls.spec.ts b/e2e/tests/app-calls.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-calls.spec.ts
+@@ -0,0 +1,148 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Connection = Schema.Struct({
++  id: Schema.String,
++  dependency: Schema.String,
++  target: Schema.String,
++  scope: Schema.Literals(["app", "user"]),
++  revision: Schema.Int,
++  enabled: Schema.Boolean,
++});
++const Connections = Schema.Struct({ connections: Schema.Array(Connection) });
++
++layer(RuntimeLive, { excludeTestServices: true })("App calls", (it) => {
++  it.effect(scenarios.appCallConnections.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}/apps`;
++        const apps: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.forEach(apps, (id) => api.request(actors.owner, "DELETE", `${prefix}/${id}`)).pipe(
++            Effect.orDie,
++          ),
++        );
++        const deploy = (name: string, content: string) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++              name,
++              files: [{ path: "index.ts", content }, appsManifest],
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const { id } = yield* body(Resource, response);
++            apps.push(id);
++            return id;
++          });
++        const target = yield* deploy(
++          "First target",
++          `import { defineApp, object, query, mutation, string, router } from "apps";
++const ping = query({input: object({message: string()})}, async (_ctx,input) => ({name: "first", message: input.message}));
++const write = mutation({input: object({})}, async () => ({wrote: true}));
++export default defineApp({}, {tools: router({ping,write})});`,
++        );
++        const source = yield* deploy(
++          "Calling app",
++          `import {defineApp, query, object, string, json, router} from "apps";
++const invoke = query({input: object({target: string(), tool: string(), kind: string(), payload: json()})}, async (ctx,input) => ctx.apps.call({connection: "remote", target: input.target, tool: input.tool, kind: input.kind, input: input.payload}));
++export default defineApp({dependencies: {remote: {scope: "user", tools: {ping: {kind: "query"}, write: {kind: "mutation"}}}}}, {tools: router({invoke})});`,
++        );
++        const path = `${prefix}/${source}/connections`;
++        const linked = yield* api.request(actors.owner, "PUT", `${path}/remote`, {
++          scope: "user",
++          target,
++          revision: 0,
++        });
++        expect(linked.status, JSON.stringify(linked.body)).toBe(200);
++        const first = yield* body(Connection, linked);
++        expect(first).toMatchObject({
++          dependency: "remote",
++          target,
++          scope: "user",
++          revision: 1,
++          enabled: true,
++        });
++        const secondTarget = yield* deploy(
++          "Second target",
++          `import {defineApp} from "apps"; export default defineApp({}, {});`,
++        );
++        const call = (
++          targetId = target,
++          tool = "ping",
++          kind = "query",
++          payload: Schema.Json = { message: "hello" },
++        ) =>
++          api.request(actors.owner, "POST", `${prefix}/${source}/tools/call`, {
++            tool: "invoke",
++            kind: "query",
++            input: { target: targetId, tool, kind, payload },
++          });
++        const called = yield* call();
++        expect(called.status, JSON.stringify(called.body)).toBe(200);
++        expect(called.body).toEqual({ name: "first", message: "hello" });
++        const malformed = yield* call(target, "ping", "query", { message: 3 });
++        expect(malformed.status).not.toBe(200);
++        expect((yield* api.request(actors.member, "GET", path)).status).toBe(403);
++        expect(
++          (yield* api.request(actors.member, "PUT", `${path}/remote`, {
++            scope: "user",
++            target,
++            revision: 0,
++          })).status,
++        ).toBe(403);
++        yield* serverControl("restart");
++        expect((yield* call()).body).toEqual({ name: "first", message: "hello" });
++        const wrongTarget = yield* call(secondTarget);
++        expect(wrongTarget.status).not.toBe(200);
++        expect(wrongTarget.body).toMatchObject({
++          failure: { errorName: "AppCallFailed", code: "denied" },
++        });
++        const mutation = yield* call(target, "write", "mutation");
++        expect(mutation.status).not.toBe(200);
++        expect(mutation.body).toMatchObject({
++          failure: { errorName: "AppCallFailed", code: "effects_unavailable" },
++        });
++        const listed = yield* body(Connections, yield* api.request(actors.owner, "GET", path));
++        expect(listed.connections).toEqual([first]);
++        const disabled = yield* api.request(actors.owner, "PATCH", `${path}/remote`, {
++          scope: "user",
++          revision: first.revision,
++          enabled: false,
++        });
++        expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
++        expect(yield* body(Connection, disabled)).toMatchObject({
++          target,
++          revision: 2,
++          enabled: false,
++        });
++        expect((yield* call()).body).toMatchObject({
++          failure: { errorName: "AppCallFailed", code: "denied" },
++        });
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${path}/remote`, {
++            scope: "user",
++            revision: 1,
++            enabled: true,
++          })).status,
++        ).toBe(409);
++        expect(
++          (yield* api.request(actors.owner, "DELETE", `${path}/remote?scope=user&revision=2`))
++            .status,
++        ).toBe(200);
++        expect(
++          (yield* body(Connections, yield* api.request(actors.owner, "GET", path))).connections,
++        ).toEqual([]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/apps/src/contracts/app-calls.ts b/packages/apps/src/contracts/app-calls.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/app-calls.ts
+@@ -0,0 +1,66 @@
++/** App dependencies carry no credentials or caller-supplied authority. */
++import { Effect, Schema } from "effect";
++import { JsonObject, JsonValue } from "./schema.ts";
++export const AppDependencyName = Schema.String.check(
++  Schema.isPattern(/^[A-Za-z][A-Za-z0-9_-]{0,47}$/u),
++);
++export const AppCallKind = Schema.Literals(["query", "mutation"]);
++export const AppDependency = Schema.Struct({
++  scope: Schema.Literals(["app", "user"]),
++  tools: Schema.Record(
++    Schema.NonEmptyString,
++    Schema.Struct({
++      kind: AppCallKind,
++      inputSchema: Schema.optionalKey(JsonObject),
++      outputSchema: Schema.optionalKey(JsonObject),
++    }),
++  ),
++});
++/** A named personal or shared app dependency with its permitted operations. */
++export type AppDependency = typeof AppDependency.Type;
++export const DeclaredAppDependencies = Schema.Record(AppDependencyName, AppDependency);
++export type DeclaredAppDependencies = typeof DeclaredAppDependencies.Type;
++export const AppCallCommand = Schema.Struct({
++  operation: Schema.Literal("app-call"),
++  connection: AppDependencyName,
++  target: Schema.NonEmptyString,
++  tool: Schema.NonEmptyString,
++  kind: AppCallKind,
++  input: JsonValue,
++});
++/** One call to the exact app instance approved for a saved dependency. */
++export type AppCallCommand = typeof AppCallCommand.Type;
++/** A safe app-call refusal or terminal unknown outcome. Automatic retries are forbidden. */
++export class AppCallFailed extends Schema.TaggedError<AppCallFailed>()("AppCallFailed", {
++  reason: Schema.Literals([
++    "connection_missing",
++    "denied",
++    "stale",
++    "invalid_input",
++    "invalid_output",
++    "in_progress",
++    "identity_conflict",
++    "outcome_unknown",
++    "depth_exceeded",
++    "effects_unavailable",
++  ]),
++  retryable: Schema.Literal(false).pipe(
++    Schema.withDecodingDefaultKey(Effect.succeed(false as const)),
++  ),
++}) {
++  override get message() {
++    return `App call refused: ${this.reason}. It will not be resent automatically.`;
++  }
++}
++export const AppCallReply = Schema.Union([
++  Schema.Struct({ ok: Schema.Literal(true), value: JsonValue }),
++  Schema.Struct({ ok: Schema.Literal(false), error: AppCallFailed }),
++]);
++export type AppCallHost = (
++  command: AppCallCommand,
++) => Effect.Effect<typeof JsonValue.Type, AppCallFailed>;
++
++/** Call a declared dependency through its saved host-authorized connection. */
++export interface AppCalls {
++  readonly call: (input: Omit<AppCallCommand, "operation">) => Promise<typeof JsonValue.Type>;
++}
+diff --git a/packages/apps/src/contracts/app.ts b/packages/apps/src/contracts/app.ts
+--- a/packages/apps/src/contracts/app.ts
++++ b/packages/apps/src/contracts/app.ts
+@@ -132,6 +132,7 @@
+   /** Declared beside the accounts and checked when the module loads. */
+   readonly icons?: import("./icons.ts").AppIcons;
+   readonly models?: import("./models.ts").DeclaredModels;
++  readonly dependencies?: import("./app-calls.ts").DeclaredAppDependencies;
+   readonly evaluate: (context: EvaluationContext<Slots>) => Effect.Effect<Def, unknown>;
+ }
+ 
+diff --git a/packages/apps/src/contracts/context.ts b/packages/apps/src/contracts/context.ts
+--- a/packages/apps/src/contracts/context.ts
++++ b/packages/apps/src/contracts/context.ts
+@@ -12,6 +12,7 @@
+  */
+ export interface AppRequirements {
+   readonly models?: import("./models.ts").DeclaredModels;
++  readonly dependencies?: import("./app-calls.ts").DeclaredAppDependencies;
+   readonly app?: { readonly accounts: AccountSlots };
+   readonly user?: { readonly accounts: AccountSlots };
+   /** Removed: declare `user: { accounts }` for the caller's accounts or `app: { accounts }`. */
+@@ -65,7 +66,8 @@
+ export type QueryContext<
+   Requirements extends AppRequirements = AppRequirements,
+   Scope extends AccountScope = "user",
+-> = AppContext<Requirements, Scope> & StorageContext<false>;
++> = AppContext<Requirements, Scope> &
++  StorageContext<false> & { readonly apps: import("./app-calls.ts").AppCalls };
+ 
+ /** Interactive mutation context; outside calls happen between SQL transactions, never inside one. */
+ export type MutationContext<
+@@ -73,6 +75,7 @@
+   Scope extends AccountScope = "user",
+ > = Omit<AppContext<Requirements, Scope>, "workflows"> & {
+   readonly workflows: WorkflowControls;
++  readonly apps: import("./app-calls.ts").AppCalls;
+ } & StorageContext<true> &
+   EventsContext<Requirements> &
+   import("./models.ts").ModelSlots<Requirements>;
+diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+--- a/packages/apps/src/contracts/host.ts
++++ b/packages/apps/src/contracts/host.ts
+@@ -26,6 +26,7 @@
+ } from "./workflows.ts";
+ export * from "./workflows.ts";
+ export * from "./models.ts";
++export * from "./app-calls.ts";
+ export * from "./workflow-input.ts";
+ export * from "./failure.ts";
+ import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
+diff --git a/packages/apps/src/contracts/operations.ts b/packages/apps/src/contracts/operations.ts
+--- a/packages/apps/src/contracts/operations.ts
++++ b/packages/apps/src/contracts/operations.ts
+@@ -12,6 +12,7 @@
+  */
+ export type OperationContext = EvaluationContext<ScopedSlots> & {
+   readonly audience?: "app";
++  readonly apps?: import("./app-calls.ts").AppCalls;
+   readonly sql?: SqlReader | Sql;
+ };
+ /** The host validates input, checks approval, then owns the transaction and output validation. */
+diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+--- a/packages/apps/src/contracts/protocols/current.ts
++++ b/packages/apps/src/contracts/protocols/current.ts
+@@ -1,3 +1,4 @@
++import { AppCallCommand, AppCallReply, DeclaredAppDependencies } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+ import { AccountObservationResult } from "../account-observation.ts";
+ /**
+@@ -189,6 +190,7 @@
+ /** Account slots available without binding accounts or evaluating the app factory. */
+ export const DeclaredRequirements = Schema.Struct({
+   models: Schema.optionalKey(DeclaredModels),
++  dependencies: Schema.optionalKey(DeclaredAppDependencies),
+   /** Protocol support of this retained framework build, not an author-declared requirement. */
+   capabilities: Schema.optionalKey(
+     Schema.Struct({
+@@ -647,6 +649,8 @@
+   elicitationRequest: "bundle",
+   workflowStep: "bundle",
+   workflowControl: "bundle",
++  appCall: "bundle",
++  appCallReply: "host",
+   modelRequest: "bundle",
+   modelReply: "host",
+   cacheCommand: "bundle",
+@@ -674,6 +678,8 @@
+     workflowStep: WorkflowRpcCommand,
+     workflowStepReply: WorkflowRpcResult,
+     workflowControl: WorkflowControlCommand,
++    appCall: AppCallCommand,
++    appCallReply: AppCallReply,
+     modelRequest: ModelCommand,
+     modelReply: ModelReply,
+     cacheCommand: CacheCommand,
+diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contracts/workflows.ts
+--- a/packages/apps/src/contracts/workflows.ts
++++ b/packages/apps/src/contracts/workflows.ts
+@@ -186,6 +186,7 @@
+   Scope extends AccountScope = "user",
+ > = Omit<AppContext<Requirements, Scope>, "elicit" | "workflows"> &
+   import("./models.ts").ModelSlots<Requirements> & {
++    readonly apps: import("./app-calls.ts").AppCalls;
+     readonly runId: WorkflowRunId;
+     readonly stepId: string;
+     readonly idempotencyKey: string;
+@@ -339,6 +340,7 @@
+ export type WorkflowRpc = (input: unknown, callback?: () => Promise<unknown>) => Promise<unknown>;
+ /** Native app-scoped management capability supplied only by an authorized host invocation. */
+ export interface WorkflowHostControls {
++  readonly appCall?: import("./app-calls.ts").AppCallHost;
+   readonly start: (
+     input: Parameters<WorkflowControls["start"]>[0],
+   ) => Effect.Effect<WorkflowRun, WorkflowFailure>;
+diff --git a/packages/apps/src/implementation/app-calls.ts b/packages/apps/src/implementation/app-calls.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/implementation/app-calls.ts
+@@ -0,0 +1,33 @@
++import { Effect, Schema } from "effect";
++import {
++  AppCallCommand,
++  AppCallFailed,
++  type AppCalls,
++  type AppCallHost,
++  type DeclaredAppDependencies,
++} from "../contracts/app-calls.ts";
++/** Only the declaration and the host capability can admit a call; authored fields grant nothing. */
++export const authorAppCalls = (
++  declarations: DeclaredAppDependencies | undefined,
++  host: AppCallHost | undefined,
++  signal: AbortSignal,
++): AppCalls => ({
++  call: (input) =>
++    Effect.runPromise(
++      Effect.gen(function* () {
++        const command = yield* Schema.decodeUnknownEffect(AppCallCommand)(
++          { operation: "app-call", ...input },
++          { onExcessProperty: "error" },
++        ).pipe(
++          Effect.mapError(() => new AppCallFailed({ retryable: false, reason: "invalid_input" })),
++        );
++        const declared = declarations?.[command.connection]?.tools[command.tool];
++        if (declared === undefined || declared.kind !== command.kind)
++          return yield* new AppCallFailed({ retryable: false, reason: "denied" });
++        if (host === undefined)
++          return yield* new AppCallFailed({ retryable: false, reason: "connection_missing" });
++        return yield* host(command);
++      }),
++      { signal },
++    ),
++});
+diff --git a/packages/apps/src/implementation/app.ts b/packages/apps/src/implementation/app.ts
+--- a/packages/apps/src/implementation/app.ts
++++ b/packages/apps/src/implementation/app.ts
+@@ -1,3 +1,4 @@
++import { DeclaredAppDependencies } from "../contracts/app-calls.ts";
+ import { DeclaredModels } from "../contracts/models.ts";
+ import { ManyAccounts } from "../contracts/provider.ts";
+ /** App author boundary: Promise callbacks are adapted into one native Effect definition. */
+@@ -344,6 +345,14 @@
+     throw new TypeError(`The app's icons are invalid: ${iconsProblem}`);
+   const native: NativeApp<RequirementSlots<Requirements>, EffectDefinition<Def>> = {
+     accounts,
++    ...(requirements.dependencies === undefined
++      ? {}
++      : {
++          dependencies: EffectSchema.decodeUnknownSync(DeclaredAppDependencies)(
++            requirements.dependencies,
++            { onExcessProperty: "error" },
++          ),
++        }),
+     ...(requirements.models === undefined
+       ? {}
+       : {
+diff --git a/packages/apps/src/implementation/failure-detail.ts b/packages/apps/src/implementation/failure-detail.ts
+--- a/packages/apps/src/implementation/failure-detail.ts
++++ b/packages/apps/src/implementation/failure-detail.ts
+@@ -1,3 +1,4 @@
++import { AppCallFailed } from "../contracts/app-calls.ts";
+ import { ModelRequestFailed } from "../contracts/models.ts";
+ import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
+ export { accountFieldSecrets } from "@executor-js/utils/account-secrets";
+@@ -286,6 +287,13 @@
+  * value is the app's own error, with its own code and scalar fields. Account secrets are replaced.
+  */
+ export const failureDetail = (error: unknown, secrets: readonly string[]): FailureDetail => {
++  if (Schema.is(AppCallFailed)(error))
++    return {
++      source: "service",
++      errorName: "AppCallFailed",
++      code: error.reason,
++      message: error.message,
++    };
+   if (Schema.is(ModelRequestFailed)(error))
+     return {
+       source: "service",
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -85,6 +85,7 @@
+ import { locate } from "./router.ts";
+ import { readCatalog, routerSkills } from "./router-catalog.ts";
+ import { shareCatalog } from "../contracts/shared-catalog.ts";
++import { authorAppCalls } from "./app-calls.ts";
+ import { authorModels } from "./models.ts";
+ import type { DeclaredModels } from "../contracts/models.ts";
+ import { dispatchWebhook } from "./webhooks.ts";
+@@ -256,6 +257,7 @@
+   icons: AppIcons | undefined,
+   checks: readonly string[] | undefined,
+   models: DeclaredModels | undefined,
++  dependencies: import("../contracts/app-calls.ts").DeclaredAppDependencies | undefined,
+ ) {
+   return Effect.gen(function* () {
+     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
+@@ -282,6 +284,7 @@
+           }),
+       ...(icons === undefined ? {} : { icons }),
+       ...(models === undefined ? {} : { models }),
++      ...(dependencies === undefined ? {} : { dependencies }),
+     }).pipe(
+       Effect.mapError((cause) =>
+         declarationInvalid("The app's account declarations are invalid", cause),
+@@ -507,6 +510,7 @@
+         native.icons,
+         native.connectChecks,
+         native.models,
++        native.dependencies,
+       );
+       if (request.operation === "connect") {
+         const selected = native.accounts.app[request.slot] ?? native.accounts.user[request.slot];
+@@ -841,6 +845,11 @@
+                   stepId,
+                   idempotencyKey: stepId,
+                   models: authorModels(native.models, context.models, signal),
++                  apps: authorAppCalls(
++                    native.dependencies,
++                    context.workflowControls?.appCall,
++                    signal,
++                  ),
+                 },
+                 // The resolved values, not the app's decoded fields, which may be `Redacted`.
+                 secrets: accountSecrets(current.accounts),
+@@ -923,6 +932,11 @@
+             sql: session.writer,
+             events: emitter("sourceAccount" in request ? request.sourceAccount : undefined),
+             models: authorModels(native.models, context.models, bound.signal),
++            apps: authorAppCalls(
++              native.dependencies,
++              context.workflowControls?.appCall,
++              bound.signal,
++            ),
+           },
+           native.accounts,
+         );
+@@ -1067,6 +1081,11 @@
+                 fetch,
+                 ...(audience === "app" ? { audience: "app" as const } : {}),
+                 workflows: kind === "mutate" ? workflowControls : workflowReads,
++                apps: authorAppCalls(
++                  native.dependencies,
++                  context.workflowControls?.appCall,
++                  fetching.signal,
++                ),
+                 sql: kind === "mutate" ? session.writer : session.reader,
+                 ...(kind === "mutate"
+                   ? {
+diff --git a/packages/apps/src/implementation/workflow-context.ts b/packages/apps/src/implementation/workflow-context.ts
+--- a/packages/apps/src/implementation/workflow-context.ts
++++ b/packages/apps/src/implementation/workflow-context.ts
+@@ -16,6 +16,7 @@
+   type WorkflowStepContext as AuthorStepContext,
+ } from "../contracts/workflows.ts";
+ import { JsonValue } from "../contracts/schema.ts";
++import { AppCallFailed } from "../contracts/app-calls.ts";
+ import { ModelRequestFailed } from "../contracts/models.ts";
+ import { nativeOperation } from "./operations.ts";
+ import { declaredOperations } from "./router.ts";
+@@ -43,7 +44,10 @@
+       return Effect.fail(
+         new WorkflowFailure({
+           reason: "execution",
+-          retryable: !(error instanceof NonRetryableError) && !Schema.is(ModelRequestFailed)(error),
++          retryable:
++            !(error instanceof NonRetryableError) &&
++            !Schema.is(ModelRequestFailed)(error) &&
++            !Schema.is(AppCallFailed)(error),
+           ...(errorName === undefined ? {} : { errorName }),
+           ...(message === undefined ? {} : { message }),
+         }),
+diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/src/implementation/workflow-rpc.ts
+--- a/packages/apps/src/implementation/workflow-rpc.ts
++++ b/packages/apps/src/implementation/workflow-rpc.ts
+@@ -1,3 +1,4 @@
++import { AppCallCommand, AppCallReply, AppCallFailed } from "../contracts/app-calls.ts";
+ import { WorkflowInput } from "../contracts/workflow-input.ts";
+ /** RPC adapters expose only parsed values and safe failures to isolated app code. */
+ import { Cause, Effect, Redacted, Schema } from "effect";
+@@ -111,6 +112,21 @@
+       ),
+     );
+   return {
++    appCall: (command) =>
++      // oxlint-disable-next-line executor/authored-code-through-adapter -- invocation-owned host RPC
++      Effect.tryPromise({
++        try: () => deliver(Schema.encodeSync(AppCallCommand)(command)),
++        catch: () => new AppCallFailed({ retryable: false, reason: "outcome_unknown" }),
++      }).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(AppCallReply)),
++        Effect.catchTag(
++          "SchemaError",
++          () => new AppCallFailed({ retryable: false, reason: "outcome_unknown" }),
++        ),
++        Effect.flatMap((reply) =>
++          reply.ok ? Effect.succeed(reply.value) : Effect.fail(reply.error),
++        ),
++      ),
+     start: (input) => run({ operation: "start", ...input }),
+     get: (input) => run({ operation: "get", ...input }),
+     terminate: (input) => run({ operation: "terminate", ...input }),
+diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
+--- a/packages/apps/src/index.ts
++++ b/packages/apps/src/index.ts
+@@ -1,3 +1,5 @@
++export { AppCallFailed } from "./contracts/app-calls.ts";
++export type { AppCalls, AppCallCommand, AppDependency } from "./contracts/app-calls.ts";
+ export * from "./contracts/account-observation.ts";
+ export { ModelRequestFailed } from "./contracts/models.ts";
+ export type {
+diff --git a/packages/sdk/src/contracts/app-calls.ts b/packages/sdk/src/contracts/app-calls.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/contracts/app-calls.ts
+@@ -0,0 +1,114 @@
++import { AppAccounts, type AppNotFound } from "./apps.ts";
++import { Effect, Schema } from "effect";
++import { AppDependency, AppDependencyName, type AppCallFailed } from "apps/contracts";
++import { JsonObject, type Json, AppId, OwnerId, StorageError } from "./shared.ts";
++import { ApiError } from "@executor-js/utils/api-error";
++export class AppConnectionConflict extends ApiError.define({
++  tag: "AppConnectionConflict",
++  status: 409,
++  message: "The saved app connection changed. Read it again before updating it.",
++}) {}
++export class AppConnectionRefused extends ApiError.define({
++  tag: "AppConnectionRefused",
++  status: 403,
++  message: "This app connection is unavailable or you may not change it.",
++}) {}
++export const AppConnectionId = Schema.String.pipe(Schema.brand("AppConnectionId"));
++export type AppConnectionId = typeof AppConnectionId.Type;
++export const AppCallReceiptId = Schema.String.pipe(Schema.brand("AppCallReceiptId"));
++export type AppCallReceiptId = typeof AppCallReceiptId.Type;
++export const AppConnectionScope = Schema.Literals(["app", "user"]);
++export const AppConnection = Schema.Struct({
++  id: AppConnectionId,
++  dependency: AppDependencyName,
++  target: AppId,
++  scope: AppConnectionScope,
++  revision: Schema.Int,
++  enabled: Schema.Boolean,
++});
++export type AppConnection = typeof AppConnection.Type;
++export const AppConnectionPayload = Schema.Struct({
++  declaration: AppDependency,
++  accounts: AppAccounts,
++  confirmation: Schema.optionalKey(JsonObject),
++});
++export type AppConnectionIdentity = {
++  readonly app: AppId;
++  readonly owner: OwnerId;
++  readonly dependency: string;
++  readonly scope: "app" | "user";
++};
++export interface AppConnections {
++  readonly list: (input: {
++    readonly app: AppId;
++    readonly owner: OwnerId;
++  }) => Effect.Effect<
++    { connections: readonly AppConnection[] },
++    StorageError | AppConnectionRefused
++  >;
++  readonly save: (
++    input: AppConnectionIdentity & {
++      readonly target: AppId;
++      readonly revision: number;
++      readonly accounts?: typeof AppAccounts.Type;
++    },
++  ) => Effect.Effect<AppConnection, StorageError | AppConnectionRefused | AppConnectionConflict>;
++  readonly update: (
++    input: AppConnectionIdentity & { readonly revision: number; readonly enabled: boolean },
++  ) => Effect.Effect<AppConnection, StorageError | AppConnectionRefused | AppConnectionConflict>;
++  readonly remove: (
++    input: AppConnectionIdentity & { readonly revision: number },
++  ) => Effect.Effect<
++    { success: true },
++    StorageError | AppConnectionRefused | AppConnectionConflict
++  >;
++}
++
++const identity = {
++  app: AppId,
++  owner: OwnerId,
++  dependency: AppDependencyName,
++  scope: AppConnectionScope,
++};
++const revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++export const AppConnectionInputs = {
++  list: Schema.Struct({ app: AppId, owner: OwnerId }),
++  save: Schema.Struct({
++    ...identity,
++    target: AppId,
++    revision,
++    accounts: Schema.optionalKey(AppAccounts),
++  }),
++  update: Schema.Struct({ ...identity, revision, enabled: Schema.Boolean }),
++  remove: Schema.Struct({ ...identity, revision }),
++};
++
++/** Host adapters share one durable fence; app code and public JSON never receive it. */
++export const AppCallsHost = Symbol("executor.AppCallsHost");
++export interface AppCallsHost {
++  readonly receipts: {
++    readonly reserve: (input: {
++      readonly id: AppCallReceiptId;
++      readonly app: AppId;
++      readonly owner: OwnerId;
++      readonly connection: string;
++      readonly fingerprint: string;
++      readonly deadline: number;
++    }) => Effect.Effect<
++      | { readonly status: "reserved"; readonly dispatch: string }
++      | { readonly status: "completed"; readonly value: Json }
++      | { readonly status: "in_progress" | "outcome_unknown" },
++      StorageError | AppNotFound | AppCallFailed
++    >;
++    readonly finish: (input: {
++      readonly id: AppCallReceiptId;
++      readonly app: AppId;
++      readonly owner: OwnerId;
++      readonly dispatch: string;
++      readonly result?: Json;
++    }) => Effect.Effect<
++      { readonly status: "completed" | "outcome_unknown" },
++      StorageError | AppNotFound | AppCallFailed
++    >;
++  };
++}
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -69,6 +69,7 @@
+ export const AppRequirements = Schema.Struct({
+   capabilities: DeclaredRequirements.fields.capabilities,
+   models: DeclaredRequirements.fields.models,
++  dependencies: DeclaredRequirements.fields.dependencies,
+   /** The document store of apps built before `sql`. Their retained builds still use it. */
+   database: DeclaredRequirements.fields.database,
+   sql: DeclaredRequirements.fields.sql,
+diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+--- a/packages/sdk/src/contracts/executor.ts
++++ b/packages/sdk/src/contracts/executor.ts
+@@ -1,3 +1,4 @@
++import { AppCallsHost } from "./app-calls.ts";
+ import { InteractiveHost } from "./interactive-accounts.ts";
+ import {
+   AccountAcquisitionHost,
+@@ -126,6 +127,24 @@
+  * bounded access acknowledgements described by HostAccessLifecycle.
+  */
+ export interface ResourceLifecycle {
++  readonly appCallAs?: <A, E, R>(
++    input: {
++      readonly app: AppId;
++      readonly owner: OwnerId;
++      readonly target: AppId;
++      readonly scope: "app" | "user";
++      readonly authorizer: string;
++      readonly caller?: string;
++    },
++    work: Effect.Effect<A, E, R>,
++  ) => Effect.Effect<A, E | StorageError, R>;
++  readonly appConnectionAuthorizing?: (input: {
++    readonly app: AppId;
++    readonly owner: OwnerId;
++    readonly target?: AppId;
++    readonly scope: "app" | "user";
++    readonly managing: boolean;
++  }) => Effect.Effect<void, StorageError>;
+   /**
+    * The saved account's placement, resolved from product state, never from the current actor.
+    * Equal placements may group verified identities; null keeps the account independent.
+@@ -479,6 +498,8 @@
+      */
+     readonly search: (input: ToolSearchInput) => Effect.Effect<ToolSearchPage, StorageError>;
+   };
++  readonly [AppCallsHost]: import("./app-calls.ts").AppCallsHost;
++  readonly appConnections: import("./app-calls.ts").AppConnections;
+   readonly apps: Omit<FlatExecutor["apps"], (typeof LegacyVersionEndpoints)[number]> & {
+     readonly workflows: FlatExecutor["appWorkflows"];
+     readonly workflowRuns: FlatExecutor["appWorkflowRuns"];
+@@ -544,6 +565,7 @@
+   Omit<
+     Executor,
+     | typeof WorkflowHost
++    | typeof AppCallsHost
+     | typeof WebhookSourceHost
+     | typeof RepositoryHost
+     | typeof InteractiveHost
+diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
+--- a/packages/sdk/src/contracts/storage.ts
++++ b/packages/sdk/src/contracts/storage.ts
+@@ -149,6 +149,8 @@
+       | WebhookId
+       | WorkflowRunId
+       | WorkflowInputId
++      | import("./app-calls.ts").AppConnectionId
++      | import("./app-calls.ts").AppCallReceiptId
+       | import("./app-views.ts").AppViewId
+       | import("./events.ts").EventSubscriptionId
+       | import("./events.ts").StoredEventId,
+@@ -164,6 +166,8 @@
+       | WebhookId
+       | WorkflowRunId
+       | WorkflowInputId
++      | import("./app-calls.ts").AppConnectionId
++      | import("./app-calls.ts").AppCallReceiptId
+       | import("./app-views.ts").AppViewId
+       | import("./events.ts").EventSubscriptionId
+       | import("./events.ts").StoredEventId,
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -57,3 +57,4 @@
+ export { asciiJson } from "./implementation/ascii-json.ts";
+ 
+ export * from "./contracts/app-views.ts";
++export * from "./contracts/app-calls.ts";
+diff --git a/packages/sdk/src/implementation/app-call-receipts.ts b/packages/sdk/src/implementation/app-call-receipts.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-call-receipts.ts
+@@ -0,0 +1,132 @@
++/** Host-only effect fence. Expiry closes a reservation; it never transfers dispatch authority. */
++import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
++import { AppCallFailed } from "apps/contracts";
++import { AppCallReceiptId } from "../contracts/app-calls.ts";
++import { Json, JsonObject, StorageError, type AppId, type OwnerId } from "../contracts/shared.ts";
++import type { Credentials } from "../contracts/storage.ts";
++import { lockApp } from "./apps.ts";
++import { query, transaction, type Query } from "./database.ts";
++const Payload = Schema.Struct({
++  fingerprint: Schema.String,
++  dispatch: Schema.String,
++  result: Schema.optionalKey(Json),
++});
++export const makeAppCallReceipts = (db: Query, credentials: Credentials, crypto: Crypto.Crypto) => {
++  const find = (id: AppCallReceiptId) =>
++    query(() => db.findFirst("appCallReceipts", { where: (b) => b("id", "=", id) }));
++  type Row = NonNullable<Effect.Success<ReturnType<typeof find>>>;
++  const read = (row: Row) =>
++    credentials.decrypt(AppCallReceiptId.make(row.id), Redacted.make(row.encrypted)).pipe(
++      Effect.flatMap((value) => Schema.decodeUnknownEffect(Payload)(Redacted.value(value))),
++      Effect.mapError(() => new StorageError()),
++    );
++  const seal = (id: AppCallReceiptId, value: typeof Payload.Type) =>
++    Schema.encodeEffect(Schema.toCodecJson(Payload))(value).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
++      Effect.flatMap((value) => credentials.encrypt(id, Redacted.make(value))),
++      Effect.mapError(() => new StorageError()),
++    );
++  const unknown = (row: Row, now: Date) =>
++    query(() =>
++      db.updateMany("appCallReceipts", {
++        where: (b) => b.and(b("id", "=", row.id), b("state", "=", "reserved")),
++        set: { state: "outcome_unknown", updatedAt: now },
++      }),
++    );
++  const reserve = (input: {
++    readonly id: AppCallReceiptId;
++    readonly app: AppId;
++    readonly owner: OwnerId;
++    readonly connection: string;
++    readonly fingerprint: string;
++    readonly deadline: number;
++  }) =>
++    transaction(db, () =>
++      Effect.gen(function* () {
++        yield* lockApp(db, input);
++        const now = new Date(yield* Clock.currentTimeMillis);
++        const row = yield* find(input.id);
++        if (row !== null) {
++          if (
++            row.app !== input.app ||
++            row.owner !== input.owner ||
++            row.connection !== input.connection
++          )
++            return yield* new AppCallFailed({ retryable: false, reason: "identity_conflict" });
++          const payload = yield* read(row);
++          if (payload.fingerprint !== input.fingerprint)
++            return yield* new AppCallFailed({ retryable: false, reason: "identity_conflict" });
++          if (row.state === "reserved" && now >= row.deadline) {
++            yield* unknown(row, now);
++            return { status: "outcome_unknown" as const };
++          }
++          if (row.state === "completed" && payload.result !== undefined)
++            return { status: "completed" as const, value: payload.result };
++          return {
++            status:
++              row.state === "reserved" ? ("in_progress" as const) : ("outcome_unknown" as const),
++          };
++        }
++        const expired = input.deadline <= now.getTime();
++        const dispatch = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
++        const encrypted = yield* seal(input.id, { fingerprint: input.fingerprint, dispatch });
++        yield* query(() =>
++          db.create("appCallReceipts", {
++            id: input.id,
++            app: input.app,
++            owner: input.owner,
++            connection: input.connection,
++            state: expired ? "outcome_unknown" : "reserved",
++            deadline: new Date(input.deadline),
++            encrypted,
++            createdAt: now,
++            updatedAt: now,
++          }),
++        );
++        return expired
++          ? { status: "outcome_unknown" as const }
++          : { status: "reserved" as const, dispatch };
++      }),
++    );
++  const finish = (input: {
++    readonly id: AppCallReceiptId;
++    readonly app: AppId;
++    readonly owner: OwnerId;
++    readonly dispatch: string;
++    readonly result?: Json;
++  }) =>
++    transaction(db, () =>
++      Effect.gen(function* () {
++        yield* lockApp(db, input);
++        const row = yield* find(input.id);
++        if (row === null || row.app !== input.app || row.owner !== input.owner)
++          return yield* new AppCallFailed({ retryable: false, reason: "identity_conflict" });
++        const payload = yield* read(row);
++        if (payload.dispatch !== input.dispatch)
++          return yield* new AppCallFailed({ retryable: false, reason: "identity_conflict" });
++        if (row.state !== "reserved")
++          return {
++            status:
++              row.state === "completed" ? ("completed" as const) : ("outcome_unknown" as const),
++          };
++        const now = new Date(yield* Clock.currentTimeMillis);
++        if (
++          input.result === undefined ||
++          now >= row.deadline ||
++          new TextEncoder().encode(JSON.stringify(input.result)).byteLength > 1_048_576
++        ) {
++          yield* unknown(row, now);
++          return { status: "outcome_unknown" as const };
++        }
++        const encrypted = yield* seal(input.id, { ...payload, result: input.result });
++        yield* query(() =>
++          db.updateMany("appCallReceipts", {
++            where: (b) => b.and(b("id", "=", input.id), b("state", "=", "reserved")),
++            set: { state: "completed", encrypted, updatedAt: now },
++          }),
++        );
++        return { status: "completed" as const };
++      }),
++    );
++  return { reserve, finish };
++};
+diff --git a/packages/sdk/src/implementation/app-call-schema.ts b/packages/sdk/src/implementation/app-call-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-call-schema.ts
+@@ -0,0 +1,28 @@
++import { column, idColumn, table } from "fumadb-effect/schema";
++import { Schema } from "effect";
++import { AppId, OwnerId } from "../contracts/shared.ts";
++export const appConnections = table("executor_app_connections", {
++  id: idColumn("id", Schema.String, { type: "varchar(80)" }),
++  app: column("app", AppId, { type: "varchar(255)" }),
++  owner: column("owner", OwnerId, { type: "varchar(255)" }),
++  dependency: column("dependency", Schema.String, { type: "varchar(48)" }),
++  subject: column("subject", Schema.String, { type: "varchar(255)" }),
++  target: column("target", AppId, { type: "varchar(255)" }),
++  authorizer: column("authorizer", Schema.String, { type: "varchar(255)" }),
++  revision: column("revision", Schema.Int),
++  enabled: column("enabled", Schema.Boolean),
++  encrypted: column("encrypted", Schema.Uint8Array),
++  createdAt: column("created_at", Schema.Date),
++  updatedAt: column("updated_at", Schema.Date),
++}).unique("executor_app_connections_binding", ["app", "dependency", "subject"]);
++export const appCallReceipts = table("executor_app_call_receipts", {
++  id: idColumn("id", Schema.String, { type: "varchar(80)" }),
++  app: column("app", AppId, { type: "varchar(255)" }),
++  owner: column("owner", OwnerId, { type: "varchar(255)" }),
++  connection: column("connection", Schema.String, { type: "varchar(80)" }),
++  state: column("state", Schema.String, { type: "varchar(32)" }),
++  deadline: column("deadline", Schema.Date),
++  encrypted: column("encrypted", Schema.Uint8Array),
++  createdAt: column("created_at", Schema.Date),
++  updatedAt: column("updated_at", Schema.Date),
++});
+diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/implementation/app-calls.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-calls.ts
+@@ -0,0 +1,147 @@
++import { Validator } from "@cfworker/json-schema";
++/** Saved dependency authority feeds normal native tool hosting; this slice only admits queries. */
++import { Context, Effect, Schema } from "effect";
++import { AppCallCommand, AppCallFailed, AppDependency, type AppCallHost } from "apps/contracts";
++import { AppId, ToolName, type Json } from "../contracts/shared.ts";
++import { CurrentActor, type Executor, type ResourceLifecycle } from "../contracts/executor.ts";
++import { storedApp, storedVersion } from "./apps.ts";
++import type { Query } from "./database.ts";
++import type { makeAppConnections } from "./app-connections.ts";
++const AppCallDepth = Context.Reference<number>("executor/AppCallDepth", { defaultValue: () => 0 });
++const same = (left: unknown, right: unknown): boolean => {
++  if (left === right) return true;
++  if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
++    return false;
++  if (Array.isArray(left) || Array.isArray(right))
++    return (
++      Array.isArray(left) &&
++      Array.isArray(right) &&
++      left.length === right.length &&
++      left.every((value, index) => same(value, right[index]))
++    );
++  const a = Object.entries(left),
++    b = Object.entries(right);
++  return (
++    a.length === b.length &&
++    a.every(([key, value]) => Object.hasOwn(right, key) && same(value, Reflect.get(right, key)))
++  );
++};
++export const makeAppCalls = (options: {
++  readonly db: Query;
++  readonly connections: ReturnType<typeof makeAppConnections>;
++  readonly tools: () => Pick<Executor["tools"], "call">;
++  readonly hooks?: ResourceLifecycle;
++}) => {
++  const dispatchAppCall = (
++    identity: { readonly app: string; readonly build: string; readonly caller?: string },
++    raw: AppCallCommand,
++  ) =>
++    Effect.gen(function* () {
++      const command = yield* Schema.decodeUnknownEffect(AppCallCommand)(raw, {
++        onExcessProperty: "error",
++      }).pipe(
++        Effect.mapError(() => new AppCallFailed({ retryable: false, reason: "invalid_input" })),
++      );
++      // No mutation reaches target code until pre-dispatch receipts and their public replay proof ship.
++      if (command.kind !== "query")
++        return yield* new AppCallFailed({ retryable: false, reason: "effects_unavailable" });
++      const depth = yield* AppCallDepth;
++      if (depth >= 8)
++        return yield* new AppCallFailed({ retryable: false, reason: "depth_exceeded" });
++      const app = yield* storedApp(options.db, { app: AppId.make(identity.app) });
++      const version = yield* storedVersion(options.db, app);
++      if (version.build !== identity.build)
++        return yield* new AppCallFailed({ retryable: false, reason: "stale" });
++      const declaration = version.requirements.dependencies?.[command.connection];
++      if (declaration === undefined || declaration.tools[command.tool]?.kind !== command.kind)
++        return yield* new AppCallFailed({ retryable: false, reason: "denied" });
++      if (
++        declaration.scope === "user" &&
++        identity.caller === undefined &&
++        options.hooks !== undefined
++      )
++        return yield* new AppCallFailed({ retryable: false, reason: "denied" });
++      const row = yield* options.connections.find(
++        app.id,
++        command.connection,
++        declaration.scope === "app" ? "" : (identity.caller ?? "local"),
++      );
++      if (row === null)
++        return yield* new AppCallFailed({ retryable: false, reason: "connection_missing" });
++      if (row.owner !== app.owner || !row.enabled || row.target !== command.target)
++        return yield* new AppCallFailed({ retryable: false, reason: "denied" });
++      const accepted = yield* options.connections.payload(row);
++      const operation = declaration.tools[command.tool];
++      const fits = (schema: import("../contracts/shared.ts").JsonObject | undefined, value: Json) =>
++        schema === undefined || new Validator(schema, "2020-12", false).validate(value).valid;
++      if (!fits(operation?.inputSchema, command.input))
++        return yield* new AppCallFailed({ retryable: false, reason: "invalid_input" });
++      if (
++        !same(
++          Schema.encodeSync(AppDependency)(declaration),
++          Schema.encodeSync(AppDependency)(accepted.declaration),
++        )
++      )
++        return yield* new AppCallFailed({ retryable: false, reason: "stale" });
++      // A removed target or a target from another owner cannot be replaced by a similar app.
++      const target = yield* storedApp(options.db, { app: row.target, owner: app.owner });
++      const targetVersion = yield* storedVersion(options.db, target);
++      const execute = options
++        .tools()
++        .call({
++          app: target.id,
++          version: targetVersion.id,
++          accounts: accepted.accounts,
++          tool: ToolName.make(command.tool),
++          kind: "query",
++          input: command.input,
++        })
++        .pipe(
++          Effect.flatMap((result) =>
++            result.status === "completed" && result.toolError !== true
++              ? Effect.succeed(result.value)
++              : Effect.fail(new AppCallFailed({ retryable: false, reason: "denied" })),
++          ),
++          Effect.flatMap((value) =>
++            fits(operation?.outputSchema, value)
++              ? Effect.succeed(value)
++              : Effect.fail(new AppCallFailed({ retryable: false, reason: "invalid_output" })),
++          ),
++          Effect.provideService(
++            CurrentActor,
++            row.authorizer === "local" ? undefined : row.authorizer,
++          ),
++          Effect.provideService(AppCallDepth, depth + 1),
++        );
++      if (options.hooks === undefined) return yield* execute;
++      if (options.hooks.appCallAs === undefined)
++        return yield* new AppCallFailed({ retryable: false, reason: "denied" });
++      return yield* options.hooks.appCallAs(
++        {
++          app: app.id,
++          owner: app.owner,
++          target: target.id,
++          scope: declaration.scope,
++          authorizer: row.authorizer,
++          ...(identity.caller === undefined ? {} : { caller: identity.caller }),
++        },
++        execute,
++      );
++    }).pipe(
++      Effect.mapError((error) =>
++        Schema.is(AppCallFailed)(error)
++          ? error
++          : new AppCallFailed({ retryable: false, reason: "denied" }),
++      ),
++    );
++  const forInvocation = (identity: {
++    readonly app: string;
++    readonly build: string;
++    readonly caller?: string;
++  }): Effect.Effect<AppCallHost> =>
++    Effect.gen(function* () {
++      const services = yield* Effect.context<never>();
++      return (command) => dispatchAppCall(identity, command).pipe(Effect.provideContext(services));
++    });
++  return { dispatchAppCall, forInvocation };
++};
+diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/app-connections.ts
+@@ -0,0 +1,197 @@
++import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
++import { AppDependency } from "apps/contracts";
++import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
++import {
++  AppConnection,
++  AppConnectionId,
++  AppConnectionPayload,
++  AppConnectionConflict,
++  AppConnectionRefused,
++  type AppConnectionIdentity,
++  type AppConnections,
++} from "../contracts/app-calls.ts";
++import { JsonObject, StorageError, type AppId } from "../contracts/shared.ts";
++import type { Credentials } from "../contracts/storage.ts";
++import { storedApp, storedVersion, lockApp } from "./apps.ts";
++import { query, transaction, type Query } from "./database.ts";
++
++export const makeAppConnections = (
++  db: Query,
++  credentials: Credentials,
++  crypto: Crypto.Crypto,
++  hooks?: ResourceLifecycle,
++) => {
++  const authorize = (input: AppConnectionIdentity & { target?: AppId }, managing: boolean) =>
++    hooks === undefined
++      ? Effect.void
++      : hooks.appConnectionAuthorizing === undefined
++        ? Effect.fail(new AppConnectionRefused())
++        : hooks
++            .appConnectionAuthorizing({ ...input, managing })
++            .pipe(Effect.mapError(() => new AppConnectionRefused()));
++  const find = (app: AppId, dependency: string, subject: string) =>
++    query(() =>
++      db.findFirst("appConnections", {
++        where: (b) =>
++          b.and(b("app", "=", app), b("dependency", "=", dependency), b("subject", "=", subject)),
++      }),
++    );
++  type Row = NonNullable<Effect.Success<ReturnType<typeof find>>>;
++  const view = (row: Row) =>
++    AppConnection.make({
++      id: AppConnectionId.make(row.id),
++      dependency: row.dependency,
++      target: row.target,
++      scope: row.subject === "" ? "app" : "user",
++      revision: row.revision,
++      enabled: row.enabled,
++    });
++  const payload = (row: Row) =>
++    credentials.decrypt(AppConnectionId.make(row.id), Redacted.make(row.encrypted)).pipe(
++      Effect.flatMap((value) =>
++        Schema.decodeUnknownEffect(AppConnectionPayload)(Redacted.value(value)),
++      ),
++      Effect.mapError(() => new StorageError()),
++    );
++  const seal = (id: AppConnectionId, value: typeof AppConnectionPayload.Type) =>
++    Schema.encodeEffect(Schema.toCodecJson(AppConnectionPayload))(value).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
++      Effect.flatMap((value) => credentials.encrypt(id, Redacted.make(value))),
++      Effect.mapError(() => new StorageError()),
++    );
++  const subject = (scope: "app" | "user") =>
++    Effect.gen(function* () {
++      const actor = yield* CurrentActor;
++      if (scope === "user" && actor === undefined && hooks !== undefined)
++        return yield* new AppConnectionRefused();
++      return scope === "app" ? "" : (actor ?? "local");
++    });
++  const declaration = (input: AppConnectionIdentity) =>
++    Effect.gen(function* () {
++      const app = yield* storedApp(db, input);
++      const version = yield* storedVersion(db, app);
++      const declared = version.requirements.dependencies?.[input.dependency];
++      if (declared?.scope !== input.scope) return yield* new AppConnectionRefused();
++      return yield* Schema.decodeUnknownEffect(AppDependency)(declared).pipe(
++        Effect.mapError(() => new AppConnectionRefused()),
++      );
++    });
++  const current = (input: AppConnectionIdentity & { revision: number }) =>
++    Effect.gen(function* () {
++      yield* lockApp(db, input);
++      yield* authorize(input, true);
++      const row = yield* find(input.app, input.dependency, yield* subject(input.scope));
++      if (row === null || row.owner !== input.owner || row.revision !== input.revision)
++        return yield* new AppConnectionConflict();
++      return row;
++    });
++  const operations: AppConnections = {
++    list: (input) =>
++      Effect.gen(function* () {
++        yield* storedApp(db, input);
++        yield* authorize({ ...input, dependency: "", scope: "user" }, false);
++        const actor = yield* subject("user");
++        const rows = yield* query(() =>
++          db.findMany("appConnections", {
++            where: (b) =>
++              b.and(
++                b("app", "=", input.app),
++                b("owner", "=", input.owner),
++                b.or(b("subject", "=", ""), b("subject", "=", actor)),
++              ),
++          }),
++        );
++        return { connections: rows.map(view) };
++      }).pipe(Effect.catchTag("AppNotFound", () => new AppConnectionRefused())),
++    save: (input) =>
++      transaction(db, () =>
++        Effect.gen(function* () {
++          yield* lockApp(db, input);
++          yield* authorize(input, true);
++          const selected = yield* storedApp(db, { app: input.target, owner: input.owner });
++          yield* authorize({ ...input, target: selected.id }, true);
++          const declared = yield* declaration(input);
++          const actor = yield* subject(input.scope);
++          const old = yield* find(input.app, input.dependency, actor);
++          if ((old?.revision ?? 0) !== input.revision) return yield* new AppConnectionConflict();
++          const id =
++            old === null
++              ? AppConnectionId.make(
++                  `acn_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
++                )
++              : AppConnectionId.make(old.id);
++          const now = new Date(yield* Clock.currentTimeMillis);
++          const values = {
++            app: input.app,
++            owner: input.owner,
++            dependency: input.dependency,
++            subject: actor,
++            target: selected.id,
++            authorizer: (yield* CurrentActor) ?? "local",
++            revision: input.revision + 1,
++            enabled: true,
++            encrypted: yield* seal(id, {
++              declaration: declared,
++              accounts: input.accounts ?? { app: {}, user: {} },
++            }),
++            updatedAt: now,
++          };
++          if (old === null)
++            yield* query(() => db.create("appConnections", { ...values, id, createdAt: now }));
++          else
++            yield* query(() =>
++              db.updateMany("appConnections", { where: (b) => b("id", "=", id), set: values }),
++            );
++          return view({ ...values, id, createdAt: old?.createdAt ?? now });
++        }),
++      ).pipe(
++        Effect.catchTags({
++          AppNotFound: () => new AppConnectionRefused(),
++          AppNotDeployed: () => new AppConnectionRefused(),
++          VersionNotFound: () => new AppConnectionRefused(),
++        }),
++      ),
++    update: (input) =>
++      transaction(db, () =>
++        Effect.gen(function* () {
++          const old = yield* current(input);
++          const now = new Date(yield* Clock.currentTimeMillis);
++          // Disabling also revokes any host confirmation. Re-enabling requires a fresh confirmation.
++          const data = yield* payload(old);
++          const encrypted = yield* seal(AppConnectionId.make(old.id), {
++            declaration: data.declaration,
++            accounts: data.accounts,
++          });
++          yield* query(() =>
++            db.updateMany("appConnections", {
++              where: (b) => b("id", "=", old.id),
++              set: {
++                revision: old.revision + 1,
++                enabled: input.enabled,
++                encrypted,
++                updatedAt: now,
++              },
++            }),
++          );
++          return view({
++            ...old,
++            revision: old.revision + 1,
++            enabled: input.enabled,
++            encrypted,
++            updatedAt: now,
++          });
++        }),
++      ).pipe(Effect.catchTag("AppNotFound", () => new AppConnectionRefused())),
++    remove: (input) =>
++      transaction(db, () =>
++        Effect.gen(function* () {
++          const old = yield* current(input);
++          yield* query(() =>
++            db.deleteMany("appConnections", { where: (b) => b("id", "=", old.id) }),
++          );
++          return { success: true as const };
++        }),
++      ).pipe(Effect.catchTag("AppNotFound", () => new AppConnectionRefused())),
++  };
++  return { operations, find, payload, seal, view, declaration, authorize };
++};
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -500,6 +500,9 @@
+         ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
+         ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
+         ...(built.requirements.models === undefined ? {} : { models: built.requirements.models }),
++        ...(built.requirements.dependencies === undefined
++          ? {}
++          : { dependencies: built.requirements.dependencies }),
+         accounts: Object.fromEntries(
+           entries.map(
+             ({
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -1,3 +1,7 @@
++import { makeAppCalls } from "./app-calls.ts";
++import { makeAppCallReceipts } from "./app-call-receipts.ts";
++import { AppCallsHost } from "../contracts/app-calls.ts";
++import { makeAppConnections } from "./app-connections.ts";
+ import { modelsForInvocation } from "./models.ts";
+ import { makeAccountObservations } from "./account-observations.ts";
+ import { makeObservationReader } from "./account-observation-read.ts";
+@@ -157,25 +161,49 @@
+           ),
+     };
+     const base = toEffectRuntime(options.runtime, options.blobs, cache);
++    const appConnectionStore = makeAppConnections(db, credentials, crypto, options.hooks);
++    const appCallReceipts = makeAppCallReceipts(db, credentials, crypto);
++    const appCalls = makeAppCalls({
++      db,
++      connections: appConnectionStore,
++      tools: () => tools,
++      ...(options.hooks === undefined ? {} : { hooks: options.hooks }),
++    });
++    const callContext = (input: {
++      readonly app: string;
++      readonly build: string;
++      readonly caller?: string;
++      readonly workflowControls?: import("apps/contracts").WorkflowHostControls;
++    }) =>
++      Effect.gen(function* () {
++        const appCall = yield* appCalls.forInvocation(input);
++        return input.workflowControls === undefined
++          ? {}
++          : { workflowControls: { ...input.workflowControls, appCall } };
++      });
+     const runtime: Runtime = {
+       ...base,
++      query: (input) =>
++        Effect.gen(function* () {
++          return yield* base.query({ ...input, ...(yield* callContext(input)) });
++        }),
+       call: (input) =>
+         Effect.gen(function* () {
+           const models = yield* modelsForInvocation(db, options.models, {
+             ...input,
+             durableStep: input.replay !== undefined,
+           });
+-          return yield* base.call({ ...input, models });
++          return yield* base.call({ ...input, models, ...(yield* callContext(input)) });
+         }).pipe(Effect.provideService(AppEventSink, sink)),
+       mutate: (input) =>
+         Effect.gen(function* () {
+           const models = yield* modelsForInvocation(db, options.models, input);
+-          return yield* base.mutate({ ...input, models });
++          return yield* base.mutate({ ...input, models, ...(yield* callContext(input)) });
+         }).pipe(Effect.provideService(AppEventSink, sink)),
+       webhook: (input) =>
+         Effect.gen(function* () {
+           const models = yield* modelsForInvocation(db, options.models, input);
+-          return yield* base.webhook({ ...input, models });
++          return yield* base.webhook({ ...input, models, ...(yield* callContext(input)) });
+         }).pipe(Effect.provideService(AppEventSink, sink)),
+       workflow: (input) =>
+         Effect.gen(function* () {
+@@ -183,7 +211,7 @@
+             ...input,
+             durableStep: true,
+           });
+-          return yield* base.workflow({ ...input, models });
++          return yield* base.workflow({ ...input, models, ...(yield* callContext(input)) });
+         }),
+     };
+     // The operator's own OAuth clients, by ID; their tokens are managed.
+@@ -360,7 +388,11 @@
+               durableStep: true,
+               ...(context.caller === undefined ? {} : { caller: context.caller }),
+             });
+-            return { ...context, models };
++            return {
++              ...context,
++              models,
++              ...(yield* callContext({ app: seed.app, build: seed.build, ...context })),
++            };
+           }),
+       },
+       [RepositoryHost]: {
+@@ -545,6 +577,8 @@
+             return result;
+           }),
+       },
++      [AppCallsHost]: { receipts: appCallReceipts },
++      appConnections: appConnectionStore.operations,
+       publications: catalog.publications,
+       registry: catalog.registry,
+       skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -7,7 +7,7 @@
+ export type Query = ReturnType<typeof database>;
+ /** Select the latest migrated storage schema. */
+ export const database = (storage: ExecutorDatabase) => ({
+-  ...storage.orm("4.0.25"),
++  ...storage.orm("4.0.27"),
+   lockAccountObservation: storage.lockAccountObservation,
+ });
+ 
+diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
+--- a/packages/sdk/src/implementation/owners.ts
++++ b/packages/sdk/src/implementation/owners.ts
+@@ -124,6 +124,12 @@
+         yield* query(() =>
+           tx.deleteMany("scheduledRuns", { where: (b) => b("owner", "=", owner) }),
+         );
++        yield* query(() =>
++          tx.deleteMany("appConnections", { where: (b) => b("owner", "=", owner) }),
++        );
++        yield* query(() =>
++          tx.deleteMany("appCallReceipts", { where: (b) => b("owner", "=", owner) }),
++        );
+         yield* query(() => tx.deleteMany("schedules", { where: (b) => b("owner", "=", owner) }));
+         // Webhook sources belong to the app owner; delete by owner for the same reason as schedules.
+         yield* query(() =>
+diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
+--- a/packages/sdk/src/implementation/promise.ts
++++ b/packages/sdk/src/implementation/promise.ts
+@@ -1,3 +1,4 @@
++import { AppConnectionInputs } from "../contracts/app-calls.ts";
+ import {
+   WorkflowInputTarget,
+   AnswerWorkflowInput,
+@@ -83,6 +84,12 @@
+ /** Adapt an existing native client; each Promise call runs one decoded operation. */
+ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
+   return {
++    appConnections: {
++      list: (input) => run(AppConnectionInputs.list, input, executor.appConnections.list),
++      save: (input) => run(AppConnectionInputs.save, input, executor.appConnections.save),
++      update: (input) => run(AppConnectionInputs.update, input, executor.appConnections.update),
++      remove: (input) => run(AppConnectionInputs.remove, input, executor.appConnections.remove),
++    },
+     skills: {
+       bundle: (input) => run(AppSkillInputs.list, input, executor.skills.bundle),
+       list: (input) => run(AppSkillInputs.list, input, executor.skills.list),
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -1,3 +1,4 @@
++import { appConnections, appCallReceipts } from "./app-call-schema.ts";
+ import { accountAcquisitions4020 } from "./account-acquisition-schema.ts";
+ import { accountDriverChecks } from "./account-driver-check-schema.ts";
+ import { accountObservations } from "./account-observation-schema.ts";
+@@ -806,6 +807,18 @@
+       }),
+     },
+   }),
++  schema({
++    version: "4.0.27",
++    tables: { ...version4025Tables, appConnections, appCallReceipts },
++    relations: {
++      accounts: ({ one }) => ({
++        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
++      }),
++      apps: ({ one }) => ({
++        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
++      }),
++    },
++  }),
+ ] as const;
+ 
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -22,7 +22,7 @@
+     const sql = yield* SqlClient.SqlClient;
+     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
+     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
+-    const db = bindOrm(client.orm("4.0.25"), sql, reactivity);
++    const db = bindOrm(client.orm("4.0.27"), sql, reactivity);
+     const checkMigration = Effect.gen(function* () {
+       const migrator = yield* client.createMigrator;
+       const version = yield* migrator.version;
+@@ -77,7 +77,7 @@
+       Effect.mapError(() => new StorageError()),
+     );
+     return {
+-      orm: (_version: "4.0.24" | "4.0.25") => db,
++      orm: (_version: "4.0.24" | "4.0.25" | "4.0.27") => db,
+       // The ORM forbids primary-key updates. Lock without changing source data or provenance.
+       lockAccountObservation: (id: string) =>
+         sql`update executor_account_observations set id = id where id = ${id}`.pipe(
+diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/sdk/src/implementation/worker-workflow-rpc.ts
+--- a/packages/sdk/src/implementation/worker-workflow-rpc.ts
++++ b/packages/sdk/src/implementation/worker-workflow-rpc.ts
+@@ -1,3 +1,4 @@
++import { AppCallCommand, AppCallReply, AppCallFailed } from "apps/contracts";
+ /** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
+ import { Cause, Effect, Redacted, Schema } from "effect";
+ import {
+@@ -101,8 +102,33 @@
+ export const invocationWorkflowControls = (controls: WorkflowHostControls, signal: AbortSignal) =>
+   Effect.gen(function* () {
+     const services = yield* Effect.context<never>();
+-    return (input: unknown): Promise<unknown> =>
+-      Effect.runPromiseWith(services)(
++    return (input: unknown): Promise<unknown> => {
++      const command = Schema.decodeUnknownOption(AppCallCommand)(input, {
++        onExcessProperty: "error",
++      });
++      if (command._tag === "Some")
++        return Effect.runPromiseWith(services)(
++          (controls.appCall === undefined
++            ? Effect.fail(new AppCallFailed({ retryable: false, reason: "connection_missing" }))
++            : controls.appCall(command.value)
++          ).pipe(
++            Effect.matchCause({
++              onSuccess: (value) => ({ ok: true as const, value }),
++              onFailure: (cause) => {
++                const failure = Cause.squash(cause);
++                return {
++                  ok: false as const,
++                  error: Schema.is(AppCallFailed)(failure)
++                    ? failure
++                    : new AppCallFailed({ retryable: false, reason: "outcome_unknown" }),
++                };
++              },
++            }),
++            Effect.flatMap(Schema.encodeUnknownEffect(AppCallReply)),
++          ),
++          { signal },
++        );
++      return Effect.runPromiseWith(services)(
+         reply(
+           Effect.gen(function* () {
+             const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input);
+@@ -120,4 +146,5 @@
+         ),
+         { signal },
+       );
++    };
+   });
