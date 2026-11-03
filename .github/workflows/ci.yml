@@ -558,6 +558,31 @@ jobs:
           bun run e2e:cloud --test-name
           "^Cloud encrypted workflow|^members contribute to opted-in app collections|^pending contributions recheck|^departure diagnostics retain the real eighth failure|^removing a member or leaving|^unlinking or losing native app and account grants|^the Accounts tab names contributors"
           --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contributed-accounts-e2e
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/server.log
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
+  contributed-account-recipes:
+    runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated recipe test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
       - name: Verify editable workflow fields and departure questions
         run: |
           node e2e/recipe-checks.mjs .generated/alerting-checks/workflow-fields
@@ -565,14 +590,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: contributed-accounts-e2e
+          name: contributed-account-recipes
           path: |
             .generated/alerting-checks/*/report.json
             .generated/alerting-checks/*/partial-checks.json
             .generated/alerting-checks/*/failure.txt
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/server.log
-            .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
   personal-data-reporting:
