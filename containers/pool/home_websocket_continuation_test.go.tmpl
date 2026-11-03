@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -15,7 +16,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestBasaltHomeOnlyModelContinuation(t *testing.T) {
@@ -60,7 +60,7 @@ func TestBasaltHomeOnlyModelContinuation(t *testing.T) {
 		if errRead != nil {
 			t.Fatalf("read websocket response %d: %v", index+1, errRead)
 		}
-		if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		if got := ojson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
 			t.Fatalf("response %d type = %q, want %q: %s", index+1, got, wsEventTypeCompleted, payload)
 		}
 		if index == 0 {

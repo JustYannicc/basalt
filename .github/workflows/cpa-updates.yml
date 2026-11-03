@@ -1,0 +1,48 @@
+name: CPA updates
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpa-updates
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.10
+          cache: false
+      - name: Prepare complete CPA pins and release notes
+        run: python3 scripts/cpa-update.py --body-file "$RUNNER_TEMP/cpa-release.md"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_UPDATE_TOKEN }}
+      - name: Open the coordinator-reviewed update
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.RELEASE_UPDATE_TOKEN }}
+          branch: cpa-updates/latest
+          title: "chore(pool): update CLIProxyAPI"
+          commit-message: "chore(pool): update CLIProxyAPI pins"
+          body-path: ${{ runner.temp }}/cpa-release.md
+          draft: false
+          add-paths: |
+            containers/pool/releases.json
+            containers/pool/sources.json
+            containers/pool/typesafe/go.mod
+            containers/pool/typesafe/go.sum
+            scripts/releases/patches.json
+            scripts/releases/receipts/node.json
+            architecture/model/basalt.c4
