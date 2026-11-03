@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { signEnvelope } from "../../src/pool/token.ts";
 import { canonical, hash } from "./artifact.ts";
 import { failure, failureReceipt, OperationFailure } from "./failure.ts";
+import { importRemovalName, importRemovalPath } from "../../src/pool/import-removal/paths.ts";
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,6 +57,10 @@ export async function productionOperation(
     request,
     recipient: input.recipient,
   };
+  if (input.selection === importRemovalName && action === "inventory" && input.planSha256) {
+    if (!/^[a-f0-9]{64}$/.test(input.planSha256)) throw new OperationFailure(failure("config", "config"));
+    operation.planSha256 = input.planSha256;
+  }
   if (action === "apply") {
     const previous = input.previous;
     if (
@@ -87,7 +92,7 @@ export async function productionOperation(
   }).catch(() => {
     throw new OperationFailure(failure("auth", "auth"));
   });
-  const response = await fetcher(`${target.origin}/api/internal/production-ops`, {
+  const response = await fetcher(`${target.origin}${input.selection === importRemovalName ? importRemovalPath : "/api/internal/production-ops"}`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ envelope }),

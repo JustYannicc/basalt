@@ -1,0 +1,59 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index ce0a86d..a14b8c5 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -138,8 +138,9 @@ export const cloudExecutor = Effect.fn(function* (
+         blobs: yield* cachedVersionSources(origin, blobs),
+         runtime: yield* makeRuntime,
+         workflows,
++        // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
+         workflowInputUrl: ({ owner, app, id }) =>
+-          `${origin}/org/${encodeURIComponent(owner)}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
++          `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+         registry: {
+           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
+             Effect.provideContext(services),
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index c9541f6..f7c7750 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -126,8 +126,9 @@ export const selfHostExecutorServices = <E, R>(
+           Effect.succeed(yield* SqlClient.SqlClient),
+         ),
+         workflows,
++        // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
+         workflowInputUrl: ({ owner, app, id }) =>
+-          `${origin}/org/${encodeURIComponent(owner)}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
++          `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+         registry,
+         hooks: lifecycle.hooks,
+         oauth: {
+diff --git a/e2e/tests/workflow-input-browser.spec.ts b/e2e/tests/workflow-input-browser.spec.ts
+index 4eeab4d..3a96281 100644
+--- a/e2e/tests/workflow-input-browser.spec.ts
++++ b/e2e/tests/workflow-input-browser.spec.ts
+@@ -43,6 +43,24 @@ layer(HostedLive, { excludeTestServices: true })("Human workflow requests", (it)
+         ];
+         for (const [index, message] of messages.entries()) {
+           const question = yield* f.pending(run.id);
++          if (index === 0) {
++            const reviewUrl = yield* Schema.decodeUnknownEffect(Schema.String)(question.reviewUrl);
++            yield* browser.use("Open the exact review URL returned by the workflow API", (page) =>
++              page.goto(reviewUrl),
++            );
++            yield* browser.use("The external link opens the actual pending question", (page) =>
++              page.getByRole("heading", { name: message, exact: true }).waitFor(),
++            );
++            yield* browser.use("The returned link reaches the answer form", (page) =>
++              page.getByRole("textbox", { name: "value", exact: true }).waitFor(),
++            );
++            yield* browser.use("The organization ID resolves to its canonical slug", (page) =>
++              page.waitForURL(
++                `**/org/${f.actors.organization.slug}/approvals/workflow/${question.app}/${question.id}`,
++              ),
++            );
++            yield* browser.checkpoint("Returned review URL opens its workflow question");
++          }
+           yield* browser.use("Open the current saved queue link", (page) => page.goto(queue));
+           yield* browser.use("Enter through Human in the loop", (page) =>
+             page
