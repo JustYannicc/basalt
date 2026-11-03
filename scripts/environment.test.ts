@@ -25,9 +25,11 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   const source = Object.fromEntries(requiredSecrets.map((name) => [name, "fixture"]));
   source.POOL_APP_SIGNING_KEY = "ab".repeat(32);
   source.POOL_MODEL_HISTORY_ENABLED = "false";
+  source.GOOGLE_MAPS_ROUTES_API_KEY = "production-routes-fixture";
   const env = deployEnvironment(source);
   assert.equal(env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
   assert.equal(env.POOL_APP_SIGNING_KEY, source.POOL_APP_SIGNING_KEY);
+  assert.equal(env.GOOGLE_MAPS_ROUTES_API_KEY, source.GOOGLE_MAPS_ROUTES_API_KEY);
   assert.equal(env.EXECUTOR_APPS_VERSION, "0.0.1-beta.104-basalt.1");
   assert.ok(env.EXECUTOR_APPS_FRAMEWORK!.endsWith("/.upstream/.local/basalt-framework"));
   assert.equal(env.BETTER_AUTH_URL, "https://app.signalbox.run");
@@ -138,6 +140,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
     PREVIEW_CODEX_CLI_AUTH_JSON: "private-codex-native",
     EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "private-production-connector",
     RELEASE_UPDATE_TOKEN: "private-repository-token",
+    GOOGLE_MAPS_ROUTES_API_KEY: "production-routes-key-must-not-pass-through",
     UNKNOWN_FUTURE_SECRET: "must-not-pass-through",
   });
 
@@ -180,6 +183,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.POSTHOG_PROJECT_KEY, undefined);
 
   assert.equal(first.deploy.POOL_APP_SIGNING_KEY_PREVIOUS, undefined);
+  assert.equal(first.deploy.GOOGLE_MAPS_ROUTES_API_KEY, undefined);
   for (const name of [
     "GOOGLE_CLIENT_SECRET",
     "GITHUB_CLIENT_SECRET",

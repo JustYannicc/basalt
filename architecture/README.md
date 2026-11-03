@@ -156,3 +156,18 @@ Default check recipes are private app copies, so detection rules and delivery ch
 Workflow review forms and custom display hosts load after browser hydration, keeping their code out of the Dashboard Worker upload. Hosted custom displays reuse the existing private MCP Worker, which already owns MCP App views and their resource dispatch. The API checks the current question recipient and access before each private call; the MCP Worker binds that request's verified caller, organization and policy to the normal MCP authorization backend for resource reads, tool calls and approval resumes. Product usage events return with the result to the API's request-owned sink. This adds a private `McpServer` binding, with no new Worker or storage migration.
 
 The model gateway registers native System One routes through the backend's server and provider execution hooks. Home still admits each request and selects its account, applies limits and records native token usage. The plugin supplies the documented Jev catalog while the pinned Home discovery callback receives secret-free account projections; live discovery waits for the upstream full-auth fix. The edge forwards protocol metadata instead of owning a second provider catalog. The `/typesafe` API root preserves the native SDK's model-list shape beside the shared model catalog. Native pool links mirror an existing API-key account through an optional host driver hook. Storage 4.0.25 retains an independently encrypted mirror reference in the existing account-acquisition row; account fields and provider identity stay untouched. Each credential generation has an immutable Home UUID, and only a current completed binding is available to the membership reader. The link preflight checks current app and account access before copying fields, then rechecks the published binding in the final link transaction. Unlink keeps the account and mirror; deleting the account retires its mirror. Canonical registrations and product composition plug into this generic seam.
+
+## Hosted Routes
+
+The hosted Google Maps Routes option sends a personal, revocable capability to the host.
+The Google key stays in the host configuration. A single Postgres ledger reserves each
+Google request before dispatch across every app instance and organization, with a
+620-request UTC calendar-month ceiling. Failed or uncertain dispatches still count.
+Google's project quotas independently cap daily and minute usage; budget emails only alert.
+Health checks read local readiness and never call Google. Bring-your-own-key Maps calls
+keep their existing provider and do not use the hosted allowance.
+
+Hosted migration 15 adds the usage ledger and the per-app/person provisioning mapping.
+Unlinking or deleting access keeps the mapping so a later read cannot silently recreate it.
+The proxy checks current membership, app use, account use, the link and the signed nonce
+on every call. Preview deployments receive no production Routes key.
