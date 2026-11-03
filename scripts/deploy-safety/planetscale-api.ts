@@ -109,7 +109,7 @@ export class PlanetScaleApi {
     const value = await this.request(
       "POST",
       `/organizations/${this.organization}/databases/${encodePathSegment(databaseName)}/branches/${encodePathSegment(branchName)}/backups`,
-      { name, emergency: false },
+      { name, emergency: false, retention_value: 30, retention_unit: "day" },
       [201],
     );
     return parseBackup(value);

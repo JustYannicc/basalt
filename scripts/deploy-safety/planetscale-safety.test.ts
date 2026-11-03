@@ -110,7 +110,7 @@ test("branch backup is completed, protected and records both logical databases w
   assert.ok(backupName.length <= MAXIMUM_BACKUP_NAME_LENGTH);
   assert.equal(backupName, createBackupName(report, "main", "PS_5", true));
   assert.deepEqual(createBackupMetadata(report, "main", "PS_5", true).scope.logicalDatabases, ["postgres", "basalt_pool"]);
-  assert.deepEqual(create.body, { name: backupName, emergency: false });
+  assert.deepEqual(create.body, { name: backupName, emergency: false, retention_value: 30, retention_unit: "day" });
   assert.equal(requests.some((request) => request.method === "PATCH" && (request.body as { protected?: boolean }).protected === true), true);
   assert.ok(requests.every((request) => request.headers.get("authorization") === "service-id-fixture:service-secret-fixture"));
   assert.ok(requests.every((request) => !request.headers.get("authorization")?.startsWith("Bearer ")));
