@@ -1,0 +1,511 @@
+diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
+index 57265da8..8760fc18 100644
+--- a/apps/hosted/cloud/src/implementation/build-admission.ts
++++ b/apps/hosted/cloud/src/implementation/build-admission.ts
+@@ -1,65 +1,52 @@
+ /**
+- * Bound how many builds one compiler isolate runs at once.
+- *
+- * Every request an isolate serves shares its memory, and esbuild's WebAssembly heap keeps its
+- * peak. When several builds that install npm packages ran together, the isolate exceeded its
+- * memory limit and the runtime failed every build in flight: as memory failures, as lost
+- * connections, or as builds that never answered.
+- *
+- * Waiting uses promises, not an Effect semaphore. A promise settled by another request resumes
+- * its waiter in the waiter's own I/O context (Workers' cross-request promise handling), so its
+- * timers and fetches stay its own. A request can be cancelled while it holds a slot, without
+- * running its finalizers, so each slot is a lease: after `lease` a waiter takes the slot over.
++ * Bound an isolate's simultaneous builds without sharing request-owned continuations. Waiters
++ * read leases on their own timers. Expiry recovers an owner whose request ended before cleanup;
++ * a late release only removes its own lease.
+  */
+ import { Duration, Effect } from "effect";
+
+ interface Slot {
+-  readonly released: Promise<void>;
+   readonly expires: number;
+ }
+
++const check = { min: 10, max: 200 };
++
+ export const makeBuildAdmission = (slots: number, lease: Duration.Input) => {
+   const leaseMillis = Duration.toMillis(lease);
+   const held = new Set<Slot>();
+-  const acquire = async (): Promise<() => void> => {
++  const acquire = Effect.gen(function* () {
++    const since = Date.now();
+     for (;;) {
+       const now = Date.now();
+       for (const slot of held) if (slot.expires <= now) held.delete(slot);
+       if (held.size < slots) {
+-        let release = () => {};
+-        const released = new Promise<void>((resolve) => {
+-          release = resolve;
+-        });
+-        const slot = { released, expires: now + leaseMillis };
++        const slot = { expires: now + leaseMillis };
+         held.add(slot);
+-        return () => {
+-          held.delete(slot);
+-          release();
+-        };
++        return slot;
+       }
+       const first = Math.min(...Array.from(held, (slot) => slot.expires));
+-      let timer: ReturnType<typeof setTimeout> | undefined;
+-      await Promise.race([
+-        ...Array.from(held, (slot) => slot.released),
+-        new Promise<void>((resolve) => {
+-          timer = setTimeout(resolve, Math.max(0, first - now));
+-        }),
+-      ]);
+-      clearTimeout(timer);
++      yield* Effect.sleep(
++        Math.min(first - now, Math.max(check.min, Math.min(check.max, (now - since) / 4))),
++      );
+     }
+-  };
+-  /** Run a build once a slot is free, and free the slot when the build ends. */
++  });
+   return <A, E, R>(
+     build: Effect.Effect<A, E, R>,
+     phase?: (phase: "admitted" | "released") => void,
+   ) =>
+-    Effect.acquireUseRelease(
+-      Effect.promise(acquire).pipe(Effect.withSpan("compiler.admission")),
+-      () => Effect.sync(() => phase?.("admitted")).pipe(Effect.andThen(build)),
+-      (release) =>
+-        Effect.sync(() => {
+-          release();
+-          phase?.("released");
+-        }),
++    Effect.scoped(
++      Effect.gen(function* () {
++        yield* Effect.acquireRelease(
++          acquire.pipe(Effect.withSpan("compiler.admission")),
++          (slot) =>
++            Effect.sync(() => {
++              held.delete(slot);
++              phase?.("released");
++            }),
++          { interruptible: true },
++        );
++        phase?.("admitted");
++        return yield* build;
++      }),
+     );
+ };
+diff --git a/bun.lock b/bun.lock
+index dfe9d5ef..e91edefb 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -862,6 +862,7 @@
+     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
+     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
+     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
++    "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
+     "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
+     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
+     "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
+diff --git a/package.json b/package.json
+index 3fe21ca0..4ea4aa7e 100644
+--- a/package.json
++++ b/package.json
+@@ -174,6 +174,7 @@
+     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
+     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
+     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
++    "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
+     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
+     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
+     "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
+diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
+index a4915b9e..7e798055 100644
+--- a/packages/sdk/src/implementation/worker-build.ts
++++ b/packages/sdk/src/implementation/worker-build.ts
+@@ -183,8 +183,9 @@ export const compileWorkerApp = (
+     const sourceMap = serverSourceMap(entry);
+     host.onPhase?.("bundle");
+     const compiled = yield* Effect.tryPromise({
+-      try: () =>
++      try: (signal) =>
+         createApp({
++          signal,
+           files: filesystem,
+           installDependencies: false,
+           server: entry,
+diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
+index e192b4ab..0cc983db 100644
+--- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
++++ b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
+@@ -21,19 +21,30 @@ index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f
+    list(prefix?: string): string[];
+    flush(): Promise<void>;
+ diff --git a/dist/index.d.ts b/dist/index.d.ts
+-index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb43b68fd8 100644
++index 53dd55f4..eea85403 100644
+ --- a/dist/index.d.ts
+ +++ b/dist/index.d.ts
+-@@ -331,6 +331,8 @@ declare function handleAssetRequest(
++@@ -63,6 +63,8 @@ type JsxMode = "transform" | "preserve" | "automatic";
++  * Options for createWorker
++  */
++ interface CreateWorkerOptions {
+++  /** Cancels this request's esbuild wait and session without affecting a later owner. */
+++  signal?: AbortSignal;
++   /**
++    * Input files - keys are paths relative to project root, values are file contents
++    */
++@@ -331,6 +333,10 @@ declare function handleAssetRequest(
+   * Options for createApp
+   */
+  interface CreateAppOptions {
+++  /** Cancels this request's esbuild wait and session without affecting a later owner. */
+++  signal?: AbortSignal;
+ +  /** Set false when an import resolver owns dependency installation. */
+ +  installDependencies?: boolean;
+    /**
+     * Input files — keys are paths relative to project root, values are file contents.
+     * Accepts a plain object (which is wrapped in an InMemoryFileSystem automatically)
+-@@ -499,6 +501,8 @@ interface InstallResult {
++@@ -499,6 +505,8 @@ interface InstallResult {
+  //#endregion
+  //#region src/installer.d.ts
+  interface InstallOptions {
+@@ -43,9 +54,16 @@ index 53dd55f4cd0292a11050505c4824afe0cac15d33..f2ef7c5e31a0561eedcd59d11abe74fb
+     * Include devDependencies (default: false)
+     */
+ diff --git a/dist/index.js b/dist/index.js
+-index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d32413719983c2e98d 100644
++index 9ddcbac0..6088b4df 100644
+ --- a/dist/index.js
+ +++ b/dist/index.js
++@@ -1,5 +1,5 @@
++ import { n as hasDependencies, r as installDependencies } from "./installer-DDvaMqav.js";
++-import * as esbuild from "esbuild-wasm/lib/browser.js";
+++import { withEsbuildSession } from "./esbuild-session.js";
++ import { parse } from "es-module-lexer/js";
++ import * as resolveExports from "resolve.exports";
++ import { parse as parse$1 } from "smol-toml";
+ @@ -78,7 +78,7 @@ function resolvePackage(specifier, files, conditions, extensions) {
+  			}
+  		}
+@@ -55,36 +73,19 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
+  	if (legacyEntry && typeof legacyEntry === "string") {
+  		const fullPath = `node_modules/${packageName}/${normalizeRelativePath(legacyEntry)}`;
+  		if (files.read(fullPath) !== null) return {
+-@@ -231,7 +231,28 @@ function bundlerOnlyOptionsWarning(opts) {
+- /**
++@@ -232,8 +232,10 @@ function bundlerOnlyOptionsWarning(opts) {
+  * Bundle files using esbuild-wasm
+  */
+-+let activeEsbuildBuilds = 0;
+-+/**
+-+* Run one bundle on a running esbuild service, stopping the service once no
+-+* bundle uses it. esbuild's Go heap grows to its largest build and never
+-+* shrinks; a fresh instance per build keeps one large build from raising the
+-+* memory every later build in the isolate starts with. The compiled WASM
+-+* module is kept, so restarting costs only instantiation.
+-+*/
+  async function bundleWithEsbuild(options) {
+-+	activeEsbuildBuilds++;
+-+	try {
+-+		return await bundleWithRunningEsbuild(options);
+-+	} finally {
+-+		activeEsbuildBuilds--;
+-+		if (activeEsbuildBuilds === 0 && esbuildInitialized) {
+-+			esbuildInitialized = false;
+-+			esbuildInitializePromise = null;
+-+			await esbuild.stop();
+-+		}
+-+	}
+++	return withEsbuildSession(options.signal, initializeEsbuild, (esbuild) => bundleWithRunningEsbuild(options, esbuild));
+ +}
+-+async function bundleWithRunningEsbuild(options) {
+++async function bundleWithRunningEsbuild(options, esbuild) {
+  	const { files, entryPoint, externals, target, minify, sourcemap, nodejsCompat, jsx, jsxImportSource, define, loader: loaderOverrides, conditions, virtualModules, plugins: extraPlugins = [] } = options;
+- 	await initializeEsbuild();
++-	await initializeEsbuild();
+  	const virtualFsPlugin = {
+-@@ -255,7 +276,7 @@ async function bundleWithEsbuild(options) {
++ 		name: "virtual-fs",
++ 		setup(build) {
++@@ -255,7 +257,7 @@ async function bundleWithEsbuild(options) {
+  						external: true
+  					};
+  					try {
+@@ -93,7 +94,83 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
+  						if (!result.external) return {
+  							path: result.path,
+  							namespace: "virtual"
+-@@ -857,7 +878,12 @@ var InMemoryFileSystem = class {
++@@ -387,8 +389,6 @@ function getLoader(path, overrides) {
++ 	if (path.endsWith(".css")) return "css";
++ 	return "js";
++ }
++-let esbuildInitialized = false;
++-let esbuildInitializePromise = null;
++ /**
++ * Detect whether we are running inside the Cloudflare Workers runtime
++ * (workerd). Both production Workers and the local dev runtime expose
++@@ -406,57 +406,17 @@ function isCloudflareWorkersRuntime() {
++ * duplicating the wording.
++ */
++ const NOT_IN_WORKERS_ERROR = "@cloudflare/worker-bundler is only supported inside the Cloudflare Workers runtime (workerd). It cannot run in plain Node.js — including Vitest, Jest or other Node-based test runners — because it bundles via a `WebAssembly.Module` import that only the Workers module loader can resolve. To test code that uses this package, run your tests with @cloudflare/vitest-pool-workers so they execute inside workerd. See https://developers.cloudflare.com/workers/testing/vitest-integration/ for setup.";
++-/**
++-* Pre-started promise for the esbuild WASM module load.
++-*
++-* Pre-warmed at module evaluation time when (and only when) we're inside
++-* workerd, so the wasm `Compile` cost runs in parallel with everything else
++-* the test/handler is doing — matching the implicit behaviour of the static
++-* `import esbuildWasm from "./esbuild.wasm"` we used to have. Without this,
++-* the first `bundleWithEsbuild` call paid the full wasm-compile cost
++-* serially, which was enough to flake the first test of an `app-e2e`-style
++-* file under vitest's default 5s timeout on slower CI runners.
++-*
++-* Outside Workers, we *don't* start the import — Node's ESM-WASM loader
++-* would try to resolve esbuild's Go-runtime `gojs` import namespace as an
++-* npm package and crash. `initializeEsbuild()` throws `NOT_IN_WORKERS_ERROR`
++-* before ever touching the file in that case.
++-*/
++-let pendingWasmImport = null;
+++// Only the compiled module is retained. Each request awaits its own module-loader call
+++// if initialization has not finished, never another request's service promise.
+++let esbuildWasmModule;
++ if (isCloudflareWorkersRuntime()) {
++-	pendingWasmImport = import("./esbuild.wasm");
++-	pendingWasmImport.catch(() => {});
+++	import("./esbuild.wasm").then((module) => { esbuildWasmModule = module.default; }).catch(() => {});
++ }
++-/**
++-* Initialize the esbuild bundler.
++-* This is called automatically when needed.
++-*/
++-async function initializeEsbuild() {
++-	if (esbuildInitialized) return;
++-	if (esbuildInitializePromise) return esbuildInitializePromise;
++-	esbuildInitializePromise = (async () => {
++-		if (!isCloudflareWorkersRuntime() || pendingWasmImport === null) throw new Error(NOT_IN_WORKERS_ERROR);
++-		try {
++-			const wasmModule = (await pendingWasmImport).default;
++-			await esbuild.initialize({
++-				wasmModule,
++-				worker: false
++-			});
++-			esbuildInitialized = true;
++-		} catch (error) {
++-			if (error instanceof Error && error.message.includes("Cannot call \"initialize\" more than once")) {
++-				esbuildInitialized = true;
++-				return;
++-			}
++-			throw error;
++-		}
++-	})();
++-	try {
++-		await esbuildInitializePromise;
++-	} catch (error) {
++-		esbuildInitializePromise = null;
++-		throw error;
++-	}
+++async function initializeEsbuild(esbuild) {
+++	if (!isCloudflareWorkersRuntime()) throw new Error(NOT_IN_WORKERS_ERROR);
+++	const wasmModule = esbuildWasmModule ?? (await import("./esbuild.wasm")).default;
+++	esbuildWasmModule = wasmModule;
+++	await esbuild.initialize({ wasmModule, worker: false });
++ }
++ //#endregion
++ //#region src/config.ts
++@@ -857,7 +817,12 @@ var InMemoryFileSystem = class {
+  		this.files = files instanceof Map ? files : new Map(Object.entries(files));
+  	}
+  	read(path) {
+@@ -107,7 +184,7 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
+  	}
+  	write(path, content) {
+  		this.files.set(path, content);
+-@@ -1516,7 +1542,7 @@ async function createApp(options) {
++@@ -1516,7 +1481,7 @@ async function createApp(options) {
+  	const wranglerConfig = parseWranglerConfig(fileSystem);
+  	const nodejsCompat = hasNodejsCompat(wranglerConfig);
+  	const installWarnings = [];
+@@ -116,6 +193,30 @@ index 9ddcbac086bbd60fece6571299c86f92d33412a6..2f2667088015a158ebd9f1d324137199
+  		const installResult = await installDependencies(fileSystem, { ...registry ? { registry } : {} });
+  		installWarnings.push(...installResult.warnings);
+  	}
++@@ -1526,6 +1491,7 @@ async function createApp(options) {
++ 	for (const clientEntry of clientEntries) {
++ 		if (fileSystem.read(clientEntry) === null) throw new Error(`Client entry point "${clientEntry}" was not found in \`files\`. Available files: ${formatFileListForError(fileSystem)}.`);
++ 		const bundleModule = (await bundleWithEsbuild({
+++		signal: options.signal,
++ 			files: fileSystem,
++ 			entryPoint: clientEntry,
++ 			externals,
++@@ -1558,6 +1524,7 @@ async function createApp(options) {
++ 	if (fileSystem.read(serverEntry) === null) throw new Error(`Server entry point "${serverEntry}" was not found in \`files\`. Available files: ${formatFileListForError(fileSystem)}.`);
++ 	let serverResult;
++ 	if (bundle) serverResult = await bundleWithEsbuild({
+++		signal: options.signal,
++ 		files: fileSystem,
++ 		entryPoint: serverEntry,
++ 		externals,
++@@ -1653,6 +1620,7 @@ async function createWorker(options) {
++ 	}
++ 	if (bundle) {
++ 		const result = await bundleWithEsbuild({
+++		signal: options.signal,
++ 			files: fileSystem,
++ 			entryPoint,
++ 			externals,
+ diff --git a/dist/installer-DDvaMqav.js b/dist/installer-DDvaMqav.js
+ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267ac36b4045 100644
+ --- a/dist/installer-DDvaMqav.js
+@@ -397,3 +498,82 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
+  /**
+  * Read a TAR entry path, including the directory prefix from POSIX USTAR.
+  */
++diff --git a/dist/esbuild-session.js b/dist/esbuild-session.js
++new file mode 100644
++index 00000000..49bbbe25
++--- /dev/null
+++++ b/dist/esbuild-session.js
++@@ -0,0 +1,73 @@
+++import { createService } from "esbuild-wasm/lib/browser.js";
+++
+++// The hosted compiler's caller stops waiting after 50 seconds. Only values cross requests:
+++// a waiter owns its timer, and an expired owner's finalizer cannot close a newer service.
+++const leaseMillis = 50_000;
+++let active;
+++const stop = (session) => {
+++  if (!session.closed) {
+++    session.closed = true;
+++    void session.service.stop();
+++  }
+++  if (active === session) active = undefined;
+++};
+++const pause = (millis, signal) =>
+++  new Promise((resolve, reject) => {
+++    const finish = () => {
+++      signal?.removeEventListener("abort", abort);
+++      resolve();
+++    };
+++    const timer = setTimeout(finish, millis);
+++    const abort = () => {
+++      clearTimeout(timer);
+++      signal.removeEventListener("abort", abort);
+++      reject(signal.reason);
+++    };
+++    signal?.addEventListener("abort", abort, { once: true });
+++    if (signal?.aborted) abort();
+++  });
+++
+++export async function withEsbuildSession(signal, initialize, build) {
+++  let session;
+++  for (;;) {
+++    signal?.throwIfAborted();
+++    const now = Date.now();
+++    if (active !== undefined && active.expires <= now) stop(active);
+++    if (active === undefined) {
+++      session = { service: createService(), expires: now + leaseMillis, closed: false };
+++      active = session;
+++      break;
+++    }
+++    await pause(Math.min(200, active.expires - now), signal);
+++  }
+++  let rejectAbort;
+++  const cancelled =
+++    signal === undefined
+++      ? undefined
+++      : new Promise((_, reject) => {
+++          rejectAbort = reject;
+++        });
+++  const abort = () => {
+++    stop(session);
+++    rejectAbort(signal.reason);
+++  };
+++  signal?.addEventListener("abort", abort, { once: true });
+++  const run = async () => {
+++    signal?.throwIfAborted();
+++    await initialize(session.service);
+++    if (session.closed) {
+++      // stop() during initialization has no running service yet. Close a late start too.
+++      await session.service.stop();
+++      throw new Error("The esbuild session ended before initialization completed");
+++    }
+++    const result = await build(session.service);
+++    if (session.closed) throw new Error("The esbuild session ended before bundling completed");
+++    return result;
+++  };
+++  try {
+++    return await (cancelled === undefined ? run() : Promise.race([run(), cancelled]));
+++  } finally {
+++    signal?.removeEventListener("abort", abort);
+++    stop(session);
+++  }
+++}
+diff --git a/patches/esbuild-wasm@0.28.1.patch b/patches/esbuild-wasm@0.28.1.patch
+new file mode 100644
+index 00000000..48e73fbc
+--- /dev/null
++++ b/patches/esbuild-wasm@0.28.1.patch
+@@ -0,0 +1,43 @@
++diff --git a/lib/browser.js b/lib/browser.js
++index fecec94b..30c9e878 100644
++--- a/lib/browser.js
+++++ b/lib/browser.js
++@@ -1,4 +1,4 @@
++-(module=>{
+++var createEsbuildService = (module) => {
++ "use strict";
++ var __defProp = Object.defineProperty;
++ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
++@@ -2733,4 +2733,16 @@ var startRunningService = (wasmURL, wasmModule, useWorker) => __async(null, null
++   };
++ });
++ var browser_default = browser_exports;
++-})(typeof module==="object"?module:{set exports(x){(typeof self!=="undefined"?self:this).esbuild=x}});
+++};
+++var esbuildModule = typeof module === "object" ? module : { exports: {} };
+++createEsbuildService(esbuildModule);
+++var createService = () => {
+++  const fresh = { exports: {} };
+++  createEsbuildService(fresh);
+++  return fresh.exports;
+++};
+++if (typeof module === "object") module.exports.createService = createService;
+++else {
+++  esbuildModule.exports.createService = createService;
+++  (typeof self !== "undefined" ? self : globalThis).esbuild = esbuildModule.exports;
+++}
++diff --git a/lib/browser.d.ts b/lib/browser.d.ts
++index 9e69c39f..ad610ed1 100644
++--- a/lib/browser.d.ts
+++++ b/lib/browser.d.ts
++@@ -714,3 +714,10 @@ declare global {
++   interface URL {
++   }
++ }
+++
+++/** An independent browser service whose initialization and callbacks belong to its caller. */
+++export declare function createService(): {
+++  initialize: typeof initialize;
+++  build: typeof build;
+++  stop: typeof stop;
+++};
+diff --git a/patches/worker-bundler-imports.md b/patches/worker-bundler-imports.md
+index a277ecf5..404a8688 100644
+--- a/patches/worker-bundler-imports.md
++++ b/patches/worker-bundler-imports.md
+@@ -40,8 +40,11 @@ admitted builds. The patch reduces what a build holds:
+   reads `.d.ts` libraries.
+ - One install unpacks at most three tarballs at once.
+ - esbuild's Go heap grows to its largest build and never shrinks. The bundler
+-  stops the esbuild service whenever no bundle is running and starts a fresh
+-  instance from the compiled module for the next one.
++  gives each bundle a fresh service with its own Go heap, message channel and
++  initialization. Only the compiled WASM module crosses requests. One service
++  runs at a time while two admitted builds can prepare dependencies. Waiters
++  use their own timers, and an expired lease stops only its owning service.
++  Cancellation releases the caller's session without touching its successor.
+
+ Outside the patch, UI chunks built only from installed packages ship without
+ source maps (`worker-browser-build.ts`), and the API retries a compile once after
