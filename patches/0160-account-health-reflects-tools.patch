@@ -1,0 +1,636 @@
+diff --git a/e2e/support/tool-loader-upstream.ts b/e2e/support/tool-loader-upstream.ts
+new file mode 100644
+index 0000000..99b1783
+--- /dev/null
++++ b/e2e/support/tool-loader-upstream.ts
+@@ -0,0 +1,31 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Effect, Layer, Ref } from "effect";
++import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
++import { createServer } from "node:http";
++
++/**
++ * A service an app asks whether its tool loader may work (`/tools`) and whether its account check
++ * accepts the key (`/health`). Each answers "ok" until a scenario sets another answer.
++ */
++export const toolLoaderUpstream = Effect.gen(function* () {
++  const tools = yield* Ref.make("ok");
++  const health = yield* Ref.make("ok");
++  const answer = (ref: Ref.Ref<string>) =>
++    Effect.map(Ref.get(ref), (value) => HttpServerResponse.text(value));
++  const services = yield* Layer.build(
++    HttpRouter.serve(
++      Layer.mergeAll(
++        HttpRouter.add("GET", "/tools", answer(tools)),
++        HttpRouter.add("GET", "/health", answer(health)),
++      ),
++      { disableLogger: true, disableListenLog: true },
++    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    tools: (value: string) => Ref.set(tools, value),
++    health: (value: string) => Ref.set(health, value),
++  };
++});
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..663c95a 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3195,6 +3195,19 @@ export const scenarios = plan({
+       local: na("The shared SDK and account view are exercised through hosted APIs."),
+     },
+   },
++  accountToolsHealth: {
++    fixtures: "actors",
++    file: "account-tools-health.spec.ts",
++    title:
++      "An account check and agents' discovery report an app whose tools do not load, and only discovery's own marks clear",
++    // Every catalog read evaluates the app, so each step observes the loader's current answer.
++    serverEnvironment: { EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS: "0" },
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a controlled loopback service through the shared runtime contract."),
++      local: na("The shared SDK and account view are exercised through hosted APIs."),
++    },
++  },
+   personalDataReporting: {
+     fixtures: "actors",
+     file: "personal-data-reporting.spec.ts",
+diff --git a/e2e/tests/account-tools-health.spec.ts b/e2e/tests/account-tools-health.spec.ts
+new file mode 100644
+index 0000000..cfc8def
+--- /dev/null
++++ b/e2e/tests/account-tools-health.spec.ts
+@@ -0,0 +1,130 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { toolLoaderUpstream } from "../support/tool-loader-upstream.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Check = Schema.Struct({
++  status: Schema.String,
++  current: Schema.Boolean,
++  message: Schema.optionalKey(Schema.String),
++});
++const Health = Schema.Struct({
++  apps: Schema.Array(Schema.Struct({ app: Schema.String, check: Schema.NullOr(Check) })),
++});
++const Detail = Schema.Struct({ health: Health });
++
++/** A provider check that never reads the tools, and a tool loader that fails while it is told to. */
++const source = (
++  origin: string,
++) => `import { defineApp, defineProvider, object, ProviderError, query, router, secrets, string } from "apps";
++const service = defineProvider({
++  name: "Service with a tool loader",
++  auth: { apiKey: secrets({ label: "API key", fields: object({ token: string() }) }) },
++  async health({ fetch, signal }) {
++    const answer = await (await fetch(${JSON.stringify(`${origin}/health`)}, { signal })).text();
++    if (answer !== "ok") throw new ProviderError({ reason: "unauthorized", status: 401 });
++    return {};
++  },
++});
++export default defineApp({ user: { accounts: { service } } }, async ({ fetch, signal }) => {
++  const answer = await (await fetch(${JSON.stringify(`${origin}/tools`)}, { signal })).text();
++  if (answer !== "ok") throw new Error("Tool loader failed: " + answer);
++  return { tools: router({ ping: query({ input: object({}) }, async () => ({ ok: true })) }) };
++});`;
++
++layer(HostedLive, { excludeTestServices: true })("Account tools health", (it) => {
++  it.effect(scenarios.accountToolsHealth.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const fixture = yield* toolLoaderUpstream;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const created = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: "Tool loader health",
++          files: [{ path: "index.ts", content: source(fixture.origin) }, appsManifest],
++        });
++        expect(created.status, JSON.stringify(created.body)).toBe(200);
++        const app = (yield* body(Resource, created)).id;
++        const appPath = `${prefix}/apps/${app}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", appPath).pipe(Effect.orDie),
++        );
++        const connection = yield* body(
++          Resource,
++          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {}),
++        );
++        const saved = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${connection.id}/submit`,
++          {
++            method: "apiKey",
++            fields: { token: "synthetic-key" },
++          },
++        );
++        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
++        const accountPath = `${prefix}/accounts/${(yield* body(Resource, saved)).id}`;
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", accountPath).pipe(Effect.orDie),
++        );
++
++        const ofApp = (health: typeof Health.Type) =>
++          health.apps.find((entry) => entry.app === app)?.check;
++        /** The badge as the dashboard reads it; reading never checks. */
++        const badge = () =>
++          Effect.flatMap(api.request(actors.owner, "GET", accountPath), (response) =>
++            Effect.map(body(Detail, response), (detail) => ofApp(detail.health)),
++          );
++        const check = () =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${accountPath}/health`);
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            return ofApp(yield* body(Health, response));
++          });
++        /** Agents' discovery: the app's catalog with the caller's linked accounts. */
++        const discover = () =>
++          Effect.map(api.request(actors.owner, "GET", `${appPath}/tools`), (r) => r.status);
++
++        expect(yield* check()).toMatchObject({ status: "healthy", current: true });
++
++        // Discovery that cannot load the tools shows on the badge, with the reason agents get.
++        yield* fixture.tools("broken");
++        expect(yield* discover()).toBe(502);
++        const marked = yield* badge();
++        expect(marked).toMatchObject({ status: "tools_unavailable", current: true });
++        expect(marked?.message).toContain("Tool loader failed: broken");
++
++        // Once discovery loads them again, the mark it set is cleared.
++        yield* fixture.tools("ok");
++        expect(yield* discover()).toBe(200);
++        expect(yield* badge()).toEqual({ status: "healthy", current: true });
++
++        // A check whose credentials pass still reports tools that do not load.
++        yield* fixture.tools("broken");
++        const probed = yield* check();
++        expect(probed).toMatchObject({ status: "tools_unavailable", current: true });
++        expect(probed?.message).toContain("Tool loader failed: broken");
++        // Discovery clears only its own marks; the check's result stands until the next check.
++        yield* fixture.tools("ok");
++        expect(yield* discover()).toBe(200);
++        expect(yield* badge()).toMatchObject({ status: "tools_unavailable" });
++        expect(yield* check()).toEqual({ status: "healthy", current: true });
++
++        // A rejected sign-in is never replaced by what discovery found.
++        yield* fixture.health("rejected");
++        expect(yield* check()).toMatchObject({ status: "credentials_rejected" });
++        yield* fixture.tools("broken");
++        expect(yield* discover()).toBe(502);
++        expect(yield* badge()).toMatchObject({ status: "credentials_rejected" });
++      }),
++    ),
++  );
++});
+diff --git a/packages/app-templates/executor/skills/app-authoring/accounts.md b/packages/app-templates/executor/skills/app-authoring/accounts.md
+index 77f2ca9..e5fdff4 100644
+--- a/packages/app-templates/executor/skills/app-authoring/accounts.md
++++ b/packages/app-templates/executor/skills/app-authoring/accounts.md
+@@ -291,6 +291,11 @@ supports:
+ | `unavailable`  | a server error or outage                                         | `upstream_unavailable` |
+ | `rejected`     | the service refused without saying why, such as a bare 403       | `check_failed`         |
+ 
++After a check passes, the host also loads the app's tools with that account, as
++agents' discovery does. If the factory or a router throws, the check reports
++`tools_unavailable` with the error agents get; a discovery that fails the same
++way marks a passing check until the tools load again.
++
+ A bare 403 is not enough for `forbidden`. Services that answer a bad token with
+ something other than 401, as Vercel does, need an explicit `unauthorized`. Tool
+ calls that fail with `rate_limited` or `unavailable` tell the agent to retry
+diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+index 8048464..e085372 100644
+--- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
++++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+@@ -3,7 +3,7 @@
+ /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
+ export const executorSkillDigests: Readonly<Record<string, string>> = {
+   "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
+-  "app-authoring/accounts.md": "43c37bbe785e0ab99a70464db056b15ce33c04970e9d840aadaca104c1873bc2",
++  "app-authoring/accounts.md": "7715e44157b098f4683cf44f0b17b47355ff599207e819754f8f3bc988938d5d",
+   "app-authoring/deploy.md": "dab905832c653eb6a22d6bfd64e4ec3b8cb994288972f61f29fe23c945d75822",
+   "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
+   "app-authoring/integrations.md": "cb0ac98ad26d840e7ec18e79756a9592acfc65045aa67caf28b18c102ca01690",
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+index cb2ba2e..487c263 100644
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -46,7 +46,8 @@ export type Account = typeof Account.Type;
+ /**
+  * The outcome of one app's check of an account. Only `credentials_rejected` means the saved
+  * credentials were refused; `check_failed` means the check could not verify the account, such as a
+- * timeout or a failure in the app's check.
++ * timeout or a failure in the app's check. `tools_unavailable` means the credentials passed but the
++ * app's tools did not load for this account, at the check or at agents' last tool discovery.
+  */
+ export const AccountCheckStatus = Schema.Literals([
+   "healthy",
+@@ -54,6 +55,7 @@ export const AccountCheckStatus = Schema.Literals([
+   "forbidden",
+   "upstream_unavailable",
+   "check_failed",
++  "tools_unavailable",
+ ]);
+ export type AccountCheckStatus = typeof AccountCheckStatus.Type;
+ 
+@@ -152,9 +154,11 @@ export const accountProblems = (
+       if (entry.account.provider !== requirement.provider)
+         return [{ provider, reason: "incompatible" }];
+       const check = entry.health.apps.find((item) => item.app === app.id)?.check;
+-      return check === undefined || check === null || !check.current || check.status === "healthy"
+-        ? []
+-        : [{ provider, account: entry.account.label, reason: check.status }];
++      if (check === undefined || check === null || !check.current || check.status === "healthy")
++        return [];
++      // App pages show tools that failed to load as an advisory failed check.
++      const reason = check.status === "tools_unavailable" ? "check_failed" : check.status;
++      return [{ provider, account: entry.account.label, reason }];
+     });
+   });
+ 
+diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
+index 7c76fc0..e80919e 100644
+--- a/packages/sdk/src/implementation/account-check-record.ts
++++ b/packages/sdk/src/implementation/account-check-record.ts
+@@ -7,8 +7,16 @@ import { StorageError } from "../contracts/shared.ts";
+ const Record = Schema.Struct({
+   displayStatus: Schema.optionalKey(AccountStatus),
+   checkFailure: Schema.optionalKey(AccountCheckFailure),
++  /** Set when agents' tool discovery, not a check, recorded that the app's tools do not load. */
++  toolsUnavailableFromDiscovery: Schema.optionalKey(Schema.Literal(true)),
+ });
+ 
++export const recordedDiscoveryMark = (info: unknown) =>
++  Schema.decodeUnknownOption(Record)(info).pipe(
++    Option.map((record) => record.toolsUnavailableFromDiscovery === true),
++    Option.getOrElse(() => false),
++  );
++
+ export const recordedCheckFailure = (info: unknown) =>
+   Schema.decodeUnknownOption(Record)(info).pipe(
+     Option.flatMap((record) => Option.fromNullishOr(record.checkFailure)),
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 63e1925..f6d5b2b 100644
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -25,6 +25,7 @@ import {
+   JsonObject,
+   StorageError,
+   type AppId,
++  type VersionId,
+   type OwnerId,
+ } from "../contracts/shared.ts";
+ import { AppNotFound } from "../contracts/apps.ts";
+@@ -81,6 +82,18 @@ type CheckRow = {
+   readonly message: string | null;
+ };
+ type ReportState = { readonly status: string };
++/**
++ * Read the app's tool catalog with one account bound, as agents' discovery does: the reason its
++ * tools do not load, or undefined when they load or the read cannot tell, such as when the app
++ * needs another account first.
++ */
++export type ToolsProbe = (input: {
++  readonly app: AppId;
++  readonly version: VersionId;
++  readonly scope: AccountScope;
++  readonly slot: string;
++  readonly account: AccountId;
++}) => Effect.Effect<string | undefined, StorageError>;
+ 
+ /** The slot whose provider check covers this account in the app's active version. */
+ const checkedSlot = (
+@@ -159,6 +172,7 @@ export const makeAccountHealth = (
+     typeof import("./account-observations.ts").makeAccountObservations
+   >["fromHealth"],
+   acquisition?: AccountDriverResolver,
++  probeTools?: ToolsProbe,
+ ) => {
+   const driver = makeDriverAccountHealth(
+     db,
+@@ -373,7 +387,22 @@ export const makeAccountHealth = (
+       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
+         return yield* Effect.fail(outcome.failure);
+       if (Result.isSuccess(outcome) && outcome.success === undefined) return;
+-      const status = Result.isSuccess(outcome) ? "healthy" : statusOf(outcome.failure);
++      // Credentials that pass still leave the account unusable to agents when the app's tools fail.
++      const tools =
++        Result.isSuccess(outcome) && probeTools !== undefined
++          ? yield* probeTools({
++              app: app.id,
++              version: version.id,
++              scope: target.required.scope,
++              slot: target.slot,
++              account: account.id,
++            })
++          : undefined;
++      const status = Result.isSuccess(outcome)
++        ? tools === undefined
++          ? "healthy"
++          : "tools_unavailable"
++        : statusOf(outcome.failure);
+       const failure = Result.isFailure(outcome) ? accountCheckFailure(outcome.failure) : undefined;
+       if (failure !== undefined) yield* recordAccountCheckFailure(failure);
+       const existing = yield* query(() =>
+@@ -406,7 +435,9 @@ export const makeAccountHealth = (
+                   ? { checkReason: outcome.failure.reason }
+                   : {}),
+               },
+-        message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
++        message: Result.isSuccess(outcome)
++          ? (tools ?? null)
++          : (messageOf(outcome.failure, late) ?? null),
+       };
+       yield* query(() =>
+         db.upsert("accountChecks", {
+diff --git a/packages/sdk/src/implementation/account-tools-health.ts b/packages/sdk/src/implementation/account-tools-health.ts
+new file mode 100644
+index 0000000..2157d39
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-tools-health.ts
+@@ -0,0 +1,123 @@
++/**
++ * Whether an app's tools load for agents, kept on the app's account checks. A provider check can
++ * accept credentials while the app's tool loader fails, so the check that shows an account as
++ * healthy also reads the app's catalog, and every catalog read marks or clears what it found.
++ */
++import { Effect, Option, Schema } from "effect";
++import type { AccountCheckStatus } from "../contracts/account.ts";
++import { JsonObject, type AccountId, type AppId, type VersionId } from "../contracts/shared.ts";
++import {
++  AppEvaluationFailed,
++  AppProviderFailed,
++  ToolListingTimedOut,
++  routerFailure,
++  type ToolRouter,
++} from "../contracts/tools.ts";
++import { recordedDiscoveryMark } from "./account-check-record.ts";
++import { query, type Query } from "./database.ts";
++
++// App text can be long, such as one line per failed router; the badge keeps a readable summary.
++const limit = 1_000;
++const bounded = (text: string) => (text.length > limit ? `${text.slice(0, limit - 1)}…` : text);
++
++/** What agents are told about the routers that could not list their tools, or undefined. */
++export const toolsProblem = (
++  identity: { app: AppId; version: VersionId },
++  routers: readonly ToolRouter[],
++) => {
++  const failed = routers.flatMap((router) =>
++    router.error === undefined ? [] : [routerFailure(identity, router.error).message],
++  );
++  return failed.length === 0 ? undefined : bounded([...new Set(failed)].join(" "));
++};
++
++/**
++ * What agents are told when a catalog read fails because the app's tools do not load, or
++ * undefined for a failure that is not the tools', such as a missing account. Only a check's own
++ * read can time out; discovery's listing store reports that to its reader.
++ */
++export const toolsFailure = (error: unknown) =>
++  Schema.is(AppEvaluationFailed)(error) ||
++  Schema.is(AppProviderFailed)(error) ||
++  Schema.is(ToolListingTimedOut)(error)
++    ? bounded(error.message)
++    : undefined;
++
++type Row = {
++  readonly status: string;
++  readonly info: unknown;
++  readonly message: string | null;
++};
++
++/** The row discovery's finding leaves, or undefined when it must not change it. */
++const marked = (row: Row, problem: string | undefined) => {
++  const mark = recordedDiscoveryMark(row.info);
++  const info = Option.getOrElse(
++    Schema.decodeUnknownOption(JsonObject)(row.info),
++    (): JsonObject => ({}),
++  );
++  if (problem !== undefined) {
++    if (row.status !== "healthy" && !(mark && row.message !== problem)) return undefined;
++    return {
++      status: "tools_unavailable" satisfies AccountCheckStatus,
++      message: problem,
++      info: { ...info, toolsUnavailableFromDiscovery: true },
++    };
++  }
++  if (row.status !== "tools_unavailable" || !mark) return undefined;
++  const { toolsUnavailableFromDiscovery: _mark, ...rest } = info;
++  return {
++    status: "healthy" satisfies AccountCheckStatus,
++    message: null,
++    info: Object.keys(rest).length === 0 ? null : rest,
++  };
++};
++
++/**
++ * Record what one catalog read found on the checks of the accounts it used, at the generation it
++ * read them with. A failure marks a current healthy check as `tools_unavailable`; a success clears
++ * only a mark a read set. A check that ran since the read is never changed.
++ */
++export const observeToolLoad = (
++  db: Query,
++  input: {
++    readonly app: AppId;
++    readonly version: VersionId;
++    readonly accounts: readonly { readonly id: AccountId; readonly credentialGeneration: number }[];
++    readonly problem: string | undefined;
++  },
++) =>
++  Effect.gen(function* () {
++    if (input.accounts.length === 0) return;
++    const generation = new Map(
++      input.accounts.map((account) => [account.id, account.credentialGeneration]),
++    );
++    const rows = yield* query(() =>
++      db.findMany("accountChecks", {
++        where: (b) =>
++          b.and(
++            b("app", "=", input.app),
++            b("deployment", "=", input.version),
++            b("account", "in", [...generation.keys()]),
++          ),
++      }),
++    );
++    for (const row of rows) {
++      if (generation.get(row.account as AccountId) !== row.credentialGeneration) continue;
++      const update = marked(row, input.problem);
++      if (update === undefined) continue;
++      yield* query(() =>
++        db.updateMany("accountChecks", {
++          where: (b) =>
++            b.and(
++              b("id", "=", row.id),
++              b("status", "=", row.status),
++              b("deployment", "=", row.deployment),
++              b("credentialGeneration", "=", row.credentialGeneration),
++              b("checkedAt", "=", row.checkedAt),
++            ),
++          set: update,
++        }),
++      );
++    }
++  });
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 482362e..1f9551b 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -1,4 +1,6 @@
+ import { modelsForInvocation } from "./models.ts";
++import { toolsFailure, toolsProblem } from "./account-tools-health.ts";
++import type { ToolsProbe } from "./account-health.ts";
+ import { makeAccountObservations } from "./account-observations.ts";
+ import { makeObservationReader } from "./account-observation-read.ts";
+ import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
+@@ -32,7 +34,7 @@ import {
+ import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
+ import { makeWorkflowRuns } from "./workflows.ts";
+ /** Compose native operations once for in-process and HTTP callers. */
+-import { Crypto, Effect } from "effect";
++import { Crypto, Effect, Option, Schema } from "effect";
+ import {
+   PersonalDataReportingHost,
+   type Executor,
+@@ -303,6 +305,35 @@ export const createExecutor = (
+       makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
+       acquisitionHost,
+     );
++    // The catalog read agents' discovery makes, of the checked version with only the checked
++    // account bound. An app that needs another account first cannot be read this way; its check
++    // says nothing about its tools, and agents' discovery still marks them.
++    // How long an account check waits for the app's catalog after its credentials passed.
++    const probeMillis = 15_000;
++    const probeTools: ToolsProbe = (input) =>
++      tools
++        .list({
++          app: input.app,
++          version: input.version,
++          accounts:
++            input.scope === "app"
++              ? { app: { [input.slot]: [input.account] } }
++              : { app: {}, user: { [input.slot]: [input.account] } },
++          limit: 1,
++        })
++        .pipe(
++          Effect.map((page) =>
++            toolsProblem({ app: input.app, version: page.version }, page.routers),
++          ),
++          Effect.catch((error) =>
++            Schema.is(StorageError)(error)
++              ? Effect.fail(error)
++              : Effect.succeed(toolsFailure(error)),
++          ),
++          // A catalog that takes longer to evaluate tells the check nothing either way.
++          Effect.timeoutOption(probeMillis),
++          Effect.map(Option.getOrUndefined),
++        );
+     const { checkCredentials, ...accountHealth } = makeAccountHealth(
+       db,
+       runtime,
+@@ -313,6 +344,7 @@ export const createExecutor = (
+       options.hooks,
+       fromHealth,
+       acquisitionHost,
++      probeTools,
+     );
+     const schedules = makeSchedules(
+       options.database,
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 2b699fe..082c181 100644
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -1,4 +1,5 @@
+ import { AppViewUnavailable, type AppSourceHost } from "../contracts/app-views.ts";
++import { observeToolLoad, toolsFailure, toolsProblem } from "./account-tools-health.ts";
+ import { McpAppViewSink, McpToolResult, type McpAppViewObservation } from "apps/contracts";
+ import { ProviderError } from "apps/contracts";
+ import { appProviderFailure } from "./provider-error.ts";
+@@ -1207,10 +1208,30 @@ export const makeTools = (
+           name: ToolName.make(tool.name),
+         })),
+     });
++  /** Keep what a catalog read found on its accounts' checks; see `observeToolLoad`. */
++  const observeTools = (state: InvocationSnapshot, problem: string | undefined) =>
++    observeToolLoad(db, {
++      app: state.app.id,
++      version: state.version.id,
++      accounts: state.selections.flatMap(({ accounts }) =>
++        accounts.map(({ id, credentialGeneration }) => ({ id, credentialGeneration })),
++      ),
++      problem,
++    }).pipe(Effect.catchCause(() => Effect.logWarning("Recording tool availability failed")));
+   /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
+   const listingOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
+     inspectRenewing(state, context, (context) => runtime.inspect(inspection(state, context))).pipe(
+       Effect.map(toListing(state)),
++      Effect.tap((listing) =>
++        observeTools(
++          state,
++          toolsProblem({ app: state.app.id, version: state.version.id }, listing.routers),
++        ),
++      ),
++      Effect.tapError((error) => {
++        const problem = toolsFailure(error);
++        return problem === undefined ? Effect.void : observeTools(state, problem);
++      }),
+     );
+   /**
+    * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
+diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+index ddfb5b5..9a5bd53 100644
+--- a/packages/ui/src/implementation/dashboard/account-form.tsx
++++ b/packages/ui/src/implementation/dashboard/account-form.tsx
+@@ -487,6 +487,15 @@ function CredentialVerdict({
+                 </>,
+               ] as const,
+           ),
++          // Saved accounts only: a check of unsaved credentials does not read the app's tools.
++          Match.when(
++            "tools_unavailable",
++            () =>
++              [
++                "bad",
++                <>{shown.message ?? `This ${label} works, but the app's tools didn't load`}</>,
++              ] as const,
++          ),
+           Match.exhaustive,
+         );
+   return (
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+index 2202cf3..43b1393 100644
+--- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -12,6 +12,7 @@ import { useDashboard } from "./context.tsx";
+ 
+ const severity: readonly AccountCheckStatus[] = [
+   "credentials_rejected",
++  "tools_unavailable",
+   "forbidden",
+   "upstream_unavailable",
+   "check_failed",
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index 7f66e11..217ba58 100644
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -33,6 +33,7 @@ export const describeAccountCheck = (status: AccountCheckStatus) =>
+       tone: "warn" as const,
+     })),
+     Match.when("check_failed", () => ({ label: "Check failed", tone: "muted" as const })),
++    Match.when("tools_unavailable", () => ({ label: "Tools unavailable", tone: "bad" as const })),
+     Match.exhaustive,
+   );
+ 
