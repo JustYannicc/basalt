@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-wait-for-physical-clone-provisioning",
+  "file": "0165-wait-for-physical-clone-provisioning.patch",
+  "content_sha256": "ac3a02f9a91aa97e692f4f775d21dc0ba45576f9776142ac758fd43b9adfd3d4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
