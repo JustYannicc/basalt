@@ -9,13 +9,51 @@ const registry = new URL(
   import.meta.url,
 );
 const fixture = new URL("./scope-proof-fixture.ts", registry);
+const database = new URL(
+  "../../.upstream/apps/hosted/cloud/src/infrastructure/database.ts",
+  import.meta.url,
+);
+const originalDatabase = await readFile(database, "utf8");
+const originFixture = new URL("./database-origin-fixture.ts", database);
+const originSource = await readFile(new URL("./database-origin.fixture", import.meta.url), "utf8");
+const originMarker = 'connectionString: yield* Output.named(database.url, "DatabaseUrl")';
+assert.ok(originalDatabase.includes(originMarker), "Expected the actual direct origin binding");
+const runtimeMarker = 'Output.map((origin) => ({ ...origin, sslmode: "disable" as const }))';
+assert.ok(originalDatabase.includes(runtimeMarker), "Expected the actual runtime SQL binding");
+const expectedDatabase =
+  'import { databaseOriginFixture, runtimeDatabaseOriginFixture } from "./database-origin-fixture.ts";\n' +
+  originalDatabase
+    .replace(
+      originMarker,
+      'connectionString: yield* Output.named(globalThis.__ALCHEMY_RUNTIME__ ? database.url : database.url.pipe(Output.map(databaseOriginFixture)), "DatabaseUrl")',
+    )
+    .replace(
+      "origin: local.origin,",
+      "origin: local.origin.pipe(Output.map(runtimeDatabaseOriginFixture)),",
+    )
+    .replace(
+      runtimeMarker,
+      'Output.map((origin) => ({ ...runtimeDatabaseOriginFixture(origin), sslmode: "disable" as const }))',
+    );
+const http = new URL("./production-ops/http.ts", database);
+const originalHttp = await readFile(http, "utf8");
+const expectedHttp = originalHttp
+  .replace(
+    "const directConnection = yield* cloudDirectDatabaseConnection;",
+    'const directConnection = yield* cloudDirectDatabaseConnection;\n  const proofRelease = yield* Config.String("BASALT_E2E_OPS_RELEASE");',
+  )
+  .replace("release: productionOpsRelease,", "release: proofRelease,");
+assert.notEqual(originalHttp, expectedHttp, "Expected the release binding");
 const original = await readFile(registry, "utf8");
 assert.match(original, /export const productionMigrations/);
 assert.ok(!original.includes('"scope-proof"'), "The proof name must not shadow a migration");
 const source = await readFile(new URL("./scope-proof.fixture", import.meta.url), "utf8");
 await writeFile(fixture, source, { flag: "wx" });
+await writeFile(originFixture, originSource, { flag: "wx" });
 let expected = original;
 try {
+  await writeFile(database, expectedDatabase);
+  await writeFile(http, expectedHttp);
   expected =
     'import { scopeProof } from "./scope-proof-fixture.ts";\n' +
     original +
@@ -28,7 +66,7 @@ try {
     config,
     JSON.stringify({
       extends: `${root}/.upstream/tsconfig.json`,
-      include: [fileURLToPath(fixture)],
+      include: [fileURLToPath(fixture), fileURLToPath(database)],
       exclude: [],
       compilerOptions: { typeRoots: [`${root}/.upstream/node_modules/@types`] },
     }),
@@ -41,7 +79,14 @@ try {
   assert.equal(checked.status, 0, "The proof-only migration must pass the product typecheck");
   const child = spawn(
     "bun",
-    ["run", "e2e:cloud", "--test-name", "^Cloud production operations enforce", "--workers", "1"],
+    [
+      "run",
+      "e2e:cloud",
+      "--test-name",
+      process.env.BASALT_SCOPE_PROOF_PATTERN ?? "^Cloud production operations enforce",
+      "--workers",
+      "1",
+    ],
     {
       cwd: `${root}/.upstream`,
       stdio: "inherit",
@@ -62,7 +107,22 @@ try {
   }
 } finally {
   assert.equal(await readFile(registry, "utf8"), expected, "The registry changed during the proof");
+  assert.equal(
+    await readFile(database, "utf8"),
+    expectedDatabase,
+    "The direct origin binding changed during the proof",
+  );
   await writeFile(registry, original);
+  await writeFile(database, originalDatabase);
+  assert.equal(
+    await readFile(http, "utf8"),
+    expectedHttp,
+    "The release binding changed during the proof",
+  );
+  await writeFile(http, originalHttp);
   await unlink(fixture);
-  console.log("Restored the migration registry and removed the proof-only module");
+  await unlink(originFixture);
+  console.log(
+    "Restored the migration registry and direct origin binding; removed proof-only modules",
+  );
 }

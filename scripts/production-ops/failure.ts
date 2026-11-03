@@ -1,4 +1,15 @@
-const categories = ["config", "auth", "decode", "sql", "encryption", "unknown"] as const;
+const categories = [
+  "config",
+  "auth",
+  "decode",
+  "sql",
+  "encryption",
+  "refused",
+  "defect",
+  "interrupted",
+  "unknown",
+] as const;
+const causeKinds = ["failure", "defect", "interrupted", "composite"] as const;
 const phases = [
   "config",
   "auth",
@@ -56,8 +67,9 @@ export interface FailureReceipt {
   readonly category: (typeof categories)[number];
   readonly phase: (typeof phases)[number];
   readonly sqlStateClass?: (typeof sqlClasses)[number];
+  readonly causeKind?: (typeof causeKinds)[number];
   readonly httpStatus?: number;
-  readonly reason?: "operation_busy" | "organization_removing";
+  readonly reason?: "operation_busy" | "organization_removing" | "stale_plan";
   readonly retryable?: boolean;
 }
 
@@ -81,13 +93,17 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
       ? { reason: "operation_busy" as const, retryable: true }
       : row.reason === "organization_removing" && row.retryable === false
         ? { reason: "organization_removing" as const, retryable: false }
-        : {};
+        : category === "refused" && row.reason === "stale_plan"
+          ? { reason: "stale_plan" as const }
+          : {};
   const sqlStateClass = sqlClasses.find((entry) => entry === row.sqlStateClass);
+  const causeKind = causeKinds.find((entry) => entry === row.causeKind);
   return {
     format: "basalt-production-ops-failure-v1",
     category,
     phase,
     ...(category === "sql" && sqlStateClass ? { sqlStateClass } : {}),
+    ...(causeKind === undefined ? {} : { causeKind }),
     ...reason,
   };
 }

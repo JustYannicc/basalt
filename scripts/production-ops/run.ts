@@ -119,11 +119,13 @@ try {
     process.stderr.write("Safe failure receipt could not be saved.\n");
   }
   process.stderr.write(
-    safe.reason === "operation_busy"
-      ? "Production operation is busy. Inspect failure.json and the saved apply receipt before retrying.\n"
-      : safe.reason === "organization_removing"
-        ? "Production operation refused: organization_removing. Inspect failure.json; retryable is false.\n"
-        : "Production operation failed. Inspect failure.json and the saved apply receipt before retrying.\n",
+    safe.reason === "stale_plan"
+      ? "Production plan is stale; run a fresh dry run.\n"
+      : safe.reason === "operation_busy"
+        ? "Production operation is busy. Inspect failure.json and the saved apply receipt before retrying.\n"
+        : safe.reason === "organization_removing"
+          ? "Production operation refused: organization_removing. Inspect failure.json; retryable is false.\n"
+          : "Production operation failed. Inspect failure.json and the saved apply receipt before retrying.\n",
   );
   process.exitCode = 1;
 }

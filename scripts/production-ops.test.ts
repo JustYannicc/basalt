@@ -97,6 +97,34 @@ test("a refused response never exposes its private body or repeats the mutation"
 
 const poison = "DO-NOT-RETAIN-password-response-credential";
 
+test("the operator CLI retains classified composite, defect and migration refusals safely", () => {
+  for (const [category, causeKind, sqlStateClass] of [
+    ["refused", "failure", undefined],
+    ["defect", "defect", undefined],
+    ["sql", "composite", "22"],
+  ] as const) {
+    const receipt = {
+      format: "basalt-production-ops-failure-v1",
+      category,
+      phase: "sql",
+      causeKind,
+      ...(sqlStateClass === undefined ? {} : { sqlStateClass }),
+    };
+    const { directory, result } = run({
+      error: "operation_refused",
+      failure: { ...receipt, message: poison, cause: { password: poison } },
+    });
+    try {
+      assert.equal(result.status, 1);
+      const text = readFileSync(join(directory, "failure.json"), "utf8");
+      assert.deepEqual(JSON.parse(text), { ...receipt, httpStatus: 409 });
+      assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 function run(response?: unknown) {
   const directory = mkdtempSync(join(tmpdir(), "production-ops-failure-"));
   const fixture = join(directory, "fetch.mjs");
@@ -125,6 +153,36 @@ function run(response?: unknown) {
   );
   return { directory, result };
 }
+
+test("the operator CLI requires a fresh dry run for a stale plan", () => {
+  const { directory, result } = run({
+    error: "operation_refused",
+    failure: {
+      format: "basalt-production-ops-failure-v1",
+      category: "refused",
+      phase: "sql",
+      causeKind: "failure",
+      reason: "stale_plan",
+      message: poison,
+    },
+  });
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /run a fresh dry run/);
+    const text = readFileSync(join(directory, "failure.json"), "utf8");
+    assert.deepEqual(JSON.parse(text), {
+      format: "basalt-production-ops-failure-v1",
+      category: "refused",
+      phase: "sql",
+      causeKind: "failure",
+      reason: "stale_plan",
+      httpStatus: 409,
+    });
+    assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("a failed operator CLI saves a safe receipt before exiting", () => {
   const { directory, result } = run();
