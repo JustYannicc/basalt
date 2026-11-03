@@ -1,3 +1,4 @@
+import { withServiceIdentities } from "./service-identities.ts";
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
@@ -63,10 +64,10 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(
+      ? JSON.stringify(withServiceIdentities(mergeFeed(
           withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
           additions,
-        ))
+        )))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
