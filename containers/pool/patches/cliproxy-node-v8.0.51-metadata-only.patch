@@ -800,9 +800,7 @@ diff --git a/internal/runtime/executor/helps/logging_helpers.go b/internal/runti
 index cdf1264d..a1504182 100644
 --- a/internal/runtime/executor/helps/logging_helpers.go
 +++ b/internal/runtime/executor/helps/logging_helpers.go
-@@ -13,6 +13,7 @@ import (
- 
- 	"github.com/gin-gonic/gin"
+@@ -16,4 +16,5 @@ import (
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
@@ -977,14 +975,11 @@ diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime
 index a037cba6..13a9dd67 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
-@@ -19,6 +19,7 @@ import (
- 	"github.com/gin-gonic/gin"
- 	"github.com/google/uuid"
+@@ -22,3 +22,4 @@ import (
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
- 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 @@ -91,6 +92,7 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
  }
  

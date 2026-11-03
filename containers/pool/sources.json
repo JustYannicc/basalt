@@ -28,13 +28,13 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc",
-      "sha256": "b3134943a47d5931e547937b12ef1c79c7d6d6116fe44498b44b179f186bfad5",
+      "commit": "01b24f1f95dc9b309765212c52b25b25e005ff01",
+      "sha256": "c8207bc6b05c9097ad2b2cb93dc220412256da6c6a758bbb40de7a7bbce60c29",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "cliproxy-node-v8.0.51-metadata-only.patch",
-          "sha256": "b2f3c24b2e2efaf41659435331c3c043e63b25169ae65b79cdeae5cfa3c473fe",
+          "sha256": "4c03e342e149e8362f7d5b3882d10c35d84661455c56165a1f6e7de2d45ed2a4",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."

@@ -1,0 +1,20 @@
+{
+  "@executor.sh/vercel": {
+    "id": "@executor.sh/vercel",
+    "mcp": ["https://mcp.vercel.com/"]
+  },
+  "@executor.sh/elevenlabs": {
+    "id": "@executor.sh/elevenlabs",
+    "mcp": ["https://api.elevenlabs.io/v1/mcp"]
+  },
+  "@executor.sh/confluence": {
+    "id": "atlassian",
+    "mcp": [],
+    "packages": ["atlassian", "@executor.sh/confluence"]
+  },
+  "atlassian": {
+    "id": "atlassian",
+    "mcp": [],
+    "packages": ["atlassian", "@executor.sh/confluence"]
+  }
+}
