@@ -286,10 +286,10 @@ index 24aa102..b50a960 100644
      file: "account-observations.spec.ts",
 diff --git a/e2e/tests/account-observation-interval.spec.ts b/e2e/tests/account-observation-interval.spec.ts
 new file mode 100644
-index 0000000..698ff0c
+index 0000000..c7d2530
 --- /dev/null
 +++ b/e2e/tests/account-observation-interval.spec.ts
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,184 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { createHmac } from "node:crypto";
@@ -306,6 +306,8 @@ index 0000000..698ff0c
 +
 +// Covers the tools-service side of the pool alarm's signed request. The alarm sending it is proven
 +// by the pool Worker's unit test only; a deployed alarm-to-tools delivery is not exercised here.
++// Also unproven by e2e, covered by unit tests only: the publish scan's 25 s limit (accounts not
++// reached keep their state and stay due) and a first collection that fails before any reading.
 +layer(HostedLive, { excludeTestServices: true })("Automatic account readings", (it) => {
 +  it.effect(scenarios.accountObservationInterval.title, (context) =>
 +    withHostedCase(

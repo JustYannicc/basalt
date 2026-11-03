@@ -167,3 +167,4 @@ collection keeps its persisted thirty-minute cap and provider backoff. The obser
 credits without redeeming them. Accounts without a native Home binding, including API keys that
 have never been mirrored and methods whose Home adapter is unavailable, have no periodic usage
 hook in this carry. Multi-credential Home bindings still have no aggregate observation report. Open account rows read the retained report again every 30 seconds while the page is visible, and every 5 seconds while a collection is running, so new readings appear without a manual refresh. Reading never collects.
+ E2E covers the signed publish request; alarm delivery, the 25 s scan limit and a first collection that fails before any reading are proven by unit tests only. A request that reaches its own deadline while Home is still collecting keeps the previous reading, like the 9 s wait bound.

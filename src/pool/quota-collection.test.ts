@@ -132,6 +132,28 @@ test("a bounded wait leaves Home's collection queued and reads its completion on
   assert.equal(f.posts(), 1, "waiting never cancels or queues a second Home collection");
 });
 
+test("the caller's own request deadline keeps the retained reading instead of failing", async () => {
+  const f = fixture(), caller = new AbortController();
+  f.onCollect(() => f.set({ credential: { credential_id: "a" }, collection: { status: "collecting", freshness: "never" } }));
+  const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async (_ms, signal) => {
+    caller.abort(new DOMException("Request deadline", "TimeoutError"));
+    signal.throwIfAborted();
+  } });
+  const pending = await collector.read("a", caller.signal);
+  assert.equal((pending!.collection as Json).status, "collecting");
+  assert.equal(f.posts(), 1, "the queued Home collection is kept for the next pass");
+});
+
+test("a caller that disconnects still fails its read", async () => {
+  const f = fixture(), caller = new AbortController();
+  f.onCollect(() => f.set({ credential: { credential_id: "a" }, collection: { status: "collecting", freshness: "never" } }));
+  const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async (_ms, signal) => {
+    caller.abort(new DOMException("Client went away", "AbortError"));
+    signal.throwIfAborted();
+  } });
+  await assert.rejects(collector.read("a", caller.signal));
+});
+
 test("an awaited collection yields to another account read", async () => {
   const f = fixture();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();

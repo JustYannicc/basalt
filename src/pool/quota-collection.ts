@@ -17,6 +17,8 @@ const instant = (value: unknown) => typeof value === "string" ? Date.parse(value
 export const collectionOf = (value: Json): Json => object(value.collection) ? value.collection
   : object(value.credential) ? value.credential : value;
 const statusOf = (value: Json) => value.status ?? value.collection_status;
+const deadline = (signal: AbortSignal | undefined) =>
+  signal?.aborted === true && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError";
 const stillCollecting = (value: Json | null): Json | null => value === null ? null : {
   ...value, collection: { ...collectionOf(value), status: "collecting" },
 };
@@ -127,8 +129,9 @@ export class QuotaCollection {
         await this.wait(500, signal);
       }
     } catch (error) {
-      // Home owns the queued job. A local wait deadline does not fail or cancel collection.
-      if (timeout.aborted && !callerSignal?.aborted) return stillCollecting(retained);
+      // Home owns the queued job. A local wait deadline, this budget or the caller's own request
+      // deadline, does not fail or cancel collection. A caller that went away still throws.
+      if ((timeout.aborted && !callerSignal?.aborted) || deadline(callerSignal)) return stillCollecting(retained);
       throw error;
     }
   }
