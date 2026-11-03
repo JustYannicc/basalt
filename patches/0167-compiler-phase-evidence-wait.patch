@@ -1,5 +1,5 @@
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 994be69..92e8e89 100644
+index 343b0dc..6608d96 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
 @@ -35,6 +35,7 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
@@ -10,23 +10,23 @@ index 994be69..92e8e89 100644
  import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
  import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
  import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
-@@ -485,6 +486,7 @@ export const startCloudEnvironment = (input: {
+@@ -486,6 +487,7 @@ export const startCloudEnvironment = (input: {
            );
      if (built !== 0)
        return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
 +    const logActivity = yield* cloudLogActivity;
      const ownerScope = yield* Effect.scope;
-     const launch = Effect.gen(function* () {
-       yield* apiListener.unset();
-@@ -526,6 +528,7 @@ export const startCloudEnvironment = (input: {
-           ],
-           (line) =>
-             Effect.gen(function* () {
-+              yield* logActivity.written;
-               const address = cloudApiAddress(line);
-               if (address !== undefined) yield* apiListener.set(address);
-               if (line.includes("[McpServer] Started in "))
-@@ -675,8 +678,11 @@ export const startCloudEnvironment = (input: {
+     let launchCount = 0;
+     const launch = (
+@@ -539,6 +541,7 @@ export const startCloudEnvironment = (input: {
+             ],
+             (line) =>
+               Effect.gen(function* () {
++                yield* logActivity.written;
+                 const address = cloudApiAddress(line);
+                 if (address !== undefined) yield* listener.set(address);
+                 if (line.includes("[McpServer] Started in "))
+@@ -753,8 +756,11 @@ export const startCloudEnvironment = (input: {
            origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
          };
        });
