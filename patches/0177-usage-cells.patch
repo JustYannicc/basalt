@@ -116,7 +116,7 @@ index 1c33a1a..de49c7e 100644
 +  return { ...view, ...reporter, canInspect: true, canRefresh: true };
  });
 diff --git a/e2e/support/account-observation-fixture.ts b/e2e/support/account-observation-fixture.ts
-index a6e47b5..9f0aa4c 100644
+index 4501070..fbd54a3 100644
 --- a/e2e/support/account-observation-fixture.ts
 +++ b/e2e/support/account-observation-fixture.ts
 @@ -116,7 +116,14 @@ ${options.observe ? 'observeAccount: context => read(context, "/observation"),'
@@ -145,11 +145,11 @@ index a6e47b5..9f0aa4c 100644
      });
      expect(created.status, JSON.stringify(created.body)).toBe(200);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 844b24b..c5033dc 100644
+index 8c6572f..b70193e 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8741,6 +8741,17 @@ export const scenarios = plan({
-       local: na("Exercises hosted sharing policy and rows."),
+@@ -8853,6 +8853,28 @@ export const scenarios = plan({
+       local: na("Hosted rows read the server's retained reports."),
      },
    },
 +  accountUsageCells: {
@@ -163,9 +163,48 @@ index 844b24b..c5033dc 100644
 +      local: na("Exercises hosted account rows."),
 +    },
 +  },
++  accountUsageHomeReporter: {
++    fixtures: "actors",
++    file: "account-usage-home-reporter.spec.ts",
++    title:
++      "a Home-bound account with no reading offers Refresh and shows the reading it brings while a connector shows no usage",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses a loopback Home service."),
++      local: na("Exercises hosted account rows."),
++    },
++  },
    accountObservations: {
      fixtures: "actors",
      file: "account-observations.spec.ts",
+diff --git a/e2e/tests/account-observation-interval.spec.ts b/e2e/tests/account-observation-interval.spec.ts
+index c7d2530..2480744 100644
+--- a/e2e/tests/account-observation-interval.spec.ts
++++ b/e2e/tests/account-observation-interval.spec.ts
+@@ -111,7 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Automatic account readings", (
+             .then(() =>
+               Promise.all([
+                 page.locator("[data-account-observations]").getByText("Refresh failed").count(),
+-                page.locator("[data-account-observations]").getByText("No usage reported").count(),
++                page.locator("[data-account-observations]").getByText("no reading yet").count(),
+               ]),
+             )
+             .then((counts) => expect(counts).toEqual([0, 0])),
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index 44c80b6..b304dc6 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -32,7 +32,9 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+         yield* browser.use("Open Accounts with nothing retained yet", (page) =>
+           page
+             .goto(`/org/${f.actors.organization.slug}/accounts`)
+-            .then(() => block(page).getByText("No usage reported").waitFor()),
++            .then(() => block(page).locator("[data-account-health]").waitFor())
++            .then(() => block(page).locator("[data-usage]").count())
++            .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0)),
+         );
+ 
+         // Stands in for the server interval: a report is retained while the row stays open.
 diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
 index e28b65a..b080476 100644
 --- a/e2e/tests/account-observation-rows.spec.ts
@@ -756,6 +795,155 @@ index 0000000..d0a0365
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
+new file mode 100644
+index 0000000..d17843c
+--- /dev/null
++++ b/e2e/tests/account-usage-home-reporter.spec.ts
+@@ -0,0 +1,143 @@
++/** A real Home-bound account with nothing retained offers its first reading; a connector shows no usage. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { allowance, observationFixture } from "../support/account-observation-fixture.ts";
++import { providerAccountProduct } from "../support/provider-account-product.ts";
++import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Unread = Schema.Struct({
++  hasUsageReporter: Schema.Boolean,
++  usageReporterLabel: Schema.NullOr(Schema.String),
++  reports: Schema.Array(Schema.Json),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Home usage reporter", (it) => {
++  it.effect(scenarios.accountUsageHomeReporter.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          home = yield* providerAppsCatalog;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const app of apps)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++            for (const account of accounts)
++              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
++          }).pipe(Effect.orDie),
++        );
++        // The same Home path as the interval case: a production driver with observeAccount.
++        yield* providerAccountProduct(home.origin, `${home.origin}/catalog/index.json`);
++        const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: "provider-openai",
++          name: "Home reporter fixture",
++        });
++        expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++        const app = (yield* body(Resource, installed)).id;
++        apps.push(app);
++        const pending = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/apps/${app}/accounts/app/openai/connections`,
++          {},
++        );
++        const connect = `${prefix}/connections/${(yield* body(Resource, pending)).id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${connect}/start`, { method: "codex" }))
++            .status,
++        ).toBe(200);
++        const connected = yield* api.request(actors.owner, "POST", `${connect}/submit`, {
++          value: "synthetic-callback",
++        });
++        const account = (yield* body(Schema.Struct({ account: Resource }), connected)).account.id;
++        accounts.push(account);
++        // Without the app the account has no app reporter; only the Home driver reports usage.
++        expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
++          200,
++        );
++        const accountPath = `${prefix}/accounts/${account}`;
++        expect(
++          (yield* api.request(actors.owner, "PATCH", accountPath, { label: "Home reporter" }))
++            .status,
++        ).toBe(200);
++        expect(
++          yield* body(
++            Unread,
++            yield* api.request(actors.owner, "GET", `${accountPath}/observations`),
++          ),
++        ).toEqual({ hasUsageReporter: true, usageReporterLabel: "basalt-home", reports: [] });
++        const observed = () =>
++          home.calls.pipe(
++            Effect.map((calls) => calls.filter((call) => call.action === "observe").length),
++          );
++        expect(yield* observed(), "reading the account collects nothing").toBe(0);
++
++        const connector = yield* observationFixture({
++          name: "Connector fixture",
++          observe: false,
++          health: true,
++        });
++        expect(
++          (yield* api.request(actors.owner, "PATCH", connector.accountPath, {
++            label: "Work mail",
++          })).status,
++        ).toBe(200);
++
++        const block = (page: Page, label: string) =>
++          page.getByRole("group", { name: new RegExp(`^Usage( and health)? of ${label}$`) });
++        const refreshButton = (page: Page) =>
++          block(page, "Home reporter").getByRole("button", { name: "Refresh", exact: true });
++        const browser = yield* Browser;
++        yield* browser.login(actors.owner);
++        const unread = yield* browser.use("Open Accounts before Home reported", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/accounts`)
++            .then(() => block(page, "Work mail").locator("[data-account-health]").waitFor())
++            .then(() => block(page, "Home reporter").locator("[data-usage-unread]").waitFor())
++            .then(() =>
++              Promise.all([
++                block(page, "Home reporter").locator("[data-usage-unread]").innerText(),
++                refreshButton(page).isEnabled(),
++                block(page, "Home reporter").getByText("Refresh failed").count(),
++                block(page, "Work mail").locator("[data-usage]").count(),
++                block(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
++              ]),
++            ),
++        );
++        expect(unread[0]).toMatch(/Usage from basalt-home\s*·\s*no reading yet/);
++        expect(unread.slice(1)).toEqual([true, 0, 0, 0]);
++        expect(yield* observed(), "showing the row collects nothing").toBe(0);
++
++        yield* home.observation(allowance());
++        yield* browser.use("Refresh the Home account from its row", (page) =>
++          refreshButton(page)
++            .click()
++            .then(() =>
++              block(page, "Home reporter").locator('[data-reading="requests"]').waitFor(),
++            ),
++        );
++        expect(yield* observed()).toBe(1);
++        const after = yield* browser.use("Read both rows after the refresh", (page) =>
++          Promise.all([
++            block(page, "Home reporter").locator("[data-usage-unread]").count(),
++            block(page, "Home reporter").locator("[data-usage-source] time").count(),
++            block(page, "Work mail").locator("[data-usage]").count(),
++          ]),
++        );
++        expect(after).toEqual([0, 1, 0]);
++        expect(yield* connector.backend.calls, "a connector has nothing to collect").toBe(0);
++      }),
++    ),
++  );
++});
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
 index a0d65f6..77d09c2 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
@@ -1166,7 +1354,7 @@ index 0807713..788a925 100644
    );
  }
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
-index 4a9738f..5ebc00e 100644
+index c98acfb..a711e92 100644
 --- a/packages/ui/src/implementation/dashboard/account-observations.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
 @@ -28,6 +28,9 @@ export interface AccountObservationsView {
@@ -1241,7 +1429,24 @@ index 4a9738f..5ebc00e 100644
        )}
      </div>
    );
-@@ -191,6 +212,7 @@ function UsageFact<E>({
+@@ -180,6 +201,16 @@ function PlanTags({ view }: { readonly view: AccountObservationsView }) {
+   ));
+ }
+ 
++/**
++ * The one state of a reporter with nothing retained. A collection under way, or a source that
++ * answered without a reading yet, is still checking; otherwise it simply has not been read. Only a
++ * recorded failed attempt adds its own note, so an unread account never reads as failed.
++ */
++const unreadLabel = (report?: AccountObservationRecord) =>
++  report !== undefined && (report.collecting || report.lastAttempt === null)
++    ? "Checking usage…"
++    : "no reading yet";
++
+ /**
+  * Where usage came from and how old it is, with Refresh. Retained readings keep their original
+  * age after a failed refresh, and a denied caller sees no source, time or attempt.
+@@ -191,6 +222,7 @@ function UsageFact<E>({
    plan,
    now,
    format,
@@ -1249,7 +1454,7 @@ index 4a9738f..5ebc00e 100644
    Failure,
  }: {
    readonly result: AsyncResult.AsyncResult<AccountObservationsView, E>;
-@@ -199,6 +221,7 @@ function UsageFact<E>({
+@@ -199,6 +231,7 @@ function UsageFact<E>({
    readonly plan: boolean;
    readonly now: number;
    readonly format: DisplayFormat;
@@ -1257,7 +1462,7 @@ index 4a9738f..5ebc00e 100644
    readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
  }) {
    const [pending, setPending] = useState(false);
-@@ -210,17 +233,17 @@ function UsageFact<E>({
+@@ -210,17 +243,17 @@ function UsageFact<E>({
        <div className="min-w-0">
          <Failure cause={result.cause} retry={retry} retrying={result.waiting} layout="compact" />
        </div>
@@ -1285,17 +1490,18 @@ index 4a9738f..5ebc00e 100644
    const run = async () => {
      if (pending) return;
      setPending(true);
-@@ -244,13 +267,15 @@ function UsageFact<E>({
+@@ -244,24 +277,30 @@ function UsageFact<E>({
    );
    return (
      <div className="flex min-w-0 flex-col gap-0.75" data-usage>
 -      {view.reports.length === 0 && (
-+      {unread && (
-         <div className={line}>
+-        <div className={line}>
 -          <span>No usage reported for this account.</span>
++      {unread && (
++        <div className={line} data-usage-unread>
 +          <span>Usage from {view.usageReporterLabel}</span>
 +          <span aria-hidden>·</span>
-+          <span>no reading yet</span>
++          <span>{unreadLabel()}</span>
            {action}
          </div>
        )}
@@ -1304,6 +1510,23 @@ index 4a9738f..5ebc00e 100644
          const read = report.result === null ? undefined : readingTimes(report.result)[0];
          const stale = report.freshness !== "fresh";
          const note = attemptNote(report, now, format);
+         return (
+           <div key={report.source.id} className="flex min-w-0 flex-col gap-0.75">
+-            <div className={line} data-usage-source={report.source.id}>
++            <div
++              className={line}
++              data-usage-source={report.source.id}
++              data-usage-unread={read === undefined ? "" : undefined}
++            >
+               {index === 0 && plan && <PlanTags view={view} />}
+               <span>Usage from {report.source.label}</span>
+               <span aria-hidden>·</span>
+               {read === undefined ? (
+-                <span>{report.lastAttempt === null ? "Checking usage…" : "no reading yet"}</span>
++                <span>{unreadLabel(report)}</span>
+               ) : (
+                 <span
+                   className={stale ? "text-sign-in-warning" : undefined}
 diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
 new file mode 100644
 index 0000000..73a739e
