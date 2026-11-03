@@ -326,9 +326,9 @@ jobs:
         env:
           BASALT_E2E_POOL_BACKEND: "1"
         run: bun run e2e:cloud --test-name '^Cloud native provider accounts link' --workers 1
-      - name: Verify legacy PAYG checkout and normal seat synchronization
+      - name: Verify isolated billing policy and OIDC sign-in
         working-directory: .upstream
-        run: bun run e2e:cloud --test-name '^Cloud SSO OIDC setup preserves drafts' --workers 1
+        run: bun run e2e:cloud --test-name '^Cloud (billing gates SSO|SSO OIDC setup preserves drafts)' --workers 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
