@@ -12,6 +12,18 @@ env:
   E2E_BUN_VERSION: 1.4.2
 
 jobs:
+  cpa-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify CPA updater and pipeline boundary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python3 -m unittest discover -s scripts/cpa-tests
+          python3 scripts/cpa-pipeline-guard.py --base "$BASE_SHA"
   client-connection:
     runs-on: ubuntu-latest
     timeout-minutes: 10
