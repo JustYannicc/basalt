@@ -105,8 +105,9 @@ normalized direct origin and the connected database's identity, checked again
 inside the write transaction. Credentials, URL options and Hyperdrive's temporary
 proxy address do not identify the database. Password changes alone preserve its
 database binding.
-The cluster identifier is included when the runtime role can read it; otherwise
-the stable origin, database name and database OID identify the target. Plans made
+The migration bootstrap gives each database a persistent random UUID. The binding
+includes that UUID and the connected login's role OID, plus the cluster identifier
+when its query succeeds. Plans made
 before this identity format was deployed require a fresh dry run. Existing
 receipts keep their plan and backup hashes; no receipt schema changes.
 It re-inspects inside the write transaction and verifies before and after commit.
@@ -124,8 +125,9 @@ follow-up. Do not invent a new plan merely to repeat an uncertain mutation.
 After preparing the pinned upstream and its E2E assets, run
 `node scripts/production-ops/prove-scope.ts`. It temporarily registers a synthetic
 migration while the normal managed Cloud suite exercises signed dry-run, apply,
-verification and replay requests. Runner-only binding controls vary passwords
-and supply mismatched host and database origins, while signed requests still use
-the real HTTP handler and SQL transactions. It restores the original registry and
-connection declaration and removes both fixture modules afterward. The fixture
+verification and replay requests. Runner-only controls vary passwords and logins,
+switch the real SQL binding to another database with equivalent rows, and change
+the declared origin or release. Signed requests still use the real HTTP handler
+and SQL transactions. It restores the original registry, connection and release
+declarations and removes both fixture modules afterward. The fixture
 modules are never part of a carried patch or a deployment.

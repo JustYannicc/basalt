@@ -18,12 +18,32 @@ const originFixture = new URL("./database-origin-fixture.ts", database);
 const originSource = await readFile(new URL("./database-origin.fixture", import.meta.url), "utf8");
 const originMarker = 'connectionString: yield* Output.named(database.url, "DatabaseUrl")';
 assert.ok(originalDatabase.includes(originMarker), "Expected the actual direct origin binding");
+const runtimeMarker = 'Output.map((origin) => ({ ...origin, sslmode: "disable" as const }))';
+assert.ok(originalDatabase.includes(runtimeMarker), "Expected the actual runtime SQL binding");
 const expectedDatabase =
-  'import { databaseOriginFixture } from "./database-origin-fixture.ts";\n' +
-  originalDatabase.replace(
-    originMarker,
-    'connectionString: yield* Output.named(globalThis.__ALCHEMY_RUNTIME__ ? database.url : database.url.pipe(Output.map(databaseOriginFixture)), "DatabaseUrl")',
-  );
+  'import { databaseOriginFixture, runtimeDatabaseOriginFixture } from "./database-origin-fixture.ts";\n' +
+  originalDatabase
+    .replace(
+      originMarker,
+      'connectionString: yield* Output.named(globalThis.__ALCHEMY_RUNTIME__ ? database.url : database.url.pipe(Output.map(databaseOriginFixture)), "DatabaseUrl")',
+    )
+    .replace(
+      "origin: local.origin,",
+      "origin: local.origin.pipe(Output.map(runtimeDatabaseOriginFixture)),",
+    )
+    .replace(
+      runtimeMarker,
+      'Output.map((origin) => ({ ...runtimeDatabaseOriginFixture(origin), sslmode: "disable" as const }))',
+    );
+const http = new URL("./production-ops/http.ts", database);
+const originalHttp = await readFile(http, "utf8");
+const expectedHttp = originalHttp
+  .replace(
+    "const directConnection = yield* cloudDirectDatabaseConnection;",
+    'const directConnection = yield* cloudDirectDatabaseConnection;\n  const proofRelease = yield* Config.String("BASALT_E2E_OPS_RELEASE");',
+  )
+  .replace("release: productionOpsRelease,", "release: proofRelease,");
+assert.notEqual(originalHttp, expectedHttp, "Expected the release binding");
 const original = await readFile(registry, "utf8");
 assert.match(original, /export const productionMigrations/);
 assert.ok(!original.includes('"scope-proof"'), "The proof name must not shadow a migration");
@@ -33,6 +53,7 @@ await writeFile(originFixture, originSource, { flag: "wx" });
 let expected = original;
 try {
   await writeFile(database, expectedDatabase);
+  await writeFile(http, expectedHttp);
   expected =
     'import { scopeProof } from "./scope-proof-fixture.ts";\n' +
     original +
@@ -93,6 +114,12 @@ try {
   );
   await writeFile(registry, original);
   await writeFile(database, originalDatabase);
+  assert.equal(
+    await readFile(http, "utf8"),
+    expectedHttp,
+    "The release binding changed during the proof",
+  );
+  await writeFile(http, originalHttp);
   await unlink(fixture);
   await unlink(originFixture);
   console.log(

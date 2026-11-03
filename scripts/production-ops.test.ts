@@ -154,6 +154,36 @@ function run(response?: unknown) {
   return { directory, result };
 }
 
+test("the operator CLI requires a fresh dry run for a stale plan", () => {
+  const { directory, result } = run({
+    error: "operation_refused",
+    failure: {
+      format: "basalt-production-ops-failure-v1",
+      category: "refused",
+      phase: "sql",
+      causeKind: "failure",
+      reason: "stale_plan",
+      message: poison,
+    },
+  });
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /run a fresh dry run/);
+    const text = readFileSync(join(directory, "failure.json"), "utf8");
+    assert.deepEqual(JSON.parse(text), {
+      format: "basalt-production-ops-failure-v1",
+      category: "refused",
+      phase: "sql",
+      causeKind: "failure",
+      reason: "stale_plan",
+      httpStatus: 409,
+    });
+    assert.ok(!`${text}${result.stdout}${result.stderr}`.includes(poison));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("a failed operator CLI saves a safe receipt before exiting", () => {
   const { directory, result } = run();
   try {

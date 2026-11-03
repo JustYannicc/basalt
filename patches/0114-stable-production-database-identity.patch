@@ -1,22 +1,47 @@
+diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
+index b34c9ab4..b13ee894 100644
+--- a/apps/hosted/cloud/src/implementation/migrations.ts
++++ b/apps/hosted/cloud/src/implementation/migrations.ts
+@@ -13,7 +13,10 @@ import { Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { cloudAuthSetup } from "./auth-provisioning.ts";
+ import { migrateAppDomainRecords } from "./app-domain-records.ts";
+-import { migrateProductionOps } from "../infrastructure/production-ops/schema.ts";
++import {
++  migrateProductionOps,
++  migrateProductionOpsDatabaseIdentity,
++} from "../infrastructure/production-ops/schema.ts";
+ import {
+   blockerReport,
+   guardMigration,
+@@ -213,6 +216,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+         "6_setup_assignments": migrateSetupAssignments,
+         "7_v1_import_orgs": migrateV1ImportOrgs,
+         "8_production_ops_receipts": migrateProductionOps,
++        "9_production_ops_database_identity": migrateProductionOpsDatabaseIdentity,
+       });
+     });
+     yield* Effect.gen(function* () {
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
-index 90ccb340..c4cf61c6 100644
+index 90ccb340..b61b879a 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
-@@ -58,4 +58,8 @@ export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving
+@@ -58,4 +58,9 @@ export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving
  
  export class ProductionOperationBusy extends Data.TaggedError("ProductionOperationBusy") {}
  
 +export class ProductionOperationRefused extends Data.TaggedError("ProductionOperationRefused")<{
 +  readonly message: string;
++  readonly reason?: "stale_plan";
 +}> {}
 +
  export const productionOpsPath = "/api/internal/production-ops";
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
 new file mode 100644
-index 00000000..db021368
+index 00000000..1320d8de
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,83 @@
 +/** Database identity excludes login secrets and invocation-local Hyperdrive routing. */
 +import { Data, Effect, Redacted, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -55,7 +80,8 @@ index 00000000..db021368
 +const ObservedDatabase = Schema.Struct({
 +  name: Schema.NonEmptyString,
 +  oid: Schema.NonEmptyString,
-+  server: Schema.NullOr(Schema.NonEmptyString),
++  role: Schema.NonEmptyString,
++  identity: Schema.String.check(Schema.isUUID()),
 +});
 +
 +/** Run inside the operation's transaction, including apply's write transaction. */
@@ -63,26 +89,44 @@ index 00000000..db021368
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    const rows = yield* sql`
-+      select current_database() as name, oid::text as oid,
-+        case when pg_catalog.has_function_privilege('pg_catalog.pg_control_system()', 'EXECUTE')
-+          then (pg_catalog.pg_control_system()).system_identifier::text
-+          else null
-+        end as server
-+      from pg_catalog.pg_database where datname = current_database()
++      select current_database() as name, d.oid::text as oid, r.oid::text as role, i.id::text as identity
++      from pg_catalog.pg_database d
++      cross join pg_catalog.pg_roles r
++      cross join production_ops_database_identity i
++      where d.datname = current_database() and r.rolname = session_user
 +    `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(ObservedDatabase))));
 +    const observed = rows[0];
-+    if (observed === undefined) return yield* new DatabaseIdentityUnavailable();
-+    // The stable configured origin covers providers that withhold pg_control_system. The database
-+    // OID detects same-name replacement, and the cluster ID adds a server check where permitted.
++    if (observed === undefined || rows.length !== 1)
++      return yield* new DatabaseIdentityUnavailable();
++    // Every database owns a persistent UUID because providers may withhold pg_control_system.
++    // Bind the login's catalog OID too; the optional server ID is never the sole target identity.
++    const server = yield* sql
++      .withTransaction(
++        sql`
++      select (pg_catalog.pg_control_system()).system_identifier::text as server
++    `.pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Array(Schema.Struct({ server: Schema.NonEmptyString })),
++            ),
++          ),
++          Effect.map((rows) => rows[0]?.server ?? null),
++        ),
++      )
++      .pipe(Effect.orElseSucceed(() => null));
 +    return {
 +      name: observed.name,
 +      targetSha256: sha256(
-+        canonical({ context: "basalt-production-database-v2", origin, observed }),
++        canonical({
++          context: "basalt-production-database-v3",
++          origin,
++          observed: { ...observed, ...(server === null ? {} : { server }) },
++        }),
 +      ),
 +    };
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
-index 11e55693..cb1dffbc 100644
+index 11e55693..2ded4843 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 @@ -1,5 +1,7 @@
@@ -93,7 +137,7 @@ index 11e55693..cb1dffbc 100644
  
  const SqlStateClass = Schema.Literals([
    "08",
-@@ -44,9 +46,20 @@ const SqlStateClass = Schema.Literals([
+@@ -44,9 +46,21 @@ const SqlStateClass = Schema.Literals([
  ]);
  export const FailureReceipt = Schema.Struct({
    format: Schema.Literal("basalt-production-ops-failure-v1"),
@@ -112,10 +156,11 @@ index 11e55693..cb1dffbc 100644
    phase: Schema.Literals(["config", "auth", "decode", "sql", "encryption", "forward"]),
    sqlStateClass: Schema.optionalKey(SqlStateClass),
 +  causeKind: Schema.optionalKey(Schema.Literals(["failure", "defect", "interrupted", "composite"])),
++  reason: Schema.optionalKey(Schema.Literal("stale_plan")),
  });
  type FailureReceipt = typeof FailureReceipt.Type;
  type Phase = FailureReceipt["phase"];
-@@ -60,29 +73,66 @@ class DiagnosticFailure extends Error {
+@@ -60,29 +74,73 @@ class DiagnosticFailure extends Error {
  }
  
  /** No message, query, row, response or credential enters this projection. */
@@ -140,7 +185,14 @@ index 11e55693..cb1dffbc 100644
 +function classified(error: unknown, phase: Phase): FailureReceipt | undefined {
 +  if (error instanceof DiagnosticFailure) return error.receipt;
 +  if (error instanceof ProviderAppsRefused || error instanceof ProductionOperationRefused)
-+    return { format: "basalt-production-ops-failure-v1", category: "refused", phase };
++    return {
++      format: "basalt-production-ops-failure-v1",
++      category: "refused",
++      phase,
++      ...(error instanceof ProductionOperationRefused && error.reason === "stale_plan"
++        ? { reason: "stale_plan" as const }
++        : {}),
++    };
 +  if (SqlError.isSqlError(error)) {
 +    const driver = error.reason.cause;
 +    const code =
@@ -309,7 +361,7 @@ index aa6393d9..962b1e9d 100644
  }> {}
  export const failure = (message: string) => new ProviderAppsRefused({ message });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
-index 0c239cc9..57b1afb6 100644
+index 0c239cc9..1bfaefc2 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 @@ -12,6 +12,8 @@ import { inventory } from "./inventory.ts";
@@ -321,7 +373,7 @@ index 0c239cc9..57b1afb6 100644
  
  export const Operation = Schema.Struct({
    action: Schema.Literals(["inventory", "backup", "prepare", "dry-run", "apply"]),
-@@ -52,12 +54,12 @@ const Plan = Schema.Struct({
+@@ -52,12 +54,16 @@ const Plan = Schema.Struct({
  export interface OpsSettings {
    readonly target: string;
    readonly release: string;
@@ -333,10 +385,14 @@ index 0c239cc9..57b1afb6 100644
  
 -const fail = (reason: string) => Effect.fail(new Error(reason));
 +const fail = (message: string) => Effect.fail(new ProductionOperationRefused({ message }));
++const stalePlan = () =>
++  Effect.fail(
++    new ProductionOperationRefused({ message: "The reviewed plan is stale", reason: "stale_plan" }),
++  );
  const checksum = /^[a-f0-9]{64}$/;
  
  function validPlan(module: ProductionMigration, plan: MigrationPlan): boolean {
-@@ -104,19 +106,6 @@ const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+@@ -104,19 +110,6 @@ const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
      );
    });
  
@@ -356,7 +412,7 @@ index 0c239cc9..57b1afb6 100644
  const inspect = (module: ProductionMigration, request: Json) =>
    module
      .inspect(request)
-@@ -139,7 +128,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+@@ -139,7 +132,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
      if (operation.action === "inventory") {
        const result = yield* readOnly(
          Effect.gen(function* () {
@@ -365,7 +421,7 @@ index 0c239cc9..57b1afb6 100644
            return { ...(yield* inventory(operation.selection, organization)), database };
          }),
        );
-@@ -163,7 +152,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+@@ -163,7 +156,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
        if (tables === undefined) return yield* fail("Unknown backup selection");
        const snapshot = yield* readOnly(
          Effect.gen(function* () {
@@ -374,7 +430,7 @@ index 0c239cc9..57b1afb6 100644
            return { ...(yield* snapshotTables(tables)), database };
          }),
        );
-@@ -205,7 +194,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+@@ -205,7 +198,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
      if (operation.action === "dry-run") {
        const result = yield* readOnly(
          Effect.gen(function* () {
@@ -383,7 +439,16 @@ index 0c239cc9..57b1afb6 100644
            const plan = yield* inspect(module, operation.request);
            yield* checkPlanScope(plan, organization, "before");
            const snapshot = yield* snapshotTables(module.tables);
-@@ -273,9 +262,10 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+@@ -264,7 +257,7 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
+       now - saved.preparedAt > 3_600_000 ||
+       saved.preparedAt > now
+     )
+-      return yield* fail("The reviewed plan no longer matches this operation");
++      return yield* stalePlan();
+     const sql = yield* SqlClient.SqlClient;
+     const hash = operation.planSha256;
+     const receipt = yield* sql.withTransaction(
+@@ -273,9 +266,10 @@ export const runProductionOperation = (settings: OpsSettings, operation: Operati
          yield* sql`set local statement_timeout = '5s'`;
          yield* sql`set local lock_timeout = '500ms'`;
          yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
@@ -396,33 +461,91 @@ index 0c239cc9..57b1afb6 100644
          )
            return yield* fail("Database identity changed");
          const prior =
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
+index 10951210..eadeb7d6 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
+@@ -17,3 +17,16 @@ export const migrateProductionOps = Effect.gen(function* () {
+   yield* sql`create index if not exists private_production_ops_receipts_organization
+     on private_production_ops_receipts (organization_id, applied_at desc)`;
+ });
++
++export const migrateProductionOpsDatabaseIdentity = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists production_ops_database_identity (
++    id uuid primary key,
++    created_at timestamptz not null default now()
++  )`;
++  yield* sql`create unique index if not exists production_ops_database_identity_singleton
++    on production_ops_database_identity ((true))`;
++  yield* sql`insert into production_ops_database_identity (id)
++    select gen_random_uuid() where not exists (select 1 from production_ops_database_identity)
++    on conflict do nothing`;
++});
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 8b6d195d..ed6ab845 100644
+index 8b6d195d..b9c46e79 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -260,6 +260,7 @@ export const startCloudEnvironment = (input: {
+@@ -34,6 +34,7 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+ import { roleHost } from "./role-hosts.ts";
+ import { freePort } from "./ports.ts";
+ import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
++import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import {
+@@ -260,6 +261,9 @@ export const startCloudEnvironment = (input: {
      });
      yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
      const env = {
 +      BASALT_E2E_DATABASE_ORIGIN: "original",
++      BASALT_E2E_DATABASE_TARGET_PORT: String(input.databasePort),
++      BASALT_E2E_OPS_RELEASE: "reviewed-release",
        PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
          process.platform === "win32" ? ";" : ":",
        ),
-@@ -564,23 +565,49 @@ export const startCloudEnvironment = (input: {
+@@ -564,23 +568,83 @@ export const startCloudEnvironment = (input: {
        databaseName: "executor",
        databaseUsername: "executor",
      });
 -    let binding: "original" | "alternate" = "original";
-+    let binding: "original" | "alternate" | "credentials" | "host" | "database" = "original";
++    const databaseFixture =
++      alternatePort === undefined
++        ? undefined
++        : yield* productionOpsDatabaseFixture({
++            container,
++            databasePassword,
++            directory,
++            dockerEnv,
++          });
++    let binding = "original";
      let running = true;
 -    const reconfigure = (next: "original" | "alternate") =>
-+    const reconfigure = (next: "original" | "alternate" | "credentials" | "host" | "database") =>
++    const reconfigure = (
++      next:
++        | "original"
++        | "alternate"
++        | "credentials"
++        | "host"
++        | "database"
++        | "role"
++        | "without-server"
++        | "target"
++        | "inspect-target"
++        | "release",
++    ) =>
        Effect.gen(function* () {
-         if (alternatePort === undefined)
+-        if (alternatePort === undefined)
++        if (alternatePort === undefined || databaseFixture === undefined)
            return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
++        if (next === "inspect-target") return { target: yield* databaseFixture.state(true) };
          if (next !== binding || !running) {
            running = false;
            yield* Scope.close(serverScope, Exit.void);
++          if (next === "role" || next === "without-server")
++            yield* databaseFixture.role(next === "role");
++          if (next === "target")
++            env.BASALT_E2E_DATABASE_TARGET_PORT = String(yield* databaseFixture.target);
 +          if (next === "credentials") {
 +            // This disposable loopback database models Hyperdrive accepting invocation-local
 +            // passwords. Keep the fixture client's existing login valid while the Worker changes.
@@ -447,6 +570,8 @@ index 8b6d195d..ed6ab845 100644
 +            next === "alternate" ? alternatePort : input.databasePort,
            );
 +          env.BASALT_E2E_DATABASE_ORIGIN = next;
++          env.BASALT_E2E_OPS_RELEASE =
++            next === "release" ? "replacement-release" : "reviewed-release";
 +          env.CLOUD_DEV_DATABASE_PASSWORD =
 +            next === "credentials" ? "hyperdrive-invocation-password-two" : databasePassword;
            serverScope = yield* launch;
@@ -458,33 +583,279 @@ index 8b6d195d..ed6ab845 100644
 +          binding,
 +          databaseName: "executor",
 +          origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
++          ...(next === "target"
++            ? {
++                original: yield* databaseFixture.state(false),
++                target: yield* databaseFixture.state(true),
++              }
++            : {}),
 +        };
        });
      const controls =
        alternatePort === undefined ? fixtures : yield* cloudRuntimeControl(fixtures, reconfigure);
 diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
-index a47083fe..1a974b4e 100644
+index a47083fe..ea91f4c9 100644
 --- a/e2e/support/cloud-runtime-control.ts
 +++ b/e2e/support/cloud-runtime-control.ts
-@@ -12,12 +12,16 @@ import {
+@@ -12,12 +12,25 @@ import {
  import { createServer } from "node:http";
  import type { FixtureControl } from "../sdk/contracts.ts";
  
 -const Change = Schema.Struct({ binding: Schema.Literals(["original", "alternate"]) });
 +const Change = Schema.Struct({
-+  binding: Schema.Literals(["original", "alternate", "credentials", "host", "database"]),
++  binding: Schema.Literals([
++    "original",
++    "alternate",
++    "credentials",
++    "host",
++    "database",
++    "role",
++    "without-server",
++    "target",
++    "inspect-target",
++    "release",
++  ]),
 +});
  
  /** Preserve the existing fixture capability while adding one fixed local runtime operation. */
  export const cloudRuntimeControl = <A, E>(
    fixtures: typeof FixtureControl.Type,
 -  change: (binding: "original" | "alternate") => Effect.Effect<A, E>,
-+  change: (
-+    binding: "original" | "alternate" | "credentials" | "host" | "database",
-+  ) => Effect.Effect<A, E>,
++  change: (binding: typeof Change.Type.binding) => Effect.Effect<A, E>,
  ) =>
    Effect.gen(function* () {
      const http = yield* HttpClient.HttpClient;
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+new file mode 100644
+index 00000000..0a4c918b
+--- /dev/null
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -0,0 +1,162 @@
++import { Data, Effect, FileSystem, Schema, Scope } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { startCloudPostgres } from "./cloud-postgres.ts";
++import { freePort } from "./ports.ts";
++
++export const ProductionDatabaseState = Schema.Struct({
++  name: Schema.String,
++  oid: Schema.String,
++  role: Schema.String,
++  identity: Schema.String,
++  accounts: Schema.String,
++  receipts: Schema.Array(Schema.String),
++});
++
++class ProductionDatabaseFixtureFailed extends Data.TaggedError("ProductionDatabaseFixtureFailed") {}
++
++/** Only the managed production-ops runner owns these disposable database controls. */
++export const productionOpsDatabaseFixture = (input: {
++  readonly container: string;
++  readonly databasePassword: string;
++  readonly directory: string;
++  readonly dockerEnv: {
++    readonly PATH: string;
++    readonly DOCKER_HOST: string;
++    readonly DOCKER_CONFIG: string;
++  };
++}) =>
++  Effect.gen(function* () {
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const scope = yield* Effect.scope;
++    const services = yield* Effect.context<
++      ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
++    >();
++    const targetContainer = `${input.container}-target`;
++    const targetPort = yield* freePort;
++    let targetStarted = false;
++    let roleCreated = false;
++    const command = (args: ReadonlyArray<string>) =>
++      ChildProcess.make("docker", args, {
++        env: input.dockerEnv,
++        extendEnv: false,
++        stdout: "ignore",
++        stderr: "ignore",
++      });
++    const checked = <E, R>(work: Effect.Effect<number, E, R>) =>
++      work.pipe(
++        Effect.flatMap((code) =>
++          code === 0 ? Effect.void : Effect.fail(new ProductionDatabaseFixtureFailed()),
++        ),
++      );
++    const role = (server: boolean) =>
++      Effect.gen(function* () {
++        if (!roleCreated) {
++          yield* checked(
++            processes.exitCode(
++              command([
++                "exec",
++                input.container,
++                "sh",
++                "-c",
++                `sed -i '1i host all executor_ops_other 0.0.0.0/0 trust' "$PGDATA/pg_hba.conf" && psql -v ON_ERROR_STOP=1 -U executor -d executor -c 'create role executor_ops_other login; grant pg_read_all_data, pg_write_all_data to executor_ops_other; select pg_reload_conf()'`,
++              ]),
++            ),
++          );
++          roleCreated = true;
++        }
++        yield* checked(
++          processes.exitCode(
++            command([
++              "exec",
++              input.container,
++              "psql",
++              "-v",
++              "ON_ERROR_STOP=1",
++              "-U",
++              "executor",
++              "-d",
++              "executor",
++              "-c",
++              `${server ? "grant execute on function pg_catalog.pg_control_system() to" : "revoke execute on function pg_catalog.pg_control_system() from"} executor_ops_other`,
++            ]),
++          ),
++        );
++      });
++    const target = Effect.gen(function* () {
++      if (!targetStarted) {
++        yield* startCloudPostgres({
++          container: targetContainer,
++          databasePort: targetPort,
++          databasePassword: input.databasePassword,
++          dockerEnv: input.dockerEnv,
++          log: `${input.directory}/target-postgres.log`,
++        }).pipe(Scope.provide(scope), Effect.provideContext(services));
++        // Copy the reviewed rows, but let the other physical database own its UUID.
++        yield* checked(
++          processes.exitCode(
++            ChildProcess.make(
++              "bash",
++              [
++                "-o",
++                "pipefail",
++                "-c",
++                `docker exec ${input.container} pg_dump -U executor -d executor --no-owner --no-privileges --exclude-table-data=public.production_ops_database_identity | docker exec -i ${targetContainer} psql -v ON_ERROR_STOP=1 -U executor -d executor`,
++              ],
++              { env: input.dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
++            ),
++          ),
++        );
++        yield* checked(
++          processes.exitCode(
++            command([
++              "exec",
++              targetContainer,
++              "psql",
++              "-v",
++              "ON_ERROR_STOP=1",
++              "-U",
++              "executor",
++              "-d",
++              "executor",
++              "-c",
++              "insert into production_ops_database_identity (id) values (gen_random_uuid())",
++            ]),
++          ),
++        );
++        targetStarted = true;
++      }
++      return targetPort;
++    });
++    const state = (target: boolean) =>
++      processes
++        .string(
++          ChildProcess.make(
++            "docker",
++            [
++              "exec",
++              target ? targetContainer : input.container,
++              "psql",
++              "-t",
++              "-A",
++              "-U",
++              "executor",
++              "-d",
++              "executor",
++              "-c",
++              `select json_build_object('name', current_database(), 'oid', d.oid::text,
++      'role', (select oid::text from pg_roles where rolname = session_user),
++      'identity', (select id::text from production_ops_database_identity),
++      'accounts', (select md5(coalesce(string_agg(to_jsonb(a)::text, '' order by id), '')) from executor_accounts a),
++      'receipts', coalesce((select json_agg(plan_sha256 order by plan_sha256) from private_production_ops_receipts), '[]'::json))
++      from pg_database d where datname = current_database()`,
++            ],
++            { env: input.dockerEnv, extendEnv: false, stderr: "ignore" },
++          ),
++        )
++        .pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(Schema.fromJsonString(ProductionDatabaseState)),
++          ),
++        );
++    return { role, target, state };
++  });
+diff --git a/e2e/support/production-ops-migration-proof.ts b/e2e/support/production-ops-migration-proof.ts
+new file mode 100644
+index 00000000..23664d29
+--- /dev/null
++++ b/e2e/support/production-ops-migration-proof.ts
+@@ -0,0 +1,57 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "./api.ts";
++import { productionOpsClient, Artifact } from "./production-ops-client.ts";
++import { productionOpsInventoryRows } from "./production-ops-inventory-rows.ts";
++
++export const DryRun = Schema.Struct({
++  action: Schema.Literal("dry-run"),
++  artifact: Artifact,
++  backupSha256: Schema.String,
++});
++export const Applied = Schema.Struct({
++  action: Schema.Literal("apply"),
++  repeated: Schema.Boolean,
++  verification: Schema.Struct({ ok: Schema.Boolean }),
++});
++
++export const productionMigrationProof = Effect.gen(function* () {
++  const rows = yield* productionOpsInventoryRows;
++  const client = yield* productionOpsClient;
++  const operation = (
++    name: string,
++    foreign: string = rows.foreign.account,
++    account = rows.own.account,
++  ) => ({
++    action: "dry-run",
++    selection: "scope-proof",
++    recipient: client.recipient,
++    request: {
++      organization: rows.own.organization,
++      account,
++      app: rows.own.app,
++      connection: rows.own.connection,
++      job: rows.own.job,
++      workflow: rows.own.workflow,
++      schedule: rows.own.schedule,
++      subject: rows.own.user,
++      foreign,
++      operation: name,
++    },
++  });
++  const apply = (op: ReturnType<typeof operation>, dry: typeof DryRun.Type) => ({
++    ...op,
++    action: "apply",
++    artifact: dry.artifact,
++    planSha256: dry.artifact.sha256,
++    backupSha256: dry.backupSha256,
++    go: `GO ${dry.artifact.sha256}`,
++  });
++  const dryRun = (op: ReturnType<typeof operation>) =>
++    Effect.gen(function* () {
++      const response = yield* client.request(op);
++      expect(response.status, JSON.stringify(response.body)).toBe(200);
++      return yield* body(DryRun, response);
++    });
++  return { ...rows, ...client, operation, apply, dryRun };
++});
 diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adoption-locks.ts
 index 3cd75c8a..e5585692 100644
 --- a/e2e/support/provider-adoption-locks.ts
@@ -515,7 +886,7 @@ index 3cd75c8a..e5585692 100644
    expect(
      yield* p.database.run({
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 56c19e72..d87fea3c 100644
+index 56c19e72..8b13436f 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -2405,6 +2405,17 @@ export const scenarios = plan({
@@ -536,7 +907,7 @@ index 56c19e72..d87fea3c 100644
    cloudProductionOpsStableKeys: {
      fixtures: "actors",
      deferOnboarding: true,
-@@ -2416,6 +2427,28 @@ export const scenarios = plan({
+@@ -2416,6 +2427,75 @@ export const scenarios = plan({
        local: na("Local does not host production operations."),
      },
    },
@@ -562,14 +933,217 @@ index 56c19e72..d87fea3c 100644
 +      local: na("Local does not host production operations."),
 +    },
 +  },
++  cloudProductionOpsRoleIdentity: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title: "Cloud production operations enforce the reviewed SQL login",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsPhysicalDatabase: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title:
++      "Cloud production operations enforce the reviewed physical database with equivalent fixture rows",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsOptionalServer: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title:
++      "Cloud production operations enforce database identity when the server identifier is unavailable",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
++  cloudProductionOpsStalePlan: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "production-ops-database.spec.ts",
++    title:
++      "Cloud production operations enforce a fresh dry run after the reviewed deployment changes",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("Production operations use the Cloud runtime database and deploy secrets."),
++      local: na("Local does not host production operations."),
++    },
++  },
    cloudProductionOpsReferences: {
      fixtures: "actors",
      deferOnboarding: true,
+diff --git a/e2e/tests/production-ops-database.spec.ts b/e2e/tests/production-ops-database.spec.ts
+new file mode 100644
+index 00000000..43bb37de
+--- /dev/null
++++ b/e2e/tests/production-ops-database.spec.ts
+@@ -0,0 +1,150 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { body } from "../support/api.ts";
++import { Target } from "../support/platform.ts";
++import { fixtureRequest } from "../sdk/fixtures.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Inventory, Response } from "../support/production-ops-client.ts";
++import { productionMigrationProof } from "../support/production-ops-migration-proof.ts";
++import { ProductionDatabaseState } from "../support/production-ops-database-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const setup = Effect.gen(function* () {
++  const p = yield* productionMigrationProof;
++  const target = yield* Target;
++  if (target.fixtures === undefined) return yield* Effect.die("Cloud fixture required");
++  const fixtures = target.fixtures;
++  const change = (binding: string) =>
++    fixtureRequest(fixtures, "/runtime/database-binding", { binding }, "5 minutes");
++  yield* Effect.addFinalizer(() => change("original").pipe(Effect.orDie));
++  const observed = () =>
++    Effect.gen(function* () {
++      const response = yield* p.request(p.read("organizations"));
++      expect(response.status).toBe(200);
++      return yield* Schema.decodeUnknownEffect(Inventory)(
++        p.decrypt((yield* body(Response, response)).artifact),
++      );
++    });
++  const noReceipt = (hash: string) =>
++    p.database.run({
++      sql: "select plan_sha256 from private_production_ops_receipts where plan_sha256 = $1",
++      params: [hash],
++    });
++  return { ...p, change, observed, noReceipt };
++});
++
++layer(HostedLive, { excludeTestServices: true })("Production database identity", (it) => {
++  it.effect(scenarios.cloudProductionOpsRoleIdentity.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* setup;
++        const valid = p.operation("increment");
++        const before = yield* p.account();
++        const dry = yield* p.dryRun(valid);
++        const original = yield* p.observed();
++        yield* p.change("role");
++        const changed = yield* p.observed();
++        expect(changed.database.name).toBe(original.database.name);
++        expect(changed.database.targetSha256).not.toBe(original.database.targetSha256);
++        expect((yield* p.request(p.apply(valid, dry))).status).toBe(409);
++        expect(yield* p.account()).toEqual(before);
++        expect(yield* p.noReceipt(dry.artifact.sha256)).toEqual([]);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudProductionOpsPhysicalDatabase.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* setup;
++        const valid = p.operation("increment");
++        const before = yield* p.account();
++        const dry = yield* p.dryRun(valid);
++        const original = yield* p.observed();
++        const states = yield* p.change("target").pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({
++                original: ProductionDatabaseState,
++                target: ProductionDatabaseState,
++              }),
++            ),
++          ),
++        );
++        expect(states.target.name).toBe(states.original.name);
++        expect(states.target.oid).toBe(states.original.oid);
++        expect(states.target.role).toBe(states.original.role);
++        expect(states.target.accounts).toBe(states.original.accounts);
++        expect(states.target.receipts).toEqual(states.original.receipts);
++        expect(states.target.identity).not.toBe(states.original.identity);
++        const changed = yield* p.observed();
++        expect(changed.database.name).toBe(original.database.name);
++        expect(changed.database.targetSha256).not.toBe(original.database.targetSha256);
++        expect((yield* p.request(p.apply(valid, dry))).status).toBe(409);
++        expect(yield* p.account()).toEqual(before);
++        expect(yield* p.noReceipt(dry.artifact.sha256)).toEqual([]);
++        const after = yield* p
++          .change("inspect-target")
++          .pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Struct({ target: ProductionDatabaseState })),
++            ),
++          );
++        expect(after.target).toEqual(states.target);
++        expect(after.target.receipts).not.toContain(dry.artifact.sha256);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudProductionOpsOptionalServer.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* setup;
++        yield* p.change("without-server");
++        const valid = p.operation("increment");
++        const dry = yield* p.dryRun(valid);
++        const before = yield* p.account();
++        expect((yield* p.request(p.apply(valid, dry))).status).toBe(200);
++        expect(yield* p.account()).not.toEqual(before);
++        expect((yield* p.request(p.apply(valid, dry))).status).toBe(200);
++        yield* p.change("original");
++        const identity = yield* p.database.run({
++          sql: "select id::text as id from production_ops_database_identity",
++        });
++        expect(identity.length).toBe(1);
++      }),
++    ),
++  );
++
++  it.effect(scenarios.cloudProductionOpsStalePlan.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* setup;
++        const valid = p.operation("increment");
++        const before = yield* p.account();
++        const dry = yield* p.dryRun(valid);
++        yield* p.change("release");
++        const response = yield* p.request(p.apply(valid, dry));
++        expect(response.status).toBe(409);
++        expect(response.body).toEqual({
++          error: "operation_refused",
++          failure: {
++            format: "basalt-production-ops-failure-v1",
++            category: "refused",
++            phase: "sql",
++            causeKind: "failure",
++            reason: "stale_plan",
++          },
++        });
++        expect(yield* p.account()).toEqual(before);
++        expect(yield* p.noReceipt(dry.artifact.sha256)).toEqual([]);
++        const fresh = yield* p.dryRun(valid);
++        expect((yield* p.request(p.apply(valid, fresh))).status).toBe(200);
++      }),
++    ),
++  );
++});
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index d9937f85..2223624c 100644
+index d9937f85..13dff67d 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
-@@ -1,9 +1,16 @@
+@@ -1,74 +1,122 @@
  import { expect, layer } from "@effect/vitest";
  import { Effect, Schema } from "effect";
 -import { randomUUID } from "node:crypto";
@@ -579,24 +1153,73 @@ index d9937f85..2223624c 100644
 +import { fixtureRequest } from "../sdk/fixtures.ts";
  import { HostedLive, withHostedCase } from "../support/case.ts";
 -import { Artifact, productionOpsClient } from "../support/production-ops-client.ts";
+-import { productionOpsInventoryRows } from "../support/production-ops-inventory-rows.ts";
++import { Response, Inventory } from "../support/production-ops-client.ts";
 +import {
-+  Artifact,
-+  Response,
-+  Inventory,
-+  productionOpsClient,
-+} from "../support/production-ops-client.ts";
- import { productionOpsInventoryRows } from "../support/production-ops-inventory-rows.ts";
++  Applied,
++  DryRun,
++  productionMigrationProof,
++} from "../support/production-ops-migration-proof.ts";
  import { scenarios } from "../test-plan.ts";
  
-@@ -60,6 +67,40 @@ const proof = Effect.gen(function* () {
- });
- 
+-const DryRun = Schema.Struct({
+-  action: Schema.Literal("dry-run"),
+-  artifact: Artifact,
+-  backupSha256: Schema.String,
+-});
+-const Applied = Schema.Struct({
+-  action: Schema.Literal("apply"),
+-  repeated: Schema.Boolean,
+-  verification: Schema.Struct({ ok: Schema.Boolean }),
+-});
+-
+-const proof = Effect.gen(function* () {
+-  const rows = yield* productionOpsInventoryRows;
+-  const client = yield* productionOpsClient;
+-  const operation = (
+-    name: string,
+-    foreign: string = rows.foreign.account,
+-    account = rows.own.account,
+-  ) => ({
+-    action: "dry-run",
+-    selection: "scope-proof",
+-    recipient: client.recipient,
+-    request: {
+-      organization: rows.own.organization,
+-      account,
+-      app: rows.own.app,
+-      connection: rows.own.connection,
+-      job: rows.own.job,
+-      workflow: rows.own.workflow,
+-      schedule: rows.own.schedule,
+-      subject: rows.own.user,
+-      foreign,
+-      operation: name,
+-    },
+-  });
+-  const apply = (op: ReturnType<typeof operation>, dry: typeof DryRun.Type) => ({
+-    ...op,
+-    action: "apply",
+-    artifact: dry.artifact,
+-    planSha256: dry.artifact.sha256,
+-    backupSha256: dry.backupSha256,
+-    go: `GO ${dry.artifact.sha256}`,
+-  });
+-  const dryRun = (op: ReturnType<typeof operation>) =>
+-    Effect.gen(function* () {
+-      const response = yield* client.request(op);
+-      expect(response.status).toBe(200);
+-      return yield* body(DryRun, response);
+-    });
+-  return { ...rows, ...client, operation, apply, dryRun };
+-});
+-
  layer(HostedLive, { excludeTestServices: true })("Production migration scope", (it) => {
 +  it.effect(scenarios.cloudProductionOpsDiagnostics.title, (context) =>
 +    withHostedCase(
 +      context,
 +      Effect.gen(function* () {
-+        const p = yield* proof;
++        const p = yield* productionMigrationProof;
 +        const before = yield* p.account();
 +        for (const [operation, category, causeKind, sqlStateClass] of [
 +          ["diagnostic-refused", "refused", "failure", undefined],
@@ -629,7 +1252,10 @@ index d9937f85..2223624c 100644
    it.effect(scenarios.cloudProductionOpsStableKeys.title, (context) =>
      withHostedCase(
        context,
-@@ -69,6 +110,64 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+       Effect.gen(function* () {
+-        const p = yield* proof;
++        const p = yield* productionMigrationProof;
+         const valid = p.operation("increment");
          const before = yield* p.account();
          const dry = yield* p.dryRun(valid);
          expect(yield* p.account()).toEqual(before);
@@ -663,16 +1289,18 @@ index d9937f85..2223624c 100644
 +            Schema.Struct({
 +              name: Schema.String,
 +              oid: Schema.String,
++              role: Schema.String,
++              identity: Schema.String,
 +              server: Schema.NullOr(Schema.String),
 +            }),
 +          ),
 +        )(
 +          yield* p.database.run({
-+            sql: "select current_database() as name, oid::text as oid, case when has_function_privilege('pg_catalog.pg_control_system()', 'EXECUTE') then (pg_control_system()).system_identifier::text else null end as server from pg_database where datname = current_database()",
++            sql: "select current_database() as name, d.oid::text as oid, r.oid::text as role, i.id::text as identity, (pg_control_system()).system_identifier::text as server from pg_database d cross join pg_roles r cross join production_ops_database_identity i where d.datname = current_database() and r.rolname = session_user",
 +          }),
 +        );
 +        const independentHashInput = {
-+          context: "basalt-production-database-v2",
++          context: "basalt-production-database-v3",
 +          origin: configured.origin,
 +          observed: observedDatabase[0],
 +        };
@@ -694,7 +1322,7 @@ index d9937f85..2223624c 100644
          const applied = yield* p.request(p.apply(valid, dry));
          expect(applied.status).toBe(200);
          expect((yield* body(Applied, applied)).repeated).toBe(false);
-@@ -78,6 +177,17 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -78,6 +126,17 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
          expect(replay.status).toBe(200);
          expect((yield* body(Applied, replay)).repeated).toBe(true);
          expect(yield* p.account()).toEqual(after);
@@ -712,7 +1340,7 @@ index d9937f85..2223624c 100644
          expect(
            (yield* p.request({
              ...p.apply(valid, dry),
-@@ -152,6 +262,55 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -152,11 +211,60 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
      ),
    );
  
@@ -724,7 +1352,7 @@ index d9937f85..2223624c 100644
 +      withHostedCase(
 +        context,
 +        Effect.gen(function* () {
-+          const p = yield* proof;
++          const p = yield* productionMigrationProof;
 +          const target = yield* Target;
 +          if (target.fixtures === undefined) return yield* Effect.die("Cloud fixture required");
 +          const fixtures = target.fixtures;
@@ -768,6 +1396,12 @@ index d9937f85..2223624c 100644
    it.effect(scenarios.cloudProductionOpsReferences.title, (context) =>
      withHostedCase(
        context,
+       Effect.gen(function* () {
+-        const p = yield* proof;
++        const p = yield* productionMigrationProof;
+         const grantlessId = randomUUID();
+         yield* Effect.addFinalizer(() =>
+           p.database
 diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
 index 622a54d5..136d2bcd 100644
 --- a/e2e/tests/production-ops.spec.ts
