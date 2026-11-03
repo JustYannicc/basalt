@@ -3,6 +3,7 @@ import { SqlClient } from "effect/sql";
 import type { Change, ProductionMigration } from "./contracts.ts";
 import { canonical, sha256 } from "./crypto.ts";
 import { refuse } from "./migrations/provider-apps-schema.ts";
+import { atPhase } from "./diagnostics.ts";
 
 const Request = Schema.Struct({
   organization: Schema.String,
@@ -100,6 +101,12 @@ export const scopeProof: ProductionMigration = {
       if (request.operation === "diagnostic-sql") return yield* sql`select 1 / 0`.pipe(Effect.andThen(Effect.die(poison)));
       if (request.operation === "diagnostic-sql-defect")
         return yield* sql`select 1 / 0`.pipe(Effect.orDie, Effect.andThen(Effect.die(poison)));
+      if (request.operation === "diagnostic-wrapped-composite")
+        return yield* sql`select 1 / 0`.pipe(
+          atPhase("sql"),
+          Effect.ensuring(Effect.die(poison)),
+          Effect.andThen(Effect.die(poison)),
+        );
       if (request.operation === "diagnostic-composite")
         return yield* Effect.fail(new Error(poison)).pipe(
           Effect.ensuring(sql`select 1 / 0`.pipe(Effect.orDie)),

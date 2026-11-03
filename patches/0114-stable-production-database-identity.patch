@@ -82,7 +82,7 @@ index 00000000..db021368
 +    };
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
-index 11e55693..2b0a945c 100644
+index 11e55693..cb1dffbc 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 @@ -1,5 +1,7 @@
@@ -115,7 +115,7 @@ index 11e55693..2b0a945c 100644
  });
  type FailureReceipt = typeof FailureReceipt.Type;
  type Phase = FailureReceipt["phase"];
-@@ -60,29 +73,62 @@ class DiagnosticFailure extends Error {
+@@ -60,29 +73,66 @@ class DiagnosticFailure extends Error {
  }
  
  /** No message, query, row, response or credential enters this projection. */
@@ -180,7 +180,11 @@ index 11e55693..2b0a945c 100644
 +    receipts.find((receipt) => receipt.category === "sql" && receipt.sqlStateClass !== undefined) ??
 +    receipts.find((receipt) => receipt.category !== "unknown") ??
 +    receipts[0];
-+  if (known !== undefined) return { ...known, causeKind: known.causeKind ?? causeKind };
++  if (known !== undefined)
++    return {
++      ...known,
++      causeKind: causeKind === "composite" ? causeKind : (known.causeKind ?? causeKind),
++    };
    return {
      format: "basalt-production-ops-failure-v1",
 -    category: phase === "sql" || phase === "forward" ? "unknown" : phase,
@@ -511,7 +515,7 @@ index 3cd75c8a..e5585692 100644
    expect(
      yield* p.database.run({
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ad80d22f..f596dffa 100644
+index 56c19e72..d87fea3c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -2405,6 +2405,17 @@ export const scenarios = plan({
@@ -562,7 +566,7 @@ index ad80d22f..f596dffa 100644
      fixtures: "actors",
      deferOnboarding: true,
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index d9937f85..c9f02eed 100644
+index d9937f85..2223624c 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -1,9 +1,16 @@
@@ -584,7 +588,7 @@ index d9937f85..c9f02eed 100644
  import { productionOpsInventoryRows } from "../support/production-ops-inventory-rows.ts";
  import { scenarios } from "../test-plan.ts";
  
-@@ -60,6 +67,39 @@ const proof = Effect.gen(function* () {
+@@ -60,6 +67,40 @@ const proof = Effect.gen(function* () {
  });
  
  layer(HostedLive, { excludeTestServices: true })("Production migration scope", (it) => {
@@ -600,6 +604,7 @@ index d9937f85..c9f02eed 100644
 +          ["diagnostic-sql", "sql", "failure", "22"],
 +          ["diagnostic-sql-defect", "sql", "defect", "22"],
 +          ["diagnostic-composite", "sql", "composite", "22"],
++          ["diagnostic-wrapped-composite", "sql", "composite", "22"],
 +        ] as const) {
 +          const response = yield* p.request(p.operation(operation));
 +          expect(response.status).toBe(409);
@@ -624,7 +629,7 @@ index d9937f85..c9f02eed 100644
    it.effect(scenarios.cloudProductionOpsStableKeys.title, (context) =>
      withHostedCase(
        context,
-@@ -69,6 +109,64 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -69,6 +110,64 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
          const before = yield* p.account();
          const dry = yield* p.dryRun(valid);
          expect(yield* p.account()).toEqual(before);
@@ -689,7 +694,7 @@ index d9937f85..c9f02eed 100644
          const applied = yield* p.request(p.apply(valid, dry));
          expect(applied.status).toBe(200);
          expect((yield* body(Applied, applied)).repeated).toBe(false);
-@@ -78,6 +176,17 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -78,6 +177,17 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
          expect(replay.status).toBe(200);
          expect((yield* body(Applied, replay)).repeated).toBe(true);
          expect(yield* p.account()).toEqual(after);
@@ -707,7 +712,7 @@ index d9937f85..c9f02eed 100644
          expect(
            (yield* p.request({
              ...p.apply(valid, dry),
-@@ -152,6 +261,55 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+@@ -152,6 +262,55 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
      ),
    );
  
