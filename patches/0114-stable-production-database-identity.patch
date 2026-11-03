@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
-index b34c9ab4..b13ee894 100644
+index b34c9ab41e9663c409a9890f9c26803ab2052ca5..b13ee894fdce4da354e713e97d17b7d5fd4b5058 100644
 --- a/apps/hosted/cloud/src/implementation/migrations.ts
 +++ b/apps/hosted/cloud/src/implementation/migrations.ts
 @@ -13,7 +13,10 @@ import { Effect } from "effect";
@@ -23,7 +23,7 @@ index b34c9ab4..b13ee894 100644
      });
      yield* Effect.gen(function* () {
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
-index 90ccb340..b61b879a 100644
+index 90ccb340c2c74da0d7aac54e91c69cecacb43825..b61b879a21042fb707bd051d1edf34038c459906 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 @@ -58,4 +58,9 @@ export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving
@@ -38,7 +38,7 @@ index 90ccb340..b61b879a 100644
  export const productionOpsPath = "/api/internal/production-ops";
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
 new file mode 100644
-index 00000000..df5b4087
+index 0000000000000000000000000000000000000000..df5b4087b3c407c31bca76a14bcf7942e91e3cd5
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
 @@ -0,0 +1,85 @@
@@ -128,7 +128,7 @@ index 00000000..df5b4087
 +    };
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
-index 11e55693..2ded4843 100644
+index 11e55693c4e1d67d111c0fc13d4e3c4bdf61cb70..2ded48433b2e52c7a841d643d5d35ae63e15f2bd 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 @@ -1,5 +1,7 @@
@@ -256,7 +256,7 @@ index 11e55693..2ded4843 100644
  }
 
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
-index 1934a17d..d2a70917 100644
+index 1934a17db56d3d2f2a1226b54df027648427929e..d2a7091759655817726c5c9254ba0f9b79cef57d 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 @@ -1,17 +1,17 @@
@@ -350,7 +350,7 @@ index 1934a17d..d2a70917 100644
        atPhase("sql"),
      );
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
-index aa6393d9..962b1e9d 100644
+index aa6393d992b75435192331b1b28e36683f1e94f9..962b1e9d2efe3f5bc18b7a2d48e37961f76f7dc7 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
 @@ -32,7 +32,7 @@ export const Rows = Schema.Array(Schema.Struct({ row: Schema.Record(Schema.Strin
@@ -363,7 +363,7 @@ index aa6393d9..962b1e9d 100644
  }> {}
  export const failure = (message: string) => new ProviderAppsRefused({ message });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
-index 0c239cc9..1bfaefc2 100644
+index 0c239cc9fb659e2e0aeb79dbca7daee2ee3ec363..1bfaefc2ac74d97c36bec45ff764c9b860b11577 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 @@ -12,6 +12,8 @@ import { inventory } from "./inventory.ts";
@@ -464,7 +464,7 @@ index 0c239cc9..1bfaefc2 100644
            return yield* fail("Database identity changed");
          const prior =
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
-index 10951210..eadeb7d6 100644
+index 10951210c3218fa640b85ca6b8f6073f095fd2de..eadeb7d6cceca31422ec24b00249e88c26328685 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
 @@ -17,3 +17,16 @@ export const migrateProductionOps = Effect.gen(function* () {
@@ -485,18 +485,46 @@ index 10951210..eadeb7d6 100644
 +    on conflict do nothing`;
 +});
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 8b6d195d..b9c46e79 100644
+index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee6447b780c97 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -34,6 +34,7 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+@@ -34,6 +34,8 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
  import { roleHost } from "./role-hosts.ts";
  import { freePort } from "./ports.ts";
  import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
 +import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
++import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
  import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
  import { cloudNativeStack } from "./cloud-native-stack.ts";
  import {
-@@ -260,6 +261,9 @@ export const startCloudEnvironment = (input: {
+@@ -177,6 +179,8 @@ export const startCloudEnvironment = (input: {
+     const cloud = path.resolve("apps/hosted/cloud");
+     const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
+     const directory = path.resolve(input.directory);
++    const databaseBackendPort =
++      process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : input.databasePort;
+     const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
+     if (input.manualCron && poolBackend)
+       return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
+@@ -228,7 +232,7 @@ export const startCloudEnvironment = (input: {
+     yield* fs.writeFileString(
+       ssoDatabase,
+       JSON.stringify({
+-        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor?sslmode=disable`,
++        database: `postgresql://executor:${databasePassword}@127.0.0.1:${databaseBackendPort}/executor?sslmode=disable`,
+       }),
+       { mode: 0o600 },
+     );
+@@ -240,7 +244,7 @@ export const startCloudEnvironment = (input: {
+     yield* fs.writeFileString(
+       v1Database,
+       JSON.stringify({
+-        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
++        database: `postgresql://executor:${databasePassword}@127.0.0.1:${databaseBackendPort}/executor_v1?sslmode=disable`,
+       }),
+       { mode: 0o600 },
+     );
+@@ -260,6 +264,9 @@ export const startCloudEnvironment = (input: {
      });
      yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
      const env = {
@@ -506,7 +534,44 @@ index 8b6d195d..b9c46e79 100644
        PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
          process.platform === "win32" ? ";" : ":",
        ),
-@@ -564,23 +568,83 @@ export const startCloudEnvironment = (input: {
+@@ -327,10 +334,10 @@ export const startCloudEnvironment = (input: {
+       EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
+       // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
+       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
+-      V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
++      V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${databaseBackendPort}/executor_v1?sslmode=disable`,
+       V1_IMPORT_OPERATOR_TOKEN: v1ImportOperatorToken,
+       // Imports freeze and cut over each organization in the emulated v1 through this login.
+-      V1_IMPORT_WRITER_DATABASE_URL: `postgresql://${v1DatabaseWriter}:${v1WriterPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
++      V1_IMPORT_WRITER_DATABASE_URL: `postgresql://${v1DatabaseWriter}:${v1WriterPassword}@127.0.0.1:${databaseBackendPort}/executor_v1?sslmode=disable`,
+       V1_MCP_FORWARD_SECRET: v1ForwardSecret,
+       // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
+       EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
+@@ -442,12 +449,16 @@ export const startCloudEnvironment = (input: {
+       process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : undefined;
+     yield* startCloudPostgres({
+       container,
+-      databasePort: input.databasePort,
++      databasePort: databaseBackendPort,
+       ...(alternatePort === undefined ? {} : { alternatePort }),
+       databasePassword,
+       dockerEnv,
+       log: `${directory}/postgres.log`,
+     });
++    const databaseProxy =
++      alternatePort === undefined
++        ? undefined
++        : yield* productionOpsDatabaseProxy(input.databasePort, databaseBackendPort);
+     yield* createV1Database({
+       container,
+       dockerEnv,
+@@ -559,28 +570,104 @@ export const startCloudEnvironment = (input: {
+     yield* fixtureRequest(fixtures, "/configure", {
+       origin: input.origin,
+       stage: "local",
+-      database: `postgres://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor`,
++      database: `postgres://executor:${databasePassword}@127.0.0.1:${databaseBackendPort}/executor`,
+       secret: env.BETTER_AUTH_SECRET,
        databaseName: "executor",
        databaseUsername: "executor",
      });
@@ -538,16 +603,38 @@ index 8b6d195d..b9c46e79 100644
 +    ) =>
        Effect.gen(function* () {
 -        if (alternatePort === undefined)
-+        if (alternatePort === undefined || databaseFixture === undefined)
++        if (
++          alternatePort === undefined ||
++          databaseFixture === undefined ||
++          databaseProxy === undefined
++        )
            return yield* new CloudStartFailed({ operation: "Runtime binding control is disabled" });
 +        if (next === "inspect-target") return { target: yield* databaseFixture.state(true) };
++        if (next === "target") {
++          if (binding !== "original")
++            return yield* new CloudStartFailed({
++              operation: "Physical target requires the original binding",
++            });
++          const port = yield* databaseFixture.target;
++          const states = {
++            original: yield* databaseFixture.state(false),
++            target: yield* databaseFixture.state(true),
++          };
++          yield* databaseProxy.select(port);
++          binding = "target";
++          return { binding, ...states };
++        }
++        if (binding === "target") {
++          yield* databaseProxy.select(databaseBackendPort);
++          const targetConnections = yield* databaseFixture.disconnected;
++          binding = "original";
++          if (next === "original") return { binding, targetConnections };
++        }
          if (next !== binding || !running) {
            running = false;
            yield* Scope.close(serverScope, Exit.void);
 +          if (next === "role" || next === "without-server")
 +            yield* databaseFixture.role(next === "role");
-+          if (next === "target")
-+            env.BASALT_E2E_DATABASE_TARGET_PORT = String(yield* databaseFixture.target);
 +          if (next === "credentials") {
 +            // This disposable loopback database models Hyperdrive accepting invocation-local
 +            // passwords. Keep the fixture client's existing login valid while the Worker changes.
@@ -585,18 +672,12 @@ index 8b6d195d..b9c46e79 100644
 +          binding,
 +          databaseName: "executor",
 +          origin: { host: "127.0.0.1", port: input.databasePort, database: "executor" },
-+          ...(next === "target"
-+            ? {
-+                original: yield* databaseFixture.state(false),
-+                target: yield* databaseFixture.state(true),
-+              }
-+            : {}),
 +        };
        });
      const controls =
        alternatePort === undefined ? fixtures : yield* cloudRuntimeControl(fixtures, reconfigure);
 diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
-index a47083fe..ea91f4c9 100644
+index a47083feebd5812477aa5dc9640e21856744d024..ea91f4c90fa7d7eeb1fc4f3fd76352988c74a5c5 100644
 --- a/e2e/support/cloud-runtime-control.ts
 +++ b/e2e/support/cloud-runtime-control.ts
 @@ -12,12 +12,25 @@ import {
@@ -629,7 +710,7 @@ index a47083fe..ea91f4c9 100644
      const http = yield* HttpClient.HttpClient;
 diff --git a/e2e/support/production-ops-credentials-proof.ts b/e2e/support/production-ops-credentials-proof.ts
 new file mode 100644
-index 00000000..e2118571
+index 0000000000000000000000000000000000000000..e21185715fac18b3bdcf754de4bba753b1b47752
 --- /dev/null
 +++ b/e2e/support/production-ops-credentials-proof.ts
 @@ -0,0 +1,92 @@
@@ -727,11 +808,11 @@ index 00000000..e2118571
 +});
 diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
 new file mode 100644
-index 00000000..0a4c918b
+index 0000000000000000000000000000000000000000..37caf7edde62ba31e9e58d9f40b2e5a45f43fc87
 --- /dev/null
 +++ b/e2e/support/production-ops-database-fixture.ts
-@@ -0,0 +1,162 @@
-+import { Data, Effect, FileSystem, Schema, Scope } from "effect";
+@@ -0,0 +1,189 @@
++import { Data, Effect, FileSystem, Schedule, Schema, Scope } from "effect";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
 +import { startCloudPostgres } from "./cloud-postgres.ts";
 +import { freePort } from "./ports.ts";
@@ -774,6 +855,7 @@ index 00000000..0a4c918b
 +        extendEnv: false,
 +        stdout: "ignore",
 +        stderr: "ignore",
++        forceKillAfter: "5 seconds",
 +      });
 +    const checked = <E, R>(work: Effect.Effect<number, E, R>) =>
 +      work.pipe(
@@ -833,9 +915,15 @@ index 00000000..0a4c918b
 +                "-o",
 +                "pipefail",
 +                "-c",
-+                `docker exec ${input.container} pg_dump -U executor -d executor --no-owner --no-privileges --exclude-table-data=public.production_ops_database_identity | docker exec -i ${targetContainer} psql -v ON_ERROR_STOP=1 -U executor -d executor`,
++                `docker exec ${input.container} pg_dump -U executor -d executor --lock-wait-timeout=5s --no-owner --no-privileges --exclude-table-data=public.production_ops_database_identity | docker exec -i ${targetContainer} psql -v ON_ERROR_STOP=1 -U executor -d executor`,
 +              ],
-+              { env: input.dockerEnv, extendEnv: false, stdout: "ignore", stderr: "ignore" },
++              {
++                env: input.dockerEnv,
++                extendEnv: false,
++                stdout: "ignore",
++                stderr: "ignore",
++                forceKillAfter: "5 seconds",
++              },
 +            ),
 +          ),
 +        );
@@ -860,42 +948,132 @@ index 00000000..0a4c918b
 +      }
 +      return targetPort;
 +    });
++    const query = (target: boolean, sql: string) =>
++      processes.string(
++        ChildProcess.make(
++          "docker",
++          [
++            "exec",
++            "--env",
++            "PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=500",
++            target ? targetContainer : input.container,
++            "psql",
++            "-t",
++            "-A",
++            "-U",
++            "executor",
++            "-d",
++            "executor",
++            "-c",
++            sql,
++          ],
++          { env: input.dockerEnv, extendEnv: false, stderr: "ignore", forceKillAfter: "5 seconds" },
++        ),
++      );
 +    const state = (target: boolean) =>
-+      processes
-+        .string(
-+          ChildProcess.make(
-+            "docker",
-+            [
-+              "exec",
-+              target ? targetContainer : input.container,
-+              "psql",
-+              "-t",
-+              "-A",
-+              "-U",
-+              "executor",
-+              "-d",
-+              "executor",
-+              "-c",
-+              `select json_build_object('name', current_database(), 'oid', d.oid::text,
++      query(
++        target,
++        `select json_build_object('name', current_database(), 'oid', d.oid::text,
 +      'role', (select oid::text from pg_roles where rolname = session_user),
 +      'identity', (select id::text from production_ops_database_identity),
 +      'accounts', (select md5(coalesce(string_agg(to_jsonb(a)::text, '' order by id), '')) from executor_accounts a),
 +      'receipts', coalesce((select json_agg(plan_sha256 order by plan_sha256) from private_production_ops_receipts), '[]'::json))
 +      from pg_database d where datname = current_database()`,
-+            ],
-+            { env: input.dockerEnv, extendEnv: false, stderr: "ignore" },
-+          ),
-+        )
-+        .pipe(
-+          Effect.flatMap(
-+            Schema.decodeUnknownEffect(Schema.fromJsonString(ProductionDatabaseState)),
-+          ),
-+        );
-+    return { role, target, state };
++      ).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ProductionDatabaseState))),
++      );
++    const disconnected = Effect.suspend(() =>
++      targetStarted
++        ? query(
++            true,
++            "select count(*) from pg_stat_activity where datname = current_database() and backend_type = 'client backend' and pid <> pg_backend_pid()",
++          ).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Number))),
++            Effect.flatMap((count) =>
++              count === 0
++                ? Effect.succeed(count)
++                : Effect.fail(new ProductionDatabaseFixtureFailed()),
++            ),
++            Effect.retry({ schedule: Schedule.spaced("20 millis") }),
++            Effect.timeout("5 seconds"),
++          )
++        : Effect.succeed(0),
++    );
++    return { role, target, state, disconnected };
++  });
+diff --git a/e2e/support/production-ops-database-proxy.ts b/e2e/support/production-ops-database-proxy.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd038ab0d193e8a921d544cbf1a46fbf52229df8
+--- /dev/null
++++ b/e2e/support/production-ops-database-proxy.ts
+@@ -0,0 +1,64 @@
++import { Effect, Schema } from "effect";
++import { connect, createServer, type Socket } from "node:net";
++
++class ProductionDatabaseProxyFailed extends Schema.TaggedError<ProductionDatabaseProxyFailed>()(
++  "ProductionDatabaseProxyFailed",
++  { operation: Schema.Literals(["listen", "close"]) },
++) {}
++
++/** Replace a disposable database behind the same endpoint without restarting the Cloud. */
++export const productionOpsDatabaseProxy = (port: number, original: number) =>
++  Effect.gen(function* () {
++    let target = original;
++    const sockets = new Set<Socket>();
++    const disconnect = () => {
++      for (const socket of sockets) socket.destroy();
++      sockets.clear();
++    };
++    const server = createServer((incoming) => {
++      const outgoing = connect({ host: "127.0.0.1", port: target });
++      sockets.add(incoming);
++      sockets.add(outgoing);
++      const close = () => {
++        incoming.destroy();
++        outgoing.destroy();
++        sockets.delete(incoming);
++        sockets.delete(outgoing);
++      };
++      incoming.once("close", close);
++      outgoing.once("close", close);
++      incoming.on("error", close);
++      outgoing.on("error", close);
++      incoming.pipe(outgoing).pipe(incoming);
++    });
++    yield* Effect.acquireRelease(
++      Effect.tryPromise({
++        try: () =>
++          new Promise<void>((resolve, reject) => {
++            server.once("error", reject);
++            server.listen(port, "127.0.0.1", () => {
++              server.off("error", reject);
++              resolve();
++            });
++          }),
++        catch: () => new ProductionDatabaseProxyFailed({ operation: "listen" }),
++      }),
++      () =>
++        Effect.tryPromise({
++          try: () =>
++            new Promise<void>((resolve, reject) => {
++              disconnect();
++              server.close((error) => (error === undefined ? resolve() : reject(error)));
++            }),
++          catch: () => new ProductionDatabaseProxyFailed({ operation: "close" }),
++        }).pipe(Effect.timeout("5 seconds"), Effect.orDie),
++    );
++    return {
++      select: (port: number) =>
++        Effect.sync(() => {
++          target = port;
++          // Existing pooled connections must not keep reaching the previous database.
++          disconnect();
++        }),
++    };
 +  });
 diff --git a/e2e/support/production-ops-migration-proof.ts b/e2e/support/production-ops-migration-proof.ts
 new file mode 100644
-index 00000000..23664d29
+index 0000000000000000000000000000000000000000..23664d29651d9a047621ae03be5327c378a1d202
 --- /dev/null
 +++ b/e2e/support/production-ops-migration-proof.ts
 @@ -0,0 +1,57 @@
@@ -957,7 +1135,7 @@ index 00000000..23664d29
 +  return { ...rows, ...client, operation, apply, dryRun };
 +});
 diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adoption-locks.ts
-index 3cd75c8a..e5585692 100644
+index 3cd75c8a4f95d67907aace645ffd6db4de1dbaa6..e5585692b355153e2c6deb959cdb36cad0d46971 100644
 --- a/e2e/support/provider-adoption-locks.ts
 +++ b/e2e/support/provider-adoption-locks.ts
 @@ -14,6 +14,7 @@ const Failure = Schema.Struct({
@@ -986,7 +1164,7 @@ index 3cd75c8a..e5585692 100644
    expect(
      yield* p.database.run({
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 56c19e72..42111f7b 100644
+index 0068b086a0a6217596b76ab7d22caa32e4c9b3e2..54eea625a692b423f4882141f0ae75a5e6c24471 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -2405,6 +2405,28 @@ export const scenarios = plan({
@@ -1096,10 +1274,10 @@ index 56c19e72..42111f7b 100644
      deferOnboarding: true,
 diff --git a/e2e/tests/production-ops-database.spec.ts b/e2e/tests/production-ops-database.spec.ts
 new file mode 100644
-index 00000000..3820de6c
+index 0000000000000000000000000000000000000000..6d2d3797e357ae6aa763ddeaaaa0263c1accbe09
 --- /dev/null
 +++ b/e2e/tests/production-ops-database.spec.ts
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,196 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Api, body } from "../support/api.ts";
@@ -1174,6 +1352,17 @@ index 00000000..3820de6c
 +                target: ProductionDatabaseState,
 +              }),
 +            ),
++          ),
++        );
++        yield* Effect.addFinalizer(() =>
++          p.change("original").pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Struct({ targetConnections: Schema.Number })),
++            ),
++            Effect.tap(({ targetConnections }) =>
++              Effect.sync(() => expect(targetConnections).toBe(0)),
++            ),
++            Effect.orDie,
 +          ),
 +        );
 +        expect(states.target.name).toBe(states.original.name);
@@ -1286,7 +1475,7 @@ index 00000000..3820de6c
 +  );
 +});
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index d9937f85..fa7c609b 100644
+index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f51101f2c930 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -2,82 +2,75 @@ import { expect, layer } from "@effect/vitest";
@@ -1490,7 +1679,7 @@ index d9937f85..fa7c609b 100644
          yield* Effect.addFinalizer(() =>
            p.database
 diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
-index 622a54d5..136d2bcd 100644
+index 622a54d5d6e96d44daf1bc868db2125a932fa24e..136d2bcda6fcdfb3c056d730b842eaff9e747eb2 100644
 --- a/e2e/tests/production-ops.spec.ts
 +++ b/e2e/tests/production-ops.spec.ts
 @@ -50,6 +50,7 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
