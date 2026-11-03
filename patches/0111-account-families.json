@@ -1,7 +1,7 @@
 {
   "identity": "executor-account-families",
   "file": "0111-account-families.patch",
-  "content_sha256": "e0bf529e2e8b279c96d388a794351c6ac27de9c69132b32577f23b29abc12de9",
+  "content_sha256": "d3eb9d8f590b67b3690791eb4a4abc28df56cfc25c0d1d9881213f690ac9d6a1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
