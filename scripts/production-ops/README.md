@@ -107,8 +107,12 @@ proxy address do not identify the database. Password changes alone preserve its
 database binding.
 The migration bootstrap gives each database a persistent random UUID. The binding
 includes that UUID and the connected login's role OID, plus the cluster identifier
-when its query succeeds. Plans made
-before this identity format was deployed require a fresh dry run. Existing
+when its query succeeds. This identifies the same dataset lineage. A byte-restored
+clone can retain the UUID and catalog OIDs, so it can match when the server
+identifier is unavailable. Apply still rechecks every reviewed row, scope and
+stable key, with a plan younger than one hour. Fresh databases, different logins
+and changed reviewed data are refused. Plans made before this identity format
+was deployed require a fresh dry run. Existing
 receipts keep their plan and backup hashes; no receipt schema changes.
 It re-inspects inside the write transaction and verifies before and after commit.
 A failed in-transaction verification rolls back the writes and receipt together.
@@ -119,6 +123,26 @@ before deciding what to do next. A repeated, still-valid committed plan returns
 its receipt and verifies again without replaying its writes. If the deployment
 or plan validity changed, use the saved receipt and backup to prepare a reviewed
 follow-up. Do not invent a new plan merely to repeat an uncertain mutation.
+
+## Rotate identity after a restore
+
+After restoring a database, rotate its identity row before running any
+production-ops plan. Use the database connection authorized by the restore
+procedure and run this transaction on the restored database:
+
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10s';
+UPDATE production_ops_database_identity
+SET id = gen_random_uuid(), created_at = now()
+RETURNING id;
+COMMIT;
+```
+
+Confirm that the update returned exactly one UUID. This invalidates pre-rotation
+plans. Run a fresh dry run and obtain GO for its new plan hash. The workflow has
+no arbitrary SQL action; this step belongs to the authorized restore procedure.
 
 ## Prove the migration boundary locally
 

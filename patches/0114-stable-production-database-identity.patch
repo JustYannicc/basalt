@@ -38,10 +38,10 @@ index 90ccb340..b61b879a 100644
  export const productionOpsPath = "/api/internal/production-ops";
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
 new file mode 100644
-index 00000000..1320d8de
+index 00000000..df5b4087
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,85 @@
 +/** Database identity excludes login secrets and invocation-local Hyperdrive routing. */
 +import { Data, Effect, Redacted, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -114,6 +114,8 @@ index 00000000..1320d8de
 +        ),
 +      )
 +      .pipe(Effect.orElseSucceed(() => null));
++    // This identifies dataset lineage: a byte-restored clone can retain the UUID and catalog OIDs.
++    // Rotate the identity row after any restore, before running production-ops plans.
 +    return {
 +      name: observed.name,
 +      targetSha256: sha256(
