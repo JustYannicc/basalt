@@ -35,7 +35,7 @@ export const withAdoptionStepGate = <A, E, R, B, E2, R2>(
           purgeClaim = undefined;
           yield* arrive("purge", id);
         }
-        if (/^update (?:\w+\.)?executor_apps\b/.test(query) && query.includes("owner")) {
+        if (/^update (?:\w+\.)?executor_apps set owner\s*=/.test(query)) {
           const owner = params.find((value) => typeof value === "string" && value.startsWith("organization:"));
           if (typeof owner === "string") {
             purgeOwner = owner.slice("organization:".length);
