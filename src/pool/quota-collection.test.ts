@@ -20,6 +20,9 @@ function fixture() {
       onCollect();
       return Response.json({ accepted: 1, running: true }, { status: 202 });
     }
+    if (path.endsWith("/quota/credentials/b")) return Response.json({
+      credential: { credential_id: "b" }, collection: { status: "success", freshness: "fresh", observed_at: new Date(now).toISOString() },
+    });
     assert.ok(path.endsWith("/quota/credentials/a"));
     return Response.json(value);
   });
@@ -107,4 +110,66 @@ test("connectors and explicitly unlimited accounts have no automatic usage repor
   assert.equal(hasUsageLimits({ type: "typesafe" }), true);
   assert.equal(hasUsageLimits({ provider: "codex" }, { primary_windows: [{ is_unlimited: true }] }), false);
   assert.equal(hasUsageLimits({ provider: "codex" }, { primary_windows: [{ is_unlimited: true }, { limit: 100 }] }), true);
+});
+
+
+test("a bounded wait leaves Home's collection queued and reads its completion on the next pass", async (t) => {
+  const f = fixture(), budget = new AbortController();
+  t.mock.method(AbortSignal, "timeout", (ms: number) => { assert.equal(ms, 9_000); return budget.signal; });
+  f.onCollect(() => f.set({ credential: { credential_id: "a" }, collection: { status: "collecting", freshness: "never" } }));
+  const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async (_ms, signal) => {
+    budget.abort(new DOMException("Collection wait ended", "TimeoutError"));
+    signal.throwIfAborted();
+  } });
+  const pending = await collector.read("a");
+  assert.equal((pending!.collection as Json).status, "collecting");
+  assert.equal(f.posts(), 1);
+  t.mock.restoreAll();
+  f.advance(5 * 60_000);
+  f.fresh();
+  const completed = await collector.read("a");
+  assert.equal((completed!.collection as Json).status, "success");
+  assert.equal(f.posts(), 1, "waiting never cancels or queues a second Home collection");
+});
+
+test("an awaited collection yields to another account read", async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async () => {
+    entered.resolve();
+    await release.promise;
+    f.fresh();
+  } });
+  const first = collector.read("a");
+  await entered.promise;
+  // A separate fresh account read must finish before the first collection is released.
+  try {
+    const second = await collector.read("b");
+    assert.equal((second!.credential as Json).credential_id, "b");
+  } finally { release.resolve(); }
+  assert.equal(((await first)!.collection as Json).status, "success");
+  assert.equal(f.posts(), 1);
+});
+
+
+test("joining a queued collection keeps the original nine-second wait budget", async (t) => {
+  const f = fixture();
+  f.fresh(); f.advance(quotaCollectInterval);
+  const budgets: AbortController[] = [];
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    assert.equal(ms, 9_000);
+    const budget = new AbortController(); budgets.push(budget); return budget.signal;
+  });
+  const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async (_ms, signal) => {
+    assert.equal(budgets.length, 2, "joining must not allocate another wait budget");
+    budgets[1]!.abort(new DOMException("Collection wait ended", "TimeoutError"));
+    signal.throwIfAborted();
+  } });
+  const queued = collector.read("a", undefined, false);
+  const observed = collector.read("a", undefined, true);
+  await queued;
+  const retained = await observed;
+  assert.equal((retained!.collection as Json).status, "collecting");
+  assert.equal((retained!.collection as Json).observed_at, new Date(f.options.now() - quotaCollectInterval).toISOString());
+  assert.equal(f.posts(), 1);
 });

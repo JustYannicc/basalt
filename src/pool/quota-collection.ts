@@ -17,6 +17,9 @@ const instant = (value: unknown) => typeof value === "string" ? Date.parse(value
 export const collectionOf = (value: Json): Json => object(value.collection) ? value.collection
   : object(value.credential) ? value.credential : value;
 const statusOf = (value: Json) => value.status ?? value.collection_status;
+const stillCollecting = (value: Json | null): Json | null => value === null ? null : {
+  ...value, collection: { ...collectionOf(value), status: "collecting" },
+};
 
 /** Only native model accounts have a quota reporter; connector credentials never do. */
 export function hasUsageLimits(file: Json, value: Json = {}): boolean {
@@ -56,10 +59,14 @@ export class QuotaCollection {
     this.now = options.now ?? Date.now; this.wait = options.wait ?? wait;
   }
   read(id: string, callerSignal?: AbortSignal, awaitCompletion = true, force = false): Promise<Json | null> {
+    return this.readWithinBudget(id, callerSignal, awaitCompletion, force, AbortSignal.timeout(checkBudget));
+  }
+  private readWithinBudget(id: string, callerSignal: AbortSignal | undefined, awaitCompletion: boolean, force: boolean, timeout: AbortSignal): Promise<Json | null> {
     const pending = this.pending.get(id);
     if (pending) return (awaitCompletion && !pending.waits || force && !pending.forced)
-      ? pending.work.then(() => this.read(id, callerSignal, awaitCompletion, force)) : pending.work;
-    const work = this.collect(id, callerSignal, awaitCompletion, force).finally(() => {
+      ? pending.work.then((value) => timeout.aborted ? stillCollecting(value)
+        : this.readWithinBudget(id, callerSignal, awaitCompletion, force, timeout)) : pending.work;
+    const work = this.collect(id, callerSignal, awaitCompletion, force, timeout).finally(() => {
       if (this.pending.get(id)?.work === work) this.pending.delete(id);
     });
     this.pending.set(id, { work, waits: awaitCompletion, forced: force });
@@ -76,46 +83,53 @@ export class QuotaCollection {
       throw error;
     }
   }
-  private async collect(id: string, callerSignal: AbortSignal | undefined, awaitCompletion: boolean, force: boolean): Promise<Json | null> {
-    const timeout = AbortSignal.timeout(checkBudget);
+  private async collect(id: string, callerSignal: AbortSignal | undefined, awaitCompletion: boolean, force: boolean, timeout: AbortSignal): Promise<Json | null> {
     const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
-    let value = await this.snapshot(id, signal);
-    if (!force && (!value || !needsQuotaCollection(value, this.now()))) return value;
-    const collection = value ? collectionOf(value) : {};
-    const credential = value && object(value.credential) ? value.credential : value;
-    const windows = value?.windows ?? credential?.primary_windows;
-    if (!force && Array.isArray(windows) && windows.length > 0
-      && windows.every((window) => object(window) && window.is_unlimited === true)) return value;
-    const retryAt = instant(collection.next_probe_at);
-    if (Number.isFinite(retryAt) && retryAt > this.now()) return value;
-    const previous = instant(collection.last_attempt_at);
-    const key = `quota-collect-v1:${await digest(id)}`;
-    const requested = await this.storage.get<number>(key);
-    const last = Math.max(Number.isFinite(previous) ? previous : -Infinity, requested ?? -Infinity);
-    const collecting = statusOf(collection) === "collecting";
-    if (!collecting) {
-      if (this.now() - last < quotaCollectInterval) {
-        const justRequested = requested !== undefined && this.now() - requested < checkBudget
-          && (!Number.isFinite(previous) || requested > previous);
-        if (!awaitCompletion || !justRequested) return value;
-      } else {
-        // Persist before sending: a transport failure can leave an accepted job behind.
-        await this.storage.put(key, this.now());
-        const result = await this.client.data("/quota/collect", { ...post({ credential_ids: [id] }), signal });
-        if (typeof result.accepted !== "number" || result.accepted < 0 || !Number.isInteger(result.accepted)) return unavailable();
-        this.client.dropQuotaDetail(id);
-        if (!awaitCompletion) return value;
-      }
-    }
-    const before = JSON.stringify([collection.observed_at, collection.last_attempt_at, statusOf(collection), collection.error]);
-    for (;;) {
+    let value: Json | null = null, retained: Json | null = null;
+    try {
       value = await this.snapshot(id, signal);
-      if (!value) return null;
-      const current = collectionOf(value);
-      const after = JSON.stringify([current.observed_at, current.last_attempt_at, statusOf(current), current.error]);
-      if (after !== before && statusOf(current) !== "collecting") return value;
-      if (!awaitCompletion) return value;
-      await this.wait(500, signal);
+      retained = value;
+      if (!force && (!value || !needsQuotaCollection(value, this.now()))) return value;
+      const collection = value ? collectionOf(value) : {};
+      const credential = value && object(value.credential) ? value.credential : value;
+      const windows = value?.windows ?? credential?.primary_windows;
+      if (!force && Array.isArray(windows) && windows.length > 0
+        && windows.every((window) => object(window) && window.is_unlimited === true)) return value;
+      const retryAt = instant(collection.next_probe_at);
+      if (Number.isFinite(retryAt) && retryAt > this.now()) return value;
+      const previous = instant(collection.last_attempt_at);
+      const key = `quota-collect-v1:${await digest(id)}`;
+      const requested = await this.storage.get<number>(key);
+      const last = Math.max(Number.isFinite(previous) ? previous : -Infinity, requested ?? -Infinity);
+      const collecting = statusOf(collection) === "collecting";
+      if (!collecting) {
+        if (this.now() - last < quotaCollectInterval) {
+          const justRequested = requested !== undefined && this.now() - requested < checkBudget
+            && (!Number.isFinite(previous) || requested > previous);
+          if (!awaitCompletion || !justRequested) return value;
+        } else {
+          // Persist before sending: a transport failure can leave an accepted job behind.
+          await this.storage.put(key, this.now());
+          const result = await this.client.data("/quota/collect", { ...post({ credential_ids: [id] }), signal });
+          if (typeof result.accepted !== "number" || result.accepted < 0 || !Number.isInteger(result.accepted)) return unavailable();
+          this.client.dropQuotaDetail(id);
+          if (!awaitCompletion) return value;
+        }
+      }
+      const before = JSON.stringify([collection.observed_at, collection.last_attempt_at, statusOf(collection), collection.error]);
+      for (;;) {
+        value = await this.snapshot(id, signal);
+        if (!value) return null;
+        const current = collectionOf(value);
+        const after = JSON.stringify([current.observed_at, current.last_attempt_at, statusOf(current), current.error]);
+        if (after !== before && statusOf(current) !== "collecting") return value;
+        if (!awaitCompletion) return value;
+        await this.wait(500, signal);
+      }
+    } catch (error) {
+      // Home owns the queued job. A local wait deadline does not fail or cancel collection.
+      if (timeout.aborted && !callerSignal?.aborted) return stillCollecting(retained);
+      throw error;
     }
   }
 }

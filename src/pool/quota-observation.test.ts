@@ -73,7 +73,7 @@ test("the public observation carries reported quantities and expiry without raw 
   assert.equal(publicQuotaObservation(quotaObservation({ windows: [] })), null);
 });
 
-test("public freshness follows the collection interval plus two upkeep passes from each source time", async () => {
+test("public freshness follows the collection interval plus two upkeep passes and the publish budget from each source time", async () => {
   const { publicQuotaObservation } = await import("./quota-observation-public.ts");
   const { quotaCollectInterval } = await import("./quota-collection.ts");
   const { poolLifecycle } = await import("./lifecycle.ts");
@@ -85,7 +85,7 @@ test("public freshness follows the collection interval plus two upkeep passes fr
     windows: [{ id: "weekly", unit: "requests", observed_at: windowAt }],
     reset_credits: { available_count: 2, observed_at: balanceAt, credits: [] },
   }));
-  const horizon = (at: string) => new Date(Date.parse(at) + quotaCollectInterval + 2 * poolLifecycle.refreshMs).toISOString();
+  const horizon = (at: string) => new Date(Date.parse(at) + quotaCollectInterval + 2 * poolLifecycle.refreshMs + 30_000).toISOString();
   assert.equal(output?.observation.plan?.staleAt, horizon(observedAt));
   assert.equal(output?.observation.windows[0]?.staleAt, horizon(windowAt));
   assert.equal(output?.observation.balances[0]?.staleAt, horizon(balanceAt));
@@ -103,8 +103,8 @@ test("public freshness preserves earlier Home deadlines and caps later ones", as
   };
   const output = publicQuotaObservation(quotaObservation(detail));
   assert.equal(output?.observation.windows[0]?.staleAt, early);
-  assert.equal(output?.observation.plan?.staleAt, "2026-11-03T10:40:00.000Z");
-  assert.equal(output?.observation.balances[0]?.staleAt, "2026-11-03T10:40:00.000Z");
+  assert.equal(output?.observation.plan?.staleAt, "2026-11-03T10:40:30.000Z");
+  assert.equal(output?.observation.balances[0]?.staleAt, "2026-11-03T10:40:30.000Z");
   detail.collection.expires_at = early;
   detail.windows[0]!.expires_at = later;
   const shortened = publicQuotaObservation(quotaObservation(detail));

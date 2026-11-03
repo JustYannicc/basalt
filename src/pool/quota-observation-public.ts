@@ -1,4 +1,5 @@
 import type { PoolAccountObservation } from "../../apps/pool/account-observation-contract.ts";
+import { observationPublishBudget } from "./account-observation-publish.ts";
 import { poolLifecycle } from "./lifecycle.ts";
 import { quotaCollectInterval } from "./quota-collection.ts";
 import type { QuotaObservation, QuotaWindowObservation } from "./quota-observation.ts";
@@ -10,10 +11,11 @@ const instant = (value: string | null): string | undefined => {
   const iso = new Date(time).toISOString();
   return /^\d{4}-/.test(iso) ? iso : undefined;
 };
-// After collection becomes due, one upkeep pass queues it and the next publishes the reading.
-// Cover both passes from the source time; keep any earlier source deadline.
+// Collected and published in one pass: 30 min cap + at most 5 min to the next alarm
+// + one 5 min pass skipped by the SDK cooldown + the bounded 30 s publish request.
+// Every horizon starts at the source time; earlier Home deadlines still win.
 const staleAt = (observedAt: string, ...deadlines: (string | null)[]) => new Date(Math.min(
-  Date.parse(observedAt) + quotaCollectInterval + 2 * poolLifecycle.refreshMs,
+  Date.parse(observedAt) + quotaCollectInterval + 2 * poolLifecycle.refreshMs + observationPublishBudget,
   ...deadlines.flatMap((value) => { const at = instant(value); return at === undefined ? [] : [Date.parse(at)]; }),
 )).toISOString();
 const ratio = (value: number | null) => value !== null && value >= 0 && value <= 1 ? value : undefined;

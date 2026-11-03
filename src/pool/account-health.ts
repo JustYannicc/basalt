@@ -50,10 +50,16 @@ export async function nativeAccountHealth(
     )
       return json({ failure: "unauthorized" });
     if (value.action === "observe") {
-      // The alarm already queued linked credentials. Unlinked bindings use the same capped reader.
+      // Await this pass outside the attribution queue, including for unlinked bindings.
       if (!ids.every((id) => hasUsageLimits(files.find((file) => file.id === id)!))) return json({ result: null });
-      const readings = await Promise.all(ids.map((id) => input.collection.read(id, signal, false)));
+      const readings = await Promise.all(ids.map((id) => input.collection.read(id, signal, true)));
       const reading = readings[0];
+      if (readings.length === 1 && reading != null) {
+        const observation = quotaObservation(reading);
+        // A first failed collection has no reading to carry its failure metadata.
+        if (observation.observedAt === null && observation.collection.status === "failed")
+          return json({ failure: observation.collection.errorCode === "UPSTREAM_RATE_LIMITED" ? "rate_limited" : "unavailable" });
+      }
       // Unlimited windows are reported as unlimited; whether a row shows them is the row's choice.
       return json({ result: readings.length === 1 && reading != null
         ? publicQuotaObservation(quotaObservation(reading)) : null });
