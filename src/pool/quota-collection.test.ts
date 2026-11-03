@@ -201,6 +201,20 @@ test("a budget and a request deadline firing together keep the retained reading"
   assert.equal((pending!.collection as Json).status, "collecting");
 });
 
+test("storage failures of any shape after the request deadline still fail the read", async () => {
+  const deadline = () => new DOMException("Request deadline", "TimeoutError");
+  const cases = [
+    { name: "a synchronous get throw", get: (caller: AbortController) => { caller.abort(deadline()); throw new Error("storage unavailable"); }, put: async () => {} },
+    { name: "a primitive put rejection", get: async () => undefined, put: (caller: AbortController) => { caller.abort(deadline()); return Promise.reject("storage unavailable"); } },
+  ];
+  for (const entry of cases) {
+    const f = fixture(), caller = new AbortController();
+    const storage = { get: () => entry.get(caller) as never, put: () => entry.put(caller) as never };
+    const collector = new QuotaCollection(storage, f.client, f.options);
+    await assert.rejects(collector.read("a", caller.signal), (error: unknown) => error !== undefined, entry.name);
+  }
+});
+
 test("an awaited collection yields to another account read", async () => {
   const f = fixture();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
