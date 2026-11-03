@@ -261,35 +261,23 @@ index cb2ba2e..487c263 100644
      });
    });
  
-diff --git a/packages/sdk/src/implementation/account-check-record.ts b/packages/sdk/src/implementation/account-check-record.ts
-index 7c76fc0..0d6223a 100644
---- a/packages/sdk/src/implementation/account-check-record.ts
-+++ b/packages/sdk/src/implementation/account-check-record.ts
-@@ -7,8 +7,19 @@ import { StorageError } from "../contracts/shared.ts";
- const Record = Schema.Struct({
-   displayStatus: Schema.optionalKey(AccountStatus),
-   checkFailure: Schema.optionalKey(AccountCheckFailure),
-+  /**
-+   * Set when agents' tool discovery, not a check, recorded that the app's tools do not load: the
-+   * catalog context it read, so only a later read of that same context clears it.
-+   */
-+  toolsUnavailableFromDiscovery: Schema.optionalKey(Schema.String),
- });
- 
-+export const recordedDiscoveryMark = (info: unknown) =>
-+  Schema.decodeUnknownOption(Record)(info).pipe(
-+    Option.flatMap((record) => Option.fromNullishOr(record.toolsUnavailableFromDiscovery)),
-+    Option.getOrUndefined,
-+  );
-+
- export const recordedCheckFailure = (info: unknown) =>
-   Schema.decodeUnknownOption(Record)(info).pipe(
-     Option.flatMap((record) => Option.fromNullishOr(record.checkFailure)),
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 63e1925..b983cb9 100644
+index 63e1925..0cecba4 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
-@@ -25,6 +25,7 @@ import {
+@@ -1,4 +1,11 @@
+ import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
++import {
++  checkContext,
++  recordRead,
++  toolsEntries,
++  toolsReason,
++  withToolsEntries,
++} from "./account-tools-health.ts";
+ import type { AccountDriverResolver } from "./account-driver-source.ts";
+ import { makeDriverAccountHealth, withDriverHealth } from "./account-driver-health.ts";
+ import { privateAccountCheck } from "./account-status-output.ts";
+@@ -25,6 +32,7 @@ import {
    JsonObject,
    StorageError,
    type AppId,
@@ -297,15 +285,7 @@ index 63e1925..b983cb9 100644
    type OwnerId,
  } from "../contracts/shared.ts";
  import { AppNotFound } from "../contracts/apps.ts";
-@@ -36,6 +37,7 @@ import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
- import {
-   accountCheckRecord,
-   recordedCheckFailure,
-+  recordedDiscoveryMark,
-   recordedDisplayStatus,
- } from "./account-check-record.ts";
- import { checkInteractiveAccount } from "./interactive-check.ts";
-@@ -81,6 +83,18 @@ type CheckRow = {
+@@ -81,6 +89,18 @@ type CheckRow = {
    readonly message: string | null;
  };
  type ReportState = { readonly status: string };
@@ -324,7 +304,7 @@ index 63e1925..b983cb9 100644
  
  /** The slot whose provider check covers this account in the app's active version. */
  const checkedSlot = (
-@@ -159,6 +173,7 @@ export const makeAccountHealth = (
+@@ -159,6 +179,7 @@ export const makeAccountHealth = (
      typeof import("./account-observations.ts").makeAccountObservations
    >["fromHealth"],
    acquisition?: AccountDriverResolver,
@@ -332,7 +312,7 @@ index 63e1925..b983cb9 100644
  ) => {
    const driver = makeDriverAccountHealth(
      db,
-@@ -373,7 +388,17 @@ export const makeAccountHealth = (
+@@ -373,7 +394,17 @@ export const makeAccountHealth = (
        if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome) && outcome.success === undefined) return;
@@ -351,71 +331,70 @@ index 63e1925..b983cb9 100644
        const failure = Result.isFailure(outcome) ? accountCheckFailure(outcome.failure) : undefined;
        if (failure !== undefined) yield* recordAccountCheckFailure(failure);
        const existing = yield* query(() =>
-@@ -382,6 +407,28 @@ export const makeAccountHealth = (
+@@ -382,6 +413,22 @@ export const makeAccountHealth = (
          }),
        );
        if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
-+      // A known tools failure of this version and credentials stands unless this read failed with
-+      // its own reason or proves it wrong. A read that cannot tell proves nothing, and one that
-+      // loads proves nothing about a failure discovery found in another catalog context: the
-+      // probe's own read already cleared a mark of its context before this row was read.
-+      const failing =
-+        existing?.status === "tools_unavailable" &&
++      // The check's own read sets or clears its entry; what discovery found in other catalog
++      // contexts of this version and credentials stands. A read that cannot tell changes nothing.
++      const kept =
++        existing !== null &&
 +        existing.deployment === version.id &&
 +        existing.credentialGeneration === account.credentialGeneration
-+          ? existing
-+          : undefined;
-+      const failingMark = failing === undefined ? undefined : recordedDiscoveryMark(failing.info);
-+      const known =
-+        tools?.reason !== undefined || (tools !== undefined && failingMark === undefined)
-+          ? undefined
-+          : failing;
-+      const mark = known === undefined ? undefined : failingMark;
-+      const toolsReason = tools?.reason ?? known?.message ?? undefined;
++          ? toolsEntries(existing.info, startedAt)
++          : {};
++      const entries =
++        tools === undefined ? kept : recordRead(kept, checkContext, tools.reason, startedAt);
++      const reason = toolsReason(entries);
 +      const status = Result.isSuccess(outcome)
-+        ? toolsReason !== undefined || known !== undefined
-+          ? "tools_unavailable"
-+          : "healthy"
++        ? reason === undefined
++          ? "healthy"
++          : "tools_unavailable"
 +        : statusOf(outcome.failure);
        const checkedAt = new Date(startedAt);
        const success = Result.isSuccess(outcome) ? outcome.success : undefined;
        const record = yield* accountCheckRecord(
-@@ -398,7 +445,9 @@ export const makeAccountHealth = (
+@@ -396,7 +443,7 @@ export const makeAccountHealth = (
+         status,
+         checkedAt,
          ...record,
-         info:
+-        info:
++        info: withToolsEntries(
            failure === undefined
--            ? record.info
-+            ? Result.isSuccess(outcome) && mark !== undefined
-+              ? { ...record.info, toolsUnavailableFromDiscovery: mark }
-+              : record.info
+             ? record.info
              : {
-                 ...record.info,
-                 checkFailure: failure,
-@@ -406,7 +455,11 @@ export const makeAccountHealth = (
+@@ -406,7 +453,11 @@ export const makeAccountHealth = (
                    ? { checkReason: outcome.failure.reason }
                    : {}),
                },
 -        message: Result.isSuccess(outcome) ? null : (messageOf(outcome.failure, late) ?? null),
++          entries,
++        ),
 +        message: Result.isSuccess(outcome)
-+          ? status === "tools_unavailable"
-+            ? (toolsReason ?? null)
-+            : null
++          ? (reason ?? null)
 +          : (messageOf(outcome.failure, late) ?? null),
        };
        yield* query(() =>
          db.upsert("accountChecks", {
 diff --git a/packages/sdk/src/implementation/account-tools-health.ts b/packages/sdk/src/implementation/account-tools-health.ts
 new file mode 100644
-index 0000000..408823f
+index 0000000..5daac7d
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-tools-health.ts
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,165 @@
 +/**
 + * Whether an app's tools load for agents, kept on the app's account checks. A provider check can
-+ * accept credentials while the app's tool loader fails, so the check that shows an account as
-+ * healthy also reads the app's catalog, and every catalog read marks or clears what it found.
++ * accept credentials while the app's tool loader fails, so the check also reads the app's catalog,
++ * and every catalog read records what it found.
++ *
++ * Each kind of read keeps its own entry: the account check, and each catalog context agents'
++ * discovery reads (MCP with app UI or without, user or app scope, which caller). A read sets its
++ * entry when the tools fail and removes it when they load, so one context loading never hides
++ * another that fails. While the credentials pass, the check shows `tools_unavailable` exactly when
++ * some entry is present. Entries older than a day are ignored, the longest a kept listing is
++ * served, so a context nobody reads any more cannot hold the badge.
 + */
-+import { Effect, Option, Schema } from "effect";
++import { Clock, Effect, Option, Schema } from "effect";
 +import type { AccountCheckStatus } from "../contracts/account.ts";
 +import { JsonObject, type AccountId, type AppId, type VersionId } from "../contracts/shared.ts";
 +import {
@@ -425,12 +404,15 @@ index 0000000..408823f
 +  routerFailure,
 +  type ToolRouter,
 +} from "../contracts/tools.ts";
-+import { recordedDiscoveryMark } from "./account-check-record.ts";
 +import { query, type Query } from "./database.ts";
 +
 +// App text can be long, such as one line per failed router; the badge keeps a readable summary.
 +const limit = 1_000;
 +const bounded = (text: string) => (text.length > limit ? `${text.slice(0, limit - 1)}…` : text);
++const retainedMillis = 24 * 60 * 60 * 1_000;
++
++/** The entry the account check's own catalog read keeps. */
++export const checkContext = "check";
 +
 +/** What agents are told about the routers that could not list their tools, or undefined. */
 +export const toolsProblem = (
@@ -445,8 +427,7 @@ index 0000000..408823f
 +
 +/**
 + * What agents are told when a catalog read fails because the app's tools do not load, or
-+ * undefined for a failure that is not the tools', such as a missing account. Only a check's own
-+ * read can time out; discovery's listing store reports that to its reader.
++ * undefined for a failure that is not the tools', such as a missing account.
 + */
 +export const toolsFailure = (error: unknown) =>
 +  Schema.is(AppEvaluationFailed)(error) ||
@@ -455,43 +436,57 @@ index 0000000..408823f
 +    ? bounded(error.message)
 +    : undefined;
 +
-+type Row = {
-+  readonly status: string;
-+  readonly info: unknown;
-+  readonly message: string | null;
++const Entries = Schema.Record(
++  Schema.String,
++  Schema.Struct({ reason: Schema.String, at: Schema.Number }),
++);
++type Entries = typeof Entries.Type;
++const Stored = Schema.Struct({ toolsUnavailable: Schema.optionalKey(Entries) });
++
++/** The entries kept in a check's info that are recent enough to count at `now`. */
++export const toolsEntries = (info: unknown, now: number): Entries =>
++  Object.fromEntries(
++    Object.entries(
++      Option.getOrUndefined(Schema.decodeUnknownOption(Stored)(info))?.toolsUnavailable ?? {},
++    ).filter(([, entry]) => now - entry.at < retainedMillis),
++  );
++
++/** Entries after one read of `context`: set with `reason` when the tools failed, else removed. */
++export const recordRead = (
++  entries: Entries,
++  context: string,
++  reason: string | undefined,
++  now: number,
++): Entries => {
++  const { [context]: _previous, ...others } = entries;
++  return reason === undefined ? others : { ...others, [context]: { reason, at: now } };
 +};
 +
-+/** The row a discovery of `context` leaves, or undefined when it must not change it. */
-+const marked = (row: Row, context: string, problem: string | undefined) => {
-+  const mark = recordedDiscoveryMark(row.info);
-+  const info = Option.getOrElse(
-+    Schema.decodeUnknownOption(JsonObject)(row.info),
-+    (): JsonObject => ({}),
-+  );
-+  if (problem !== undefined) {
-+    const refreshed =
-+      row.status === "tools_unavailable" && mark === context && row.message !== problem;
-+    if (row.status !== "healthy" && !refreshed) return undefined;
-+    return {
-+      status: "tools_unavailable" satisfies AccountCheckStatus,
-+      message: problem,
-+      info: { ...info, toolsUnavailableFromDiscovery: context },
-+    };
-+  }
-+  // Another catalog context, such as one without MCP's app UI, can load while this one fails.
-+  if (row.status !== "tools_unavailable" || mark !== context) return undefined;
-+  const { toolsUnavailableFromDiscovery: _mark, ...rest } = info;
-+  return {
-+    status: "healthy" satisfies AccountCheckStatus,
-+    message: null,
-+    info: Object.keys(rest).length === 0 ? null : rest,
-+  };
++/** Why the tools do not load, from every entry, or undefined when none is kept. */
++export const toolsReason = (entries: Entries) => {
++  const reasons = [...new Set(Object.values(entries).map((entry) => entry.reason))];
++  return reasons.length === 0 ? undefined : bounded(reasons.join(" "));
 +};
++
++/** A check's info with these entries, without the key once none is kept. */
++export const withToolsEntries = (info: JsonObject | null, entries: Entries) => {
++  const { toolsUnavailable: _previous, ...rest } = info ?? {};
++  const kept = Object.keys(entries).length === 0 ? rest : { ...rest, toolsUnavailable: entries };
++  return Object.keys(kept).length === 0 ? null : kept;
++};
++
++/** Credentials that passed leave the status to the tools; a failed sign-in keeps its own. */
++const statusWith = (status: string, reason: string | undefined) =>
++  status === "healthy" || status === "tools_unavailable"
++    ? reason === undefined
++      ? ("healthy" satisfies AccountCheckStatus)
++      : ("tools_unavailable" satisfies AccountCheckStatus)
++    : status;
 +
 +/**
-+ * Record what one catalog read found on the checks of the accounts it used, at the generation it
-+ * read them with. A failure marks a current healthy check as `tools_unavailable`; a success clears
-+ * only a mark a read set. A check that ran since the read is never changed.
++ * Record what one catalog read of `context` found on the checks of the accounts it used, at the
++ * version and credential generations it read. A check written since this read is never changed.
++ * Two reads that overlap may leave the earlier one's finding until the next read of its context.
 + */
 +export const observeToolLoad = (
 +  db: Query,
@@ -499,13 +494,14 @@ index 0000000..408823f
 +    readonly app: AppId;
 +    readonly version: VersionId;
 +    readonly accounts: readonly { readonly id: AccountId; readonly credentialGeneration: number }[];
-+    /** Identifies the catalog the read evaluated, as the listing store keys it. */
++    /** Identifies who read which kind of catalog, as the listing store keys it. */
 +    readonly context: string;
 +    readonly problem: string | undefined;
 +  },
 +) =>
 +  Effect.gen(function* () {
 +    if (input.accounts.length === 0) return;
++    const now = yield* Clock.currentTimeMillis;
 +    const generation = new Map(
 +      input.accounts.map((account) => [account.id, account.credentialGeneration]),
 +    );
@@ -521,8 +517,15 @@ index 0000000..408823f
 +    );
 +    for (const row of rows) {
 +      if (generation.get(row.account as AccountId) !== row.credentialGeneration) continue;
-+      const update = marked(row, input.context, input.problem);
-+      if (update === undefined) continue;
++      const entries = toolsEntries(row.info, now);
++      if (input.problem === undefined && !Object.hasOwn(entries, input.context)) continue;
++      const next = recordRead(entries, input.context, input.problem, now);
++      const reason = toolsReason(next);
++      const status = statusWith(row.status, reason);
++      const info = withToolsEntries(
++        Option.getOrNull(Schema.decodeUnknownOption(JsonObject)(row.info)),
++        next,
++      );
 +      yield* query(() =>
 +        db.updateMany("accountChecks", {
 +          where: (b) =>
@@ -532,10 +535,14 @@ index 0000000..408823f
 +              b("deployment", "=", row.deployment),
 +              b("credentialGeneration", "=", row.credentialGeneration),
 +              b("checkedAt", "=", row.checkedAt),
-+              // A newer read can change a mark's reason without changing anything else.
-+              row.message === null ? b("message", "is", null) : b("message", "=", row.message),
 +            ),
-+          set: update,
++          set: {
++            status,
++            info,
++            ...(status === "tools_unavailable" || row.status === "tools_unavailable"
++              ? { message: status === "tools_unavailable" ? (reason ?? null) : null }
++              : {}),
++          },
 +        }),
 +      );
 +    }
