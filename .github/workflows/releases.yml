@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        source: [tools, home, node]
+        source: [tools, home]
     steps:
       - uses: actions/checkout@v4
         with:
