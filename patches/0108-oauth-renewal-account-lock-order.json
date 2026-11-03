@@ -1,7 +1,7 @@
 {
   "identity": "executor-oauth-renewal-account-lock-order",
   "file": "0108-oauth-renewal-account-lock-order.patch",
-  "content_sha256": "cd8b5068910df10abb2acec358dd1f9d49bf3fae8bad16a3083364f4fdbc7a67",
+  "content_sha256": "7bec9255695c54a8287cd27db94f962b0e52faaec5cc5e125bb4fd4db9e7763c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -17,7 +17,7 @@ export async function oauthRemovalGate() {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       const step = url.searchParams.get("step"),
         id = url.searchParams.get("id");
-      assert.ok(step === "renewal" || step === "delete");
+      assert.ok(step === "renewal" || step === "identification" || step === "delete");
       assert.ok(typeof id === "string" && (id === "any" || id.startsWith("acc_")));
       const key = `${step}/${id}`;
       if (url.pathname === "/arm") {

@@ -53,6 +53,7 @@ try {
         database,
         `${upstream}/apps/hosted/cloud/src/contracts/native-workflows.d.ts`,
         `${upstream}/e2e/tests/oauth-account-removal.spec.ts`,
+        `${upstream}/e2e/tests/oauth-identification-removal.spec.ts`,
       ],
       exclude: [],
       compilerOptions: { typeRoots: [`${upstream}/node_modules/@types`] },
