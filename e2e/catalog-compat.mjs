@@ -33,7 +33,15 @@ const known = JSON.parse(await readFile(join(root, "scripts/catalog-compat/known
 process.chdir(upstream);
 
 const origin = "https://catalog.invalid";
-const served = async (path) => handleCatalog(new Request(`${origin}${catalog.path}${path}`));
+// The catalog answers 502 when its publisher does not answer. A blip retries a few times before it
+// counts as a failure, so the gate reports packages, not one slow publisher request.
+const served = async (path) => {
+  for (let attempt = 1; ; attempt++) {
+    const response = await handleCatalog(new Request(`${origin}${catalog.path}${path}`));
+    if (response.status !== 502 || attempt === 3) return response;
+    await new Promise((retry) => setTimeout(retry, attempt * 2_000));
+  }
+};
 const publisher = async (path) => fetch(new URL(path, catalog.official));
 
 // Results as each package finishes, so a run that stops early keeps what it found.
