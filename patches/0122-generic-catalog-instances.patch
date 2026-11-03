@@ -1,3 +1,25 @@
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
+index 1ed16b9..193e27b 100644
+--- a/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
+@@ -19,7 +19,7 @@ select pool.value ->> 'app' as app, pool.value ->> 'account' as replacement,
+       and d.requirements::jsonb #>> '{accounts,pool,cardinality}' = 'one') as declared
+ from organization o cross join lateral
+   jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
+-where o.id = $1 and pool.key = $4`;
++where o.id = $1 and coalesce(pool.value ->> 'owner', pool.key) = $4`;
+ 
+ export const replacementLinkQuery = `
+ select app, requirement, subject from hosted_app_account_links
+@@ -48,7 +48,7 @@ export const dependencyQueries = {
+   defaults: `select o.id, p.key as person from organization o cross join lateral
+     jsonb_each(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) p
+     where p.value #>> '{}' = $1 order by o.id, p.key limit 101`,
+-  pools: `select o.id, p.key as person, p.value ->> 'app' as app from organization o
++  pools: `select o.id, coalesce(p.value ->> 'owner', p.key) as person, p.value ->> 'app' as app from organization o
+     cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
+     where p.value ->> 'account' = $1 order by o.id, p.key limit 101`,
+   acquisitions: `select account as id from executor_account_acquisitions where account = $1 limit 101`,
 diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
 index 953decb..041775b 100644
 --- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
@@ -11,6 +33,37 @@ index 953decb..041775b 100644
      p.value ->> 'version' as version, p.value ->> 'account' as account
      from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) p
      order by o.id, p.key limit 1001`,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+index 2c95e7f..30e249a 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -17,7 +17,7 @@ export const inventoryQueries = {
+     p.organization_id, p.creator_id, p.personal_user_id, p.kind, p.audience, p.revision
+     from executor_accounts a left join hosted_account_access p on p.account_id = a.id and p.organization_id = $1
+     where a.owner = 'organization:' || $1 order by a.id limit 2001`,
+-  pools: `select o.id as organization, entry.key as owner, entry.value ->> 'app' as app,
++  pools: `select o.id as organization, coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'app' as app,
+     entry.value ->> 'version' as version, entry.value ->> 'authorization' as authorization,
+     entry.value ->> 'membership' as membership
+     from organization o cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+@@ -27,13 +27,14 @@ export const inventoryQueries = {
+     join executor_accounts account on account.id = l.account
+     where a.owner = 'organization:' || $1 and account.owner = a.owner
+     order by l.app, l.requirement, l.account, l.subject nulls first limit 2001`,
+-  "retired-tokens": `select a.id, a.owner, a.provider, a.method,
++  "retired-tokens": `select distinct a.id, a.owner, a.provider, a.method,
+     p.organization_id, p.creator_id, p.kind, p.revision
+     from executor_accounts a
+     join hosted_account_access p on p.account_id = a.id and p.organization_id = $1 and p.kind = 'personal'
+     join organization team on team.id = $1
+-    join executor_apps app on app.owner = a.owner
+-      and app.id = coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb) -> p.personal_user_id ->> 'app'
++    cross join lateral jsonb_each(coalesce(team.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++    join executor_apps app on app.owner = a.owner and app.id = pool.value ->> 'app'
++      and coalesce(pool.value ->> 'owner', pool.key) = p.personal_user_id
+     where a.owner = 'organization:' || $1 and a.method = 'token'
+       and exists (select 1 from executor_deployments d where d.code = app.code
+         and d.requirements::jsonb -> 'accounts' -> 'pool' ->> 'provider' = a.provider)
 diff --git a/apps/hosted/server/src/contracts/api.ts b/apps/hosted/server/src/contracts/api.ts
 index 562c186..3be0bb3 100644
 --- a/apps/hosted/server/src/contracts/api.ts
@@ -251,6 +304,20 @@ index eb0907c..c784bac 100644
        });
      }),
    );
+diff --git a/apps/hosted/server/src/implementation/model-bindings.ts b/apps/hosted/server/src/implementation/model-bindings.ts
+index 2ea5a18..67669c9 100644
+--- a/apps/hosted/server/src/implementation/model-bindings.ts
++++ b/apps/hosted/server/src/implementation/model-bindings.ts
+@@ -29,7 +29,8 @@ const declarations = (app: AppId, actor: ResourceAuthority) =>
+ export const modelPoolOwner = (pool: AppId, organization: string) =>
+   Effect.gen(function* () {
+     const sql = yield* policyDatabase;
+-    const rows = yield* sql`select entry.key as owner from organization o
++    const rows =
++      yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner from organization o
+     cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+     join executor_apps a on a.id = entry.value ->> 'app' and a.owner = 'organization:' || o.id
+     where o.id = ${organization} and a.id = ${pool}`;
 diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
 index 91a5658..de71472 100644
 --- a/apps/hosted/server/src/implementation/pool-access-hook.ts
@@ -1170,6 +1237,39 @@ index 0000000..7d1e98b
 +        .then(() => page.emulateMedia({ colorScheme: "light" })),
 +    );
 +  });
+diff --git a/e2e/support/production-ops-inventory-rows.ts b/e2e/support/production-ops-inventory-rows.ts
+index bf86db6..89ba6e6 100644
+--- a/e2e/support/production-ops-inventory-rows.ts
++++ b/e2e/support/production-ops-inventory-rows.ts
+@@ -84,8 +84,13 @@ export const productionOpsInventoryRows = Effect.gen(function* () {
+       params: [row.deployment, row.account],
+     });
+     yield* database.run({
+-      sql: `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) || jsonb_build_object('basaltPools', jsonb_build_object($2::text, jsonb_build_object('app', $3::text))))::text where id = $1`,
+-      params: [row.organization, row.user, row.app],
++      sql: `update organization set metadata = (coalesce(metadata::jsonb, '{}'::jsonb) || jsonb_build_object('basaltPools', jsonb_build_object($2::text, jsonb_build_object('app', $3::text) || $4::jsonb)))::text where id = $1`,
++      params: [
++        row.organization,
++        row === own ? row.app : row.user,
++        row.app,
++        JSON.stringify(row === own ? { owner: row.user } : {}),
++      ],
+     });
+     yield* database.run({
+       sql: `insert into hosted_contributed_departure_jobs (id, organization_id, user_id, status) values ($1, $2, $3, 'succeeded')`,
+diff --git a/e2e/support/retired-pool-token-fixture.ts b/e2e/support/retired-pool-token-fixture.ts
+index 7ad5acc..3ae1e98 100644
+--- a/e2e/support/retired-pool-token-fixture.ts
++++ b/e2e/support/retired-pool-token-fixture.ts
+@@ -133,7 +133,7 @@ export const retiredTokenFixture = Effect.gen(function* () {
+   yield* rows(
+     `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
+     [
+-      JSON.stringify({ [session.user.id]: { app: app.id, account: id("current") } }),
++      JSON.stringify({ [app.id]: { app: app.id, owner: session.user.id, account: id("current") } }),
+       actors.organization.id,
+     ],
+   );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 index 202a23f..dc91eb1 100644
 --- a/e2e/test-plan.ts
@@ -1205,12 +1305,27 @@ index 202a23f..dc91eb1 100644
    appModelRequests: {
      fixtures: "actors",
      legacyStorage: true,
+diff --git a/e2e/tests/app-model-requests.spec.ts b/e2e/tests/app-model-requests.spec.ts
+index cf0fcc5..1691571 100644
+--- a/e2e/tests/app-model-requests.spec.ts
++++ b/e2e/tests/app-model-requests.spec.ts
+@@ -40,8 +40,9 @@ layer(RuntimeLive, { excludeTestServices: true })("App model requests", (it) =>
+             sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
+             params: [
+               JSON.stringify({
+-                [f.ids.admin]: {
++                [f.pool]: {
+                   app: f.pool,
++                  owner: f.ids.admin,
+                   version: "retained-version",
+                   authorization: "executor-app-v1",
+                 },
 diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
 new file mode 100644
-index 0000000..259157d
+index 0000000..0903010
 --- /dev/null
 +++ b/e2e/tests/catalog-instances.spec.ts
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,281 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -1358,6 +1473,37 @@ index 0000000..259157d
 +          page.setViewportSize({ width: 1280, height: 900 }),
 +        );
 +        yield* ui.another("Pool");
++        yield* ui.name("Denied pool");
++        yield* browser.use("Refuse creation before any write", (page) =>
++          page.route(
++            "**/api/organizations/*/apps/install",
++            (route) =>
++              route.fulfill({
++                status: 403,
++                contentType: "application/json",
++                body: JSON.stringify({ _tag: "OrganizationForbidden" }),
++              }),
++            { times: 1 },
++          ),
++        );
++        const denied = yield* ui.submit("Add", { dialog: true });
++        expect(denied.status).toBe(403);
++        yield* browser.use("A definite refusal finishes the request", (page) =>
++          page
++            .getByText("Organization access denied", { exact: true })
++            .waitFor(),
++        );
++        expect(
++          yield* browser.use("A definite refusal keeps the name editable", (page) =>
++            page.getByRole("textbox", { name: "Name", exact: true }).getAttribute("readonly"),
++          ),
++        ).toBeNull();
++        expect(
++          yield* browser.use("A definite refusal does not claim uncertain creation", (page) =>
++            page.getByText(/Couldn't confirm whether/).count(),
++          ),
++        ).toBe(0);
++        yield* browser.checkpoint("A definite refusal keeps the name editable");
 +        yield* ui.name("Research pool");
 +        yield* captureCatalog("Name a separate pool", (page) =>
 +          page.getByRole("dialog", { name: "Add another Pool", exact: true }).waitFor(),
@@ -1784,6 +1930,21 @@ index 0000000..49e8c1c
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
+index 136d2bc..966bd0e 100644
+--- a/e2e/tests/production-ops.spec.ts
++++ b/e2e/tests/production-ops.spec.ts
+@@ -225,6 +225,10 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =
+               excluded.receipt,
+             ])
+               expect(JSON.stringify(rows)).not.toContain(forbidden);
++            if (selection === "pools")
++              expect(rows.find((row) => row.app === wanted.app)).toMatchObject({
++                owner: wanted.user,
++              });
+             if (selection === "retired-tokens")
+               expect(rows.map((row) => row.id)).toEqual([wanted.account]);
+           }
 diff --git a/packages/catalog/src/index.ts b/packages/catalog/src/index.ts
 index 4652bea..f0574d8 100644
 --- a/packages/catalog/src/index.ts
@@ -1810,10 +1971,10 @@ index d2e9f51..a2c5898 100644
  export interface MutationProps<Input, A, E> {
 diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
 new file mode 100644
-index 0000000..0e5cf63
+index 0000000..75b170a
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,201 @@
 +import { useRef, useState, type ComponentType } from "react";
 +import { Cause, Exit, Option, Predicate } from "effect";
 +import type { CatalogEntry } from "@executor-js/catalog/contracts";
@@ -1828,11 +1989,13 @@ index 0000000..0e5cf63
 +} from "../components/dialog.tsx";
 +import { Input } from "../components/input.tsx";
 +
-+/**
-+ * Answers that settle a request: the name or address is taken, or the request ID was used for
-+ * another name. Any other failure may have created the instance anyway.
-+ */
-+const settled = ["AppNameTaken", "AppSlugTaken", "PoolCreationConflict"] as const;
++// Transport, decoding and storage failures can hide a committed install; declared refusals settle it.
++const unconfirmedFailures = [
++  "StorageError",
++  "PoolCreationUnavailable",
++  "HttpClientError",
++  "SchemaError",
++] as const;
 +
 +/** A version 4 UUID. `crypto.randomUUID` exists only in secure contexts; a self-host can be HTTP. */
 +const newRequestId = () => {
@@ -1936,9 +2099,10 @@ index 0000000..0e5cf63
 +        return;
 +      }
 +      const error = Cause.findErrorOption(exit.cause);
-+      const answered =
-+        Option.isSome(error) && settled.some((tag) => Predicate.isTagged(tag)(error.value));
-+      save(entry.id, { ...request, unconfirmed: !answered, failure: exit.cause });
++      const unconfirmed =
++        Option.isNone(error) ||
++        unconfirmedFailures.some((tag) => Predicate.isTagged(tag)(error.value));
++      save(entry.id, { ...request, unconfirmed, failure: exit.cause });
 +    } finally {
 +      inFlight.current = false;
 +      setSending(false);
