@@ -17,7 +17,8 @@ const removalTest = () => ({
     stack: "FixtureFailed: Fixture /remove failed (HTTP 400)\n    at /fixture/e2e/sdk/fixtures.ts:47:23", diff: null }],
   primary: { file: removal.file, title: removal.titles[0], status: "passed", errors: [] },
 });
-const verdict = (tests: unknown[]) => ({ version: 1, reason: "failed", unhandledErrors: [], suiteErrors: [], tests });
+const shutdown = { complete: true, error: false, timedOut: false, uncaught: false, exitCode: 1 };
+const verdict = (tests: unknown[]) => ({ version: 1, reason: "failed", unhandledErrors: [], suiteErrors: [], tests, shutdown });
 const classifyRemoval = (input: unknown, entries = policy) => classify(parseVerdict(input), entries, removal.job, "");
 
 test("only the reviewed removal failure after a passed body is non-blocking, and deleting its entry restores blocking", () => {
@@ -40,7 +41,7 @@ test("only the reviewed removal failure after a passed body is non-blocking, and
 
 test("unknown, incomplete, cancelled, setup and unhandled failures remain blocking beside a known flake", () => {
   const input = verdict([removalTest()]);
-  for (const field of ["unhandledErrors", "suiteErrors", "tests"]) {
+  for (const field of ["unhandledErrors", "suiteErrors", "tests", "shutdown"]) {
     const missing: Record<string, unknown> = { ...input };
     delete missing[field];
     assert.throws(() => parseVerdict(missing));
@@ -50,6 +51,8 @@ test("unknown, incomplete, cancelled, setup and unhandled failures remain blocki
     { suiteErrors: [{ message: "setup failed" }] },
     { tests: [removalTest(), { ...removalTest(), title: "unknown failure" }] },
     { tests: [removalTest(), { ...removalTest(), state: "pending" }] },
+    ...[{ complete: false }, { error: true }, { timedOut: true }, { uncaught: true }, { exitCode: null }]
+      .map((change) => ({ shutdown: { ...shutdown, ...change } })),
   ]) assert.equal(classifyRemoval({ ...input, ...changed }), null);
 });
 
@@ -99,7 +102,24 @@ test("final reporter records real assertion diffs, suite errors and unhandled er
     assert.equal(report.reason, "failed");
     assert.equal(report.unhandledErrors.length, 1);
     assert.ok(report.suiteErrors.length > 0);
+    assert.equal(report.shutdown.complete, true);
+    assert.equal(report.shutdown.exitCode, 1);
     const error = report.tests.find((test) => test.title === "changed checksum")?.errors[0];
     assert.ok(error?.diff?.includes('"accounts"'), "Final reporter must retain the actual assertion diff");
+    writeFileSync(join(scratch, "probe.spec.mjs"), `
+      import { test, expect } from ${JSON.stringify(join(vitest, "dist/index.js"))};
+      test("body failure", () => expect(1).toBe(2));
+    `);
+    writeFileSync(join(scratch, "global-setup.mjs"), `export default () => () => { throw new Error("late close probe"); };`);
+    writeFileSync(join(scratch, "vitest.config.mjs"), `export default { test: {
+      include: ["probe.spec.mjs"], maxWorkers: 1, globalSetup: ["./global-setup.mjs"],
+      reporters: [[${JSON.stringify(reporter)}, { outputFile: ${JSON.stringify(output)} }]]
+    } };`);
+    const late = spawnSync(process.execPath, [join(vitest, "vitest.mjs"), "run", "--config", "vitest.config.mjs"],
+      { cwd: scratch, encoding: "utf8" });
+    assert.equal(late.status, 1);
+    const lateReport = parseVerdict(JSON.parse(readFileSync(output, "utf8")));
+    assert.equal(lateReport.shutdown.complete, true);
+    assert.equal(lateReport.shutdown.error, true, "Global teardown failure must survive the earlier final report");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

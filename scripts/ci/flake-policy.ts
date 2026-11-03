@@ -34,6 +34,11 @@ function parseError(value: unknown) {
 export function parseVerdict(value: unknown) {
   assert.ok(object(value) && value.version === 1);
   assert.ok(text(value.reason));
+  assert.ok(object(value.shutdown));
+  const shutdown = value.shutdown;
+  assert.ok(typeof shutdown.complete === "boolean" && typeof shutdown.error === "boolean" &&
+    typeof shutdown.timedOut === "boolean" && typeof shutdown.uncaught === "boolean" &&
+    (shutdown.exitCode === null || Number.isInteger(shutdown.exitCode)));
   // These fields are mandatory. Vitest's standard JSON report cannot establish their absence.
   assert.ok(array(value.unhandledErrors) && array(value.suiteErrors) && array(value.tests));
   const tests = value.tests.map((test) => {
@@ -52,7 +57,7 @@ export function parseVerdict(value: unknown) {
       primary: body,
     };
   });
-  return { reason: value.reason, unhandledErrors: value.unhandledErrors, suiteErrors: value.suiteErrors, tests };
+  return { reason: value.reason, unhandledErrors: value.unhandledErrors, suiteErrors: value.suiteErrors, tests, shutdown };
 }
 
 function accountChecksum(error: ReturnType<typeof parseError>, source: string) {
@@ -73,7 +78,9 @@ export function classify(
   job: string,
   databaseSource: string,
 ) {
-  if (verdict.reason !== "failed" || verdict.unhandledErrors.length || verdict.suiteErrors.length ||
+  if (verdict.reason !== "failed" || verdict.shutdown.complete !== true || verdict.shutdown.error !== false ||
+      verdict.shutdown.timedOut !== false || verdict.shutdown.uncaught !== false || verdict.shutdown.exitCode !== 1 ||
+      verdict.unhandledErrors.length || verdict.suiteErrors.length ||
       verdict.tests.some((test) => !["passed", "failed", "skipped"].includes(test.state))) return null;
   const failures = verdict.tests.filter((test) => test.state === "failed");
   if (!failures.length || verdict.tests.some((test) => test.state !== "failed" && test.errors.length)) return null;
