@@ -968,7 +968,8 @@ jobs:
           if-no-files-found: warn
 
   boat-bundle:
-    if: ${{ vars.BASALT_CI_BOAT_JOBS != '' }}
+    # Temporary bundle proof on this PR only. Revert this commit after measurement.
+    if: ${{ vars.BASALT_CI_BOAT_JOBS != '' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'ci/boat-job-allowlist') }}
     runs-on: ${{ vars.BASALT_CI_BOAT_SIZE || 'boat-large' }}
     timeout-minutes: ${{ fromJSON(vars.BASALT_CI_BOAT_TIMEOUT_MINUTES || '45') }}
     steps:
@@ -996,7 +997,7 @@ jobs:
       - name: Run every selected suite and retain its resource measurements
         id: bundle
         env:
-          BASALT_CI_BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS }}
+          BASALT_CI_BOAT_JOBS: ${{ vars.BASALT_CI_BOAT_JOBS || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'ci/boat-job-allowlist') && 'production-ops,production-ops-migrations,production-ops-identity,host-managed-accounts,contributed-accounts,oauth-account-regressions,account-acquisition,pool-account-recovery,compiler-diagnostics' || '' }}
           BASALT_CI_BOAT_MAX_PARALLEL: ${{ vars.BASALT_CI_BOAT_MAX_PARALLEL }}
           BASALT_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: node scripts/ci-bundles/run.mjs
