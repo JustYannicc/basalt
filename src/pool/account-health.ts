@@ -6,7 +6,7 @@ import type { HomeClient } from "./control.ts";
 import { homeReferences } from "./home-references.ts";
 import { json, rows, text } from "./json.ts";
 import providers from "./providers.json" with { type: "json" };
-import type { QuotaCollection } from "./quota-collection.ts";
+import { hasUsageLimits, type QuotaCollection } from "./quota-collection.ts";
 import { publicQuotaObservation } from "./quota-observation-public.ts";
 import { quotaObservation } from "./quota-observation.ts";
 
@@ -33,7 +33,7 @@ export async function nativeAccountHealth(
   } catch {
     return json({ error: "acquisition_forbidden" }, 403);
   }
-  if (value.action !== "check") return undefined;
+  if (value.action !== "check" && value.action !== "observe") return undefined;
   try {
     const provider = text(value.provider),
       reference = text(value.reference);
@@ -49,6 +49,21 @@ export async function nativeAccountHealth(
       )
     )
       return json({ failure: "unauthorized" });
+    if (value.action === "observe") {
+      // Await this pass outside the attribution queue, including for unlinked bindings.
+      if (!ids.every((id) => hasUsageLimits(files.find((file) => file.id === id)!))) return json({ result: null });
+      const readings = await Promise.all(ids.map((id) => input.collection.read(id, signal, true)));
+      const reading = readings[0];
+      if (readings.length === 1 && reading != null) {
+        const observation = quotaObservation(reading);
+        // A first failed collection has no reading to carry its failure metadata.
+        if (observation.observedAt === null && observation.collection.status === "failed")
+          return json({ failure: observation.collection.errorCode === "UPSTREAM_RATE_LIMITED" ? "rate_limited" : "unavailable" });
+      }
+      // Unlimited windows are reported as unlimited; whether a row shows them is the row's choice.
+      return json({ result: readings.length === 1 && reading != null
+        ? publicQuotaObservation(quotaObservation(reading)) : null });
+    }
     const checked = await Promise.all(
       ids.map((id) => readCredentialAccount(input.client, input.collection, id, signal, files)),
     );

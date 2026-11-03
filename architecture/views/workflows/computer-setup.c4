@@ -17,7 +17,13 @@ views {
       computers through a signed rename action. On the tools gateway's Connect page, the coding-agent
       guides lead with a one-click setup prompt that calls the same /setup/v1 routes from the dashboard
       origin, keep their built-in steps behind an expander, and list the caller's computers among the
-      connected agents. The desktop chat guide and the pool endpoint tab mint a models-only computer and
+      connected agents. The dashboard registry retains only that person's list and selected pool for
+      the current organization. Fresh returns use it immediately; stale returns, visible idle periods
+      and tab re-entry reconcile in place. The organization layout clears that slot when the person
+      or organization changes, even while Connect is closed. Closing the page or a confirmed access
+      refusal invalidates its outstanding reads and later mutation refreshes. Signed intents and
+      one-time keys remain page-local.
+      The desktop chat guide and the pool endpoint tab mint a models-only computer and
       claim its one-time link in the browser, so the key shows once on that page; the desktop client's
       tools come from its own managed MCP entry with OAuth sign-in, not a stored token.
       Private pool actions carry an action-bound signature and a 30-second expiry.

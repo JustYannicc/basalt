@@ -3,7 +3,7 @@ export interface PoolAccountObservation {
   readonly observedAt: string;
   readonly observation: {
     readonly offering: "subscription";
-    readonly plan?: { readonly label: string; readonly observedAt: string };
+    readonly plan?: { readonly label: string; readonly observedAt: string; readonly staleAt?: string };
     readonly windows: readonly {
       readonly id: string;
       readonly label: string;
@@ -32,6 +32,7 @@ export interface PoolAccountObservation {
       readonly unit: string;
       readonly available: number;
       readonly observedAt: string;
+      readonly staleAt?: string;
       readonly expiresAt?: string;
     }[];
   };

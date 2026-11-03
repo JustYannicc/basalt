@@ -100,7 +100,14 @@ test("model responses reconcile successful Home usage without listing; alarm ret
       setAlarm: async () => {},
     },
   };
+  let publications = 0;
   const worker = new PoolContainer(ctx, {
+    TOOLS_SERVICE: { fetch: async (url: string, init: RequestInit) => {
+      assert.equal(new URL(url).pathname, "/api/internal/account-observations/refresh");
+      assert.equal(init.method, "POST");
+      publications++;
+      return new Response(null, { status: 204 });
+    } },
     POOL_DATABASE_URL: "postgres://fixture:fixture@database.invalid/fixture",
     POOL_MANAGEMENT_KEY: "fixture-management-key",
     POOL_APP_SIGNING_KEY: signingKey,
@@ -137,6 +144,7 @@ test("model responses reconcile successful Home usage without listing; alarm ret
   homeUsage.add(74); // Home persists the streamed success after the response headers.
   await worker.alarm();
   await drain();
+  assert.equal(publications, 1);
   assert.deepEqual(trackedEvents().map((event) => [event.event, event.distinct_id]), [
     ["first_model_request", "response-owner"], ["first_model_request", "delayed-owner"],
   ]);
