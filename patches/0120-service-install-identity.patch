@@ -92,6 +92,7 @@ diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/serv
  export type AppScreenRecord = typeof AppScreenRecord.Type;
  /** An icon is an HTTPS image, a private uploaded-image path, or null. */
 diff --git a/apps/hosted/server/src/contracts/service-install.ts b/apps/hosted/server/src/contracts/service-install.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/service-install.ts
 @@ -0,0 +1,8 @@
@@ -249,6 +250,7 @@ diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/
              Effect.provideService(SqlClient.SqlClient, sql),
            );
 diff --git a/apps/hosted/server/src/implementation/service-install-records.ts b/apps/hosted/server/src/implementation/service-install-records.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/service-install-records.ts
 @@ -0,0 +1,85 @@
@@ -338,6 +340,7 @@ diff --git a/apps/hosted/server/src/implementation/service-install-records.ts b/
 +    });
 +  });
 diff --git a/apps/hosted/server/src/implementation/service-installs.ts b/apps/hosted/server/src/implementation/service-installs.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/service-installs.ts
 @@ -0,0 +1,128 @@
@@ -527,6 +530,7 @@ diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
          ),
          HttpRouter.add(
 diff --git a/e2e/support/service-install-fixture.ts b/e2e/support/service-install-fixture.ts
+new file mode 100644
 --- /dev/null
 +++ b/e2e/support/service-install-fixture.ts
 @@ -0,0 +1,175 @@
@@ -752,6 +756,7 @@ diff --git a/e2e/tests/mcp-auth-discovery.spec.ts b/e2e/tests/mcp-auth-discovery
          const added = (response: { readonly status: number; readonly body: unknown }) =>
            Effect.gen(function* () {
 diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-install-identity.spec.ts
+new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/service-install-identity.spec.ts
 @@ -0,0 +1,198 @@
@@ -992,6 +997,7 @@ diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/cont
  export {
    CatalogAuth,
 diff --git a/packages/catalog/src/contracts/service.ts b/packages/catalog/src/contracts/service.ts
+new file mode 100644
 --- /dev/null
 +++ b/packages/catalog/src/contracts/service.ts
 @@ -0,0 +1,12 @@
@@ -1026,6 +1032,7 @@ diff --git a/packages/catalog/src/implementation/catalog.ts b/packages/catalog/s
    custom: (input) =>
      Effect.promise(() => import("./custom.ts")).pipe(
 diff --git a/packages/catalog/src/implementation/services.ts b/packages/catalog/src/implementation/services.ts
+new file mode 100644
 --- /dev/null
 +++ b/packages/catalog/src/implementation/services.ts
 @@ -0,0 +1,39 @@
