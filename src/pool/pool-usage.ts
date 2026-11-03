@@ -8,7 +8,7 @@ import { verifyPoolToken } from "./token.ts";
 import type { UsageStorage } from "./usage-storage.ts";
 import { UsageLedger } from "./usage-summary.ts";
 import { mapBounded } from "./bounded.ts";
-import { needsQuotaCollection, type QuotaCollection } from "./quota-collection.ts";
+import { hasUsageLimits, needsQuotaCollection, type QuotaCollection } from "./quota-collection.ts";
 
 // Personal summaries filter before aggregation. Pool managers can inspect the whole pool.
 
@@ -65,7 +65,8 @@ export class PoolUsage {
     const now = this.deps.now?.() ?? new Date();
     const byId = new Map(quota.map((reading) => [reading.credential_id, reading]));
     if (this.deps.collection) {
-      await mapBounded([...ids].filter((id) => needsQuotaCollection(byId.get(id) ?? {}, now.getTime())), async (id) => {
+      await mapBounded([...ids].filter((id) => hasUsageLimits(files.find((file) => file.id === id) ?? {}, byId.get(id))
+        && needsQuotaCollection(byId.get(id) ?? {}, now.getTime())), async (id) => {
         try { await this.deps.collection!.read(id, undefined, false); }
         catch { /* The next alarm retries within the persisted per-account cap. */ }
       });

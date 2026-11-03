@@ -2,7 +2,7 @@ model {
   extend basalt {
     scaleTest = module "Isolated pool scale test" {
       #basalt
-      description "A manually dispatched test owns one temporary stage, synthetic traffic, its time and cost limits, and verified cleanup. Provisioning keeps state on its own runner. Size changes and deletion use only issue-scoped resources; production state and runtime are outside this boundary."
+      description "A manually dispatched test owns one temporary stage, synthetic traffic, its time and cost limits, and verified cleanup. Provisioning keeps state on its own runner. Size changes and deletion use only issue-scoped resources; production state and runtime are outside this boundary. An independent load-evidence gate requires complete raw traffic, latency, persistence and cleanup records. Deploy and destroy never pass this gate; single-instance measurements never claim autoscaling."
       metadata {
         code "scripts/scale-test|.github/workflows/scale-test.yml"
         libraries "asyncio|ssl|resource"

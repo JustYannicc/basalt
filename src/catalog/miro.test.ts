@@ -42,8 +42,7 @@ test("Miro catalog offers personal OAuth first and keeps its access-token fallba
     connectionNotices?: unknown }[] };
   const miro = feed.apps.find(app => app.id === "miro")!;
   assert.deepEqual(miro.auth.map(method => method.method), ["oauth", "token"]);
-  assert.match(miro.description, /team and organization administration/);
-  assert.match(miro.description, /Enterprise and Company Admin/);
+  assert.match(miro.description, /teams and organization administration/);
   assert.equal(miro.connectionNotices, undefined);
 });
 
@@ -88,6 +87,6 @@ test("Miro carry preserves the full OpenAPI package and aligns the app scopes wi
   }
   const manifest = JSON.parse(carried.files.find((file: { path: string }) => file.path === "package.json")!.content);
   assert.equal(manifest.dependencies.apps, provenance.appsVersion);
-  assert.equal(manifest.dependencies.apps, "0.0.1-beta.104-basalt.1");
+  assert.equal(manifest.dependencies.apps, "0.0.1-beta.104-basalt.2");
   assert.deepEqual(published.files.map((file: { path: string }) => file.path), carried.files.map((file: { path: string }) => file.path));
 });

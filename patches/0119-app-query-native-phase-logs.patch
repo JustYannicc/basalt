@@ -1,0 +1,317 @@
+diff --git a/apps/hosted/server/src/implementation/app-ui-query-timing.ts b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+--- a/apps/hosted/server/src/implementation/app-ui-query-timing.ts
++++ b/apps/hosted/server/src/implementation/app-ui-query-timing.ts
+@@ -12,13 +12,22 @@
+     return yield* operation.pipe(
+       Effect.onExit(() =>
+         Effect.gen(function* () {
+-          const elapsed = Number((yield* Clock.currentTimeNanos) - start) / 1_000_000;
+-          request.attribute(`app.ui.query.${phase}.duration_ms`, Math.max(0, elapsed));
++          const elapsed = Math.max(0, Number((yield* Clock.currentTimeNanos) - start) / 1_000_000);
++          request.attribute(`app.ui.query.${phase}.duration_ms`, elapsed);
+           const order = request.attributes.get("app.ui.query.phase_order");
+           request.attribute(
+             "app.ui.query.phase_order",
+             typeof order === "string" ? `${order},${phase}` : phase,
+           );
++          // Direct trace export leaves Workers Observability with native logs only.
++          yield* Effect.logInfo("app.ui.query.phase").pipe(
++            Effect.annotateLogs({
++              phase,
++              duration_ms: elapsed,
++              "executor.trace_id": request.traceId,
++              "executor.span_id": request.spanId,
++            }),
++          );
+         }),
+       ),
+     );
+diff --git a/e2e/tests/app-query-timing.spec.ts b/e2e/tests/app-query-timing.spec.ts
+--- a/e2e/tests/app-query-timing.spec.ts
++++ b/e2e/tests/app-query-timing.spec.ts
+@@ -1,121 +1,185 @@
+ /** Delivered request attributes distinguish host work from app execution without new trace IDs. */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schedule } from "effect";
++import { Effect, FileSystem, Layer, Schedule, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+ import { scenarios } from "../test-plan.ts";
+-import { Actors } from "../support/actors.ts";
+-import { Api, body } from "../support/api.ts";
++import { Actors, provisionSelfHostActors } from "../support/actors.ts";
++import { Api, body, SessionClients } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { waitForAppUrl } from "../support/app-pages.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { App } from "../support/contracts.ts";
++import { App, SpanQuery } from "../support/contracts.ts";
+ import { Evidence, Telemetry } from "../support/evidence.ts";
++import { Target } from "../support/platform.ts";
++import { startControlledSelfHost } from "../support/managed-server.ts";
++import { throttlingCollector } from "../support/throttling-collector.ts";
++
++const queryTiming = (queryTrace: (traceId: string) => Effect.Effect<typeof SpanQuery.Type>) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      browser = yield* Browser,
++      evidence = yield* Evidence;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++      name: `Query timing ${randomUUID().slice(0, 8)}`,
++      files: [
++        appsManifest,
++        {
++          path: "index.ts",
++          content: `import { defineApp, query, object, string, router } from "apps";
++export const read = query({ input: object({}), output: string() }, async () => "Query is ready");
++export default defineApp({}, { tools: router({ read }) });`,
++        },
++        {
++          path: "ui/index.html",
++          content:
++            '<!doctype html><html><body><p role="status">Loading</p><script type="module" src="./main.ts"></script></body></html>',
++        },
++        {
++          path: "ui/main.ts",
++          content: `import { string } from "apps";
++import { createAppClient, queryReference } from "apps/client";
++import type { read } from "../index.ts";
++createAppClient().query(queryReference<typeof read>("read"), {}, string()).then(value => {
++  document.querySelector('[role="status"]').textContent = value;
++});`,
++        },
++      ],
++    });
++    expect(deployed.status).toBe(200);
++    const app = yield* body(App, deployed);
++    yield* Effect.addFinalizer(() =>
++      api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++    );
++    const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
++    yield* browser.login(actors.owner);
++    const [query] = yield* browser.use("Read through the authenticated app query", (page) =>
++      Promise.all([
++        page
++          .waitForResponse((response) => response.url().endsWith("/_executor/api/query"))
++          .then((response) =>
++            response.headerValue("server-timing").then((timing) => ({
++              status: response.status(),
++              trace: response.request().headers()["traceparent"],
++              timing,
++            })),
++          ),
++        page.goto(url),
++      ]),
++    );
++    expect(query.status).toBe(200);
++    yield* browser.use("The query result is unchanged", (page) =>
++      page.getByRole("status").filter({ hasText: "Query is ready" }).waitFor(),
++    );
++    const traceId = query.trace?.match(/^00-([a-f0-9]{32})-/)?.[1];
++    const serverSpanId = query.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
++    if (traceId === undefined || serverSpanId === undefined)
++      return yield* Effect.die("The query did not preserve its request trace");
++    const delivered = yield* queryTrace(traceId).pipe(
++      Effect.flatMap((result) =>
++        // A child export can make Motel synthesize its still-undelivered parent with the same ID.
++        result.data.some(
++          ({ span }) =>
++            span.spanId === serverSpanId && !span.operationName.startsWith("[missing parent"),
++        )
++          ? Effect.succeed(result)
++          : Effect.fail(new Error("The request span has not reached the collector")),
++      ),
++      Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++    );
++    yield* evidence.json("app-query-timing.json", delivered);
++    const request = delivered.data.find((row) => row.span.spanId === serverSpanId);
++    if (request === undefined) return yield* Effect.die("Missing delivered request span");
++    expect(request.traceId).toBe(traceId);
++    expect(request.span.operationName).toBe("http.server POST");
++    const phases = ["session_access", "caller_accounts", "dispatch"];
++    const attributes = Object.fromEntries(
++      Object.entries(request.span.tags).filter(([key]) => key.startsWith("app.ui.query.")),
++    );
++    expect(Object.keys(attributes).sort()).toEqual(
++      [
++        ...phases.map((phase) => `app.ui.query.${phase}.duration_ms`),
++        "app.ui.query.phase_order",
++      ].sort(),
++    );
++    expect(attributes["app.ui.query.phase_order"]).toBe(phases.join(","));
++    const durations = phases.map((phase) =>
++      Number(attributes[`app.ui.query.${phase}.duration_ms`]),
++    );
++    for (const duration of durations) {
++      expect(Number.isFinite(duration)).toBe(true);
++      expect(duration).toBeGreaterThanOrEqual(0);
++    }
++    // The phases are serial and must fit inside the same request, allowing exporter rounding.
++    expect(durations.reduce((sum, duration) => sum + duration, 0)).toBeLessThanOrEqual(
++      request.span.durationMs + 1,
++    );
++
++    const target = yield* Target;
++    if (target.metadata.target === "self-host") {
++      const fs = yield* FileSystem.FileSystem;
++      const Record = Schema.Struct({
++        message: Schema.String,
++        annotations: Schema.Record(Schema.String, Schema.Unknown),
++      });
++      const records = yield* fs.readFileString(`${target.directory}/server.log`).pipe(
++        Effect.map((text) =>
++          text.split("\n").flatMap((line) => {
++            const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(Record))(line);
++            return decoded._tag === "Some" &&
++              decoded.value.message === "app.ui.query.phase" &&
++              decoded.value.annotations["executor.span_id"] === serverSpanId
++              ? [decoded.value]
++              : [];
++          }),
++        ),
++        Effect.filterOrFail(
++          (rows) => rows.length >= 3,
++          () => new Error("Native phase records have not arrived"),
++        ),
++        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
++      );
++      yield* evidence.json("app-query-native-phases.json", records);
++      expect(records).toHaveLength(3);
++      expect(records.map(({ annotations }) => annotations.phase)).toEqual(phases);
++      for (const [index, record] of records.entries()) {
++        expect(record.annotations).toEqual({
++          phase: phases[index],
++          duration_ms: durations[index],
++          "executor.trace_id": traceId,
++          "executor.span_id": serverSpanId,
++        });
++      }
++    }
++  });
+ 
+ layer(HostedLive, { excludeTestServices: true })("App query timing", (it) => {
+   it.effect(scenarios.appQueryTiming.title, (context) =>
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+-        const api = yield* Api,
+-          actors = yield* Actors,
+-          browser = yield* Browser,
+-          telemetry = yield* Telemetry,
+-          evidence = yield* Evidence;
+-        const prefix = `/api/organizations/${actors.organization.id}`;
+-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-          name: `Query timing ${randomUUID().slice(0, 8)}`,
+-          files: [
+-            appsManifest,
+-            {
+-              path: "index.ts",
+-              content: `import { defineApp, query, object, string, router } from "apps";
+-export const read = query({ input: object({}), output: string() }, async () => "Query is ready");
+-export default defineApp({}, { tools: router({ read }) });`,
+-            },
+-            {
+-              path: "ui/index.html",
+-              content:
+-                '<!doctype html><html><body><p role="status">Loading</p><script type="module" src="./main.ts"></script></body></html>',
+-            },
+-            {
+-              path: "ui/main.ts",
+-              content: `import { string } from "apps";
+-import { createAppClient, queryReference } from "apps/client";
+-import type { read } from "../index.ts";
+-createAppClient().query(queryReference<typeof read>("read"), {}, string()).then(value => {
+-  document.querySelector('[role="status"]').textContent = value;
+-});`,
+-            },
+-          ],
++        const target = yield* Target;
++        if (target.metadata.target !== "self-host") {
++          const telemetry = yield* Telemetry;
++          return yield* queryTiming((traceId) => telemetry.query(traceId).pipe(Effect.orDie));
++        }
++        // A real operator-configured product exports traces, while native logs have no remote exporter.
++        const collector = yield* throttlingCollector;
++        const isolated = yield* startControlledSelfHost(target, {
++          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector.endpoint}/v1/traces`,
+         });
+-        expect(deployed.status).toBe(200);
+-        const app = yield* body(App, deployed);
+-        yield* Effect.addFinalizer(() =>
+-          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        const runtime = Layer.fresh(SessionClients.layer).pipe(
++          Layer.provideMerge(Layer.succeed(Target, isolated)),
+         );
+-        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
+-        yield* browser.login(actors.owner);
+-        const [query] = yield* browser.use("Read through the authenticated app query", (page) =>
+-          Promise.all([
+-            page
+-              .waitForResponse((response) => response.url().endsWith("/_executor/api/query"))
+-              .then((response) =>
+-                response.headerValue("server-timing").then((timing) => ({
+-                  status: response.status(),
+-                  trace: response.request().headers()["traceparent"],
+-                  timing,
+-                })),
+-              ),
+-            page.goto(url),
+-          ]),
++        const services = yield* Layer.build(
++          Layer.fresh(Layer.mergeAll(Api.layer, Browser.layer).pipe(Layer.provideMerge(runtime))),
+         );
+-        expect(query.status).toBe(200);
+-        yield* browser.use("The query result is unchanged", (page) =>
+-          page.getByRole("status").filter({ hasText: "Query is ready" }).waitFor(),
+-        );
+-        const traceId = query.trace?.match(/^00-([a-f0-9]{32})-/)?.[1];
+-        const serverSpanId = query.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
+-        if (traceId === undefined || serverSpanId === undefined)
+-          return yield* Effect.die("The query did not preserve its request trace");
+-        const delivered = yield* telemetry.query(traceId).pipe(
+-          Effect.flatMap((result) =>
+-            // A child export can make Motel synthesize its still-undelivered parent with the same ID.
+-            result.data.some(
+-              ({ span }) =>
+-                span.spanId === serverSpanId && !span.operationName.startsWith("[missing parent"),
+-            )
+-              ? Effect.succeed(result)
+-              : Effect.fail(new Error("The request span has not reached the collector")),
+-          ),
+-          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
+-        );
+-        yield* evidence.json("app-query-timing.json", delivered);
+-        const request = delivered.data.find((row) => row.span.spanId === serverSpanId);
+-        if (request === undefined) return yield* Effect.die("Missing delivered request span");
+-        expect(request.traceId).toBe(traceId);
+-        expect(request.span.operationName).toBe("http.server POST");
+-        const phases = ["session_access", "caller_accounts", "dispatch"];
+-        const attributes = Object.fromEntries(
+-          Object.entries(request.span.tags).filter(([key]) => key.startsWith("app.ui.query.")),
+-        );
+-        expect(Object.keys(attributes).sort()).toEqual(
+-          [
+-            ...phases.map((phase) => `app.ui.query.${phase}.duration_ms`),
+-            "app.ui.query.phase_order",
+-          ].sort(),
+-        );
+-        expect(attributes["app.ui.query.phase_order"]).toBe(phases.join(","));
+-        const durations = phases.map((phase) =>
+-          Number(attributes[`app.ui.query.${phase}.duration_ms`]),
+-        );
+-        for (const duration of durations) {
+-          expect(Number.isFinite(duration)).toBe(true);
+-          expect(duration).toBeGreaterThanOrEqual(0);
+-        }
+-        // The phases are serial and must fit inside the same request, allowing exporter rounding.
+-        expect(durations.reduce((sum, duration) => sum + duration, 0)).toBeLessThanOrEqual(
+-          request.span.durationMs + 1,
++        const actors = yield* provisionSelfHostActors.pipe(Effect.provideContext(services));
++        return yield* queryTiming((traceId) => collector.query(traceId).pipe(Effect.orDie)).pipe(
++          Effect.provideService(Actors, actors),
++          Effect.provideContext(services),
+         );
+       }),
+     ),

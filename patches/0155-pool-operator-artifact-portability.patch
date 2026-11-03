@@ -1,0 +1,25 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts b/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts
+@@ -86,7 +86,11 @@
+     false,
+     ["encrypt"],
+   );
+-  if ((publicKey.algorithm as RsaHashedKeyAlgorithm).modulusLength < 3072)
++  if (
++    !("modulusLength" in publicKey.algorithm) ||
++    typeof publicKey.algorithm.modulusLength !== "number" ||
++    publicKey.algorithm.modulusLength < 3072
++  )
+     throw new Error("Ops recipient requires RSA 3072 or stronger");
+   const rawKey = crypto.getRandomValues(new Uint8Array(32));
+   const copyKey = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["encrypt"]);
+@@ -125,7 +129,7 @@
+     await encryptionKey(secret, "decrypt"),
+     bytes(artifact.sealed.ciphertext),
+   );
+-  const text = new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
++  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(plaintext);
+   if (sha256(text) !== artifact.sha256) throw new Error("Ops artifact hash mismatch");
+   return Schema.decodeUnknownSync(Schema.Json)(JSON.parse(text));
+ }

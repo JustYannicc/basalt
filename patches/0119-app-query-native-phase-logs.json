@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-query-native-phase-logs",
+  "file": "0119-app-query-native-phase-logs.patch",
+  "content_sha256": "f5c5ae453c634497463786c95fe8878a83045f572103d7afa95e9a378d85d257",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

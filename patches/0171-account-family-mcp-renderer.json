@@ -1,0 +1,9 @@
+{
+  "identity": "executor-account-family-mcp-renderer",
+  "file": "0171-account-family-mcp-renderer.patch",
+  "content_sha256": "cd4dcf583295fcd1d9c360516272a6e380bc556688bc2443227d0cb1466d94fb",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

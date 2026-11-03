@@ -1,0 +1,201 @@
+diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
+--- a/e2e/support/production-ops-database-fixture.ts
++++ b/e2e/support/production-ops-database-fixture.ts
+@@ -1,4 +1,15 @@
+-import { Data, Effect, FileSystem, Schedule, Schema, Scope } from "effect";
++import {
++  Data,
++  Effect,
++  FileSystem,
++  Option,
++  Queue,
++  Schedule,
++  Schema,
++  Scope,
++  Stream,
++  type Cause,
++} from "effect";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { startCloudPostgres } from "./cloud-postgres.ts";
+ import { freePort } from "./ports.ts";
+@@ -83,57 +94,121 @@
+           ),
+         );
+       });
+-    const target = Effect.gen(function* () {
+-      if (!targetStarted) {
+-        yield* startCloudPostgres({
+-          container: targetContainer,
+-          databasePort: targetPort,
+-          databasePassword: input.databasePassword,
+-          dockerEnv: input.dockerEnv,
+-          log: `${input.directory}/target-postgres.log`,
+-        }).pipe(Scope.provide(scope), Effect.provideContext(services));
+-        // Copy the reviewed rows, but let the other physical database own its UUID.
+-        yield* checked(
+-          processes.exitCode(
+-            ChildProcess.make(
+-              "bash",
+-              [
+-                "-o",
+-                "pipefail",
+-                "-c",
+-                `docker exec ${input.container} pg_dump -U executor -d executor --lock-wait-timeout=5s --no-owner --no-privileges --exclude-table-data=public.production_ops_database_identity | docker exec -i ${targetContainer} psql -v ON_ERROR_STOP=1 -U executor -d executor`,
+-              ],
+-              {
+-                env: input.dockerEnv,
+-                extendEnv: false,
+-                stdout: "ignore",
+-                stderr: "ignore",
+-                forceKillAfter: "5 seconds",
+-              },
+-            ),
+-          ),
+-        );
+-        yield* checked(
+-          processes.exitCode(
+-            command([
++    const target = Effect.scoped(
++      Effect.gen(function* () {
++        // pg_dump and the baseline reads must observe the same account and receipt rows.
++        // SHARE permits the dump's reads but blocks every writer until both states are captured.
++        const commands = yield* Queue.unbounded<string, Cause.Done>();
++        const holder = yield* processes.spawn(
++          ChildProcess.make(
++            "docker",
++            [
+               "exec",
+-              targetContainer,
++              "-i",
++              input.container,
+               "psql",
++              "-q",
++              "-t",
++              "-A",
+               "-v",
+               "ON_ERROR_STOP=1",
+               "-U",
+               "executor",
+               "-d",
+               "executor",
+-              "-c",
+-              "insert into production_ops_database_identity (id) values (gen_random_uuid())",
+-            ]),
+-          ),
+-        );
+-        targetStarted = true;
+-      }
+-      return targetPort;
+-    });
++            ],
++            {
++              env: input.dockerEnv,
++              extendEnv: false,
++              stdin: Stream.fromQueue(commands).pipe(Stream.encodeText),
++              stderr: "ignore",
++              forceKillAfter: "5 seconds",
++            },
++          ),
++        );
++        yield* Effect.addFinalizer(() =>
++          Queue.offer(commands, "rollback;\n\\q\n").pipe(
++            Effect.andThen(Queue.end(commands)),
++            Effect.andThen(holder.exitCode),
++            Effect.flatMap((code) =>
++              code === 0 ? Effect.void : Effect.fail(new ProductionDatabaseFixtureFailed()),
++            ),
++            Effect.timeout("5 seconds"),
++            Effect.orDie,
++          ),
++        );
++        yield* Queue.offer(
++          commands,
++          "begin; set local lock_timeout = '5s'; lock table executor_accounts, private_production_ops_receipts in share mode; select 'snapshot-locked';\n",
++        );
++        const locked = holder.stdout.pipe(
++          Stream.decodeText(),
++          Stream.splitLines,
++          Stream.filter((line) => line.trim() === "snapshot-locked"),
++          Stream.runHead,
++          Effect.flatMap((line) =>
++            Option.isSome(line) ? Effect.void : Effect.fail(new ProductionDatabaseFixtureFailed()),
++          ),
++        );
++        yield* Effect.raceFirst(
++          locked,
++          holder.exitCode.pipe(Effect.andThen(Effect.fail(new ProductionDatabaseFixtureFailed()))),
++        );
++        if (!targetStarted) {
++          yield* startCloudPostgres({
++            container: targetContainer,
++            databasePort: targetPort,
++            databasePassword: input.databasePassword,
++            dockerEnv: input.dockerEnv,
++            log: `${input.directory}/target-postgres.log`,
++          }).pipe(Scope.provide(scope), Effect.provideContext(services));
++          // Copy the reviewed rows, but let the other physical database own its UUID.
++          yield* checked(
++            processes.exitCode(
++              ChildProcess.make(
++                "bash",
++                [
++                  "-o",
++                  "pipefail",
++                  "-c",
++                  `docker exec ${input.container} pg_dump -U executor -d executor --lock-wait-timeout=5s --no-owner --no-privileges --exclude-table-data=public.production_ops_database_identity | docker exec -i ${targetContainer} psql -v ON_ERROR_STOP=1 -U executor -d executor`,
++                ],
++                {
++                  env: input.dockerEnv,
++                  extendEnv: false,
++                  stdout: "ignore",
++                  stderr: "ignore",
++                  forceKillAfter: "5 seconds",
++                },
++              ),
++            ),
++          );
++          yield* checked(
++            processes.exitCode(
++              command([
++                "exec",
++                targetContainer,
++                "psql",
++                "-v",
++                "ON_ERROR_STOP=1",
++                "-U",
++                "executor",
++                "-d",
++                "executor",
++                "-c",
++                "insert into production_ops_database_identity (id) values (gen_random_uuid())",
++              ]),
++            ),
++          );
++          targetStarted = true;
++        }
++        return {
++          port: targetPort,
++          original: yield* state(false),
++          target: yield* state(true),
++        };
++      }),
++    );
+     const query = (target: boolean, sql: string) =>
+       processes.string(
+         ChildProcess.make(
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -612,11 +612,7 @@
+             return yield* new CloudStartFailed({
+               operation: "Physical target requires the original binding",
+             });
+-          const port = yield* databaseFixture.target;
+-          const states = {
+-            original: yield* databaseFixture.state(false),
+-            target: yield* databaseFixture.state(true),
+-          };
++          const { port, ...states } = yield* databaseFixture.target;
+           yield* databaseProxy.select(port);
+           binding = "target";
+           return { binding, ...states };

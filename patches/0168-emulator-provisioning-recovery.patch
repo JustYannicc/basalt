@@ -1,0 +1,857 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts b/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
+--- a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
++++ b/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
+@@ -1,3 +1,7 @@
++import {
++  provisioningRequest,
++  provisioningRetryAfter,
++} from "@executor-js/utils/provisioning-request";
+ /**
+  * Provision the declared catalog against an Autumn endpoint that has no management API.
+  *
+@@ -5,8 +9,8 @@
+  * A private drop-in instance has no such API; it accepts the same catalog as seed data. Only
+  * the transport differs, so both paths publish the identical `BillingCatalog` identities.
+  */
+-import { Effect, Redacted, Schema } from "effect";
+-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import { Clock, Effect, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+ import type {
+   BillingCatalogDeclaration,
+   BillingPlanDeclaration,
+@@ -15,10 +19,16 @@
+ /** Seeding is deployment provisioning; its failures never carry the endpoint or its key. */
+ export class BillingCatalogSeedFailed extends Schema.TaggedError<BillingCatalogSeedFailed>()(
+   "BillingCatalogSeedFailed",
+-  { status: Schema.optionalKey(Schema.Int) },
++  {
++    status: Schema.optional(Schema.Int),
++    category: Schema.Literals(["transport", "http", "request", "timeout"]),
++    attempts: Schema.Int,
++    ray: Schema.optional(Schema.String),
++    retryAfterMs: Schema.optional(Schema.Number),
++  },
+ ) {
+   get message() {
+-    return "Could not provision the billing catalog on the configured Autumn endpoint";
++    return `Could not provision the billing catalog on the configured Autumn endpoint (${this.category}, ${this.attempts} attempt(s)${this.status === undefined ? "" : `, HTTP ${this.status}`}${this.ray === undefined ? "" : `, cf-ray ${this.ray}`})`;
+   }
+ }
+ 
+@@ -75,26 +85,52 @@
+   secretKey: Redacted.Redacted<string>,
+   declaration: BillingCatalogDeclaration,
+ ) =>
+-  Effect.scoped(
+-    Effect.gen(function* () {
+-      const http = yield* HttpClient.HttpClient;
+-      const request = yield* HttpClientRequest.post(
+-        `${Redacted.value(serverUrl).replace(/\/+$/, "")}/_emulate/seed`,
+-      ).pipe(
+-        HttpClientRequest.bearerToken(secretKey),
+-        HttpClientRequest.setHeader("accept", "application/json"),
+-        HttpClientRequest.bodyJson(billingCatalogSeed(declaration)),
+-        Effect.mapError(() => new BillingCatalogSeedFailed()),
+-      );
+-      const response = yield* HttpClient.withScope(http)
+-        .execute(request)
+-        .pipe(Effect.mapError(() => new BillingCatalogSeedFailed()));
+-      if (response.status < 200 || response.status >= 300)
+-        return yield* new BillingCatalogSeedFailed({ status: response.status });
+-    }),
++  provisioningRequest(
++    (attempts) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const http = yield* HttpClient.HttpClient;
++          const request = yield* HttpClientRequest.post(
++            `${Redacted.value(serverUrl).replace(/\/+$/, "")}/_emulate/seed`,
++          ).pipe(
++            HttpClientRequest.bearerToken(secretKey),
++            HttpClientRequest.setHeader("accept", "application/json"),
++            HttpClientRequest.bodyJson(billingCatalogSeed(declaration)),
++            Effect.mapError(() => new BillingCatalogSeedFailed({ category: "request", attempts })),
++          );
++          const response = yield* HttpClient.withScope(http)
++            .execute(request)
++            .pipe(
++              Effect.mapError(
++                (error) =>
++                  new BillingCatalogSeedFailed({
++                    category:
++                      HttpClientError.isHttpClientError(error) &&
++                      error.reason._tag === "TransportError"
++                        ? "transport"
++                        : "request",
++                    attempts,
++                  }),
++              ),
++            );
++          if (response.status < 200 || response.status >= 300) {
++            const ray = response.headers["cf-ray"];
++            return yield* new BillingCatalogSeedFailed({
++              status: response.status,
++              category: "http",
++              attempts,
++              ray: ray !== undefined && /^[0-9a-f]{16}(?:-[A-Z]{3})?$/u.test(ray) ? ray : undefined,
++              retryAfterMs: provisioningRetryAfter(
++                response.headers["retry-after"],
++                yield* Clock.currentTimeMillis,
++              ),
++            });
++          }
++        }),
++      ),
++    (attempts, last) => new BillingCatalogSeedFailed({ ...last, category: "timeout", attempts }),
+   ).pipe(
+-    Effect.timeout("30 seconds"),
+-    Effect.mapError(() => new BillingCatalogSeedFailed()),
++    Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+     Effect.provide(FetchHttpClient.layer),
+     Effect.withSpan("billing.provisionCatalog"),
+   );
+diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+--- a/e2e/check-boundary.ts
++++ b/e2e/check-boundary.ts
+@@ -17,6 +17,7 @@
+   "vitest",
+   "vitest/config",
+   "effect/http",
++  "effect/testing",
+   "effect/cli",
+   "effect",
+   "effect/encoding",
+@@ -73,6 +74,12 @@
+             allowed.has(specifier)
+           )
+             return;
++          // The harness shares only the bounded infrastructure policy, never product implementations.
++          if (
++            label === `support${path.sep}emulators.ts` &&
++            specifier === "@executor-js/utils/provisioning-request"
++          )
++            return;
+           // The runner owns its canonical TCP listener through this external transport SDK.
+           // Application implementations remain forbidden; only this listener adapter may import it.
+           if (
+diff --git a/e2e/emulator-failures.config.ts b/e2e/emulator-failures.config.ts
+--- a/e2e/emulator-failures.config.ts
++++ b/e2e/emulator-failures.config.ts
+@@ -2,5 +2,12 @@
+ 
+ /** Fails emulator calls against a local stand-in for emulators.dev, the way the harness makes them. */
+ export default defineConfig({
+-  test: { include: ["e2e/tests/emulator-failures.spec.ts"], testTimeout: 30_000 },
++  test: {
++    include: [
++      "e2e/tests/emulator-failures.spec.ts",
++      "e2e/tests/emulator-provisioning.spec.ts",
++      "e2e/tests/emulator-fixture-provisioning.spec.ts",
++    ],
++    testTimeout: 30_000,
++  },
+ });
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -17,7 +17,7 @@
+ import { startAnalyticsCollector } from "./analytics-collector.ts";
+ import { serveShardedOtlpCollector } from "./otlp-collector.ts";
+ import { randomBytes } from "node:crypto";
+-import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
++import { createEmulatorFixture, EmulatorFixture, provisionEmulatorRequest } from "./emulators.ts";
+ import {
+   createV1Database,
+   startCloudPostgres,
+@@ -212,7 +212,8 @@
+     yield* Effect.addFinalizer(() =>
+       Effect.forEach(
+         Object.values(Redacted.value(fixture).services),
+-        (service) => emulatorRequest(service.baseUrl, "/_emulate/reset", {}),
++        (service) =>
++          provisionEmulatorRequest(service.baseUrl, "/_emulate/reset", {}, Schema.Unknown),
+         { concurrency: 5 },
+       ).pipe(Effect.asVoid, Effect.orDie),
+     );
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -1,4 +1,9 @@
+ import {
++  provisioningRequest,
++  provisioningRetryAfter,
++} from "@executor-js/utils/provisioning-request";
++import {
++  Clock,
+   Config,
+   Context,
+   Effect,
+@@ -9,7 +14,7 @@
+   Schedule,
+   Schema,
+ } from "effect";
+-import { HttpClient, HttpClientRequest } from "effect/http";
++import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
+ import { createHash, randomUUID } from "node:crypto";
+ import { Target } from "./platform.ts";
+ import { roleHost } from "./role-hosts.ts";
+@@ -197,6 +202,11 @@
+   emulator: Schema.optional(Schema.String),
+   status: Schema.optional(Schema.Number),
+   reason: Schema.optional(Schema.Literals(["timeout", "request", "invalid response"])),
++  category: Schema.optional(
++    Schema.Literals(["transport", "http", "json", "schema", "request", "timeout"]),
++  ),
++  attempts: Schema.optional(Schema.Int),
++  retryAfterMs: Schema.optional(Schema.Number),
+   /** Cloudflare's request id: finds the request in emulators.dev's Workers Logs. */
+   ray: Schema.optional(Schema.String),
+   /** emulators.dev's own failure report, reduced to its diagnostic fields. */
+@@ -207,6 +217,7 @@
+     const detail = [
+       this.status === undefined ? this.reason : `HTTP ${this.status}`,
+       this.ray === undefined ? undefined : `cf-ray ${this.ray}`,
++      this.attempts === undefined ? undefined : `${this.category}, ${this.attempts} attempt(s)`,
+     ].filter((part) => part !== undefined);
+     const words = (parts: ReadonlyArray<string | undefined>) =>
+       parts.filter((part) => part !== undefined).join(" ");
+@@ -281,7 +292,7 @@
+  * body can quote tokens, sign-in codes and addresses. Client tracing is off for these requests,
+  * because its span records the full URL as `url.full` and `server.address`.
+  */
+-export const emulatorRequest = (
++const emulatorRequestAttempt = (
+   origin: string,
+   path: string,
+   payload?: unknown,
+@@ -299,32 +310,115 @@
+       let request = HttpClientRequest.make(method)(`${origin}${path}`);
+       if (token !== undefined)
+         request = HttpClientRequest.setHeader(request, "authorization", `Bearer ${token}`);
+-      if (payload !== undefined) request = yield* HttpClientRequest.bodyJson(request, payload);
+-      const response = yield* withoutEmulatorTracing(http.execute(request));
++      if (payload !== undefined)
++        request = yield* HttpClientRequest.bodyJson(request, payload).pipe(
++          Effect.mapError(
++            () =>
++              new EmulatorFailed({ operation, emulator, reason: "request", category: "request" }),
++          ),
++        );
++      const response = yield* withoutEmulatorTracing(http.execute(request)).pipe(
++        Effect.mapError(
++          (error) =>
++            new EmulatorFailed({
++              operation,
++              emulator,
++              reason: "request",
++              category:
++                HttpClientError.isHttpClientError(error) && error.reason._tag === "TransportError"
++                  ? "transport"
++                  : "request",
++            }),
++        ),
++      );
++      const ray = Option.getOrUndefined(decodeRay(response.headers["cf-ray"]));
+       if (response.status < 200 || response.status >= 300) {
+         const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+         return yield* new EmulatorFailed({
+           operation,
+           emulator,
+           status: response.status,
+-          ray: Option.getOrUndefined(decodeRay(response.headers["cf-ray"])),
++          category: "http",
++          retryAfterMs: provisioningRetryAfter(
++            response.headers["retry-after"],
++            yield* Clock.currentTimeMillis,
++          ),
++          ray,
+           report: reportOf(text, { target, method, path }),
+         });
+       }
+-      return yield* response.json;
++      const body = yield* response.json.pipe(
++        Effect.mapError(
++          () =>
++            new EmulatorFailed({
++              operation,
++              emulator,
++              status: response.status,
++              ray,
++              reason: "invalid response",
++              category: "json",
++            }),
++        ),
++      );
++      return { body, status: response.status, ray };
+     }),
+-  ).pipe(
+-    Effect.timeout("30 seconds"),
+-    Effect.catchTag("TimeoutError", () =>
+-      Effect.fail(new EmulatorFailed({ operation, emulator, reason: "timeout" })),
+-    ),
+-    Effect.mapError((error) =>
+-      error instanceof EmulatorFailed
+-        ? error
+-        : new EmulatorFailed({ operation, emulator, reason: "request" }),
+-    ),
+   );
+ };
++
++export const emulatorRequest = (...args: Parameters<typeof emulatorRequestAttempt>) =>
++  emulatorRequestAttempt(...args).pipe(
++    Effect.map(({ body }) => body),
++    Effect.timeoutOrElse({
++      duration: "30 seconds",
++      orElse: () =>
++        Effect.fail(
++          new EmulatorFailed({
++            operation: `${args[4] ?? (args[2] === undefined ? "GET" : "POST")} ${args[1]}`,
++            emulator: emulatorTarget(args[0])?.label,
++            reason: "timeout",
++            category: "timeout",
++          }),
++        ),
++    }),
++  );
++
++/** Instances are lazy; keyed credentials and reset converge when repeated with the same input. */
++export const provisionEmulatorRequest = <A>(
++  origin: string,
++  path: "/_emulate/instances" | "/_emulate/credentials" | "/_emulate/reset",
++  payload: unknown,
++  schema: Schema.Codec<A>,
++) =>
++  provisioningRequest(
++    (attempts) =>
++      emulatorRequestAttempt(origin, path, payload).pipe(
++        Effect.flatMap((response) =>
++          Schema.decodeUnknownEffect(schema)(response.body).pipe(
++            Effect.mapError(
++              () =>
++                new EmulatorFailed({
++                  operation: `POST ${path}`,
++                  emulator: emulatorTarget(origin)?.label,
++                  reason: "invalid response",
++                  status: response.status,
++                  ray: response.ray,
++                  category: "schema",
++                }),
++            ),
++          ),
++        ),
++        Effect.mapError((error) => new EmulatorFailed({ ...error, attempts })),
++      ),
++    (attempts, last) =>
++      new EmulatorFailed({
++        ...last,
++        operation: `POST ${path}`,
++        emulator: emulatorTarget(origin)?.label,
++        reason: "timeout",
++        category: "timeout",
++        attempts,
++      }),
++  );
+ 
+ /**
+  * Provision actual hosted instances and credentials through emulators.dev's control plane, for a
+@@ -335,10 +429,13 @@
+   Effect.gen(function* () {
+     const instance = `executor-onboarding-${randomUUID()}`;
+     const create = (service: string) =>
+-      emulatorRequest(`https://${service}.emulators.dev`, "/_emulate/instances", {
+-        instance,
+-      }).pipe(
+-        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ providerBaseUrl: BaseUrl }))),
++      provisionEmulatorRequest(
++        `https://${service}.emulators.dev`,
++        "/_emulate/instances",
++        {
++          instance,
++        },
++        Schema.Struct({ providerBaseUrl: BaseUrl }),
+       );
+     const oauth = (service: "google" | "github") =>
+       Effect.gen(function* () {
+@@ -378,15 +475,15 @@
+     const keyed = (service: string, token?: string) =>
+       Effect.gen(function* () {
+         const instance = yield* create(service);
+-        const issued = yield* emulatorRequest(instance.providerBaseUrl, "/_emulate/credentials", {
+-          type: "api-key",
+-          ...(token === undefined ? {} : { token }),
+-        }).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({ credential: Schema.Struct({ token: Schema.NonEmptyString }) }),
+-            ),
+-          ),
++        const credentialToken = token ?? `emu_${service}_${randomUUID().replaceAll("-", "")}`;
++        const issued = yield* provisionEmulatorRequest(
++          instance.providerBaseUrl,
++          "/_emulate/credentials",
++          {
++            type: "api-key",
++            token: credentialToken,
++          },
++          Schema.Struct({ credential: Schema.Struct({ token: Schema.NonEmptyString }) }),
+         );
+         return { baseUrl: instance.providerBaseUrl, token: issued.credential.token };
+       });
+diff --git a/e2e/tests/emulator-fixture-provisioning.spec.ts b/e2e/tests/emulator-fixture-provisioning.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/emulator-fixture-provisioning.spec.ts
+@@ -0,0 +1,116 @@
++import { expect, layer } from "@effect/vitest";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Effect, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import { createServer } from "node:http";
++import type { AddressInfo } from "node:net";
++import { createEmulatorFixture } from "../support/emulators.ts";
++
++/** The real fixture client talks HTTP to this control-plane stand-in instead of the hosted service. */
++const controlPlane = (failOauth: boolean) =>
++  Effect.acquireRelease(
++    Effect.callback<{
++      origin: string;
++      workosTokens: unknown[];
++      counts: Map<string, number>;
++      close: () => void;
++    }>((resume) => {
++      const workosTokens: unknown[] = [];
++      const counts = new Map<string, number>();
++      const server = createServer((request, response) => {
++        const original = String(request.headers["x-fixture-origin"]);
++        const service = new URL(original).hostname.split(".")[0];
++        const key = `${service} ${request.url}`;
++        const count = (counts.get(key) ?? 0) + 1;
++        counts.set(key, count);
++        let text = "";
++        request.on("data", (chunk) => {
++          text += String(chunk);
++        });
++        request.on("end", () => {
++          const body = Schema.decodeUnknownSync(
++            Schema.fromJsonString(
++              Schema.Struct({
++                type: Schema.optional(Schema.String),
++                token: Schema.optional(Schema.String),
++              }),
++            ),
++          )(text || "{}");
++          const send = (status: number, body: unknown) =>
++            response
++              .writeHead(status, { "content-type": "application/json" })
++              .end(JSON.stringify(body));
++          if (request.url === "/_emulate/instances") {
++            send(service === "github" && count === 1 ? 500 : 200, { providerBaseUrl: original });
++          } else if (request.url === "/.well-known/openid-configuration") {
++            send(200, {
++              issuer: original,
++              authorization_endpoint: `${original}/authorize`,
++              token_endpoint: `${original}/token`,
++              userinfo_endpoint: `${original}/userinfo`,
++              jwks_uri: `${original}/keys`,
++              id_token_signing_alg_values_supported: ["RS256"],
++            });
++          } else if (body.type === "oauth-authorization-code") {
++            send(failOauth ? 503 : 200, {
++              credential: { client_id: "synthetic-client", client_secret: "synthetic-secret" },
++            });
++          } else {
++            if (service === "workos") workosTokens.push(body.token);
++            send(service === "workos" && count === 1 ? 503 : 200, {
++              credential: { token: body.token },
++            });
++          }
++        });
++      });
++      const close = () => {
++        server.closeAllConnections();
++        server.close();
++      };
++      server.listen(0, () => {
++        const { port } = server.address() as AddressInfo;
++        resume(Effect.succeed({ origin: `http://127.0.0.1:${port}`, workosTokens, counts, close }));
++      });
++      return Effect.sync(close);
++    }),
++    ({ close }) => Effect.sync(close),
++  );
++
++const routed = (http: HttpClient.HttpClient, origin: string) =>
++  HttpClient.mapRequest(http, (request) => {
++    const url = new URL(request.url);
++    return request.pipe(
++      HttpClientRequest.setUrl(`${origin}${url.pathname}`),
++      HttpClientRequest.setHeader("x-fixture-origin", url.origin),
++    );
++  });
++
++layer(NodeServices.layer, { excludeTestServices: true })("Emulator fixture provisioning", (it) => {
++  it.effect("fixture setup recovers instances and reuses its generated WorkOS credential", () =>
++    Effect.gen(function* () {
++      const stub = yield* controlPlane(false);
++      const http = yield* HttpClient.HttpClient;
++      const fixture = yield* createEmulatorFixture(stub.origin).pipe(
++        Effect.provideService(HttpClient.HttpClient, routed(http, stub.origin)),
++      );
++      const workos = Redacted.value(fixture).services.workos;
++      expect(stub.counts.get("github /_emulate/instances")).toBe(2);
++      expect(stub.counts.get("github /_emulate/credentials")).toBe(1);
++      expect(stub.workosTokens).toEqual([workos.token, workos.token]);
++      expect(workos.token.length).toBeGreaterThan(0);
++    }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++
++  it.effect("OAuth client creation remains outside setup retries", () =>
++    Effect.gen(function* () {
++      const stub = yield* controlPlane(true);
++      const http = yield* HttpClient.HttpClient;
++      const error = yield* createEmulatorFixture(stub.origin).pipe(
++        Effect.provideService(HttpClient.HttpClient, routed(http, stub.origin)),
++        Effect.flip,
++      );
++      expect(error.status).toBe(503);
++      expect(stub.counts.get("google /_emulate/credentials")).toBe(1);
++    }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++});
+diff --git a/e2e/tests/emulator-provisioning.spec.ts b/e2e/tests/emulator-provisioning.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/emulator-provisioning.spec.ts
+@@ -0,0 +1,262 @@
++import { expect, layer } from "@effect/vitest";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Cause, Clock, Deferred, Effect, Fiber, Schema, Tracer, Exit } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { TestClock } from "effect/testing";
++import { createServer } from "node:http";
++import type { AddressInfo } from "node:net";
++import { emulatorRequest, provisionEmulatorRequest } from "../support/emulators.ts";
++
++const secret = "SYNTHETIC_PRIVATE_TOKEN";
++const ray = "0123456789abcdef-AAA";
++const reply = Schema.Struct({ ready: Schema.Boolean });
++
++const server = (
++  answer: (attempt: number) => number | "disconnect" | "invalid" | "schema",
++  retryAfter?: string,
++) =>
++  Effect.acquireRelease(
++    Effect.callback<{ origin: string; calls: () => number; bodies: string[]; close: () => void }>(
++      (resume) => {
++        let calls = 0;
++        const bodies: string[] = [];
++        const http = createServer((request, response) => {
++          const result = answer(++calls);
++          let body = "";
++          request.on("data", (chunk) => {
++            body += String(chunk);
++          });
++          request.on("end", () => {
++            bodies.push(body);
++            if (result === "disconnect") {
++              request.socket.destroy();
++              return;
++            }
++            response
++              .writeHead(typeof result === "number" ? result : 200, {
++                "content-type": "application/json",
++                "cf-ray": ray,
++                ...(retryAfter === undefined ? {} : { "retry-after": retryAfter }),
++              })
++              .end(
++                result === "invalid"
++                  ? secret
++                  : result === "schema"
++                    ? JSON.stringify({ secret })
++                    : JSON.stringify({ ready: true, secret }),
++              );
++          });
++        });
++        http.listen(0, () => {
++          const { port } = http.address() as AddressInfo;
++          resume(
++            Effect.succeed({
++              origin: `http://127.0.0.1:${port}`,
++              calls: () => calls,
++              bodies,
++              close: () => {
++                http.closeAllConnections();
++                http.close();
++              },
++            }),
++          );
++        });
++        return Effect.sync(() => {
++          http.closeAllConnections();
++          http.close();
++        });
++      },
++    ),
++    ({ close }) => Effect.sync(close),
++  );
++
++layer(NodeServices.layer, { excludeTestServices: true })("Emulator provisioning", (it) => {
++  it.effect("transient setup HTTP errors recover within the operation budget", () =>
++    Effect.gen(function* () {
++      for (const status of [500, 502, 503, 504]) {
++        const stub = yield* server((attempt) => (attempt === 1 ? status : 200));
++        const started = yield* Clock.currentTimeMillis;
++        const result = yield* provisionEmulatorRequest(
++          stub.origin,
++          "/_emulate/instances",
++          { instance: "synthetic" },
++          reply,
++        ).pipe(Effect.provide(FetchHttpClient.layer));
++        expect(result).toEqual({ ready: true });
++        expect(stub.calls()).toBe(2);
++        expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(30_000);
++      }
++    }),
++  );
++
++  it.effect("a transport failure repeats a keyed credential's exact payload", () =>
++    Effect.gen(function* () {
++      const stub = yield* server((attempt) => (attempt === 1 ? "disconnect" : 200));
++      yield* provisionEmulatorRequest(
++        stub.origin,
++        "/_emulate/credentials",
++        { type: "api-key", token: secret },
++        reply,
++      ).pipe(Effect.provide(FetchHttpClient.layer));
++      expect(stub.calls()).toBe(2);
++      expect(stub.bodies).toEqual([
++        JSON.stringify({ type: "api-key", token: secret }),
++        JSON.stringify({ type: "api-key", token: secret }),
++      ]);
++    }),
++  );
++
++  it.effect("persistent setup errors fail after four attempts with safe diagnostics", () =>
++    Effect.gen(function* () {
++      const stub = yield* server(() => 500);
++      const spans: Tracer.NativeSpan[] = [];
++      const tracer = Tracer.make({
++        span(options) {
++          const span = new Tracer.NativeSpan(options);
++          spans.push(span);
++          return span;
++        },
++      });
++      const error = yield* provisionEmulatorRequest(
++        stub.origin,
++        "/_emulate/instances",
++        {},
++        reply,
++      ).pipe(
++        Effect.withSpan("setup"),
++        Effect.withTracer(tracer),
++        Effect.flip,
++        Effect.provide(FetchHttpClient.layer),
++      );
++      expect(stub.calls()).toBe(4);
++      expect(error).toMatchObject({
++        category: "http",
++        attempts: 4,
++        status: 500,
++        ray,
++        operation: "POST /_emulate/instances",
++      });
++      expect(error.message).toContain("4 attempt(s)");
++      expect(error.message).toContain("HTTP 500");
++      const exported = JSON.stringify(
++        spans.map((span) => ({
++          attributes: Object.fromEntries(span.attributes),
++          events: span.events,
++          status:
++            span.status._tag === "Ended" && Exit.isFailure(span.status.exit)
++              ? Cause.pretty(span.status.exit.cause)
++              : span.status._tag,
++        })),
++      );
++      for (const text of [JSON.stringify(error), Cause.pretty(Cause.fail(error)), exported]) {
++        expect(text).not.toContain(secret);
++        expect(text).not.toContain(stub.origin);
++      }
++    }),
++  );
++
++  it.effect("setup honours Retry-After before the next request", () =>
++    Effect.gen(function* () {
++      const stub = yield* server((attempt) => (attempt === 1 ? 503 : 200), "1");
++      const started = yield* Clock.currentTimeMillis;
++      yield* provisionEmulatorRequest(stub.origin, "/_emulate/instances", {}, reply).pipe(
++        Effect.provide(FetchHttpClient.layer),
++      );
++      expect((yield* Clock.currentTimeMillis) - started).toBeGreaterThanOrEqual(1000);
++      expect(stub.calls()).toBe(2);
++    }),
++  );
++
++  it.effect("ordinary emulator calls still fail on their first HTTP error", () =>
++    Effect.gen(function* () {
++      const stub = yield* server((attempt) => (attempt === 1 ? 500 : 200));
++      const error = yield* emulatorRequest(stub.origin, "/emails").pipe(
++        Effect.flip,
++        Effect.provide(FetchHttpClient.layer),
++      );
++      expect(error.status).toBe(500);
++      expect(stub.calls()).toBe(1);
++    }),
++  );
++
++  it.effect("permanent HTTP, JSON and schema errors are never retried", () =>
++    Effect.gen(function* () {
++      for (const result of [400, 401, 403, 429, 501, "invalid", "schema"] as const) {
++        const stub = yield* server(() => result);
++        const error = yield* provisionEmulatorRequest(
++          stub.origin,
++          "/_emulate/instances",
++          {},
++          reply,
++        ).pipe(Effect.flip, Effect.provide(FetchHttpClient.layer));
++        expect(stub.calls()).toBe(1);
++        expect(error.attempts).toBe(1);
++        expect(error.category).toBe(
++          result === "invalid" ? "json" : result === "schema" ? "schema" : "http",
++        );
++        expect(error.status).toBe(typeof result === "number" ? result : 200);
++        expect(error.ray).toBe(ray);
++        expect(JSON.stringify(error)).not.toContain(secret);
++      }
++    }),
++  );
++
++  it.effect("reset recovers, while exhaustion retains the original startup error", () =>
++    Effect.gen(function* () {
++      const transient = yield* server((attempt) => (attempt === 1 ? 503 : 200));
++      yield* provisionEmulatorRequest(transient.origin, "/_emulate/reset", {}, reply).pipe(
++        Effect.provide(FetchHttpClient.layer),
++      );
++      expect(transient.calls()).toBe(2);
++      const persistent = yield* server(() => 500);
++      const exit = yield* Effect.fail("original startup failure").pipe(
++        Effect.ensuring(
++          provisionEmulatorRequest(persistent.origin, "/_emulate/reset", {}, reply).pipe(
++            Effect.orDie,
++          ),
++        ),
++        Effect.exit,
++        Effect.provide(FetchHttpClient.layer),
++      );
++      expect(Exit.isFailure(exit)).toBe(true);
++      if (Exit.isFailure(exit)) {
++        const text = Cause.pretty(exit.cause);
++        expect(text).toContain("original startup failure");
++        expect(text).toContain("POST /_emulate/reset");
++        expect(text).toContain("4 attempt(s)");
++      }
++      expect(persistent.calls()).toBe(4);
++    }),
++  );
++});
++
++layer(NodeServices.layer)("Emulator provisioning deadline", (it) => {
++  it.effect("the thirty second budget includes earlier requests and backoff", () =>
++    Effect.gen(function* () {
++      const stub = yield* server(() => 500, "3600");
++      const received = yield* Deferred.make<void>();
++      const http = yield* HttpClient.HttpClient;
++      const delayed = HttpClient.make((request) =>
++        Effect.gen(function* () {
++          yield* Effect.sleep("20 seconds");
++          const response = yield* http.execute(request);
++          yield* response.text;
++          yield* Deferred.succeed(received, undefined);
++          return response;
++        }),
++      );
++      const fiber = yield* provisionEmulatorRequest(
++        stub.origin,
++        "/_emulate/instances",
++        {},
++        reply,
++      ).pipe(Effect.provideService(HttpClient.HttpClient, delayed), Effect.flip, Effect.forkChild);
++      yield* TestClock.adjust("20 seconds");
++      yield* Deferred.await(received);
++      yield* TestClock.adjust("10 seconds");
++      const error = yield* Fiber.join(fiber);
++      expect(error).toMatchObject({ category: "timeout", attempts: 2, status: 500 });
++      expect(stub.calls()).toBe(1);
++    }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++});
+diff --git a/packages/utils/package.json b/packages/utils/package.json
+--- a/packages/utils/package.json
++++ b/packages/utils/package.json
+@@ -4,6 +4,7 @@
+   "type": "module",
+   "sideEffects": false,
+   "exports": {
++    "./provisioning-request": "./src/provisioning-request.ts",
+     "./account-display-privacy": "./src/account-display-privacy.ts",
+     "./account-secrets": "./src/account-secrets.ts",
+     "./url-policy": "./src/url-policy.ts",
+diff --git a/packages/utils/src/provisioning-request.ts b/packages/utils/src/provisioning-request.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/utils/src/provisioning-request.ts
+@@ -0,0 +1,53 @@
++import { Duration, Effect, Schedule } from "effect";
++
++export interface ProvisioningDiagnostic {
++  readonly category?: string | undefined;
++  readonly status?: number | undefined;
++  readonly retryAfterMs?: number | undefined;
++}
++
++/** Only repeatable provisioning and cleanup may opt in. Scenario requests must see outages. */
++export const provisioningRequest = <A, E extends ProvisioningDiagnostic, R>(
++  attempt: (attempts: number) => Effect.Effect<A, E, R>,
++  timedOut: (attempts: number, last: E | undefined) => E,
++) =>
++  Effect.suspend(() => {
++    let attempts = 0;
++    let last: E | undefined;
++    const schedule = Schedule.exponential("250 millis").pipe(
++      Schedule.jittered,
++      Schedule.modifyDelay(({ duration }) =>
++        Effect.succeed(Math.max(Duration.toMillis(duration), last?.retryAfterMs ?? 0)),
++      ),
++    );
++    return Effect.suspend(() => attempt(++attempts)).pipe(
++      Effect.tapError((error) =>
++        Effect.sync(() => {
++          last = error;
++        }),
++      ),
++      Effect.retry({
++        times: 3,
++        schedule,
++        while: (error) =>
++          error.category === "transport" ||
++          (error.category === "http" && [500, 502, 503, 504].includes(error.status ?? 0)),
++      }),
++      // One deadline covers requests, body reads and every backoff, not one per attempt.
++      Effect.timeoutOrElse({
++        duration: "30 seconds",
++        orElse: () => Effect.fail(timedOut(attempts, last)),
++      }),
++    );
++  });
++
++/** Accept delta-seconds or an HTTP date, capped at five seconds within the operation budget. */
++export const provisioningRetryAfter = (value: string | undefined, now: number) => {
++  if (value === undefined) return undefined;
++  const delay = /^\d+(?:\.\d+)?$/u.test(value)
++    ? Number(value) * 1000
++    : /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), /u.test(value)
++      ? Date.parse(value) - now
++      : NaN;
++  return Number.isFinite(delay) ? Math.min(5000, Math.max(0, delay)) : undefined;
++};
