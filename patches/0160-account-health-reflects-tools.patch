@@ -414,10 +414,10 @@ index 63e1925..c53851f 100644
          db.upsert("accountChecks", {
 diff --git a/packages/sdk/src/implementation/account-tools-health.ts b/packages/sdk/src/implementation/account-tools-health.ts
 new file mode 100644
-index 0000000..037cec9
+index 0000000..69ee479
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-tools-health.ts
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,197 @@
 +/**
 + * Whether an app's tools load for agents, kept on the app's account checks. A provider check can
 + * accept credentials while the app's tool loader fails, so the check also reads the app's catalog,
@@ -425,9 +425,10 @@ index 0000000..037cec9
 + *
 + * Each kind of read keeps its own entry: the account check, and each catalog context agents'
 + * discovery reads (MCP with app UI or without, user or app scope, which caller). A read sets its
-+ * entry when the tools fail and removes it when they load, so one context loading never hides
++ * entry when the tools fail and removes it when they load, so one context loading does not hide
 + * another that fails. While the credentials pass, the check shows `tools_unavailable` exactly when
-+ * some entry is present. Entries older than a day are ignored, the longest a kept listing is
++ * some entry is present. The entries share one stored value, so two reads writing it at the same
++ * moment can drop one entry until that context is read again. Entries older than a day are ignored, the longest a kept listing is
 + * served, so a context nobody reads any more cannot hold the badge.
 + */
 +import { Clock, Effect, Option, Schema } from "effect";
@@ -522,9 +523,10 @@ index 0000000..037cec9
 +/**
 + * Record what one catalog read of `context` found on the checks of the accounts it used, at the
 + * version and credential generations it read. A check written since this read is never changed.
-+ * Reads of other contexts can update the same row at once, so each write is read back and merged
-+ * again if another write replaced it; a read that loses every attempt leaves its finding to the
-+ * next read of its context.
++ * Reads of other contexts can update the same row at once. Each write is read back and merged
++ * again when another write replaced it first; a write that lands after another read's check can
++ * still drop that read's entry until its context is read again. Closing that needs a revision on
++ * the row.
 + */
 +export const observeToolLoad = (
 +  db: Query,
