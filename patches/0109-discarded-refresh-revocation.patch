@@ -53,7 +53,7 @@ index 0000000..9bf8c21
 +  };
 +});
 diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
-index f8e7cb7..04a35aa 100644
+index f8e7cb7..026082e 100644
 --- a/e2e/support/oauth-setup-issuer.ts
 +++ b/e2e/support/oauth-setup-issuer.ts
 @@ -10,7 +10,7 @@ import {
@@ -82,7 +82,7 @@ index f8e7cb7..04a35aa 100644
    /** Refresh tokens a rotation replaced, with their client. */
    const replacedRefreshGrants = new Map<string, string>();
    const refreshedAccessTokens = new Set<string>();
-@@ -904,7 +907,16 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -904,10 +907,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
            typeof presented.clientId === "string" ? clients.get(presented.clientId) : undefined;
          const token = input.get("token");
          const origin = token === null ? undefined : refreshOrigins.get(token);
@@ -99,7 +99,11 @@ index f8e7cb7..04a35aa 100644
 +        }
          revocations.push({
            token:
-             token !== null && refreshGrants.has(token)
+-            token !== null && refreshGrants.has(token)
++            token !== null && refreshOrigins.has(token)
+               ? "refresh"
+               : token === "synthetic-access-token" ||
+                   (token !== null && refreshedAccessTokens.has(token))
 @@ -921,6 +933,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
              presented.secret === client.secret,
          });
@@ -178,10 +182,10 @@ index 93e2d1e..48e22ba 100644
      ),
 diff --git a/e2e/tests/oauth-discarded-refresh.spec.ts b/e2e/tests/oauth-discarded-refresh.spec.ts
 new file mode 100644
-index 0000000..d032b6c
+index 0000000..f402b02
 --- /dev/null
 +++ b/e2e/tests/oauth-discarded-refresh.spec.ts
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,210 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -319,9 +323,11 @@ index 0000000..d032b6c
 +          { issuedTo: client.clientId, presentedBy: client.clientId },
 +          { issuedTo: client.clientId, presentedBy: client.clientId },
 +        ]);
-+        expect(current.revocations).toHaveLength(2);
-+        for (const revocation of current.revocations)
-+          expect(revocation).toMatchObject({ hint: "refresh_token", clientAuthenticated: true });
++        expect(current.revocations).toEqual([
++          { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
++          { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
++          { token: "access", hint: "access_token", clientAuthenticated: true },
++        ]);
 +        for (const table of ["executor_accounts", "executor_oauth_grants"])
 +          expect(
 +            yield* database.run({
@@ -371,6 +377,7 @@ index 0000000..d032b6c
 +        ]);
 +        expect(current.revocations).toEqual([
 +          { token: "refresh", hint: "refresh_token", clientAuthenticated: true },
++          { token: "access", hint: "access_token", clientAuthenticated: true },
 +        ]);
 +        expect(yield* stored()).toEqual(before);
 +        const read = yield* api.request(
@@ -390,7 +397,7 @@ index 0000000..d032b6c
 +  );
 +});
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index e4dec2e..5c4f762 100644
+index e4dec2e..16f11f9 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -650,23 +650,6 @@ export const makeOAuth = (
@@ -435,27 +442,74 @@ index e4dec2e..5c4f762 100644
          if (renewal === undefined) return yield* reconnect("not_renewable");
          const claim = `refresh_${yield* nextId}`;
          /**
-@@ -2976,6 +2963,23 @@ export const makeOAuth = (
+@@ -2976,6 +2963,34 @@ export const makeOAuth = (
            );
            if (!committed) {
              recorded.lost = "tokens";
 +            // Only this response is discarded. A replacement grant belongs to another writer.
 +            yield* revokeLater(
-+              settledRevocation(
-+                revokeTokens(issuing, {
-+                  refreshToken:
-+                    grant.grant !== "client_credentials" &&
-+                    tokens.refresh_token === grant.refreshToken
-+                      ? undefined
-+                      : tokens.refresh_token,
-+                  accessToken:
-+                    tokens.access_token === grant.fields.access_token
-+                      ? undefined
-+                      : tokens.access_token,
-+                }),
-+                "oauth.revokeRefused",
++              Effect.forEach(
++                [
++                  {
++                    refreshToken:
++                      grant.grant !== "client_credentials" &&
++                      tokens.refresh_token === grant.refreshToken
++                        ? undefined
++                        : tokens.refresh_token,
++                    accessToken: undefined,
++                  },
++                  {
++                    refreshToken: undefined,
++                    accessToken:
++                      tokens.access_token === grant.fields.access_token
++                        ? undefined
++                        : tokens.access_token,
++                  },
++                ],
++                (discarded) =>
++                  settledRevocation(revokeTokens(issuing, discarded), "oauth.revokeRefused", {
++                    account: account.id,
++                    provider: account.provider,
++                  }),
++                { discard: true },
 +              ),
 +            );
              return undefined;
            }
            yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
+@@ -3492,11 +3507,27 @@ export const makeOAuth = (
+   const settledRevocation = <R>(
+     revocation: Effect.Effect<string, unknown, R>,
+     span: "oauth.revokeGrant" | "oauth.revokeRefused",
++    identity?: { readonly account: AccountId; readonly provider: string },
+   ) =>
+     revocation.pipe(
+       Effect.catch(() => Effect.succeed("failed")),
+       Effect.catchDefect(() => Effect.succeed("failed")),
+       Effect.tap((outcome) => Effect.annotateCurrentSpan("oauth.revocation.outcome", outcome)),
++      Effect.tap((outcome) =>
++        outcome === "failed"
++          ? Effect.logWarning("OAuth token revocation failed").pipe(
++              Effect.annotateLogs({
++                "oauth.revocation.outcome": outcome,
++                ...(identity === undefined
++                  ? {}
++                  : {
++                      "executor.account.id": identity.account,
++                      "oauth.provider.id": identity.provider,
++                    }),
++              }),
++            )
++          : Effect.void,
++      ),
+       Effect.asVoid,
+       Effect.withSpan(span),
+     );
+@@ -3533,6 +3564,7 @@ export const makeOAuth = (
+         });
+       }),
+       "oauth.revokeGrant",
++      removed,
+     );
+   /** Revoke after the deletion commits; see `revokeLater`. */
+   const revokeRemoved = (removed: Parameters<typeof revokeGrant>[0]) =>
