@@ -168,6 +168,39 @@ test("a real storage error after the request deadline still fails the read", asy
   assert.equal(f.posts(), 0, "no Home collection was queued");
 });
 
+test("a request deadline that fires while a Home body is read keeps the retained reading", async () => {
+  const caller = new AbortController();
+  let reads = 0;
+  const client = new HomeClient(async (path) => {
+    if (path.endsWith("/quota/collect")) return Response.json({ accepted: 1 }, { status: 202 });
+    reads++;
+    if (reads === 1) return Response.json({ credential: { credential_id: "a" }, collection: { status: "idle", freshness: "never" } });
+    // Headers arrive in time; the body is still streaming when the deadline fires.
+    return new Response(new ReadableStream({
+      pull(controller) {
+        caller.abort(new DOMException("Request deadline", "TimeoutError"));
+        controller.error(caller.signal.reason);
+      },
+    }, { highWaterMark: 0 }));
+  });
+  const collector = new QuotaCollection(new Storage(), client, { now: () => Date.parse("2030-01-01T00:00:00Z") });
+  const pending = await collector.read("a", caller.signal);
+  assert.equal((pending!.collection as Json).status, "collecting");
+});
+
+test("a budget and a request deadline firing together keep the retained reading", async (t) => {
+  const f = fixture(), budget = new AbortController(), caller = new AbortController();
+  t.mock.method(AbortSignal, "timeout", () => budget.signal);
+  f.onCollect(() => f.set({ credential: { credential_id: "a" }, collection: { status: "collecting", freshness: "never" } }));
+  const collector = new QuotaCollection(f.storage, f.client, { ...f.options, wait: async (_ms, signal) => {
+    budget.abort(new DOMException("Collection wait ended", "TimeoutError"));
+    caller.abort(new DOMException("Request deadline", "TimeoutError"));
+    signal.throwIfAborted();
+  } });
+  const pending = await collector.read("a", caller.signal);
+  assert.equal((pending!.collection as Json).status, "collecting");
+});
+
 test("an awaited collection yields to another account read", async () => {
   const f = fixture();
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();

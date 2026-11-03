@@ -19,6 +19,12 @@ export const collectionOf = (value: Json): Json => object(value.collection) ? va
 const statusOf = (value: Json) => value.status ?? value.collection_status;
 const deadline = (signal: AbortSignal | undefined) =>
   signal?.aborted === true && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError";
+// Storage errors are marked where they happen so a deadline never hides them.
+const storageFailures = new WeakSet<object>();
+const stored = <T>(work: Promise<T>): Promise<T> => work.catch((error: unknown) => {
+  if (typeof error === "object" && error !== null) storageFailures.add(error);
+  throw error;
+});
 const stillCollecting = (value: Json | null): Json | null => value === null ? null : {
   ...value, collection: { ...collectionOf(value), status: "collecting" },
 };
@@ -101,7 +107,7 @@ export class QuotaCollection {
       if (Number.isFinite(retryAt) && retryAt > this.now()) return value;
       const previous = instant(collection.last_attempt_at);
       const key = `quota-collect-v1:${await digest(id)}`;
-      const requested = await this.storage.get<number>(key);
+      const requested = await stored(this.storage.get<number>(key));
       const last = Math.max(Number.isFinite(previous) ? previous : -Infinity, requested ?? -Infinity);
       const collecting = statusOf(collection) === "collecting";
       if (!collecting) {
@@ -111,7 +117,7 @@ export class QuotaCollection {
           if (!awaitCompletion || !justRequested) return value;
         } else {
           // Persist before sending: a transport failure can leave an accepted job behind.
-          await this.storage.put(key, this.now());
+          await stored(this.storage.put(key, this.now()));
           const result = await this.client.data("/quota/collect", { ...post({ credential_ids: [id] }), signal });
           if (typeof result.accepted !== "number" || result.accepted < 0 || !Number.isInteger(result.accepted)) return unavailable();
           this.client.dropQuotaDetail(id);
@@ -129,11 +135,13 @@ export class QuotaCollection {
         await this.wait(500, signal);
       }
     } catch (error) {
-      // Home owns the queued job. A local wait deadline, this budget or the caller's own request
-      // deadline, does not fail or cancel collection. A caller that went away still throws.
-      // Only the deadline's own abort counts; any other error, even after a deadline, still throws.
-      if ((timeout.aborted && !callerSignal?.aborted && error === timeout.reason)
-        || (deadline(callerSignal) && error === callerSignal!.reason)) return stillCollecting(retained);
+      // Home owns the queued job. Once a local deadline, this budget or the caller's own request
+      // deadline, has passed, a Home call failing (including while reading a body) keeps the
+      // previous reading. A caller that went away, or a storage error, still throws.
+      const fromStorage = typeof error === "object" && error !== null && storageFailures.has(error);
+      const disconnected = callerSignal?.aborted === true && !deadline(callerSignal);
+      if (!fromStorage && !disconnected && (timeout.aborted || deadline(callerSignal)))
+        return stillCollecting(retained);
       throw error;
     }
   }
