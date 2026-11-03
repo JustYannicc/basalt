@@ -92,6 +92,7 @@ USER pool
 ENTRYPOINT ["python3", "-m", "pool.supervisor"]
 
 FROM runtime-base AS runtime
+LABEL io.signalbox.pool.oauth-completion-receipts="1"
 COPY --from=source-build /out/home/cli-proxy-api /usr/local/bin/cliproxy-home
 COPY --from=source-build /out/node/cli-proxy-api /usr/local/bin/cliproxy-node
 COPY --from=source-build /out/home/LICENSE /usr/share/licenses/cliproxy-home/LICENSE
