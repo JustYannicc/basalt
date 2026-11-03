@@ -673,7 +673,7 @@ index 42722c5..dc125bc 100644
    });
    const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0f9d9b5..8f1cc67 100644
+index 0f9d9b5..46fba55 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -223,6 +223,16 @@ export const scenarios = plan({
@@ -760,6 +760,23 @@ index 0f9d9b5..8f1cc67 100644
    accountConsentBatch: {
      file: "account-consent.spec.ts",
      title:
+@@ -287,6 +350,16 @@ export const scenarios = plan({
+       cloud: na("The synthetic authorization server listens on loopback."),
+     },
+   },
++  hostedScopeRefusal: {
++    fixtures: "actors",
++    file: "hosted-scope-refusal.spec.ts",
++    title: "Hosted operator-client partial consent retains exact scope evidence and gates retries",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The synthetic authorization server listens on loopback."),
++      local: na("Exercises the hosted callback and operator-client allowlist."),
++    },
++  },
+   accountConsentRefusal: {
+     file: "account-consent.spec.ts",
+     title: "Wrong identities denial and partial scopes preserve every working app during consent",
 diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
 index d778b74..685c02f 100644
 --- a/e2e/tests/account-consent.spec.ts
@@ -1715,6 +1732,227 @@ index 0ccbca6..408e5bf 100644
            if (client.parameter.length > 0)
              expect(sent.searchParams.get(client.parameter[0]!)).toBe(client.parameter[1]);
            expect(JSON.stringify(shared.body)).not.toContain(`shared-secret-${client.id}`);
+diff --git a/e2e/tests/hosted-scope-refusal.spec.ts b/e2e/tests/hosted-scope-refusal.spec.ts
+new file mode 100644
+index 0000000..768ccd7
+--- /dev/null
++++ b/e2e/tests/hosted-scope-refusal.spec.ts
+@@ -0,0 +1,215 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const docs = "https://www.googleapis.com/auth/documents";
++const drive = "https://www.googleapis.com/auth/drive";
++const Failure = Schema.Struct({
++  requestedScopes: Schema.Array(Schema.String),
++  grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  missingScopes: Schema.Array(Schema.String),
++  grantedScopesKnown: Schema.Boolean,
++  scopeNamesOmitted: Schema.Boolean,
++});
++const Connection = Schema.Struct({
++  state: Schema.Struct({
++    status: Schema.String,
++    failure: Schema.Struct({ error: Failure }),
++  }),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Hosted scope refusal", (it) => {
++  it.effect(scenarios.hostedScopeRefusal.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          issuer = yield* accountIdentityIssuer,
++          http = yield* HttpClient.HttpClient;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        yield* serverControl("stop");
++        yield* serverControl("environment", 200, {
++          EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
++            {
++              id: "synthetic-mail",
++              label: "Synthetic Google shared client",
++              server: {
++                authorizationUrl: `${issuer.origin}/authorize`,
++                tokenUrl: `${issuer.origin}/token`,
++              },
++              tokenEndpointAuthMethod: "client_secret_post",
++              defaultScopes: [],
++              allowedScopes: [docs, drive],
++              placement: { hosts: [new URL(issuer.origin).host] },
++            },
++          ]),
++          EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "scope-fixture-client",
++          EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "scope-fixture-secret",
++        });
++        yield* serverControl("start");
++        const deploy = (name: string, scope: string) =>
++          Effect.gen(function* () {
++            const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: [
++                appsManifest,
++                {
++                  path: "index.ts",
++                  content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({
++  authorizationUrl: ${JSON.stringify(issuer.origin + "/authorize")},
++  tokenUrl: ${JSON.stringify(issuer.origin + "/token")},
++  identity: { issuer: ${JSON.stringify(issuer.origin)}, name: "Fixture Google identity" },
++  scopes: [${JSON.stringify(scope)}], tokenEndpointAuthMethod: "client_secret_post"
++}) } });
++export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
++                },
++              ],
++            });
++            expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++            const app = yield* body(Resource, deployed);
++            yield* Effect.addFinalizer(() =>
++              api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++            );
++            return yield* body(
++              Resource,
++              yield* api.request(
++                actors.owner,
++                "POST",
++                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++                {},
++              ),
++            );
++          });
++        const primary = yield* deploy("Fixture Docs", docs);
++        const additional = yield* deploy("Fixture Drive", drive);
++        const start = Effect.gen(function* () {
++          const response = yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${primary.id}/oauth/start`,
++            {
++              method: "oauth",
++              additionalConnections: [{ connection: additional.id, method: "oauth" }],
++            },
++          );
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          const authorization = yield* body(
++            Schema.Struct({ authorizationUrl: Schema.String }),
++            response,
++          );
++          // The hosted relay returns the provider's query to this same-origin callback page.
++          const callback = yield* Effect.scoped(
++            Effect.gen(function* () {
++              const answer = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++              expect(answer.status).toBe(302);
++              const location = answer.headers.location;
++              if (location === undefined) return yield* Effect.die("Issuer omitted its callback");
++              return new URL(location);
++            }),
++          ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++          return { ...authorization, callbackPath: `/oauth/callback${callback.search}` };
++        });
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(actors.owner);
++        yield* issuer.configure({ scopes: [docs] });
++        const partial = yield* start;
++        expect(new URL(partial.authorizationUrl).searchParams.get("client_id")).toBe(
++          "scope-fixture-client",
++        );
++        yield* browser.use("Complete a partial operator-client grant", (page) =>
++          page
++            .goto(partial.callbackPath)
++            .then(() => page.getByText("Not granted", { exact: true }).waitFor()),
++        );
++        yield* browser.use("Open exact requested and granted access", (page) =>
++          page.getByText("Access details", { exact: true }).click(),
++        );
++        for (const [label, expected] of [
++          ["Requested", [docs, drive]],
++          ["Granted", [docs]],
++        ] as const) {
++          const values = yield* browser.use("Read the exact scope comparison", (page) => {
++            const detail = page
++              .locator("details")
++              .filter({ has: page.getByText("Access details", { exact: true }) });
++            return detail
++              .locator("dl > div")
++              .filter({ has: page.getByText(label, { exact: true }) })
++              .locator("dd li > span:last-child")
++              .allTextContents();
++          });
++          expect(values).toEqual(expected);
++        }
++        expect(
++          yield* browser.use("A known partial grant offers consent recovery", (page) =>
++            page.getByRole("link", { name: "Grant access again", exact: true }).isVisible(),
++          ),
++        ).toBe(true);
++        yield* browser.use("Explain permission selection before retrying", (page) =>
++          page
++            .getByText("On the consent screen, select every permission listed above.", {
++              exact: false,
++            })
++            .waitFor(),
++        );
++        const failed = yield* body(
++          Connection,
++          yield* api.request(actors.owner, "GET", `${prefix}/connections/${primary.id}`),
++        );
++        expect(failed.state).toMatchObject({
++          status: "pending",
++          failure: {
++            error: {
++              requestedScopes: [docs, drive],
++              grantedScopes: [docs],
++              missingScopes: [drive],
++              grantedScopesKnown: true,
++              scopeNamesOmitted: false,
++            },
++          },
++        });
++        yield* browser.checkpoint("Hosted operator-client refusal names exact missing access");
++        yield* issuer.configure({ omitScopes: true });
++        const unknown = yield* start;
++        yield* browser.use("An unreported grant needs diagnosis before retry", (page) =>
++          page
++            .goto(unknown.callbackPath)
++            .then(() =>
++              page
++                .getByText("The service did not report its granted permissions.", { exact: false })
++                .waitFor(),
++            ),
++        );
++        expect(
++          yield* browser.use("The hosted page withholds a blind retry", (page) =>
++            page.getByRole("link", { name: "Grant access again", exact: true }).count(),
++          ),
++        ).toBe(0);
++        const unreported = yield* body(
++          Connection,
++          yield* api.request(actors.owner, "GET", `${prefix}/connections/${primary.id}`),
++        );
++        expect(unreported.state.failure.error).toEqual({
++          requestedScopes: [docs, drive],
++          missingScopes: [docs, drive],
++          grantedScopesKnown: false,
++          scopeNamesOmitted: false,
++        });
++        yield* browser.checkpoint("Hosted unreported scopes stop blind retries");
++      }),
++    ),
++  );
++});
 diff --git a/packages/apps/package.json b/packages/apps/package.json
 index e51067d..5d80e1e 100644
 --- a/packages/apps/package.json
