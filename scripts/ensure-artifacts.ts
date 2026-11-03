@@ -27,8 +27,30 @@ const failureHeaders = {
   "x-ratelimit-reset": /^\d{1,10}$/,
 };
 
+async function failureBody(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) return;
+  const bytes = new Uint8Array(64 * 1024);
+  let length = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return JSON.parse(new TextDecoder().decode(bytes.subarray(0, length)));
+      // Stop at the ceiling without requesting another chunk just to discover EOF.
+      if (value.byteLength >= bytes.byteLength - length) {
+        void reader.cancel().catch(() => {});
+        return;
+      }
+      bytes.set(value, length);
+      length += value.byteLength;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function apiFailure(response: Response, message: string, body?: unknown): Promise<Error> {
-  const envelope: unknown = body ?? await response.json().catch(() => undefined);
+  const envelope: unknown = body ?? await failureBody(response).catch(() => undefined);
   const errors = typeof envelope === "object" && envelope !== null && "errors" in envelope
     ? envelope.errors : undefined;
   const codes = new Set<number>();

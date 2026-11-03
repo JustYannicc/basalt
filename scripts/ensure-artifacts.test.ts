@@ -232,6 +232,48 @@ test("invalid error bodies and header values cannot replace or contaminate the H
   });
 });
 
+test("oversized failure streams stop at 64 KiB and retain HTTP status and Ray", async () => {
+  const cap = 64 * 1024;
+  const ray = "0123456789abcdef-ABC";
+  const prefix = new TextEncoder().encode('{"errors":[{"code":10000}]}');
+  let consumed = 0;
+  let cancelled = false;
+  let requests = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const chunk = new Uint8Array(4096).fill(32);
+      if (consumed === 0) chunk.set(prefix);
+      consumed += chunk.byteLength;
+      controller.enqueue(chunk);
+      if (consumed === 1024 * 1024) controller.close();
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const api = cloudflareArtifactsApi("account", "fixture-token", async () => {
+    requests++;
+    return new Response(body, { status: 403, headers: { "cf-ray": ray } });
+  });
+  await assert.rejects(api.listNamespaces(), {
+    message: `Cloudflare Artifacts list failed with HTTP 403; diagnostics={"codes":[],"headers":{"cf-ray":"${ray}"}}`,
+  });
+  assert.equal(consumed, cap);
+  assert.equal(cancelled, true);
+  assert.equal(body.locked, false);
+  assert.equal(requests, 1);
+});
+
+test("Ray IDs with line breaks are omitted from failure diagnostics", async () => {
+  for (const ray of ["0123456789abcdef-ABC\n", "0123456789abcdef-ABC\r\n", "01234567\n89abcdef-ABC"]) {
+    const response = Response.json({ errors: [{ code: 10000 }] }, { status: 403 });
+    // Native Headers rejects or trims line breaks; inject a malformed header at the fetch boundary.
+    response.headers.get = name => name === "cf-ray" ? ray : null;
+    const api = cloudflareArtifactsApi("account", "fixture-token", async () => response);
+    await assert.rejects(api.listNamespaces(), {
+      message: 'Cloudflare Artifacts list failed with HTTP 403; diagnostics={"codes":[10000],"headers":{}}',
+    });
+  }
+});
+
 test("rejected API envelopes keep numeric codes without their messages", async () => {
   const api = cloudflareArtifactsApi("account", "fixture-token", async () => Response.json({
     result: null, success: false, errors: [{ code: 10000, message: "fixture-secret-do-not-log" }],
