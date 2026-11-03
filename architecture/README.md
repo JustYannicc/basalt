@@ -113,7 +113,7 @@ bun run architecture:test
 
 CI runs format and validation first, then generated element types and typechecking, then deployment regeneration with a clean-diff check and validation, then the fitness tests. Validation includes layout drift. The deploy workflow also regenerates element types before its existing typecheck.
 
-After the account owner enables Boat for public repositories, set repository variable `BASALT_CI_RUNNER_HEAVY=boat` to move 19 Linux Check executions to 4-vCPU runners; unset it or set `ubuntu-latest` to fall back immediately (the default); `check`, Windows packaging and other workflows keep their existing runners.
+After the account owner enables Boat for public repositories, set repository variable `BASALT_CI_RUNNER_HEAVY=boat` to move 19 Linux Check executions to 4-vCPU runners; unset it or set `ubuntu-latest` to fall back immediately (the default); `check`, Windows packaging and other workflows keep their existing runners; `BASALT_CI_BOAT_MAX_PARALLEL` sets identity matrix parallelism on Boat (positive integer, default `1`), while the hosted fallback keeps `8`.
 
 Pure brand data uses `configuration "true"`; this is valid only for literal constant declarations. Host and SDK metadata use exact evidence keys on external adapters, while visible names stay in the domain language.
 

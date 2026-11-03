@@ -383,7 +383,7 @@ jobs:
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: ${{ startsWith(vars.BASALT_CI_RUNNER_HEAVY, 'boat') && 1 || 8 }}
+      max-parallel: ${{ startsWith(vars.BASALT_CI_RUNNER_HEAVY, 'boat') && fromJSON(vars.BASALT_CI_BOAT_MAX_PARALLEL || '1') || 8 }}
       matrix:
         include:
           - scope: diagnostics
