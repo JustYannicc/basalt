@@ -5,6 +5,7 @@ import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
 import { miroSource, withMiroCapabilities } from "./miro.ts";
+import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -48,6 +49,8 @@ export async function handleCatalog(
     return new Response(request.method === "HEAD" ? null : JSON.stringify(gitlabSource), { headers });
   if (relative === "apps/miro.json")
     return new Response(request.method === "HEAD" ? null : JSON.stringify(miroSource), { headers });
+  if (relative === "apps/vercel.json")
+    return new Response(request.method === "HEAD" ? null : JSON.stringify(vercelSource), { headers });
   const added = additions.find(item => relative === `apps/${encodeURIComponent(item.entry.id)}.json`);
   if (added) {
     if (!added.source)
@@ -65,7 +68,7 @@ export async function handleCatalog(
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
       ? JSON.stringify(withServiceIdentities(mergeFeed(
-          withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
+          withVercelSignIn(withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed)))),
           additions,
         )))
       : await response.text();
