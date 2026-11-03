@@ -171,8 +171,12 @@ export async function runMainCandidateCli(env = process.env, mode = process.argv
   // The walk only returns a commit that already meets every release check.
   const newer = requested && mode ? await newerMainCandidate(repository, token, requested, fetcher) : undefined;
   if (mode === "newer") lines = `newer=${newer ?? ""}\n`;
-  else if (newer) lines = mainCandidateOutputLines({ head: newer });
-  else lines = mainCandidateOutputLines(await validateMainCandidate(repository, token, env.MAIN_RELEASE_CHECKOUT ?? "", requested, fetcher));
+  else {
+    const candidate = newer ? { head: newer } : await validateMainCandidate(repository, token, env.MAIN_RELEASE_CHECKOUT ?? "", requested, fetcher);
+    lines = mainCandidateOutputLines(candidate);
+    if (env.GITHUB_STEP_SUMMARY)
+      appendFileSync(env.GITHUB_STEP_SUMMARY, `Selected release candidate: \`${candidate.head}\`.\n`, { encoding: "utf8", mode: 0o600 });
+  }
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, lines, { encoding: "utf8", mode: 0o600 });
   process.stdout.write(lines);
 }

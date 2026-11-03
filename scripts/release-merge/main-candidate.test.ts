@@ -174,3 +174,29 @@ test("the CLI writes the head release-main checks out and the newer commit Deplo
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the release summary names the selected candidate and leaves probes and refusals unreported", async (t) => {
+  t.mock.method(process.stdout, "write", () => true);
+  const root = mkdtempSync(join(tmpdir(), "basalt-main-summary-"));
+  try {
+    const summary = join(root, "summary");
+    const prior = "Earlier job notes.\n";
+    writeFileSync(summary, prior);
+    const env = {
+      GITHUB_TOKEN: "token", GITHUB_REF: "refs/heads/main", GITHUB_REPOSITORY: "owner/basalt",
+      MAIN_RELEASE_CANDIDATE: head, GITHUB_STEP_SUMMARY: summary,
+    };
+    await runMainCandidateCli(env, "newest", mainAfter([n1, n2], { [n2]: undefined }));
+    const selected = `${prior}Selected release candidate: \`${n1}\`.\n`;
+    assert.equal(readFileSync(summary, "utf8"), selected);
+
+    await runMainCandidateCli(env, "newer", mainAfter([n1]));
+    await assert.rejects(runMainCandidateCli(env, undefined, github(newer, [])), /no successful push Check/);
+    assert.equal(readFileSync(summary, "utf8"), selected);
+
+    await runMainCandidateCli(env, "newest", mainAfter([n1], { [n1]: undefined }));
+    assert.equal(readFileSync(summary, "utf8"), `${selected}Selected release candidate: \`${head}\`.\n`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
