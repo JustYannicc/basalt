@@ -1,5 +1,6 @@
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import { catalog } from "./settings.ts";
+import { onServedFramework } from "./framework.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
 import { slackSource, withSlackUserAuth } from "./slack.ts";
@@ -67,7 +68,7 @@ export async function handleCatalog(
           withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
           additions,
         ))
-      : await response.text();
+      : onServedFramework(await response.text());
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {
     return unavailable();
