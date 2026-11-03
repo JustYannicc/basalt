@@ -1,0 +1,572 @@
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index a4387f7..bc2a476 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -21,6 +21,7 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+ import { OAuthClientsDialog } from "./oauth-clients.tsx";
+ import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
+ import { inventoryAtom } from "../../contracts/organization.ts";
++import { catalogAtom } from "../../contracts/api.ts";
+ 
+ import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+ 
+@@ -88,7 +89,7 @@ export function AccountsPage({
+             ready !== undefined && (
+               <IdentityAppPicker bindings={bindings} inventory={inventory}>
+                 {({ app, requirement, slot, method, account, onDone, onPendingChange }) => (
+-                  <AppConnectionDialogContent
++                  <CatalogAppConnection
+                     key={`${app.id}:${slot}`}
+                     app={app}
+                     scope={requirement.scope}
+@@ -182,3 +183,11 @@ export function AccountsPage({
+     </>
+   );
+ }
++
++/** This page opens an app's connection outside the app, so it finds the app's catalog guidance. */
++function CatalogAppConnection(props: Parameters<typeof AppConnectionDialogContent>[0]) {
++  const catalog = useQuery(catalogAtom);
++  const copiedFrom = props.app.copiedFrom?.name;
++  const entry = Option.getOrUndefined(catalog.data)?.find((item) => item.package === copiedFrom);
++  return <AppConnectionDialogContent {...props} oauthDeferrals={entry?.oauthDeferrals} />;
++}
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+index 227a415..9a21631 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-setup.tsx
+@@ -387,6 +387,10 @@ function AppList({
+         cause: exit.cause,
+       });
+   };
++  const connectingEntry =
++    connection === undefined
++      ? undefined
++      : apps.find((item) => item.entry.id === connection.entry)?.entry;
+   const row = (item: SetupApp) => (
+     <AppRow
+       key={item.entry.id}
+@@ -442,9 +446,8 @@ function AppList({
+             slot={connection.slot}
+             requirement={connection.requirement}
+             method={connection.method}
+-            connectionNotices={
+-              apps.find((item) => item.entry.id === connection.entry)?.entry.connectionNotices ?? []
+-            }
++            connectionNotices={connectingEntry?.connectionNotices ?? []}
++            oauthDeferrals={connectingEntry?.oauthDeferrals}
+             redirectUri={redirectUri}
+             onPendingChange={setPending}
+             onSaved={() => setConnection(undefined)}
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+index 28e67e8..c2a89c0 100644
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -12,7 +12,7 @@ import { Effect, Option } from "effect";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { appAccessAtom } from "../../contracts/resource-access.ts";
+ import type { Provider, AccountRequirement, AccountScope, App } from "@executor-js/sdk";
+-import type { CatalogConnectionNotice } from "@executor-js/catalog/contracts";
++import type { CatalogConnectionNotice, CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
+ import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
+ import {
+   AppAccounts as SharedAccounts,
+@@ -323,6 +323,7 @@ export function AppAccounts({
+             requirement={connection.requirement}
+             method={connection.method}
+             connectionNotices={noticesFor(connection.requirement)}
++            oauthDeferrals={catalogEntry?.oauthDeferrals}
+             redirectUri={redirectUri}
+             account={connection.account}
+             unavailable={(method) =>
+@@ -368,6 +369,7 @@ export function AppConnectionDialogContent({
+   requirement,
+   method,
+   connectionNotices = [],
++  oauthDeferrals,
+   redirectUri,
+   account,
+   initialAccount,
+@@ -386,6 +388,8 @@ export function AppConnectionDialogContent({
+   readonly requirement: AccountRequirement;
+   readonly method: string;
+   readonly connectionNotices?: readonly CatalogConnectionNotice[] | undefined;
++  /** The catalog's guidance for methods with no automatic or registered OAuth client. */
++  readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
+   readonly redirectUri: string;
+   readonly onPendingChange: (pending: boolean) => void;
+   readonly onSaved: () => void;
+@@ -480,6 +484,7 @@ export function AppConnectionDialogContent({
+             slot={slot}
+             form={form}
+             unavailable={unavailable}
++            oauthDeferrals={oauthDeferrals}
+             checks={requirement.health === true}
+             onPendingChange={onPendingChange}
+             onSaved={onSaved}
+@@ -503,11 +508,13 @@ function AppConnectionFields({
+   site,
+   initialAccount,
+   unavailable,
++  oauthDeferrals,
+ }: {
+   /** Set when replacing this account's credentials rather than adding an account. */
+   readonly account?: AccountSummary | undefined;
+   readonly initialAccount?: AccountId | undefined;
+   readonly unavailable?: ((method: string) => string | undefined) | undefined;
++  readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
+   /** The slot's provider defines a check, so entered credentials can be validated. */
+   readonly checks: boolean;
+   readonly app: App;
+@@ -568,6 +575,7 @@ function AppConnectionFields({
+       redirectUri={form.redirectUri}
+       initialMethod={form.method}
+       unavailable={unavailable}
++      oauthDeferrals={oauthDeferrals}
+       submit={submit}
+       start={(input) =>
+         account !== undefined ||
+diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+index e3a9356..0071f18 100644
+--- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
+@@ -20,7 +20,8 @@ import { Link } from "@tanstack/react-router";
+ import { createContext, useContext, useEffect, useRef, useState } from "react";
+ import { Cause, Match, Option, Exit, Schema } from "effect";
+ import { Button } from "@executor-js/ui/components/button";
+-import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
++import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
++import type { CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { AccountForm } from "@executor-js/ui/dashboard/account-form";
+ import {
+@@ -64,12 +65,14 @@ export function ConnectionFields({
+   onSaved,
+   initialMethod,
+   manualClient,
++  oauthDeferrals,
+   onPendingChange,
+ }: {
+   readonly connection: HostedAccountConnection;
+   readonly onSaved: (account: Account) => void;
+   readonly initialMethod?: string | undefined;
+   readonly manualClient?: boolean | undefined;
++  readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
+   readonly onPendingChange?: (pending: boolean) => void;
+ }) {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+@@ -120,6 +123,7 @@ export function ConnectionFields({
+       redirectUri={connection.redirectUri}
+       initialMethod={initialMethod}
+       manualClient={manualClient}
++      oauthDeferrals={oauthDeferrals}
+       setupQuery={(method) =>
+         connectionOAuthSetupAtom({ organization, connection: connection.id, method })
+       }
+@@ -177,7 +181,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+   app,
+   interactive,
+   unavailable,
++  oauthDeferrals,
+ }: {
++  /** The catalog's guidance for methods with no automatic or registered OAuth client. */
++  readonly oauthDeferrals?: readonly CatalogOAuthDeferral[] | undefined;
+   /** The host's reason a method can't be connected here; such methods show greyed out. */
+   readonly unavailable?: ((method: string) => string | undefined) | undefined;
+   /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
+@@ -312,6 +319,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+               access={access}
+               disabled={disabled}
+               manualClient={manualClient}
++              deferral={oauthDeferral(oauthDeferrals, method)}
+               {...(account ? { account } : {})}
+               redirectUri={redirectUri}
+               onPendingChange={onPendingChange}
+diff --git a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+index c064042..65456f6 100644
+--- a/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
++++ b/apps/hosted/web/src/implementation/pages/connection-dialog.tsx
+@@ -208,6 +208,7 @@ function ResumedConnectionDetails({
+           <ConnectionFields
+             connection={connection}
+             manualClient={client === "change"}
++            oauthDeferrals={catalogEntry?.oauthDeferrals}
+             onPendingChange={onPendingChange}
+             onSaved={() => {
+               void navigate({
+diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+index 5f5c5d2..04cb3ea 100644
+--- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
++++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
+@@ -7,6 +7,8 @@ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identit
+ import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
+ import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
+ import { overviewAtom } from "../../contracts/api.ts";
++import { catalogAtom } from "../../contracts/onboarding.ts";
++import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { useAtomSet } from "@effect/atom-react";
+ import type { Atom } from "effect/reactivity";
+ import { Cause, Effect, Exit, Option, Schema } from "effect";
+@@ -22,7 +24,11 @@ import {
+ } from "@executor-js/sdk";
+ import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
+ import type { ConnectionGrant } from "@executor-js/local-server/account-connections";
+-import { OAuthFields as SharedFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
++import {
++  OAuthFields as SharedFields,
++  OAuthSetup,
++  oauthDeferral,
++} from "@executor-js/ui/dashboard/oauth-fields";
+ import type { appConnectionAtoms } from "../../contracts/app-connections.ts";
+ import {
+   startConnectionOAuthAtom,
+@@ -62,9 +68,20 @@ export function AppOAuthFields({
+   const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
+   const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
+   const reconnect = props.account !== undefined;
++  // Catalog guidance follows the catalog app this one was copied from.
++  const overview = useQuery(overviewAtom);
++  const catalog = useQuery(catalogAtom);
++  const copiedFrom = Option.getOrUndefined(overview.data)?.apps.find((item) => item.id === app)
++    ?.copiedFrom?.name;
++  const deferral = oauthDeferral(
++    Option.getOrUndefined(catalog.data)?.find((entry) => entry.package === copiedFrom)
++      ?.oauthDeferrals,
++    props.method,
++  );
+   const fields = (selection: IdentityConsentSelection) => (
+     <Fields
+       {...props}
++      deferral={deferral}
+       query={atoms.oauthSetup(props.method)}
+       Failure={Failure}
+       start={(client) =>
+@@ -127,6 +144,7 @@ export function LinkOAuthFields({
+ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+   provider,
+   account,
++  deferral,
+   onSaved,
+   onPendingChange,
+   access,
+@@ -136,6 +154,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+   start,
+   open,
+ }: FieldsProps & {
++  readonly deferral?: string | undefined;
+   readonly query: Parameters<typeof OAuthSetup>[0]["query"];
+   readonly Failure: ComponentType<FailureProps<E>>;
+   readonly start: (client: OAuthSubmission) => Promise<Exit.Exit<S, E>>;
+@@ -154,6 +173,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+           setupLoading={loading}
+           setupFailed={failed}
+           setupAction={action}
++          deferral={deferral}
+           access={access}
+           disabled={disabled}
+           onPendingChange={onPendingChange}
+diff --git a/e2e/support/public-catalogs.ts b/e2e/support/public-catalogs.ts
+index e8242a9..65e05b1 100644
+--- a/e2e/support/public-catalogs.ts
++++ b/e2e/support/public-catalogs.ts
+@@ -69,6 +69,10 @@ export const officialApps = {
+         message: "Use a workspace that has approved the app before signing in.",
+       },
+     ],
++    oauthDeferrals: [
++      { method: "anotherMethod", message: "This guidance belongs to another method." },
++      { method: "oauth", message: "Synthetic Tracker requires your own developer app for now." },
++    ],
+     source: "apps/synthetic-tracker.json",
+   },
+   mismatched: {
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 24aa102..e900e62 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3736,6 +3736,16 @@ export const scenarios = plan({
+       local: na("Local products have no operator OAuth clients."),
+     },
+   },
++  catalogOAuthDeferrals: {
++    fixtures: "actors",
++    file: "catalog-oauth-deferrals.spec.ts",
++    title: "Catalog OAuth deferrals appear only in Connect until a usable client is registered",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The shared Connect form is exercised through self-host."),
++      local: na("The shared OAuth fields are exercised through hosted catalog installation."),
++    },
++  },
+   catalogOAuthClients: {
+     fixtures: "actors",
+     file: "catalog-oauth-clients.spec.ts",
+diff --git a/e2e/tests/catalog-oauth-deferrals.spec.ts b/e2e/tests/catalog-oauth-deferrals.spec.ts
+new file mode 100644
+index 0000000..21ed999
+--- /dev/null
++++ b/e2e/tests/catalog-oauth-deferrals.spec.ts
+@@ -0,0 +1,146 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { officialApps } from "../support/public-catalogs.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Catalog = Schema.Array(
++  Schema.Struct({
++    id: Schema.String,
++    oauthDeferrals: Schema.optional(
++      Schema.Array(
++        Schema.Struct({
++          method: Schema.String,
++          message: Schema.String,
++        }),
++      ),
++    ),
++  }),
++);
++
++layer(HostedLive, { excludeTestServices: true })("Catalog OAuth deferrals", (it) => {
++  it.effect(scenarios.catalogOAuthDeferrals.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const entries = yield* body(
++          Catalog,
++          yield* api.request(actors.owner, "GET", "/api/catalog"),
++        );
++        expect(
++          entries.find((entry) => entry.id === officialApps.tracker.id)?.oauthDeferrals,
++        ).toEqual(officialApps.tracker.oauthDeferrals);
++        const installed = yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++          entry: officialApps.tracker.id,
++          name: `Tracker guidance ${randomUUID().slice(0, 8)}`,
++        });
++        expect(installed.status, JSON.stringify(installed.body)).toBe(200);
++        const app = yield* body(Resource, installed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open Add app", (page) =>
++          page.goto(`/org/${actors.organization.slug}/apps/add`),
++        );
++        yield* browser.use("Wait for the catalog row", (page) =>
++          page.locator(".catalog-row", { hasText: officialApps.tracker.name }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Deferrals stay out of catalog cards", (page) =>
++            page.getByText(officialApps.tracker.oauthDeferrals[1].message, { exact: true }).count(),
++          ),
++        ).toBe(0);
++
++        const open = browser.use("Open installed app Connect", (page) =>
++          page
++            .goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`)
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            ),
++        );
++        yield* open;
++        yield* browser.use("Wait for resolved client setup", (page) =>
++          page
++            .getByRole("dialog")
++            .getByRole("button", { name: "Register OAuth client", exact: true })
++            .waitFor(),
++        );
++        yield* browser.use("Wait for dialog motion to settle", (page) =>
++          page.waitForFunction(() =>
++            document.getAnimations().every((animation) => animation.playState !== "running"),
++          ),
++        );
++        yield* browser.checkpoint("Catalog OAuth missing-client guidance");
++        expect(
++          yield* browser.use(
++            "The exact method's deferral replaces the generic explanation",
++            (page) => page.getByRole("dialog").innerText(),
++          ),
++        ).toContain(officialApps.tracker.oauthDeferrals[1].message);
++        expect(
++          yield* browser.use("Other methods' guidance stays hidden", (page) =>
++            page.getByRole("dialog").innerText(),
++          ),
++        ).not.toContain(officialApps.tracker.oauthDeferrals[0].message);
++        yield* browser.use("Open Advanced client choices", (page) =>
++          page.getByRole("dialog").locator("summary").filter({ hasText: "Advanced" }).click(),
++        );
++        yield* browser.use("Keep the personal developer app choice", (page) =>
++          page
++            .getByRole("dialog")
++            .getByRole("checkbox", { name: "Use your own Synthetic Tracker app for this account" })
++            .click(),
++        );
++        yield* browser.use("Manual client entry remains available", (page) =>
++          page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor(),
++        );
++        yield* browser.use("Wait for dialog motion to settle", (page) =>
++          page.waitForFunction(() =>
++            document.getAnimations().every((animation) => animation.playState !== "running"),
++          ),
++        );
++        yield* browser.checkpoint("Catalog OAuth personal client guidance");
++        const registered = yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
++          issuer: "https://tracker.example.test/oauth/token",
++          clientId: "synthetic-guidance-client",
++          clientSecret: "synthetic-guidance-secret",
++        });
++        expect(registered.status, JSON.stringify(registered.body)).toBe(200);
++        const client = yield* body(Schema.Struct({ client: Resource }), registered);
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "DELETE", `${prefix}/oauth-clients/${client.client.id}`)
++            .pipe(Effect.orDie),
++        );
++        yield* open;
++        yield* browser.use("A registered client restores Connect", (page) =>
++          page
++            .getByRole("dialog")
++            .getByRole("button", { name: "Connect Synthetic Tracker", exact: true })
++            .waitFor(),
++        );
++        expect(
++          yield* browser.use("Working client suppresses the deferral", (page) =>
++            page.getByRole("dialog").innerText(),
++          ),
++        ).not.toContain(officialApps.tracker.oauthDeferrals[1].message);
++        yield* browser.use("Wait for dialog motion to settle", (page) =>
++          page.waitForFunction(() =>
++            document.getAnimations().every((animation) => animation.playState !== "running"),
++          ),
++        );
++        yield* browser.checkpoint("Catalog OAuth registered client");
++      }),
++    ),
++  );
++});
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+index ae70d6d..cbe399e 100644
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -22,6 +22,13 @@ export const CatalogAuth = Schema.Struct({
+ });
+ export type CatalogAuth = typeof CatalogAuth.Type;
+ 
++/** Guidance used only when a connection has no automatic or registered OAuth client. */
++export const CatalogOAuthDeferral = Schema.Struct({
++  method: Schema.NonEmptyString,
++  message: Schema.NonEmptyString,
++});
++export type CatalogOAuthDeferral = typeof CatalogOAuthDeferral.Type;
++
+ /** Operator-provided context shown before connecting a catalog app's provider. */
+ export const CatalogConnectionNotice = Schema.Struct({
+   /** Matches the provider definition's display name, not its content-derived provider ID. */
+@@ -41,6 +48,7 @@ export const CatalogEntry = Schema.Struct({
+   name: Schema.NonEmptyString,
+   description: Schema.String,
+   auth: Schema.Array(CatalogAuth),
++  oauthDeferrals: Schema.optionalKey(Schema.Array(CatalogOAuthDeferral)),
+   category: Schema.optionalKey(Schema.String),
+   icons: Schema.Array(CatalogIcon),
+   /** Optional operator notes; they do not change the installed app or its provider. */
+diff --git a/packages/catalog/src/contracts/index.ts b/packages/catalog/src/contracts/index.ts
+index ca61c33..8690e5d 100644
+--- a/packages/catalog/src/contracts/index.ts
++++ b/packages/catalog/src/contracts/index.ts
+@@ -3,6 +3,7 @@ export {
+   CatalogAuth,
+   CatalogEntry,
+   CatalogConnectionNotice,
++  CatalogOAuthDeferral,
+   CatalogFeed,
+   CatalogFeedSource,
+   CatalogIcon,
+diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+index eb4caac..3422fe2 100644
+--- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
++++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
+@@ -3,6 +3,7 @@ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { Cause, Exit, Option, Redacted } from "effect";
+ import type { Account, OAuthClientId, OAuthConnectOptions } from "@executor-js/sdk";
++import type { CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
+ import type { OAuthSubmission } from "../../contracts/credentials.ts";
+ import type { FailureProps, Query } from "../../contracts/dashboard.ts";
+ import type { ComponentType, ReactNode } from "react";
+@@ -73,6 +74,12 @@ export function OAuthSetup<E>({
+   );
+ }
+ 
++/** The catalog's guidance for one sign-in method, matched by its exact method name. */
++export const oauthDeferral = (
++  deferrals: readonly CatalogOAuthDeferral[] | undefined,
++  method: string,
++): string | undefined => deferrals?.find((deferral) => deferral.method === method)?.message;
++
+ /** Where the connection's OAuth client comes from. */
+ type ClientChoice =
+   | { readonly kind: "current" }
+@@ -120,6 +127,7 @@ export function OAuthFields<A, E>({
+   setupFailed = false,
+   setupAction,
+   missingClient,
++  deferral,
+   disabled = false,
+ }: {
+   readonly providerName: string;
+@@ -148,6 +156,11 @@ export function OAuthFields<A, E>({
+    * the form says so, shows this instead of Connect, and keeps entering details under Advanced.
+    */
+   readonly missingClient?: ReactNode;
++  /**
++   * Operator guidance for this method. It stands in for the missing-client explanation only once
++   * setup offers no automatic, registered or current client.
++   */
++  readonly deferral?: string | undefined;
+ }) {
+   const brand = useProductBrand();
+   const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
+@@ -187,12 +200,18 @@ export function OAuthFields<A, E>({
+     : acceptsSecret
+       ? "client ID (and secret, if it has one)"
+       : "client ID";
++  const deferred =
++    !setupFailed && setup !== "unresolved" && choices.every((offered) => offered.kind === "manual")
++      ? deferral
++      : undefined;
+   // Client entry's one line of help; a failure, which carries its own recovery, replaces it.
+   const guidance = machine
+-    ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
+-    : setup !== "unresolved" && setup.mode === "client-required"
+-      ? `${brand.name} can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
+-      : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
++    ? `${deferred === undefined ? "" : `${deferred} `}Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
++    : deferred !== undefined
++      ? `${deferred} Create an OAuth app in ${providerName} with this redirect URL, then enter its ${details}.`
++      : setup !== "unresolved" && setup.mode === "client-required"
++        ? `${brand.name} can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
++        : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
+   const [clientId, setClientId] = useState("");
+   const [clientSecret, setClientSecret] = useState("");
+   const [pending, setPending] = useState(false);
+@@ -335,8 +354,8 @@ export function OAuthFields<A, E>({
+         <>
+           {missing && !manual && (
+             <p className="text-[13px] leading-5 text-pretty text-muted-foreground">
+-              No OAuth client is registered for {providerName}, and {brand.name} doesn’t provide
+-              one.
++              {deferred ??
++                `No OAuth client is registered for ${providerName}, and ${brand.name} doesn’t provide one.`}
+             </p>
+           )}
+           {manual && (

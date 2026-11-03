@@ -1,4 +1,6 @@
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
+import { oauthReviews, withOAuthDeferrals } from "./oauth-policy.ts";
+import oauthReviewData from "./oauth-reviews.json" with { type: "json" };
 import { catalog } from "./settings.ts";
 import { atlassianAddition } from "./atlassian/index.ts";
 import { gitlabSource, withGitLabInstances } from "./gitlab.ts";
@@ -12,6 +14,7 @@ import { zendeskMarketplaceMetadata, type ZendeskMarketplaceMetadata } from "./z
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
 const sourceAdditions: readonly Addition[] = [aws, ...providerApps];
+const reviewedOAuth = oauthReviews(oauthReviewData);
 const headers = {
   "Content-Type": "application/json; charset=utf-8",
   "Access-Control-Allow-Origin": "*",
@@ -63,10 +66,10 @@ export async function handleCatalog(
     if (response.status === 404) return new Response(null, { status: 404, headers });
     if (!response.ok || response.status !== 200) return unavailable();
     const body = relative === "index.json"
-      ? JSON.stringify(mergeFeed(
+      ? JSON.stringify(withOAuthDeferrals(mergeFeed(
           withMiroCapabilities(withSlackUserAuth(withGitLabInstances(await response.json() as Feed))),
           additions,
-        ))
+        ), reviewedOAuth))
       : await response.text();
     return new Response(request.method === "HEAD" ? null : body, { headers });
   } catch {

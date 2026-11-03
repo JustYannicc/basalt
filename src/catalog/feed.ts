@@ -6,6 +6,7 @@ export interface FeedEntry {
   name: string;
   description: string;
   auth: unknown[];
+  oauthDeferrals?: readonly { method: string; message: string }[];
   icons: { src: string; [key: string]: unknown }[];
   source: string;
   [key: string]: unknown;
