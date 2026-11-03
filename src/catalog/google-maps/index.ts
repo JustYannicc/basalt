@@ -1,22 +1,18 @@
 import type { Addition, FeedEntry } from "../feed.ts";
 import official from "./source.json" with { type: "json" };
 import hostedRoutes from "./hosted-routes.source.json" with { type: "json" };
+import { googleMapsLogo } from "./logo.ts";
 import { hostedRoutesCatalogReference } from "./provider.ts";
-
-const iconModule = official.files.find((file) => file.path === "icon.ts")?.content;
-const icons = JSON.parse(iconModule?.match(/=\s*(\[[\s\S]*\]);?\s*$/)?.[1] ?? "null") as FeedEntry["icons"];
-if (!Array.isArray(icons) || icons.some((icon) => typeof icon.src !== "string"))
-  throw new Error("The pinned Google Maps icons are invalid.");
 
 const entry: FeedEntry = {
   id: "google-maps",
   package: official.package,
   name: "Google Maps",
   description:
-    "Search places, geocode addresses, compute routes, and look up weather, air quality, pollen, solar, elevation and time zones with Google Maps Platform.",
+    "Find places, plan routes, check addresses, and look up weather, air quality, elevation and time zones.",
   category: "developer tools",
   auth: [{ method: "apiKey", kind: "secrets", label: "Maps Platform API key" }],
-  icons,
+  icons: [{ src: googleMapsLogo, mimeType: "image/png" }],
   source: "apps/google-maps.json",
 };
 
