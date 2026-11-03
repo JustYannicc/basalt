@@ -56,6 +56,7 @@ function reviewFor(inventory: BackupInventory, history: BackupDeployment[]) {
     branches: inventory.branches.map(({ branch }) => ({
       branch: branch.name, latestMigrationRecoveryBackupId: `backup-${branch.name}-13`,
       pinnedBackupIds: [`backup-${branch.name}-12`], restoreDependentBackupIds: [`backup-${branch.name}-14`],
+      evidenceDigests: { latestMigration: "a".repeat(64), pins: "b".repeat(64), restoreDependencies: "c".repeat(64) },
     })),
   };
 }
@@ -76,6 +77,33 @@ test("retirement requires both age and count and preserves reviewed and provider
   inventory.branches[0]!.backups[10]!.created_at = new Date(now - 30 * day).toISOString();
   const atBoundary = backupRetirementReport(inventory, history, now, reviewFor(inventory, history));
   assert.ok(atBoundary.backups.find(item => item.id === "backup-main-11")!.reasons.includes("not-older-than-30-days"));
+});
+
+test("unverified release names cannot displace the tenth verified release backup", () => {
+  const { inventory, history } = fixture();
+  inventory.branches[0]!.backups.push({
+    ...inventory.branches[0]!.backups[0]!, id: "unknown-newer", name: "basalt-release-v2-" + "x".repeat(43),
+    created_at: new Date(now - 40 * day).toISOString(),
+  });
+  const result = backupRetirementReport(inventory, history, now, reviewFor(inventory, history));
+  const tenth = result.backups.find(item => item.id === "backup-main-10")!;
+  assert.equal(tenth.completedReleaseRank, 10);
+  assert.equal(tenth.decision, "keep");
+  assert.equal(result.backups.find(item => item.id === "unknown-newer")!.decision, "keep");
+});
+
+test("external keep evidence is required and the exact review is hashed into the output", () => {
+  const { inventory, history } = fixture();
+  const review = reviewFor(inventory, history);
+  const result = backupRetirementReport(inventory, history, now, review);
+  assert.equal(result.keepReviewDigest, backupSnapshotDigest(review));
+  const changed = { ...review, branches: [{ ...review.branches[0]!, evidenceDigests: { ...review.branches[0]!.evidenceDigests, pins: "d".repeat(64) } }] };
+  assert.notEqual(backupRetirementReport(inventory, history, now, changed).keepReviewDigest, result.keepReviewDigest);
+  for (const evidenceDigests of [undefined, {}, { latestMigration: "a".repeat(64), pins: "", restoreDependencies: "c".repeat(64) }]) {
+    const held = backupRetirementReport(inventory, history, now, { ...review, branches: [{ ...review.branches[0], evidenceDigests }] });
+    assert.deepEqual(held.candidates, []);
+    assert.equal(held.keepReviewDigest, null);
+  }
 });
 
 test("the current rollback target after roll-forward is selected through releaseBackup, even outside the newest ten", () => {

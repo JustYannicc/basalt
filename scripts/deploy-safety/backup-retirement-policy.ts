@@ -15,6 +15,7 @@ type BranchReview = {
   latestMigrationRecoveryBackupId: string;
   pinnedBackupIds: string[];
   restoreDependentBackupIds: string[];
+  evidenceDigests: { latestMigration: string; pins: string; restoreDependencies: string };
 };
 
 const day = 86_400_000;
@@ -26,8 +27,10 @@ export function backupRetirementReport(inventory: BackupInventory, history: Back
   const ledgerDigest = backupSnapshotDigest(history);
   const holds: string[] = [];
   let reviews: BranchReview[] = [];
+  let keepReviewDigest: string | null = null;
   try {
     reviews = parseKeepReview(keepReview, inventory, inventoryDigest, ledgerDigest, now);
+    keepReviewDigest = backupSnapshotDigest(keepReview);
   } catch (error) {
     if (!(error instanceof SafetyGateError)) throw error;
     holds.push(error.message);
@@ -68,7 +71,17 @@ export function backupRetirementReport(inventory: BackupInventory, history: Back
   const rows = inventory.branches.flatMap(({ branch, backups }) => {
     const branchHolds: string[] = [];
     if (!branch.production || branch.kind !== "postgresql" || !branch.ready || branch.state !== "ready") branchHolds.push("production-branch-unverified");
-    const completed = backups.filter(backup => backup.name.startsWith("basalt-release-") && backup.state === "success" && backup.deleted_at === null);
+    const ownershipVerified = (backup: BackupRecord) => {
+      const reference = references.get(key(branch.name, backup.name));
+      try {
+        return !!reference && !!readBackupName(backup.name) && verifyBackupMetadata(backup.name, reference.metadata).scope.branch === branch.name &&
+          isObject(backup.database_branch) && backup.database_branch.name === branch.name;
+      } catch (error) {
+        if (!(error instanceof SafetyGateError)) throw error;
+        return false;
+      }
+    };
+    const completed = backups.filter(backup => ownershipVerified(backup) && backup.state === "success" && backup.deleted_at === null);
     if (completed.some(backup => !validTime(backup.created_at, now))) branchHolds.push("completed-release-order-unverified");
     completed.sort((left, right) => Date.parse(String(right.created_at)) - Date.parse(String(left.created_at)) || left.id.localeCompare(right.id));
     const ranks = new Map(completed.map((backup, index) => [backup.id, index + 1]));
@@ -112,7 +125,7 @@ export function backupRetirementReport(inventory: BackupInventory, history: Back
     observedAt: new Date(now).toISOString(),
     scope: { organization: inventory.organization, database: inventory.database },
     policy: { olderThanDays: 30, keepNewestCompletedReleaseBackups: 10 },
-    inventoryDigest, ledgerDigest, holds: [...new Set(holds)].sort(), candidates, backups: rows,
+    inventoryDigest, ledgerDigest, keepReviewDigest, holds: [...new Set(holds)].sort(), candidates, backups: rows,
   };
 }
 
@@ -134,15 +147,22 @@ function parseKeepReview(value: unknown, inventory: BackupInventory, inventoryDi
     const latestMigrationRecoveryBackupId = stringField(item.latestMigrationRecoveryBackupId, "latest-migration-recovery-backup-required");
     const pinnedBackupIds = ids(item.pinnedBackupIds);
     const restoreDependentBackupIds = ids(item.restoreDependentBackupIds);
+    const evidence = record(item.evidenceDigests, "keep-review-source-evidence-required");
+    const evidenceDigests = { latestMigration: digest(evidence.latestMigration), pins: digest(evidence.pins), restoreDependencies: digest(evidence.restoreDependencies) };
     if ([latestMigrationRecoveryBackupId, ...pinnedBackupIds, ...restoreDependentBackupIds].some(id => !snapshot.backups.some(backup => backup.id === id)))
       throw new SafetyGateError("keep-review-backup-id-outside-snapshot");
-    return { branch, latestMigrationRecoveryBackupId, pinnedBackupIds, restoreDependentBackupIds };
+    return { branch, latestMigrationRecoveryBackupId, pinnedBackupIds, restoreDependentBackupIds, evidenceDigests };
   });
 }
 
 function ids(value: unknown): string[] {
   if (!Array.isArray(value) || value.some(id => typeof id !== "string" || !id.trim()) || new Set(value).size !== value.length)
     throw new SafetyGateError("keep-review-backup-ids-invalid");
+  return value;
+}
+
+function digest(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) throw new SafetyGateError("keep-review-source-evidence-digest-invalid");
   return value;
 }
 

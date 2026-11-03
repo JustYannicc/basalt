@@ -202,7 +202,7 @@ node scripts/deploy-safety/backup-retirement.ts \
   --keep-review /private/path/keep-review.json > /private/path/reviewed-backup-report.json
 ```
 
-The first run keeps everything. Review its inventory and ledger digests, then supply a private keep-review file. For every production branch, name the latest production migration's recovery backup and list explicit pins and restore-dependent backups. Those references can exist outside the release ledger, so the report cannot infer their absence. Empty pin and restore lists mean the operator verified there are none. Copy the digests from the first report; changed inventory or history invalidates the review.
+The first run keeps everything. Review its inventory and ledger digests, then supply a private keep-review file. For every production branch, name the latest production migration's recovery backup and list explicit pins and restore-dependent backups. Those references can exist outside the release ledger, so the report cannot infer their absence. Empty pin and restore lists mean the operator verified there are none. Record the SHA-256 of the private evidence checked for each external decision. Copy the inventory and ledger digests from the first report; changed inventory or history invalidates the review. The output's `keepReviewDigest` binds the exact review, including its evidence digests. The operator remains responsible for checking those external sources; a hash records which evidence was reviewed.
 
 ```json
 {
@@ -215,7 +215,12 @@ The first run keeps everything. Review its inventory and ledger digests, then su
     "branch": "main",
     "latestMigrationRecoveryBackupId": "EXACT_BACKUP_ID",
     "pinnedBackupIds": [],
-    "restoreDependentBackupIds": []
+    "restoreDependentBackupIds": [],
+    "evidenceDigests": {
+      "latestMigration": "SHA256_OF_PRIVATE_MIGRATION_EVIDENCE",
+      "pins": "SHA256_OF_PRIVATE_PIN_INVENTORY",
+      "restoreDependencies": "SHA256_OF_PRIVATE_RESTORE_EVIDENCE"
+    }
   }]
 }
 ```
