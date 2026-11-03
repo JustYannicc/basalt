@@ -5,8 +5,8 @@ import { ProviderResets } from "./reset-provider.ts";
 import { ResetRedemption, type ActionStorage } from "./reset-redemption.ts";
 import type { QuotaCollection } from "./quota-collection.ts";
 
-export type AccountAction = "refresh" | "pause" | "resume" | "cooldown/clear" | "resets" | "resets/use";
-export const accountActionPath = /^\/accounts\/([^/]+)\/(refresh|pause|resume|cooldown\/clear|resets(?:\/use)?)$/;
+export type AccountAction = "refresh" | "pause" | "resume" | "cooldown/clear" | "resets" | "resets/use" | "resets/attempt";
+export const accountActionPath = /^\/accounts\/([^/]+)\/(refresh|pause|resume|cooldown\/clear|resets(?:\/(?:use|attempt))?)$/;
 
 export class AccountActions {
   private queue = new Map<string, Promise<unknown>>();
@@ -58,6 +58,7 @@ export class AccountActions {
       return json({ cleared: result.cleared });
     }
     if (provider !== "codex" && provider !== "claude") return fail(400, "unknown_provider", "This provider does not support banked resets.");
+    if (action === "resets/attempt") return json(await this.redemption.read(id));
     const resets = new ProviderResets(this.client, id, provider, this.now);
     if (action === "resets") return json(await resets.credits(signal));
     let body: unknown;

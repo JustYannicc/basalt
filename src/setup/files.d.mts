@@ -16,6 +16,7 @@ export interface SetupOptions {
   brand: SetupBrand;
   credentials?: SetupCredentials;
   clients?: SetupClients;
+  replaceMcp?: Partial<Record<"claude" | "codex", string[]>>;
   undo?: boolean;
   expectedRevision?: string;
 }

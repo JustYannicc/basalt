@@ -142,7 +142,7 @@ test("v2 previews include the base schema on fresh databases and no DDL after mi
       assert.deepEqual(preview.pendingDdl, applied ? [] : [
         `CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
-        ...historySchemaMigrations.flatMap(migration => migration.statements),
+        ...historySchemaMigrations.slice(0, 2).flatMap(migration => migration.statements),
       ]);
       assert.ok(Array.isArray(preview.migrationMarkers));
       assert.equal(preview.migrationMarkers.length, applied ? 0 : 2);

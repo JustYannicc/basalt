@@ -48,10 +48,34 @@ const typedColumns = `id char(64), source char(64), source_record char(64), time
   latency_ms bigint, failed boolean, status_code smallint, cost numeric(28,12), currency varchar(16),
   cost_basis varchar(32), price_version char(64), original_price_rule varchar(1024), price_snapshot jsonb, attribution varchar(32)`;
 
-export async function existingRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false): Promise<Set<string>> {
+export async function existingRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false, strictContent = false): Promise<Set<string>> {
   if (records.length > historyBatchSize) throw new Error("Model usage batch exceeds its limit");
   if (!records.length) return new Set();
-  const result = await db.query(`SELECT id, source, source_record, pool FROM basalt_model_requests WHERE id = ANY($1::text[])`,
+  if (strictContent) {
+    const incoming = new Map<string, string>();
+    for (const row of records) {
+      const value = JSON.stringify(recordValues(row));
+      if (incoming.has(row.id) && incoming.get(row.id) !== value) throw new HistoryConflict();
+      incoming.set(row.id, value);
+    }
+    const appAttribution = await appAttributionReady(db);
+    if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null)) throw new HistoryConflict();
+    const selected = columns + (appAttribution ? ", app_id, requirement" : "");
+    const types = typedColumns + (appAttribution ? ", app_id varchar(256), requirement varchar(64)" : "");
+    const names = selected.split(",").map((name) => name.trim());
+    const conflicts = await db.query(`SELECT incoming.id FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
+      CROSS JOIN LATERAL (SELECT ${selected} FROM basalt_model_requests
+        WHERE id=incoming.id LIMIT 1) AS saved
+      WHERE ROW(${names.map((name) => `saved.${name}`).join(",")})
+        IS DISTINCT FROM ROW(${names.map((name) => `incoming.${name}`).join(",")}) LIMIT 1`,
+    [JSON.stringify(records.map((row) => recordValues(row, appAttribution)))]);
+    if (conflicts.rows.length) throw new HistoryConflict();
+  }
+  // Per-ID lateral lookups prune hash partitions and cannot turn a small import into a table scan.
+  const result = await db.query(`SELECT saved.id,saved.source,saved.source_record,saved.pool
+    FROM unnest($1::char(64)[]) AS incoming(id)
+    CROSS JOIN LATERAL (SELECT id,source,source_record,pool FROM basalt_model_requests
+      WHERE id=incoming.id LIMIT 1) AS saved`,
     [records.map((row) => row.id)]);
   const byId = new Map(records.map((row) => [row.id, row]));
   for (const saved of result.rows) {
@@ -64,8 +88,8 @@ export async function existingRequests(db: HistoryDatabase, records: readonly Mo
 }
 
 /** The caller owns the transaction, including its source cursor or import receipt. */
-export async function insertRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false): Promise<number> {
-  await existingRequests(db, records, preserveOriginalAttribution);
+export async function insertRequests(db: HistoryDatabase, records: readonly ModelRequest[], preserveOriginalAttribution = false, strictContent = false): Promise<number> {
+  await existingRequests(db, records, preserveOriginalAttribution, strictContent);
   if (!records.length) return 0;
   const appAttribution = await appAttributionReady(db);
   if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
@@ -76,7 +100,7 @@ export async function insertRequests(db: HistoryDatabase, records: readonly Mode
     SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
     ON CONFLICT (id) DO NOTHING RETURNING id`, [JSON.stringify(records.map((row) => recordValues(row, appAttribution)))]);
   // Repeat the ownership check after ON CONFLICT waits for a concurrent import to commit.
-  await existingRequests(db, records, preserveOriginalAttribution);
+  await existingRequests(db, records, preserveOriginalAttribution, strictContent);
   return result.rowCount ?? result.rows.length;
 }
 
