@@ -1,5 +1,6 @@
 import type { Addition } from "../feed.ts";
 import source from "./source.json" with { type: "json" };
+import { atlassianIcons } from "./logo.ts";
 
 /** The app is source data served by the Catalog Worker, never imported by the tools API. */
 export function atlassianAddition(): Addition {
@@ -9,9 +10,9 @@ export function atlassianAddition(): Addition {
       package: source.package,
       name: "Atlassian",
       description:
-        "Jira, service management and Confluence reads and writes with your own Atlassian account.",
+        "Search, create and update Jira issues, service desk requests and Confluence pages with your Atlassian account.",
       auth: [{ method: "oauth", kind: "oauth2" }],
-      icons: [],
+      icons: [...atlassianIcons],
       source: "apps/atlassian.json",
     },
     source,
