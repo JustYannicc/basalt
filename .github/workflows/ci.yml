@@ -337,6 +337,38 @@ jobs:
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
           if-no-files-found: warn
+  compiler-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - name: Build the isolated compiler test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the scenarios' browser engine
+        working-directory: .upstream
+        run: bunx playwright install --with-deps chromium
+      - name: Verify a compiler deadline retains its phase trail
+        timeout-minutes: 5
+        working-directory: .upstream
+        run: bun run e2e:cloud --test-name '^Cloud deploys fail promptly when the compiler does not answer' --workers 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compiler-diagnostics-e2e
+          include-hidden-files: true
+          path: |
+            .upstream/.local/e2e/**/results.json
+            .upstream/.local/e2e/**/cloud.log
+            .upstream/.local/e2e/**/report/**
+          if-no-files-found: warn
   human-in-the-loop:
     runs-on: ubuntu-latest
     timeout-minutes: 15

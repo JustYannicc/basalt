@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compiler-phase-diagnostics",
+  "file": "0113-compiler-phase-diagnostics.patch",
+  "content_sha256": "83671521eeadc89d5a44a11765085f22efe0e36be844629b5d59fa41cbac5561",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
