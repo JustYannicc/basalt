@@ -47,6 +47,12 @@ import { forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { captureError } from "../telemetry/sentry.ts";
+import { brand } from "../../brand.ts";
+import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
+import { importRemovalPath } from "./import-removal/contract.ts";
+import { ImportRemoval } from "./import-removal/operation.ts";
+import { handleImportRemoval } from "./import-removal/http.ts";
+import { removalSnapshot } from "./import-removal/snapshot.ts";
 
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv {
@@ -74,6 +80,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private memberships: NativeMemberships;
   private modelStreams = new NativeStreams();
   private protection: RuntimeProtection;
+  private importRemoval: ImportRemoval;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
@@ -174,6 +181,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         if (alarm === null || alarm > at) await ctx.storage.setAlarm(at);
       },
     });
+    const database = new URL(env.POOL_DATABASE_URL);
+    this.importRemoval = new ImportRemoval({
+      read: selection => withHistoryDatabase(env.POOL_DATABASE_URL, db => removalSnapshot(db, selection)),
+      home: (path, init) => this.mirrorHome.response(path, init), storage: ctx.storage,
+      secret: env.POOL_APP_SIGNING_KEY, release: productionOpsRelease,
+      databaseOrigin: `${database.hostname}:${database.port || "5432"}${database.pathname}`,
+    });
   }
 
   private async managementReady(): Promise<void> {
@@ -223,6 +237,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname === importRemovalPath) return handleImportRemoval(request, this.importRemoval,
+      this.env.POOL_APP_SIGNING_KEY, `https://${brand.host}`);
     if (pathname === accountAcquisitionPath) return this.control.acquire(request);
     if (pathname === membershipPath) {
       try {
@@ -298,7 +314,7 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
-  if (pathname === appModelPath || pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
+  if (pathname === importRemovalPath || pathname === appModelPath || pathname === accountMirrorPath || pathname === nativeControlPath || pathname === nativeSessionPath) return singleton(env).fetch(request);
   if (pathname !== accountAcquisitionPath && pathname !== accessPath && pathname !== membershipPath && !isControlPath(pathname) && !isPublicModelPath(pathname) && !pathname.startsWith("/__setup/v1/")) {
     return new Response(null, { status: 404 });
   }

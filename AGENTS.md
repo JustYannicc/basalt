@@ -23,3 +23,5 @@ subset cannot retire a whole mixed carry; overlays need a reviewed manual retire
 
 Public commits, PRs, issues and comments must exclude preview hosts, private fork
 refs, local paths, thread links and personal data.
+
+Put a carry's durable constraint in its affected area file under `architecture/model/`; keep module descriptions about responsibilities, not carry summaries.
