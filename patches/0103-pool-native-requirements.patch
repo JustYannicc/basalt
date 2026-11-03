@@ -1,0 +1,270 @@
+diff --git a/e2e/support/pool-seed.ts b/e2e/support/pool-seed.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5b71fd1a0aae4c9ca304eeb349ececfcaab7075
+--- /dev/null
++++ b/e2e/support/pool-seed.ts
+@@ -0,0 +1,22 @@
++import { Schema } from "effect";
++
++export const PoolSeedFiles = Schema.Array(
++  Schema.Struct({ path: Schema.String, content: Schema.String }),
++);
++export const PoolSeedApp = Schema.Struct({
++  id: Schema.String,
++  activeVersion: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Record(
++      Schema.String,
++      Schema.Struct({
++        provider: Schema.String,
++        cardinality: Schema.String,
++        contributed: Schema.Boolean,
++      }),
++    ),
++  }),
++});
++// The released seed's declaration, before native slots were wired in. Keep its provider identity.
++export const legacyPoolRequirements =
++  'import { bearer, defineProvider, interactive, object, secrets, string, type InteractiveMethod } from "apps";\nimport { poolOrigin, productName } from "./deployment.ts";\nimport { providers } from "./providers.ts";\nimport { loginFileMethod } from "./sign-in.ts";\n\n// The tools service links this account for everyone when it installs a pool.\n// Its token works for this one pool only; the pool Worker holds the backend\'s key.\nconst pool = defineProvider({\n  name: `${productName} pool`,\n  hosts: [new URL(poolOrigin).host],\n  auth: {\n    token: secrets({\n      label: "Pool access",\n      provisioned: true,\n      fields: object({ token: string({ minLength: 1 }) }),\n      request: ({ token }) => bearer(token),\n    }),\n  },\n});\n\n// Each subscription the pool serves is an account here, connected from the app\'s Accounts tab.\n// One sign-in method per service the backend signs in, plus pasting a login file.\nconst subscription = defineProvider({\n  name: "Subscription",\n  auth: {\n    ...Object.fromEntries(providers.map(({ id, name }) => [id, interactive({ label: name })])),\n    [loginFileMethod]: interactive({ label: "Login file" }),\n  } as Readonly<Record<string, InteractiveMethod>>,\n});\n\nexport const requirements = { app: { accounts: { pool, subscriptions: subscription.many() } } };\n';
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 58cef1e884c105fa3fe76f824be96b5b988dd1e5..9719c2ab870c0767e111c3561209aa1c903bc009 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -8249,6 +8249,17 @@ export const scenarios = plan({
+       local: na("Uses hosted organization audiences and roles."),
+     },
+   },
++  poolSeedNativeUpgrade: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-seed-native-upgrade.spec.ts",
++    title: "pool seed upgrades add canonical native slots and preserve existing account links",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted organization account links."),
++      cloud: na("Uses runner-owned retained account fixtures on the full self-host product."),
++    },
++  },
+   poolSharing: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/pool-seed-native-upgrade.spec.ts b/e2e/tests/pool-seed-native-upgrade.spec.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff23f26445809ed23d3932ff30ce5436fe2dfa0b
+--- /dev/null
++++ b/e2e/tests/pool-seed-native-upgrade.spec.ts
+@@ -0,0 +1,168 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, FileSystem, Path, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++import {
++  PoolSeedFiles as Files,
++  PoolSeedApp as App,
++  legacyPoolRequirements as legacyRequirements,
++} from "../support/pool-seed.ts";
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool seed upgrade", (it) => {
++  it.effect(scenarios.poolSeedNativeUpgrade.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          fs = yield* FileSystem.FileSystem,
++          path = yield* Path.Path;
++        const directory = path.resolve("apps/hosted/cloud/.generated/pool-app");
++        const bundles = (yield* fs.readDirectory(directory)).filter((name) =>
++          /^pool-app-[a-f0-9]+\.json$/.test(name),
++        );
++        expect(bundles).toHaveLength(1);
++        const files = yield* fs
++          .readFileString(path.join(directory, bundles[0]!))
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Files))));
++        const previous = files.map((file) =>
++          file.path === "requirements.ts" ? { ...file, content: legacyRequirements } : file,
++        );
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const apps: string[] = [],
++          accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("start");
++            for (const app of apps) {
++              const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`);
++              expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++            }
++            for (const account of accounts) {
++              const removed = yield* api.request(
++                actors.owner,
++                "DELETE",
++                `${prefix}/accounts/${account}`,
++              );
++              expect(removed.status, JSON.stringify(removed.body)).toBe(200);
++            }
++          }).pipe(Effect.orDie),
++        );
++        const deploy = (name: string, source: typeof Files.Type) =>
++          Effect.gen(function* () {
++            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name,
++              files: source,
++            });
++            expect(response.status, JSON.stringify(response.body)).toBe(200);
++            const app = yield* body(App, response);
++            apps.push(app.id);
++            return app;
++          });
++        const old = yield* deploy("Retained pool seed", previous),
++          appPath = `${prefix}/apps/${old.id}`;
++        expect(Object.keys(old.requirements.accounts).sort()).toEqual(["pool", "subscriptions"]);
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        const rows = [
++          { slot: "pool", method: "token", fields: { token: "synthetic-retained-pool-token" } },
++          {
++            slot: "subscriptions",
++            method: "codex",
++            fields: { ref: "synthetic-retained-subscription" },
++          },
++        ];
++        for (const row of rows) {
++          const id = `acc_${randomUUID()}`;
++          accounts.push(id);
++          yield* legacyStorage([
++            {
++              sql: `insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,credential_generation,created_at)
++            select $1,owner,$2,$3,$4,$5,7,now() from executor_apps where id = $6`,
++              params: [
++                id,
++                old.requirements.accounts[row.slot]!.provider,
++                row.method,
++                row.slot,
++                { sealed: { id, value: row.fields } },
++                old.id,
++              ],
++            },
++            {
++              sql: `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id) values ($1,$2,$3,'personal',$3)`,
++              params: [id, actors.organization.id, viewer.userId],
++            },
++            {
++              sql: `insert into hosted_app_account_links (app,requirement,subject,account,linked_by) values ($1,$2,null,$3,$4)`,
++              params: [old.id, row.slot, id, viewer.userId],
++            },
++          ]);
++        }
++        yield* serverControl("start");
++        const links = () => api.request(actors.owner, "GET", `${appPath}/accounts/app`);
++        const before = yield* links();
++        expect(before.status).toBe(200);
++        for (const account of accounts) expect(JSON.stringify(before.body)).toContain(account);
++        const upgraded = yield* api.request(actors.owner, "POST", `${appPath}/deploy`, { files });
++        expect(upgraded.status, JSON.stringify(upgraded.body)).toBe(200);
++        const current = (yield* body(Schema.Struct({ app: App }), upgraded)).app;
++        expect(Object.keys(current.requirements.accounts).sort()).toEqual([
++          "anthropic",
++          "openai",
++          "pool",
++          "subscriptions",
++        ]);
++        expect(current.activeVersion).not.toBe(old.activeVersion);
++        for (const slot of ["pool", "subscriptions"])
++          expect(current.requirements.accounts[slot]).toEqual(old.requirements.accounts[slot]);
++        for (const lab of ["openai", "anthropic"]) {
++          const source = yield* fs
++            .readFileString(path.resolve(`../src/catalog/provider-apps/${lab}.json`))
++            .pipe(
++              Effect.flatMap(
++                Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ files: Files }))),
++              ),
++            );
++          const providerApp = yield* deploy(`Canonical ${lab}`, source.files);
++          expect(current.requirements.accounts[lab]).toMatchObject({
++            provider: providerApp.requirements.accounts[lab]!.provider,
++            cardinality: "many",
++            contributed: true,
++          });
++        }
++        const after = yield* links();
++        expect(after.status).toBe(200);
++        expect(after.body).toEqual(before.body);
++        for (let index = 0; index < rows.length; index++) {
++          const choices = yield* api.request(
++            actors.owner,
++            "GET",
++            `${appPath}/accounts/app/${rows[index]!.slot}`,
++          );
++          expect(choices.status, JSON.stringify(choices.body)).toBe(200);
++          expect(choices.body).toMatchObject({
++            accounts: expect.arrayContaining([
++              expect.objectContaining({
++                account: expect.objectContaining({ id: accounts[index] }),
++                linked: true,
++              }),
++            ]),
++          });
++          expect(
++            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[index]}`))
++              .status,
++          ).toBe(200);
++        }
++      }),
++    ),
++  );
++});
+diff --git a/packages/apps/src/implementation/connect.ts b/packages/apps/src/implementation/connect.ts
+index ef5ad59c36f12fc0e62b2ac12c3ea71860c31c2a..c4adfad75a173ea8e42ecbcac1192d347ef049bb 100644
+--- a/packages/apps/src/implementation/connect.ts
++++ b/packages/apps/src/implementation/connect.ts
+@@ -29,7 +29,13 @@ import type { Sql } from "../contracts/sql.ts";
+ 
+ type Slots<R extends AppRequirements> = RequirementSlots<R>["app"] & RequirementSlots<R>["user"];
+ type Methods<P> = P extends Provider<infer A> | ManyAccounts<infer A>
+-  ? { [K in keyof A & string]: A[K] extends InteractiveMethod ? K : never }[keyof A & string]
++  ? {
++      [K in keyof A & string]: A[K] extends InteractiveMethod
++        ? A[K] extends { readonly acquisition: "host" }
++          ? never
++          : K
++        : never;
++    }[keyof A & string]
+   : never;
+ type ConnectAccounts<S extends AccountSlots> = {
+   readonly [
+diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
+index b5ac5c6b1a81dab8daa5df620ec9955943b05acf..80f70c008d7e7bfda81ced2f050a5c23a00f2b58 100644
+--- a/packages/apps/src/implementation/provider.ts
++++ b/packages/apps/src/implementation/provider.ts
+@@ -27,10 +27,20 @@ export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
+ }): SecretsMethod<Fields> => new SecretsMethod(options);
+ 
+ /** Declare an app-acquired account without retaining any handlers on its provider. */
+-export const interactive = (options: {
++export function interactive(options: {
++  readonly label: string;
++  readonly acquisition: "host";
++}): InteractiveMethod & { readonly acquisition: "host" };
++export function interactive(options: {
++  readonly label: string;
++  readonly acquisition?: "host";
++}): InteractiveMethod;
++export function interactive(options: {
+   readonly label: string;
+   readonly acquisition?: "host";
+-}): InteractiveMethod => new InteractiveMethod(options);
++}): InteractiveMethod {
++  return new InteractiveMethod(options);
++}
+ 
+ /**
+  * The `oauth2()` form an author chose: client credentials or authorization code by `grant`, then

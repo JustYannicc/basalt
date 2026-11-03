@@ -1,6 +1,7 @@
 import { bearer, defineProvider, interactive, object, secrets, string, type InteractiveMethod } from "apps";
 import { poolOrigin, productName } from "./deployment.ts";
 import { providers } from "./providers.ts";
+import { providers as nativeProviders } from "../../src/pool/provider-accounts/definitions.ts";
 import { loginFileMethod } from "./sign-in.ts";
 
 // The tools service links this account for everyone when it installs a pool.
@@ -28,4 +29,13 @@ const subscription = defineProvider({
   } as Readonly<Record<string, InteractiveMethod>>,
 });
 
-export const requirements = { app: { accounts: { pool, subscriptions: subscription.many() } } };
+export const requirements = {
+  app: {
+    accounts: {
+      pool,
+      subscriptions: subscription.many(),
+      openai: nativeProviders.openai.many().contributed(),
+      anthropic: nativeProviders.anthropic.many().contributed(),
+    },
+  },
+};

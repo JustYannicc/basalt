@@ -67,6 +67,8 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
         // The Connect dialog offers one sign-in method per service in the provider table.
         if (name === "providers.ts")
           content = `export const providers: readonly { readonly id: string; readonly name: string; readonly site?: string }[] = ${JSON.stringify(providerTable(root))};\n`;
+        if (name === "requirements.ts")
+          content = content.replace('"../../src/pool/provider-accounts/definitions.ts"', '"./provider-definitions.ts"');
         if (name === "package.json") {
           const manifest = JSON.parse(content);
           manifest.dependencies = { ...manifest.dependencies, apps: framework.version };
