@@ -1,7 +1,8 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { GitHubApi } from "./github.ts";
-import { assertPatchManifestContentMatchesFiles, assertPatchManifestMatchesFiles, assertPoolCarryManifestContent, parsePatchManifestV3, patchManifestPath } from "./patch-registry.ts";
+import { assertPoolCarryManifestContent, patchManifestPath } from "./patch-registry.ts";
+import { materializePatchManifest } from "./patch-layout.ts";
 import type { PatchManifestV3 } from "./types.ts";
 
 const PATCH_FILE = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.patch$/;
@@ -15,14 +16,16 @@ export type PatchDecision = {
 };
 
 export function readPatchManifest(root: string): PatchManifestV3 {
-  const source = readFileSync(join(root, patchManifestPath), "utf8");
-  const manifest = parsePatchManifestV3(source);
-  assertPatchManifestMatchesFiles(manifest, activePatchFiles(root));
-  const contentByFile = Object.fromEntries(manifest.patches.map(({ file }) => [
-    file,
-    readFileSync(join(root, "patches", file)),
-  ]));
-  assertPatchManifestContentMatchesFiles(manifest, contentByFile);
+  const headerPath = join(root, patchManifestPath);
+  if (!lstatSync(headerPath).isFile()) throw new Error("Patch header must be a regular file");
+  const source = readFileSync(headerPath, "utf8");
+  const files = Object.fromEntries(readdirSync(join(root, "patches"))
+    .filter((file) => /\.(patch|json)$/.test(file)).map((file) => {
+      const path = join(root, "patches", file);
+      const regular = lstatSync(path).isFile();
+      return [file, { regular, content: regular ? readFileSync(path) : "" }];
+    }));
+  const manifest = materializePatchManifest(source, files);
   if (manifest.pool_carries) assertPoolCarryManifestContent(manifest, readFileSync(join(root, manifest.pool_carries.manifest)));
   return manifest;
 }

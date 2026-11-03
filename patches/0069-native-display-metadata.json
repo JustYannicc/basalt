@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-display-metadata",
+  "file": "0069-native-display-metadata.patch",
+  "content_sha256": "b2691cf776ee128eda7dbef94fe64a86f6f8fffaaadf11dfbbe5e8a78ddb8404",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

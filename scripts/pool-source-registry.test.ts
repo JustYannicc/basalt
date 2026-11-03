@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { test } from "node:test";
-import { parsePatchManifestV3 } from "./releases/patch-registry.ts";
+import { readPatchManifest } from "./releases/patches.ts";
+import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 const read = (path: string) => readFileSync(new URL(path, root));
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 test("pool carries bind the exact source, patch bytes and manual retirement proof", () => {
-  const registry = parsePatchManifestV3(read("scripts/releases/patches.json").toString());
+  const registry = readPatchManifest(fileURLToPath(root));
   assert.ok(registry.pool_carries);
   const bytes = read(registry.pool_carries.manifest);
   assert.equal(digest(bytes), registry.pool_carries.content_sha256);

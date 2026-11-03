@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloud-deployment",
+  "file": "0002-cloud-deployment.patch",
+  "content_sha256": "b76641ef06a5d4cfb06b9c269f684749d39a38f3ebd3b9a85715dcf8549127e1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

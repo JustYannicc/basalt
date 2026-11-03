@@ -1,0 +1,9 @@
+{
+  "identity": "executor-preview-auth",
+  "file": "0019-preview-auth.patch",
+  "content_sha256": "f804fdc679e90fff242fb6cec9fd91d4383099fdaaa261d60a3260fad48aacbd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

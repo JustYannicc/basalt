@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-connect-pool-setup",
+  "file": "0048-connect-pool-setup.patch",
+  "content_sha256": "5661671813a45477be0b0e60068fb51483dbef0c099d77fe482a323d52d1dd5d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

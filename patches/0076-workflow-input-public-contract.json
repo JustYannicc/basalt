@@ -1,0 +1,9 @@
+{
+  "identity": "executor-workflow-input-public-contract",
+  "file": "0076-workflow-input-public-contract.patch",
+  "content_sha256": "f22a96f65fe5750234625343ba260f4ae0837e999bcf11a6afe73a170201d951",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

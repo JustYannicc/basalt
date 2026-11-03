@@ -94,9 +94,11 @@ export function changedPatchFiles(paths: string[]): string[] {
 }
 
 export function localDatabasePaths(paths: string[]): string[] {
-  return paths.filter((path) => isDatabasePath(path) || /^containers\/pool\/(?:sources\.json|patches\/.*\.patch)$/.test(path));
+  return paths.filter((path) => !isPatchRecordPath(path) && (isDatabasePath(path) || /^containers\/pool\/(?:sources\.json|patches\/.*\.patch)$/.test(path)));
 }
 
 export function localWorkflowPaths(paths: string[]): string[] {
-  return paths.filter(isWorkflowPath);
+  return paths.filter((path) => !isPatchRecordPath(path) && isWorkflowPath(path));
 }
+
+function isPatchRecordPath(path: string): boolean { return /^patches\/[^/]+\.json$/.test(path); }

@@ -156,6 +156,7 @@ class FakeApi implements MergeGateApi {
   async getFileAt(_repository: string, path: string, ref: string): Promise<string | undefined> {
     if (path === "upstream.json") return ref === mainSha || ref === nextMainSha ? baseUpstream : headUpstream;
     if (path === "containers/pool/releases.json") return pool;
+    if (path === "scripts/releases/patches.json") return '{"format_version":4,"repository":"UsefulSoftwareCo/executor"}';
     if (path === "scripts/releases/receipts/tools.json" && ref !== mainSha && ref !== nextMainSha)
       return JSON.stringify({ schemaVersion: 2, source: "tools", releaseKey: "tools-v1.2.3", basePins: pins, candidatePins: nextPins, removedPatches: [] });
     return undefined;

@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ArtifactPin, PatchManifestV3, ReleasePins } from "./types.ts";
+import { serializePatchLayout } from "./patch-layout.ts";
 import { sha256PatchContent } from "./patch-registry.ts";
 
 export const sha = (digit: string) => digit.repeat(40);
@@ -72,7 +73,7 @@ export function makeReleaseRoot(): string {
     artifacts: { home: current.home, node: current.node },
   }, null, 2)}\n`);
   writeFileSync(join(root, "containers/pool/sources.json"), '{"format_version":1,"plugins":{}}\n');
-  writeFileSync(join(root, "scripts/releases/patches.json"), `${JSON.stringify(patchManifest, null, 2)}\n`);
+  writePatchLayout(root, patchManifest);
   writeFileSync(join(root, "src/pool/providers.json"), '[\n  {"id":"claude","name":"Claude"}\n]\n');
   for (const patch of patchManifest.patches) writeFileSync(join(root, "patches", patch.file), patchFixtureContent(patch.file));
   return root;
@@ -100,3 +101,7 @@ func (c *Client) StartOAuthV8() {
     case "gemini":
   }
 }`;
+
+export function writePatchLayout(root: string, manifest: PatchManifestV3): void {
+  for (const [path, content] of serializePatchLayout(manifest)) writeFileSync(join(root, path), content);
+}

@@ -1,0 +1,9 @@
+{
+  "identity": "executor-mcp-app-callback-renewal",
+  "file": "0058-mcp-app-callback-renewal.patch",
+  "content_sha256": "1d177cedbf06c2f533d1655c15d918f86a865c6a1a446b3f520314de468d5a15",
+  "kind": "upstream",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

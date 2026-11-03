@@ -1,0 +1,9 @@
+{
+  "identity": "executor-workflow-diagrams",
+  "file": "0052-workflow-diagrams.patch",
+  "content_sha256": "230ddb5dbd65dd7674258e698a8cad8fe00a12c99de3ed814222c38aa2af0b8c",
+  "kind": "upstream",
+  "upstream_pull_request": 2466,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

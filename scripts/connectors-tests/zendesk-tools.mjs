@@ -1,3 +1,4 @@
+import { readPatchManifest } from "../releases/patches.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -30,7 +31,7 @@ assert.match(app.content, /fetch: marketplaceFetch\(accountOrigin\(account\), fe
 
 const requestedScopes = ["read", "write", "impersonate"];
 const hostPatch = await readFile(join(root, "patches/0022-zendesk-hosted-oauth.patch"), "utf8");
-const patchRegistry = JSON.parse(await readFile(join(root, "scripts/releases/patches.json"), "utf8"));
+const patchRegistry = readPatchManifest(root);
 const patchDigest = digest(await readFile(join(root, "patches/0022-zendesk-hosted-oauth.patch")));
 const patchEntry = patchRegistry.patches.find((entry) => entry.file === "0022-zendesk-hosted-oauth.patch");
 assert.equal(patchEntry?.content_sha256, patchDigest, "Zendesk host OAuth patch differs from its registry digest");

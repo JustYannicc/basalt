@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-native-requirements",
+  "file": "0103-pool-native-requirements.patch",
+  "content_sha256": "267e9cc943645ec5c1aff69dbabe46fae668959b1136790f244c417cf993ac56",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

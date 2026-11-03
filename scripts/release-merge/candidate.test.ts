@@ -90,6 +90,27 @@ test("candidate validation rejects a receipt whose base patch bytes do not match
   assert.match(result.reasons.join(" "), /content digest does not match/);
 });
 
+test("format 4 candidate binds the deleted record and patch at the exact refs", async () => {
+  for (const missingRecord of [false, true]) {
+    const api = candidateApi(async (path, ref) => {
+      if (path === "upstream.json") return upstreamText;
+      if (path === "containers/pool/releases.json") return poolText;
+      if (path === RELEASE_MERGE_POLICY.patchManifestPath)
+        return JSON.stringify({ format_version: 4, repository: baseManifest.repository });
+      if (path === RELEASE_MERGE_POLICY.releaseReceiptPrefix + "tools.json" && ref === head) return receipt;
+      if (path === "patches/0001-reviewed.patch" && ref === main) return patchContent;
+      if (path === "patches/0001-reviewed.json" && ref === main && !missingRecord) return JSON.stringify(baseManifest.patches[0]);
+      return undefined;
+    });
+    api.listPullRequestFiles = async () => [
+      ...files.filter(({ filename }) => filename !== RELEASE_MERGE_POLICY.patchManifestPath),
+      { filename: "patches/0001-reviewed.json", status: "removed", additions: 0, deletions: 10, changes: 10 },
+    ];
+    const result = await validateReleaseCandidate(api, "owner/repo", 19, head);
+    assert.equal(result.allowed, !missingRecord, result.reasons.join("; "));
+  }
+});
+
 function candidateApi(lookup: (path: string, ref: string) => Promise<string | undefined>): CandidateApi {
   const pullRequest: PullRequestSnapshot = {
     number: 19,

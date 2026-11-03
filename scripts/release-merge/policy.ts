@@ -5,7 +5,8 @@ import {
   validateUpstreamPins,
   validProviderTable,
 } from "./metadata.ts";
-import { removedPatchRecords, sha256PatchContent, type PatchManifestRemoval } from "../releases/patch-registry.ts";
+import { sha256PatchContent, type PatchManifestRemoval } from "../releases/patch-registry.ts";
+import { inspectPatchRetirement } from "../releases/patch-retirement.ts";
 import { samePatchRemovalReceipts, validateReleaseReceipt } from "../releases/receipts.ts";
 import type { PatchRemovalReceipt } from "../releases/types.ts";
 
@@ -111,7 +112,9 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
   let homeChanged = false;
   let nodeChanged = false;
   let toolsChanged = false;
-  let manifestRemoved: PatchManifestRemoval[] = [];
+  const retirement = inspectPatchRetirement(files, contents);
+  const manifestRemoved: PatchManifestRemoval[] = retirement.removed;
+  reasons.push(...retirement.reasons);
   const receiptFiles: Array<{ source: "tools" | "home" | "node"; path: string }> = [];
 
   for (const file of files) {
@@ -139,13 +142,7 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
         reasons.push("provider table is invalid JSON or has invalid rows");
       continue;
     }
-    if (filename === RELEASE_MERGE_POLICY.patchManifestPath) {
-      if (file.status !== "modified") reasons.push("patch manifest must be modified in place");
-      const change = removedPatchRecords(contents[filename]);
-      if (!change.ok) reasons.push(`${filename}: ${change.reason}`);
-      else manifestRemoved = change.removed;
-      continue;
-    }
+    if (filename === RELEASE_MERGE_POLICY.patchManifestPath || /^patches\/.*\.json$/.test(filename)) continue;
     if (filename === RELEASE_MERGE_POLICY.generatedArchitecturePath) {
       if (file.status !== "modified") reasons.push("generated architecture file must be modified in place");
       continue;

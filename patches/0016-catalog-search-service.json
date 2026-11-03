@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-catalog-search-service",
+  "file": "0016-catalog-search-service.patch",
+  "content_sha256": "7462245e3f4401ffdb87de139dbc6919eaebdfc68b7936a7e102b5c85c59cbdd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

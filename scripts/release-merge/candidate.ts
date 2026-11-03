@@ -67,12 +67,13 @@ async function validateCandidate(
   const contentPaths = new Set<string>([
     RELEASE_MERGE_POLICY.upstreamPinsPath,
     RELEASE_MERGE_POLICY.poolPinsPath,
+    RELEASE_MERGE_POLICY.patchManifestPath,
   ]);
   for (const { filename } of files) {
     if (
       filename === RELEASE_MERGE_POLICY.providerTablePath ||
       filename === RELEASE_MERGE_POLICY.patchManifestPath ||
-      /^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.patch$/.test(filename) ||
+      /^patches\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:patch|json)$/.test(filename) ||
       /^scripts\/releases\/receipts\/(?:tools|home|node)\.json$/.test(filename)
     ) contentPaths.add(filename);
   }
