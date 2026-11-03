@@ -149,6 +149,8 @@ jobs:
       - name: Install the scenarios' browser engine
         working-directory: .upstream
         run: bunx playwright install --with-deps chromium
+      - name: Verify the pool accounts-ready measurement contract
+        run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs
       - name: Verify host-managed visibility and existing account behavior
         working-directory: .upstream
         run: >-

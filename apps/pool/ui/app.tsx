@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Account, PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { AccountList } from "./accounts.tsx";
-import { productName } from "../deployment.ts";
+import { poolOrigin, productName } from "../deployment.ts";
 import { Button, buttonClass, ExternalIcon, Problem } from "./controls.tsx";
 
 /** Where the owner connects and removes subscriptions: the host's own Accounts tab for this app. */
@@ -43,6 +43,16 @@ function useNow(every = 30_000) {
 
 export function App({ api }: { api: PoolApi }) {
   const { view, error, load } = usePool(api);
+  const accountsReady = useRef(false);
+  useLayoutEffect(() => {
+    if (view === undefined || accountsReady.current) return;
+    accountsReady.current = true;
+    // Document load does not prove the account list or empty result has committed.
+    const name = "basalt:pool-accounts-ready";
+    performance.mark(name);
+    if (window.parent !== window)
+      window.parent.postMessage({ name, version: 1 }, new URL(poolOrigin).origin);
+  }, [view]);
   const now = useNow();
   const [removeError, setRemoveError] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
