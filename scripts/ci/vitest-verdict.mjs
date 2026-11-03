@@ -23,8 +23,20 @@ export default class CiVerdict {
       if (closing) { this.shutdown.error = true; this.save(); }
       return logError(...args);
     };
+    const printError = context.logger.printError.bind(context.logger);
+    context.logger.printError = (error, options) => {
+      if (this.report && options?.type === "Unhandled Error") { this.shutdown.error = true; this.save(); }
+      return printError(error, options);
+    };
     process.on("uncaughtExceptionMonitor", () => { this.shutdown.uncaught = true; this.save(); });
-    process.on("exit", (code) => { this.shutdown.exitCode = code; this.save(); });
+    process.on("exit", (code) => {
+      if (this.report) {
+        const errors = [...this.report.unhandledErrors, ...context.state.getUnhandledErrors().map(errorRecord)];
+        this.report.unhandledErrors = [...new Map(errors.map((error) => [JSON.stringify(error), error])).values()];
+      }
+      this.shutdown.exitCode = code;
+      this.save();
+    });
   }
 
   onProcessTimeout() { this.shutdown.timedOut = true; this.save(); }

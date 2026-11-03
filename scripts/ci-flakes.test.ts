@@ -121,5 +121,26 @@ test("final reporter records real assertion diffs, suite errors and unhandled er
     const lateReport = parseVerdict(JSON.parse(readFileSync(output, "utf8")));
     assert.equal(lateReport.shutdown.complete, true);
     assert.equal(lateReport.shutdown.error, true, "Global teardown failure must survive the earlier final report");
+    for (const [name, action] of [
+      ["late-worker", 'this.context.onClose(() => this.context.state.catchError(new Error("late worker probe"), "Teardown Error"));'],
+      ["late-reporter", 'throw new Error("late reporter probe");'],
+      ["ordinary-failure", ""],
+    ]) {
+      writeFileSync(join(scratch, "observer.mjs"), `export default class {
+        onInit(context) { this.context = context; }
+        onTestRunEnd() { ${action} }
+      }`);
+      writeFileSync(join(scratch, "vitest.config.mjs"), `export default { test: {
+        include: ["probe.spec.mjs"], maxWorkers: 1,
+        reporters: [[${JSON.stringify(reporter)}, { outputFile: ${JSON.stringify(output)} }], "./observer.mjs", "verbose"]
+      } };`);
+      const run = spawnSync(process.execPath, [join(vitest, "vitest.mjs"), "run", "--config", "vitest.config.mjs"],
+        { cwd: scratch, encoding: "utf8" });
+      assert.equal(run.status, 1);
+      const observed = parseVerdict(JSON.parse(readFileSync(output, "utf8")));
+      assert.equal(observed.shutdown.complete, true);
+      if (name === "late-worker") assert.equal(observed.unhandledErrors.length, 1);
+      else assert.equal(observed.shutdown.error, name === "late-reporter", name);
+    }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
