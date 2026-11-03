@@ -190,6 +190,40 @@ Matching is exact:
 
 Exactly one backup must match. Other backups, such as PlanetScale's own, are ignored. A malformed `basalt-release-` name, a digest mismatch, missing or orphaned payload metadata, or more than one match stops the release. The earlier `basalt-release-v1-` format embedded compressed metadata in the name. Those names can still be read and count only when the release recorded them; new backups always use v2.
 
+### Backup retention report
+
+New release backups request 30 days of retention at creation. The deployment gate still waits for completion, protects the backup and reads it back. Protection prevents automatic expiry, so this change does not retire existing or new protected backups by itself.
+
+Use the read-only report to review backups that might be retired. It needs the PlanetScale service-token environment above and GitHub `deployments: read` access:
+
+```sh
+node scripts/deploy-safety/backup-retirement.ts > /private/path/backup-report.json
+node scripts/deploy-safety/backup-retirement.ts \
+  --keep-review /private/path/keep-review.json > /private/path/reviewed-backup-report.json
+```
+
+The first run keeps everything. Review its inventory and ledger digests, then supply a private keep-review file. For every production branch, name the latest production migration's recovery backup and list explicit pins and restore-dependent backups. Those references can exist outside the release ledger, so the report cannot infer their absence. Empty pin and restore lists mean the operator verified there are none. Copy the digests from the first report; changed inventory or history invalidates the review.
+
+```json
+{
+  "schemaVersion": 1,
+  "scope": { "organization": "YOUR_ORGANIZATION", "database": "basalt" },
+  "inventoryDigest": "DIGEST_FROM_REPORT",
+  "ledgerDigest": "DIGEST_FROM_REPORT",
+  "reviewedAt": "UTC_REVIEW_TIMESTAMP",
+  "branches": [{
+    "branch": "main",
+    "latestMigrationRecoveryBackupId": "EXACT_BACKUP_ID",
+    "pinnedBackupIds": [],
+    "restoreDependentBackupIds": []
+  }]
+}
+```
+
+A candidate must be older than 30 days and outside the newest ten completed release backups on its production branch, ordered by creation time. The report preserves the current `releaseBackup` selection, including the failed release's backup after a roll-forward, the latest successful database release's recovery point, reviewed migration recovery points and pins, unresolved release references and restore dependencies. Missing ownership, restore metadata, keep evidence or ledger verification keeps backups. Scheduled and required backups remain under provider policy.
+
+The report lists exact IDs, names, ages, ranks, compressed sizes and keep reasons. It makes only GET requests and provides no unprotect or delete command. Retirement needs a separate exact-ID list, dry run, fresh provider and ledger checks, and coordinator GO. Keep the report and review file private.
+
 ## Provider contracts
 
 - [PlanetScale service-token authorization](https://planetscale.com/docs/api/reference/service-tokens): `Authorization: <SERVICE_TOKEN_ID>:<SERVICE_TOKEN>`.
