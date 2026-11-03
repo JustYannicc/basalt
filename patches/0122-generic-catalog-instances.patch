@@ -319,10 +319,25 @@ index 2ea5a18..67669c9 100644
      join executor_apps a on a.id = entry.value ->> 'app' and a.owner = 'organization:' || o.id
      where o.id = ${organization} and a.id = ${pool}`;
 diff --git a/apps/hosted/server/src/implementation/pool-access-hook.ts b/apps/hosted/server/src/implementation/pool-access-hook.ts
-index 91a5658..de71472 100644
+index 91a5658..12e664a 100644
 --- a/apps/hosted/server/src/implementation/pool-access-hook.ts
 +++ b/apps/hosted/server/src/implementation/pool-access-hook.ts
-@@ -67,10 +67,11 @@ export const poolAccessLifecycle = (
+@@ -3,7 +3,13 @@ import { AppId, StorageError, type HostAccessLifecycle } from "@executor-js/sdk/
+ import { Clock, Effect, Option, Redacted, Schedule, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+-import { accessPath, accessPrefix, accessTtl, type AccessChange } from "./pool-access-contract.ts";
++import {
++  accessPath,
++  accessPrefix,
++  accessTtl,
++  type AccessChange,
++  type PoolAudience,
++} from "./pool-access-contract.ts";
+ import { signEnvelope } from "./pool-token.ts";
+ import { GroupDatabase, GroupMemberId } from "../contracts/groups.ts";
+ import { OrganizationId, OrganizationRole } from "../contracts/organization.ts";
+@@ -67,10 +73,11 @@ export const poolAccessLifecycle = (
      Effect.gen(function* () {
        const sql = yield* SqlClient.SqlClient;
        // JSON expands only this organization's recorded pools; deleted apps stay deleted.
@@ -336,7 +351,16 @@ index 91a5658..de71472 100644
            where m."organizationId" = o.id
            and ((access.audience = 'private' and access.creator_id = m."userId")
              or access.audience = 'everyone' or (access.audience = 'groups' and exists (
-@@ -168,8 +169,12 @@ export const poolAccessLifecycle = (
+@@ -112,7 +119,7 @@ export const poolAccessLifecycle = (
+           users: policy?.users ?? [],
+           managers: policy?.managers ?? [],
+           authorization,
+-        };
++        } satisfies PoolAudience;
+       });
+     }).pipe(Effect.catch(() => new StorageError()));
+ 
+@@ -168,8 +175,12 @@ export const poolAccessLifecycle = (
            const rows = yield* sql<{
              pool: string;
            }>`select app.id as pool from organization o
@@ -1322,10 +1346,10 @@ index cf0fcc5..1691571 100644
                  },
 diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
 new file mode 100644
-index 0000000..0903010
+index 0000000..3af0834
 --- /dev/null
 +++ b/e2e/tests/catalog-instances.spec.ts
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,279 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -1489,9 +1513,7 @@ index 0000000..0903010
 +        const denied = yield* ui.submit("Add", { dialog: true });
 +        expect(denied.status).toBe(403);
 +        yield* browser.use("A definite refusal finishes the request", (page) =>
-+          page
-+            .getByText("Organization access denied", { exact: true })
-+            .waitFor(),
++          page.getByText("Organization access denied", { exact: true }).waitFor(),
 +        );
 +        expect(
 +          yield* browser.use("A definite refusal keeps the name editable", (page) =>
