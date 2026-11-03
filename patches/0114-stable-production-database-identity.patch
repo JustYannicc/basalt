@@ -27,9 +27,9 @@ index 90ccb340..b61b879a 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 @@ -58,4 +58,9 @@ export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving
- 
+
  export class ProductionOperationBusy extends Data.TaggedError("ProductionOperationBusy") {}
- 
+
 +export class ProductionOperationRefused extends Data.TaggedError("ProductionOperationRefused")<{
 +  readonly message: string;
 +  readonly reason?: "stale_plan";
@@ -136,7 +136,7 @@ index 11e55693..2ded4843 100644
  import { SqlError } from "effect/sql";
 +import { ProviderAppsRefused } from "./migrations/provider-apps-schema.ts";
 +import { ProductionOperationRefused } from "./contracts.ts";
- 
+
  const SqlStateClass = Schema.Literals([
    "08",
 @@ -44,9 +46,21 @@ const SqlStateClass = Schema.Literals([
@@ -164,7 +164,7 @@ index 11e55693..2ded4843 100644
  type Phase = FailureReceipt["phase"];
 @@ -60,29 +74,73 @@ class DiagnosticFailure extends Error {
  }
- 
+
  /** No message, query, row, response or credential enters this projection. */
 -export function diagnostic(cause: Cause.Cause<unknown>, phase: Phase): FailureReceipt {
 -  const error = Cause.findErrorOption(cause);
@@ -254,7 +254,7 @@ index 11e55693..2ded4843 100644
 +    causeKind,
    };
  }
- 
+
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 index 1934a17d..d2a70917 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
@@ -372,7 +372,7 @@ index 0c239cc9..1bfaefc2 100644
  import { atPhase } from "./diagnostics.ts";
 +import { databaseIdentity, type DatabaseOrigin } from "./database-identity.ts";
 +import { ProductionOperationRefused } from "./contracts.ts";
- 
+
  export const Operation = Schema.Struct({
    action: Schema.Literals(["inventory", "backup", "prepare", "dry-run", "apply"]),
 @@ -52,12 +54,16 @@ const Plan = Schema.Struct({
@@ -384,7 +384,7 @@ index 0c239cc9..1bfaefc2 100644
    readonly encryptionKey: string;
    readonly preparations: Readonly<Record<string, ProductionPreparation>>;
  }
- 
+
 -const fail = (reason: string) => Effect.fail(new Error(reason));
 +const fail = (message: string) => Effect.fail(new ProductionOperationRefused({ message }));
 +const stalePlan = () =>
@@ -392,12 +392,12 @@ index 0c239cc9..1bfaefc2 100644
 +    new ProductionOperationRefused({ message: "The reviewed plan is stale", reason: "stale_plan" }),
 +  );
  const checksum = /^[a-f0-9]{64}$/;
- 
+
  function validPlan(module: ProductionMigration, plan: MigrationPlan): boolean {
 @@ -104,19 +110,6 @@ const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
      );
    });
- 
+
 -const databaseName = Effect.gen(function* () {
 -  const sql = yield* SqlClient.SqlClient;
 -  const rows = yield* sql`select current_database() as name`.pipe(
@@ -602,7 +602,7 @@ index a47083fe..ea91f4c9 100644
 @@ -12,12 +12,25 @@ import {
  import { createServer } from "node:http";
  import type { FixtureControl } from "../sdk/contracts.ts";
- 
+
 -const Change = Schema.Struct({ binding: Schema.Literals(["original", "alternate"]) });
 +const Change = Schema.Struct({
 +  binding: Schema.Literals([
@@ -618,7 +618,7 @@ index a47083fe..ea91f4c9 100644
 +    "release",
 +  ]),
 +});
- 
+
  /** Preserve the existing fixture capability while adding one fixed local runtime operation. */
  export const cloudRuntimeControl = <A, E>(
    fixtures: typeof FixtureControl.Type,
@@ -1096,13 +1096,14 @@ index 56c19e72..42111f7b 100644
      deferOnboarding: true,
 diff --git a/e2e/tests/production-ops-database.spec.ts b/e2e/tests/production-ops-database.spec.ts
 new file mode 100644
-index 00000000..43bb37de
+index 00000000..3820de6c
 --- /dev/null
 +++ b/e2e/tests/production-ops-database.spec.ts
-@@ -0,0 +1,150 @@
+@@ -0,0 +1,185 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
-+import { body } from "../support/api.ts";
++import { Api, body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
 +import { Target } from "../support/platform.ts";
 +import { fixtureRequest } from "../sdk/fixtures.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -1184,6 +1185,35 @@ index 00000000..43bb37de
 +        const changed = yield* p.observed();
 +        expect(changed.database.name).toBe(original.database.name);
 +        expect(changed.database.targetSha256).not.toBe(original.database.targetSha256);
++        const api = yield* Api;
++        const actors = yield* Actors;
++        const [unrelated] = yield* p.database
++          .run({
++            sql: "select id from executor_accounts where provider = (select provider from executor_accounts where id = $1) and method = 'apiKey'",
++            params: [p.own.account],
++          })
++          .pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++            ),
++          );
++        if (unrelated === undefined) return yield* Effect.die("Saved fixture account missing");
++        const renamed = yield* api.request(
++          actors.owner,
++          "PATCH",
++          `/api/organizations/${p.own.organization}/accounts/${unrelated.id}`,
++          { label: "Unrelated account activity" },
++        );
++        expect(renamed.status).toBe(200);
++        expect((yield* p.observed()).database.targetSha256).toBe(changed.database.targetSha256);
++        const beforeApply = yield* p
++          .change("inspect-target")
++          .pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Struct({ target: ProductionDatabaseState })),
++            ),
++          );
++        expect(beforeApply.target.accounts).not.toBe(states.target.accounts);
 +        expect((yield* p.request(p.apply(valid, dry))).status).toBe(409);
 +        expect(yield* p.account()).toEqual(before);
 +        expect(yield* p.noReceipt(dry.artifact.sha256)).toEqual([]);
@@ -1194,7 +1224,7 @@ index 00000000..43bb37de
 +              Schema.decodeUnknownEffect(Schema.Struct({ target: ProductionDatabaseState })),
 +            ),
 +          );
-+        expect(after.target).toEqual(states.target);
++        expect(after.target).toEqual(beforeApply.target);
 +        expect(after.target.receipts).not.toContain(dry.artifact.sha256);
 +      }),
 +    ),
@@ -1205,6 +1235,16 @@ index 00000000..43bb37de
 +      context,
 +      Effect.gen(function* () {
 +        const p = yield* setup;
++        // A second runtime restart can exceed the scenario deadline on CI; cleanup owns restoration.
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* p.change("original");
++            const identity = yield* p.database.run({
++              sql: "select id::text as id from production_ops_database_identity",
++            });
++            expect(identity.length).toBe(1);
++          }).pipe(Effect.orDie),
++        );
 +        yield* p.change("without-server");
 +        const valid = p.operation("increment");
 +        const dry = yield* p.dryRun(valid);
@@ -1212,11 +1252,6 @@ index 00000000..43bb37de
 +        expect((yield* p.request(p.apply(valid, dry))).status).toBe(200);
 +        expect(yield* p.account()).not.toEqual(before);
 +        expect((yield* p.request(p.apply(valid, dry))).status).toBe(200);
-+        yield* p.change("original");
-+        const identity = yield* p.database.run({
-+          sql: "select id::text as id from production_ops_database_identity",
-+        });
-+        expect(identity.length).toBe(1);
 +      }),
 +    ),
 +  );
@@ -1271,7 +1306,7 @@ index d9937f85..fa7c609b 100644
 +} from "../support/production-ops-migration-proof.ts";
 +import { productionOpsCredentialsProof } from "../support/production-ops-credentials-proof.ts";
  import { scenarios } from "../test-plan.ts";
- 
+
 -const DryRun = Schema.Struct({
 -  action: Schema.Literal("dry-run"),
 -  artifact: Artifact,
@@ -1395,7 +1430,7 @@ index d9937f85..fa7c609b 100644
 @@ -152,11 +145,60 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
      ),
    );
- 
+
 +  for (const [scenario, binding] of [
 +    [scenarios.cloudProductionOpsHostIdentity, "host"],
 +    [scenarios.cloudProductionOpsDatabaseIdentity, "database"],
