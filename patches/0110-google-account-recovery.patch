@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-index b86ea29437b5076bad468760ff2fb6e729f468cb..11fb67cd6d6467da24dd4716b74c0cfe8b30499a 100644
+index b86ea29..11fb67c 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 @@ -1,7 +1,9 @@
@@ -14,7 +14,7 @@ index b86ea29437b5076bad468760ff2fb6e729f468cb..11fb67cd6d6467da24dd4716b74c0cfe
  };
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a7f7596da3e249124a1bc276c162fee883957d9
+index 0000000..9a7f759
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts
 @@ -0,0 +1,210 @@
@@ -230,7 +230,7 @@ index 0000000000000000000000000000000000000000..9a7f7596da3e249124a1bc276c162fee
 +};
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..542e6dfc38bed95f3910cf886d2d0e1b4dbab17e
+index 0000000..542e6df
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-proofs.ts
 @@ -0,0 +1,131 @@
@@ -367,7 +367,7 @@ index 0000000000000000000000000000000000000000..542e6dfc38bed95f3910cf886d2d0e1b
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdb076037fa2794f6719d3274ec7749c76403b9b
+index 0000000..bdb0760
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-identity-records.ts
 @@ -0,0 +1,236 @@
@@ -608,7 +608,7 @@ index 0000000000000000000000000000000000000000..bdb076037fa2794f6719d3274ec7749c
 +      return yield* new GoogleIdentityRefused({ reason: "prepared-proof-changed" });
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
-index 61c6758675133b4459a8c3006351ee7a5a2d034f..4f2a4326b64c9af4b8948e59393023721e5ff67f 100644
+index 61c6758..4f2a432 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
 @@ -1,7 +1,46 @@
@@ -664,7 +664,7 @@ index 61c6758675133b4459a8c3006351ee7a5a2d034f..4f2a4326b64c9af4b8948e5939302372
 +  return preparations;
 +}).pipe(Effect.orDie);
 diff --git a/apps/hosted/web/src/implementation/components/connection-status.tsx b/apps/hosted/web/src/implementation/components/connection-status.tsx
-index dff59b1bf931d5b42ebd9e2662c18da5e2194449..ec0797f53703bef426f938f182be89a87b3107a3 100644
+index dff59b1..ec0797f 100644
 --- a/apps/hosted/web/src/implementation/components/connection-status.tsx
 +++ b/apps/hosted/web/src/implementation/components/connection-status.tsx
 @@ -9,10 +9,13 @@ import { productWordmark } from "@executor-js/ui/contracts/product-brand";
@@ -690,7 +690,7 @@ index dff59b1bf931d5b42ebd9e2662c18da5e2194449..ec0797f53703bef426f938f182be89a8
              <div className="mt-6 flex w-full flex-col justify-center gap-2 sm:flex-row">
                {children}
 diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
-index a94a6f2aa69863a48e0ba26e81bcabda4f05ad26..db7a1bbf686e107a71a3b28cb596b127ee9c8b58 100644
+index a94a6f2..db7a1bb 100644
 --- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
 @@ -38,10 +38,13 @@ export function HostedAccountActions({
@@ -776,7 +776,7 @@ index a94a6f2aa69863a48e0ba26e81bcabda4f05ad26..db7a1bbf686e107a71a3b28cb596b127
          <p className="text-[12px] leading-[1.5] text-muted-foreground">
            These apps lose this account. Their other linked accounts stay linked.
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
-index a4387f78ff459545bbd362b9d969dfb1dd987752..10c8bac1996784604ccdbdb16fb18f52429b0110 100644
+index a4387f7..10c8bac 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 @@ -41,7 +41,11 @@ export function AccountsPage({
@@ -820,7 +820,7 @@ index a4387f78ff459545bbd362b9d969dfb1dd987752..10c8bac1996784604ccdbdb16fb18f52
          />
        )}
 diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
-index 04dde1644410f15cfeb10c8642a146e2e06eef67..02d846ce0a4447d0eae3325b631ad07a97127272 100644
+index 04dde16..02d846c 100644
 --- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 +++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 @@ -15,6 +15,7 @@ import { useContext, useEffect, useRef, useState } from "react";
@@ -920,7 +920,7 @@ index 04dde1644410f15cfeb10c8642a146e2e06eef67..02d846ce0a4447d0eae3325b631ad07a
              recovery === "client" || context.manualClient === true
                ? { client: "change" as const }
 diff --git a/apps/local/web/src/contracts/oauth.ts b/apps/local/web/src/contracts/oauth.ts
-index 7ec5caf2694711e9de3c9c8e6cab31373dea17aa..e3fbfca9cc132dd071252c71510d75ab1ea256e4 100644
+index 7ec5caf..e3fbfca 100644
 --- a/apps/local/web/src/contracts/oauth.ts
 +++ b/apps/local/web/src/contracts/oauth.ts
 @@ -3,7 +3,14 @@ import { hydrated } from "@executor-js/ui/contracts/http";
@@ -972,7 +972,7 @@ index 7ec5caf2694711e9de3c9c8e6cab31373dea17aa..e3fbfca9cc132dd071252c71510d75ab
  /** Finish once per document load, even if React remounts the page. */
  export const completeOAuthAtom = DashboardClient.runtime
 diff --git a/apps/local/web/src/implementation/oauth.ts b/apps/local/web/src/implementation/oauth.ts
-index 7be2435bcfc37202efea3f6925602ede6559817d..c4fe9a4e8a016836393dcaa5501bf32441d1438f 100644
+index 7be2435..c4fe9a4 100644
 --- a/apps/local/web/src/implementation/oauth.ts
 +++ b/apps/local/web/src/implementation/oauth.ts
 @@ -1,8 +1,9 @@
@@ -1022,7 +1022,7 @@ index 7be2435bcfc37202efea3f6925602ede6559817d..c4fe9a4e8a016836393dcaa5501bf324
  export const oauthDestination = (account: AccountId) =>
    Effect.sync(() => {
 diff --git a/apps/local/web/src/implementation/pages/account-actions.tsx b/apps/local/web/src/implementation/pages/account-actions.tsx
-index 334ea049e24c88e4b828dc19716030ef8b58c08c..e14f75b526aa4e91b7e2af0ab40e07d0d3376abd 100644
+index 334ea04..e14f75b 100644
 --- a/apps/local/web/src/implementation/pages/account-actions.tsx
 +++ b/apps/local/web/src/implementation/pages/account-actions.tsx
 @@ -34,9 +34,12 @@ const managed = "This account is managed by the local server.";
@@ -1106,7 +1106,7 @@ index 334ea049e24c88e4b828dc19716030ef8b58c08c..e14f75b526aa4e91b7e2af0ab40e07d0
        Failure={Failure}
        disabledReason={data.canManage ? undefined : managed}
 diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
-index d3a93412ed1d9572ba37842fc6532caf4c93f707..a62e1382438cc14bf243e1a64adcbec551ed03c6 100644
+index d3a9341..a62e138 100644
 --- a/apps/local/web/src/implementation/pages/accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/accounts.tsx
 @@ -20,7 +20,11 @@ import { LocalAccountObservations, LocalAccountPlan } from "./account-observatio
@@ -1145,7 +1145,7 @@ index d3a93412ed1d9572ba37842fc6532caf4c93f707..a62e1382438cc14bf243e1a64adcbec5
          />
        )}
 diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
-index 5f5c5d22665b318218777266cb98cef8c78cddc4..4cef298e7ef6d8b3dfc1c787d20f2c53af743e2c 100644
+index 5f5c5d2..4cef298 100644
 --- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
 @@ -1,7 +1,7 @@
@@ -1231,7 +1231,7 @@ index 5f5c5d22665b318218777266cb98cef8c78cddc4..4cef298e7ef6d8b3dfc1c787d20f2c53
      >
        {(selection) => fields(selection)}
 diff --git a/apps/local/web/src/implementation/pages/oauth.tsx b/apps/local/web/src/implementation/pages/oauth.tsx
-index 3a7a51c3f1f80ab8fdd2d91580e5decb4c1fc84b..a1c966709ad94c4630acbe5df1500c72c60ca2bb 100644
+index 3a7a51c..a1c9667 100644
 --- a/apps/local/web/src/implementation/pages/oauth.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth.tsx
 @@ -1,10 +1,18 @@
@@ -1360,7 +1360,7 @@ index 3a7a51c3f1f80ab8fdd2d91580e5decb4c1fc84b..a1c966709ad94c4630acbe5df1500c72
 +  );
 +}
 diff --git a/e2e/support/account-identity-issuer.ts b/e2e/support/account-identity-issuer.ts
-index 4652af8ce923b91740b15a951c5f89fa24bbe32b..6e0e2cec18364dd27f5aadfad64fa17e50d5f13c 100644
+index 4652af8..6e0e2ce 100644
 --- a/e2e/support/account-identity-issuer.ts
 +++ b/e2e/support/account-identity-issuer.ts
 @@ -16,6 +16,7 @@ export const accountIdentityIssuer = Effect.gen(function* () {
@@ -1397,7 +1397,7 @@ index 4652af8ce923b91740b15a951c5f89fa24bbe32b..6e0e2cec18364dd27f5aadfad64fa17e
        }),
      metrics: Effect.sync(() => ({ authorizations, exchanges, refreshes, revocations })),
 diff --git a/e2e/support/account-identity-product.ts b/e2e/support/account-identity-product.ts
-index d504b6a573764c19a887097491864be3d583276f..100356e46d0646af238f7e7a5673bcf8a15225e0 100644
+index d504b6a..100356e 100644
 --- a/e2e/support/account-identity-product.ts
 +++ b/e2e/support/account-identity-product.ts
 @@ -9,6 +9,7 @@ import { appsManifest } from "./apps-release.ts";
@@ -1436,7 +1436,7 @@ index d504b6a573764c19a887097491864be3d583276f..100356e46d0646af238f7e7a5673bcf8
            ? {}
            : { sourceAccount: selection.sourceAccount }),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index ad80d22f4b18dff940d9afd8fa3c7651123253f1..bd7691dc4a71500b82f86c02a626f224bd481302 100644
+index 56c19e7..752e905 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -212,6 +212,17 @@ export const scenarios = plan({
@@ -1458,7 +1458,7 @@ index ad80d22f4b18dff940d9afd8fa3c7651123253f1..bd7691dc4a71500b82f86c02a626f224
      fixtures: "actors",
      file: "account-identity-policy.spec.ts",
 diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
-index 3dd312a8ebc7e608af2231ee90cc2f56902f266c..d778b74807e7816e971577ac77e2c2d8080ab71e 100644
+index 3dd312a..d778b74 100644
 --- a/e2e/tests/account-consent.spec.ts
 +++ b/e2e/tests/account-consent.spec.ts
 @@ -25,7 +25,12 @@ const Health = Schema.Struct({
@@ -1511,7 +1511,7 @@ index 3dd312a8ebc7e608af2231ee90cc2f56902f266c..d778b74807e7816e971577ac77e2c2d8
      ),
    );
 diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
-index f031686701a894f54109ee55bbadda0eca0d9b8d..cc7339d1d1e36f20c74659432190204801be898c 100644
+index f031686..cc7339d 100644
 --- a/e2e/tests/account-identities.spec.ts
 +++ b/e2e/tests/account-identities.spec.ts
 @@ -31,6 +31,20 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
@@ -1544,7 +1544,7 @@ index f031686701a894f54109ee55bbadda0eca0d9b8d..cc7339d1d1e36f20c746594321902048
          const storage = yield* legacyStorage([
            { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
 diff --git a/e2e/tests/account-identity-screens.spec.ts b/e2e/tests/account-identity-screens.spec.ts
-index 39fd20850c4cf967257e3e7b08873e62ea03ace0..d71a13752aed34f564e6aea1c03aba49524beda2 100644
+index 39fd208..d71a137 100644
 --- a/e2e/tests/account-identity-screens.spec.ts
 +++ b/e2e/tests/account-identity-screens.spec.ts
 @@ -157,6 +157,12 @@ layer(TestLive, { excludeTestServices: true })("Account identity screens", (it)
@@ -1598,12 +1598,13 @@ index 39fd20850c4cf967257e3e7b08873e62ea03ace0..d71a13752aed34f564e6aea1c03aba49
              .identity?.id,
 diff --git a/e2e/tests/google-identity-migration.spec.ts b/e2e/tests/google-identity-migration.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b3338c1751b3
+index 0000000..33dede1
 --- /dev/null
 +++ b/e2e/tests/google-identity-migration.spec.ts
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,391 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
++import type { TestContext } from "vitest";
 +import {
 +  createHash,
 +  createHmac,
@@ -1648,7 +1649,7 @@ index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b333
 +const hash = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex");
 +
 +layer(HostedLive, { excludeTestServices: true })("Google recovery operations", (it) => {
-+  it.effect(scenarios.googleIdentityMigration.title, (context) =>
++  const recovery = (context: TestContext, changedBinding: boolean) =>
 +    withHostedCase(
 +      context,
 +      Effect.gen(function* () {
@@ -1729,23 +1730,23 @@ index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b333
 +        for (const [index, id] of ids.entries()) {
 +          yield* rows(
 +            `insert into executor_accounts
-+          (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation)
-+          values ($1,$2,$3,'oauth',$4,decode('123456','hex'),now(),3)`,
++        (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation)
++        values ($1,$2,$3,'oauth',$4,decode('123456','hex'),now(),3)`,
 +            [id, owner, provider, index === 0 ? "Default" : "My Google"],
 +          );
 +          yield* rows(
 +            `insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
-+          values ($1,decode('abcdef','hex'),'ready_fixture',now(),$2)`,
++        values ($1,decode('abcdef','hex'),'ready_fixture',now(),$2)`,
 +            [id, owner],
 +          );
 +          yield* rows(
 +            `insert into hosted_account_access (account_id,organization_id,creator_id,kind,personal_user_id)
-+          values ($1,$2,$3,'personal',$3)`,
++        values ($1,$2,$3,'personal',$3)`,
 +            [id, organization, person],
 +          );
 +          yield* rows(
 +            `insert into hosted_app_account_links (app,requirement,subject,account,linked_by)
-+          values ($1,'service',$2,$3,$2)`,
++        values ($1,'service',$2,$3,$2)`,
 +            [app, person, id],
 +          );
 +        }
@@ -1803,13 +1804,13 @@ index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b333
 +        const snapshot = () =>
 +          rows(
 +            `select a.id, a.owner, a.provider, a.method, a.credential_generation as generation,
-+        a.oauth_grant_id, encode(a.encrypted_credentials,'hex') as credentials,
-+        encode(g.encrypted,'hex') as encrypted,g.status,g.owner as "grantOwner",
-+        to_char(g.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated,
-+        h.revision, h.kind, h.personal_user_id as person,h.audience,
-+        (select jsonb_agg(to_jsonb(l) order by l.app,l.requirement) from hosted_app_account_links l where l.account=a.id) as links
-+        from executor_accounts a join executor_oauth_grants g on g.id=a.id
-+        join hosted_account_access h on h.account_id=a.id where a.id in ($1,$2) order by a.id`,
++      a.oauth_grant_id, encode(a.encrypted_credentials,'hex') as credentials,
++      encode(g.encrypted,'hex') as encrypted,g.status,g.owner as "grantOwner",
++      to_char(g.updated_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as updated,
++      h.revision, h.kind, h.personal_user_id as person,h.audience,
++      (select jsonb_agg(to_jsonb(l) order by l.app,l.requirement) from hosted_app_account_links l where l.account=a.id) as links
++      from executor_accounts a join executor_oauth_grants g on g.id=a.id
++      join hosted_account_access h on h.account_id=a.id where a.id in ($1,$2) order by a.id`,
 +            ids,
 +          );
 +        const before = yield* snapshot();
@@ -1892,7 +1893,9 @@ index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b333
 +        const decoded = Schema.decodeUnknownSync(
 +          Schema.Struct({
 +            database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
-+            plan: Schema.Struct({ changes: Schema.Array(Schema.Struct({ table: Schema.String })) }),
++            plan: Schema.Struct({
++              changes: Schema.Array(Schema.Struct({ table: Schema.String })),
++            }),
 +          }),
 +        )(open(plan.artifact));
 +        expect(decoded.plan.changes.map((change) => change.table).sort()).toEqual([
@@ -1924,43 +1927,34 @@ index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b333
 +            plan.artifact.sha256,
 +          ]);
 +        expect(yield* receipt()).toEqual([]);
-+        yield* Effect.scoped(
-+          Effect.gen(function* () {
-+            yield* Effect.acquireRelease(
-+              fixtureRequest(
-+                fixtures,
-+                "/runtime/database-binding",
-+                { binding: "alternate" },
-+                "5 minutes",
-+              ),
-+              () =>
-+                fixtureRequest(
-+                  fixtures,
-+                  "/runtime/database-binding",
-+                  { binding: "original" },
-+                  "5 minutes",
-+                ).pipe(Effect.orDie),
-+            );
-+            const inventory = yield* operation("inventory", "accounts", { organization });
-+            expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
-+            const changed = Schema.decodeUnknownSync(
-+              Schema.Struct({
-+                database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
-+              }),
-+            )(
-+              open((yield* body(Schema.Struct({ artifact: Artifact }), inventory)).artifact),
-+            ).database;
-+            expect(decoded.database.name).toBe("executor");
-+            expect(changed.name).toBe(decoded.database.name);
-+            expect(changed.targetSha256).toMatch(/^[a-f0-9]{64}$/u);
-+            expect(changed.targetSha256).not.toBe(decoded.database.targetSha256);
-+            const refused = yield* apply();
-+            expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-+            expect(yield* snapshot()).toEqual(before);
-+            expect(yield* metadata()).toEqual(retainedMetadata);
-+            expect(yield* receipt()).toEqual([]);
-+          }),
-+        );
++        if (changedBinding) {
++          // The runner owns this disposable runtime, as in the production-ops binding scenario.
++          yield* fixtureRequest(
++            fixtures,
++            "/runtime/database-binding",
++            { binding: "alternate" },
++            "5 minutes",
++          );
++          const inventory = yield* operation("inventory", "accounts", { organization });
++          expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
++          const changed = Schema.decodeUnknownSync(
++            Schema.Struct({
++              database: Schema.Struct({ name: Schema.String, targetSha256: Schema.String }),
++            }),
++          )(
++            open((yield* body(Schema.Struct({ artifact: Artifact }), inventory)).artifact),
++          ).database;
++          expect(decoded.database.name).toBe("executor");
++          expect(changed.name).toBe(decoded.database.name);
++          expect(changed.targetSha256).toMatch(/^[a-f0-9]{64}$/u);
++          expect(changed.targetSha256).not.toBe(decoded.database.targetSha256);
++          const refused = yield* apply();
++          expect(refused.status, JSON.stringify(refused.body)).toBe(409);
++          expect(yield* snapshot()).toEqual(before);
++          expect(yield* metadata()).toEqual(retainedMetadata);
++          expect(yield* receipt()).toEqual([]);
++          return;
++        }
 +        yield* rows("update executor_accounts set credential_generation=4 where id=$1", [ids[0]!]);
 +        expect((yield* apply()).status).toBe(409);
 +        yield* rows("update executor_accounts set credential_generation=3 where id=$1", [ids[0]!]);
@@ -1994,11 +1988,13 @@ index 0000000000000000000000000000000000000000..7cf569e5e2fe6900826171dd3ad2b333
 +        expect(noop.status, JSON.stringify(noop.body)).toBe(200);
 +        expect((yield* body(Schema.Struct({ changes: Schema.Number }), noop)).changes).toBe(0);
 +      }),
-+    ),
-+  );
++    );
++
++  it.effect(scenarios.googleIdentityMigration.title, (context) => recovery(context, false));
++  it.effect(scenarios.googleIdentityBinding.title, (context) => recovery(context, true));
 +});
 diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
-index 8c6aa1d87dd02c2b2e5917c78f63d6daed57f526..c5b60350955f004dbce2bfa219929ee764d20547 100644
+index 8c6aa1d..c5b6035 100644
 --- a/packages/sdk/src/contracts/oauth-families.ts
 +++ b/packages/sdk/src/contracts/oauth-families.ts
 @@ -43,3 +43,22 @@ export const oauthIdentityConsent = (method: AuthMethod) =>
@@ -2025,7 +2021,7 @@ index 8c6aa1d87dd02c2b2e5917c78f63d6daed57f526..c5b60350955f004dbce2bfa219929ee7
 +  return requested.filter((scope) => !covered.has(scopeKey(issuer, scope)));
 +};
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 772b197521111ad064b035c10db61c31c6aca8a5..3cda5eec61db5e5c2e6902fcf59b13c41d0109ba 100644
+index 772b197..3cda5ee 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
 @@ -780,6 +780,8 @@ export const OAuthCompletionFailed = UserFacingError.define({
@@ -2038,7 +2034,7 @@ index 772b197521111ad064b035c10db61c31c6aca8a5..3cda5eec61db5e5c2e6902fcf59b13c4
      serviceError: Schema.optional(OAuthServiceError),
      retryAfter: RetryAfter,
 diff --git a/packages/sdk/src/implementation/account-identification.ts b/packages/sdk/src/implementation/account-identification.ts
-index 55f91ff924b959da505e306f8d8efefefc0a1ce0..e18bd4cc06bf5ff529ff30b4cea4514b5e6fe5f9 100644
+index 55f91ff..e18bd4c 100644
 --- a/packages/sdk/src/implementation/account-identification.ts
 +++ b/packages/sdk/src/implementation/account-identification.ts
 @@ -28,9 +28,9 @@ export const makeAccountIdentification =
@@ -2061,7 +2057,7 @@ index 55f91ff924b959da505e306f8d8efefefc0a1ce0..e18bd4cc06bf5ff529ff30b4cea4514b
 +      return yield* shown(yield* accountIdentity(db, current, lifecycle), current);
      }).pipe(Effect.withSpan("sdk.accounts.identify"));
 diff --git a/packages/sdk/src/implementation/account-identities.ts b/packages/sdk/src/implementation/account-identities.ts
-index 1452049bc064835685b1fb4376b60101242a36c6..2f0d7cdd35bccfdaa97629bd5d18aa232c22a783 100644
+index 1452049..2f0d7cd 100644
 --- a/packages/sdk/src/implementation/account-identities.ts
 +++ b/packages/sdk/src/implementation/account-identities.ts
 @@ -63,7 +63,7 @@ export const recordAccountIdentity = (
@@ -2094,7 +2090,7 @@ index 1452049bc064835685b1fb4376b60101242a36c6..2f0d7cdd35bccfdaa97629bd5d18aa23
      }),
    );
 diff --git a/packages/sdk/src/implementation/oauth-connection-plan.ts b/packages/sdk/src/implementation/oauth-connection-plan.ts
-index afed1e89fc0e085880fcf8d1f3b14297762660f8..ed56f8a809b370162aa2f568f06f59d23abfa0a7 100644
+index afed1e8..ed56f8a 100644
 --- a/packages/sdk/src/implementation/oauth-connection-plan.ts
 +++ b/packages/sdk/src/implementation/oauth-connection-plan.ts
 @@ -1,3 +1,4 @@
@@ -2128,7 +2124,7 @@ index afed1e89fc0e085880fcf8d1f3b14297762660f8..ed56f8a809b370162aa2f568f06f59d2
        plan: {
          ...base,
 diff --git a/packages/sdk/src/implementation/oauth-consent-state.ts b/packages/sdk/src/implementation/oauth-consent-state.ts
-index 7adf6ecf7cf69f8f33871a882fedd4bc8685796f..de7acfab621741446ea220931e137dc7b5f6b589 100644
+index 7adf6ec..de7acfa 100644
 --- a/packages/sdk/src/implementation/oauth-consent-state.ts
 +++ b/packages/sdk/src/implementation/oauth-consent-state.ts
 @@ -1,3 +1,4 @@
@@ -2198,7 +2194,7 @@ index 7adf6ecf7cf69f8f33871a882fedd4bc8685796f..de7acfab621741446ea220931e137dc7
        );
        if (account === undefined) return yield* new AccountConnectionRefused(row.target);
 diff --git a/packages/sdk/src/implementation/oauth-grant-bindings.ts b/packages/sdk/src/implementation/oauth-grant-bindings.ts
-index 2bbccd8bf13aee886f96e8a490aa1287f5bd1558..926429c6e31b52d4fd6bf4ee55979522b313ef6a 100644
+index 2bbccd8..926429c 100644
 --- a/packages/sdk/src/implementation/oauth-grant-bindings.ts
 +++ b/packages/sdk/src/implementation/oauth-grant-bindings.ts
 @@ -20,12 +20,26 @@ export const shareOAuthGrant = (
@@ -2229,7 +2225,7 @@ index 2bbccd8bf13aee886f96e8a490aa1287f5bd1558..926429c6e31b52d4fd6bf4ee55979522
      const encrypted = yield* credentials.encrypt(id, Redacted.make(json));
      yield* query(() =>
 diff --git a/packages/sdk/src/implementation/oauth-grant-reuse.ts b/packages/sdk/src/implementation/oauth-grant-reuse.ts
-index 52e7d8f6dcb5360d533e65d1ec91af19fac6acd0..1a5f25c27a1473539f99eaabfeb0887fae0c2fb5 100644
+index 52e7d8f..1a5f25c 100644
 --- a/packages/sdk/src/implementation/oauth-grant-reuse.ts
 +++ b/packages/sdk/src/implementation/oauth-grant-reuse.ts
 @@ -11,7 +11,7 @@ import {
@@ -2251,7 +2247,7 @@ index 52e7d8f6dcb5360d533e65d1ec91af19fac6acd0..1a5f25c27a1473539f99eaabfeb0887f
                },
              );
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index e4dec2e0cf111cd44d2ecf617af7d2d6de2875d6..31b6329172b02e2946ac3fabfd96a74d8fa93399 100644
+index 16f11f9..385601f 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,6 +1,6 @@
@@ -2262,7 +2258,7 @@ index e4dec2e0cf111cd44d2ecf617af7d2d6de2875d6..31b6329172b02e2946ac3fabfd96a74d
  import type { BackgroundWork } from "../contracts/declarations.ts";
  /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
  import {
-@@ -2528,7 +2528,9 @@ export const makeOAuth = (
+@@ -2511,7 +2511,9 @@ export const makeOAuth = (
                      provider: attempt.provider,
                      owner: attempt.owner,
                      label:
@@ -2273,7 +2269,7 @@ index e4dec2e0cf111cd44d2ecf617af7d2d6de2875d6..31b6329172b02e2946ac3fabfd96a74d
                      description: null,
                      method: attempt.method,
                      ...(attempt.site === undefined ? {} : { site: attempt.site }),
-@@ -2579,7 +2581,12 @@ export const makeOAuth = (
+@@ -2562,7 +2564,12 @@ export const makeOAuth = (
                  tx,
                  crypto,
                  lifecycle,
@@ -2287,7 +2283,7 @@ index e4dec2e0cf111cd44d2ecf617af7d2d6de2875d6..31b6329172b02e2946ac3fabfd96a74d
                  verified,
                  new Date(completedAt),
                );
-@@ -2734,7 +2741,8 @@ export const makeOAuth = (
+@@ -2717,7 +2724,8 @@ export const makeOAuth = (
              grant.identity === undefined ||
              grant.identityId !== account.identityId ||
              grant.grantedScopes === undefined ||
@@ -2298,7 +2294,7 @@ index e4dec2e0cf111cd44d2ecf617af7d2d6de2875d6..31b6329172b02e2946ac3fabfd96a74d
              return yield* reconnect("grant_unusable");
          }
 diff --git a/packages/ui/src/contracts/account-identities.ts b/packages/ui/src/contracts/account-identities.ts
-index 614ea957af366251a0e5ea9ecc23194e2664f76e..018b7f5776a51a0672b74f2496979771607485c5 100644
+index 614ea95..018b7f5 100644
 --- a/packages/ui/src/contracts/account-identities.ts
 +++ b/packages/ui/src/contracts/account-identities.ts
 @@ -1,4 +1,5 @@
@@ -2387,7 +2383,7 @@ index 614ea957af366251a0e5ea9ecc23194e2664f76e..018b7f5776a51a0672b74f2496979771
 +};
 diff --git a/packages/ui/src/contracts/oauth-scopes.ts b/packages/ui/src/contracts/oauth-scopes.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..85c42c197bb241810be0c0ec377a4337f73f9485
+index 0000000..85c42c1
 --- /dev/null
 +++ b/packages/ui/src/contracts/oauth-scopes.ts
 @@ -0,0 +1,10 @@
@@ -2402,7 +2398,7 @@ index 0000000000000000000000000000000000000000..85c42c197bb241810be0c0ec377a4337
 +  return path === "" ? url.hostname : path;
 +};
 diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
-index d4f01497dfbd965244ec8aab4b81c6dd696a2008..973740ecc2ac8f2aff019c1d6a4f6e1c3d418869 100644
+index d4f0149..973740e 100644
 --- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
 @@ -12,7 +12,14 @@ import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dash
@@ -2550,7 +2546,7 @@ index d4f01497dfbd965244ec8aab4b81c6dd696a2008..973740ecc2ac8f2aff019c1d6a4f6e1c
                    <div className="col-span-full min-w-0 pl-11.5">
                      {accountDetails(account, apps)}
 diff --git a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
-index 2213725e62235c75d0de8bdd7073330f795987b8..2b1bd348beb1d1ae803e055c7096bb23e332bb3c 100644
+index 2213725..2b1bd34 100644
 --- a/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/identity-consent-client.tsx
 @@ -18,6 +18,7 @@ import {
@@ -2578,7 +2574,7 @@ index 2213725e62235c75d0de8bdd7073330f795987b8..2b1bd348beb1d1ae803e055c7096bb23
                busy || planning || planned === undefined || planned.plan.status === "incompatible"
 diff --git a/packages/ui/src/implementation/dashboard/oauth-scopes.tsx b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..f1546acb8fa61e1c8b4be38fd8acd15e2e521e13
+index 0000000..f1546ac
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/oauth-scopes.tsx
 @@ -0,0 +1,56 @@
@@ -2639,7 +2635,7 @@ index 0000000000000000000000000000000000000000..f1546acb8fa61e1c8b4be38fd8acd15e
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/verify-identities-client.tsx b/packages/ui/src/implementation/dashboard/verify-identities-client.tsx
-index 21976d64776d079079338bb21e3647e1f6370cdf..e540f1673ec94ffd54808491d81b4d9103bc86ae 100644
+index 21976d6..e540f16 100644
 --- a/packages/ui/src/implementation/dashboard/verify-identities-client.tsx
 +++ b/packages/ui/src/implementation/dashboard/verify-identities-client.tsx
 @@ -1,8 +1,12 @@

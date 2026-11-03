@@ -523,10 +523,27 @@ index 42722c5..dc125bc 100644
    });
    const calls = yield* Ref.make<readonly (typeof Acquisition.Type)[]>([]);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 752e905..681200e 100644
+index 752e905..dccd246 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -245,6 +245,7 @@ export const scenarios = plan({
+@@ -223,6 +223,16 @@ export const scenarios = plan({
+       cloud: scheduled,
+     },
+   },
++  googleIdentityBinding: {
++    fixtures: "actors",
++    file: "google-identity-migration.spec.ts",
++    title: "Google identity recovery refuses a plan after the runtime database binding changes",
++    targets: {
++      local: na("Hosted production operations own this migration."),
++      "self-host": na("The signed operator endpoint is Cloud-only."),
++      cloud: scheduled,
++    },
++  },
+   accountIdentityPolicy: {
+     fixtures: "actors",
+     file: "account-identity-policy.spec.ts",
+@@ -245,6 +255,7 @@ export const scenarios = plan({
      },
    },
    accountIdentityRows: {
@@ -534,7 +551,7 @@ index 752e905..681200e 100644
      file: "account-identity-screens.spec.ts",
      title: "Verified account rows retain five app bindings and add a covered app without consent",
      targets: {
-@@ -267,6 +268,58 @@ export const scenarios = plan({
+@@ -267,6 +278,58 @@ export const scenarios = plan({
        cloud: na("Synthetic OAuth issuer uses loopback."),
      },
    },
