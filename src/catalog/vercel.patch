@@ -46,14 +46,14 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.100"
-+    "apps": "0.0.1-beta.104-basalt.1",
++    "apps": "0.0.1-beta.104-basalt.2",
 +    "@modelcontextprotocol/sdk": "1.32.1"
    }
  }
 --- /dev/null
 +++ b/mcp.ts
 @@ -0,0 +1,25 @@
-+import { defineProvider, oauth2, toolAnnotations, withApprovals } from "apps";
++import { defineProvider, oauth2, toolAnnotations, withApprovals, type AccountOf, type AppCache } from "apps";
 +import { mcpHealth, mcpRouter } from "apps/mcp";
 +import { always } from "apps/operations/approval";
 +
@@ -71,8 +71,8 @@
 +});
 +
 +export const signedInRouter = async (
-+  account: Parameters<typeof headers>[0] & { id: string },
-+  context: Pick<Parameters<typeof mcpRouter>[0], "cache" | "signal">,
++  account: AccountOf<typeof vercelSignIn>,
++  context: { cache: AppCache; signal: AbortSignal },
 +) =>
 +  withApprovals(
 +    await mcpRouter({ url, account, headers: headers(account), ...context }),
