@@ -24,7 +24,7 @@ const unavailable = () => new Response('{"error":"Catalog unavailable"}', {
 });
 
 function configuredAdditions(origin: string, metadata?: ZendeskMarketplaceMetadata): readonly FeedAddition[] {
-  const additions = [atlassianAddition()];
+  const additions = [atlassianAddition(origin)];
   const zendesk = zendeskAddition(metadata);
   return [...additions, ...sourceAdditions, ...recipeAdditions(origin), zendesk];
 }

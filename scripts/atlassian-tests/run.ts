@@ -11,7 +11,7 @@ type AtlassianProofInput = {
   readonly commit: string;
 };
 
-const frozenSourceHash = "b534c0aa6b16dcd58c2164a417f8dbae593bd1f5802e0359aff0990b6a3a09c8";
+const frozenSourceHash = "f3a1622ae0b564d6f10d2ae12b6db2f8823372bf2caebdacff156b44878a90e9";
 
 async function run(
   command: string,
