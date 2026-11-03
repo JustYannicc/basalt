@@ -61,6 +61,7 @@ test("the public observation carries reported quantities and expiry without raw 
     ] },
   }));
   assert.equal(output?.observedAt, "2026-10-30T18:00:00.000Z");
+  assert.equal(output?.observation.offering, "unknown", "a plan and quota do not establish an offering");
   assert.equal(output?.observation.windows[0]?.measure.remaining, -20);
   assert.equal(output?.observation.windows[0]?.measure.limit, 100);
   assert.equal(output?.observation.windows[0]?.period?.mode, "rolling");
