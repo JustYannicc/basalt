@@ -209,10 +209,9 @@ index c064042..65456f6 100644
              onSaved={() => {
                void navigate({
 diff --git a/apps/local/web/src/implementation/pages/oauth-fields.tsx b/apps/local/web/src/implementation/pages/oauth-fields.tsx
-index 5f5c5d2..04cb3ea 100644
 --- a/apps/local/web/src/implementation/pages/oauth-fields.tsx
 +++ b/apps/local/web/src/implementation/pages/oauth-fields.tsx
-@@ -7,6 +7,8 @@ import type { IdentityConsentSelection } from "@executor-js/ui/contracts/identit
+@@ -7,6 +7,8 @@
  import { IdentityConsent } from "@executor-js/ui/dashboard/identity-consent";
  import { identityConsentAtoms } from "../../contracts/identity-consent.ts";
  import { overviewAtom } from "../../contracts/api.ts";
@@ -221,7 +220,7 @@ index 5f5c5d2..04cb3ea 100644
  import { useAtomSet } from "@effect/atom-react";
  import type { Atom } from "effect/reactivity";
  import { Cause, Effect, Exit, Option, Schema } from "effect";
-@@ -22,7 +24,11 @@ import {
+@@ -22,7 +24,11 @@
  } from "@executor-js/sdk";
  import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
  import type { ConnectionGrant } from "@executor-js/local-server/account-connections";
@@ -234,7 +233,7 @@ index 5f5c5d2..04cb3ea 100644
  import type { appConnectionAtoms } from "../../contracts/app-connections.ts";
  import {
    startConnectionOAuthAtom,
-@@ -62,9 +68,20 @@ export function AppOAuthFields({
+@@ -63,6 +69,16 @@
    const reuse = useAtomSet(identityAtoms.reuse, { mode: "promiseExit" });
    const authorize = useAtomSet(identityAtoms.start, { mode: "promiseExit" });
    const reconnect = props.account !== undefined;
@@ -248,14 +247,18 @@ index 5f5c5d2..04cb3ea 100644
 +      ?.oauthDeferrals,
 +    props.method,
 +  );
+   // The identity consent that left for the service, so the callback can ask for it again.
+   const consent = useRef<OAuthConsentRetry | undefined>(undefined);
+   const authorizeIdentity = (selection: IdentityConsentSelection, client: OAuthSubmission) => {
+@@ -83,6 +99,7 @@
    const fields = (selection: IdentityConsentSelection) => (
      <Fields
        {...props}
 +      deferral={deferral}
        query={atoms.oauthSetup(props.method)}
        Failure={Failure}
-       start={(client) =>
-@@ -127,6 +144,7 @@ export function LinkOAuthFields({
+       start={(client) => {
+@@ -150,6 +167,7 @@
  function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
    provider,
    account,
@@ -263,7 +266,7 @@ index 5f5c5d2..04cb3ea 100644
    onSaved,
    onPendingChange,
    access,
-@@ -136,6 +154,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+@@ -159,6 +177,7 @@
    start,
    open,
  }: FieldsProps & {
@@ -271,7 +274,7 @@ index 5f5c5d2..04cb3ea 100644
    readonly query: Parameters<typeof OAuthSetup>[0]["query"];
    readonly Failure: ComponentType<FailureProps<E>>;
    readonly start: (client: OAuthSubmission) => Promise<Exit.Exit<S, E>>;
-@@ -154,6 +173,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
+@@ -177,6 +196,7 @@
            setupLoading={loading}
            setupFailed={failed}
            setupAction={action}
