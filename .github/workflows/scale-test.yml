@@ -1,4 +1,5 @@
-name: Pool scale test
+name: Pool scale experiment
+run-name: Pool scale experiment / ${{ inputs.mode }} / load evidence required
 
 on:
   workflow_dispatch:
@@ -28,6 +29,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       deadline: ${{ steps.execute.outputs.deadline }}
+      load-status: ${{ steps.verdict.outputs.status }}
     env:
       SCALE_MODE: ${{ inputs.mode }}
       SCALE_STAGE: ${{ inputs.stage }}
@@ -86,6 +88,11 @@ jobs:
           PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
           PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
           SCALE_MODE: destroy
+      - name: Classify measured load separately from deployment and cleanup
+        id: verdict
+        if: always()
+        continue-on-error: true
+        run: node scripts/scale-test/verdict.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,6 +100,22 @@ jobs:
           path: .local/scale-results
           if-no-files-found: warn
           retention-days: 7
+  load-evidence:
+    needs: scale
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require completed measured traffic
+        env:
+          MODE: ${{ inputs.mode }}
+          OPERATION: ${{ needs.scale.result }}
+          LOAD_STATUS: ${{ needs.scale.outputs.load-status }}
+        run: |
+          if [ "$MODE" != run ] || [ "$OPERATION" != success ] || [ "$LOAD_STATUS" != passed ]; then
+            echo 'No passing load evidence. Deployment and teardown are not capacity proof.'
+            exit 1
+          fi
+          echo 'Measured single-instance pool traffic only. Autoscaling remains unproven.'
   lease:
     needs: scale
     if: inputs.mode == 'deploy' && needs.scale.result == 'success'

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { cf, list, inventory, assertAbsent, pg, publicInventory } from "./api.mjs";
+import { scenarios } from "./scenarios.mjs";
 import { stageClient, stageOrigin } from "./stage-client.mjs";
 import { candidate, credentials, imageDigest, prefix, sizes, stage, validate, worker } from "./settings.ts";
 
@@ -111,6 +112,10 @@ async function job(spec) {
         throw new Error("A synthetic fixture event loop is saturated; pool capacity is unmeasured");
     }
     if (result.state === "done") {
+      const completed = await request(`/_test/gen/job/${spec.id}/details`);
+      save(spec.id, { spec, result: completed, samples });
+      if (completed.state !== "done" || completed.count !== spec.requests || !Array.isArray(completed.records)
+        || completed.records.length !== completed.count) throw new Error("Completed raw load records are unavailable");
       if (result.success !== result.count) throw new CapacityStop(`First synthetic failure at ${spec.id}; evidence saved`);
       if (result.scheduleLagMsP99 > 1000) throw new Error("Generator is saturated; pool capacity is unmeasured");
       const expected = persistedBefore.usage[0].records + result.count;
@@ -136,6 +141,7 @@ async function resize(size) {
   await cf(`containers/applications/${app.id}`, "PATCH", { max_instances: 1, configuration });
   // Use the same immediate rollout as the pinned Alchemy container provider.
   await cf(`containers/applications/${app.id}/rollouts`, "POST", {
+    description: "Scale test instance size update",
     strategy: "rolling", kind: "full_auto", step_percentage: 100, target_configuration: configuration,
   });
   const observed = await cf(`containers/applications/${app.id}`);
@@ -197,10 +203,7 @@ try {
         save(`${size}-deployment`, publicInventory(await inventory()));
         await request("/_test/pool/stop", {});
         await configure(size);
-        for (const protocol of ["chat", "responses", "messages"]) await job({ id: `${size}-${protocol}-probe`, protocol, users: 1, concurrency: 1, requests: 1, streamSeconds: 2, bodyBytes: 1024 });
-        for (const [users, concurrency] of [[1, 20], [200, 800], [200, 2000], [200, 4000], [5000, 5000]])
-          await job({ id: `${size}-${users}-${concurrency}`, users, concurrency, requests: concurrency, streamSeconds: 60, bodyBytes: 262144, startsPerSecond: 100 });
-        await job({ id: `${size}-long`, users: 20, concurrency: 20, requests: 20, streamSeconds: 360, bodyBytes: 262144, rate: 1 });
+        for (const spec of scenarios(size)) await job(spec);
         const beforeRestart = await request("/_test/pool/db");
         await request("/_test/pool/stop", {}); await request("/_test/pool/warm", {});
         const afterRestart = await request("/_test/pool/db");
@@ -218,6 +221,6 @@ try {
   }
 } catch (error) {
   // Errors from the synthetic controller are bounded strings; no remote bodies are included.
-  save("failure", { at: new Date().toISOString(), message: error.message });
+  save("failure", { at: new Date().toISOString(), message: error.message, ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}) });
   throw error;
 }
