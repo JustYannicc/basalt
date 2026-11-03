@@ -196,23 +196,25 @@ index 0000000..cfc8def
 +  );
 +});
 diff --git a/packages/app-templates/executor/skills/app-authoring/accounts.md b/packages/app-templates/executor/skills/app-authoring/accounts.md
-index 77f2ca9..e5fdff4 100644
+index 77f2ca9..d49e099 100644
 --- a/packages/app-templates/executor/skills/app-authoring/accounts.md
 +++ b/packages/app-templates/executor/skills/app-authoring/accounts.md
-@@ -291,6 +291,11 @@ supports:
+@@ -291,6 +291,13 @@ supports:
  | `unavailable`  | a server error or outage                                         | `upstream_unavailable` |
  | `rejected`     | the service refused without saying why, such as a bare 403       | `check_failed`         |
  
 +After a check passes, the host also loads the app's tools with that account, as
 +agents' discovery does. If the factory or a router throws, the check reports
-+`tools_unavailable` with the error agents get; a discovery that fails the same
-+way marks a passing check until the tools load again.
++`tools_unavailable` with the error agents get. Agents' discovery records the
++same per kind of read, such as MCP with or without app UI, and each kind clears
++only its own failure once the tools load for it; a failure nobody reads again
++stops counting after a day.
 +
  A bare 403 is not enough for `forbidden`. Services that answer a bad token with
  something other than 401, as Vercel does, need an explicit `unauthorized`. Tool
  calls that fail with `rate_limited` or `unavailable` tell the agent to retry
 diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-index 8048464..e085372 100644
+index 8048464..a19f470 100644
 --- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 +++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 @@ -3,7 +3,7 @@
@@ -220,7 +222,7 @@ index 8048464..e085372 100644
  export const executorSkillDigests: Readonly<Record<string, string>> = {
    "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
 -  "app-authoring/accounts.md": "43c37bbe785e0ab99a70464db056b15ce33c04970e9d840aadaca104c1873bc2",
-+  "app-authoring/accounts.md": "7715e44157b098f4683cf44f0b17b47355ff599207e819754f8f3bc988938d5d",
++  "app-authoring/accounts.md": "432a174d046d503b5280c2bce3208047bd2d2dcb637e2f31d5f5d2827c234a91",
    "app-authoring/deploy.md": "dab905832c653eb6a22d6bfd64e4ec3b8cb994288972f61f29fe23c945d75822",
    "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
    "app-authoring/integrations.md": "cb0ac98ad26d840e7ec18e79756a9592acfc65045aa67caf28b18c102ca01690",
@@ -262,7 +264,7 @@ index cb2ba2e..487c263 100644
    });
  
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 63e1925..0cecba4 100644
+index 63e1925..c53851f 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,4 +1,11 @@
@@ -312,7 +314,41 @@ index 63e1925..0cecba4 100644
  ) => {
    const driver = makeDriverAccountHealth(
      db,
-@@ -373,7 +394,17 @@ export const makeAccountHealth = (
+@@ -192,15 +213,21 @@ export const makeAccountHealth = (
+         apps: yield* Effect.forEach(apps, (app) =>
+           Effect.gen(function* () {
+             const row = rows.find((item) => item.app === app.id);
++            // Tools failures every one of whose entries expired no longer count.
++            const toolsExpired =
++              row?.status === "tools_unavailable" &&
++              Object.keys(toolsEntries(row.info, yield* Clock.currentTimeMillis)).length === 0;
+             const displayStatus = row === undefined ? undefined : recordedDisplayStatus(row.info);
+             const failure = row === undefined ? undefined : recordedCheckFailure(row.info);
+             const check =
+               row === undefined
+                 ? null
+                 : {
+-                    status: yield* Schema.decodeUnknownEffect(AccountCheckStatus)(row.status).pipe(
+-                      Effect.mapError(() => new StorageError()),
+-                    ),
++                    status: toolsExpired
++                      ? ("healthy" as const)
++                      : yield* Schema.decodeUnknownEffect(AccountCheckStatus)(row.status).pipe(
++                          Effect.mapError(() => new StorageError()),
++                        ),
+                     checkedAt: row.checkedAt,
+                     ...(displayStatus === undefined ? {} : { displayStatus }),
+                     ...(failure === undefined ? {} : { failure }),
+@@ -213,7 +240,7 @@ export const makeAccountHealth = (
+                     current:
+                       row.deployment === app.activeVersion &&
+                       row.credentialGeneration === account.credentialGeneration,
+-                    ...(row.message === null ? {} : { message: row.message }),
++                    ...(row.message === null || toolsExpired ? {} : { message: row.message }),
+                   };
+             return {
+               app: app.id,
+@@ -373,7 +400,17 @@ export const makeAccountHealth = (
        if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
          return yield* Effect.fail(outcome.failure);
        if (Result.isSuccess(outcome) && outcome.success === undefined) return;
@@ -331,7 +367,7 @@ index 63e1925..0cecba4 100644
        const failure = Result.isFailure(outcome) ? accountCheckFailure(outcome.failure) : undefined;
        if (failure !== undefined) yield* recordAccountCheckFailure(failure);
        const existing = yield* query(() =>
-@@ -382,6 +413,22 @@ export const makeAccountHealth = (
+@@ -382,6 +419,22 @@ export const makeAccountHealth = (
          }),
        );
        if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
@@ -354,7 +390,7 @@ index 63e1925..0cecba4 100644
        const checkedAt = new Date(startedAt);
        const success = Result.isSuccess(outcome) ? outcome.success : undefined;
        const record = yield* accountCheckRecord(
-@@ -396,7 +443,7 @@ export const makeAccountHealth = (
+@@ -396,7 +449,7 @@ export const makeAccountHealth = (
          status,
          checkedAt,
          ...record,
@@ -363,7 +399,7 @@ index 63e1925..0cecba4 100644
            failure === undefined
              ? record.info
              : {
-@@ -406,7 +453,11 @@ export const makeAccountHealth = (
+@@ -406,7 +459,11 @@ export const makeAccountHealth = (
                    ? { checkReason: outcome.failure.reason }
                    : {}),
                },
@@ -378,10 +414,10 @@ index 63e1925..0cecba4 100644
          db.upsert("accountChecks", {
 diff --git a/packages/sdk/src/implementation/account-tools-health.ts b/packages/sdk/src/implementation/account-tools-health.ts
 new file mode 100644
-index 0000000..5daac7d
+index 0000000..037cec9
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-tools-health.ts
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,195 @@
 +/**
 + * Whether an app's tools load for agents, kept on the app's account checks. A provider check can
 + * accept credentials while the app's tool loader fails, so the check also reads the app's catalog,
@@ -486,7 +522,9 @@ index 0000000..5daac7d
 +/**
 + * Record what one catalog read of `context` found on the checks of the accounts it used, at the
 + * version and credential generations it read. A check written since this read is never changed.
-+ * Two reads that overlap may leave the earlier one's finding until the next read of its context.
++ * Reads of other contexts can update the same row at once, so each write is read back and merged
++ * again if another write replaced it; a read that loses every attempt leaves its finding to the
++ * next read of its context.
 + */
 +export const observeToolLoad = (
 +  db: Query,
@@ -515,37 +553,65 @@ index 0000000..5daac7d
 +          ),
 +      }),
 +    );
-+    for (const row of rows) {
-+      if (generation.get(row.account as AccountId) !== row.credentialGeneration) continue;
-+      const entries = toolsEntries(row.info, now);
-+      if (input.problem === undefined && !Object.hasOwn(entries, input.context)) continue;
-+      const next = recordRead(entries, input.context, input.problem, now);
-+      const reason = toolsReason(next);
-+      const status = statusWith(row.status, reason);
-+      const info = withToolsEntries(
-+        Option.getOrNull(Schema.decodeUnknownOption(JsonObject)(row.info)),
-+        next,
-+      );
-+      yield* query(() =>
-+        db.updateMany("accountChecks", {
-+          where: (b) =>
-+            b.and(
-+              b("id", "=", row.id),
-+              b("status", "=", row.status),
-+              b("deployment", "=", row.deployment),
-+              b("credentialGeneration", "=", row.credentialGeneration),
-+              b("checkedAt", "=", row.checkedAt),
-+            ),
-+          set: {
-+            status,
-+            info,
-+            ...(status === "tools_unavailable" || row.status === "tools_unavailable"
-+              ? { message: status === "tools_unavailable" ? (reason ?? null) : null }
-+              : {}),
-+          },
-+        }),
-+      );
-+    }
++    type CheckRow = (typeof rows)[number];
++    // Whether this read's finding is what the row holds now.
++    const recorded = (row: CheckRow) => {
++      const entry = toolsEntries(row.info, now)[input.context];
++      return input.problem === undefined ? entry === undefined : entry?.reason === input.problem;
++    };
++    const current = (row: CheckRow | null): row is CheckRow =>
++      row !== null &&
++      row.deployment === input.version &&
++      generation.get(row.account as AccountId) === row.credentialGeneration;
++    const settle = (first: CheckRow) =>
++      Effect.gen(function* () {
++        let row: CheckRow | null = first;
++        for (let attempt = 0; attempt < 3 && current(row); attempt++) {
++          const read: CheckRow = row;
++          const entries = toolsEntries(read.info, now);
++          // A status whose every entry expired is reconciled even by a read that changes nothing.
++          const expired = read.status === "tools_unavailable" && Object.keys(entries).length === 0;
++          if (
++            attempt === 0 &&
++            input.problem === undefined &&
++            !Object.hasOwn(entries, input.context) &&
++            !expired
++          )
++            return;
++          const next = recordRead(entries, input.context, input.problem, now);
++          const reason = toolsReason(next);
++          const status = statusWith(read.status, reason);
++          yield* query(() =>
++            db.updateMany("accountChecks", {
++              where: (b) =>
++                b.and(
++                  b("id", "=", read.id),
++                  b("status", "=", read.status),
++                  b("deployment", "=", read.deployment),
++                  b("credentialGeneration", "=", read.credentialGeneration),
++                  b("checkedAt", "=", read.checkedAt),
++                ),
++              set: {
++                status,
++                info: withToolsEntries(
++                  Option.getOrNull(Schema.decodeUnknownOption(JsonObject)(read.info)),
++                  next,
++                ),
++                ...(status === "tools_unavailable" || read.status === "tools_unavailable"
++                  ? { message: status === "tools_unavailable" ? (reason ?? null) : null }
++                  : {}),
++              },
++            }),
++          );
++          row = yield* query(() =>
++            db.findFirst("accountChecks", { where: (b) => b("id", "=", read.id) }),
++          );
++          // Done once the row holds this finding, or a check has since replaced what was read.
++          if (row === null || row.checkedAt.getTime() !== read.checkedAt.getTime() || recorded(row))
++            return;
++        }
++      });
++    for (const row of rows) if (current(row)) yield* settle(row);
 +  });
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
 index 482362e..d2c9671 100644
@@ -618,7 +684,7 @@ index 482362e..d2c9671 100644
      const schedules = makeSchedules(
        options.database,
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 2b699fe..dfb06ad 100644
+index 2b699fe..ccf2a41 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -1,6 +1,7 @@
@@ -630,15 +696,16 @@ index 2b699fe..dfb06ad 100644
  import { appProviderFailure } from "./provider-error.ts";
  import { invocationAccount } from "./provider.ts";
  import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
-@@ -96,6 +97,7 @@ import {
+@@ -96,6 +97,8 @@ import {
    InvocationSelection,
    type PrefetchedInvocation,
    type PrefetchHost,
 +  ToolListingTimedOut,
++  type ToolRouter,
  } from "../contracts/tools.ts";
  import type { ExecutorDatabase } from "./storage.ts";
  import type { ProviderDefinition } from "../contracts/provider.ts";
-@@ -1207,10 +1209,52 @@ export const makeTools = (
+@@ -1207,10 +1210,62 @@ export const makeTools = (
            name: ToolName.make(tool.name),
          })),
      });
@@ -663,16 +730,26 @@ index 2b699fe..dfb06ad 100644
 +        problem,
 +      });
 +    }).pipe(Effect.catchCause(() => Effect.logWarning("Recording tool availability failed")));
-+  /** A listing that timed out for its reader also failed to load the tools, as agents see it. */
-+  const observeTimeout =
++  /**
++   * What a read serves agents counts as well as what an evaluation found: a kept listing can hold a
++   * router that failed, and a remembered failure or a timeout can be served without evaluating.
++   * Only failures are recorded here; a success is recorded when an evaluation runs.
++   */
++  const observeServed =
 +    (state: InvocationSnapshot) =>
-+    <A, E, R>(read: Effect.Effect<A, E, R>) =>
++    <A extends { readonly routers: readonly ToolRouter[] }, E, R>(read: Effect.Effect<A, E, R>) =>
 +      read.pipe(
-+        Effect.tapError((error) =>
-+          Schema.is(ToolListingTimedOut)(error)
-+            ? observeTools(state, toolsFailure(error))
-+            : Effect.void,
-+        ),
++        Effect.tap((served) => {
++          const problem = toolsProblem(
++            { app: state.app.id, version: state.version.id },
++            served.routers,
++          );
++          return problem === undefined ? Effect.void : observeTools(state, problem);
++        }),
++        Effect.tapError((error) => {
++          const problem = toolsFailure(error);
++          return problem === undefined ? Effect.void : observeTools(state, problem);
++        }),
 +      );
    /** Evaluate every tool of the catalog with schemas, sorted by name, for the listing store. */
    const listingOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
@@ -691,18 +768,18 @@ index 2b699fe..dfb06ad 100644
      );
    /**
     * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
-@@ -1273,7 +1317,9 @@ export const makeTools = (
+@@ -1273,7 +1328,9 @@ export const makeTools = (
      list: (input: Parameters<Executor["tools"]["list"]>[0], options?: ToolListOptions) =>
        Effect.gen(function* () {
          const state = yield* listed(input);
 -        const listing = yield* listings.read(state, listingOf(state), options);
 +        const listing = yield* listings
 +          .read(state, listingOf(state), options)
-+          .pipe(observeTimeout(state));
++          .pipe(observeServed(state));
          // Pages share the listing's item objects, so a caller can recognise a kept listing.
          const start = pageStart(listing, input.cursor);
          const selected = yield* pageTools(
-@@ -1292,6 +1338,19 @@ export const makeTools = (
+@@ -1292,6 +1349,19 @@ export const makeTools = (
              : {}),
          };
        }).pipe(Effect.withSpan("sdk.tools.list")),
@@ -722,32 +799,32 @@ index 2b699fe..dfb06ad 100644
      /** Keep the target's current listing as search rows; see `Listings.searchable`. */
      searchable: (
        input: Omit<Parameters<Executor["tools"]["list"]>[0], "cursor" | "limit">,
-@@ -1299,7 +1358,9 @@ export const makeTools = (
+@@ -1299,7 +1369,9 @@ export const makeTools = (
      ) =>
        Effect.gen(function* () {
          const state = yield* listed(input);
 -        const found = yield* listings.searchable(state, listingOf(state), options);
 +        const found = yield* listings
 +          .searchable(state, listingOf(state), options)
-+          .pipe(observeTimeout(state));
++          .pipe(observeServed(state));
          return {
            listing: found.listing,
            version: state.version.id,
-@@ -1341,7 +1402,7 @@ export const makeTools = (
+@@ -1341,7 +1413,7 @@ export const makeTools = (
      index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
        Effect.gen(function* () {
          const state = yield* listed(input);
 -        const listing = yield* listings.read(state, listingOf(state));
-+        const listing = yield* listings.read(state, listingOf(state)).pipe(observeTimeout(state));
++        const listing = yield* listings.read(state, listingOf(state)).pipe(observeServed(state));
          return {
            ...listing.catalog,
            routers: listing.routers,
-@@ -1356,7 +1417,7 @@ export const makeTools = (
+@@ -1356,7 +1428,7 @@ export const makeTools = (
      get: (input: Parameters<Executor["tools"]["get"]>[0]) =>
        Effect.gen(function* () {
          const state = yield* listed(input);
 -        const listing = yield* listings.read(state, listingOf(state));
-+        const listing = yield* listings.read(state, listingOf(state)).pipe(observeTimeout(state));
++        const listing = yield* listings.read(state, listingOf(state)).pipe(observeServed(state));
          const kept = listing.items.find((tool) => tool.name === input.tool);
          if (kept !== undefined) {
            yield* Effect.annotateCurrentSpan("executor.tools.source", "listing");
