@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { appsManifest } from "../.upstream/e2e/support/apps-release.ts";
+import { localOpenapi } from "./openapi-fixture.mjs";
 
 /** Run an unrelated catalog app with extra token metadata through real sign-in and health. */
-export const verifyMiroOAuth = ({ request, prefix, fixtureOrigin, source }) =>
+export const verifyMiroOAuth = ({ request, prefix, fixtureOrigin, source, documents }) =>
   Effect.gen(function* () {
-    const app = yield* request("POST", `${prefix}/apps/deploy`, {
-      name: "Miro OAuth health proof",
-      files: [
-        ...source.files
+    // Its live definition is served by the fixture too, so the account check can load its tools.
+    const local = yield* Effect.promise(() =>
+      localOpenapi(
+        source.files
           .filter((file) => file.path !== "package.json")
           .map((file) => ({
             ...file,
@@ -20,8 +21,14 @@ export const verifyMiroOAuth = ({ request, prefix, fixtureOrigin, source }) =>
                 `hosts: [${JSON.stringify(new URL(fixtureOrigin).host)}]`,
               ),
           })),
-        appsManifest,
-      ],
+        fixtureOrigin,
+        "miro",
+      ),
+    );
+    if (local.document !== undefined) documents.set("miro", local.document);
+    const app = yield* request("POST", `${prefix}/apps/deploy`, {
+      name: "Miro OAuth health proof",
+      files: [...local.files, appsManifest],
     });
     const connection = yield* request(
       "POST",
