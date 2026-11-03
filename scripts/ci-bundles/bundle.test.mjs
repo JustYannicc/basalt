@@ -88,6 +88,8 @@ test("required missing evidence fails even when the suite summary exists", async
     const suite = { artifacts: [{ name: "screenshots", path: "screenshots/*.png", "if-no-files-found": "error" }] };
     await assert.rejects(collect(suite, directory, { temp: directory }, output), /Required artifact is missing/);
     await mkdir(join(directory, "screenshots"));
+    await assert.rejects(collect({ artifacts: [{ ...suite.artifacts[0], path: "screenshots" }] },
+      directory, { temp: directory }, output), /Required artifact is missing/);
     await writeFile(join(directory, "screenshots/proof.png"), "retained-proof");
     await collect(suite, directory, { temp: directory }, output);
     assert.equal(await readFile(join(output, "artifacts/screenshots/proof.png"), "utf8"), "retained-proof");

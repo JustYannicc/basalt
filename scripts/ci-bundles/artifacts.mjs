@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
-import { cp, glob, mkdir } from "node:fs/promises";
+import { cp, glob, mkdir, readdir, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { interpolate } from "./plan.mjs";
+
+async function hasFiles(path) {
+  const entry = await stat(path);
+  if (entry.isFile()) return true;
+  if (entry.isDirectory()) {
+    for (const child of await readdir(path)) if (await hasFiles(join(path, child))) return true;
+  }
+  return false;
+}
 
 export async function collect(suite, workspace, context, destination) {
   for (const artifact of suite.artifacts) {
@@ -15,10 +24,12 @@ export async function collect(suite, workspace, context, destination) {
         const target = join(destination, "artifacts", relativePath);
         await mkdir(dirname(target), { recursive: true });
         await cp(source, target, { recursive: true, force: true });
-        matches++;
+        if (await hasFiles(source)) matches++;
       }
     }
     if (!matches && artifact["if-no-files-found"] === "error")
       throw new Error(`Required artifact is missing: ${interpolate(artifact.name, context)}`);
+    if (!matches && (artifact["if-no-files-found"] ?? "warn") === "warn")
+      console.log(`::warning title=${suite.key ?? "Boat evidence"}::No files for ${interpolate(artifact.name, context)}`);
   }
 }
