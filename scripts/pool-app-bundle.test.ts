@@ -39,7 +39,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-mono.woff2": "mono",
       ".upstream/packages/ui/src/implementation/styles/fonts/LICENSE.txt": "Open Font License",
       ".upstream/packages/apps/package.json": JSON.stringify({
-        version: "0.0.1-beta.104-basalt.1",
+        version: "0.0.1-beta.104-basalt.2",
       }),
     }))
       writeFileSync(join(root, path), content);
@@ -72,7 +72,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       `export const poolOrigin = "https://${brand.host}";\nexport const productName = ${JSON.stringify(brand.name)};\n`,
     );
     assert.deepEqual(JSON.parse(files[2]!.content).dependencies, {
-      apps: "0.0.1-beta.104-basalt.1",
+      apps: "0.0.1-beta.104-basalt.2",
       react: "19",
     });
     const output = join(upstream, "apps/hosted/server/src/implementation");
