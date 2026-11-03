@@ -58,8 +58,10 @@ export async function adoptionStepGate() {
   });
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("TCP gate required");
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(address.port);
   return {
-    origin: `http://127.0.0.1:${address.port}`,
+    origin: origin.origin,
     close: async () => {
       for (const gate of gates.values()) gate.release.resolve();
       gates.clear();
