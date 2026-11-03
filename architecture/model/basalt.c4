@@ -123,13 +123,13 @@ model {
     }
 
     usageImportClient = adapter "Usage import client" {
-      description "Operator-supplied target origin and private pool-token file. Redirects are refused; only the usage import endpoint is called."
-      metadata { code "scripts/import-usage.ts"; bindings "globalThis=basalt.modelGateway" }
+      description "Operator-supplied target origin and private pool-token file. Redirects are refused; only the usage import endpoint is called. Manager Plus metadata files stream in byte-bounded pages of at most 200 rows. A complete hashed exact-ID dry-run manifest binds the source file, destination and caller. Apply obtains a fresh matching short-lived page approval and fsyncs acknowledgement receipts; uncertain HTTP results stop for reconciliation. Replays compare immutable retained contents before inserting missing identities."
+      metadata { code "scripts/import-usage.ts|scripts/import-cpamp.ts|scripts/usage-import-stream.ts"; bindings "globalThis=basalt.modelGateway" }
     }
 
     usageExportClient = adapter "Usage export client" {
-      description "Operator-supplied source origin and private management-key file. Reads fixed non-destructive export routes, checks page counts and refuses redirects."
-      metadata { code "scripts/usage-import-source.ts"; bindings "globalThis=historyExportService" }
+      description "Operator-supplied source origin and private management-key file. Reads fixed non-destructive export routes, checks page counts and refuses redirects. Manager Plus uses an explicit frozen upper row ID and paced read-only keyset pages on its live SQLite file, with a short transaction and SQL deadline per page. A second pass checks the same metadata ranges by checksum. Private fsynced local page receipts allow resume, and a disk floor stops new allocations. It never copies the source database or reads request payloads."
+      metadata { code "scripts/usage-import-source.ts|scripts/cpamp-read-page.py|scripts/export-cpamp.py"; bindings "globalThis=historyExportService" }
     }
 
     poolController = actor "Pool controller" {
@@ -272,14 +272,14 @@ model {
         cursors commit with their request rows. Each sweep freezes its upper bound so sustained
         arrivals cannot prevent revisiting late commits. Missing model metadata remains unknown;
         Home charges round half up to twelve decimal places without rejecting extra precision.
-        The import endpoint accepts paginated Home JSONL or legacy per-request snapshots, defaults
+        The import endpoint accepts paginated Home JSONL, Manager Plus metadata JSONL or legacy per-request snapshots, defaults
         to a read-only dry run and requires a signed matching approval before inserting a batch.
         It stores neither exports nor prompts, raw keys, human labels or error text. Aggregate-only
         history stays explicitly unimportable. Historical API prices need a model/provider mapping
         and dated rates; only validated complete token breakdowns can receive a calculated price.
         Local Home imports explicitly bind to the local source and resolve its exact usage IDs and
         attribution before signed approval, deduplicating against capture in either order.
-        Remote usage IDs stay source-scoped; display-only HTTP codes never fill unknown status. Remote exports use fixed
+        Manager Plus event hashes retain a stable source-scoped identity independent of source row IDs. Its absent authoritative billing and unproved token semantics stay unpriced and legacy. External imports reject changed retained contents even across concurrent inserts; local Home imports retain their canonical attribution resolution. Remote usage IDs stay source-scoped; display-only HTTP codes never fill unknown status. Remote exports use fixed
         read-only Home routes with offset pagination, never a consumable usage queue.
         Guards diagnostic usage and application-log inserts and updates from older writers.
         Application-log cleanup extends the existing privacy journal, including completed usage
