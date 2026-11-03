@@ -1,3 +1,17 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+index 9856d93..f536c84 100644
+--- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
++++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+@@ -179,7 +179,8 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
+             }),
+         output: {
+           entryFileNames: `${worker}-[name].js`,
+-          chunkFileNames: `${worker}-[name]-[hash].js`,
++          // Keep hashed chunks separate from the single root entry, even for lowercase hashes.
++          chunkFileNames: `chunks/${worker}-[name]-[hash].js`,
+           // Normal ESM ordering avoids an initializer wrapper around every module.
+           // This graph is covered by the workerd MCP and app-UI tests; keep source maps for diagnostics.
+           strictExecutionOrder: false,
 diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
 index a4387f7..bc2a476 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx

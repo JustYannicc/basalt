@@ -15,6 +15,7 @@ import {
 
 test("the main module is the one Rolldown didn't name with a content hash", () => {
   const chunks = [
+    "chunks/dashboard-dashboard-_ebysgqs.js",
     "api-api-Cr01jjcH.js",
     "api-session-Da1dViX-.js",
     "api-kysely-migration-tables-DFfmKhq--DIOBV7Sd.js",
@@ -28,6 +29,10 @@ test("the main module is the one Rolldown didn't name with a content hash", () =
   assert.equal(findEntry(["router.js"]), "router.js");
   assert.throws(() => findEntry(chunks), /found none/);
   assert.throws(() => findEntry(["a.js", "b.js"]), /found a\.js, b\.js/);
+  assert.throws(
+    () => findEntry(["dashboard-dashboard.js", "dashboard-dashboard-_ebysgqs.js"]),
+    /Expected one main module/,
+  );
 });
 
 test("only modules the entry reaches are uploaded, through static, dynamic and asset imports", () => {
