@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handleCatalog } from "./worker.ts";
+import reviewData from "./oauth-reviews.json" with { type: "json" };
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
 import {
   oauthFitness,
   oauthReviews,
@@ -10,6 +12,25 @@ import {
 import type { Feed } from "./feed.ts";
 
 const sha = "a".repeat(64);
+
+test("reviewed carried sources match the packages the catalog serves", async () => {
+  const reviews = oauthReviews(reviewData);
+  for (const id of ["atlassian", "gitlab", "miro", "slack"]) {
+    const response = await handleCatalog(
+      new Request(`https://catalog.example.test/catalog/apps/${id}.json`),
+      async () => {
+        throw new Error("A carried source must not contact its publisher");
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(
+      catalogDocumentSha256(await response.json()),
+      reviews.find((review) => review.entry === id)?.sourceSha256,
+      id,
+    );
+  }
+});
+
 const entry = (id: string) => ({
   id,
   package: `@fixture/${id}`,

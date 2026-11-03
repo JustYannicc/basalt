@@ -281,7 +281,7 @@
     {
       "entry": "atlassian",
       "package": "atlassian",
-      "sourceSha256": "4e6a82f95c13b94c986ceec30b1098629839d795be5263a5427cde491d8690c1",
+      "sourceSha256": "d7047e4226b6744b95f9cd0a4bd573630dc254e1d8344c9f8ad530d0f7de8294",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1877,7 +1877,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "9e6efd623d431f12fcb298e79dbca4470f4776701ef12865dacb4aa2df2518a0",
+      "sourceSha256": "bdb86eb6827630f729959c7e8eda2ddf057fefb81691ce42594e92167faf297f",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3019,7 +3019,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "23074a3b0d53ab3fd7c593d16503fbffeaa04588d0fd603e7a669cdb293b2f5d",
+      "sourceSha256": "5321e78cb86e5f6a7f2433c87d3d6120d0b817e935b1941e19131c63510f90ef",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4253,7 +4253,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "683803c02f2272e3b108a20d6164c1e9fdd7c7617c872042d8c9353a088dc2f5",
+      "sourceSha256": "82d474544e8f0c028b6ea937d727c0bcddafec1f02b2975c11cc5691a1608889",
       "methods": {
         "user": {
           "kind": "hosted",
