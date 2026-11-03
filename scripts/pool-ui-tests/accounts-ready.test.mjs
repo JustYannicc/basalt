@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(root, ".upstream/package.json"));
 const { chromium } = require("playwright");
-const ready = { name: "basalt:pool-accounts-ready", version: 1 };
+const ready = { name: "basalt:pool-accounts-ready", version: 2, snapshot: false };
 const failed = { ok: false, error: "backend_unavailable", message: "Synthetic pool failure" };
 const empty = { isOwner: true, providers: [], accounts: [] };
 const emptyUsage = { ok: true, value: {
@@ -193,7 +193,7 @@ test(
         const frame = document.querySelector('iframe');
         if (event.source !== frame.contentWindow || event.origin !== new URL(frame.src).origin) { window.rejected++; return; }
         const data = event.data;
-        if (data.version !== 1 || Object.keys(data).length !== 2) { window.rejected++; return; }
+        if (data.version !== 2 || typeof data.snapshot !== 'boolean' || Object.keys(data).length !== 3) { window.rejected++; return; }
         window.readiness.push({ data, at: performance.now() });
       });
     </script><iframe src="${childOrigin}"></iframe>`);
@@ -368,18 +368,21 @@ test(
       }
     };
 
-    for (const { populated, recovery } of sourceRef ? [] : [
+    for (const { populated, recovery, sourced } of sourceRef ? [] : [
       { populated: false },
       { populated: true },
+      { populated: true, sourced: true },
       { populated: true, recovery: "manual" },
       { populated: true, recovery: "background" },
     ])
       await t.test(
         recovery
           ? `failed first load, then ${recovery} recovery`
-          : populated
-            ? "account rows"
-            : "authorized empty result",
+          : sourced
+            ? "explicit live account rows"
+            : populated
+              ? "account rows"
+              : "authorized empty result",
         async () => {
           const value = populated
             ? {
@@ -403,6 +406,8 @@ test(
                 ],
               }
             : empty;
+          if (sourced)
+            value.reading = poolView(Date.now(), { source: "live", observedAgo: 0, savedAgo: 0, left: [[1, 1], [1, 1], [1, 1]] }).value.reading;
           viewResult = recovery ? failed : { ok: true, value };
           await session(async ({ page, frame, accepted, marks, committedAtReady }) => {
             const poll = async () => {
@@ -435,7 +440,7 @@ test(
               return;
             }
             await frame.getByText(visible, { exact: true }).waitFor();
-            await page.waitForFunction(() => Reflect.get(window, "readiness").length === 1);
+            await page.waitForFunction(() => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0);
             assert.deepEqual(
               (await accepted()).map((entry) => entry.data),
               [ready],
@@ -446,11 +451,22 @@ test(
             assert.deepEqual(sent(), { retained: 2, fresh: 0 });
             // Unrelated sources and unsupported contracts cannot satisfy the parent probe.
             await page.evaluate((data) => window.postMessage(data, location.origin), ready);
+            const invalid = [
+              { name: ready.name, version: 1 },
+              { ...ready, version: 3 },
+              { name: ready.name, version: 2 },
+              { ...ready, snapshot: "snapshot" },
+              { ...ready, snapshot: 0 },
+              { ...ready, snapshot: null },
+              { ...ready, extra: true },
+            ];
             await frame.evaluate(
-              ({ origin, data }) => window.parent.postMessage({ ...data, version: 2 }, origin),
-              { origin: parentOrigin, data: ready },
+              ({ origin, messages }) => {
+                for (const data of messages) window.parent.postMessage(data, origin);
+              },
+              { origin: parentOrigin, messages: invalid },
             );
-            await page.waitForFunction(() => Reflect.get(window, "rejected") === 2);
+            await page.waitForFunction((count) => Reflect.get(window, "rejected") === count, invalid.length + 1);
             assert.equal((await accepted()).length, 1);
             await poll();
             await requests(1, true);
@@ -461,7 +477,7 @@ test(
             assert.equal((await accepted()).length, 1);
             // Keep the same WindowProxy, changing only its actual origin.
             await frame.goto(`${parentOrigin}/spoof`);
-            await page.waitForFunction(() => Reflect.get(window, "rejected") === 3);
+            await page.waitForFunction((count) => Reflect.get(window, "rejected") === count, invalid.length + 2);
             assert.equal((await accepted()).length, 1);
           });
         },
@@ -477,8 +493,8 @@ test(
       release(false);
       await frame.getByText(saved, { exact: true }).waitFor();
       await capture(page, name);
-      await page.waitForFunction(() => Reflect.get(window, "readiness").length === 1);
-      assert.deepEqual((await accepted()).map((entry) => entry.data), [ready]);
+      await page.waitForFunction(() => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0);
+      assert.deepEqual((await accepted()).map((entry) => entry.data), [{ ...ready, snapshot: true }]);
       assert.deepEqual(await marks(), [{ source: "snapshot" }]);
       assert.ok((await committedAtReady())?.includes(saved));
       await frame.waitForFunction(() => Reflect.get(window, "followUps").length === 1);
