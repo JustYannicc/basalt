@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-production-database-proxy-startup",
+  "file": "0173-production-database-proxy-startup.patch",
+  "content_sha256": "8f394c7230e236ed64a278319052a6aff895bde7fb8914892f03eb40c80761cf",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

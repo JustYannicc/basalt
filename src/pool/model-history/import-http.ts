@@ -60,8 +60,8 @@ export async function handleUsageImport(request: Request, access: HistoryAccess)
             || typeof approval.expiresAt !== "number" || approval.expiresAt <= now || approval.expiresAt > now + approvalLifetime)
             throw new ImportApprovalError();
         }
-        const existing = await existingRequests(db, records);
-        const inserted = mode === "apply" ? await insertRequests(db, records) : 0;
+        const existing = await existingRequests(db, records, false, !parsed.local);
+        const inserted = mode === "apply" ? await insertRequests(db, records, false, !parsed.local) : 0;
         await db.query("COMMIT");
         return { existing: existing.size, wouldInsert: new Set(records.map((row) => row.id)).size - existing.size, inserted, resolvedDigest,
           unpriced: records.filter((row) => row.cost === null).length,
@@ -75,7 +75,7 @@ export async function handleUsageImport(request: Request, access: HistoryAccess)
       }
     });
     const { resolvedDigest, ...report } = result;
-    return json({ mode, ...parsed.report, ...report, next: parsed.next,
+    return json({ mode, ...parsed.report, ...report, ids: parsed.records.map((row) => row.id), next: parsed.next,
       approval: mode === "dry-run" ? await signEnvelope(access.signingKey, approvalPrefix,
         { digest: resolvedDigest, pool: claims.pool, caller, expiresAt: now + approvalLifetime }) : null });
   } catch (error) {
