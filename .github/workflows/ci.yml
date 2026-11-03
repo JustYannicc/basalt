@@ -144,6 +144,36 @@ jobs:
             .generated/slack-health/ci/partial-results.json
             .generated/slack-health/ci/failure.txt
           if-no-files-found: warn
+  catalog-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - name: Build every catalog package as served, on the framework Basalt ships
+        run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8
+      - name: Verify ElevenLabs tools load as the catalog serves it, with dropped routes
+        run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: catalog-compat
+          # Only these files: session files under .generated stay private.
+          path: |
+            .generated/catalog-compat/ci/report.json
+            .generated/catalog-compat/ci/partial-results.json
+            .generated/catalog-compat/ci/failure.txt
+            .generated/elevenlabs-discovery/ci/result.json
+            .generated/elevenlabs-discovery/ci/failure.txt
+          include-hidden-files: true
+          if-no-files-found: warn
   host-managed-accounts:
     runs-on: ${{ vars.BASALT_CI_RUNNER_HEAVY || 'ubuntu-latest' }}
     timeout-minutes: 20
