@@ -1,0 +1,393 @@
+{
+  "status": "dry-run",
+  "version": "model_request_history_v2_app_attribution",
+  "schemaHash": "1577d5e8b460b51596448da5586b860b628369a68cda589924a68e68b67ea543",
+  "catalogHash": "ab9af3a94f282b95d8c449ed0ec8286ccfe6571cfef958d10bb39d091dde3d85",
+  "catalog": {
+    "identity": {
+      "database": "fixture_history",
+      "role": "fixture_owner",
+      "schema": "public"
+    },
+    "relations": [
+      {
+        "name": "basalt_model_history_cursor",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_history_cursor_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_history_migrations",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_history_migrations_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests",
+        "kind": "p"
+      },
+      {
+        "name": "basalt_model_requests_0",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_0_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_0_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_0_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_0_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_1",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_10",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_10_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_10_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_10_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_10_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_11",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_11_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_11_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_11_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_11_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_12",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_12_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_12_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_12_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_12_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_13",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_13_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_13_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_13_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_13_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_14",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_14_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_14_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_14_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_14_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_15",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_15_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_15_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_15_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_15_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_1_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_1_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_1_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_1_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_2",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_2_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_2_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_2_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_2_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_3",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_3_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_3_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_3_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_3_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_4",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_4_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_4_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_4_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_4_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_5",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_5_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_5_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_5_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_5_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_6",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_6_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_6_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_6_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_6_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_7",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_7_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_7_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_7_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_7_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_8",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_8_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_8_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_8_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_8_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_9",
+        "kind": "r"
+      },
+      {
+        "name": "basalt_model_requests_9_pkey",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_9_pool_person_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_9_pool_timestamp_id_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_9_source_source_record_idx",
+        "kind": "i"
+      },
+      {
+        "name": "basalt_model_requests_person_time",
+        "kind": "I"
+      },
+      {
+        "name": "basalt_model_requests_pkey",
+        "kind": "I"
+      },
+      {
+        "name": "basalt_model_requests_pool_time",
+        "kind": "I"
+      },
+      {
+        "name": "basalt_model_requests_source_record",
+        "kind": "I"
+      }
+    ],
+    "writes": false
+  },
+  "history": {
+    "privacyReady": true,
+    "source": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "upperId": "0",
+    "rows": "0",
+    "firstAt": null,
+    "lastAt": null
+  },
+  "ledgerRows": "0",
+  "applied": false,
+  "catalogDiff": {
+    "createTables": [],
+    "addColumns": [
+      "basalt_model_requests.app_id",
+      "basalt_model_requests.requirement"
+    ],
+    "conflicts": []
+  },
+  "additive": true,
+  "writes": false,
+  "automaticBackfill": false
+}
