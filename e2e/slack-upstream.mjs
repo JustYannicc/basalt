@@ -2,10 +2,20 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 
-/** Synthetic Slack sign-in and metadata endpoints. No messages or files are exposed. */
-export async function startSlackHealthFixture(getAnswer, calls) {
+/**
+ * Synthetic Slack sign-in and metadata endpoints. No messages or files are exposed. `documents`
+ * holds the OpenAPI definitions the apps under test read from this fixture, by name.
+ */
+export async function startSlackHealthFixture(getAnswer, calls, documents = new Map()) {
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
+    const definition = /^\/openapi\/([\w-]+)\.json$/.exec(url.pathname)?.[1];
+    if (definition !== undefined) {
+      const document = documents.get(definition);
+      response.writeHead(document === undefined ? 404 : 200, { "content-type": "application/json" });
+      response.end(JSON.stringify(document ?? {}));
+      return;
+    }
     if (["/oauth/v2/authorize", "/oauth/authorize"].includes(url.pathname)) {
       const callback = new URL(url.searchParams.get("redirect_uri"));
       callback.searchParams.set("state", url.searchParams.get("state"));
