@@ -158,6 +158,12 @@ jobs:
           bun run e2e:self-host --test-name
           "^app query traces record ordered request phase durations$"
           --workers 1
+      - name: Verify catalog service identity and import compatibility
+        working-directory: .upstream
+        run: >-
+          bun run e2e:self-host --test-name
+          "^Service installs reuse one team app|^Quick-add MCP apps retain package names|^MCP quick add confirms public"
+          --workers 1
       - name: Verify host-managed visibility and existing account behavior
         working-directory: .upstream
         run: >-
@@ -793,6 +799,10 @@ jobs:
       - run: npm run check
       - name: Check every catalog OAuth method has a reviewed connection path
         run: node scripts/check-catalog-oauth.ts
+      - name: Verify social sign-in and admin security boundaries
+        run: |
+          bun run --cwd .upstream patches:check
+          bun run --cwd .upstream auth:security
       - name: Build documentation without Google font requests
         run: node scripts/docs-fonts/check.ts
       - name: Verify Cloud startup failure diagnostics

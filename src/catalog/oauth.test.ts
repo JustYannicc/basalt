@@ -225,3 +225,37 @@ test("the public catalog supplies Spotify's explicit deferral without a listing 
   assert.equal(result.description, spotify.description);
   assert.deepEqual(result.auth, spotify.auth);
 });
+
+test("the public catalog preserves service aliases and exact-method OAuth guidance together", async () => {
+  const confluence = {
+    ...entry("confluence"),
+    package: "@executor.sh/confluence",
+    name: "Confluence",
+    auth: [
+      { method: "OAuth2", kind: "oauth2" },
+      { method: "token", kind: "secrets" },
+    ],
+  };
+  const response = await handleCatalog(
+    new Request("https://catalog.example.test/catalog/index.json"),
+    async () => Response.json({ version: 1, apps: [confluence] }),
+  );
+  assert.equal(response.status, 200);
+  const result = ((await response.json()) as Feed).apps.find((app) => app.id === "confluence")!;
+  assert.deepEqual(result.service, {
+    id: "atlassian",
+    mcp: [],
+    packages: ["@executor.sh/confluence", "atlassian"],
+  });
+  assert.deepEqual(result.oauthDeferrals, [
+    {
+      method: "OAuth2",
+      message:
+        "Signalbox has not verified one-click sign-in for Confluence yet. You can connect with your own OAuth app.",
+    },
+  ]);
+  assert.deepEqual(result.auth, confluence.auth);
+  assert.equal(result.description, confluence.description);
+  assert.equal(result.source, confluence.source);
+  assert.equal(result.connectionNotices, undefined);
+});

@@ -1,3 +1,4 @@
+import { withServiceIdentities } from "./service-identities.ts";
 import { mergeFeed, type Addition, type FeedAddition, type Feed } from "./feed.ts";
 import { oauthReviews, withOAuthDeferrals } from "./oauth-policy.ts";
 import oauthReviewData from "./oauth-reviews.json" with { type: "json" };
@@ -89,11 +90,13 @@ export async function handleCatalog(
       relative === "index.json"
         ? JSON.stringify(
             withOAuthDeferrals(
-              mergeFeed(
-                withMiroCapabilities(
-                  withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+              withServiceIdentities(
+                mergeFeed(
+                  withMiroCapabilities(
+                    withSlackUserAuth(withGitLabInstances((await response.json()) as Feed)),
+                  ),
+                  additions,
                 ),
-                additions,
               ),
               reviewedOAuth,
             ),
