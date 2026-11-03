@@ -191,20 +191,34 @@ index c7d2530..2480744 100644
              )
              .then((counts) => expect(counts).toEqual([0, 0])),
 diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
-index 44c80b6..b304dc6 100644
+index 44c80b6..dc33ef4 100644
 --- a/e2e/tests/account-observation-row-polling.spec.ts
 +++ b/e2e/tests/account-observation-row-polling.spec.ts
-@@ -32,7 +32,9 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
-         yield* browser.use("Open Accounts with nothing retained yet", (page) =>
-           page
+@@ -29,11 +29,20 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+ 
+         yield* installBrowserClock;
+         yield* browser.login(f.actors.owner);
+-        yield* browser.use("Open Accounts with nothing retained yet", (page) =>
+-          page
++        yield* browser.use("Open Accounts with nothing retained yet", (page) => {
++          // The row's own observations read must have answered before an empty row means anything.
++          const loaded = page.waitForResponse(
++            (response) =>
++              response.request().method() === "GET" &&
++              new URL(response.url()).pathname.endsWith(`/accounts/${f.account}/observations`) &&
++              response.ok(),
++          );
++          return page
              .goto(`/org/${f.actors.organization.slug}/accounts`)
 -            .then(() => block(page).getByText("No usage reported").waitFor()),
-+            .then(() => block(page).locator("[data-account-health]").waitFor())
+-        );
++            .then(() => loaded)
 +            .then(() => block(page).locator("[data-usage]").count())
-+            .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0)),
-         );
++            .then((usage) => expect(usage, "nothing retained shows no usage line").toBe(0));
++        });
  
          // Stands in for the server interval: a report is retained while the row stays open.
+         expect((yield* f.refresh()).status).toBe(200);
 diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
 index e28b65a..b080476 100644
 --- a/e2e/tests/account-observation-rows.spec.ts
@@ -797,10 +811,10 @@ index 0000000..d0a0365
 +});
 diff --git a/e2e/tests/account-usage-home-reporter.spec.ts b/e2e/tests/account-usage-home-reporter.spec.ts
 new file mode 100644
-index 0000000..d17843c
+index 0000000..feaa234
 --- /dev/null
 +++ b/e2e/tests/account-usage-home-reporter.spec.ts
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,152 @@
 +/** A real Home-bound account with nothing retained offers its first reading; a connector shows no usage. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -903,10 +917,19 @@ index 0000000..d17843c
 +          block(page, "Home reporter").getByRole("button", { name: "Refresh", exact: true });
 +        const browser = yield* Browser;
 +        yield* browser.login(actors.owner);
-+        const unread = yield* browser.use("Open Accounts before Home reported", (page) =>
-+          page
++        const unread = yield* browser.use("Open Accounts before Home reported", (page) => {
++          // The connector's own observations read must have answered before its empty row counts.
++          const connectorLoaded = page.waitForResponse(
++            (response) =>
++              response.request().method() === "GET" &&
++              new URL(response.url()).pathname.endsWith(
++                `/accounts/${connector.account}/observations`,
++              ) &&
++              response.ok(),
++          );
++          return page
 +            .goto(`/org/${actors.organization.slug}/accounts`)
-+            .then(() => block(page, "Work mail").locator("[data-account-health]").waitFor())
++            .then(() => connectorLoaded)
 +            .then(() => block(page, "Home reporter").locator("[data-usage-unread]").waitFor())
 +            .then(() =>
 +              Promise.all([
@@ -916,8 +939,8 @@ index 0000000..d17843c
 +                block(page, "Work mail").locator("[data-usage]").count(),
 +                block(page, "Work mail").getByRole("button", { name: "Refresh" }).count(),
 +              ]),
-+            ),
-+        );
++            );
++        });
 +        expect(unread[0]).toMatch(/Usage from basalt-home\s*·\s*no reading yet/);
 +        expect(unread.slice(1)).toEqual([true, 0, 0, 0]);
 +        expect(yield* observed(), "showing the row collects nothing").toBe(0);
