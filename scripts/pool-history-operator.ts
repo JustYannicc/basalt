@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -5,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import { historyBackfillPath, historyBackfillVersion, historySchemaApplyPath, historySchemaCatalogPath } from "../src/pool/model-history/operator.ts";
+
+import { historyBaseSchemaVersion, historySchemaVersion, historySchemaStatements, historySchemaMigrations } from "../src/pool/model-history/schema.ts";
 
 type Platform = { env: { POOL_OPERATIONS: { fetch(request: Request): Promise<Response> } }; dispose(): Promise<void> };
 
@@ -21,9 +24,39 @@ export function historyOperatorOptions(args: string[]) {
 }
 
 function hashes(value: Record<string, unknown>) {
-  if (value.version !== "model_request_history_v1" || typeof value.schemaHash !== "string" || !/^[a-f0-9]{64}$/.test(value.schemaHash)
+  if ((value.version !== historyBaseSchemaVersion && value.version !== historySchemaVersion) || typeof value.schemaHash !== "string" || !/^[a-f0-9]{64}$/.test(value.schemaHash)
     || typeof value.catalogHash !== "string" || !/^[a-f0-9]{64}$/.test(value.catalogHash)) throw new Error("Invalid history schema plan");
   return { schemaHash: value.schemaHash, catalogHash: value.catalogHash };
+}
+
+function schemaPreview(report: Record<string, unknown>) {
+  hashes(report);
+  const manifest = report.version === historyBaseSchemaVersion ? historySchemaStatements : historySchemaMigrations;
+  if (report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex")
+    || typeof report.applied !== "boolean") throw new Error("Unknown history schema statements");
+  const diff = historyObject(report.catalogDiff);
+  if (!Array.isArray(diff.createTables) || !Array.isArray(diff.conflicts) || diff.conflicts.length)
+    throw new Error("History schema catalog conflicts");
+  const catalog = historyObject(report.catalog);
+  if (report.catalogHash !== createHash("sha256").update(JSON.stringify(catalog)).digest("hex"))
+    throw new Error("History schema catalog hash changed");
+  if (!Array.isArray(catalog.relations)) throw new Error("Invalid history schema catalog");
+  const ledgerExists = catalog.relations.some(row => {
+    const relation = historyObject(row);
+    return relation.name === "basalt_model_history_migrations" && relation.kind === "r";
+  });
+  // The Worker's ledger bootstrap runs outside the hashed versioned migrations.
+  const ledgerDdl = ledgerExists ? [] : [`CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
+      name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`];
+  const pending = report.applied ? [] : report.version === historyBaseSchemaVersion
+    ? [historySchemaMigrations[0]!]
+    : diff.createTables.length ? historySchemaMigrations : [historySchemaMigrations[1]!];
+  return {
+    pendingDdl: [...ledgerDdl, ...pending.flatMap(migration => migration.statements)],
+    migrationMarkers: pending.map(migration => ({
+      text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", values: [migration.name],
+    })),
+  };
 }
 
 function approvalFor(operation: "schema" | "backfill", report: Record<string, unknown>) {
@@ -38,10 +71,20 @@ export async function runHistoryOperator(options: ReturnType<typeof historyOpera
   connect?: (path: string) => Promise<Platform>) {
   if (!/^[a-f0-9]{32}$/.test(accountId)) throw new Error("CLOUDFLARE_ACCOUNT_ID is required");
   let approval: ReturnType<typeof approvalFor> | undefined;
+  let approvedSchemaState: string | undefined;
   if (options.apply) {
     const saved = historyObject(JSON.parse(await readFile(options.plan, "utf8")));
     if (saved.accountId !== accountId || saved.worker !== options.worker || saved.operation !== options.operation) throw new Error("History schema plan target changed");
-    approval = approvalFor(options.operation, historyObject(saved.report));
+    const report = historyObject(saved.report);
+    approval = approvalFor(options.operation, report);
+    if (options.operation === "schema") {
+      const preview = schemaPreview(report);
+      if (report.version === historySchemaVersion && (JSON.stringify(report.pendingDdl) !== JSON.stringify(preview.pendingDdl)
+        || JSON.stringify(report.migrationMarkers) !== JSON.stringify(preview.migrationMarkers)))
+        throw new Error("History schema statements changed since dry run");
+      if (report.version === historySchemaVersion)
+        approvedSchemaState = JSON.stringify({ ...approval, version: report.version, ...preview });
+    }
   }
   const directory = await mkdtemp(join(tmpdir(), "pool-history-operator-"));
   const receipt = `${options.plan}.result.json`;
@@ -56,6 +99,14 @@ export async function runHistoryOperator(options: ReturnType<typeof historyOpera
       return getPlatformProxy({ configPath, persist: false, remoteBindings: true });
     });
     platform = await open(configPath);
+    if (approvedSchemaState) {
+      const response = await platform.env.POOL_OPERATIONS.fetch(new Request(`http://pool-operations${historySchemaCatalogPath}`));
+      if (!response.ok) throw new Error("History schema catalog refresh failed");
+      const current = historyObject(await response.json());
+      if (current.status !== "dry-run" || current.writes !== false || current.automaticBackfill !== false
+        || JSON.stringify({ ...hashes(current), version: current.version, ...schemaPreview(current) }) !== approvedSchemaState)
+        throw new Error("History schema plan changed; prepare and approve a fresh dry run");
+    }
     if (approval) await writeFile(receipt, JSON.stringify({ status: "started", accountId, worker: options.worker, ...approval }),
       { mode: 0o600, flag: "wx" });
     const path = options.operation === "backfill" ? historyBackfillPath : approval ? historySchemaApplyPath : historySchemaCatalogPath;
@@ -63,7 +114,7 @@ export async function runHistoryOperator(options: ReturnType<typeof historyOpera
       ...(approval ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...approval, go: true }) } : {}),
     }));
     if (!response.ok) throw new Error("History operator failed; inspect the private receipt before another apply");
-    const report = historyObject(await response.json());
+    let report = historyObject(await response.json());
     if (approval) {
       if (report.status !== "complete" || ("schemaHash" in approval
         ? report.schemaHash !== approval.schemaHash || typeof report.applied !== "boolean"
@@ -72,6 +123,7 @@ export async function runHistoryOperator(options: ReturnType<typeof historyOpera
     } else {
       approvalFor(options.operation, report);
       if (report.status !== "dry-run" || report.writes !== false || options.operation === "schema" && report.automaticBackfill !== false) throw new Error("Invalid history schema dry run");
+      if (options.operation === "schema") report = { ...report, ...schemaPreview(report) };
       await writeFile(options.plan, JSON.stringify({ accountId, worker: options.worker, operation: options.operation, report }), { mode: 0o600, flag: "wx" });
     }
     return report;
