@@ -64,6 +64,7 @@ test("the pool projection stays fresh between normal collections and eventually 
   }));
   assert.ok(reading);
   assert.equal(freshObservation(reading, Date.parse(at(25))), true);
-  assert.equal(freshObservation(reading, Date.parse(at(35))), false);
+  assert.equal(freshObservation(reading, Date.parse(at(35))), true);
+  assert.equal(freshObservation(reading, Date.parse(at(40))), false);
   assert.equal(freshObservation(reading, Date.parse(at(180))), false);
 });

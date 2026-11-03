@@ -282,10 +282,10 @@ index 24aa102..b50a960 100644
      file: "account-observations.spec.ts",
 diff --git a/e2e/tests/account-observation-interval.spec.ts b/e2e/tests/account-observation-interval.spec.ts
 new file mode 100644
-index 0000000..ec5e609
+index 0000000..58bf28c
 --- /dev/null
 +++ b/e2e/tests/account-observation-interval.spec.ts
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,150 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { createHmac } from "node:crypto";
@@ -380,14 +380,34 @@ index 0000000..ec5e609
 +              { envelope: `sbaa1.${payload}.${signature}` },
 +            );
 +          });
-+        const first = allowance();
++        const initial = allowance();
++        const staleAt = new Date(Date.parse(initial.observedAt) + 40 * 60_000).toISOString();
++        const first = {
++          ...initial,
++          observation: {
++            ...initial.observation,
++            plan: { ...initial.observation.plan, staleAt },
++            windows: initial.observation.windows.map((window) => ({ ...window, staleAt })),
++            balances: initial.observation.balances.map((balance) => ({ ...balance, staleAt })),
++          },
++        };
 +        yield* home.observation(first);
 +        expect((yield* publish()).status).toBe(204);
 +        expect((yield* read()).reports[0]).toMatchObject({
 +          source: { kind: "driver", id: "basalt-home" },
 +          result: { observedAt: first.observedAt },
++          freshness: "fresh",
 +        });
-+        yield* advance(31 * 60_000);
++        yield* advance(6 * 60_000);
++        expect((yield* read()).reports[0]).toMatchObject({
++          result: { observedAt: first.observedAt },
++          freshness: "fresh",
++        });
++        yield* advance(35 * 60_000);
++        expect((yield* read()).reports[0]).toMatchObject({
++          result: { observedAt: first.observedAt },
++          freshness: "stale",
++        });
 +        const second = allowance(new Date(Date.now() + offset).toISOString());
 +        const retryAt = new Date(Date.now() + offset + 60 * 60_000).toISOString();
 +        yield* home.observation({

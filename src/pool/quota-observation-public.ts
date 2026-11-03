@@ -10,9 +10,10 @@ const instant = (value: string | null): string | undefined => {
   const iso = new Date(time).toISOString();
   return /^\d{4}-/.test(iso) ? iso : undefined;
 };
-// Collection can become due just after an upkeep pass; keep the source's earlier deadline.
+// After collection becomes due, one upkeep pass queues it and the next publishes the reading.
+// Cover both passes from the source time; keep any earlier source deadline.
 const staleAt = (observedAt: string, ...deadlines: (string | null)[]) => new Date(Math.min(
-  Date.parse(observedAt) + quotaCollectInterval + poolLifecycle.refreshMs,
+  Date.parse(observedAt) + quotaCollectInterval + 2 * poolLifecycle.refreshMs,
   ...deadlines.flatMap((value) => { const at = instant(value); return at === undefined ? [] : [Date.parse(at)]; }),
 )).toISOString();
 const ratio = (value: number | null) => value !== null && value >= 0 && value <= 1 ? value : undefined;
@@ -81,7 +82,7 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
   const retryAt = instant(value.collection.nextAllowedAt);
   const failed = value.collection.status === "failed";
   const outcome = failed ? value.collection.errorCode === "UPSTREAM_RATE_LIMITED" ? "rate_limited" : "unavailable"
-    : value.collection.status === "success" || value.collection.status === "partial" ? "success" : "unavailable";
+    : value.collection.status === "success" || value.collection.status === "partial" ? "success" : undefined;
   const plan = bounded(value.plan?.name ?? null);
   return {
     observedAt,
@@ -90,6 +91,6 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
       ...(plan === undefined ? {} : { plan: { label: plan, observedAt, staleAt: staleAt(observedAt, value.staleAt) } }),
       windows, balances: balances.slice(0, 8),
     },
-    ...(attemptedAt === undefined ? {} : { collection: { attemptedAt, outcome, ...(retryAt === undefined ? {} : { retryAt }) } }),
+    ...(attemptedAt === undefined || outcome === undefined ? {} : { collection: { attemptedAt, outcome, ...(retryAt === undefined ? {} : { retryAt }) } }),
   };
 }
