@@ -449,10 +449,10 @@ test("reconciliation retains a legacy user-key default and every unknown policy 
       jsonb_build_object('person-a', ((metadata::jsonb -> 'basaltPools' -> ${poolRecordKey(sql)})
         - 'owner' - 'primary') || '{"authorization":"executor-app-v1","membership":"executor-links-v1","futurePolicy":{"keep":true}}'::jsonb))::text
       where id = ${organization}`;
-    const [before] = yield* sql`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    const [before] = yield* sql<{ pools: Record<string, unknown> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
     yield* setup();
     yield* setup();
-    const [after] = yield* sql`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
+    const [after] = yield* sql<{ pools: Record<string, unknown> }>`select metadata::jsonb -> 'basaltPools' as pools from organization where id = ${organization}`;
     assert.deepEqual(after, before);
     assert.deepEqual(Object.keys(after!.pools), ["person-a"]);
     assert.equal((yield* sql`select id from executor_apps`).length, 1);

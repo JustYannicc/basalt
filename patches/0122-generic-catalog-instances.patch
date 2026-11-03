@@ -461,7 +461,7 @@ index 0000000..f4abc37
 +    service: poolCatalogService,
 +  });
 diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
-index d403400..e87592a 100644
+index d403400..477787b 100644
 --- a/apps/hosted/server/src/implementation/pool-defaults.ts
 +++ b/apps/hosted/server/src/implementation/pool-defaults.ts
 @@ -1,4 +1,4 @@
@@ -595,7 +595,7 @@ index d403400..e87592a 100644
 +    // Explicit additional pools cannot suppress the person's default during onboarding.
 +    if (!rotationOnly && records.every(([, record]) => record.primary === false))
 +      yield* reconcilePool(executor, key, organization, user);
-+  });
++  }).pipe(Effect.mapError(() => new StorageError()));
 +
  /** Ordinary setup commits first; rotation jobs have authority only to renew existing pool tokens. */
  export const withPoolDefaults = (
