@@ -206,3 +206,25 @@ test("a busy runtime 409 keeps its safe reason and retryability in failure.json"
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("organization removal remains a non-retryable safe refusal in failure.json", () => {
+  const { directory, result } = run({
+    error: "organization_removing",
+    retryable: false,
+    failure: { format: "basalt-production-ops-failure-v1", category: "auth", phase: "sql" },
+  });
+  try {
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /organization_removing/);
+    assert.deepEqual(JSON.parse(readFileSync(join(directory, "failure.json"), "utf8")), {
+      format: "basalt-production-ops-failure-v1",
+      category: "auth",
+      phase: "sql",
+      reason: "organization_removing",
+      retryable: false,
+      httpStatus: 409,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

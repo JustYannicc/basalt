@@ -5,7 +5,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/
 -import type { Effect } from "effect";
 +import { Data, type Effect } from "effect";
  import type { SqlClient } from "effect/sql";
- 
+
  export type Json =
 @@ -33,6 +33,11 @@
    readonly revision: string;
@@ -19,33 +19,61 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/
    readonly apply: (
      request: Json,
      plan: MigrationPlan,
-@@ -49,4 +54,6 @@
+@@ -49,4 +54,8 @@
    readonly run: (request: Json) => Effect.Effect<Json, unknown, SqlClient.SqlClient>;
  }
- 
+
++export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving") {}
++
 +export class ProductionOperationBusy extends Data.TaggedError("ProductionOperationBusy") {}
 +
  export const productionOpsPath = "/api/internal/production-ops";
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
-@@ -8,6 +8,7 @@
+@@ -8,9 +8,11 @@
  import { cloudHosts } from "../stage.ts";
  import { productionOpsRelease } from "../../implementation/production-ops-release.ts";
  import { Operation, runProductionOperation } from "./runner.ts";
-+import { ProductionOperationBusy } from "./contracts.ts";
++import { OrganizationRemoving, ProductionOperationBusy } from "./contracts.ts";
  import { cloudProductionPreparations } from "./preparations.ts";
  import { requestBody } from "./body.ts";
  import { canonical, sha256 } from "./crypto.ts";
-@@ -91,8 +92,18 @@
++import { contention } from "./locking.ts";
+ import { atPhase, diagnostic } from "./diagnostics.ts";
+ export { productionOpsPath } from "./contracts.ts";
+
+@@ -91,8 +93,40 @@
      ).pipe(
        Effect.provideService(SqlClient.SqlClient, sql),
        Effect.timeout("25 seconds"),
-+      Effect.catch((error) =>
-+        error instanceof ProductionOperationBusy
-+          ? Effect.succeed({ error: "operation_busy" as const, retryable: true as const })
-+          : Effect.fail(error),
-+      ),
++      Effect.mapError(contention),
++      Effect.catch((error) => {
++        const refusal =
++          error instanceof ProductionOperationBusy
++            ? {
++                error: "operation_busy" as const,
++                retryable: true as const,
++                failure: {
++                  format: "basalt-production-ops-failure-v1" as const,
++                  category: "sql" as const,
++                  phase: "sql" as const,
++                  sqlStateClass: "55" as const,
++                },
++              }
++            : error instanceof OrganizationRemoving
++              ? {
++                  error: "organization_removing" as const,
++                  retryable: false as const,
++                  failure: {
++                    format: "basalt-production-ops-failure-v1" as const,
++                    category: "auth" as const,
++                    phase: "sql" as const,
++                  },
++                }
++              : undefined;
++        return refusal === undefined ? Effect.fail(error) : Effect.succeed(refusal);
++      }),
        atPhase("sql"),
      );
 +    if ("error" in result)
@@ -56,13 +84,32 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/
      return yield* HttpServerResponse.json(result, {
        headers: { "cache-control": "no-store" },
      }).pipe(atPhase("decode"));
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts b/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/locking.ts
+@@ -0,0 +1,14 @@
++import { SqlError } from "effect/sql";
++import { ProductionOperationBusy } from "./contracts.ts";
++
++/** Only PostgreSQL lock contention is retryable; preserve every other error unchanged. */
++export const contention = <E>(error: E): E | ProductionOperationBusy => {
++  if (!SqlError.isSqlError(error)) return error;
++  const driver = error.reason.cause;
++  return typeof driver === "object" &&
++    driver !== null &&
++    "code" in driver &&
++    driver.code === "55P03"
++    ? new ProductionOperationBusy()
++    : error;
++};
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
 @@ -1,4 +1,7 @@
 +import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
  import type { ProductionMigration } from "./contracts.ts";
- 
+
  /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
 -export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {};
 +export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
@@ -175,15 +222,11 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/prov
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-openai-anthropic-v1.ts
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,168 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
-+import {
-+  ProductionOperationBusy,
-+  type Json,
-+  type MigrationPlan,
-+  type ProductionMigration,
-+} from "../contracts.ts";
++import { type Json, type MigrationPlan, type ProductionMigration } from "../contracts.ts";
++import { contention } from "../locking.ts";
 +import { adoptionRevision, planProviderApps, stateHash } from "./provider-apps-plan.ts";
 +import { readProviderApps } from "./provider-apps-read.ts";
 +import { providerAppsPrerequisites } from "./provider-apps-prerequisites.ts";
@@ -216,13 +259,13 @@ new file mode 100644
 +    return { ...plan, data: { ...record(plan.data), prerequisites } };
 +  });
 +
-+/** Match the normal organization/app/account lock order before checking any mutable authority. */
++/** Only the organization advisory lock and member share may wait; every selected row uses NOWAIT before scope checks, so other writers cannot form a row-lock cycle with adoption. */
 +const lockAuthority = (request: ProviderAppsRequest) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    const owner = `organization:${request.organization}`;
 +    yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${request.organization}`}, 0))`;
-+    yield* sql`select id from organization where id = ${request.organization} for share`;
++    yield* sql`select id from organization where id = ${request.organization} for update nowait`;
 +    yield* sql`select id from member where "organizationId" = ${request.organization} and "userId" = ${request.actor} for share`;
 +    const apps = [
 +      ...new Set([
@@ -232,9 +275,9 @@ new file mode 100644
 +      ]),
 +    ].sort();
 +    for (const app of apps) {
-+      yield* sql`select id from executor_apps where id = ${app} and owner = ${owner} for no key update`;
-+      yield* sql`select d.id from executor_deployments d join executor_apps a on a.active_deployment = d.id where a.id = ${app} and a.owner = ${owner} and d.owner = ${owner} for share of d`;
-+      yield* sql`select p.id from hosted_app_access p join executor_apps a on a.id = p.id where p.id = ${app} and p.organization_id = ${request.organization} and a.owner = ${owner} for share of p`;
++      yield* sql`select id from executor_apps where id = ${app} and owner = ${owner} for update nowait`;
++      yield* sql`select d.id from executor_deployments d join executor_apps a on a.active_deployment = d.id where a.id = ${app} and a.owner = ${owner} and d.owner = ${owner} for update of d nowait`;
++      yield* sql`select p.id from hosted_app_access p join executor_apps a on a.id = p.id where p.id = ${app} and p.organization_id = ${request.organization} and a.owner = ${owner} for update of p nowait`;
 +    }
 +  });
 +
@@ -248,26 +291,20 @@ new file mode 100644
 +      yield* sql`select id from executor_account_connections where owner = ${owner}
 +      and (state -> 'account' ->> 'id' = ${item.account} or reconnect_account = ${item.account} or source_account = ${item.account}) order by id for update nowait`;
 +    }
-+  }).pipe(
-+    Effect.mapError((error) => {
-+      const driver = error.reason.cause;
-+      return typeof driver === "object" &&
-+        driver !== null &&
-+        "code" in driver &&
-+        driver.code === "55P03"
-+        ? new ProductionOperationBusy()
-+        : error;
-+    }),
-+  );
++  });
 +
 +const lockDependents = (request: ProviderAppsRequest) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    const owner = `organization:${request.organization}`;
 +    for (const item of [...request.accounts].sort((a, b) => a.account.localeCompare(b.account))) {
-+      yield* sql`select p.account_id from hosted_account_access p join executor_accounts a on a.id = p.account_id where p.account_id = ${item.account} and p.organization_id = ${request.organization} and a.owner = ${owner} for share of p`;
-+      yield* sql`select r.account from executor_account_acquisitions r join executor_accounts a on a.id = r.account where r.account = ${item.account} and r.owner = ${owner} and a.owner = ${owner} for update of r`;
-+      yield* sql`select s.id from executor_webhook_sources s join executor_accounts a on a.id = s.account join executor_apps app on app.id = s.app where s.account = ${item.account} and s.owner = ${owner} and a.owner = ${owner} and app.owner = ${owner} order by s.id for update of s`;
++      yield* sql`select p.account_id from hosted_account_access p join executor_accounts a on a.id = p.account_id where p.account_id = ${item.account} and p.organization_id = ${request.organization} and a.owner = ${owner} for update of p nowait`;
++      yield* sql`select r.account from executor_account_acquisitions r join executor_accounts a on a.id = r.account where r.account = ${item.account} and r.owner = ${owner} and a.owner = ${owner} for update of r nowait`;
++      yield* sql`select l.app, l.requirement, l.subject from hosted_app_account_links l
++      join executor_apps app on app.id = l.app join executor_accounts a on a.id = l.account
++      where l.account = ${item.account} and app.owner = ${owner} and a.owner = ${owner}
++      order by l.app, l.requirement, l.subject nulls first for update of l nowait`;
++      yield* sql`select s.id from executor_webhook_sources s join executor_accounts a on a.id = s.account join executor_apps app on app.id = s.app where s.account = ${item.account} and s.owner = ${owner} and a.owner = ${owner} and app.owner = ${owner} order by s.id for update of s nowait`;
 +    }
 +  });
 +
@@ -301,15 +338,15 @@ new file mode 100644
 +      const request = yield* decodeRequest(input);
 +      yield* lockAuthority(request);
 +      yield* lockAccountClaims(request);
++      yield* lockDependents(request);
 +      if (!(yield* providerAppsPrerequisites(request)).ready)
 +        return yield* refuse("provider app or pool prerequisites are missing");
-+    }),
++    }).pipe(Effect.mapError(contention)),
 +  apply: (input, plan) =>
 +    Effect.gen(function* () {
 +      const request = yield* decodeRequest(input);
 +      const sql = yield* SqlClient.SqlClient;
 +      const owner = `organization:${request.organization}`;
-+      yield* lockDependents(request);
 +      const prerequisites = yield* providerAppsPrerequisites(request);
 +      if (!prerequisites.ready)
 +        return yield* refuse("provider app or pool prerequisites are missing");
@@ -1122,6 +1159,15 @@ new file mode 100644
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -280,7 +280,7 @@
+           return yield* fail("Database identity changed");
+         const prior =
+           yield* sql`select organization_id, migration, revision, release, backup_sha256 from private_production_ops_receipts
+-      where plan_sha256 = ${hash} for update`;
++      where plan_sha256 = ${hash} for update nowait`;
+         if (prior.length > 0) {
+           const row = prior[0];
+           if (
 @@ -293,6 +293,8 @@
              return yield* fail("Receipt identity differs");
            return { repeated: true };
@@ -1131,6 +1177,64 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/app
          yield* checkPlanScope(saved.plan, organization, "before", true);
          const current = yield* inspect(module, saved.request);
          if (canonical(current) !== canonical(saved.plan))
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/scope.ts
+@@ -1,6 +1,7 @@
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+-import type { Change, MigrationPlan } from "./contracts.ts";
++import { contention } from "./locking.ts";
++import { OrganizationRemoving, type Change, type MigrationPlan } from "./contracts.ts";
+
+ export const OrganizationRequest = Schema.StructWithRest(
+   Schema.Struct({ organization: Schema.NonEmptyString.check(Schema.isMaxLength(256)) }),
+@@ -94,8 +95,11 @@
+ export const requireOrganization = (organization: string) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
+-    const rows = yield* sql`select id from organization where id = ${organization}`;
+-    if (rows.length !== 1) return yield* Effect.fail(new Error("Organization unavailable"));
++    const rows = yield* sql`select
++      exists(select 1 from organization where id = ${organization}) as present,
++      exists(select 1 from hosted_organization_removal where organization_id = ${organization}) as removing`;
++    if (rows[0]?.removing === true) return yield* Effect.fail(new OrganizationRemoving());
++    if (rows[0]?.present !== true) return yield* Effect.fail(new Error("Organization unavailable"));
+   });
+
+ /** Lock declared existing rows before apply; inspect the same stable identities after writes and on replay. */
+@@ -125,8 +129,13 @@
+       group.push(change);
+       tables.set(change.table, group);
+     }
+-    for (const [table, changes] of tables) {
++    for (const [table, changes] of [...tables].sort(([a], [b]) => a.localeCompare(b))) {
+       const scope = scopes[table]!;
++      changes.sort((a, b) =>
++        JSON.stringify(scope.keys.map((key) => a.key[key])).localeCompare(
++          JSON.stringify(scope.keys.map((key) => b.key[key])),
++        ),
++      );
+       const rows = yield* sql
+         .unsafe(
+           `select expected.value ->> 'index' as index, actual.scoped
+@@ -134,7 +143,7 @@
+         left join lateral (
+           select coalesce((${scope.predicate}), false) as scoped from "${table}" entry
+           where ${scope.keys.map((key) => `entry."${key}" is not distinct from (expected.value -> 'key' ->> '${key}')`).join(" and ")}
+-          limit 2 ${lock ? "for update of entry" : ""}
++          limit 2 ${lock ? "for update of entry nowait" : ""}
+         ) actual on true`,
+           [
+             organization,
+@@ -142,6 +151,7 @@
+           ],
+         )
+         .pipe(
++          Effect.mapError(contention),
+           Effect.flatMap(
+             Schema.decodeUnknownEffect(
+               Schema.Array(
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
@@ -1193,7 +1297,7 @@ diff --git a/apps/hosted/testing/cloud-locks-fixture.ts b/apps/hosted/testing/cl
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -313,6 +313,26 @@
+@@ -313,6 +313,31 @@
      targets: ["cloud"],
      reason:
        "The Basalt production-ops job runs it through the proof-only migration registry wrapper.",
@@ -1217,6 +1321,11 @@ diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
 +    targets: ["cloud"],
 +    reason:
 +      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
++  },
++  providerAdoptionPurge: {
++    targets: ["cloud"],
++    reason:
++      "The Basalt production-ops job runs the concrete registered migration through signed HTTP.",
    },
    cloudPoolSetupAtomic: {
      targets: ["cloud"],
@@ -1236,7 +1345,7 @@ diff --git a/e2e/support/provider-adoption-fixture.ts b/e2e/support/provider-ado
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/provider-adoption-fixture.ts
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,246 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "./actors.ts";
@@ -1278,6 +1387,20 @@ new file mode 100644
 +  });
 +  yield* Effect.addFinalizer(() =>
 +    Effect.gen(function* () {
++      const removing = yield* database.run({
++        sql: "select organization_id from hosted_organization_removal where organization_id = $1",
++        params: [actors.organization.id],
++      });
++      if (removing.length > 0) {
++        for (const table of ["executor_apps", "executor_accounts"])
++          expect(
++            yield* database.run({
++              sql: `select id from ${table} where owner = $1`,
++              params: [`organization:${actors.organization.id}`],
++            }),
++          ).toEqual([]);
++        return;
++      }
 +      yield* database.run({
 +        sql: "delete from private_production_ops_receipts where organization_id = $1 and migration = $2",
 +        params: [actors.organization.id, migration],
@@ -1473,16 +1596,16 @@ diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adopt
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/provider-adoption-locks.ts
-@@ -0,0 +1,293 @@
+@@ -0,0 +1,275 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Fiber, Schema } from "effect";
-+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 +import { body } from "./api.ts";
 +import { Target } from "./platform.ts";
 +import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
 +import { Evidence } from "./evidence.ts";
 +import { productionOpsClient } from "./production-ops-client.ts";
 +import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++import { apply, boundary } from "./provider-adoption-steps.ts";
 +import { DryRun, Plan } from "./provider-adoption-refusals.ts";
 +
 +const Failure = Schema.Struct({
@@ -1492,33 +1615,6 @@ new file mode 100644
 +    sqlStateClass: Schema.optionalKey(Schema.String),
 +  }),
 +});
-+const apply = (operation: unknown, dry: typeof DryRun.Type) => ({
-+  ...(typeof operation === "object" && operation !== null ? operation : {}),
-+  action: "apply",
-+  artifact: dry.artifact,
-+  planSha256: dry.artifact.sha256,
-+  backupSha256: dry.backupSha256,
-+  go: `GO ${dry.artifact.sha256}`,
-+});
-+
-+/** SQL boundaries pause actual HTTP transactions; NOWAIT probes establish their held locks. */
-+const boundary = (step: "organization" | "app" | "account", id: string) =>
-+  Effect.gen(function* () {
-+    const origin = process.env.BASALT_ADOPTION_STEP_GATE;
-+    if (origin === undefined)
-+      return yield* Effect.die("Run scripts/production-ops/prove-provider-adoption.ts");
-+    const request = (action: string) =>
-+      Effect.gen(function* () {
-+        const url = new URL(`/${action}`, origin);
-+        url.searchParams.set("step", step);
-+        url.searchParams.set("id", id);
-+        const response = yield* HttpClient.execute(HttpClientRequest.post(url));
-+        if (response.status !== 204) return yield* Effect.die("SQL boundary request refused");
-+      }).pipe(Effect.provide(FetchHttpClient.layer));
-+    yield* request("arm");
-+    yield* Effect.addFinalizer(() => request("release").pipe(Effect.orDie));
-+    return { entered: request("entered"), release: request("release") };
-+  });
 +const Probe = Schema.Array(Schema.Struct({ code: Schema.NullOr(Schema.String) }));
 +
 +export const proveConcurrentUnlink = Effect.gen(function* () {
@@ -1672,7 +1768,16 @@ new file mode 100644
 +    refusal: refused.body,
 +  });
 +  expect(refused.status).toBe(409);
-+  expect(refused.body).toEqual({ error: "operation_busy", retryable: true });
++  expect(refused.body).toEqual({
++    error: "operation_busy",
++    retryable: true,
++    failure: {
++      format: "basalt-production-ops-failure-v1",
++      category: "sql",
++      phase: "sql",
++      sqlStateClass: "55",
++    },
++  });
 +  expect(yield* p.snapshot).toEqual(before);
 +  expect(
 +    yield* p.database.run({
@@ -1766,6 +1871,104 @@ new file mode 100644
 +    }),
 +  ).toEqual([]);
 +  yield* p.database.release;
++});
+diff --git a/e2e/support/provider-adoption-purge.ts b/e2e/support/provider-adoption-purge.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-purge.ts
+@@ -0,0 +1,93 @@
++import { expect } from "@effect/vitest";
++import { Effect, Fiber, Schema } from "effect";
++import { body } from "./api.ts";
++import { Evidence } from "./evidence.ts";
++import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++import { apply, boundary } from "./provider-adoption-steps.ts";
++import { DryRun } from "./provider-adoption-refusals.ts";
++import { productionOpsClient } from "./production-ops-client.ts";
++
++export const proveConcurrentOrganizationPurge = Effect.gen(function* () {
++  const p = yield* providerAdoptionFixture,
++    client = yield* productionOpsClient,
++    evidence = yield* Evidence;
++  const operation = {
++    action: "dry-run",
++    selection: "provider-apps-openai-anthropic-v1",
++    recipient: client.recipient,
++    request: p.request,
++  };
++  const dry = yield* body(DryRun, yield* client.request(operation));
++  const applyStep = yield* boundary("organization", p.request.organization);
++  const applying = yield* client.request(apply(operation, dry)).pipe(Effect.forkChild);
++  yield* Effect.raceFirst(
++    applyStep.entered,
++    Fiber.join(applying).pipe(
++      Effect.flatMap((reply) => Effect.die(`Apply missed its authority boundary: ${reply.status}`)),
++    ),
++  );
++  const purgeStep = yield* boundary("purge", p.request.organization);
++  const purgedStep = yield* boundary("purged", p.request.organization);
++  const removal = yield* p.api.request(p.actors.owner, "DELETE", p.prefix);
++  expect(removal.status, JSON.stringify(removal.body)).toBe(200);
++  yield* purgeStep.entered;
++  let completed = false;
++  yield* Effect.addFinalizer(() =>
++    Effect.gen(function* () {
++      if (completed) return;
++      yield* applyStep.release;
++      yield* purgeStep.release;
++      yield* purgedStep.entered;
++      yield* purgedStep.release;
++    }).pipe(Effect.orDie),
++  );
++  const probe = yield* p.database
++    .probe({
++      sql: "select id from executor_apps where owner = $1 and id = $2 for update nowait",
++      params: [`organization:${p.request.organization}`, p.request.apps.openai],
++    })
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Array(Schema.Struct({ code: Schema.NullOr(Schema.String) })),
++        ),
++      ),
++    );
++  expect(probe[0]!.code).toBe("55P03");
++  const before = yield* p.snapshot;
++  yield* applyStep.release;
++  const refused = yield* Fiber.join(applying);
++  yield* evidence.json("adoption-organization-purge-busy.json", {
++    actualPurgeHoldsAppRows: probe[0]!.code,
++    status: refused.status,
++    refusal: refused.body,
++  });
++  expect(refused.status).toBe(409);
++  expect(refused.body).toMatchObject({ error: "operation_busy", retryable: true });
++  expect(yield* p.snapshot).toEqual(before);
++  expect(
++    yield* p.database.run({
++      sql: "select plan_sha256 from private_production_ops_receipts where organization_id = $1",
++      params: [p.request.organization],
++    }),
++  ).toEqual([]);
++  for (const action of ["inventory", "dry-run"] as const) {
++    const reply = yield* client.request({
++      ...operation,
++      action,
++      selection: action === "inventory" ? "accounts" : operation.selection,
++    });
++    expect(reply.status).toBe(409);
++    expect(reply.body).toMatchObject({ error: "organization_removing", retryable: false });
++  }
++  yield* purgeStep.release;
++  yield* purgedStep.entered;
++  expect(
++    yield* p.database.run({
++      sql: "select id from executor_apps where owner = $1 union all select id from executor_accounts where owner = $1",
++      params: [`organization:${p.request.organization}`],
++    }),
++  ).toEqual([]);
++  yield* purgedStep.release;
++  completed = true;
 +});
 diff --git a/e2e/support/provider-adoption-refusals.ts b/e2e/support/provider-adoption-refusals.ts
 new file mode 100644
@@ -1919,10 +2122,49 @@ new file mode 100644
 +    });
 +    expect(yield* snapshot()).toEqual(before);
 +  });
+diff --git a/e2e/support/provider-adoption-steps.ts b/e2e/support/provider-adoption-steps.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-adoption-steps.ts
+@@ -0,0 +1,34 @@
++import { Effect } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import type { DryRun } from "./provider-adoption-refusals.ts";
++
++export const apply = (operation: unknown, dry: typeof DryRun.Type) => ({
++  ...(typeof operation === "object" && operation !== null ? operation : {}),
++  action: "apply",
++  artifact: dry.artifact,
++  planSha256: dry.artifact.sha256,
++  backupSha256: dry.backupSha256,
++  go: `GO ${dry.artifact.sha256}`,
++});
++
++/** SQL boundaries pause actual HTTP transactions; NOWAIT probes establish their held locks. */
++export const boundary = (
++  step: "organization" | "app" | "account" | "purge" | "purged",
++  id: string,
++) =>
++  Effect.gen(function* () {
++    const origin = process.env.BASALT_ADOPTION_STEP_GATE;
++    if (origin === undefined)
++      return yield* Effect.die("Run scripts/production-ops/prove-provider-adoption.ts");
++    const request = (action: string) =>
++      Effect.gen(function* () {
++        const url = new URL(`/${action}`, origin);
++        url.searchParams.set("step", step);
++        url.searchParams.set("id", id);
++        const response = yield* HttpClient.execute(HttpClientRequest.post(url));
++        if (response.status !== 204) return yield* Effect.die("SQL boundary request refused");
++      }).pipe(Effect.provide(FetchHttpClient.layer));
++    yield* request("arm");
++    yield* Effect.addFinalizer(() => request("release").pipe(Effect.orDie));
++    return { entered: request("entered"), release: request("release") };
++  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2292,6 +2292,51 @@
+@@ -2292,6 +2292,62 @@
        "self-host": scheduled,
        cloud: na("Cloud runs the same step from its Worker's cron; see the Cloud scenario."),
        local: na("Local runs the same step at its own startup; see the local scenario."),
@@ -1971,6 +2213,17 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      cloud: managedCloud,
 +      "self-host": na("The named production migration uses the Cloud database."),
 +      local: na("Local does not host production operations."),
++    },
++  },
++  providerAdoptionPurge: {
++    fixtures: "actors",
++    deferOnboarding: true,
++    file: "provider-adoption.spec.ts",
++    title: "Cloud provider adoption refuses a busy organization purge",
++    targets: {
++      cloud: managedCloud,
++      "self-host": na("The named production migration uses the Cloud database."),
++      local: na("Local does not host production operations."),
      },
    },
    cloudCronJobsPlaced: {
@@ -1978,7 +2231,7 @@ diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.s
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/provider-adoption.spec.ts
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,214 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { body } from "../support/api.ts";
@@ -1991,6 +2244,7 @@ new file mode 100644
 +  proveConcurrentAccountDelete,
 +  proveForeignPlanLocks,
 +} from "../support/provider-adoption-locks.ts";
++import { proveConcurrentOrganizationPurge } from "../support/provider-adoption-purge.ts";
 +import { scenarios } from "../test-plan.ts";
 +
 +const Applied = Schema.Struct({
@@ -2018,6 +2272,9 @@ new file mode 100644
 +  );
 +  it.effect(scenarios.providerAdoptionForeign.title, (context) =>
 +    withHostedCase(context, proveForeignPlanLocks),
++  );
++  it.effect(scenarios.providerAdoptionPurge.title, (context) =>
++    withHostedCase(context, proveConcurrentOrganizationPurge),
 +  );
 +  it.effect(scenarios.providerAdoption.title, (context) =>
 +    withHostedCase(
