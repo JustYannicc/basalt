@@ -1,0 +1,488 @@
+{
+ "AgentConversationTicketIssueType": {
+  "type": "string",
+  "enum": [
+   "knowledge_gap",
+   "incorrect_information",
+   "documentation_gap",
+   "product_feedback",
+   "platform_bug",
+   "tool_issue",
+   "missing_tool",
+   "unnecessary_escalation",
+   "wrong_action"
+  ],
+  "title": "AgentConversationTicketIssueType"
+ },
+ "AgentConversationTicketPriority": {
+  "type": "string",
+  "enum": [
+   "low",
+   "medium",
+   "high",
+   "urgent"
+  ],
+  "title": "AgentConversationTicketPriority"
+ },
+ "AgentConversationTicketSortBy": {
+  "type": "string",
+  "enum": [
+   "created_at",
+   "priority"
+  ],
+  "title": "AgentConversationTicketSortBy"
+ },
+ "AgentConversationTicketSource": {
+  "type": "string",
+  "enum": [
+   "qa",
+   "agent",
+   "manual"
+  ],
+  "title": "AgentConversationTicketSource"
+ },
+ "AgentConversationTicketStatus": {
+  "type": "string",
+  "enum": [
+   "open",
+   "in_progress",
+   "resolved",
+   "cancelled",
+   "merged"
+  ],
+  "title": "AgentConversationTicketStatus"
+ },
+ "AgentSortBy": {
+  "type": "string",
+  "enum": [
+   "name",
+   "created_at",
+   "updated_at",
+   "call_count_7d"
+  ],
+  "title": "AgentSortBy"
+ },
+ "AllowedOutputFormats": {
+  "type": "string",
+  "enum": [
+   "mp3_22050_32",
+   "mp3_24000_48",
+   "mp3_44100_32",
+   "mp3_44100_64",
+   "mp3_44100_96",
+   "mp3_44100_128",
+   "mp3_44100_192",
+   "pcm_8000",
+   "pcm_16000",
+   "pcm_22050",
+   "pcm_24000",
+   "pcm_32000",
+   "pcm_44100",
+   "pcm_48000",
+   "ulaw_8000",
+   "alaw_8000",
+   "opus_48000_32",
+   "opus_48000_64",
+   "opus_48000_96",
+   "opus_48000_128",
+   "opus_48000_192"
+  ]
+ },
+ "BreakdownTypes": {
+  "type": "string",
+  "enum": [
+   "none",
+   "voice",
+   "voice_multiplier",
+   "user",
+   "groups",
+   "api_keys",
+   "all_api_keys",
+   "product_type",
+   "model",
+   "resource",
+   "request_queue",
+   "region",
+   "subresource_id",
+   "reporting_workspace_id",
+   "has_api_key",
+   "request_source"
+  ],
+  "title": "BreakdownTypes",
+  "description": "How to break down the information. Cannot be \"user\" or \"api_key\" if include_workspace_metrics is False."
+ },
+ "ConversationInitiationSource": {
+  "type": "string",
+  "enum": [
+   "unknown",
+   "android_sdk",
+   "node_js_sdk",
+   "react_native_sdk",
+   "react_sdk",
+   "js_sdk",
+   "python_sdk",
+   "widget",
+   "sip_trunk",
+   "twilio",
+   "exotel",
+   "genesys",
+   "avaya",
+   "audiocodes",
+   "swift_sdk",
+   "whatsapp",
+   "twilio_sms",
+   "flutter_sdk",
+   "zendesk_integration",
+   "slack_integration",
+   "telegram_integration",
+   "intercom_integration",
+   "freshdesk_integration",
+   "salesforce_integration",
+   "template_preview",
+   "genesys_bot_connector",
+   "subagent_tool"
+  ],
+  "title": "ConversationInitiationSource",
+  "description": "Enum representing the possible sources for conversation initiation.",
+  "default": "unknown"
+ },
+ "ConversationProduct": {
+  "type": "string",
+  "enum": [
+   "agents",
+   "speech_engine"
+  ],
+  "title": "ConversationProduct",
+  "description": "Which product surface owns this agent document."
+ },
+ "EmbeddingModelEnum": {
+  "type": "string",
+  "enum": [
+   "e5_mistral_7b_instruct",
+   "multilingual_e5_large_instruct"
+  ],
+  "title": "EmbeddingModelEnum",
+  "default": "e5_mistral_7b_instruct"
+ },
+ "EvaluationResultFilter": {
+  "type": "string",
+  "enum": [
+   "success",
+   "failure",
+   "unknown",
+   "error"
+  ],
+  "title": "EvaluationResultFilter"
+ },
+ "FinetuneCreatedBy": {
+  "type": "string",
+  "enum": [
+   "self",
+   "workspace",
+   "elevenlabs"
+  ],
+  "title": "FinetuneCreatedBy"
+ },
+ "FinetuneVisibility": {
+  "type": "string",
+  "enum": [
+   "private",
+   "workspace",
+   "public"
+  ],
+  "title": "FinetuneVisibility"
+ },
+ "GuardrailType": {
+  "type": "string",
+  "enum": [
+   "custom",
+   "prompt_injection",
+   "self_harm_intent",
+   "violence_graphic",
+   "sexual",
+   "violence",
+   "harassment",
+   "sexual_minors",
+   "self_harm",
+   "self_harm_instructions",
+   "harassment_threatening",
+   "hate",
+   "hate_threatening",
+   "profanity",
+   "religion_or_politics",
+   "medical_and_legal",
+   "guardrail"
+  ],
+  "title": "GuardrailType"
+ },
+ "ItemId": {
+  "type": "string",
+  "pattern": "^proditem_[a-z0-9]{26}$"
+ },
+ "KnowledgeBaseDependentType": {
+  "type": "string",
+  "enum": [
+   "direct",
+   "transitive",
+   "all"
+  ],
+  "title": "KnowledgeBaseDependentType"
+ },
+ "KnowledgeBaseDocumentType": {
+  "type": "string",
+  "enum": [
+   "file",
+   "url",
+   "text",
+   "folder"
+  ],
+  "title": "KnowledgeBaseDocumentType"
+ },
+ "KnowledgeBaseSortBy": {
+  "type": "string",
+  "enum": [
+   "name",
+   "created_at",
+   "updated_at",
+   "size"
+  ],
+  "title": "KnowledgeBaseSortBy"
+ },
+ "MediaId": {
+  "type": "string",
+  "pattern": "^prodmedia_[a-z0-9]{26}$"
+ },
+ "MergeProposalStatus": {
+  "type": "string",
+  "enum": [
+   "open",
+   "merged",
+   "closed"
+  ],
+  "title": "MergeProposalStatus"
+ },
+ "MessageSearchSortBy": {
+  "type": "string",
+  "enum": [
+   "search_score",
+   "created_at"
+  ],
+  "title": "MessageSearchSortBy"
+ },
+ "MetricType": {
+  "type": "string",
+  "enum": [
+   "credits",
+   "tts_characters",
+   "minutes_used",
+   "request_count",
+   "ttfb_avg",
+   "ttfb_p95",
+   "fiat_units_spent",
+   "concurrency",
+   "concurrency_average"
+  ],
+  "title": "MetricType"
+ },
+ "NonStreamingOutputFormats": {
+  "type": "string",
+  "enum": [
+   "wav_8000",
+   "wav_16000",
+   "wav_22050",
+   "wav_24000",
+   "wav_32000",
+   "wav_44100",
+   "wav_48000"
+  ]
+ },
+ "OrderId": {
+  "type": "string",
+  "pattern": "^prodorder_[a-z0-9]{26}$"
+ },
+ "OrderItemKind": {
+  "type": "string",
+  "enum": [
+   "dub",
+   "subtitles",
+   "transcription"
+  ],
+  "title": "OrderItemKind"
+ },
+ "OrderState": {
+  "type": "string",
+  "enum": [
+   "open",
+   "submitted",
+   "paid",
+   "accepted",
+   "rejected",
+   "done",
+   "cancelling",
+   "cancelled",
+   "expired",
+   "merged"
+  ],
+  "title": "OrderState"
+ },
+ "PhoneNumberSortBy": {
+  "type": "string",
+  "enum": [
+   "label",
+   "phone_number"
+  ],
+  "title": "PhoneNumberSortBy"
+ },
+ "SecretDependencyResourceType": {
+  "type": "string",
+  "enum": [
+   "tools",
+   "agents",
+   "phone_numbers"
+  ],
+  "title": "SecretDependencyResourceType"
+ },
+ "SingleUseTokenType": {
+  "type": "string",
+  "enum": [
+   "realtime_scribe",
+   "batch_scribe",
+   "tts_websocket"
+  ],
+  "title": "SingleUseTokenType"
+ },
+ "SortDirection": {
+  "type": "string",
+  "enum": [
+   "asc",
+   "desc"
+  ],
+  "title": "SortDirection"
+ },
+ "TelephonyProvider": {
+  "type": "string",
+  "enum": [
+   "twilio",
+   "sip_trunk",
+   "exotel"
+  ],
+  "title": "TelephonyProvider"
+ },
+ "TestSharingMode": {
+  "type": "string",
+  "enum": [
+   "all",
+   "shared_with_me"
+  ],
+  "title": "TestSharingMode"
+ },
+ "TestType": {
+  "type": "string",
+  "enum": [
+   "llm",
+   "tool",
+   "simulation",
+   "folder"
+  ],
+  "title": "TestType"
+ },
+ "ToolSortBy": {
+  "type": "string",
+  "enum": [
+   "name",
+   "created_at"
+  ],
+  "title": "ToolSortBy"
+ },
+ "ToolTypeFilter": {
+  "type": "string",
+  "enum": [
+   "webhook",
+   "client",
+   "api_integration_webhook"
+  ],
+  "title": "ToolTypeFilter"
+ },
+ "TopicSortBy": {
+  "type": "string",
+  "enum": [
+   "conversations",
+   "sentiment",
+   "success_rate",
+   "frustration"
+  ],
+  "title": "TopicSortBy"
+ },
+ "UsageAggregationInterval": {
+  "type": "string",
+  "enum": [
+   "hour",
+   "day",
+   "week",
+   "month",
+   "cumulative"
+  ],
+  "title": "UsageAggregationInterval",
+  "description": "The time interval over which to aggregate the usage data."
+ },
+ "UsersSortBy": {
+  "type": "string",
+  "enum": [
+   "last_contact_unix_secs",
+   "conversation_count",
+   "average_sentiment_score"
+  ],
+  "title": "UsersSortBy"
+ },
+ "WorkspaceResourceType": {
+  "type": "string",
+  "enum": [
+   "voice",
+   "voice_collection",
+   "pronunciation_dictionary",
+   "dubbing",
+   "dubbing_project",
+   "project",
+   "convai_agents",
+   "convai_knowledge_base_documents",
+   "convai_tools",
+   "convai_settings",
+   "convai_secrets",
+   "workspace_auth_connections",
+   "convai_phone_numbers",
+   "convai_mcp_servers",
+   "convai_api_integration_connections",
+   "convai_api_integration_trigger_connections",
+   "convai_batch_calls",
+   "convai_agent_response_tests",
+   "convai_test_suite_invocations",
+   "convai_crawl_jobs",
+   "convai_crawl_tasks",
+   "convai_kb_external_sync_jobs",
+   "convai_whatsapp_accounts",
+   "convai_agent_versions",
+   "convai_agent_branches",
+   "convai_agent_versions_deployments",
+   "convai_agent_experiments",
+   "convai_memory_entries",
+   "convai_templates",
+   "dashboard",
+   "dashboard_configuration",
+   "convai_agent_drafts",
+   "resource_locators",
+   "assets",
+   "content_generations",
+   "content_templates",
+   "content_skills",
+   "songs",
+   "transcription_tasks",
+   "avatars",
+   "avatar_video_generations",
+   "resource_collection",
+   "studio_projects",
+   "convai_analysis_items"
+  ],
+  "title": "WorkspaceResourceType",
+  "description": "Resource types that can be shared in the workspace. The name always need to match the collection names"
+ }
+}
